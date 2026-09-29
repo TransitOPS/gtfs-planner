@@ -66,19 +66,19 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveSectionsTest do
       assert newport =~ "stops"
 
       # Edit area and Add another area both enter the area editor through
-      # `push_patch`, which keeps the draft (CR-8).
+      # `push_patch`, which keeps the draft (CR-8) and names the area it opens.
       assert attribute_of(document, "#edit-area-a1", "type") == "button"
 
       view |> element("#edit-area-a1") |> render_click()
 
-      assert_patched(view, "/gtfs/#{ctx.version.id}/flex/#{service.id}/area")
+      assert_patched(view, "/gtfs/#{ctx.version.id}/flex/#{service.id}/area?area=a1")
       assert has_element?(view, "#flex-service-area")
 
       view |> element("#area-back") |> render_click()
       assert_patched(view, service_path(ctx.version, service))
 
       view |> element("#add-area") |> render_click()
-      assert_patched(view, "/gtfs/#{ctx.version.id}/flex/#{service.id}/area")
+      assert_patched(view, "/gtfs/#{ctx.version.id}/flex/#{service.id}/area?area=new")
     end
 
     test "connecting stops add and remove on the draft, then save", ctx do
@@ -496,7 +496,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveSectionsTest do
       assert text_of(drawer, "#export-details") =~ "flex-valley-line-detours-NP1-NP2"
 
       assert text_of(drawer, "#export-details") =~
-               "The timed stop_sequence doubles so the zone rows sit between them"
+               "the timed stop_sequence doubles so the zone rows sit between them"
     end
   end
 
@@ -777,11 +777,21 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveSectionsTest do
     |> Enum.map(&LazyHTML.text/1)
   end
 
+  # The option a browser would submit: the one the markup marks selected, or the
+  # first option when it marks none, which is the select's own default (the
+  # distance placeholder is rendered as an unselected first option).
   defp selected_value(document, selector) do
-    document
-    |> LazyHTML.query("#{selector} option")
-    |> Enum.find(fn option -> option |> LazyHTML.attribute("selected") |> List.first() != nil end)
-    |> case do
+    options =
+      document
+      |> LazyHTML.query("#{selector} option")
+      |> Enum.to_list()
+
+    marked =
+      Enum.find(options, fn option ->
+        option |> LazyHTML.attribute("selected") |> List.first() != nil
+      end)
+
+    case marked || List.first(options) do
       nil -> nil
       option -> option |> LazyHTML.attribute("value") |> List.first()
     end

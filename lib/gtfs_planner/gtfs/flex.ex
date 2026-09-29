@@ -1123,6 +1123,11 @@ defmodule GtfsPlanner.Gtfs.Flex do
   A service's `key` is derived from its name with this slug, and a generated
   `service_id` slug (`flex-<key>-book-<slug>`, `flex-<key>-<slug>-<hhmm>`) uses
   the same one, so export and readiness checks build the same IDs.
+
+  Unlike `GtfsPlanner.Gtfs.Stop.kebabify/1`, the whole name is kept: the key is
+  a stored identifier, and the 64-character cap belongs to generated stop IDs
+  where truncation only shortens a label. Two long service names truncated to
+  the same cap would collide on the key's unique index.
   """
   @spec slugify(String.t() | nil) :: String.t()
   def slugify(name) when is_binary(name) do

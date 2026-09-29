@@ -646,7 +646,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
             Edit points
           </.map_button>
           <.map_button
-            id="area-mode-draw"
+            id="area-mode-draw-tool"
             event="choose_source"
             value="draw"
             pressed={@mode == :draw}

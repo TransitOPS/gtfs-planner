@@ -1484,7 +1484,7 @@ case Accounts.register_first_admin(%{
       )
 
     custom_occurrences = occurrence_fixture.(custom_pattern, Enum.take(pattern_stops, 3))
-    custom_timing = timing_fixture.(custom_pattern, "All day", custom_occurrences)
+    _custom_timing = timing_fixture.(custom_pattern, "All day", custom_occurrences)
 
     {:ok, custom_trip} =
       Gtfs.create_trip(%{

@@ -367,10 +367,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveTest do
       assert stored(ctx, service).lock_version == service.lock_version
       assert has_element?(view, "#save-bar")
 
-      # Answering the field clears the summary.
+      # Answering the field clears the summary; the follow-up change submits the
+      # stored hours end too, because the refused save above had also drafted
+      # 17:00 against the stored 18:00. Nothing is unsaved once both are back.
       view
       |> element("#flex-service-form")
-      |> render_change(%{"service" => hours_params(service, end: "17:00")})
+      |> render_change(%{"service" => hours_params(service, end: "18:00")})
 
       refute has_element?(view, "#flex-service-error-summary")
       refute has_element?(view, "#save-bar")
@@ -397,8 +399,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveTest do
 
       assert attribute_of(document, "#service_hours_0_start", "aria-invalid") == "true"
 
-      # The refused form is still the draft's own rows: no doubled editor.
-      assert count(document, "#f-hours .fieldset") == 4
+      # The refused form is still the draft's own row: no doubled editor. A
+      # single-area service renders no Area select, so the row's three inputs
+      # (calendar, From, To) are the count.
+      assert count(document, "#f-hours .fieldset") == 3
       assert stored(ctx, service).hours == service.hours
     end
   end
@@ -466,11 +470,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveTest do
       service = single_window_service(ctx)
       {:ok, first, _html} = live(ctx.conn, service_path(ctx.version, service))
       {:ok, second, _html} = live(ctx.conn, service_path(ctx.version, service))
-      {:ok, third, _html} = live(ctx.conn, service_path(ctx.version, service))
 
       loaded(first)
       loaded(second)
-      loaded(third)
 
       first
       |> element("#flex-service-form")
@@ -486,8 +488,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLiveTest do
 
       assert has_element?(second, "#flex-service-stale")
 
-      # Their row moves on once more, so the second session is stale again on
-      # its next save.
+      # A third session opens after the first save, so its own save lands and
+      # their row moves on once more; the second session is stale again on its
+      # next save.
+      {:ok, third, _html} = live(ctx.conn, service_path(ctx.version, service))
+      loaded(third)
+
       third
       |> element("#flex-service-form")
       |> render_submit(%{"service" => hours_params(service, end: "17:00")})

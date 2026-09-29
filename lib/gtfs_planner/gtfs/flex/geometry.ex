@@ -288,7 +288,10 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   # `pairs` cuts one segment per consecutive pair, `segments` buffers it, and
   # `zones` unions every pattern's and direction's segments by the unordered pair
   # with the lesser stop ID first, so two patterns, both directions and a short
-  # turn sharing a pair produce one zone.
+  # turn sharing a pair produce one zone. A pattern that visits only one of the
+  # stretch's two stops runs from that stop to the pattern's end, or from the
+  # pattern's start to it, so the fallback bound mirrors the stop it does not
+  # visit.
   @detour_zones_cte """
   WITH RECURSIVE
   patterns AS (
@@ -322,7 +325,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
       AND $5 IS NOT NULL
       AND (b.first_pos IS NOT NULL OR b.last_pos IS NOT NULL)
       AND v.position BETWEEN
-            least(coalesce(b.first_pos, b.last_pos), coalesce(b.last_pos, b.first_pos))
+            least(coalesce(b.first_pos, 1), coalesce(b.last_pos, b.first_pos))
             AND greatest(coalesce(b.last_pos, b.max_pos), coalesce(b.first_pos, 1))
   ),
   stop_points AS (

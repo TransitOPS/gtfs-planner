@@ -496,6 +496,10 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderTextTest do
       }
 
       assert RiderText.changes(saved, draft, calendars()) == [
+               # Choosing registered riders also adds their eligibility sentence
+               # to the text, so the generic line joins the specific one, as it
+               # does for a booking rule above.
+               "Text for riders changed",
                "Where: Anywhere in Toledo or Newport",
                "Registered riders only, shown in trip planners",
                "Detour wording changed",
