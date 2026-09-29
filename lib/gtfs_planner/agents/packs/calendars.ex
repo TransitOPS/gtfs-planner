@@ -344,9 +344,9 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
 
   defp parse_dates(values) when is_list(values) do
     if Enum.all?(values, &is_binary/1) do
-      with {:ok, dates} <- parse_each_date(values),
-           dates = dates |> Enum.uniq() |> Enum.sort(Date) do
-        check_date_count(dates)
+      case parse_each_date(values) do
+        {:ok, dates} -> dates |> Enum.uniq() |> Enum.sort(Date) |> check_date_count()
+        {:error, reason} -> {:error, reason}
       end
     else
       {:error, "Dates must be ISO dates like 2026-10-12."}
