@@ -59,13 +59,14 @@ brew list postgis
 psql -d gtfs_planner_dev -c 'SELECT postgis_full_version();'
 ```
 
-PostGIS requires a superuser to create it. If the check fails, enable the extension once per local
-database with your Homebrew superuser (the default macOS account), and re-check after a
-`postgresql@18` or `postgis` upgrade:
+PostGIS requires a superuser to create it. If the check fails, enable the extension once with your
+Homebrew superuser (the default macOS account), and re-check after a `postgresql@18` or `postgis`
+upgrade. The `gtfs_planner_test` role that runs `mix test` is not a superuser, so the extension goes
+into `template1`, which the `gtfs_planner_exunit*` databases it creates copy:
 
 ```bash
 psql -d gtfs_planner_dev -c 'CREATE EXTENSION IF NOT EXISTS postgis'
-psql -d gtfs_planner_test -c 'CREATE EXTENSION IF NOT EXISTS postgis'
+psql -d template1 -c 'CREATE EXTENSION IF NOT EXISTS postgis'
 ```
 
 The `docker-compose.yml` and `docker-compose.mock-production.yml` database services use the

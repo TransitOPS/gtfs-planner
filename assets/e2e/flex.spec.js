@@ -1,7 +1,7 @@
 // Flex workspace browser journey.
 //
-// Runs against the reset-and-seeded browser database the repository's Playwright
-// configuration already uses (`mise run prepare:browser`, workers: 1, retries: 0)
+// Runs against the freshly seeded browser database the repository's Playwright
+// configuration already uses (`bin/test-browser`, workers: 1, retries: 0)
 // with `BROWSER_E2E=true`. The seeded "Browser Flex Version" is resolved by name
 // through the version panel, so every case reads the flex fixture it names
 // instead of whichever version is the organization's default.
@@ -851,7 +851,7 @@ test("export-defaults", async ({ page }) => {
 // export and the flex zip its download link serves.
 //
 // It runs last: it adds a third service to the version the cases above read, so
-// the suite expects the reset `mise run prepare:browser` performs before it.
+// the suite expects the new database `bin/test-browser` seeds before it.
 test("flex journey", async ({ page }) => {
   test.setTimeout(600_000);
   await page.setViewportSize(DESKTOP);
