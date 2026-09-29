@@ -4953,6 +4953,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           is_bidirectional: true
         })
 
+      # The changeset stores exit gates one-way, but feed import inserts rows
+      # without it, so an imported two-way exit gate still has to render.
+      {1, _} =
+        Repo.update_all(from(p in Gtfs.Pathway, where: p.id == ^two_way_exit_gate.id),
+          set: [is_bidirectional: true]
+        )
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
@@ -6586,6 +6593,67 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                view,
                "#pathway-form select[name='pathway_mode'] option[value='7'][selected]"
              )
+    end
+
+    test "selecting Exit gate disables the both-directions control and hides reverse signage",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           nested_pathway: nested_pathway
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{nested_pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      assert has_element?(view, "#is_bidirectional[checked]")
+      refute has_element?(view, "#is_bidirectional[disabled]")
+      assert has_element?(view, "#pathway-form input[name='reversed_signposted_as']")
+      assert has_element?(view, "svg[data-pathway-preview] [marker-start='url(#preview-arrow)']")
+
+      view
+      |> form("#pathway-form", %{"pathway_mode" => "7"})
+      |> render_change()
+
+      assert has_element?(view, "#is_bidirectional[disabled]")
+      refute has_element?(view, "#is_bidirectional[checked]")
+      assert has_element?(view, "#is_bidirectional-help", "Exit gates are one-way.")
+      refute has_element?(view, "#pathway-form input[name='reversed_signposted_as']")
+      refute has_element?(view, "svg[data-pathway-preview] [marker-start='url(#preview-arrow)']")
+    end
+
+    test "saving a two-way pathway switched to Exit gate stores it as one-way", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      nested_pathway: nested_pathway
+    } do
+      assert nested_pathway.is_bidirectional
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{nested_pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> form("#pathway-form", %{"pathway_mode" => "7"})
+      |> render_change()
+
+      view
+      |> form("#pathway-form")
+      |> render_submit()
+
+      saved = Gtfs.get_pathway!(nested_pathway.id)
+      assert saved.pathway_mode == 7
+      assert saved.is_bidirectional == false
     end
 
     test "pathway mode options render in deterministic numeric order", %{

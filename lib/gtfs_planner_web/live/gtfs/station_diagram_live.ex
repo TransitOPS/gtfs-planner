@@ -2630,7 +2630,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     {:noreply,
      socket
-     |> assign(:pathway_form, to_form(form_params))
+     |> assign(:pathway_form, to_form(one_way_when_exit_gate(form_params)))
      |> assign(:pathway_error, nil)
      |> assign(:pathway_form_dirty, true)}
   end
@@ -6542,7 +6542,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       "signposted_as" => pathway.signposted_as,
       "reversed_signposted_as" => pathway.reversed_signposted_as
     }
+    |> one_way_when_exit_gate()
   end
+
+  # Exit gates are always one-way (see `Pathway.changeset/2`). Keeping the form
+  # value false also keeps the preview and the reverse-signage field in step.
+  defp one_way_when_exit_gate(%{"pathway_mode" => "7"} = params),
+    do: Map.put(params, "is_bidirectional", false)
+
+  defp one_way_when_exit_gate(params), do: params
 
   defp handle_diagram_upload_progress(:diagram, entry, socket) do
     socket =

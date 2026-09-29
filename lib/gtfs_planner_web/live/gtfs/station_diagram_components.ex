@@ -5824,7 +5824,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         {Pathway.mode_label(mode_value), to_string(mode_value)}
       end)
 
-    assigns = assign(assigns, :pathway_mode_options, pathway_mode_options)
+    assigns =
+      assigns
+      |> assign(:pathway_mode_options, pathway_mode_options)
+      |> assign(:exit_gate?, to_string(assigns.pathway_form[:pathway_mode].value) == "7")
 
     ~H"""
     <.simple_form
@@ -5858,6 +5861,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               field={@pathway_form[:is_bidirectional]}
               type="checkbox"
               label="Can be traversed in both directions?"
+              disabled={@exit_gate?}
+              help={if @exit_gate?, do: "Exit gates are one-way."}
             />
           </div>
         </div>
