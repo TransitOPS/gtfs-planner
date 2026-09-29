@@ -257,6 +257,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBlockSelectionLiveTest do
       assert block_count(view) == "1 block selected"
 
       # A sort keeps the same page, so the bar is unchanged by the round trip.
+      # Sorting by a key the page was not on starts ascending, so `dir` stays at
+      # its default and is omitted; clicking the same key again is what toggles.
+      view |> element("button[phx-click='sort'][phx-value-key='hours']") |> render_click()
+      assert_patch(view, base <> "?sort=hours")
+
       view |> element("button[phx-click='sort'][phx-value-key='hours']") |> render_click()
       assert_patch(view, base <> "?sort=hours&dir=desc")
       assert block_count(view) == "1 block selected"

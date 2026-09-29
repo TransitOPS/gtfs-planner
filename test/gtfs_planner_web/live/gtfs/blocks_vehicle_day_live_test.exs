@@ -104,13 +104,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
       context.organization.id,
       context.version.id,
       route.route_id,
-      attrs
+      # The defaults go in first: merging them over `attrs` would replace the
+      # stops a caller chose, and every trip would be the same trip.
+      %{}
       |> Map.merge(%{
         service_id: "WK",
         block_id: "101",
         first_stop: "AB_RS_A",
         last_stop: "AB_VALLEY"
       })
+      |> Map.merge(attrs)
       |> Map.put(:first_arrival, first)
       |> Map.put(:last_arrival, last)
       |> Map.put(:first_departure, first)
@@ -192,7 +195,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
       {:ok, view, _html} =
         live(editor_conn(context), blocks_path(context.version.id) <> "?block=101")
 
-      summary = text(view, "#block-day-summary")
+      # The summary is prose in a wrapping element, so the rendered HTML breaks
+      # it across lines; matching on the collapsed text is what a reader sees.
+      summary =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#block-day-summary")
+        |> LazyHTML.text()
+        |> String.replace(~r/\s+/u, " ")
+        |> String.trim()
 
       # The span is the platform span, so the pull-out before the first departure
       # and the pull-back after the last arrival are inside the range.
@@ -239,7 +251,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
       # colour rather than as a claim it could make the connection.
       drive = "#block-day tr[data-kind='drive']"
       assert has_element?(view, drive, "! Needs 14 min; has 8")
-      assert has_element?(view, drive, "text-error")
+      assert has_element?(view, "#{drive} td.text-error", "! Needs 14 min; has 8")
 
       assert has_element?(view, "#block-day tr[data-kind='wait']", "22 min")
     end
@@ -329,8 +341,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
 
       assert_patch(
         view,
+        # The `gap=` parameter's own separator is percent-encoded inside the
+        # query string, so the patch carries `%7C` rather than a bare `|`.
         blocks_path(context.version.id) <>
-          "?gap=#{trips.first.id}|#{trips.second.id}&block=101"
+          "?gap=#{trips.first.id}%7C#{trips.second.id}&block=101"
       )
 
       assert has_element?(view, "#gap-drawer", "Open block 101")
@@ -364,8 +378,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
 
       assert_patch(
         view,
+        # The `gap=` parameter's own separator is percent-encoded inside the
+        # query string, so the patch carries `%7C` rather than a bare `|`.
         blocks_path(context.version.id) <>
-          "?gap=#{trips.first.id}|#{trips.second.id}&block=101"
+          "?gap=#{trips.first.id}%7C#{trips.second.id}&block=101"
       )
     end
 

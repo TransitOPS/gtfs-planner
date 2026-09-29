@@ -537,9 +537,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
 
       assert has_element?(view, "#plan-summary-drawer-overlay[data-open='true']")
 
-      # Three blocks and the unassigned trip are left out of the plan's own
-      # figures, and the minimum is the day's lower bound.
-      assert has_element?(view, "#plan-summary-vehicles", "3 vehicles used")
+      # The unassigned trip is left out of the plan's own figures, and the peak
+      # is block 101's two overlapping trips rather than the day's two blocks, so
+      # the figure is the vehicles out at that instant.
+      assert has_element?(view, "#plan-summary-vehicles", "2")
       assert has_element?(view, "#plan-summary-minimum", "2")
 
       # The plan summary's chart is one garage · type's demand against that
@@ -614,7 +615,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       base =
         blocks_path(version.id) <>
           "?day=#{weekday}&panel=pool&route=#{context.route.route_id}&status=problems" <>
-          "&sort=trips&dir=desc&scale=zoom&page=3&pool_page=2"
+          "&sort=hours&dir=desc&scale=zoom&page=3&pool_page=2"
 
       {:ok, view, _html} = live(conn, base)
 
@@ -625,8 +626,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       assert LazyHTML.attribute(LazyHTML.query(doc, "#blocks-route option[selected]"), "value") ==
                [context.route.route_id]
 
-      # A patch keeps every non-default parameter and omits the defaults: the
-      # review-checks button is a drawer and the finding's block is a patch.
+      # `sort=hours` is a real key and is kept. A patch keeps every non-default
+      # parameter and omits the defaults: the review-checks button is a drawer
+      # and the finding's block is a patch.
       view |> element("#blocks-review-checks") |> render_click()
       view |> element("[data-role='blocks-finding-block']") |> render_click()
 
