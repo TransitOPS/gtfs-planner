@@ -4,6 +4,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
   alias GtfsPlanner.Gtfs.GtfsTime
 
   @max_seconds 2_147_483_647
+  @slot_keys [:arrival_offset, :departure_offset]
 
   @doc "Builds absolute GTFS stop times from a trip start, pattern occurrences and relative rows."
   def materialize(start_seconds, occurrences, timing_rows)
@@ -23,7 +24,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
 
   def materialize(_, _, _), do: {:error, :invalid_input}
 
-  @doc "Reviews a new occurrence order and rebases all timing rows around its first departure."
+  @doc """
+  Reviews a new occurrence order and rebases all timing rows around its first departure.
+
+  When the retained occurrences change relative order, each timing keeps its times by
+  position and its other row values move with the stop; the rows whose times change come
+  back in `estimates` flagged `resequenced: true`, because the running time between the
+  stops that are now adjacent is only the old slot spacing.
+  """
   def review_stops(old_occurrences, new_occurrences, timing_rows, added_values)
       when is_list(old_occurrences) and is_list(new_occurrences) and is_list(timing_rows) and
              is_map(added_values) do
@@ -136,15 +144,18 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
     if length(rows) != length(old) do
       {:error, :invalid_input}
     else
-      with {:ok, result} <- review_timing(old, new, rows, Map.get(added_values, id, %{})) do
+      with {:ok, result} <- review_timing(old, new, id, rows, Map.get(added_values, id, %{})) do
         {:ok, if(is_nil(id), do: result, else: Map.put(result, :timing_id, id))}
       end
     end
   end
 
-  defp review_timing(old, new, rows, supplied) do
-    old_rows =
-      Map.new(Enum.zip(old, rows), fn {occurrence, row} -> {field(occurrence, :id), row} end)
+  defp review_timing(old, new, timing_id, rows, supplied) do
+    {old_rows, resequenced} =
+      old
+      |> Enum.zip(rows)
+      |> Map.new(fn {occurrence, row} -> {field(occurrence, :id), row} end)
+      |> resequence(old, new, timing_id)
 
     retained = Enum.filter(new, &(not is_nil(field(&1, :id))))
     first_row = row_for(new |> hd(), old_rows, supplied)
@@ -157,11 +168,39 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
       if length(retained) != MapSet.size(MapSet.new(Enum.map(retained, &field(&1, :id)))) do
         {:error, :invalid_input}
       else
-        {:ok, %{start_shift: first_departure, rows: normalized, estimates: estimates}}
+        {:ok,
+         %{start_shift: first_departure, rows: normalized, estimates: resequenced ++ estimates}}
       end
     else
       false -> {:error, :explicit_terminal_values_required}
       {:error, _} = error -> error
+    end
+  end
+
+  # Times stay with positions: the retained stops' rows in their old order are
+  # chronological time slots, and each slot goes to the retained stop now at that
+  # position. The remaining row values describe the stop, so they stay with it.
+  defp resequence(old_rows, old, new, timing_id) do
+    new_ids = for occurrence <- new, id = field(occurrence, :id), do: id
+    old_ids = for occurrence <- old, id = field(occurrence, :id), id in new_ids, do: id
+
+    if new_ids == old_ids do
+      {old_rows, []}
+    else
+      slots = Enum.map(old_ids, &Map.take(Map.fetch!(old_rows, &1), @slot_keys))
+      moved = Enum.zip(new_ids, slots)
+
+      rows =
+        Map.new(moved, fn {id, slot} ->
+          {id, Map.merge(row_attrs(Map.fetch!(old_rows, id)), slot)}
+        end)
+
+      estimates =
+        for {id, slot} <- moved, slot != Map.take(Map.fetch!(old_rows, id), @slot_keys) do
+          Map.merge(slot, %{id: id, timing_id: timing_id, resequenced: true})
+        end
+
+      {Map.merge(old_rows, rows), estimates}
     end
   end
 

@@ -355,6 +355,154 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.MutationsTest do
     assert Enum.map(before, & &1.id) == Enum.map(after_rows, & &1.id)
   end
 
+  describe "reordering the stops of a timed pattern" do
+    setup context do
+      stops =
+        for name <- ["A", "B", "C"],
+            do: stop_fixture(context.organization.id, context.version.id, %{stop_name: name})
+
+      {:ok, pattern} =
+        Gtfs.create_pattern(context.route.route_id, pattern_attrs(stops), context.audit)
+
+      [timing] = Repo.all(from t in TimedPattern, where: t.route_pattern_id == ^pattern.id)
+      [a, b, c] = occurrences(pattern.id)
+      set_timing_rows(timing, [{0, 0}, {300, 360}, {900, 900}])
+
+      for {occurrence, headsign} <- [{a, "Alpha"}, {b, "Bravo"}, {c, "Charlie"}] do
+        Repo.update_all(
+          from(r in TimedPatternStop, where: r.route_pattern_stop_id == ^occurrence.id),
+          set: [stop_headsign: headsign]
+        )
+      end
+
+      %{
+        stops: stops,
+        pattern: pattern,
+        timing: timing,
+        a: a,
+        b: b,
+        c: c,
+        reordered: [
+          %{id: a.id, stop_id: a.stop_id},
+          %{id: c.id, stop_id: c.stop_id},
+          %{id: b.id, stop_id: b.stop_id}
+        ]
+      }
+    end
+
+    test "requires an acknowledgement before saving, then keeps each timing's times by position",
+         %{pattern: pattern, timing: timing, a: a, b: b, c: c, reordered: reordered} = context do
+      source = source_for(context, pattern)
+
+      assert {:error, :timing_acknowledgement_required} =
+               Gtfs.review(
+                 pattern.id,
+                 {:stops, reordered, %{timing.id => %{}}},
+                 source,
+                 context.audit
+               )
+
+      assert {:ok, %{proposed: %{estimates: estimates}}} =
+               Gtfs.preview_stop_edit(
+                 pattern.id,
+                 {:stops, reordered, %{timing.id => %{}}},
+                 context.audit
+               )
+
+      assert Enum.map(estimates, &{&1.id, &1.arrival_offset, &1.departure_offset}) ==
+               [{c.id, 300, 360}, {b.id, 900, 900}]
+
+      assert Enum.map(occurrences(pattern.id), & &1.id) == [a.id, b.id, c.id]
+
+      operation = {:stops, reordered, %{timing.id => %{acknowledged: true}}}
+
+      assert {:ok, %{fingerprint: reviewed}} =
+               Gtfs.review(pattern.id, operation, source, context.audit)
+
+      assert {:ok, %{trips_updated: 0}} =
+               Gtfs.apply_review(pattern.id, operation, reviewed, context.audit)
+
+      assert Enum.map(occurrences(pattern.id), &{&1.id, &1.position}) ==
+               [{a.id, 1}, {c.id, 2}, {b.id, 3}]
+
+      assert stored_timing_rows(timing) == [
+               {a.id, 0, 0, "Alpha"},
+               {c.id, 300, 360, "Charlie"},
+               {b.id, 900, 900, "Bravo"}
+             ]
+    end
+
+    test "estimates an added stop between the re-sequenced neighbours when it is saved with a reorder",
+         %{pattern: pattern, timing: timing, a: a, b: b, c: c, reordered: [first, second, third]} =
+           context do
+      extra = stop_fixture(context.organization.id, context.version.id, %{stop_name: "X"})
+      entries = [first, %{key: "new-x", stop_id: extra.stop_id}, second, third]
+      operation = {:stops, entries, %{timing.id => %{acknowledged: true}}}
+      source = source_for(context, pattern)
+
+      assert {:ok, %{fingerprint: reviewed}} =
+               Gtfs.review(pattern.id, operation, source, context.audit)
+
+      assert {:ok, %{trips_updated: 0}} =
+               Gtfs.apply_review(pattern.id, operation, reviewed, context.audit)
+
+      [_, inserted, _, _] = occurrences(pattern.id)
+
+      assert stored_timing_rows(timing) == [
+               {a.id, 0, 0, "Alpha"},
+               {inserted.id, 150, 150, nil},
+               {c.id, 300, 360, "Charlie"},
+               {b.id, 900, 900, "Bravo"}
+             ]
+    end
+
+    test "still refuses to reorder a pattern that trips use",
+         %{
+           pattern: pattern,
+           timing: timing,
+           stops: stops,
+           reordered: reordered
+         } = context do
+      trip = trip_fixture(context.organization.id, context.version.id, context.route.route_id)
+
+      trip
+      |> Ecto.Changeset.change(%{
+        route_pattern_id: pattern.route_pattern_id,
+        timed_pattern_id: timing.id,
+        pattern_derivation_state: "linked"
+      })
+      |> Repo.update!()
+
+      insert_trip_times(
+        context,
+        trip,
+        stops,
+        [1, 2, 3],
+        ["08:00:00", "08:05:00", "08:15:00"],
+        ["08:00:00", "08:06:00", "08:15:00"]
+      )
+
+      before = stored_timing_rows(timing)
+      operation = {:stops, reordered, %{timing.id => %{acknowledged: true}}}
+
+      assert {:error, :invalid_occurrence_order} =
+               Gtfs.review(pattern.id, operation, source_for(context, pattern), context.audit)
+
+      assert stored_timing_rows(timing) == before
+    end
+  end
+
+  defp stored_timing_rows(timing) do
+    Repo.all(
+      from r in TimedPatternStop,
+        join: occurrence in RoutePatternStop,
+        on: occurrence.id == r.route_pattern_stop_id,
+        where: r.timed_pattern_id == ^timing.id,
+        order_by: occurrence.position,
+        select: {r.route_pattern_stop_id, r.arrival_offset, r.departure_offset, r.stop_headsign}
+    )
+  end
+
   defp pattern_attrs(stops),
     do: %{route_pattern_name: "Service", direction_id: 0, stops: Enum.map(stops, & &1.stop_id)}
 

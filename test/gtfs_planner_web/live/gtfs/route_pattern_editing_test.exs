@@ -529,6 +529,52 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       assert audit_count() == 1
     end
 
+    test "an unused pattern with real times reorders after the proposed times are acknowledged",
+         %{conn: conn, organization: organization, version: version} do
+      %{route: route, stops: stops, pattern: pattern, occurrences: [first, second, third]} =
+        timed =
+        three_stop_pattern(organization, version, "EDIT1T", [{0, 0}, {300, 360}, {900, 900}])
+
+      set_timepoints(timed.timing, [1, 0, 1])
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route, pattern, "?task=stops"))
+
+      render_click(view, "move_stop", %{"index" => "2", "direction" => "-1"})
+      render_click(view, "save_stops")
+
+      assert has_element?(view, "#stop-review-dialog[data-open='true']")
+      assert has_element?(view, "#stop-review-reorder-note", "keeps its times by position")
+      assert has_element?(view, "#stop-review-resequenced-#{timed.timing.id}-#{second.id}")
+      assert has_element?(view, "#stop-review-resequenced-#{timed.timing.id}-#{first.id}")
+      refute has_element?(view, "#stop-review-resequenced-#{timed.timing.id}-#{third.id}")
+      assert has_element?(view, "#stop-review-dialog-confirm[disabled]")
+      assert occurrence_rows(pattern) |> Enum.map(& &1.id) == [first.id, second.id, third.id]
+      assert audit_count() == 0
+
+      render_click(view, "acknowledge_review_timing", %{"timing_id" => timed.timing.id})
+      refute has_element?(view, "#stop-review-dialog-confirm[disabled]")
+
+      render_click(view, "apply_stop_review")
+
+      refute has_element?(view, "#stop-review-dialog[data-open='true']")
+      assert has_element?(view, "#status", "Changes saved in this version")
+
+      assert occurrence_rows(pattern) |> Enum.map(& &1.stop_id) == [
+               Enum.at(stops, 1).stop_id,
+               Enum.at(stops, 0).stop_id,
+               Enum.at(stops, 2).stop_id
+             ]
+
+      assert timing_rows(timed.timing)
+             |> Enum.map(&{&1.route_pattern_stop_id, &1.arrival_offset, &1.departure_offset}) == [
+               {second.id, 0, 0},
+               {first.id, 300, 360},
+               {third.id, 900, 900}
+             ]
+
+      assert timepoints(timed.timing) == [0, 1, 1]
+    end
+
     test "a stop list shorter than two stops is refused without writing",
          %{conn: conn, organization: organization, version: version} do
       %{route: route, pattern: pattern} =
