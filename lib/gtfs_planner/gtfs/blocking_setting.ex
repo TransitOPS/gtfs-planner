@@ -7,6 +7,13 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
   0 minutes pull-out buffer, any interlining, no default garage, 30 km/h estimated
   deadhead speed at 1.3 circuity). `changeset/2` casts and range-checks all eight
   settings, and the reader in `GtfsPlanner.Gtfs.Blocking` owns the default map.
+
+  The five crew columns on the same row — `report_pull_out_minutes`,
+  `report_relief_minutes`, `sign_off_minutes`, `paid_break_max_minutes` and
+  `max_spread_minutes` — are the crew rules, and are deliberately not part of
+  `settings_fields/0` or `changeset/2`: `GtfsPlanner.Gtfs.Runs` owns them through
+  its own `crew_fields/0` and `crew_changeset/2`, so a Block rules save never
+  rewrites a crew rule and a crew save never rewrites a Block rule.
   """
 
   use Ecto.Schema
@@ -23,6 +30,11 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
     field :deadhead_speed_kmh, :integer, default: 30
     field :deadhead_circuity, :decimal, default: Decimal.new("1.3")
     field :max_piece_minutes, :integer
+    field :report_pull_out_minutes, :integer, default: 15
+    field :report_relief_minutes, :integer, default: 5
+    field :sign_off_minutes, :integer, default: 5
+    field :paid_break_max_minutes, :integer, default: 30
+    field :max_spread_minutes, :integer, default: 720
 
     belongs_to :default_garage, GtfsPlanner.Operations.Garage
 
@@ -46,6 +58,11 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
           deadhead_speed_kmh: integer(),
           deadhead_circuity: Decimal.t(),
           max_piece_minutes: integer() | nil,
+          report_pull_out_minutes: integer(),
+          report_relief_minutes: integer(),
+          sign_off_minutes: integer(),
+          paid_break_max_minutes: integer(),
+          max_spread_minutes: integer(),
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
