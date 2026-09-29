@@ -8,12 +8,18 @@ defmodule GtfsPlanner.Operations.Tods do
   into accepted, skipped and error rows. Nothing here touches the database —
   `GtfsPlanner.Operations` owns every decision that depends on stored records,
   such as add versus update and the coordinates a new garage needs.
-
   Accepted rows carry the destination field atoms for the columns the file
   actually has (`:name`, `:lat`, `:lon` for garages; `:vehicle_label`,
   `:license_plate` for vehicles). A present column appears with its trimmed
   value, possibly `""` for a blank; an absent column is missing from the map, so
   the caller can apply the TODS absent/blank rules.
+
+  The `*_spec/0` functions are the export's column specs for the six files an
+  operations export may write. Four of them — the movement supplements
+  `calendar_dates_supplement.txt`, `routes_supplement.txt`, `trips_supplement.txt`
+  and `stop_times_supplement.txt` — hold the rows `GtfsPlanner.Gtfs.Blocking.TodsExport`
+  derives; their column names are that module's row keys, and this module is the
+  one place the file's shape is written down.
   """
 
   alias GtfsPlanner.Gtfs.Import.{CsvParser, ParseError}
@@ -165,6 +171,87 @@ defmodule GtfsPlanner.Operations.Tods do
         {"vehicle_id", :vehicle_id},
         {"vehicle_label", :vehicle_label},
         {"license_plate", :license_plate}
+      ]
+    }
+  end
+
+  @doc """
+  Column spec for the exported `calendar_dates_supplement.txt`.
+
+  A movement carries no revenue, so the public calendar has no service for it;
+  this file is where a consumer learns that a supplement service runs on one
+  date. Every row is an addition (`exception_type` `1`), which is what
+  `Blocking.TodsExport` writes.
+  """
+  @spec calendar_dates_supplement_spec() :: %{
+          filename: String.t(),
+          fields: [{String.t(), atom()}]
+        }
+  def calendar_dates_supplement_spec do
+    %{
+      filename: "calendar_dates_supplement.txt",
+      fields: [
+        {"service_id", :service_id},
+        {"date", :date},
+        {"exception_type", :exception_type}
+      ]
+    }
+  end
+
+  @doc """
+  Column spec for the exported `routes_supplement.txt`.
+
+  One row: the deadhead route every movement runs on, named by
+  `Blocking.TodsExport`.
+  """
+  @spec routes_supplement_spec() :: %{filename: String.t(), fields: [{String.t(), atom()}]}
+  def routes_supplement_spec do
+    %{
+      filename: "routes_supplement.txt",
+      fields: [
+        {"route_id", :route_id},
+        {"route_short_name", :route_short_name},
+        {"route_long_name", :route_long_name},
+        {"route_type", :route_type}
+      ]
+    }
+  end
+
+  @doc """
+  Column spec for the exported `trips_supplement.txt`.
+
+  `TODS_trip_type` is the movement's kind as a consumer reads it: `pull-out`,
+  `pull-back` or `deadhead`.
+  """
+  @spec trips_supplement_spec() :: %{filename: String.t(), fields: [{String.t(), atom()}]}
+  def trips_supplement_spec do
+    %{
+      filename: "trips_supplement.txt",
+      fields: [
+        {"route_id", :route_id},
+        {"service_id", :service_id},
+        {"trip_id", :trip_id},
+        {"TODS_trip_type", :tods_trip_type}
+      ]
+    }
+  end
+
+  @doc """
+  Column spec for the exported `stop_times_supplement.txt`.
+
+  A movement's two rows are its endpoints; `arrival_time` equals
+  `departure_time` at both, because a deadhead has no dwell.
+  """
+  @spec stop_times_supplement_spec() :: %{filename: String.t(), fields: [{String.t(), atom()}]}
+  def stop_times_supplement_spec do
+    %{
+      filename: "stop_times_supplement.txt",
+      fields: [
+        {"trip_id", :trip_id},
+        {"arrival_time", :arrival_time},
+        {"departure_time", :departure_time},
+        {"stop_id", :stop_id},
+        {"stop_sequence", :stop_sequence}
       ]
     }
   end

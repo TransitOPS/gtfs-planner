@@ -69,7 +69,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     Queries,
     Relief,
     Review,
-    Summary
+    Summary,
+    TodsExport
   }
 
   alias GtfsPlanner.Gtfs.BlockAttribute
@@ -172,6 +173,18 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         }
 
   @type in_seat_entry :: %{row: Queries.in_seat_row(), state: InSeat.state()}
+
+  @typedoc """
+  What `export_movements/2` hands the operations export: the day types in
+  derivation order, each one's blocks in the shape `TodsExport.rows/1` reads
+  them, and the garages by UUID so a pull's garage can be written by its public
+  `garage_id` (CR-7).
+  """
+  @type export_movements_result :: %{
+          day_types: [DayTypes.day_type()],
+          blocks_by_day_type: %{optional(String.t()) => [TodsExport.block()]},
+          garages_by_id: %{optional(Ecto.UUID.t()) => Context.garage()}
+        }
 
   @type problem :: %{
           code: Checks.code(),
@@ -1386,6 +1399,87 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       {:ok, day} -> {:ok, day}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  @doc """
+  Loads every day type's blocks and their derived movements for the operations export.
+
+  This is the export's read of the same thing the day load assembles, and it
+  returns it in the shape `Blocking.TodsExport.rows/1` takes: the day types in
+  derivation order, each one's blocked trips grouped into blocks carrying their
+  own movements, and the garages by UUID so a pull's garage can be written by its
+  correctable `garage_id` (CR-7). Blocks are resolved through the same
+  `Context.resolve_block/3` every other consumer uses, so the export's garage is
+  the day load's garage (INV-9), and the movements are rebuilt from
+  `Movements.build/3` on every call — nothing here is stored (INV-8).
+
+  Every day type is read, not one, because a consumer hangs a movement on a
+  service of its own day type: a block running on two day types contributes its
+  movements to both. A block appears once per day type under that day type's key
+  and a trip with no `block_id` is a pool trip with no movement, so it is left
+  out rather than given an empty block.
+
+  The function opens no transaction. It runs inside the caller's — the export's
+  one read snapshot, which has already established its isolation before the
+  first query, and a nested `Repo.transaction/1` would only take a savepoint.
+  The queries are therefore the ordinary ones the day load makes, against the
+  caller's connection.
+
+  Nothing but the movements is derived here: the checks, in-seat findings, fleet
+  rows, peak and bins a day load computes are not read, because a consumer of a
+  deadhead file has no use for them and re-deriving them would cost a read per
+  day type.
+  """
+  @spec export_movements(Ecto.UUID.t(), Ecto.UUID.t()) :: export_movements_result()
+  def export_movements(organization_id, gtfs_version_id) do
+    calendars = load_calendars!(organization_id, gtfs_version_id)
+    day_types = DayTypes.derive(calendars)
+    settings = get_settings(organization_id, gtfs_version_id)
+
+    {blocks_by_day_type, garages_by_id} =
+      Enum.reduce(day_types, {%{}, %{}}, fn day_type, {blocks, garages} ->
+        trips = day_trips(organization_id, gtfs_version_id, day_type)
+        context = build_context!(organization_id, gtfs_version_id, settings, trips)
+
+        # The garages are organization-level, so the first day type's context
+        # answers for every one of them; a version with no day type has no block
+        # and therefore names no garage, so the empty map is the honest answer
+        # there and not a missing read.
+        {
+          Map.put(blocks, day_type.key, movement_blocks(trips, context)),
+          if(garages == %{}, do: context.garages, else: garages)
+        }
+      end)
+
+    %{
+      day_types: day_types,
+      blocks_by_day_type: blocks_by_day_type,
+      garages_by_id: garages_by_id
+    }
+  end
+
+  # One day type's blocked trips, grouped into the blocks `TodsExport.rows/1`
+  # takes: the block's own ID, its trips in the order the vehicle runs them (a
+  # drive gap names its endpoints through them) and the movements derived for it.
+  # A pool trip has no block and therefore no movement, so it contributes
+  # nothing. The blocks keep the day's own natural order, as they do on the page.
+  defp movement_blocks(trips, context) do
+    trips
+    |> Enum.reject(&is_nil(&1.block_id))
+    |> Enum.group_by(& &1.block_id)
+    |> Enum.map(fn {block_id, block_trips} ->
+      %{
+        block_id: block_id,
+        trips: order_block_trips(block_trips),
+        movements:
+          Movements.build(
+            Checks.sequence(block_trips),
+            Context.resolve_block(context, block_id, block_trips),
+            context
+          )
+      }
+    end)
+    |> Enum.sort_by(&Summary.natural_key(&1.block_id))
   end
 
   @doc """
