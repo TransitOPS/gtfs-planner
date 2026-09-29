@@ -480,86 +480,266 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Renders the Peak drawer: the definition, a bar per 15-minute bin, the same
-  bins as a table and the count of trips the figure leaves out.
+  Renders the Plan summary drawer (AC-35): what the day's blocks cost in
+  vehicles, minutes and kilometres, and how far the fleet is from carrying them.
+
+  The four sections are the reference's, in its order and wording: the headline
+  number with the minimum and the riders share and the sentence that explains
+  them, the fleet table at the busiest time with its chart, the time and distance
+  totals, and the operator changes. Every number is `day.figures`, `day.fleet`
+  or `day.longest_stretch` read once per load into render assigns (CR-6), so the
+  drawer prints derived answers and re-derives none of its own.
+
+  The chart is the built peak chart's markup with the capacity line the reference
+  adds: the focused row — the first short row, else the first typed row, never a
+  garage total — is drawn per 15-minute bin against its own listing, and a bin
+  above that listing is an error bar rather than a demand bar. The sentence under
+  the chart is the chart's text equivalent, so the encoding is readable without
+  the pixels.
+
+  The two Operator changes links are step 42's: this step renders the section's
+  own answers and leaves the drawer they open to that step.
   """
   attr :open, :boolean, required: true
-  attr :peak, :map, required: true
-  attr :bins, :list, required: true
-  attr :axis, :map, default: nil
+  attr :figures, :map, required: true
+  attr :fleet_rows, :list, required: true
+  attr :chart, :map, default: nil
+  attr :day_type, :map, default: nil
+  attr :min_layover_minutes, :integer, default: nil
+  attr :longest_stretch, :map, default: nil
+  attr :max_piece_minutes, :integer, default: nil
+  attr :relief_stop_count, :integer, default: 0
+  attr :estimated?, :boolean, default: false
+  attr :repeating?, :boolean, default: false
+  attr :errors?, :boolean, default: false
+  attr :garages?, :boolean, default: false
+  attr :vehicles?, :boolean, default: false
+  attr :version_id, :string, required: true
 
-  def peak_drawer(assigns) do
-    max = assigns.bins |> Enum.map(& &1.count) |> Enum.max(fn -> 0 end)
-
-    assigns =
-      assigns
-      |> assign(:max, max)
-      |> assign(:bars, Enum.map(assigns.bins, &Map.put(&1, :height, bar_height(&1.count, max))))
-
+  def plan_summary_drawer(assigns) do
     ~H"""
     <.drawer
-      id="peak-drawer"
+      id="plan-summary-drawer"
       open={@open}
-      title="Peak vehicles out"
-      return_focus_id="blocks-summary-figures-item-peak"
+      title="Plan summary"
+      return_focus_id="blocks-summary-figures-item-vehicles"
     >
-      <p class="text-sm font-semibold">{peak_headline(@peak)} · whole day type</p>
-      <p class="mt-1 text-sm text-base-content/70">
-        Blocks in progress, including time between trips. Excludes unassigned and frequency
-        trips.
+      <p :if={@day_type} class="text-sm font-semibold">
+        {@day_type.label} · {date_count_label(@day_type.date_count)}
       </p>
 
-      <div :if={@bins != []} class="mt-4">
-        <div
-          id="peak-chart"
-          role="img"
-          aria-label={peak_chart_label(@peak, @bins, @axis)}
-          class="flex h-28 items-end gap-px border-b border-base-300"
-        >
-          <i
-            :for={bar <- @bars}
-            id={"peak-bin-bar-#{bar.start_secs}"}
-            style={"height: #{bar.height}%"}
-            class="min-w-0 flex-1 bg-base-content/40"
-            title={"#{clock(bar.start_secs)} · #{bar.count}"}
-          >
-          </i>
-        </div>
-        <div class="mt-1 flex justify-between text-xs text-base-content/70">
-          <span>{clock(List.first(@bins).start_secs)}</span>
-          <span>{clock(List.last(@bins).start_secs + 900)}</span>
-        </div>
+      <section id="plan-summary-plan">
+        <p id="plan-summary-vehicles" class="mt-2 text-4xl font-semibold leading-none">
+          {@figures.vehicles}
+          <span class="text-base font-normal text-base-content/70">vehicles used</span>
+        </p>
 
-        <table id="peak-bins" class="table table-sm mt-4">
-          <caption class="sr-only">Vehicles out per 15-minute bin</caption>
+        <dl id="plan-summary-figures" class="mt-4 grid grid-cols-[1fr_auto] gap-x-4 gap-y-2 text-sm">
+          <dt class="text-base-content/70">Minimum possible</dt>
+          <dd id="plan-summary-minimum" class="text-right font-semibold tabular-nums">
+            {@figures.minimum}
+          </dd>
+          <dt class="text-base-content/70">Time with riders</dt>
+          <dd id="plan-summary-riders" class="text-right font-semibold tabular-nums">
+            {@figures.riders}%
+          </dd>
+        </dl>
+
+        <p id="plan-summary-minimum-help" class="mt-2 text-sm text-base-content/70">
+          The minimum is the fewest vehicles these trip times allow with a {min_layover_label(
+            @min_layover_minutes
+          )} layover. Driving between stops and operator
+          changes can mean a good plan uses more.{repeating_note(@repeating?)} Time with riders is
+          the share of time out of the garage spent carrying riders.
+        </p>
+      </section>
+
+      <section id="plan-summary-fleet" class="mt-6 border-t border-base-300 pt-5">
+        <h3 class="text-base font-bold">Fleet at the busiest time</h3>
+
+        <p
+          :if={not @garages?}
+          id="plan-summary-fleet-no-garage"
+          class="mt-2 text-sm text-base-content/70"
+        >
+          Add a garage to count vehicles out of the garage.
+        </p>
+
+        <p
+          :if={@garages? and not @vehicles?}
+          id="plan-summary-fleet-no-vehicles"
+          class="mt-2 text-sm text-base-content/70"
+        >
+          No vehicles are listed.
+          <.link navigate={"/gtfs/#{@version_id}/settings/fleet"} class="link link-primary">
+            Go to Settings › Fleet
+          </.link>
+        </p>
+
+        <table
+          :if={@garages? and @vehicles?}
+          id="plan-summary-fleet-table"
+          class="table table-sm mt-2"
+        >
+          <caption class="sr-only">
+            Vehicles needed and listed per garage and type at the busiest time
+          </caption>
           <thead>
             <tr>
-              <th scope="col">From</th>
-              <th scope="col" class="text-right">Vehicles out</th>
+              <th scope="col">Garage · type</th>
+              <th scope="col" class="text-right">Needed</th>
+              <th scope="col" class="text-right">Listed</th>
+              <th scope="col">When</th>
             </tr>
           </thead>
           <tbody>
-            <tr :for={bar <- @bars} id={"peak-bin-#{bar.start_secs}"} data-role="peak-bin">
-              <td>{clock(bar.start_secs)}</td>
-              <td class="text-right tabular-nums">{bar.count}</td>
+            <tr
+              :for={row <- @fleet_rows}
+              id={"plan-summary-fleet-#{row.index}"}
+              data-role="plan-summary-fleet-row"
+              data-total={to_string(row.total?)}
+            >
+              <td class={["whitespace-nowrap", row.total? && "text-base-content/70"]}>
+                {row.garage} · {row.type}
+              </td>
+              <td class={["text-right tabular-nums font-semibold", row.short? && "text-error"]}>
+                {row.needed}{if row.short?, do: " !"}
+              </td>
+              <td class="text-right tabular-nums">{row.listed}</td>
+              <td class="tabular-nums">{fleet_when(row.at_secs, row.needed)}</td>
             </tr>
           </tbody>
         </table>
-      </div>
 
-      <p :if={@bins == []} id="peak-bins-empty" class="mt-4 text-sm text-base-content/70">
-        No block is timed in this day type, so there is no peak to show.
-      </p>
+        <p
+          :if={@garages? and @vehicles?}
+          id="plan-summary-fleet-note"
+          class="mt-2 text-sm text-base-content/70"
+        >
+          Blocks without a type count against their garage’s total. Garage travel counts as time
+          out.
+        </p>
 
-      <p id="peak-exclusions" class="mt-4 text-sm text-base-content/70">
-        Excludes {count_label(@peak.excluded_unassigned, "unassigned trip", "unassigned trips")} and {count_label(
-          @peak.excluded_frequency,
-          "frequency trip",
-          "frequency trips"
-        )}. Trips without
-        usable timing are also left out, and this is not a fleet requirement.
-      </p>
+        <div :if={@chart} id="plan-summary-chart-block" class="mt-4">
+          <div
+            id="plan-summary-chart"
+            role="img"
+            aria-label={plan_chart_label(@chart)}
+            data-role="plan-summary-chart"
+            class="relative flex h-28 items-end gap-px border-b border-base-300"
+          >
+            <i
+              :for={bar <- @chart.bars}
+              id={"plan-summary-bar-#{bar.start_secs}"}
+              data-role="plan-summary-bar"
+              data-over-listed={to_string(bar.over_listed?)}
+              style={"height: #{bar.height}%"}
+              class={["min-w-0 flex-1", (bar.over_listed? && "bg-error") || "bg-base-content/40"]}
+              title={"#{clock(bar.start_secs)} · #{bar.count}"}
+            >
+            </i>
+            <span
+              id="plan-summary-listed-line"
+              data-role="plan-summary-listed-line"
+              data-listed={to_string(@chart.row.listed)}
+              style={"bottom: #{@chart.listed_height}%"}
+              class="pointer-events-none absolute inset-x-0 border-t-2 border-dashed border-warning"
+            >
+            </span>
+            <span
+              id="plan-summary-listed-label"
+              class="pointer-events-none absolute right-0 -translate-y-full bg-base-100 px-1 text-xs font-semibold text-warning"
+              style={"bottom: #{@chart.listed_height}%"}
+            >
+              {@chart.row.listed} listed
+            </span>
+          </div>
+          <div class="mt-1 flex justify-between text-xs text-base-content/70">
+            <span>{clock(List.first(@chart.bins).start_secs)}</span>
+            <span>{clock(List.last(@chart.bins).start_secs + 900)}</span>
+          </div>
+          <p id="plan-summary-chart-summary" class="mt-2 text-sm">
+            {chart_summary(@chart.row)}
+          </p>
+        </div>
+      </section>
+
+      <section id="plan-summary-time" class="mt-6 border-t border-base-300 pt-5">
+        <h3 class="text-base font-bold">Time and distance</h3>
+        <dl
+          id="plan-summary-totals"
+          class="mt-2 grid grid-cols-[1fr_auto] items-baseline gap-x-4 gap-y-2 text-sm"
+        >
+          <.plan_summary_total
+            :for={{key, label, value, estimated} <- total_rows(@figures, @estimated?)}
+            key={key}
+            label={label}
+            value={value}
+            estimated={estimated}
+          />
+        </dl>
+        <p id="plan-summary-time-note" class="mt-2 text-sm text-base-content/70">
+          Includes travel to and from the garage.{provisional_note(@errors?)}
+        </p>
+      </section>
+
+      <section id="plan-summary-relief" class="mt-6 border-t border-base-300 pt-5">
+        <h3 class="text-base font-bold">Operator changes</h3>
+
+        <p
+          :if={is_nil(@max_piece_minutes)}
+          id="plan-summary-relief-off"
+          class="mt-2 text-sm text-base-content/70"
+        >
+          Not checked. Mark the stops where operators can change and set the limit to check each
+          block.
+        </p>
+
+        <div :if={@max_piece_minutes} id="plan-summary-relief-limit" class="mt-2">
+          <dl class="grid grid-cols-[1fr_auto] gap-x-4 gap-y-2 text-sm">
+            <dt class="text-base-content/70">Longest time before a change</dt>
+            <dd
+              data-role="plan-summary-relief-longest"
+              class={[
+                "text-right font-semibold tabular-nums",
+                too_long?(@longest_stretch, @max_piece_minutes) && "text-warning"
+              ]}
+            >
+              {stretch_label(@longest_stretch)}
+            </dd>
+          </dl>
+          <p id="plan-summary-relief-note" class="mt-2 text-sm text-base-content/70">
+            Limit {duration(@max_piece_minutes)} · {count_label(@relief_stop_count, "stop", "stops")} marked.{too_long_note(
+              @longest_stretch,
+              @max_piece_minutes
+            )}
+          </p>
+        </div>
+      </section>
     </.drawer>
+    """
+  end
+
+  # One figure row of the Time and distance block. A `dl` may only hold `dt` and
+  # `dd`, so the row is a component rather than a bare fragment: the value is one
+  # slot and the `est.` mark stays in it, quiet, where the reference puts it.
+  attr :key, :string, required: true
+  attr :label, :string, required: true
+  attr :value, :string, required: true
+  attr :estimated, :boolean, required: true
+
+  defp plan_summary_total(assigns) do
+    ~H"""
+    <dt class="text-base-content/70">{@label}</dt>
+    <dd data-role={"plan-summary-total-#{@key}"} class="text-right font-semibold tabular-nums">
+      {@value}<span
+        :if={@estimated}
+        data-role="plan-summary-est"
+        class="font-normal text-base-content/70"
+      >
+        est.
+      </span>
+    </dd>
     """
   end
 
@@ -2965,22 +3145,103 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp count_label(1, singular, _plural), do: "1 #{singular}"
   defp count_label(count, _singular, plural), do: "#{count} #{plural}"
 
-  defp peak_headline(%{at_secs: nil} = peak), do: "#{peak.count} vehicles out"
+  # The chart's text equivalent and its caption. The bars are one garage · type's
+  # vehicles out per 15-minute bin, so the label names that row and its listing
+  # rather than the whole day type, and the sentence under the chart repeats the
+  # same numbers for a reader who cannot see the pixels.
+  defp plan_chart_label(chart) do
+    row = chart.row
 
-  defp peak_headline(peak), do: "#{peak.count} at #{clock(peak.at_secs)}"
-
-  defp peak_chart_label(peak, bins, axis) do
-    "Vehicles out per 15-minute bin, #{peak.count} at the peak. " <>
-      "Chart covers #{clock(List.first(bins).start_secs)} to " <>
-      "#{clock(List.last(bins).start_secs + 900)} of the day type" <>
-      if(axis,
-        do: " (whole day type #{clock(axis.start_secs)}–#{clock(axis.end_secs)})",
-        else: ""
-      )
+    "#{row.garage} #{row.type} vehicles out by 15 minutes; peak #{row.needed} at " <>
+      "#{clock(row.at_secs)}; #{row.listed} listed. Chart covers " <>
+      "#{clock(List.first(chart.bins).start_secs)} to " <>
+      "#{clock(List.last(chart.bins).start_secs + 900)}."
   end
 
-  defp bar_height(_count, 0), do: 0
-  defp bar_height(count, max), do: round(count / max * 100)
+  defp chart_summary(%{at_secs: nil} = row), do: fleet_when(row.at_secs, row.needed)
+
+  defp chart_summary(row) do
+    sentence =
+      "#{row.garage} · #{row.type}: #{row.needed} out at the busiest time (#{clock(row.at_secs)}); " <>
+        "#{row.listed} listed."
+
+    if row.short? do
+      sentence <> " #{row.needed - row.listed} short."
+    else
+      sentence
+    end
+  end
+
+  # The Time and distance rows, in the reference's order. `drive_secs` and
+  # `deadhead_km` come from estimated driving times unless every pair on the day
+  # has been entered, so those two rows carry the `est.` mark while any pair is
+  # still an estimate (AC-3).
+  defp total_rows(figures, estimated?) do
+    [
+      {"platform", "Total time out", hours(secs_to_hours(figures.platform_secs)), false},
+      {"service", "Trips with riders", hours(secs_to_hours(figures.service_secs)), false},
+      {"layover", "Waiting between trips", hours(secs_to_hours(figures.layover_secs)), false},
+      {"drive", "Driving without riders", hours(secs_to_hours(figures.drive_secs)), estimated?},
+      {"service_km", "Distance with riders", "#{km(figures.service_km)} km", false},
+      {"deadhead_km", "Distance without riders", "#{km(figures.deadhead_km)} km", estimated?}
+    ]
+  end
+
+  defp secs_to_hours(secs), do: secs / 3600
+
+  defp repeating_note(false), do: ""
+  defp repeating_note(true), do: " Repeating service isn’t counted."
+
+  defp provisional_note(false), do: ""
+  defp provisional_note(true), do: " Totals are provisional while errors remain."
+
+  # A listing with no demand has no busiest time to name, so the column carries a
+  # dash rather than a clock the row never reached.
+  defp fleet_when(nil, _needed), do: "—"
+  defp fleet_when(_at_secs, 0), do: "—"
+  defp fleet_when(at_secs, _needed), do: clock(at_secs)
+
+  defp min_layover_label(nil), do: "the plan’s"
+  defp min_layover_label(minutes), do: "#{minutes}-minute"
+
+  defp too_long?(%{secs: secs}, limit) when is_integer(limit), do: secs > limit * 60
+  defp too_long?(_stretch, _limit), do: false
+
+  defp too_long_note(%{secs: secs, block_id: block_id}, limit) when is_integer(limit) do
+    if secs > limit * 60 do
+      " Block #{block_id} has no place to change operators for #{duration(div(secs, 60))}."
+    else
+      ""
+    end
+  end
+
+  defp too_long_note(_stretch, _limit), do: ""
+
+  defp stretch_label(nil), do: "—"
+
+  defp stretch_label(%{secs: secs, block_id: block_id}) do
+    "#{duration(div(secs, 60))} in block #{block_id}"
+  end
+
+  # Whole hours, then minutes only when there are some, so a stretch of exactly
+  # two hours reads "2 h" rather than "2 h 0 min".
+  defp duration(minutes) when rem(minutes, 60) == 0, do: "#{div(minutes, 60)} h"
+
+  defp duration(minutes) do
+    "#{div(minutes, 60)} h #{rem(minutes, 60)} min"
+  end
+
+  @doc """
+  Returns one bar's height as a percentage of the chart's tallest bar.
+
+  The scale is the caller's, so a chart draws the listing line on the same
+  scale as its bars (`BlocksLive` builds the Plan summary chart's with this
+  function). A chart with nothing to draw has no bars, so a zero maximum gives a
+  zero height rather than a division by zero.
+  """
+  @spec bar_height(non_neg_integer(), non_neg_integer()) :: non_neg_integer()
+  def bar_height(_count, 0), do: 0
+  def bar_height(count, max), do: round(count / max * 100)
 
   defp month_groups(dates) do
     dates
