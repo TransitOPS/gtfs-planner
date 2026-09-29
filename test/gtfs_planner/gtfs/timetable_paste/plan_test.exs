@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.TimetablePaste.PlanTest do
   use ExUnit.Case, async: true
 
+  alias GtfsPlanner.Gtfs.Schedules.Summary
   alias GtfsPlanner.Gtfs.TimetablePaste.Plan
 
   # Literal fixtures. One pattern ("pattern-main", natural id "PAT-1") with
@@ -131,7 +132,8 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.PlanTest do
       assert plan.warnings == []
       assert plan.transfers_removed == 0
       assert plan.replace_patterns == []
-      assert plan.vehicles == %{before: nil, after: nil}
+      # No scope spans; the two non-overlapping 10-minute adds peak at 1.
+      assert plan.vehicles == %{before: 0, after: 1}
       assert plan.trips == %{before: 0, after: 2}
       assert plan.writes_blocks? == false
       # Same vector twice: one shared pending timing, both rows point at it.
@@ -359,7 +361,9 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.PlanTest do
       assert plan.transfers_removed == 0
       assert plan.new_timings == []
       assert plan.trips == %{before: 1, after: 1}
-      assert plan.vehicles == %{before: nil, after: nil}
+      # The minimal scope trip carries no span, so before is 0 and the
+      # paired 10-minute span peaks after at 1.
+      assert plan.vehicles == %{before: 0, after: 1}
       assert plan.writes_blocks? == false
     end
 
@@ -986,6 +990,180 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.PlanTest do
 
       assert Plan.build([ready_row(1, 6 * 3600, base_rows())], s, :replace, %{}, @stamp, []).discarded_decisions ==
                []
+    end
+  end
+
+  describe "vehicles and block overlaps" do
+    # Step-10 fixtures. Scope trips carry an explicit `span` in the
+    # Schedules shape (`%{start_secs:, end_secs:}`); planned spans derive
+    # from the row start plus the last timing offset. Expected counts are
+    # authored literally and cross-checked against Summary.peak_vehicles/1
+    # over the literal spans (EV-6 independence).
+    defp hour_rows do
+      [timing_row(0, 0), timing_row(1800, 1800), timing_row(3600, 3600)]
+    end
+
+    defp half_hour_rows do
+      [timing_row(0, 0), timing_row(900, 900), timing_row(1800, 1800)]
+    end
+
+    defp span_trip(id, start_secs, end_secs, opts \\ []) do
+      trip(id, start_secs)
+      |> Map.put(:span, %{start_secs: start_secs, end_secs: end_secs})
+      |> Map.merge(Map.new(opts))
+    end
+
+    defp calendar_scope(trips) do
+      %{
+        pattern_id: @pattern_id,
+        calendar: %{service_id: "SVC", name: "Weekday"},
+        patterns: [%{id: @pattern_id, route_pattern_id: @natural_id, timings: []}],
+        trips: trips
+      }
+    end
+
+    defp block_row(id, block_id, service_id, first_secs, last_secs) do
+      %{
+        id: id,
+        trip_id: "T-#{id}",
+        route_id: "R-1",
+        service_id: service_id,
+        block_id: block_id,
+        trip_headsign: nil,
+        route_pattern_id: nil,
+        updated_at: ~U[2026-09-28 12:00:00Z],
+        frequency?: false,
+        headway_secs: nil,
+        first_arrival: first_secs,
+        first_departure: first_secs,
+        last_arrival: last_secs,
+        last_departure: last_secs,
+        first_stop: nil,
+        last_stop: nil,
+        plottable?: true
+      }
+    end
+
+    test "Replace adding a 07:40 trip changes vehicles from 2 to 3" do
+      # Both directions count: the 07:00 trip runs one way, the 07:30
+      # trip the other, and they overlap 07:30-08:00.
+      s =
+        calendar_scope([
+          span_trip("trip-0700", 7 * 3600, 8 * 3600, direction_id: 0),
+          span_trip("trip-0730", 7 * 3600 + 1800, 8 * 3600 + 1800, direction_id: 1)
+        ])
+
+      rows = [
+        ready_row(1, 7 * 3600, hour_rows()),
+        ready_row(2, 7 * 3600 + 1800, hour_rows()),
+        ready_row(3, 7 * 3600 + 2400, hour_rows())
+      ]
+
+      plan = Plan.build(rows, s, :replace, %{}, @stamp, [])
+
+      assert Enum.map(plan.changes, & &1.op) == [:change, :change, :add]
+      assert plan.counts == %{empty_counts() | change: 2, add: 1}
+
+      before_spans = [
+        %{start_secs: 7 * 3600, end_secs: 8 * 3600},
+        %{start_secs: 7 * 3600 + 1800, end_secs: 8 * 3600 + 1800}
+      ]
+
+      after_spans = before_spans ++ [%{start_secs: 7 * 3600 + 2400, end_secs: 8 * 3600 + 2400}]
+
+      assert Summary.peak_vehicles(before_spans).count == 2
+      assert Summary.peak_vehicles(after_spans).count == 3
+      assert plan.vehicles == %{before: 2, after: 3}
+      assert plan.trips == %{before: 2, after: 3}
+    end
+
+    test "a row needing a decision is excluded from the after count" do
+      s =
+        calendar_scope([
+          span_trip("trip-0700", 7 * 3600, 8 * 3600, direction_id: 0),
+          span_trip("trip-0730", 7 * 3600 + 1800, 8 * 3600 + 1800, direction_id: 1)
+        ])
+
+      decided = %{
+        ready_row(4, 7 * 3600 + 2700, hour_rows())
+        | status: :decision,
+          issue: :no_pattern
+      }
+
+      rows = [
+        ready_row(1, 7 * 3600, hour_rows()),
+        ready_row(2, 7 * 3600 + 1800, hour_rows()),
+        ready_row(3, 7 * 3600 + 2400, hour_rows()),
+        decided
+      ]
+
+      plan = Plan.build(rows, s, :replace, %{}, @stamp, [])
+
+      assert Enum.map(plan.changes, & &1.op) == [:change, :change, :add, :needs_decision]
+      # The undecided row carries a would-be overlapping span but is not
+      # applied, so after stays 3 rather than climbing to 4.
+      assert plan.vehicles == %{before: 2, after: 3}
+      assert plan.counts == %{empty_counts() | change: 2, add: 1, needs_decision: 1}
+    end
+
+    test "a changed trip's old span is removed from the after count" do
+      s = calendar_scope([span_trip("trip-0700", 7 * 3600, 8 * 3600)])
+
+      # Same 07:00 start pairs, but the new vector is half an hour, so
+      # the after span is 07:00-07:30. Keeping the old 07:00-08:00 span
+      # would peak at 2 over 07:00-07:30; removing it peaks at 1.
+      plan = Plan.build([ready_row(1, 7 * 3600, half_hour_rows())], s, :replace, %{}, @stamp, [])
+
+      assert Enum.map(plan.changes, & &1.op) == [:change]
+
+      assert Summary.peak_vehicles([
+               %{start_secs: 7 * 3600, end_secs: 8 * 3600},
+               %{start_secs: 7 * 3600, end_secs: 7 * 3600 + 1800}
+             ]).count == 2
+
+      assert Summary.peak_vehicles([%{start_secs: 7 * 3600, end_secs: 7 * 3600 + 1800}]).count ==
+               1
+
+      assert plan.vehicles == %{before: 1, after: 1}
+    end
+
+    test "a pasted block overlapping an existing trip warns :block_overlap" do
+      # Block 101 already runs 09:35-10:03 on the calendar.
+      existing = block_row("existing-1", "101", "SVC", 9 * 3600 + 35 * 60, 10 * 3600 + 3 * 60)
+      s = calendar_scope([])
+
+      overlapping = ready_row(1, 9 * 3600 + 45 * 60, half_hour_rows(), %{block_id: "101"})
+      plan = Plan.build([overlapping], s, :add, %{}, @stamp, [existing])
+      [change] = plan.changes
+
+      assert change.op == :add
+      assert change.block_id == "101"
+      assert :block_overlap in change.warnings
+      assert plan.writes_blocks? == true
+
+      # A disjoint pasted trip on the same block does not warn.
+      clear = ready_row(1, 11 * 3600, half_hour_rows(), %{block_id: "101"})
+      quiet = Plan.build([clear], s, :add, %{}, @stamp, [existing])
+      [quiet_change] = quiet.changes
+
+      assert quiet_change.op == :add
+      assert quiet_change.warnings == []
+      assert quiet.writes_blocks? == true
+
+      # A block row on another calendar never warns.
+      foreign = block_row("foreign-1", "101", "OTHER", 9 * 3600 + 35 * 60, 10 * 3600 + 3 * 60)
+      scoped = Plan.build([overlapping], s, :add, %{}, @stamp, [foreign])
+      [scoped_change] = scoped.changes
+
+      assert scoped_change.warnings == []
+    end
+
+    test "writes_blocks? is false when no Block column is mapped" do
+      s = calendar_scope([])
+      plan = Plan.build([ready_row(1, 6 * 3600, base_rows())], s, :add, %{}, @stamp, [])
+
+      assert plan.writes_blocks? == false
+      assert Enum.map(plan.changes, & &1.warnings) == [[]]
     end
   end
 
