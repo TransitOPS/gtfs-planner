@@ -119,18 +119,24 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolution do
           {Map.delete(acc, key), errors}
 
         {:ok, value} when is_binary(value) ->
-          case String.trim(value) do
-            "" ->
-              {Map.delete(acc, key), errors}
-
-            trimmed ->
-              put_parsed_service_time(acc, errors, field, key, trimmed)
-          end
+          normalize_service_time(acc, errors, field, key, value)
 
         {:ok, value} ->
           put_parsed_service_time(acc, errors, field, key, value)
       end
     end)
+  end
+
+  # A blank string is a missing value and leaves the required error to
+  # `validate_required/2`; anything else is parsed.
+  defp normalize_service_time(acc, errors, field, key, value) do
+    case String.trim(value) do
+      "" ->
+        {Map.delete(acc, key), errors}
+
+      trimmed ->
+        put_parsed_service_time(acc, errors, field, key, trimmed)
+    end
   end
 
   defp put_parsed_service_time(acc, errors, field, key, value) do

@@ -328,6 +328,7 @@ const PathwayEvolutionsFloorplan = {
     this._rovingId = null;
     this._highlightedId = null;
     this._lastSelectedId = null;
+    this._restoreFocusId = null;
     this._failed = false;
 
     this._image = this.el.querySelector("[data-floorplan-image]");
@@ -402,6 +403,10 @@ const PathwayEvolutionsFloorplan = {
     const note = document.getElementById(this.el.dataset.noteId || "");
     if (note) note.hidden = false;
 
+    // The Floorplan/List switch has nothing to switch to once the image is gone.
+    const toggle = document.getElementById(this.el.dataset.toggleId || "");
+    if (toggle) toggle.hidden = true;
+
     const list = document.getElementById(this.el.dataset.listId || "");
     if (list) list.classList.remove("md:hidden");
 
@@ -443,6 +448,7 @@ const PathwayEvolutionsFloorplan = {
     this._svg.innerHTML = html;
 
     if (inside && focused) this._focusPathway(focused);
+    this._restoreKeyboardFocus();
 
     this._renderCaption();
     this._renderCauseHighlight();
@@ -510,6 +516,30 @@ const PathwayEvolutionsFloorplan = {
     this._render();
   },
 
+  // Selecting a pathway opens the editor on it, and the server moves focus into
+  // that form — re-asserting that move on the next animation frame. A reader
+  // who activated the pathway with Enter or Space keeps their place on the
+  // floorplan instead: the restore is queued as a microtask from the update
+  // this selection rendered, so its frame is registered after the server's own
+  // and therefore runs last.
+  _restoreKeyboardFocus() {
+    const id = this._restoreFocusId;
+    if (!id) return;
+
+    this._restoreFocusId = null;
+
+    queueMicrotask(() => {
+      if (this._rovingId !== id) return;
+
+      const nextFrame = typeof window !== "undefined" && window.requestAnimationFrame;
+      if (!nextFrame) return this._focusPathway(id);
+
+      nextFrame(() => {
+        if (this._rovingId === id) this._focusPathway(id);
+      });
+    });
+  },
+
   _renderCauseHighlight() {
     const pathways = parseJson(this.el.dataset.pathways, []);
     const highlighted = pathways.find((pathway) => pathway.id === this._highlightedId);
@@ -543,6 +573,7 @@ const PathwayEvolutionsFloorplan = {
     } else if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       this._rovingId = id;
+      this._restoreFocusId = id;
       this._activate(id);
       return;
     }

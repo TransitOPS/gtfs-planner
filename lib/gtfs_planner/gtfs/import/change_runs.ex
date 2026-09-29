@@ -388,29 +388,27 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
          context,
          opts
        ) do
-    try do
-      transaction_with_broadcast(fn ->
-        with gtfs_version_id when is_binary(gtfs_version_id) <-
-               run_version_scope(organization_id, run_id),
-             _version <- Versions.lock_for_input_write!(organization_id, gtfs_version_id),
-             {:ok, run} <- fenced_run(organization_id, run_id, generation, token, [:applying]),
-             :ok <- valid_audit_context?(run, context),
-             %ChangeDecision{} = decision <- lock_decision(run.id, decision_id) do
-          apply_or_return_decision(run, decision, generation, token, context, opts)
-        else
-          nil -> Repo.rollback(:not_found)
-          {:error, :lease_lost} -> Repo.rollback(:lease_lost)
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
-    rescue
-      e in [Ecto.ConstraintError, Postgrex.Error] ->
-        if closure_reference_violation?(e) do
-          {:error, :pathway_in_use}
-        else
-          reraise(e, __STACKTRACE__)
-        end
-    end
+    transaction_with_broadcast(fn ->
+      with gtfs_version_id when is_binary(gtfs_version_id) <-
+             run_version_scope(organization_id, run_id),
+           _version <- Versions.lock_for_input_write!(organization_id, gtfs_version_id),
+           {:ok, run} <- fenced_run(organization_id, run_id, generation, token, [:applying]),
+           :ok <- valid_audit_context?(run, context),
+           %ChangeDecision{} = decision <- lock_decision(run.id, decision_id) do
+        apply_or_return_decision(run, decision, generation, token, context, opts)
+      else
+        nil -> Repo.rollback(:not_found)
+        {:error, :lease_lost} -> Repo.rollback(:lease_lost)
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  rescue
+    e in [Ecto.ConstraintError, Postgrex.Error] ->
+      if closure_reference_violation?(e) do
+        {:error, :pathway_in_use}
+      else
+        reraise(e, __STACKTRACE__)
+      end
   end
 
   # Applying one decision publishes stop/pathway/level rows of the run's version, a combination

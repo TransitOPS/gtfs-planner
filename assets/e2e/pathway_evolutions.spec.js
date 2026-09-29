@@ -1657,6 +1657,7 @@ test.describe("exchange", () => {
   test("a rejected closure row explains the field and its fix and stays until discarded", async ({
     page,
   }, testInfo) => {
+    await logIn(page);
     const versionId = await seededVersionId(page);
     const importPath = `/gtfs/${versionId}/import`;
 
@@ -1744,6 +1745,7 @@ test.describe("exchange", () => {
   });
 
   test("two failed imports keep their own recovery element and sentence", async ({ page }) => {
+    await logIn(page);
     const versionId = await seededVersionId(page);
     await page.setViewportSize(DESKTOP);
     await page.goto(`/gtfs/${versionId}/import`);
@@ -2500,9 +2502,16 @@ test.describe("calendars", () => {
     // weekly schedule. They span at most two consecutive months, so the open
     // month and its two neighbours hold exactly three removed cells.
     let removed = 0;
+    let month = await page.locator("#closure-dates-month").textContent();
 
     for (const step of ["prev", "next", "next"]) {
       await page.locator(`#closure-dates-${step}`).click();
+
+      // The step is an async round trip: wait for its month before counting
+      // the cells that month shows.
+      await expect(page.locator("#closure-dates-month")).not.toHaveText(month);
+      month = await page.locator("#closure-dates-month").textContent();
+
       removed += await page
         .locator('#closure-dates-months [aria-label*="Service removed"]')
         .count();
@@ -4103,7 +4112,7 @@ test.describe("range", () => {
       await expect(page.locator("#range-periods-list > li").first()).toBeVisible();
       await expect(page.locator("#range-periods-table")).toBeHidden();
 
-      for (const selector of ["#check-range", "#range-periods-list a[id*='range-show']"]) {
+      for (const selector of ["#check-range", "#range-periods-list a[id$='-show']"]) {
         const box = await page.locator(selector).first().boundingBox();
         if (box) expect(box.height).toBeGreaterThanOrEqual(44);
       }
@@ -4440,7 +4449,8 @@ test.describe("floorplan", () => {
     await expect(page.locator("#closure-floorplan-panel")).toBeHidden();
     await expect(page.locator("#locator-toggle")).toBeHidden();
     await expect(page.locator("#closure-pathway-list")).toBeVisible();
-    await expect(page.locator("#locator-view-diagram")).toBeVisible();
+    // Nothing is left to switch to once the image is gone: the list is the locator.
+    await expect(page.locator("#locator-view-list")).toBeHidden();
 
     await page.unroute("**/uploads/diagrams/**");
   });

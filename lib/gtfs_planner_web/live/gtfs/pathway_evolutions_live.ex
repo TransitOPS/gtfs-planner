@@ -139,6 +139,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
      |> assign(:range_scope, nil)
      |> assign(:range_request, nil)
      |> assign(:range_report, nil)
+     |> assign(:range_moment, nil)
      |> assign(:range_view, :grouped)
      |> assign(:range_timer, nil)
      |> assign(:floorplan, nil)
@@ -276,7 +277,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   # to the reader; closing it writes nothing and leaves the form untouched.
   def handle_event("toggle_dates", _params, socket) do
     if socket.assigns.dates_open? do
-      {:noreply, assign(socket, :dates_open?, false)}
+      # Closing forgets the loaded month: a hidden grid kept behind a closed
+      # disclosure would render a month title that no longer exists.
+      {:noreply, socket |> assign(:dates_open?, false) |> forget_dates()}
     else
       {:noreply, open_dates(socket)}
     end
@@ -798,6 +801,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     |> cancel_range_request()
     |> assign(:preview, nil)
     |> assign(:range_report, nil)
+    |> assign(:range_moment, nil)
     |> assign(:range_status, :idle)
     |> assign(:range_error, nil)
     |> assign(:range_scope, nil)
@@ -1075,6 +1079,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
       |> assign(:range_generation, generation)
       |> assign(:range_scope, scope)
       |> assign(:range_request, %{first: first, last: last})
+      |> assign(:range_moment, socket.assigns.preview_request)
       |> assign(:range_status, :loading)
       |> assign(:range_error, nil)
       |> assign(:range_form, range_form(Date.to_iso8601(first), Date.to_iso8601(last)))
@@ -1113,6 +1118,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   defp apply_range(socket, {:error, {:timezone_unavailable, reason}}) do
     socket
     |> assign(:range_report, nil)
+    |> assign(:range_moment, nil)
     |> assign(:range_status, :idle)
     |> assign(:range_error, nil)
     |> assign(:preview, nil)
@@ -1359,7 +1365,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   # The stale label belongs to the retained range, never to the new request: it
   # names the range still on screen, when it was checked, and either what is
-  # being checked now or why the new check stopped.
+  # being checked now or why the new check stopped. A report is also stale for
+  # as long as it is displayed after the page moved to a different moment: the
+  # range answered the page as it stood when it was checked.
   defp range_stale_detail(assigns) do
     case assigns.range_report do
       %{first_date: %Date{} = first, last_date: %Date{} = last} ->
@@ -1375,6 +1383,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
           map_size(assigns.range_form_errors) > 0 ->
             "· showing #{shown} · the entered dates were not checked"
+
+          assigns.range_moment != assigns.preview_request ->
+            "· showing #{shown}"
 
           true ->
             nil
@@ -1862,6 +1873,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
         values = Map.put(socket.assigns.form.params, "pathway_id", pathway_id(pathway))
 
         socket
+        |> assign(
+          :saved_values,
+          Map.put(socket.assigns.saved_values, "pathway_id", pathway_id(pathway))
+        )
         |> assign_entered_params(values)
         |> assign(:selected_pathway_id, pathway && pathway.id)
         |> assign(:status_message, "Choose a calendar and a window for this closure.")
@@ -2381,7 +2396,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
         rejected_changeset(socket, params, changeset)
 
       {:error, reason} ->
-        rejected_save(socket, reason)
+        rejected_save(socket, params, reason)
     end
   end
 
@@ -2404,7 +2419,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
         rejected_changeset(socket, params, changeset)
 
       {:error, reason} ->
-        rejected_save(socket, reason)
+        rejected_save(socket, params, reason)
     end
   end
 
@@ -2465,16 +2480,16 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     |> focus_scoped("closure-stale")
   end
 
-  defp rejected_save(socket, %Ecto.Changeset{} = changeset) do
-    show_form_errors(socket, changeset.params || %{}, changeset)
+  defp rejected_save(socket, params, :forbidden) do
+    socket
+    |> assign_entered_params(params)
+    |> put_flash(:error, "You no longer have permission to edit closures.")
   end
 
-  defp rejected_save(socket, :forbidden) do
-    put_flash(socket, :error, "You no longer have permission to edit closures.")
-  end
-
-  defp rejected_save(socket, :not_found) do
-    put_flash(socket, :error, "This closure is no longer available in this service version.")
+  defp rejected_save(socket, params, :not_found) do
+    socket
+    |> assign_entered_params(params)
+    |> put_flash(:error, "This closure is no longer available in this service version.")
   end
 
   defp notice_views(notices, row) do
@@ -2533,7 +2548,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
         case preview_date(calendar) do
           nil ->
             {nil,
-             "#{calendar.label} has no active service dates, so there is nothing to preview."}
+             "#{calendar_option_label(socket, saved["service_id"])} has no active service dates, so there is nothing to preview."}
 
           date ->
             {access_path(socket.assigns, date, saved["start_time"]), nil}
@@ -2546,6 +2561,15 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
       {:error, :not_found} ->
         {nil, "This closure's calendar is no longer in this service version."}
+    end
+  end
+
+  # The editor's own calendar option carries the label the page shows; the
+  # context's calendar payload is a source snapshot without a display name.
+  defp calendar_option_label(socket, service_id) do
+    case Enum.find(socket.assigns.calendars, &(&1.service_id == service_id)) do
+      nil -> service_id
+      option -> option.label
     end
   end
 
@@ -2655,15 +2679,14 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   end
 
   defp exact_pathway_id(search, pathways) do
-    term = normalize(search)
-
-    if term == "" do
-      nil
-    else
-      Enum.find_value(pathways, fn pathway ->
-        if normalize(pathway.pathway_id) == term, do: pathway.pathway_id
-      end)
+    case normalize(search) do
+      "" -> nil
+      term -> Enum.find_value(pathways, &exact_pathway_match(&1, term))
     end
+  end
+
+  defp exact_pathway_match(pathway, term) do
+    if normalize(pathway.pathway_id) == term, do: pathway.pathway_id
   end
 
   defp matches?([pathway_label, pathway_id, calendar_label, calendar_detail, service_id], term) do
@@ -3980,23 +4003,23 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 id="locator-toggle"
                 role="group"
                 aria-label="Pathway locator view"
-                class="inline-flex h-11 shrink-0 overflow-hidden rounded-control border border-control bg-white max-md:hidden"
+                class="inline-flex shrink-0 overflow-hidden rounded-control border border-control bg-white max-md:hidden"
               >
                 <button
                   :for={
                     {view, label, icon} <- [
-                      {"diagram", "Floorplan", "hero-map"},
-                      {"list", "List", "hero-list-bullet"}
+                      {:diagram, "Floorplan", "hero-map"},
+                      {:list, "List", "hero-list-bullet"}
                     ]
                   }
                   id={"locator-view-#{view}"}
                   type="button"
                   phx-click="floorplan_view"
-                  phx-value-view={view}
+                  phx-value-view={to_string(view)}
                   aria-pressed={to_string(@floorplan_view == view)}
                   class={[
-                    "inline-flex items-center gap-1.5 px-3.5 text-[13px] font-[650] text-base-content hover:bg-canvas aria-pressed:bg-strong aria-pressed:text-white",
-                    view == "list" && "border-l border-control"
+                    "inline-flex min-h-11 items-center gap-1.5 px-3.5 text-[13px] font-[650] text-base-content hover:bg-canvas aria-pressed:bg-strong aria-pressed:text-white",
+                    view == :list && "border-l border-control"
                   ]}
                 >
                   <.icon name={icon} class="size-4" />{label}
@@ -4022,6 +4045,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 selected_level_id={@floorplan.selected_level_id}
                 selected_level_label={@floorplan.selected_level_label}
                 levels_without_image={@floorplan.levels_without_image}
+                toggle_id="locator-toggle"
                 image_url={@floorplan.image_url}
                 image_alt={@floorplan.image_alt}
                 stops={@floorplan.stops}

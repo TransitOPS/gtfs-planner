@@ -531,6 +531,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   attr :selected_level_id, :string, required: true
   attr :selected_level_label, :string, required: true
   attr :levels_without_image, :list, required: true
+  attr :toggle_id, :string, default: nil
   attr :image_url, :string, required: true
   attr :image_alt, :string, required: true
   attr :stops, :list, required: true, doc: "plotted stops of the selected level"
@@ -571,6 +572,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
         mode={:authoring}
         note_id={@id <> "-missing"}
         list_id="closure-pathway-list"
+        toggle_id={@toggle_id}
         image_url={@image_url}
         image_alt={@image_alt}
         stops={@stops}
@@ -839,6 +841,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   attr :frame_class, :string, default: ""
   attr :note_id, :string, required: true
   attr :list_id, :string, default: nil
+  attr :toggle_id, :string, default: nil
   attr :image_url, :string, required: true
   attr :image_alt, :string, required: true
   attr :stops, :list, required: true
@@ -869,6 +872,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
       data-show-stop-names={to_string(@mode == :preview)}
       data-note-id={@note_id}
       data-list-id={@list_id || ""}
+      data-toggle-id={@toggle_id || ""}
       class="mt-3"
     >
       <div
@@ -1731,7 +1735,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
               </span>
               <span
                 :if={@timeline.cursor_pct}
-                id="timeline-cursor"
+                id={"#{row.bar_id}-cursor"}
+                data-timeline-cursor
                 aria-hidden="true"
                 class="absolute inset-y-0 z-10 w-0.5 -translate-x-1/2 bg-strong"
                 style={"left: #{@timeline.cursor_pct}%"}
@@ -2106,7 +2111,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
         kind: :group,
         period_count: length(members),
         date_label: range_pattern(members),
-        dates: Enum.map(members, &range_occurrence(&1, first)),
+        dates: Enum.map(members, &range_occurrence/1),
         first_date_label: first.date_label,
         show_id: "range-show-group-#{first.index}"
       })
@@ -2115,10 +2120,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   end
 
   # One date of a group, with its own exact target: the disclosure lists every
-  # occurrence and links each one to the pair the backend named for it.
-  defp range_occurrence(period, group) do
+  # occurrence and links each one to the pair the backend named for it. The link
+  # id is composed by the disclosure from its own id, because the same group is
+  # rendered once per presentation and ids must stay unique across both.
+  defp range_occurrence(period) do
     %{
-      id: "range-date-#{group.index}-#{period.service_date}-#{period.target_time}",
+      service_date: period.service_date,
+      target_time: period.target_time,
       date: period.service_date,
       label: period.date_label,
       href: period.href,
@@ -2131,7 +2139,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   # between. Either way the group's own disclosure carries every exact date.
   defp range_pattern(members) do
     dates =
-      members |> Enum.map(& &1.service_date) |> Enum.map(&Date.from_iso8601!/1) |> Enum.sort()
+      members
+      |> Enum.map(& &1.service_date)
+      |> Enum.map(&Date.from_iso8601!/1)
+      |> Enum.sort(Date)
 
     case dates do
       [one] ->
@@ -2454,7 +2465,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
           <li :for={date <- @row.dates}>
             <.link
               patch={date.href}
-              id={date.id}
+              id={"#{@id}-#{date.service_date}-#{date.target_time}"}
               data-show-date={date.date}
               data-show-time={date.target_label}
               class="inline-flex min-h-11 items-center rounded-control px-2 text-sm font-[650] tabular-nums text-action no-underline hover:bg-canvas hover:underline"
