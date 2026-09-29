@@ -776,6 +776,13 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
         |> Enum.uniq()
 
       assert match?([operation_id] when is_binary(operation_id), operation_ids)
+
+      # AC-22: the paste's timed_pattern "created" log shares the batch's
+      # operation_id with the trip logs.
+      assert [timing_operation_id] =
+               Enum.map(timing_logs(context), & &1.changed_fields["operation_id"])
+
+      assert timing_operation_id == hd(operation_ids)
     end
 
     test "an audit failure on the last added trip rolls back the whole mixed apply",

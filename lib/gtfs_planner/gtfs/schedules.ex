@@ -739,7 +739,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     result = remove_locked_trips!(organization_id, version_id, remove_trips)
     audit_removed_trips!(audit_context, remove_trips, snapshots, operation_id)
 
-    timings_by_name = create_paste_timings!(route, review.plan, audit_context)
+    timings_by_name = create_paste_timings!(route, review.plan, audit_context, operation_id)
 
     {changed_count, changed_ids} =
       apply_paste_changes!(
@@ -858,7 +858,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   # headsign, so trips keep falling through to the pattern default exactly
   # as Plan's effective-default rule assumes (a pending timing has no
   # headsign yet).
-  defp create_paste_timings!(route, plan, audit_context) do
+  defp create_paste_timings!(route, plan, audit_context, operation_id) do
     Enum.reduce(paste_timing_entries(plan), %{}, fn entry, by_name ->
       name = attr(entry, :name)
 
@@ -873,7 +873,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
             name,
             attr(entry, :timing_rows) || [],
             nil,
-            audit_context
+            audit_context,
+            operation_id
           )
 
         Map.put(by_name, name, timing.id)

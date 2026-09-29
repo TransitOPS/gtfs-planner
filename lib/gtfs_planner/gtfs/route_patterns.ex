@@ -2450,14 +2450,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
           String.t(),
           [map()],
           String.t() | nil,
-          AuditContext.t()
+          AuditContext.t(),
+          String.t() | nil
         ) :: TimedPattern.t()
   def create_pasted_timing!(
         %RoutePattern{} = pattern,
         name,
         rows,
         headsign,
-        %AuditContext{} = audit_context
+        %AuditContext{} = audit_context,
+        operation_id \\ nil
       ) do
     occurrences = pattern_occurrences(pattern)
 
@@ -2471,7 +2473,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       :timed_pattern,
       timing,
       "created",
-      timing_audit_attrs(pattern, timing, %{after: audit_timing_snapshot(timing)})
+      timing_audit_attrs(pattern, timing, %{
+        after: audit_timing_snapshot(timing),
+        operation_id: operation_id
+      })
     )
 
     timing
