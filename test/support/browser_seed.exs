@@ -35,6 +35,7 @@
 alias GtfsPlanner.Accounts
 alias GtfsPlanner.Accounts.User
 alias GtfsPlanner.Accounts.UserToken
+alias GtfsPlanner.AdvancedBlockingFixtures
 alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Gtfs.Agency
 alias GtfsPlanner.Gtfs.Calendar
@@ -5046,6 +5047,436 @@ case Accounts.register_first_admin(%{
       "Browser seed: version #{blocks_version.name} (#{blocks_version.id}) with 34 weekday blocks, " <>
         "#{blocks_day_trips} trips, a frequency trip, an unplottable trip and two type-4 records " <>
         "across #{map_size(block_stops)} stops and #{map_size(block_routes)} routes"
+    )
+
+    # ── Advanced blocking browser journey (EV-9, step 31) ──
+    #
+    # A published "Browser Advanced Blocks Version" carries the prototype's
+    # “Plan with problems” state, isolated from every other scenario by its
+    # version and by its `AB_` names:
+    #
+    #   * the three calendars behind the day types the journey visits — “Weekday”
+    #     on weekdays, “School days” on Monday, Wednesday and Friday and
+    #     “Saturday” on Saturday — which derive {WKDY, SCHOOL} (the largest, so the
+    #     page's default), {WKDY} alone and {SAT};
+    #   * the prototype's geometry, so an estimated drive at the stored 30 km/h
+    #     and 1.3 circuity is Main garage → Riverside Station 12 min,
+    #     Valley College ↔ Market Square 14 min and Main garage → Valley College
+    #     18 min (the three distances step 31 names). Riverside Station ↔ Valley
+    #     College estimates 15 min, Riverside Station ↔ Market Square 11 min,
+    #     North garage → Riverside Station 16 min and North garage → Valley
+    #     College 9 min. The prototype's own table is not one consistent set of
+    #     distances — its Main garage → Market Square 10 min cannot be reached from
+    #     any geometry that also holds the other eight — so that pair estimates
+    #     4 min here and nothing reads it;
+    #   * blocks 101–104 on the largest day type, with the two problems the
+    #     state is named for: 101 cannot reach Market Square (14 min of drive
+    #     into an 8-minute gap) and 104 runs route 30, which requires a 35-ft
+    #     diesel, on a Cutaway. Block 102 is extended as the prototype's “No
+    #     operator change” state extends it, so it runs past the 330-minute
+    #     operator-change limit without ever visiting the relief point;
+    #   * a two-trip pool — 6105 and 8105 — plus the frequency trip F30;
+    #   * Saturday blocks 101 and 102 out of the North garage, which is a
+    #     different vehicle's day than the weekday 101 of the same number.
+    #
+    # Block IDs are numeric (101–104) so R11 numbers generated blocks from 105.
+    # They are scoped to this version, so they cannot collide with the
+    # “Browser Blocks Version” `BB-` names.
+    {:ok, advanced_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Advanced Blocks Version"})
+
+    # Backdated, so this version never becomes the organization's latest
+    # published default and the existing browser journeys keep opening
+    # “Browser Blocks Version”.
+    advanced_version =
+      Repo.update!(
+        Ecto.Changeset.change(advanced_version,
+          published_at: ~U[2020-06-01 00:00:00.000000Z]
+        )
+      )
+
+    advanced_week_start = ~D[2026-09-07]
+    advanced_week_end = ~D[2027-06-25]
+
+    for {service_id, name, days} <- [
+          {"WKDY", "Weekday",
+           [monday: 1, tuesday: 1, wednesday: 1, thursday: 1, friday: 1, saturday: 0, sunday: 0]},
+          {"SCHOOL", "School days",
+           [monday: 1, tuesday: 0, wednesday: 1, thursday: 0, friday: 1, saturday: 0, sunday: 0]},
+          {"SAT", "Saturday",
+           [monday: 0, tuesday: 0, wednesday: 0, thursday: 0, friday: 0, saturday: 1, sunday: 0]}
+        ] do
+      attrs =
+        Map.merge(
+          %{
+            service_id: service_id,
+            name: name,
+            start_date: advanced_week_start,
+            end_date: advanced_week_end
+          },
+          Map.new(days)
+        )
+
+      GtfsPlanner.BlockingFixtures.calendar_service_fixture(
+        org.id,
+        advanced_version.id,
+        attrs
+      )
+    end
+
+    # Riverside Station is a station (location_type 1) with a Bay A and a Bay B
+    # beneath it. The bays carry no point of their own, so every estimate uses
+    # the parent's coordinates and a Bay A ↔ Bay B handoff is a same-station
+    # handoff rather than a drive, exactly as the prototype treats one station.
+    AdvancedBlockingFixtures.stop_with_coordinates_fixture(org.id, advanced_version.id, %{
+      stop_id: "AB_RS",
+      stop_name: "Riverside Station",
+      location_type: 1,
+      stop_lat: 40.750000,
+      stop_lon: -73.990000
+    })
+
+    for {stop_id, bay} <- [{"AB_RS_A", "A"}, {"AB_RS_B", "B"}] do
+      AdvancedBlockingFixtures.stop_with_coordinates_fixture(org.id, advanced_version.id, %{
+        stop_id: stop_id,
+        stop_name: "Riverside Station · Bay #{bay}",
+        location_type: 0,
+        parent_station: "AB_RS",
+        platform_code: bay,
+        stop_lat: nil,
+        stop_lon: nil
+      })
+    end
+
+    AdvancedBlockingFixtures.stop_with_coordinates_fixture(org.id, advanced_version.id, %{
+      stop_id: "AB_VALLEY",
+      stop_name: "Valley College",
+      location_type: 0,
+      stop_lat: 40.750000,
+      stop_lon: -73.921687
+    })
+
+    AdvancedBlockingFixtures.stop_with_coordinates_fixture(org.id, advanced_version.id, %{
+      stop_id: "AB_MKT",
+      stop_name: "Market Square",
+      location_type: 0,
+      stop_lat: 40.783935,
+      stop_lon: -73.967229
+    })
+
+    # The prototype's route colours: 12 ocean, 24 plum, 30 green.
+    advanced_routes =
+      [
+        {"AB_R12", "12", "Riverside", "1F5FBF"},
+        {"AB_R24", "24", "Crosstown", "4B1F78"},
+        {"AB_R30", "30", "College shuttle", "267548"}
+      ]
+      |> Map.new(fn {route_id, short_name, long_name, color} ->
+        {:ok, route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: advanced_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3,
+            route_color: color,
+            route_text_color: "FFFFFF"
+          })
+
+        {route_id, route}
+      end)
+
+    advanced_trip = fn attrs ->
+      attrs = Map.new(attrs)
+
+      GtfsPlanner.BlockingFixtures.blocked_trip_fixture(
+        org.id,
+        advanced_version.id,
+        Map.fetch!(advanced_routes, Map.fetch!(attrs, :route_id)).route_id,
+        # The fixture's own service default is the blocks scenario's calendar, so
+        # this version's Weekday calendar is named here rather than inherited.
+        Map.merge(
+          Map.take(attrs, [
+            :trip_id,
+            :block_id,
+            :trip_headsign,
+            :first_stop,
+            :last_stop,
+            :first_arrival,
+            :last_arrival
+          ]),
+          %{service_id: Map.get(attrs, :service_id, "WKDY")}
+        )
+      )
+    end
+
+    # Block 101: two Riverside → Valley College trips around a Crosstown trip out
+    # of Market Square. The 06:35 arrival at Valley College leaves 8 minutes to
+    # the 06:43 departure at Market Square, and the drive between them estimates
+    # 14, so the block carries the “can't reach” error the journey opens first.
+    advanced_trip.(%{
+      trip_id: "6101",
+      route_id: "AB_R12",
+      block_id: "101",
+      first_stop: "AB_RS_A",
+      last_stop: "AB_VALLEY",
+      first_arrival: "06:00:00",
+      last_arrival: "06:35:00",
+      trip_headsign: "Valley College"
+    })
+
+    advanced_trip.(%{
+      trip_id: "8101",
+      route_id: "AB_R24",
+      block_id: "101",
+      first_stop: "AB_MKT",
+      last_stop: "AB_RS_B",
+      first_arrival: "06:43:00",
+      last_arrival: "07:18:00",
+      trip_headsign: "Riverside Station"
+    })
+
+    advanced_trip.(%{
+      trip_id: "6103",
+      route_id: "AB_R12",
+      block_id: "101",
+      first_stop: "AB_RS_A",
+      last_stop: "AB_VALLEY",
+      first_arrival: "07:40:00",
+      last_arrival: "08:15:00",
+      trip_headsign: "Valley College"
+    })
+
+    # Block 102, extended as the prototype's “No operator change” state extends
+    # it: six trips from 06:05 to 11:35, every handoff at Valley College or at the
+    # station, so no trip ever passes the relief point at Market Square and the
+    # block exceeds the 330-minute operator-change limit in one stretch.
+    for {trip_id, first_stop, last_stop, first_arrival, last_arrival} <- [
+          {"6102", "AB_VALLEY", "AB_RS_B", "06:05:00", "06:40:00"},
+          {"6104", "AB_RS_A", "AB_VALLEY", "07:05:00", "07:40:00"},
+          {"6106", "AB_VALLEY", "AB_RS_B", "08:00:00", "08:35:00"},
+          {"6108", "AB_RS_A", "AB_VALLEY", "09:00:00", "09:35:00"},
+          {"6110", "AB_VALLEY", "AB_RS_B", "10:00:00", "10:35:00"},
+          {"6112", "AB_RS_A", "AB_VALLEY", "11:00:00", "11:35:00"}
+        ] do
+      advanced_trip.(%{
+        trip_id: trip_id,
+        route_id: "AB_R12",
+        block_id: "102",
+        first_stop: first_stop,
+        last_stop: last_stop,
+        first_arrival: first_arrival,
+        last_arrival: last_arrival,
+        trip_headsign:
+          if(first_stop == "AB_VALLEY", do: "Riverside Station", else: "Valley College")
+      })
+    end
+
+    # Block 103: the Crosstown trips of the weekday, clean at every handoff.
+    for {trip_id, first_stop, last_stop, first_arrival, last_arrival} <- [
+          {"8102", "AB_MKT", "AB_RS_B", "06:15:00", "06:50:00"},
+          {"8104", "AB_RS_A", "AB_MKT", "07:15:00", "07:50:00"},
+          {"8106", "AB_MKT", "AB_RS_B", "08:20:00", "08:55:00"}
+        ] do
+      advanced_trip.(%{
+        trip_id: trip_id,
+        route_id: "AB_R24",
+        block_id: "103",
+        first_stop: first_stop,
+        last_stop: last_stop,
+        first_arrival: first_arrival,
+        last_arrival: last_arrival,
+        trip_headsign: if(first_stop == "AB_MKT", do: "Riverside Station", else: "Crosstown")
+      })
+    end
+
+    # Block 104: the college shuttle's school-day trips on route 30, whose
+    # required type is the 35-ft diesel its block attribute does not name.
+    for {trip_id, first_stop, last_stop, first_arrival, last_arrival} <- [
+          {"9101", "AB_RS_A", "AB_VALLEY", "06:20:00", "06:55:00"},
+          {"9103", "AB_VALLEY", "AB_RS_B", "07:20:00", "07:55:00"},
+          {"9105", "AB_RS_A", "AB_VALLEY", "08:30:00", "09:05:00"}
+        ] do
+      advanced_trip.(%{
+        trip_id: trip_id,
+        route_id: "AB_R30",
+        service_id: "SCHOOL",
+        block_id: "104",
+        first_stop: first_stop,
+        last_stop: last_stop,
+        first_arrival: first_arrival,
+        last_arrival: last_arrival,
+        trip_headsign:
+          if(first_stop == "AB_RS_A", do: "Valley College", else: "Riverside Station")
+      })
+    end
+
+    # Saturday: the same block numbers out of the North garage, a different
+    # vehicle on a day of its own.
+    for {trip_id, block_id, first_stop, last_stop, first_arrival, last_arrival} <- [
+          {"S1201", "101", "AB_RS_A", "AB_VALLEY", "07:00:00", "07:35:00"},
+          {"S1202", "101", "AB_VALLEY", "AB_RS_B", "08:00:00", "08:35:00"},
+          {"S1203", "102", "AB_VALLEY", "AB_RS_B", "07:30:00", "08:05:00"},
+          {"S1204", "102", "AB_RS_A", "AB_VALLEY", "08:30:00", "09:05:00"}
+        ] do
+      advanced_trip.(%{
+        trip_id: trip_id,
+        route_id: "AB_R12",
+        service_id: "SAT",
+        block_id: block_id,
+        first_stop: first_stop,
+        last_stop: last_stop,
+        first_arrival: first_arrival,
+        last_arrival: last_arrival,
+        trip_headsign:
+          if(first_stop == "AB_VALLEY", do: "Riverside Station", else: "Valley College")
+      })
+    end
+
+    # The pool: 6105 and 8105, and the frequency trip F30, which runs a headway
+    # over three hours on the school-day calendar.
+    advanced_trip.(%{
+      trip_id: "6105",
+      route_id: "AB_R12",
+      first_stop: "AB_VALLEY",
+      last_stop: "AB_RS_B",
+      first_arrival: "09:15:00",
+      last_arrival: "09:50:00",
+      trip_headsign: "Riverside Station"
+    })
+
+    advanced_trip.(%{
+      trip_id: "8105",
+      route_id: "AB_R24",
+      first_stop: "AB_RS_A",
+      last_stop: "AB_MKT",
+      first_arrival: "09:30:00",
+      last_arrival: "10:05:00",
+      trip_headsign: "Crosstown"
+    })
+
+    advanced_trip.(%{
+      trip_id: "F30",
+      route_id: "AB_R30",
+      service_id: "SCHOOL",
+      first_stop: "AB_VALLEY",
+      last_stop: "AB_RS_B",
+      first_arrival: "07:00:00",
+      last_arrival: "10:00:00",
+      trip_headsign: "Riverside Station"
+    })
+
+    GtfsPlanner.GtfsFixtures.frequency_fixture(org.id, advanced_version.id, "F30", %{
+      start_time: "07:00:00",
+      end_time: "10:00:00",
+      headway_secs: 1800
+    })
+
+    # The two garages, at the prototype's points, and the two vehicle types with
+    # the prototype's time-out limits: a Cutaway 10 hours, a 35-ft diesel 8.
+    advanced_main =
+      GtfsPlanner.OperationsFixtures.garage_fixture(org.id, %{
+        garage_id: "MAIN",
+        name: "Main",
+        lat: 40.791236,
+        lon: -73.983169
+      })
+
+    advanced_north =
+      GtfsPlanner.OperationsFixtures.garage_fixture(org.id, %{
+        garage_id: "NORTH",
+        name: "North",
+        lat: 40.719368,
+        lon: -73.929277
+      })
+
+    advanced_cutaway =
+      GtfsPlanner.OperationsFixtures.vehicle_type_fixture(org.id, %{
+        name: "Cutaway",
+        max_out_hours: 10
+      })
+
+    advanced_diesel =
+      GtfsPlanner.OperationsFixtures.vehicle_type_fixture(org.id, %{
+        name: "35-ft diesel",
+        max_out_hours: 8
+      })
+
+    # The fleet the count strip and the Plan summary read: 12 Cutaways and 8
+    # diesels at Main, 6 Cutaways at North.
+    for {prefix, garage, type, count} <- [
+          {"AB_VC", advanced_main, advanced_cutaway, 12},
+          {"AB_VD", advanced_main, advanced_diesel, 8},
+          {"AB_VN", advanced_north, advanced_cutaway, 6}
+        ] do
+      for index <- 1..count do
+        GtfsPlanner.OperationsFixtures.vehicle_fixture(org.id, %{
+          vehicle_id: prefix <> String.pad_leading(Integer.to_string(index), 2, "0"),
+          vehicle_type_id: type.id,
+          garage_id: garage.id
+        })
+      end
+    end
+
+    # Every route runs out of Main, and route 30 needs the 35-ft diesel.
+    for {route_id, required_type_id} <- [
+          {"AB_R12", nil},
+          {"AB_R24", nil},
+          {"AB_R30", advanced_diesel.id}
+        ] do
+      AdvancedBlockingFixtures.route_operating_setting_fixture(
+        org.id,
+        advanced_version.id,
+        %{
+          route_id: route_id,
+          garage_id: advanced_main.id,
+          required_vehicle_type_id: required_type_id
+        }
+      )
+    end
+
+    # Block settings are stored per calendar and block number, so block 101's
+    # garage reaches both weekday day types and Saturday 101 keeps the North
+    # garage. 104's Cutaway is the wrong type for route 30, on purpose.
+    for {service_id, block_id, garage_id, type_id} <- [
+          {"WKDY", "101", advanced_main.id, advanced_cutaway.id},
+          {"WKDY", "102", advanced_main.id, advanced_cutaway.id},
+          {"WKDY", "103", advanced_main.id, advanced_cutaway.id},
+          {"SCHOOL", "104", advanced_main.id, advanced_cutaway.id},
+          {"SAT", "101", advanced_north.id, advanced_cutaway.id},
+          {"SAT", "102", advanced_north.id, advanced_cutaway.id}
+        ] do
+      AdvancedBlockingFixtures.block_attribute_fixture(org.id, advanced_version.id, %{
+        service_id: service_id,
+        block_id: block_id,
+        garage_id: garage_id,
+        vehicle_type_id: type_id
+      })
+    end
+
+    # Block rules: the default layover and driving-time settings, Main as the
+    # default garage and the researched 330-minute operator-change limit.
+    {:ok, _advanced_settings} =
+      GtfsPlanner.Gtfs.Blocking.update_settings(org.id, advanced_version.id, %{
+        min_layover_minutes: 5,
+        max_block_minutes: nil,
+        pull_out_buffer_minutes: 0,
+        interlining: :any,
+        deadhead_speed_kmh: 30,
+        deadhead_circuity: Decimal.new("1.3"),
+        max_piece_minutes: 330,
+        default_garage_id: advanced_main.id
+      })
+
+    # One relief point, at Market Square, which no weekday block visits.
+    AdvancedBlockingFixtures.relief_point_fixture(org.id, advanced_version.id, %{
+      stop_id: "AB_MKT"
+    })
+
+    IO.puts(
+      "Browser seed: version #{advanced_version.name} (#{advanced_version.id}) with blocks " <>
+        "101-104, a 2-trip pool plus frequency trip F30, 2 garages and 2 vehicle types"
     )
 
     {:ok, schedules_version} =
