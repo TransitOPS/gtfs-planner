@@ -609,14 +609,15 @@ test.describe("calendar coverage details", () => {
     );
   });
 
-  test("never routes an unreadable identity into the detail read or the date-change targets", async ({
+  test("routes an unreadable identity only to its repair actions, never into the date-change targets", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const versionId = await openCalendars(page, DETAILS_VERSION);
 
     // The identity stays listed with its name and usage, but its name is not a link
-    // into the detail read that evaluates the dates, and it has no coverage control.
+    // and it has no coverage control. The detail page opens it with the stored dates
+    // so they can be corrected, so the repair state's "Fix dates" is the only link there.
     const invalidRow = page.locator("#calendars-list tr", {
       hasText: "Details reversed range",
     });
@@ -624,7 +625,13 @@ test.describe("calendar coverage details", () => {
     await expect(
       page.locator('#calendars-list [data-calendar-link="DETAIL_REVERSED"]'),
     ).toHaveCount(0);
-    await expect(invalidRow.locator('a[href*="/calendars/show"]')).toHaveCount(0);
+    const detailLinks = invalidRow.locator('a[href*="/calendars/show"]');
+    await expect(detailLinks).toHaveCount(1);
+    await expect(detailLinks).toHaveAttribute(
+      "id",
+      "calendar-coverage-fix-DETAIL_REVERSED",
+    );
+    await expect(detailLinks).toHaveText("Fix dates");
     await expect(
       page.locator('[data-calendar-coverage="DETAIL_REVERSED"]'),
     ).toHaveCount(0);
