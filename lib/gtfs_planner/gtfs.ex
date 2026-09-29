@@ -2591,6 +2591,49 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns a map of station stop_id to the routes serving its child platforms.
+
+  A station's lines come from the stop_times of its child stops, so a child stop
+  (`parent_station` equal to a requested station) contributes only when it is a
+  platform (`location_type` `0` or `nil`); a stop_time on the station row itself
+  contributes nothing. Stops, stop_times, trips and routes from another organization
+  or version are ignored, and the result is distinct on station and route. An empty
+  `station_stop_ids` list returns `%{}` without querying.
+  """
+  @spec routes_by_station(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) ::
+          %{String.t() => [%{route_id: String.t(), route_short_name: String.t() | nil}]}
+  def routes_by_station(_organization_id, _gtfs_version_id, []), do: %{}
+
+  def routes_by_station(organization_id, gtfs_version_id, station_stop_ids) do
+    from(s in Stop,
+      join: st in StopTime,
+      on:
+        st.stop_id == s.stop_id and st.organization_id == s.organization_id and
+          st.gtfs_version_id == s.gtfs_version_id,
+      join: t in Trip,
+      on:
+        st.trip_id == t.trip_id and st.organization_id == t.organization_id and
+          st.gtfs_version_id == t.gtfs_version_id,
+      join: r in Route,
+      on:
+        t.route_id == r.route_id and t.organization_id == r.organization_id and
+          t.gtfs_version_id == r.gtfs_version_id,
+      where: s.organization_id == ^organization_id,
+      where: s.gtfs_version_id == ^gtfs_version_id,
+      where: s.parent_station in ^station_stop_ids,
+      where: is_nil(s.location_type) or s.location_type == 0,
+      distinct: [s.parent_station, r.route_id],
+      order_by: [asc: s.parent_station, asc: r.route_id],
+      select: {s.parent_station, %{route_id: r.route_id, route_short_name: r.route_short_name}}
+    )
+    |> Repo.all()
+    |> Enum.group_by(
+      fn {station_stop_id, _route} -> station_stop_id end,
+      fn {_station_stop_id, route} -> route end
+    )
+  end
+
+  @doc """
   Returns a list of routes that serve at least one station (stop with no parent).
   """
   def list_routes_serving_stations(organization_id, gtfs_version_id) do
