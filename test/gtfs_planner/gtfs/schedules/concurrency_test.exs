@@ -149,8 +149,13 @@ defmodule GtfsPlanner.Gtfs.Schedules.ConcurrencyTest do
              }
 
       # The rematerialized trip advances `updated_at` for spec 04's fingerprint.
-      assert unboxed(fn -> Repo.get!(Trip, created.id).updated_at end) >
+      # `DateTime.compare/2` orders the instants; the structural `>` comparison
+      # this replaces read two DateTime structs' fields and rejected a later
+      # timestamp that shares the same second.
+      assert DateTime.compare(
+               unboxed(fn -> Repo.get!(Trip, created.id).updated_at end),
                created_updated_at
+             ) == :gt
     end
   end
 
