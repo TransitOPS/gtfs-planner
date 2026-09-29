@@ -152,6 +152,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       # repeats the values the closed disclosure still owes the operator.
       refute has_element?(view, "#route-details-additional[open]")
 
+      # The disclosure the operator opens stays open when a field inside it
+      # changes: server patches leave the client-owned `open` attribute alone.
+      assert view |> element("#route-details-additional") |> render() =~ "ignore_attrs"
+
       assert has_element?(
                view,
                "#route-details-additional-summary",
@@ -2330,6 +2334,32 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
              )
 
       assert saved_route(route).route_id == "DEL2"
+    end
+
+    test "ticking the acknowledgement after its error keeps the box checked through the re-render",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route = details_route(organization.id, version.id, %{route_id: "DEL2B"})
+      trip_fixture(organization.id, version.id, route.route_id, trip_id: "DEL2B_T1")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view |> element("#route-delete") |> render_click()
+      view |> form("#route-delete-form") |> render_submit()
+      assert has_element?(view, "#route-delete-ack-error", "Check the box")
+
+      # The change event clears the error; the patch that follows must not
+      # reset the box the operator just ticked.
+      view
+      |> form("#route-delete-form", %{"delete" => %{"acknowledged" => "on"}})
+      |> render_change()
+
+      refute has_element?(view, "#route-delete-ack-error")
+      assert ack_checked?(view)
+
+      # Unticking is honored too.
+      render_change(view, "acknowledge_delete", %{"delete" => %{}})
+
+      refute ack_checked?(view)
     end
 
     test "the reviewed cascade deletes exactly its disclosed closure and returns to the scoped list with real counts",
