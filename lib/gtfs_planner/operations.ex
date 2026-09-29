@@ -171,6 +171,33 @@ defmodule GtfsPlanner.Operations do
     end
   end
 
+  @doc """
+  Returns the organization's garages keyed by UUID, with float coordinates.
+
+  This is the read a loaded planning context uses, so it returns exactly the five
+  fields that context carries and nothing a `Garage` struct holds for the settings
+  pages: no vehicle count, no address, no `updated_by_id`. Coordinates are decimals
+  on the column and floats here, which is what the driving-time estimate and
+  `Blocking.Distance.path_km/1` take.
+
+  The key is the UUID, because that is the identity a `block_attributes` or
+  `route_operating_settings` row references (CR-7). The correctable public
+  `garage_id` travels in the value for the TODS export but is never a key.
+  """
+  @spec planning_garages(Ecto.UUID.t()) :: %{
+          Ecto.UUID.t() => GtfsPlanner.Gtfs.Blocking.Context.garage()
+        }
+  def planning_garages(organization_id) do
+    Garage
+    |> where([g], g.organization_id == ^organization_id)
+    |> select([g], %{id: g.id, garage_id: g.garage_id, name: g.name, lat: g.lat, lon: g.lon})
+    |> Repo.all()
+    |> Map.new(fn garage ->
+      {garage.id,
+       %{garage | lat: Decimal.to_float(garage.lat), lon: Decimal.to_float(garage.lon)}}
+    end)
+  end
+
   # --- vehicle types ---------------------------------------------------------
 
   @doc """
@@ -245,6 +272,27 @@ defmodule GtfsPlanner.Operations do
           count_vehicles(organization_id, :vehicle_type_id, vehicle_type.id)
         end)
     end
+  end
+
+  @doc """
+  Returns the organization's vehicle types keyed by UUID.
+
+  The companion of `planning_garages/1` and the same shape: the three fields a
+  loaded context carries, keyed by the UUID a `block_attributes` or
+  `route_operating_settings` row references. `max_out_minutes` is passed through
+  as stored, so an absent limit stays `nil` and a caller can tell "no limit" from
+  "a limit of zero". A type no planning row references is still returned, because
+  R4 falls back to the first trip's route type rather than to an attribute.
+  """
+  @spec planning_vehicle_types(Ecto.UUID.t()) :: %{
+          Ecto.UUID.t() => GtfsPlanner.Gtfs.Blocking.Context.vehicle_type()
+        }
+  def planning_vehicle_types(organization_id) do
+    VehicleType
+    |> where([t], t.organization_id == ^organization_id)
+    |> select([t], %{id: t.id, name: t.name, max_out_minutes: t.max_out_minutes})
+    |> Repo.all()
+    |> Map.new(&{&1.id, &1})
   end
 
   # --- vehicles --------------------------------------------------------------

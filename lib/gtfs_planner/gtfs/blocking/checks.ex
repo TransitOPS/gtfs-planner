@@ -42,6 +42,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
           block_id: String.t() | nil,
           trip_headsign: String.t() | nil,
           route_pattern_id: String.t() | nil,
+          shape_id: String.t() | nil,
           updated_at: DateTime.t(),
           frequency?: boolean(),
           headway_secs: pos_integer() | nil,

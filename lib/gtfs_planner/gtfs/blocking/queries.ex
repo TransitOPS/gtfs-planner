@@ -22,11 +22,30 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
   UPDATE` query that takes every decision input of the command in UUID order
   (INV-1). Both filter on the organization and the version like every other read
   here, so a command can never see or lock another scope's rows (CR-4).
+
+  `planning_rows/3`, `shape_points/3` and `stop_paths/3` are the planning reads a
+  loaded context needs. Each costs one query per kind - four, one and one - so a
+  context costs the same however many trips, routes or stops the day has.
   """
 
   import Ecto.Query, warn: false
 
-  alias GtfsPlanner.Gtfs.{Agency, Frequency, GtfsTime, Route, Stop, StopTime, Transfer, Trip}
+  alias GtfsPlanner.Gtfs.{
+    Agency,
+    BlockAttribute,
+    DeadheadTime,
+    Frequency,
+    GtfsTime,
+    ReliefPoint,
+    Route,
+    RouteOperatingSetting,
+    Shape,
+    Stop,
+    StopTime,
+    Transfer,
+    Trip
+  }
+
   alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Repo
 
@@ -51,6 +70,29 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
           | {:blocks, [String.t()]}
           | {:blocks, [String.t()], [String.t()]}
 
+  # The four planning-input kinds, as the reads return them: one list per kind,
+  # each ordered by its own natural keys so two reads of unchanged data produce
+  # the same rows in the same order.
+  @type planning_rows :: %{
+          route_settings: [
+            %{
+              route_id: String.t(),
+              garage_id: Ecto.UUID.t() | nil,
+              required_vehicle_type_id: Ecto.UUID.t() | nil
+            }
+          ],
+          attributes: [
+            %{
+              service_id: String.t(),
+              block_id: String.t(),
+              garage_id: Ecto.UUID.t() | nil,
+              vehicle_type_id: Ecto.UUID.t() | nil
+            }
+          ],
+          deadhead: [%{from_ref: String.t(), to_ref: String.t(), minutes: integer()}],
+          relief: [%{stop_id: String.t()}]
+        }
+
   @type in_seat_row :: %{
           id: Ecto.UUID.t(),
           from_trip_id: String.t(),
@@ -68,6 +110,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
   missing or does not parse is `nil`. `plottable?` is true exactly when all four
   parsed, `frequency?` exactly when the trip has a `frequencies` row, and
   `headway_secs` is the smallest headway of those rows.
+
+  `shape_id` is the trip's own nullable column, carried so a context can measure a
+  shaped trip from its shape and a shapeless one from its stop path without
+  re-reading the trips. It is deliberately absent from `trip_identities/3`: that
+  read feeds a review fingerprint, and adding a column there would change the
+  fingerprints spec 05 already produced.
 
   The filter is one of the `filter()` variants: a day type's services, exact trip
   UUIDs, natural trip IDs, block IDs within a set of services, or block IDs across
@@ -89,6 +137,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
         block_id: t.block_id,
         trip_headsign: t.trip_headsign,
         route_pattern_id: t.route_pattern_id,
+        shape_id: t.shape_id,
         updated_at: t.updated_at
       })
       |> Repo.all()
@@ -246,6 +295,130 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
       }
     )
     |> Repo.all()
+  end
+
+  @doc """
+  Loads the four planning-input kinds a context needs, one query per kind.
+
+  Route operating settings, entered driving times and relief points are scoped to
+  the organization and the version alone: a route, a reference pair and a stop are
+  properties of the version, not of one day type. Block attributes are
+  additionally restricted to `service_ids`, because an attribute row for a service
+  the loaded day does not run is not one of that day's inputs - it is kept for the
+  next day rather than returned here.
+
+  Every list is ordered by its own natural keys, so a context digest over two
+  reads of unchanged data is stable. The read is four queries whatever the number
+  of routes, services, references or relief points.
+  """
+  @spec planning_rows(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) :: planning_rows()
+  def planning_rows(organization_id, gtfs_version_id, service_ids) do
+    %{
+      route_settings:
+        from(s in RouteOperatingSetting,
+          where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
+          order_by: [asc: s.route_id],
+          select: %{
+            route_id: s.route_id,
+            garage_id: s.garage_id,
+            required_vehicle_type_id: s.required_vehicle_type_id
+          }
+        )
+        |> Repo.all(),
+      attributes:
+        from(a in BlockAttribute,
+          where:
+            a.organization_id == ^organization_id and a.gtfs_version_id == ^gtfs_version_id and
+              a.service_id in ^service_ids,
+          order_by: [asc: a.service_id, asc: a.block_id],
+          select: %{
+            service_id: a.service_id,
+            block_id: a.block_id,
+            garage_id: a.garage_id,
+            vehicle_type_id: a.vehicle_type_id
+          }
+        )
+        |> Repo.all(),
+      deadhead:
+        from(d in DeadheadTime,
+          where: d.organization_id == ^organization_id and d.gtfs_version_id == ^gtfs_version_id,
+          order_by: [asc: d.from_ref, asc: d.to_ref],
+          select: %{from_ref: d.from_ref, to_ref: d.to_ref, minutes: d.minutes}
+        )
+        |> Repo.all(),
+      relief:
+        from(r in ReliefPoint,
+          where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id,
+          order_by: [asc: r.stop_id],
+          select: %{stop_id: r.stop_id}
+        )
+        |> Repo.all()
+    }
+  end
+
+  @doc """
+  Loads the points of each of `shape_ids`, keyed by shape ID and walked in order.
+
+  The order is `shape_pt_sequence` in SQL, not the order the feed happened to
+  insert the points in, so a shape whose points were imported out of order still
+  measures the path it drew. Coordinates are decimals on the column and floats in
+  the answer, which is what `Blocking.Distance.path_km/1` takes.
+
+  A shape ID with no rows is absent from the map rather than mapped to `[]`: a
+  trip naming it is a shaped trip whose measurement is zero, and step 7 decides
+  what that means. One query answers any number of shapes.
+  """
+  @spec shape_points(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) :: %{
+          String.t() => [{float(), float()}]
+        }
+  def shape_points(organization_id, gtfs_version_id, shape_ids) do
+    from(s in Shape,
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          s.shape_id in ^shape_ids,
+      order_by: [asc: s.shape_id, asc: s.shape_pt_sequence],
+      select: {s.shape_id, s.shape_pt_lat, s.shape_pt_lon}
+    )
+    |> Repo.all()
+    |> Enum.group_by(&elem(&1, 0), &point/1)
+  end
+
+  @doc """
+  Loads each trip's stop path, keyed by trip ID and walked in `stop_sequence` order.
+
+  One query joins `stop_times` to their stops and left joins each stop's parent
+  station, coalescing the parent's coordinates for a stop that has none of its own
+  exactly as `stop_refs/3` substitutes them for a layover distance. A stop that
+  resolves to neither a coordinate of its own nor one of its parent's is skipped
+  rather than contributing a point at an unknown position, so the answer is the
+  walkable path of the trip. A `stop_times` row naming a stop the version does not
+  describe is dropped by the join for the same reason.
+
+  Called only for shapeless trips, whose distance AC-7 takes from this path; a
+  shaped trip is measured once per `shape_id` by `shape_points/3` instead.
+  """
+  @spec stop_paths(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) :: %{
+          String.t() => [{float(), float()}]
+        }
+  def stop_paths(organization_id, gtfs_version_id, trip_ids) do
+    from(st in StopTime,
+      join: s in Stop,
+      on:
+        s.stop_id == st.stop_id and s.organization_id == st.organization_id and
+          s.gtfs_version_id == st.gtfs_version_id,
+      left_join: p in Stop,
+      on:
+        p.stop_id == s.parent_station and p.organization_id == st.organization_id and
+          p.gtfs_version_id == st.gtfs_version_id,
+      where:
+        st.organization_id == ^organization_id and st.gtfs_version_id == ^gtfs_version_id and
+          st.trip_id in ^trip_ids,
+      order_by: [asc: st.trip_id, asc: st.stop_sequence],
+      select: {st.trip_id, coalesce(s.stop_lat, p.stop_lat), coalesce(s.stop_lon, p.stop_lon)}
+    )
+    |> Repo.all()
+    |> Enum.reject(fn {_id, lat, lon} -> is_nil(lat) or is_nil(lon) end)
+    |> Enum.group_by(&elem(&1, 0), &point/1)
   end
 
   @doc """
@@ -455,6 +628,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
   defp coordinate(nil), do: nil
   defp coordinate(%Decimal{} = value), do: Decimal.to_float(value)
 
+  # One `{key, lat, lon}` row becomes the `{lat, lon}` point both distance reads
+  # and `Blocking.Distance.path_km/1` speak in, with the column's decimal already
+  # narrowed to a float. A row with no coordinates never reaches here.
+  defp point({_id, %Decimal{} = lat, %Decimal{} = lon}),
+    do: {Decimal.to_float(lat), Decimal.to_float(lon)}
+
   defp trip_row(trip, first_endpoints, last_endpoints, stop_refs, headways) do
     first = Map.get(first_endpoints, trip.trip_id)
     last = Map.get(last_endpoints, trip.trip_id)
@@ -470,6 +649,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
       block_id: trip.block_id,
       trip_headsign: trip.trip_headsign,
       route_pattern_id: trip.route_pattern_id,
+      shape_id: trip.shape_id,
       updated_at: trip.updated_at,
       frequency?: Map.has_key?(headways, trip.trip_id),
       headway_secs: Map.get(headways, trip.trip_id),
