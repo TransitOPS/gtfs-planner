@@ -594,7 +594,6 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
     |> assign(:closure_count, Gtfs.count_closures(organization_id, version_id))
   end
 
-
   defp tods_inventory(organization_id, :operations),
     do: Operations.tods_file_inventory(organization_id)
 

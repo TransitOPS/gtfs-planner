@@ -2,7 +2,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.PathwayDeletionTest do
   @moduledoc """
   Pathway deletion boundaries through the ordinary `Gtfs` facade
   (`delete_pathway/1`, `delete_child_stop/4`,
-  `remove_child_stop_from_diagram/4`): a closure-backed pathway returns
+  `remove_child_stop_from_diagram/5`): a closure-backed pathway returns
   `{:error, :pathway_in_use}` instead of raising the step-1
   `ON DELETE RESTRICT` violation, and every refusal preserves stop
   coordinates, stops, pathways and closures. Expectations are hand-authored
@@ -174,7 +174,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.PathwayDeletionTest do
     end
   end
 
-  describe "Gtfs.remove_child_stop_from_diagram/4" do
+  describe "Gtfs.remove_child_stop_from_diagram/5" do
     test "returns pathway_in_use and preserves coordinates, stops, pathways and closures",
          context do
       create_closure(context, "PW_ENTRY")
@@ -184,7 +184,8 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.PathwayDeletionTest do
                  context.organization.id,
                  context.version.id,
                  "STN_1",
-                 context.entrance.id
+                 context.entrance.id,
+                 context.audit
                )
 
       entrance = Repo.get!(Stop, context.entrance.id)
@@ -207,7 +208,8 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.PathwayDeletionTest do
                  context.organization.id,
                  context.version.id,
                  "STN_1",
-                 context.entrance.id
+                 context.entrance.id,
+                 context.audit
                )
 
       assert updated.diagram_coordinate == nil

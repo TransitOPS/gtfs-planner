@@ -900,7 +900,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
              "Not removed: this pathway has scheduled closures."
            )
 
-    refute has_element?(view, "#diff-failed-decisions a[data-role='version-diff-evolutions-link']")
+    refute has_element?(
+             view,
+             "#diff-failed-decisions a[data-role='version-diff-evolutions-link']"
+           )
   end
 
   defp decision(run, decision_id) do

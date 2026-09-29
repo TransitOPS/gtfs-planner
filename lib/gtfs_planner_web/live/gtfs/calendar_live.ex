@@ -1686,7 +1686,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                   link_class="font-mono text-[13px] font-semibold underline underline-offset-2"
                   text_class="font-mono text-[13px] font-semibold"
                   suffix="."
-                /> Delete {closure_phrase(@delete_block.closure_count)} on the station’s Closures tab first.
+                />
+                Delete {closure_phrase(@delete_block.closure_count)} on the station’s Closures tab first.
               </p>
               <p :if={@delete_block.trip_count > 0} class="mt-2 flex flex-wrap gap-x-5">
                 <a
