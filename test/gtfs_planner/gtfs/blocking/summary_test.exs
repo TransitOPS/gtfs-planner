@@ -15,6 +15,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
     for the touching pair.
   - Natural order is `2 < 10 < 101 < A1`; status sorting puts errors first and
     breaks ties by natural block ID; `nil` values sort last in both directions.
+    The timeline sorts by `:garage` (the garage's name, then the type's name) and
+    by `:out` (the platform start), the two keys AC-32 gives the timeline; the
+    removed Trips, Start and End columns are not keys.
   - A block's status is the worst severity of its own findings with the first code
     of that severity in the fixed order, and hours are one decimal. AC-16's order
     puts the errors Overlap, Can't reach and Wrong type ahead of the warnings
@@ -55,7 +58,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
                hours: 4.0,
                status: :warning,
                status_code: :short_layover,
-               route_ids: ["R1"]
+               route_ids: ["R1"],
+               garage_name: nil,
+               type_name: nil,
+               conflict?: false
              }
     end
 
@@ -100,7 +106,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
                hours: nil,
                status: :notice,
                status_code: :frequency_trip,
-               route_ids: ["R1"]
+               route_ids: ["R1"],
+               garage_name: nil,
+               type_name: nil,
+               conflict?: false
              }
     end
 
@@ -122,7 +131,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
                hours: nil,
                status: :notice,
                status_code: :unplottable,
-               route_ids: ["R1"]
+               route_ids: ["R1"],
+               garage_name: nil,
+               type_name: nil,
+               conflict?: false
              }
     end
 
@@ -259,26 +271,31 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
       assert ids(Summary.sort_blocks(blocks, :status, :desc)) == ["10", "A1", "2", "101"]
     end
 
-    test "sorts nil starts last in both directions" do
+    test "sorts a nil platform start last in both directions" do
       blocks = [
         summary("a", start_secs: 28_800),
         summary("b", start_secs: nil),
         summary("c", start_secs: 21_600)
       ]
 
-      assert ids(Summary.sort_blocks(blocks, :start, :asc)) == ["c", "a", "b"]
-      assert ids(Summary.sort_blocks(blocks, :start, :desc)) == ["a", "c", "b"]
+      assert ids(Summary.sort_blocks(blocks, :out, :asc)) == ["c", "a", "b"]
+      assert ids(Summary.sort_blocks(blocks, :out, :desc)) == ["a", "c", "b"]
     end
 
-    test "sorts trips descending and breaks ties by natural block ID" do
+    test "sorts by the garage name and then the type name, with no-garage blocks last" do
       blocks = [
-        summary("2", trip_count: 3),
-        summary("10", trip_count: 3),
-        summary("1", trip_count: 7)
+        summary("2", garage_name: "North", type_name: "Cutaway"),
+        summary("10", garage_name: "Main", type_name: "Cutaway"),
+        summary("1", garage_name: "Main", type_name: "Any type"),
+        summary("101", garage_name: "Main", type_name: "35-ft diesel"),
+        summary("A1")
       ]
 
-      assert ids(Summary.sort_blocks(blocks, :trips, :desc)) == ["1", "2", "10"]
-      assert ids(Summary.sort_blocks(blocks, :trips, :asc)) == ["2", "10", "1"]
+      assert ids(Summary.sort_blocks(blocks, :garage, :asc)) ==
+               ["1", "101", "10", "2", "A1"]
+
+      assert ids(Summary.sort_blocks(blocks, :garage, :desc)) ==
+               ["2", "10", "101", "1", "A1"]
     end
 
     test "sorts hours descending with hours-less blocks last" do
@@ -428,7 +445,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
       hours: Keyword.get(opts, :hours),
       status: Keyword.get(opts, :status, :ok),
       status_code: Keyword.get(opts, :status_code),
-      route_ids: Keyword.get(opts, :route_ids, ["R1"])
+      route_ids: Keyword.get(opts, :route_ids, ["R1"]),
+      garage_name: Keyword.get(opts, :garage_name),
+      type_name: Keyword.get(opts, :type_name),
+      conflict?: Keyword.get(opts, :conflict?, false)
     }
   end
 

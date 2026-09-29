@@ -24,7 +24,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
 
   @seconds_per_hour 3600
 
-  @sort_keys [:block, :trips, :start, :end, :hours, :status]
+  # The timeline's sortable columns (AC-32). `:garage` and `:out` replaced the
+  # removed `Trips`, `Start` and `End` columns; the trip count is still on the
+  # List view, and the platform span is one column rather than two.
+  @sort_keys [:block, :garage, :out, :hours, :status]
 
   # Worst first: error, then warning, then notice, then a block with no finding.
   @status_rank %{error: 0, warning: 1, notice: 2, ok: 3}
@@ -50,8 +53,17 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
     :in_seat_unconfirmed
   ]
 
-  @type sort :: :block | :trips | :start | :end | :hours | :status
+  @type sort :: :block | :garage | :out | :hours | :status
 
+  @typedoc """
+  One block's summary.
+
+  `garage_name`, `type_name` and `conflict?` name the block's R4 resolution
+  (INV-9): the two are `nil` until the day load names them from the context's
+  garages and vehicle types, and `conflict?` is true when `resolve_block/3`
+  reported rows that disagree. A block that no garage resolves has a `nil`
+  `garage_name` whatever its type, which is the page's "No garage".
+  """
   @type block_summary :: %{
           block_id: String.t(),
           trip_count: pos_integer(),
@@ -60,7 +72,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
           hours: float() | nil,
           status: :error | :warning | :notice | :ok,
           status_code: Checks.code() | nil,
-          route_ids: [String.t()]
+          route_ids: [String.t()],
+          garage_name: String.t() | nil,
+          type_name: String.t() | nil,
+          conflict?: boolean()
         }
 
   @typedoc """
@@ -91,6 +106,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
   could never have one. `nil` for either end, or no argument at all, keeps the
   trip span, so a block with no movements and every existing caller of the
   three-arity form are unchanged.
+
+  The three resolution keys start empty here: only the day load, which holds the
+  context the resolution came from, can name the garage and the type (INV-9).
   """
   @spec block_summary(String.t(), [Checks.trip_row()], [Checks.finding()], platform_span() | nil) ::
           block_summary()
@@ -120,7 +138,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
       hours: hours(start_secs, end_secs),
       status: status,
       status_code: status_code,
-      route_ids: trips |> Enum.map(& &1.route_id) |> Enum.uniq() |> Enum.sort()
+      route_ids: trips |> Enum.map(& &1.route_id) |> Enum.uniq() |> Enum.sort(),
+      garage_name: nil,
+      type_name: nil,
+      conflict?: false
     }
   end
 
@@ -142,9 +163,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
   Sorts block summaries by one timeline column.
 
   `:block` compares `natural_key/1`, `:status` ranks error, warning, notice and ok,
-  and the other keys compare their number. `nil` values sort last in both
-  directions, and ties break by `natural_key/1` ascending so a page keeps the
-  natural block order whatever the column shows.
+  `:garage` compares the garage's name and then the type's name, `:out` the
+  platform start, and `:hours` the number of hours. `nil` values sort last in
+  both directions, so a block no garage resolves leads neither garage order, and
+  ties break by `natural_key/1` ascending so a page keeps the natural block order
+  whatever the column shows.
   """
   @spec sort_blocks([block_summary()], sort(), :asc | :desc) :: [block_summary()]
   def sort_blocks(blocks, key, direction)
@@ -246,10 +269,17 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
   defp natural_before?(a, b), do: natural_key(a.block_id) < natural_key(b.block_id)
 
   defp sort_value(block, :block), do: natural_key(block.block_id)
-  defp sort_value(block, :trips), do: block.trip_count
-  defp sort_value(block, :start), do: block.start_secs
-  defp sort_value(block, :end), do: block.end_secs
+  defp sort_value(block, :out), do: block.start_secs
   defp sort_value(block, :hours), do: block.hours
+
+  # A block no garage resolves has no place in a garage order, and a type-less
+  # block shares its garage's row rather than sorting before the named types.
+  defp sort_value(%{garage_name: nil}, :garage), do: nil
+
+  defp sort_value(block, :garage) do
+    {block.garage_name, block.type_name || ""}
+  end
+
   defp sort_value(block, :status), do: Map.fetch!(@status_rank, block.status)
 
   defp spans(blocks) do

@@ -1853,8 +1853,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   stream because a stream renders in one container: the timeline's rows and these
   tables are two densities of one page, and the LiveView fills both together. The
   columns are the reference's Select, Trip, Route, Start, End, From → To, Gap and
-  Issues; the route's long name is the trip's secondary line, and the terminal is
-  the destination line of the From → To cell.
+  Issues; the block's heading also carries its two distance figures, `km with
+  riders` and `km without (est.)`, read from the block's own movements (AC-32)
+  and the same numbers the Plan summary and the export read. The route's long
+  name is the trip's secondary line, and the terminal is the destination line of
+  the From → To cell.
 
   The gap is the layover before the trip, from the block's own `gaps/1` pairs, so
   it agrees with the timeline's gap bars; the first trip and every trip outside
@@ -1897,6 +1900,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       assign(assigns,
         summary: assigns.block.summary,
         rows: list_rows(assigns.block, assigns.route_filter),
+        movements: assigns.block.movements,
         gaps: Map.new(assigns.block.gaps, &{&1.to_id, &1})
       )
 
@@ -1915,6 +1919,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         </button>
         <span class="font-normal text-base-content/70">
           {count_label(@summary.trip_count, "trip", "trips")}
+        </span>
+        <span class="font-normal text-base-content/70">
+          <span data-role="list-km-riders" data-km={@movements.service_km}>
+            {km(@movements.service_km)} km with riders
+          </span>
+          <span data-role="list-km-deadhead" data-km={@movements.deadhead_km}>
+            {km(@movements.deadhead_km)} km without (est.)
+          </span>
         </span>
       </h3>
 
@@ -2286,9 +2298,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       >
         <colgroup>
           <col class="blocks-col-block" />
-          <col class="blocks-col-trips" />
-          <col class="blocks-col-start" />
-          <col class="blocks-col-end" />
+          <col class="blocks-col-garage" />
+          <col class="blocks-col-out" />
           <col class="blocks-col-hours" />
           <col class="blocks-col-status" />
           <col />
@@ -2343,8 +2354,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Renders one 36px block row: the sticky Block, Trips, Start, End, Hours and
+  Renders one 36px block row: the sticky Block, Garage · type, Time out, Hours and
   Status cells and the track with the block's trip bars and gaps.
+
+  Garage · type prints the block's R4 resolution — `Main · Cutaway`, `Main · Any
+  type` when nothing requires a type, `No garage` when no garage resolves, and
+  `Differs · Cutaway` in the warning colour when the block's calendars disagree
+  (INV-9). Time out is the platform span from `Movements.build/3`, so a vehicle
+  that pulls out before midnight reads `23:45 −1d–01:30 +1d`.
 
   The bars are the block's sequence (plottable, non-frequency trips) so they line
   up with `gaps/1`'s consecutive pairs; an unplottable or repeating trip appears
@@ -2365,6 +2382,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       |> assign(:summary, assigns.block.summary)
       |> assign(:plotted, plotted(assigns.block))
       |> assign(:status, status_label(assigns.block.summary))
+      |> assign(:garage, garage_type(assigns.block.summary))
 
     ~H"""
     <tr id={@dom} data-block={@summary.block_id} class="blocks-row">
@@ -2379,9 +2397,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           {@summary.block_id}
         </button>
       </td>
-      <td class={["blocks-meta", "blocks-meta-trips"]}>{@summary.trip_count}</td>
-      <td class={["blocks-meta", "blocks-meta-start"]}>{clock(@summary.start_secs)}</td>
-      <td class={["blocks-meta", "blocks-meta-end"]}>{clock(@summary.end_secs)}</td>
+      <td class={["blocks-meta", "blocks-meta-garage", @garage.class]} title={@garage.title}>
+        {@garage.text}
+      </td>
+      <td class={["blocks-meta", "blocks-meta-out"]}>
+        {time_out(@summary.start_secs, @summary.end_secs)}
+      </td>
       <td class={["blocks-meta", "blocks-meta-hours"]}>{hours(@summary.hours)}</td>
       <td class={["blocks-meta", "blocks-meta-status"]}>
         <span data-role="block-status" class="inline-flex items-center gap-1">
@@ -2516,12 +2537,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Prints parsed seconds as `HH:MM`, with ` +1d`/` +2d` after midnight (Copy).
+  Prints parsed seconds as `HH:MM`, with ` −1d` before midnight and ` +1d` after
+  it (Copy). A negative service-day second floors into the day before rather than
+  truncating towards it, so −900 s reads 23:45 −1d rather than 00:00.
   """
   def clock(nil), do: "—"
 
   def clock(secs) when is_integer(secs) do
-    days = div(secs, 86_400)
+    days = Integer.floor_div(secs, 86_400)
     within = rem(secs, 86_400)
 
     clock =
@@ -2530,8 +2553,39 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
     case days do
       0 -> clock
+      days when days < 0 -> clock <> " −" <> Integer.to_string(-days) <> "d"
       days -> clock <> " +#{days}d"
     end
+  end
+
+  # The Time out cell: the platform span on one line, or a dash when the block has
+  # no span at all rather than a dash at either end of a pair.
+  defp time_out(nil, _end_secs), do: "—"
+  defp time_out(_start_secs, nil), do: "—"
+
+  defp time_out(start_secs, end_secs) do
+    clock(start_secs) <> "–" <> clock(end_secs)
+  end
+
+  # The Garage · type cell. A block whose calendars disagree has no single
+  # garage, so it prints the warning word instead of one of the two names (AC-32);
+  # the full text is in `title` because the column is narrower than the longest
+  # garage and type names.
+  defp garage_type(%{conflict?: true} = summary) do
+    garage_cell("Differs", summary.type_name, "blocks-meta-garage-conflict")
+  end
+
+  defp garage_type(%{garage_name: nil}) do
+    garage_cell("No garage", nil, "blocks-meta-garage-none")
+  end
+
+  defp garage_type(summary), do: garage_cell(summary.garage_name, summary.type_name, nil)
+
+  defp garage_cell(garage, type_name, class) do
+    type = type_name || "Any type"
+    text = garage <> " · " <> type
+
+    %{text: text, title: text, class: class}
   end
 
   defp route_options(routes) do
@@ -2757,9 +2811,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp sort_columns do
     [
       %{key: "block", label: "Block"},
-      %{key: "trips", label: "Trips"},
-      %{key: "start", label: "Start"},
-      %{key: "end", label: "End"},
+      %{key: "garage", label: "Garage · type"},
+      %{key: "out", label: "Time out"},
       %{key: "hours", label: "Hours"},
       %{key: "status", label: "Status"}
     ]
@@ -2895,6 +2948,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp hours(nil), do: "—"
   defp hours(hours), do: :erlang.float_to_binary(hours * 1.0, decimals: 1)
+
+  # Kilometres to one decimal, the unit AC-7 and the page copy both use. A
+  # block with no movement is 0.0 rather than a dash: the vehicle drove nowhere.
+  defp km(value), do: :erlang.float_to_binary(value * 1.0, decimals: 1)
 
   defp route_label(nil), do: "Unknown route"
 
