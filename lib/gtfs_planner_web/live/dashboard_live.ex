@@ -387,8 +387,11 @@ defmodule GtfsPlannerWeb.DashboardLive do
     push_board_params(socket, socket.assigns.board_params.stage, q)
   end
 
+  # The access states render no region, so a retry sent to one is ignored
+  # instead of loading a region that reads a version the state may not have.
   defp retry_regions(:pathways), do: @pathways_retry_regions
-  defp retry_regions(_state), do: @planner_retry_regions
+  defp retry_regions(:planner), do: @planner_retry_regions
+  defp retry_regions(_state), do: %{}
 
   @impl true
   def handle_async(:resume, {:ok, %{scope: scope, items: items}}, socket) do

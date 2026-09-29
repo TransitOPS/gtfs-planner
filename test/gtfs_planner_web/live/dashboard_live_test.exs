@@ -223,6 +223,12 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
                "#dashboard-no-version",
                "There is no service data to work on yet"
              )
+
+      # An access state renders no region, so a retry for a working page's
+      # region must not load one against the missing version.
+      render_click(view, "retry", %{"region" => "status"})
+
+      assert_single_state_root(view, "#dashboard-no-version")
     end
 
     test "a member with no editing role sees the no-task state with the active administrators",
