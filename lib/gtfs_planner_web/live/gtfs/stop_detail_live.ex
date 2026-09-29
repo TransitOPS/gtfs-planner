@@ -1,6 +1,7 @@
 defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   @moduledoc """
-  LiveView for viewing GTFS station (stop) details.
+  LiveView for viewing a GTFS stop or station: where it is, what riders can do
+  there and, for a station, what is inside it and what people found on site.
   Requires pathways_studio_editor role.
   """
   use GtfsPlannerWeb, :live_view
@@ -9,8 +10,24 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   alias GtfsPlanner.Gtfs.FareZones
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Versions
-  alias GtfsPlannerWeb.Components.TransitPresentation
-  alias GtfsPlannerWeb.Gtfs.StationJournalComponents
+  alias GtfsPlannerWeb.Gtfs.StopDetailComponents
+  alias GtfsPlannerWeb.StationWorkspace
+
+  import GtfsPlannerWeb.Gtfs.StopDetailComponents,
+    only: [
+      editing_banner: 1,
+      editing_control: 1,
+      editing_failure: 1,
+      gtfs_fields: 1,
+      inside: 1,
+      journal_card: 1,
+      loading: 1,
+      location_card: 1,
+      pathways_card: 1,
+      service_card: 1,
+      unavailable: 1
+    ]
+
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @journal_load_key :journal_summary_load
@@ -21,20 +38,23 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
 
     {:ok,
      socket
-     |> assign(:page_title, "Station Details")
+     |> assign(:page_title, "Stop details")
      |> assign(:user_roles, user_roles)
      |> assign(:stop_state, :loading)
+     |> assign(:parent_station, nil)
      |> assign(:child_stops_state, :ready)
+     |> assign(:child_stops, [])
      |> assign(:fare_zone, nil)
      |> assign(:platform_fare_zones, [])
      |> assign(:levels_state, :ready)
+     |> assign(:levels, [])
+     |> assign(:floors, [])
+     |> assign(:inventory, "")
      |> assign(:pathways_state, :ready)
+     |> assign(:pathways_expanded?, false)
      |> assign(:editing_status_state, :ready)
+     |> assign(:station_editing_status, nil)
      |> assign(:editing_error, nil)
-     |> assign(:child_stops_empty?, true)
-     |> assign(:child_stops_count, 0)
-     |> assign(:levels_empty?, true)
-     |> assign(:levels_count, 0)
      |> assign(:pathways_empty?, true)
      |> assign(:pathways_count, 0)
      |> assign(:journal_scope, nil)
@@ -47,9 +67,6 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
      |> assign(:journal_targets, %{})
      |> assign(:journal_local_times, %{})
      |> assign(:journal_now, nil)
-     |> stream(:child_stops, [])
-     |> stream_configure(:levels, dom_id: fn %{level: level} -> "level-#{level.level_id}" end)
-     |> stream(:levels, [])
      |> stream(:pathways, [])
      |> stream_configure(:journal_recent_entries,
        dom_id: fn entry -> "station-journal-summary-#{entry.id}" end
@@ -59,33 +76,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
 
   @impl true
   def handle_params(%{"stop_id" => stop_id} = _params, _uri, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-
-    socket = assign(socket, :stop_id, stop_id)
-
-    case Gtfs.fetch_catalog_stop(organization_id, gtfs_version_id, stop_id) do
-      {:error, :not_found} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Station not found")
-         |> push_navigate(to: "/gtfs/#{gtfs_version_id}/stops")}
-
-      {:error, :unavailable} ->
-        {:noreply, assign(socket, :stop_state, :unavailable)}
-
-      {:ok, stop} ->
-        socket =
-          socket
-          |> assign(:stop, stop)
-          |> assign(:stop_state, :ready)
-          |> assign(:fare_zone, fare_zone(socket, stop))
-          |> assign(:transfer_count, related_transfers(organization_id, gtfs_version_id, stop))
-
-        socket = load_regions(socket)
-
-        {:noreply, socket}
-    end
+    {:noreply, socket |> assign(:stop_id, stop_id) |> load_stop()}
   end
 
   @impl true
@@ -156,34 +147,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   def handle_info({:station_journal_changed, _station_id}, socket), do: {:noreply, socket}
 
   @impl true
-  def handle_event("retry", _params, socket) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    stop_id = socket.assigns.stop_id
-
-    case Gtfs.fetch_catalog_stop(organization_id, gtfs_version_id, stop_id) do
-      {:error, :not_found} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Station not found")
-         |> push_navigate(to: "/gtfs/#{gtfs_version_id}/stops")}
-
-      {:error, :unavailable} ->
-        {:noreply, assign(socket, :stop_state, :unavailable)}
-
-      {:ok, stop} ->
-        socket =
-          socket
-          |> assign(:stop, stop)
-          |> assign(:stop_state, :ready)
-          |> assign(:fare_zone, fare_zone(socket, stop))
-          |> assign(:transfer_count, related_transfers(organization_id, gtfs_version_id, stop))
-
-        socket = load_regions(socket)
-
-        {:noreply, socket}
-    end
-  end
+  def handle_event("retry", _params, socket), do: {:noreply, load_stop(socket)}
 
   @impl true
   def handle_event("retry_child_stops", _params, socket) do
@@ -206,6 +170,17 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
   end
 
   @impl true
+  def handle_event("retry_editing_status", _params, socket) do
+    {:noreply, load_editing_status_region(socket)}
+  end
+
+  @impl true
+  def handle_event("toggle_pathways", _params, socket) do
+    socket = update(socket, :pathways_expanded?, &(!&1))
+    {:noreply, load_pathways_region(socket)}
+  end
+
+  @impl true
   def handle_event("set_station_editing_status", _params, socket) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
@@ -220,12 +195,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
         {:noreply,
          socket
          |> assign(:station_editing_status, status)
-         |> assign(:editing_error, nil)}
+         |> assign(:editing_error, nil)
+         |> focus_editing_button()}
 
       {:error, _changeset} ->
         {:noreply,
          socket
-         |> assign(:editing_error, "Failed to set station editing status")}
+         |> assign(:editing_error, :set)
+         |> focus_editing_button()}
     end
   end
 
@@ -243,12 +220,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
         {:noreply,
          socket
          |> assign(:station_editing_status, nil)
-         |> assign(:editing_error, nil)}
+         |> assign(:editing_error, nil)
+         |> focus_editing_button()}
 
       {:error, _reason} ->
         {:noreply,
          socket
-         |> assign(:editing_error, "Failed to clear station editing status")}
+         |> assign(:editing_error, :clear)
+         |> focus_editing_button()}
     end
   end
 
@@ -290,6 +269,55 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     end
   end
 
+  # `phx-disable-with` blurs the button while the change saves, so focus goes
+  # back to it once the outcome is on the page, whether it saved or not. The
+  # shared `FormErrorFocus` hook on the control's wrapper does the focusing.
+  defp focus_editing_button(socket) do
+    push_event(socket, "focus_scoped_target", %{id: "station-editing-status-button"})
+  end
+
+  defp load_stop(socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version = socket.assigns.current_gtfs_version
+
+    case Gtfs.fetch_catalog_stop(organization_id, gtfs_version.id, socket.assigns.stop_id) do
+      {:error, :not_found} ->
+        socket
+        |> put_flash(
+          :error,
+          "We couldn't find that stop or station in #{gtfs_version.name}. " <>
+            "It may have been removed or renamed in that version."
+        )
+        |> push_navigate(to: "/gtfs/#{gtfs_version.id}/stops")
+
+      {:error, :unavailable} ->
+        assign(socket, :stop_state, :unavailable)
+
+      {:ok, stop} ->
+        socket
+        |> assign(:stop, stop)
+        |> assign(:page_title, stop.stop_name || stop.stop_id)
+        |> assign(:stop_state, :ready)
+        |> assign(:parent_station, load_parent(organization_id, gtfs_version.id, stop))
+        |> assign(:fare_zone, fare_zone(socket, stop))
+        |> assign(:transfer_count, related_transfers(organization_id, gtfs_version.id, stop))
+        |> load_regions()
+    end
+  end
+
+  # A platform, entrance or connection point names its station and inherits the
+  # station's wheelchair value, so the parent is read once with the stop. A
+  # parent that cannot be read leaves the ID as its name and the value unknown.
+  defp load_parent(organization_id, gtfs_version_id, %Stop{parent_station: parent_id})
+       when is_binary(parent_id) and parent_id != "" do
+    case Gtfs.fetch_catalog_stop(organization_id, gtfs_version_id, parent_id) do
+      {:ok, parent} -> parent
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp load_parent(_organization_id, _gtfs_version_id, _stop), do: nil
+
   # The related-transfer count is a direct facade call, never the catalog adapter
   # (CR-15): this page's own read may be a substituted adapter, but the count is
   # the same predicate the filtered list uses (CR-4), so a station counts its
@@ -298,7 +326,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     Gtfs.count_general_transfers(organization_id, gtfs_version_id, stop: stop.stop_id)
   end
 
-  defp load_regions(socket) do
+  # Only a station has stops, levels, pathways and an editing status of its own.
+  # A stop, platform or entrance has none of them, so its page reads no regions.
+  defp load_regions(%{assigns: %{stop: %Stop{location_type: 1}}} = socket) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
     stop = socket.assigns.stop
@@ -315,6 +345,10 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     |> apply_pathways_region(regions.pathways)
     |> apply_editing_status_region(regions.editing_status)
     |> setup_journal_scope()
+  end
+
+  defp load_regions(%{assigns: %{stop: stop}} = socket) do
+    assign(socket, :inventory, StopDetailComponents.inventory(stop, [], []))
   end
 
   defp load_child_stops_region(socket) do
@@ -344,26 +378,43 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     apply_pathways_region(socket, regions.pathways)
   end
 
-  defp apply_child_stops_region(socket, {:ok, child_stops}) do
-    child_stops_by_level =
-      Enum.group_by(child_stops, fn s ->
-        case s.level do
-          nil -> nil
-          level -> level.level_name || level.level_id
-        end
-      end)
+  defp load_editing_status_region(socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+    stop = socket.assigns.stop
 
+    regions = Gtfs.load_catalog_stop_regions(organization_id, gtfs_version_id, stop)
+    apply_editing_status_region(socket, regions.editing_status)
+  end
+
+  defp apply_child_stops_region(socket, {:ok, child_stops}) do
     socket
     |> assign(:child_stops_state, :ready)
-    |> assign(:child_stops_by_level, child_stops_by_level)
-    |> assign(:child_stops_empty?, child_stops == [])
-    |> assign(:child_stops_count, length(child_stops))
+    |> assign(:child_stops, child_stops)
     |> assign(:platform_fare_zones, platform_fare_zones(socket, child_stops))
-    |> stream(:child_stops, child_stops, reset: true)
+    |> assign_inside()
   end
 
   defp apply_child_stops_region(socket, {:error, :unavailable}) do
-    assign(socket, :child_stops_state, :unavailable)
+    socket
+    |> assign(:child_stops_state, :unavailable)
+    |> assign_inside()
+  end
+
+  # What is inside a station reads from two regions at once: the stops group by
+  # the levels, and the header counts both. Either region may be missing, so the
+  # groups are rebuilt whenever one of them changes.
+  defp assign_inside(socket) do
+    %{stop: stop, child_stops: child_stops, levels: levels} = socket.assigns
+
+    child_stops =
+      if socket.assigns.child_stops_state == :ready, do: child_stops, else: :unavailable
+
+    levels = if socket.assigns.levels_state == :ready, do: levels, else: :unavailable
+
+    socket
+    |> assign(:floors, StopDetailComponents.build_floors(levels, child_stops))
+    |> assign(:inventory, StopDetailComponents.inventory(stop, child_stops, levels))
   end
 
   # The fare zone a boardable stop itself carries, named by this version through
@@ -407,46 +458,32 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     )
   end
 
-  # Every Fares link is built here, so the zone travels as its own query key
-  # through `URI.encode_query/1` and `filter=unassigned` stays a different key
-  # from `zone` (CR-7). No zone ID reaches a DOM ID.
-  defp fares_zone_path(gtfs_version_id, nil) do
-    "/gtfs/#{gtfs_version_id}/settings/fares?" <> URI.encode_query(%{"filter" => "unassigned"})
-  end
-
-  defp fares_zone_path(gtfs_version_id, zone_id) do
-    "/gtfs/#{gtfs_version_id}/settings/fares?" <> URI.encode_query(%{"zone" => zone_id})
-  end
-
-  # The zone as "name · ID", which is how the workspace names a zone; an
-  # undeclared zone's name is its own ID, so the entry never reads as blank, and
-  # a stop with no zone reads "None".
-  defp fare_zone_label(nil), do: "None"
-
-  defp fare_zone_label(%{zone_id: zone_id, name: name}) when is_binary(name) and name != "" do
-    "#{name} · #{zone_id}"
-  end
-
-  defp fare_zone_label(%{zone_id: zone_id}), do: zone_id
-
   defp apply_levels_region(socket, {:ok, levels}) do
     socket
     |> assign(:levels_state, :ready)
-    |> assign(:levels_empty?, levels == [])
-    |> assign(:levels_count, length(levels))
-    |> stream(:levels, levels, reset: true)
+    |> assign(:levels, levels)
+    |> assign_inside()
   end
 
   defp apply_levels_region(socket, {:error, :unavailable}) do
-    assign(socket, :levels_state, :unavailable)
+    socket
+    |> assign(:levels_state, :unavailable)
+    |> assign_inside()
   end
 
+  # Only the first few pathways stream in until the reader asks for the rest, so
+  # a station with hundreds of them does not push the journal off the page.
   defp apply_pathways_region(socket, {:ok, pathways}) do
+    shown =
+      if socket.assigns.pathways_expanded?,
+        do: pathways,
+        else: Enum.take(pathways, StopDetailComponents.pathways_shown())
+
     socket
     |> assign(:pathways_state, :ready)
     |> assign(:pathways_empty?, pathways == [])
     |> assign(:pathways_count, length(pathways))
-    |> stream(:pathways, pathways, reset: true)
+    |> stream(:pathways, shown, reset: true)
   end
 
   defp apply_pathways_region(socket, {:error, :unavailable}) do
@@ -631,99 +668,30 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     Application.get_env(:gtfs_planner, :station_journal_source, Gtfs)
   end
 
-  defp journal_target_presentation(entry, targets) do
-    target_key = if entry.target_type == "pin", do: entry.stop_level_id, else: entry.target_id
-    target = Map.get(targets, target_key)
-
-    label =
-      case {entry.target_type, target} do
-        {"station", _} -> "Station"
-        {type, nil} -> String.capitalize(type)
-        {type, %{label: label}} -> "#{String.capitalize(type)} · #{label}"
-      end
-
-    %{label: label}
+  # The station's own link back is the stops list; a stop inside a station names
+  # its station instead. The name falls back to the ID when the station itself
+  # could not be read.
+  defp parent_link(%Stop{parent_station: parent_id}, parent, gtfs_version_id)
+       when is_binary(parent_id) and parent_id != "" do
+    %{
+      name: (parent && (parent.stop_name || parent.stop_id)) || parent_id,
+      navigate: ~p"/gtfs/#{gtfs_version_id}/stops/#{parent_id}"
+    }
   end
 
-  defp journal_local_time(entry, local_times) do
-    case Map.get(local_times, {entry.id, :captured}) do
-      %NaiveDateTime{} = local -> local
-      _ -> entry.captured_at |> DateTime.to_naive()
-    end
-  end
-
-  defp editing_status_owner?(nil, _current_user), do: false
-
-  defp editing_status_owner?(editing_status, current_user) do
-    editing_status.user_id == current_user.id
-  end
-
-  defp editing_status_button_label(nil, _current_user), do: "Start editing"
-
-  defp editing_status_button_label(editing_status, current_user) do
-    if editing_status_owner?(editing_status, current_user) do
-      "Finish editing"
-    else
-      "Clear editing status"
-    end
-  end
-
-  defp editing_status_button_event(nil, _current_user), do: "set_station_editing_status"
-
-  defp editing_status_button_event(editing_status, current_user) do
-    if editing_status_owner?(editing_status, current_user) do
-      "clear_station_editing_status"
-    else
-      "clear_station_editing_status"
-    end
-  end
-
-  defp editing_status_button_disable_with(nil, _current_user), do: "Starting..."
-
-  defp editing_status_button_disable_with(editing_status, current_user) do
-    if editing_status_owner?(editing_status, current_user) do
-      "Finishing..."
-    else
-      "Clearing..."
-    end
-  end
-
-  defp editing_status_tooltip(nil, _current_user),
-    do: "Let others know you're editing this Station."
-
-  defp editing_status_tooltip(editing_status, current_user) do
-    if editing_status_owner?(editing_status, current_user) do
-      "Let others know you're done editing this Station."
-    else
-      "Clear this editing status for everyone."
-    end
-  end
-
-  defp relative_started_at(%DateTime{} = started_at) do
-    minutes =
-      DateTime.utc_now()
-      |> DateTime.diff(started_at, :second)
-      |> max(0)
-      |> div(60)
-
-    cond do
-      minutes == 0 -> "just now"
-      minutes == 1 -> "1 minute ago"
-      minutes < 60 -> "#{minutes} minutes ago"
-      minutes < 120 -> "1 hour ago"
-      true -> "#{div(minutes, 60)} hours ago"
-    end
-  end
-
-  defp diagram_status_text(nil), do: "No diagram"
-  defp diagram_status_text(_), do: "Available"
-
-  defp accessibility_resolution(stop) do
-    Stop.resolve_wheelchair_boarding(stop, nil)
-  end
+  defp parent_link(_stop, _parent, _gtfs_version_id), do: nil
 
   @impl true
   def render(assigns) do
+    assigns =
+      assigns
+      |> assign(:station?, assigns[:stop_state] == :ready and assigns.stop.location_type == 1)
+      |> assign(
+        :parent_link,
+        assigns[:stop_state] == :ready &&
+          parent_link(assigns.stop, assigns.parent_station, assigns.current_gtfs_version.id)
+      )
+
     ~H"""
     <Layouts.app
       flash={@flash}
@@ -734,593 +702,119 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <:sub_header :if={@stop_state == :ready}>
-        <%= if @station_editing_status do %>
-          <div class="w-full px-4 sm:px-6 lg:px-8 pt-3">
-            <.callout
-              kind="info"
-              id="station-editing-status-banner"
-              role="status"
-              title={
-                if editing_status_owner?(@station_editing_status, @current_user),
-                  do: "You're editing this Station.",
-                  else: "#{@station_editing_status.user.email} is editing this Station."
-              }
-            >
-              <p>
-                <%= if editing_status_owner?(@station_editing_status, @current_user) do %>
-                  Others have been notified. Remember to clear this when you're done.
-                <% else %>
-                  You can view it, but it's best to wait before making changes.
-                <% end %>
-              </p>
-              <p class="mt-1 text-xs font-medium text-base-content/70">
-                Started {relative_started_at(@station_editing_status.started_at)}
-              </p>
-            </.callout>
-          </div>
-        <% end %>
-
-        <.station_sub_nav
-          station={@stop}
+      <:sub_header>
+        <StationWorkspace.station_header
+          :if={@stop_state == :ready}
+          title={@stop.stop_name || @stop.stop_id}
+          stop_id={@stop.stop_id}
           gtfs_version_id={@current_gtfs_version.id}
-          active_tab={:details}
+          tabs?={@station?}
+          back={@parent_link && %{label: @parent_link.name, navigate: @parent_link.navigate}}
         >
-          <:actions>
+          <:meta>{@inventory}</:meta>
+          <:actions :if={@station?}>
+            <.editing_control
+              status={@station_editing_status}
+              state={@editing_status_state}
+              current_user={@current_user}
+            />
             <.button
-              id="station-editing-status-button"
-              phx-click={editing_status_button_event(@station_editing_status, @current_user)}
-              phx-disable-with={
-                editing_status_button_disable_with(@station_editing_status, @current_user)
-              }
-              title={editing_status_tooltip(@station_editing_status, @current_user)}
-              variant="secondary"
-              size="sm"
+              id="open-floorplans"
+              navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/#{@stop.stop_id}/diagram"}
               class="min-h-11"
             >
-              {editing_status_button_label(@station_editing_status, @current_user)}
+              <.icon name="hero-map" class="size-4" /> Open floorplans
             </.button>
           </:actions>
-        </.station_sub_nav>
+        </StationWorkspace.station_header>
+        <StationWorkspace.station_header
+          :if={@stop_state != :ready}
+          title="Stop details"
+          gtfs_version_id={@current_gtfs_version.id}
+          tabs?={false}
+        />
       </:sub_header>
 
-      <%= case @stop_state do %>
-        <% :unavailable -> %>
-          <div class="mt-8">
-            <.callout kind="error" title="Station data unavailable" id="stop-unavailable">
-              We could not load this station. Please try again.
-              <button
-                id="stop-retry"
-                phx-click="retry"
-                class="btn btn-sm btn-outline mt-2"
-              >
-                Retry
-              </button>
-            </.callout>
-          </div>
-        <% :ready -> %>
-          <%= if @editing_error do %>
-            <div class="mt-4">
-              <.callout kind="error" title={@editing_error} id="editing-error">
-                Please try again.
-                <button
-                  id="editing-error-retry"
-                  phx-click={editing_status_button_event(@station_editing_status, @current_user)}
-                  class="btn btn-sm btn-outline mt-2"
-                >
-                  Retry
-                </button>
-              </.callout>
-            </div>
-          <% end %>
-
-          <div class="mt-8">
-            <.section_heading title="Overview" />
-            <div class="bg-base-100 border border-base-300 rounded-box p-6">
-              <dl class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <dt class="text-sm font-medium text-base-content/70">Station ID</dt>
-                  <dd class="mt-1 text-base font-mono">{@stop.stop_id}</dd>
-                </div>
-
-                <div>
-                  <dt class="text-sm font-medium text-base-content/70">Station Name</dt>
-                  <dd class="mt-1 text-base">{@stop.stop_name || "—"}</dd>
-                </div>
-
-                <div>
-                  <dt class="text-sm font-medium text-base-content/70">Location Type</dt>
-                  <dd class="mt-1 text-base">{Stop.location_type_label(@stop.location_type)}</dd>
-                </div>
-
-                <div>
-                  <dt class="text-sm font-medium text-base-content/70">Description</dt>
-                  <dd class="mt-1 text-base">{@stop.stop_desc || "—"}</dd>
-                </div>
-
-                <div>
-                  <dt class="text-sm font-medium text-base-content/70">Latitude</dt>
-                  <dd class="mt-1 text-base">{@stop.stop_lat || "—"}</dd>
-                </div>
-
-                <div>
-                  <dt class="text-sm font-medium text-base-content/70">Longitude</dt>
-                  <dd class="mt-1 text-base">{@stop.stop_lon || "—"}</dd>
-                </div>
-
-                <div>
-                  <dt class="text-sm font-medium text-base-content/70">Level ID</dt>
-                  <dd class="mt-1 text-base">{@stop.level_id || "—"}</dd>
-                </div>
-
-                <div>
-                  <dt class="text-sm font-medium text-base-content/70">Platform Code</dt>
-                  <dd class="mt-1 text-base">{@stop.platform_code || "—"}</dd>
-                </div>
-
-                <div :if={@stop.location_type == 0}>
-                  <dt class="text-sm font-medium text-base-content/70">Fare zone</dt>
-                  <dd class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-base">
-                    <span id="stop-fare-zone">{fare_zone_label(@fare_zone)}</span>
-                    <.link
-                      id="stop-fare-zone-link"
-                      navigate={
-                        fares_zone_path(@current_gtfs_version.id, @fare_zone && @fare_zone.zone_id)
-                      }
-                      class="inline-flex min-h-11 items-center text-sm font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-                    >
-                      View in Fares
-                    </.link>
-                  </dd>
-                </div>
-
-                <div :if={@stop.location_type == 1}>
-                  <dt class="text-sm font-medium text-base-content/70">Platform fare zones</dt>
-                  <dd class="mt-1 text-base">
-                    <%= cond do %>
-                      <% @child_stops_state == :unavailable -> %>
-                        <span id="station-platform-fare-zones">—</span>
-                      <% @platform_fare_zones == [] -> %>
-                        <span id="station-platform-fare-zones">None</span>
-                      <% true -> %>
-                        <ul
-                          id="station-platform-fare-zones"
-                          class="flex flex-wrap items-center gap-x-4 gap-y-1"
-                        >
-                          <li
-                            :for={{zone, index} <- Enum.with_index(@platform_fare_zones)}
-                            class="flex items-center"
-                          >
-                            <.link
-                              id={"platform-fare-zone-#{index}"}
-                              navigate={fares_zone_path(@current_gtfs_version.id, zone.zone_id)}
-                              class="inline-flex min-h-11 items-center font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-                            >
-                              {fare_zone_label(zone)}
-                            </.link>
-                          </li>
-                        </ul>
-                    <% end %>
-                  </dd>
-                </div>
-
-                <div>
-                  <dt class="text-sm font-medium text-base-content/70">Accessibility</dt>
-                  <dd class="mt-1 text-base">
-                    <TransitPresentation.accessibility_status
-                      status={accessibility_resolution(@stop).status}
-                      source={accessibility_resolution(@stop).source}
-                    />
-                  </dd>
-                </div>
-
-                <div>
-                  <dt class="text-sm font-medium text-base-content/70">Diagram</dt>
-                  <dd class="mt-1 text-base" id="diagram-status">
-                    {diagram_status_text(@stop.diagram_coordinate)}
-                  </dd>
-                </div>
-
-                <div>
-                  <dt class="text-sm font-medium text-base-content/70">Transfers</dt>
-                  <dd class="mt-1 text-base">
-                    <.link
-                      id="stop-transfers-link"
-                      navigate={
-                        ~p"/gtfs/#{@current_gtfs_version.id}/transfers?#{[stop: @stop.stop_id]}"
-                      }
-                      class="link link-primary"
-                    >
-                      Transfers here ({@transfer_count})
-                    </.link>
-                  </dd>
-                </div>
-              </dl>
-            </div>
-          </div>
-
-          <div class="mt-8">
-            <.section_heading title="Child stops" count={@child_stops_count} />
-            <%= cond do %>
-              <% @child_stops_state == :unavailable -> %>
-                <.callout kind="warning" title="Child stops unavailable" id="child-stops-unavailable">
-                  Child stops could not be loaded. Please try again.
-                  <button
-                    id="child-stops-retry"
-                    phx-click="retry_child_stops"
-                    class="btn btn-sm btn-outline mt-2"
-                  >
-                    Retry
-                  </button>
-                </.callout>
-              <% @child_stops_empty? -> %>
-                <.empty_state
-                  title="No child stops"
-                  id="child-stops-empty"
-                  class="bg-base-100"
-                >
-                  This station has no child stops. Child stops appear after they are linked to this station.
-                </.empty_state>
-              <% true -> %>
-                <div class="space-y-4">
-                  <%= for {level_name, stops} <- @child_stops_by_level do %>
-                    <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
-                      <div class="flex items-center justify-between gap-3 border-b border-base-300 bg-base-200 px-4 py-2 text-sm font-medium">
-                        <span>{level_name || "No level"}</span>
-                        <span class="badge badge-ghost tabular-nums">{length(stops)}</span>
-                      </div>
-                      <.table
-                        id={"child-stops-level-#{level_name || "none"}"}
-                        rows={stops}
-                        row_id={fn stop -> "child-stop-row-#{stop.id}" end}
-                        responsive="stack"
-                      >
-                        <:col :let={stop} label="Name">
-                          <span class="font-medium">{stop.stop_name || stop.stop_id}</span>
-                          <span class="text-sm text-base-content/70 ml-2">{stop.stop_id}</span>
-                        </:col>
-                        <:col :let={stop} label="Type">
-                          <span class="badge badge-outline">
-                            {Stop.location_type_label(stop.location_type)}
-                          </span>
-                        </:col>
-                        <:col :let={stop} label="Accessibility">
-                          <TransitPresentation.accessibility_status
-                            status={Stop.resolve_wheelchair_boarding(stop, @stop).status}
-                            source={Stop.resolve_wheelchair_boarding(stop, @stop).source}
-                          />
-                        </:col>
-                        <:action :let={stop}>
-                          <%= if is_nil(level_name) do %>
-                            <.link
-                              navigate={
-                                ~p"/gtfs/#{@current_gtfs_version.id}/stops/#{@stop.stop_id}/diagram?edit_child_stop_id=#{stop.id}"
-                              }
-                              class="link link-primary text-sm"
-                            >
-                              Edit in Diagram
-                            </.link>
-                          <% end %>
-                        </:action>
-                      </.table>
-                    </div>
-                  <% end %>
-                </div>
-            <% end %>
-          </div>
-
-          <div class="mt-8">
-            <.section_heading title="Levels" count={@levels_count} />
-            <%= cond do %>
-              <% @levels_state == :unavailable -> %>
-                <.callout kind="warning" title="Levels unavailable" id="levels-unavailable">
-                  Levels could not be loaded. Please try again.
-                  <button
-                    id="levels-retry"
-                    phx-click="retry_levels"
-                    class="btn btn-sm btn-outline mt-2"
-                  >
-                    Retry
-                  </button>
-                </.callout>
-              <% @levels_empty? -> %>
-                <.empty_state
-                  title="No levels"
-                  id="levels-empty"
-                  class="bg-base-100"
-                >
-                  This station has no levels defined.
-                </.empty_state>
-              <% true -> %>
-                <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
-                  <.table
-                    id="levels-table"
-                    rows={@streams.levels}
-                    row_id={fn {id, _item} -> id end}
-                    row_item={fn {_id, item} -> item end}
-                    responsive="stack"
-                  >
-                    <:col :let={%{level: level}} label="Level ID">
-                      <span class="font-mono">{level.level_id}</span>
-                    </:col>
-                    <:col :let={%{level: level}} label="Name">
-                      {level.level_name || "—"}
-                    </:col>
-                    <:col :let={%{level: level}} label="Index" align="right">
-                      <span class="tabular-nums">{level.level_index}</span>
-                    </:col>
-                    <:col :let={%{stop_count: count}} label="Stops">
-                      <span class="badge badge-ghost tabular-nums">{count}</span>
-                    </:col>
-                    <:col :let={%{level: level, diagram_filename: filename}} label="Diagram">
-                      <span id={"diagram-status-#{level.level_id}"}>
-                        {diagram_status_text(filename)}
-                      </span>
-                    </:col>
-                  </.table>
-                </div>
-            <% end %>
-          </div>
-
-          <div class="mt-8">
-            <.section_heading title="Pathways" count={@pathways_count} />
-            <%= cond do %>
-              <% @pathways_state == :unavailable -> %>
-                <.callout kind="warning" title="Pathways unavailable" id="pathways-unavailable">
-                  Pathways could not be loaded. Please try again.
-                  <button
-                    id="pathways-retry"
-                    phx-click="retry_pathways"
-                    class="btn btn-sm btn-outline mt-2"
-                  >
-                    Retry
-                  </button>
-                </.callout>
-              <% @pathways_empty? -> %>
-                <.empty_state
-                  title="No pathways"
-                  id="pathways-empty"
-                  class="bg-base-100"
-                >
-                  This station has no pathways defined.
-                </.empty_state>
-              <% true -> %>
-                <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
-                  <.table
-                    id="pathways-table"
-                    rows={@streams.pathways}
-                    row_id={fn {id, _item} -> id end}
-                    row_item={fn {_id, item} -> item end}
-                    responsive="stack"
-                  >
-                    <:col :let={pathway} label="Pathway ID">
-                      <span class="font-mono">{pathway.pathway_id}</span>
-                    </:col>
-                    <:col :let={pathway} label="From">
-                      <span class="font-mono">{pathway.from_stop_id}</span>
-                    </:col>
-                    <:col :let={pathway} label="To">
-                      <span class="font-mono">{pathway.to_stop_id}</span>
-                    </:col>
-                    <:col :let={pathway} label="Mode & Direction">
-                      <TransitPresentation.pathway_summary pathway={pathway} />
-                    </:col>
-                  </.table>
-                </div>
-            <% end %>
-          </div>
-
-          <%= if @journal_scope do %>
+      <div id="stop-detail-page" class="ds-page pt-2">
+        <%= case @stop_state do %>
+          <% :unavailable -> %>
+            <.unavailable />
+          <% :ready -> %>
             <div
-              class="mt-8"
-              id="station-journal-summary"
-              aria-busy={to_string(@journal_state == :loading)}
+              :if={@station? and (@station_editing_status || @editing_error)}
+              class="mb-6 grid gap-3"
             >
-              <.section_heading title="Journal">
-                <:actions :if={not @journal_entries_empty? and @journal_loaded_once?}>
-                  <span id="station-journal-open-count" class="badge badge-ghost tabular-nums">
-                    {@journal_open_count} open
-                  </span>
-                  <span id="station-journal-closed-count" class="badge badge-ghost tabular-nums">
-                    {@journal_closed_count} closed
-                  </span>
-                  <button
-                    id="journal-summary-refresh"
-                    phx-click={@journal_state != :loading && "retry_journal"}
-                    class="ml-auto btn btn-ghost size-11 min-h-11 min-w-11 p-0 text-base-content/70 hover:text-base-content"
-                    aria-label="Refresh journal entries"
-                    title="Refresh journal entries"
-                    aria-busy={to_string(@journal_state == :loading)}
-                    aria-disabled={to_string(@journal_state == :loading)}
-                  >
-                    <.icon
-                      name="hero-arrow-path"
-                      class={["size-3.5", @journal_state == :loading && "animate-spin"]}
-                    />
-                  </button>
-                </:actions>
-              </.section_heading>
-
-              <%= cond do %>
-                <% @journal_state == :loading and not @journal_loaded_once? -> %>
-                  <.skeleton
-                    id="journal-summary-loading"
-                    label="Loading journal entries"
-                    rows={3}
-                    role="status"
-                    aria-live="polite"
-                    aria-busy="true"
-                    aria-atomic="true"
-                    class="journal-loading-delay bg-base-100 border border-base-300 rounded-box p-4"
-                  />
-                <% @journal_state == :error and not @journal_loaded_once? -> %>
-                  <.callout
-                    kind="warning"
-                    title="Journal unavailable"
-                    id="station-journal-unavailable"
-                    role="alert"
-                  >
-                    Journal entries could not be loaded. Please try again.
-                    <button
-                      id="station-journal-retry"
-                      phx-click="retry_journal"
-                      class="btn btn-sm btn-outline mt-2 min-h-11 min-w-11"
-                    >
-                      Retry
-                    </button>
-                  </.callout>
-                <% @journal_state == :error and @journal_loaded_once? and
-                     @journal_entries_empty? -> %>
-                  <.callout
-                    kind="warning"
-                    title="Journal may be out of date"
-                    id="station-journal-refresh-warning"
-                    role="status"
-                    aria-live="polite"
-                  >
-                    The last successful journal snapshot remains available.
-                    <button
-                      id="station-journal-retry"
-                      phx-click="retry_journal"
-                      class="btn btn-sm btn-outline mt-2 min-h-11 min-w-11"
-                    >
-                      Retry
-                    </button>
-                  </.callout>
-                  <.empty_state
-                    title="No journal entries"
-                    id="station-journal-empty"
-                    class="mt-3 bg-base-100"
-                  >
-                    Notes and photos captured at this station with the Pathways field companion appear here for review.
-                  </.empty_state>
-                <% @journal_state == :error and @journal_loaded_once? -> %>
-                  <.callout
-                    kind="warning"
-                    title="Journal may be out of date"
-                    id="station-journal-refresh-warning"
-                    role="status"
-                    aria-live="polite"
-                  >
-                    The last saved entries remain available.
-                    <button
-                      id="station-journal-retry"
-                      phx-click="retry_journal"
-                      class="btn btn-sm btn-outline mt-2 min-h-11 min-w-11"
-                    >
-                      Retry
-                    </button>
-                  </.callout>
-                  <.journal_summary_rows
-                    entries={@streams.journal_recent_entries}
-                    targets={@journal_targets}
-                    local_times={@journal_local_times}
-                    now={@journal_now}
-                    gtfs_version_id={@current_gtfs_version.id}
-                    stop_id={@stop.stop_id}
-                  />
-                <% @journal_entries_empty? -> %>
-                  <.empty_state
-                    title="No journal entries"
-                    id="station-journal-empty"
-                    class="bg-base-100"
-                  >
-                    Notes and photos captured at this station with the Pathways field companion appear here for review.
-                  </.empty_state>
-                <% true -> %>
-                  <.journal_summary_rows
-                    entries={@streams.journal_recent_entries}
-                    targets={@journal_targets}
-                    local_times={@journal_local_times}
-                    now={@journal_now}
-                    gtfs_version_id={@current_gtfs_version.id}
-                    stop_id={@stop.stop_id}
-                  />
-              <% end %>
+              <.editing_banner
+                :if={@station_editing_status}
+                status={@station_editing_status}
+                current_user={@current_user}
+              />
+              <.editing_failure
+                :if={@editing_error}
+                kind={@editing_error}
+                status={@station_editing_status}
+              />
             </div>
-          <% end %>
-        <% _ -> %>
-          <div></div>
-      <% end %>
+
+            <div class="grid items-start gap-6 lg:grid-cols-2">
+              <.location_card stop={@stop} parent={@parent_link} />
+              <.service_card
+                stop={@stop}
+                access={Stop.resolve_wheelchair_boarding(@stop, @parent_station)}
+                gtfs_version_id={@current_gtfs_version.id}
+                fare_zone={@fare_zone}
+                platform_fare_zones={@platform_fare_zones}
+                child_stops_state={@child_stops_state}
+                transfer_count={@transfer_count}
+                levels={if @levels_state == :ready, do: @levels, else: :unavailable}
+                in_station?={not is_nil(@parent_link)}
+              />
+            </div>
+
+            <.inside
+              :if={@station?}
+              floors={@floors}
+              child_stops_state={@child_stops_state}
+              levels_state={@levels_state}
+              stop={@stop}
+              gtfs_version_id={@current_gtfs_version.id}
+            />
+
+            <div :if={@station?} class="mt-10 grid gap-6 lg:grid-cols-12">
+              <div class={if @journal_scope, do: "lg:col-span-7", else: "lg:col-span-12"}>
+                <.pathways_card
+                  state={@pathways_state}
+                  pathways={@streams.pathways}
+                  count={@pathways_count}
+                  empty?={@pathways_empty?}
+                  expanded?={@pathways_expanded?}
+                  stop={@stop}
+                  gtfs_version_id={@current_gtfs_version.id}
+                />
+              </div>
+              <div :if={@journal_scope} class="lg:col-span-5">
+                <.journal_card
+                  state={@journal_state}
+                  loaded_once?={@journal_loaded_once?}
+                  entries_empty?={@journal_entries_empty?}
+                  open_count={@journal_open_count}
+                  closed_count={@journal_closed_count}
+                  entries={@streams.journal_recent_entries}
+                  targets={@journal_targets}
+                  local_times={@journal_local_times}
+                  now={@journal_now}
+                  gtfs_version_id={@current_gtfs_version.id}
+                  stop_id={@stop.stop_id}
+                />
+              </div>
+            </div>
+
+            <.gtfs_fields stop={@stop} />
+          <% _ -> %>
+            <.loading />
+        <% end %>
+      </div>
     </Layouts.app>
-    """
-  end
-
-  attr :title, :string, required: true
-  attr :count, :integer, default: nil, doc: "record count; hidden when zero"
-  slot :actions, doc: "controls and counts aligned with the heading"
-
-  # One heading treatment for every section on this tab, so the lists below
-  # them read as the same kind of thing.
-  defp section_heading(assigns) do
-    ~H"""
-    <div class="mb-4 flex items-center gap-3">
-      <h2 class="text-lg font-semibold">{@title}</h2>
-      <span :if={@count && @count > 0} class="badge badge-ghost tabular-nums">{@count}</span>
-      {render_slot(@actions)}
-    </div>
-    """
-  end
-
-  attr :entries, :any, required: true
-  attr :targets, :map, required: true
-  attr :local_times, :map, required: true
-  attr :now, :any, required: true
-  attr :gtfs_version_id, :any, required: true
-  attr :stop_id, :string, required: true
-
-  defp journal_summary_rows(assigns) do
-    ~H"""
-    <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
-      <div
-        id="station-journal-summary-list"
-        phx-update="stream"
-        class="divide-y divide-base-200 text-sm"
-      >
-        <.link
-          :for={{dom_id, entry} <- @entries}
-          id={dom_id}
-          data-role="journal-summary-entry"
-          navigate={
-            ~p"/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/diagram?journal=open&entry_id=#{entry.id}"
-          }
-          class="flex min-h-11 items-center gap-3 px-4 py-3 text-base-content transition-colors hover:bg-base-200/50 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary"
-        >
-          <span class="inline-flex max-w-32 shrink-0 items-center gap-1 truncate rounded-full border border-base-300 px-2.5 py-0.5 text-xs">
-            {journal_target_presentation(entry, @targets).label}
-          </span>
-          <span class={[
-            "min-w-0 flex-1 truncate",
-            if(is_nil(entry.closed_at), do: "text-base-content/80", else: "text-base-content/70")
-          ]}>
-            {entry.body}
-          </span>
-          <span
-            :if={not is_nil(entry.closed_at)}
-            class="rounded-full border border-base-300 bg-base-200 px-2 py-0.5 text-xs font-medium text-base-content/80"
-          >
-            Closed
-          </span>
-          <span class="ml-auto text-base-content/60 text-xs shrink-0">
-            <time datetime={DateTime.to_iso8601(entry.captured_at)}>
-              {StationJournalComponents.relative_time(
-                journal_local_time(entry, @local_times),
-                @now
-              )}
-            </time>
-          </span>
-        </.link>
-      </div>
-      <div class="border-t border-base-200 px-4 py-2.5">
-        <.link
-          id="journal-footer-link"
-          navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/diagram?journal=open"}
-          class="inline-flex min-h-11 items-center text-sm text-primary hover:underline"
-        >
-          Open journal in Floorplans →
-        </.link>
-      </div>
-    </div>
     """
   end
 end

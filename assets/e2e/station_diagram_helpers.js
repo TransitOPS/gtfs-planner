@@ -33,7 +33,7 @@ export async function loginAndGoToDiagram(page) {
   await expect(stationRow).toBeVisible();
   await stationRow.getByRole("link").first().click();
   await page.waitForURL("**/stops/**");
-  await page.getByRole("link", { name: "Floorplans" }).click();
+  await page.getByRole("link", { name: "Floorplans", exact: true }).click();
   await expect(page.locator("#diagram-page")).toBeVisible();
   await selectSeededDiagramLevel(page);
 }
