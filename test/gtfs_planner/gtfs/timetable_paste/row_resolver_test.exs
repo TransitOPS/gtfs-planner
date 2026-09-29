@@ -577,6 +577,63 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolverTest do
       assert is_binary(key)
     end
 
+    test "a template with nil pickup/drop_off attributes keys as 0 so timing reuse can match" do
+      # Stored stop_times may carry NULL pickup_type/drop_off_type; GTFS reads
+      # those as 0. The timing key must normalize nil to 0, otherwise a
+      # pasted row never matches an existing timing and always creates a
+      # duplicate "Pasted" timing (step 17 regression).
+      timing =
+        template_timing("timing-held", [{0, 0}, {23, 23}, {51, 51}, {78, 78}, {100, 100}], 5)
+
+      rows_with_nils =
+        Enum.map(timing.rows, fn row ->
+          %{row | pickup_type: nil, drop_off_type: nil}
+        end)
+
+      nil_timing = %{timing | rows: rows_with_nils}
+
+      scope = %{
+        pattern_id: "pattern-five",
+        patterns: [line_pattern("pattern-five", 5, [nil_timing])]
+      }
+
+      grid = [["7:15", "", "", "", "7:24"]]
+
+      assert [%{status: :ready, timing_rows: timing_rows, key: nil_key}] =
+               RowResolver.resolve(
+                 grid,
+                 line_columns("pattern-five", 5),
+                 scope,
+                 %{},
+                 "timing-held"
+               )
+
+      assert is_binary(nil_key)
+      assert Enum.map(timing_rows, & &1.pickup_type) == [0, 0, 0, 0, 0]
+      assert Enum.map(timing_rows, & &1.drop_off_type) == [0, 0, 0, 0, 0]
+
+      zero_timing =
+        template_timing("timing-zero", [{0, 0}, {23, 23}, {51, 51}, {78, 78}, {100, 100}], 5)
+
+      zero_scope = %{
+        pattern_id: "pattern-five",
+        patterns: [line_pattern("pattern-five", 5, [zero_timing])]
+      }
+
+      assert [%{key: zero_key}] =
+               RowResolver.resolve(
+                 grid,
+                 line_columns("pattern-five", 5),
+                 zero_scope,
+                 %{},
+                 "timing-zero"
+               )
+
+      # Same template times, same effective attributes: the keys must match so
+      # Plan can reuse the existing timing instead of duplicating it.
+      assert nil_key == zero_key
+    end
+
     test "a zero-length template segment spaces estimates evenly" do
       timing = template_timing("timing-flat", [{0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}], 5)
       scope = %{pattern_id: "pattern-five", patterns: [line_pattern("pattern-five", 5, [timing])]}
