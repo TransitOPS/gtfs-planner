@@ -850,6 +850,60 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
     end
   end
 
+  describe "pattern ID with reserved URL characters" do
+    setup :editor_scope
+
+    setup %{organization: organization, version: version} do
+      route = route(organization, version, "SLASH1")
+      stops = Enum.map(1..2, &stop(organization, version, "SLASH1", &1))
+      pattern = pattern(organization, version, route, "QA/PAT 1")
+      timing = timing(pattern, occurrences(pattern, stops), %{name: "Weekday"})
+
+      %{
+        timing: timing,
+        encoded_path: "/gtfs/#{version.id}/routes/SLASH1/patterns/QA%2FPAT%201",
+        patterns_path: "/gtfs/#{version.id}/routes/SLASH1/patterns"
+      }
+    end
+
+    test "opens the pattern from the list by its encoded path", %{
+      conn: conn,
+      patterns_path: patterns_path,
+      encoded_path: encoded_path
+    } do
+      {:ok, view, _html} = live(conn, patterns_path)
+
+      render_click(element(view, "button[phx-click='open_pattern']"))
+
+      assert_redirect(view, "#{encoded_path}?task=stops")
+    end
+
+    test "opens the Alignment task from the list by its encoded path", %{
+      conn: conn,
+      patterns_path: patterns_path,
+      encoded_path: encoded_path
+    } do
+      {:ok, view, _html} = live(conn, patterns_path)
+
+      render_click(element(view, "button[phx-click='open_pattern_alignment']"))
+
+      assert_patched(view, "#{encoded_path}?task=alignment")
+    end
+
+    test "keeps the encoded path when switching tasks", %{
+      conn: conn,
+      timing: timing,
+      encoded_path: encoded_path
+    } do
+      {:ok, view, _html} = live(conn, encoded_path)
+
+      render_click(element(view, "#pattern-task-alignment"))
+
+      assert_patched(view, "#{encoded_path}?task=alignment&timing=#{timing.id}")
+      assert has_element?(view, "#pattern-task-alignment[aria-current='page']")
+    end
+  end
+
   describe "timing summaries" do
     setup :editor_scope
 

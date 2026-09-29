@@ -147,6 +147,40 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     end
   end
 
+  describe "StopsLive stop links" do
+    setup :shared_setup
+
+    test "links a stop whose ID has reserved URL characters by its encoded path and opens its detail page",
+         %{conn: conn, user: user, organization: organization, gtfs_version: version} do
+      # This case reads through the production adapter; the setup's on_exit
+      # restores the mock override.
+      Application.delete_env(:gtfs_planner, @adapter_key)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "QA/STN 1",
+        stop_name: "Slash Station",
+        location_type: 1
+      })
+
+      {:ok, list_view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      [href] =
+        list_view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("tbody#stops a")
+        |> LazyHTML.attribute("href")
+
+      assert href == "/gtfs/#{version.id}/stops/QA%2FSTN%201"
+
+      {:ok, detail_view, _html} = live(conn, href)
+
+      assert has_element?(detail_view, "#station-sub-nav h1", "Slash Station")
+    end
+  end
+
   describe "StopsLive page header and type labels" do
     setup :shared_setup
 

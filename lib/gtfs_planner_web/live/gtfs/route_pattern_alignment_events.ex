@@ -257,7 +257,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   """
   def open_pattern_alignment(socket, %{"pattern-id" => pattern_id})
       when is_binary(pattern_id) do
-    path = "#{patterns_path(socket)}/#{pattern_id}?task=alignment"
+    path = alignment_path(socket, pattern_id)
 
     if socket.assigns[:dirty?] do
       Component.assign(socket, :pending_navigation, path)
@@ -1205,9 +1205,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
       when is_binary(route_pattern_id) do
     if Map.has_key?(socket.assigns[:alignment_suggestions] || %{}, route_pattern_id) or
          bulk_reviewable?(socket, route_pattern_id) do
-      Phoenix.LiveView.push_patch(socket,
-        to: "#{patterns_path(socket)}/#{route_pattern_id}?task=alignment"
-      )
+      Phoenix.LiveView.push_patch(socket, to: alignment_path(socket, route_pattern_id))
     else
       socket
     end
@@ -1721,9 +1719,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   defp editable?(socket), do: socket.assigns[:alignment_editable] == true
 
   # Same Route › Patterns base the LiveView's own `patterns_path/1` builds;
-  # kept local so the list cell never drifts from the router paths.
-  defp patterns_path(socket) do
-    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns"
+  # kept local so the list cell never drifts from the router paths. The
+  # route pattern ID is free text, so the sigil encodes it.
+  defp alignment_path(socket, route_pattern_id) do
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns/#{route_pattern_id}?task=alignment"
   end
 
   defp alignment_dirty?(socket) do

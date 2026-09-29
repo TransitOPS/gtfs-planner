@@ -3361,14 +3361,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   defp pattern_path(socket, pattern_id, query) do
-    "#{patterns_path(socket)}/#{pattern_id}#{query}"
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns/#{pattern_id}" <>
+      query
   end
 
   defp task_path(socket, task) do
     base =
       case socket.assigns.live_action do
         :new -> "#{patterns_path(socket)}/new"
-        _ -> "#{patterns_path(socket)}/#{socket.assigns.pattern_id}"
+        _ -> pattern_path(socket, socket.assigns.pattern_id, "")
       end
 
     "#{base}?#{task_query(socket, task)}"

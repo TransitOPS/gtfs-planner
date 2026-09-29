@@ -1449,9 +1449,9 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # Every row keeps its own agency ID in the query, except a version with one
   # agency: the list filtered to that agency is the unfiltered list (AC-9).
   defp routes_path(version_id, agency_count, row) do
-    base = "/gtfs/#{version_id}/routes"
-
-    if agency_count == 1, do: base, else: "#{base}?agency_id=#{row.agency.agency_id}"
+    if agency_count == 1,
+      do: ~p"/gtfs/#{version_id}/routes",
+      else: ~p"/gtfs/#{version_id}/routes?#{[agency_id: row.agency.agency_id]}"
   end
 
   defp band_state({:ok, zone}), do: "#{zone} · Used by all agencies and their schedules."

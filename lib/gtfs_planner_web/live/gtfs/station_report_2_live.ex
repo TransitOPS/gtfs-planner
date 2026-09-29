@@ -357,7 +357,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
          Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       path =
         if stop_id,
-          do: "/gtfs/#{version_id}/stops/#{stop_id}/report",
+          do: ~p"/gtfs/#{version_id}/stops/#{stop_id}/report",
           else: "/gtfs/#{version_id}/stops"
 
       {:noreply,

@@ -473,7 +473,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
               sort={column_sort_state(@sort_by, @sort_dir, :stop_id)}
             >
               <.link
-                navigate={"/gtfs/#{@current_gtfs_version.id}/stops/#{stop.stop_id}"}
+                navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/#{stop.stop_id}"}
                 class="link link-primary font-semibold font-mono tabular-nums"
               >
                 {stop.stop_id}

@@ -635,6 +635,80 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
     end
   end
 
+  describe "StopDetailLive - stop ID with reserved URL characters" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "QA/STN 1",
+          stop_name: "Slash Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{level_id: "L1", level_index: 0.0})
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station
+      }
+    end
+
+    test "encodes the stop ID in the Edit in Diagram link and keeps its query parameter", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      no_level_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "QA/CHILD 1",
+          stop_name: "Slash Child",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: "ORPHAN_LEVEL"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      base = "/gtfs/#{gtfs_version.id}/stops/QA%2FSTN%201"
+
+      {:ok, view, _html} = live(conn, base, on_error: :warn)
+
+      expected_href = "#{base}/diagram?edit_child_stop_id=#{no_level_stop.id}"
+
+      assert has_element?(
+               view,
+               "#child-stop-row-#{no_level_stop.id} a[href=\"#{expected_href}\"]",
+               "Edit in Diagram"
+             )
+
+      {:ok, diagram_view, _html} = live(conn, expected_href, on_error: :warn)
+
+      assert has_element?(diagram_view, "#station-sub-nav h1", "Slash Station")
+    end
+  end
+
   describe "StopDetailLive - station facts and regions (Mox)" do
     setup do
       previous = Application.fetch_env(:gtfs_planner, @adapter_key)

@@ -392,7 +392,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     station_stop_id = socket.assigns.station.stop_id
 
     {:noreply,
-     push_patch(socket, to: "/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
+     push_patch(socket, to: ~p"/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
   end
 
   @impl true
@@ -401,7 +401,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     station_stop_id = socket.assigns.station.stop_id
 
     {:noreply,
-     push_patch(socket, to: "/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
+     push_patch(socket, to: ~p"/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
   end
 
   @impl true
@@ -1607,7 +1607,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     if version_id && stop_id && version_id != current_version_id &&
          Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
-      path = "/gtfs/#{version_id}/stops/#{stop_id}/diagram"
+      path = ~p"/gtfs/#{version_id}/stops/#{stop_id}/diagram"
       {:noreply, push_navigate(socket, to: path)}
     else
       {:noreply, socket}

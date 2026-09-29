@@ -1016,28 +1016,28 @@ defmodule GtfsPlannerWeb.CoreComponents do
       >
         <div class="flex min-w-max items-end gap-1 sm:min-w-0">
           <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}"}
             class={sub_nav_link_class(@active_tab == :details)}
             aria-current={@active_tab == :details && "page"}
           >
             Details
           </.link>
           <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/diagram"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/diagram"}
             class={sub_nav_link_class(@active_tab == :diagram)}
             aria-current={@active_tab == :diagram && "page"}
           >
             Floorplans
           </.link>
           <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/report"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/report"}
             class={sub_nav_link_class(@active_tab == :report)}
             aria-current={@active_tab == :report && "page"}
           >
             Reports
           </.link>
           <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/reachability"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/reachability"}
             class={sub_nav_link_class(@active_tab == :reachability)}
             aria-current={@active_tab == :reachability && "page"}
           >
@@ -1045,7 +1045,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           </.link>
           <.link
             id="station-tab-evolutions"
-            navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/evolutions"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/evolutions"}
             class={sub_nav_link_class(@active_tab == :evolutions)}
             aria-current={@active_tab == :evolutions && "page"}
           >
