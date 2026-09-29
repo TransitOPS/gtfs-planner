@@ -286,6 +286,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLiveTest do
              )
     end
 
+    test "says no route in either direction when the reverse pair also fails", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version,
+      run: run
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/station-reachability/#{run.id}")
+
+      view |> element("#pair-ENT_A-PLAT_3") |> render_click()
+
+      assert has_element?(view, "#trip-ENT_A-PLAT_3", "in either direction of travel")
+      refute has_element?(view, "#trip-ENT_A-PLAT_3", "Riders can travel the other way")
+    end
+
     test "loads trip steps only once the row is expanded", %{
       conn: conn,
       user: user,
@@ -337,6 +353,127 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLiveTest do
     end
   end
 
+  describe "one-way pathway failures" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+
+      %{user: user, organization: organization, gtfs_version: version}
+    end
+
+    test "says riders can travel the other way when the reverse pair is reachable", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      run = one_way_run(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/station-reachability/#{run.id}")
+
+      assert has_element?(view, "#pair-PLAT_1-ENT_A", "Reachable")
+      view |> element("#pair-ENT_A-PLAT_1") |> render_click()
+
+      assert has_element?(
+               view,
+               "#trip-ENT_A-PLAT_1",
+               "Riders can travel the other way, from Platform 1 to Entrance A, but not in this direction."
+             )
+
+      assert has_element?(view, "#trip-ENT_A-PLAT_1", "is_bidirectional = 0")
+      refute has_element?(view, "#trip-ENT_A-PLAT_1", "in either direction")
+    end
+
+    test "drops the either-direction claim when the reverse pair is not in the results", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      station =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "STATION_TRUNCATED",
+          stop_name: "Truncated Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      unreachable_walk = %{
+        "index" => 0,
+        "kind" => "entry",
+        "mode" => "walking",
+        "from_stop_id" => "ENT_A",
+        "from_stop_name" => "Entrance A",
+        "to_stop_id" => "PLAT_1",
+        "to_stop_name" => "Platform 1",
+        "outcome" => "unreachable",
+        "reason" => nil
+      }
+
+      run =
+        completed_run(organization, version, station, diagnostics: [], pairs: [unreachable_walk])
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/station-reachability/#{run.id}")
+
+      view |> element("#pair-ENT_A-PLAT_1") |> render_click()
+
+      assert has_element?(
+               view,
+               "#trip-ENT_A-PLAT_1",
+               "No pathway route connects these two elements. They sit in separate parts"
+             )
+
+      refute has_element?(view, "#trip-ENT_A-PLAT_1", "in either direction")
+      refute has_element?(view, "#trip-ENT_A-PLAT_1", "Riders can travel the other way")
+    end
+  end
+
+  # A one-way walkway from the platform to the entrance: riders can leave, but
+  # the entrance cannot reach the platform.
+  defp one_way_run(organization, version) do
+    station =
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "STATION_ONE_WAY",
+        stop_name: "One Way Station",
+        location_type: 1,
+        parent_station: nil
+      })
+
+    level_fixture(organization.id, version.id, %{level_id: "L1", level_index: 0.0})
+
+    for {stop_id, name, location_type} <- [
+          {"ENT_A", "Entrance A", 2},
+          {"PLAT_1", "Platform 1", 0}
+        ] do
+      stop_fixture(organization.id, version.id, %{
+        stop_id: stop_id,
+        stop_name: name,
+        location_type: location_type,
+        parent_station: station.stop_id,
+        level_id: "L1"
+      })
+    end
+
+    pathway_fixture(organization.id, version.id, "PLAT_1", "ENT_A", %{
+      pathway_id: "PW_ONE_WAY",
+      pathway_mode: 1,
+      is_bidirectional: false,
+      traversal_time: 30
+    })
+
+    run_battery(organization, version, station)
+  end
+
   # A station where the only way in is a stairway and one platform is stranded:
   # it produces a walking success, an accessibility gap, and a missing pathway.
   defp planned_run(organization, version) do
@@ -379,6 +516,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLiveTest do
       traversal_time: 30
     })
 
+    run_battery(organization, version, station)
+  end
+
+  defp run_battery(organization, version, station) do
     snapshot = %{
       station: station,
       child_stops: Gtfs.list_child_stops_for_parent(organization.id, version.id, station.id),
@@ -428,7 +569,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLiveTest do
       },
       "totals" => %{"pair_count" => 0, "reachable" => 0},
       "diagnostics" => Keyword.fetch!(opts, :diagnostics),
-      "pairs" => [],
+      "pairs" => Keyword.get(opts, :pairs, []),
       "duration_ms" => 12
     }
 

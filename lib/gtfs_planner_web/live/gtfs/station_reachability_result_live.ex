@@ -654,9 +654,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
   defp build_sections(%{"pairs" => pairs}) when is_list(pairs) do
     by_kind = Enum.group_by(pairs, & &1["kind"])
 
+    # A pair's opposite direction sits in another section (entry <-> egress),
+    # so it is looked up across every pair, not within one kind.
+    walking_by_direction =
+      for %{"mode" => "walking"} = pair <- pairs,
+          into: %{},
+          do: {{pair["from_stop_id"], pair["to_stop_id"]}, pair}
+
     @kinds
     |> Enum.map(fn {kind, title, subtitle, description} ->
-      rows = merge_mode_rows(Map.get(by_kind, kind, []))
+      rows = merge_mode_rows(Map.get(by_kind, kind, []), walking_by_direction)
 
       %{
         kind: kind,
@@ -674,7 +681,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
   # One origin/destination, both modes, so accessibility reads as a comparison
   # rather than two rows a screen apart.
-  defp merge_mode_rows(pairs) do
+  defp merge_mode_rows(pairs, walking_by_direction) do
     pairs
     |> Enum.group_by(&{&1["from_stop_id"], &1["to_stop_id"]})
     |> Enum.map(fn {{from_stop_id, to_stop_id}, entries} ->
@@ -689,6 +696,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
         to_stop_id: to_stop_id,
         to_stop_name: reference["to_stop_name"] || to_stop_id,
         walking: Enum.find(entries, &(&1["mode"] == "walking")),
+        reverse_walking: Map.get(walking_by_direction, {to_stop_id, from_stop_id}),
         wheelchair: Enum.find(entries, &(&1["mode"] == "wheelchair"))
       }
     end)
@@ -711,6 +719,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
   defp reachable?(%{"outcome" => "reachable"}), do: true
   defp reachable?(_pair), do: false
+
+  defp unreachable?(%{"outcome" => "unreachable"}), do: true
+  defp unreachable?(_pair), do: false
 
   defp invalid?(%{"outcome" => "invalid"}), do: true
   defp invalid?(_pair), do: false
@@ -754,11 +765,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLive do
 
   defp walking_explanation(%{walking: nil}), do: nil
 
-  defp walking_explanation(%{walking: pair}) do
+  defp walking_explanation(%{walking: pair} = row) do
     cond do
-      reachable?(pair) -> nil
-      invalid?(pair) -> invalid_explanation(pair)
-      true -> "No pathway route connects these two elements in either direction of travel. \
+      reachable?(pair) ->
+        nil
+
+      invalid?(pair) ->
+        invalid_explanation(pair)
+
+      reachable?(row.reverse_walking) ->
+        "Riders can travel the other way, from #{row.to_stop_name} to #{row.from_stop_name}, \
+but not in this direction. Check whether a pathway on the route is one-way (is_bidirectional = 0) \
+and should allow travel in both directions."
+
+      unreachable?(row.reverse_walking) ->
+        "No pathway route connects these two elements in either direction of travel. \
+They sit in separate parts of the pathway graph — look for a missing pathway record between them."
+
+      true ->
+        "No pathway route connects these two elements. \
 They sit in separate parts of the pathway graph — look for a missing pathway record between them."
     end
   end

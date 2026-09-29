@@ -132,8 +132,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
 
       assert ent2_row.status == :none
       assert summaries.entrance_to_platform.status == :fail
-      assert length(summaries.entrance_to_platform.alerts) == 1
-      assert hd(summaries.entrance_to_platform.alerts) =~ "Disconnected Entrance"
+      assert [%{level: :error, text: text}] = summaries.entrance_to_platform.alerts
+      assert text =~ "Needs immediate attention: Disconnected Entrance"
     end
 
     test "no entrances returns empty summary rows" do
@@ -206,6 +206,171 @@ defmodule GtfsPlanner.Gtfs.StationReport2.ConnectivityTest do
         Enum.find(summaries.platform_to_platform.summary_rows, &(&1.source_stop_id == "PLAT_3"))
 
       assert plat3_row.status == :none
+    end
+  end
+
+  describe "build_summaries/1 exit-only entrances" do
+    defp exit_only_snapshot(extra_stops, extra_pathways) do
+      %{
+        child_stops:
+          [
+            make_stop(%{stop_id: "ENT_1", stop_name: "Main Entrance", location_type: 2}),
+            make_stop(%{stop_id: "PLAT_1", stop_name: "Platform 1", location_type: 0})
+          ] ++ extra_stops,
+        pathways:
+          [
+            make_pathway(%{pathway_id: "PW_1", from_stop_id: "ENT_1", to_stop_id: "PLAT_1"})
+          ] ++ extra_pathways,
+        levels: []
+      }
+    end
+
+    defp entrance_row(summaries, stop_id),
+      do: Enum.find(summaries.entrance_to_platform.summary_rows, &(&1.source_stop_id == stop_id))
+
+    test "warns for an entrance reached only through a one-way pathway toward it" do
+      snapshot =
+        exit_only_snapshot(
+          [make_stop(%{stop_id: "ENT_2", stop_name: "Exit Door", location_type: 2})],
+          [
+            make_pathway(%{
+              pathway_id: "PW_2",
+              from_stop_id: "PLAT_1",
+              to_stop_id: "ENT_2",
+              is_bidirectional: false
+            })
+          ]
+        )
+
+      summaries = Connectivity.build_summaries(snapshot)
+
+      assert entrance_row(summaries, "ENT_1").status == :full
+      assert entrance_row(summaries, "ENT_2").status == :exit_only
+      assert summaries.entrance_to_platform.status == :warning
+
+      assert summaries.entrance_to_platform.alerts == [
+               %{
+                 level: :warning,
+                 text:
+                   "Exit Door is exit-only: riders can leave through it but cannot enter. " <>
+                     "Platforms are not reachable from it. Check that this is intended."
+               }
+             ]
+    end
+
+    test "warns for an entrance behind an exit gate" do
+      snapshot =
+        exit_only_snapshot(
+          [
+            make_stop(%{stop_id: "NODE_1", stop_name: "Gate Hall", location_type: 3}),
+            make_stop(%{stop_id: "ENT_2", stop_name: "Gated Exit", location_type: 2})
+          ],
+          [
+            make_pathway(%{
+              pathway_id: "PW_2",
+              from_stop_id: "PLAT_1",
+              to_stop_id: "NODE_1"
+            }),
+            make_pathway(%{
+              pathway_id: "PW_3",
+              from_stop_id: "NODE_1",
+              to_stop_id: "ENT_2",
+              pathway_mode: 7,
+              is_bidirectional: false
+            })
+          ]
+        )
+
+      summaries = Connectivity.build_summaries(snapshot)
+
+      assert entrance_row(summaries, "ENT_2").status == :exit_only
+      assert summaries.entrance_to_platform.status == :warning
+      assert [%{level: :warning}] = summaries.entrance_to_platform.alerts
+    end
+
+    test "fails for an entrance with no pathways at all" do
+      snapshot =
+        exit_only_snapshot(
+          [make_stop(%{stop_id: "ENT_2", stop_name: "Orphan Entrance", location_type: 2})],
+          []
+        )
+
+      summaries = Connectivity.build_summaries(snapshot)
+
+      assert entrance_row(summaries, "ENT_2").status == :none
+      assert summaries.entrance_to_platform.status == :fail
+      assert [%{level: :error}] = summaries.entrance_to_platform.alerts
+    end
+
+    test "fails for an entrance whose outgoing pathways reach no platform" do
+      snapshot =
+        exit_only_snapshot(
+          [
+            make_stop(%{stop_id: "NODE_1", stop_name: "Dead End", location_type: 3}),
+            make_stop(%{stop_id: "ENT_2", stop_name: "Dead End Entrance", location_type: 2})
+          ],
+          [
+            make_pathway(%{
+              pathway_id: "PW_2",
+              from_stop_id: "ENT_2",
+              to_stop_id: "NODE_1",
+              is_bidirectional: false
+            })
+          ]
+        )
+
+      summaries = Connectivity.build_summaries(snapshot)
+
+      assert entrance_row(summaries, "ENT_2").status == :none
+      assert summaries.entrance_to_platform.status == :fail
+    end
+
+    test "fails when a disconnected entrance sits beside an exit-only one" do
+      snapshot =
+        exit_only_snapshot(
+          [
+            make_stop(%{stop_id: "ENT_2", stop_name: "Exit Door", location_type: 2}),
+            make_stop(%{stop_id: "ENT_3", stop_name: "Orphan Entrance", location_type: 2})
+          ],
+          [
+            make_pathway(%{
+              pathway_id: "PW_2",
+              from_stop_id: "PLAT_1",
+              to_stop_id: "ENT_2",
+              is_bidirectional: false
+            })
+          ]
+        )
+
+      summaries = Connectivity.build_summaries(snapshot)
+
+      assert summaries.entrance_to_platform.status == :fail
+      assert Enum.map(summaries.entrance_to_platform.alerts, & &1.level) == [:warning, :error]
+    end
+
+    test "does not flag an entrance that riders can only enter through" do
+      snapshot =
+        exit_only_snapshot(
+          [make_stop(%{stop_id: "ENT_2", stop_name: "Entry Door", location_type: 2})],
+          [
+            make_pathway(%{
+              pathway_id: "PW_2",
+              from_stop_id: "ENT_2",
+              to_stop_id: "PLAT_1",
+              is_bidirectional: false
+            })
+          ]
+        )
+
+      summaries = Connectivity.build_summaries(snapshot)
+
+      assert entrance_row(summaries, "ENT_2").status == :full
+      assert summaries.entrance_to_platform.status == :passed
+
+      refute Enum.any?(
+               summaries.platform_to_exit.summary_rows,
+               &(&1.status in [:none, :exit_only])
+             )
     end
   end
 

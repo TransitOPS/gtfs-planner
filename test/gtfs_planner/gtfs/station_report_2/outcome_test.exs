@@ -31,6 +31,60 @@ defmodule GtfsPlanner.Gtfs.StationReport2.OutcomeTest do
     end
   end
 
+  describe "report_items/1 with an exit-only entrance" do
+    test "counts the entrance-to-platform check as a warning, not a failure" do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      level = level_fixture(organization.id, gtfs_version.id, %{level_id: "L1"})
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_1",
+          stop_name: "Station One",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      for {stop_id, location_type} <- [{"ENT_1", 2}, {"ENT_EXIT", 2}, {"PLAT_1", 0}] do
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: stop_id,
+          stop_name: stop_id,
+          location_type: location_type,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+      end
+
+      pathway_fixture(organization.id, gtfs_version.id, "ENT_1", "PLAT_1", %{
+        pathway_id: "PATH_IN",
+        pathway_mode: 1,
+        is_bidirectional: true
+      })
+
+      pathway_fixture(organization.id, gtfs_version.id, "PLAT_1", "ENT_EXIT", %{
+        pathway_id: "PATH_OUT",
+        pathway_mode: 7,
+        is_bidirectional: false
+      })
+
+      assert {:ok, snapshot} =
+               Gtfs.get_station_report_snapshot(
+                 organization.id,
+                 gtfs_version.id,
+                 station.stop_id
+               )
+
+      connectivity =
+        snapshot
+        |> Outcome.report_items()
+        |> Enum.find(&(&1.id == "entrance_to_platform_connectivity"))
+
+      assert connectivity.status == :warn
+      assert Outcome.counts([connectivity]) == %{passed: 0, warnings: 1, failed: 0, info: 0}
+    end
+  end
+
   describe "report_items/1" do
     test "returns the data quality, GPS and naming items in order for a real station snapshot" do
       organization = organization_fixture()

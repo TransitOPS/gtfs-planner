@@ -882,6 +882,114 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveConnectivityTest do
     end
   end
 
+  describe "Connectivity exit-only entrance" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+      level = level_fixture(organization.id, gtfs_version.id, %{level_id: "L_STREET"})
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "STATION_EXIT_ONLY",
+          stop_name: "Exit Only Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      for {stop_id, name, location_type} <- [
+            {"ENT_MAIN", "Main Entrance", 2},
+            {"ENT_GATED", "Gated Exit", 2},
+            {"PLAT_1", "Platform 1", 0}
+          ] do
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: stop_id,
+          stop_name: name,
+          location_type: location_type,
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+      end
+
+      pathway_fixture(organization.id, gtfs_version.id, "ENT_MAIN", "PLAT_1", %{
+        pathway_id: "PW_IN",
+        pathway_mode: 1,
+        is_bidirectional: true
+      })
+
+      pathway_fixture(organization.id, gtfs_version.id, "PLAT_1", "ENT_GATED", %{
+        pathway_id: "PW_EXIT_GATE",
+        pathway_mode: 7,
+        is_bidirectional: false
+      })
+
+      %{user: user, organization: organization, gtfs_version: gtfs_version, station: station}
+    end
+
+    test "labels the row Exit only and warns instead of failing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      assert has_element?(
+               view,
+               "[data-source-row='entrance_to_platform-ENT_GATED'] [data-reachability='exit_only']",
+               "Exit only"
+             )
+
+      assert has_element?(
+               view,
+               "[data-source-row='entrance_to_platform-ENT_MAIN'] [data-reachability='full']"
+             )
+
+      assert has_element?(
+               view,
+               "#connectivity-entrance_to_platform [data-dimension-status='warning']",
+               "Warning"
+             )
+
+      assert has_element?(
+               view,
+               "[data-check='entrance_to_platform_connectivity'] [data-status='warn']"
+             )
+    end
+
+    test "shows the exit-only notice as a status, not an urgent alert", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {view, _html} =
+        live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
+
+      assert has_element?(
+               view,
+               "#connectivity-entrance_to_platform-alert-0[role='status']",
+               "Gated Exit is exit-only: riders can leave through it but cannot enter."
+             )
+
+      refute has_element?(view, "#connectivity-entrance_to_platform [role='alert']")
+    end
+  end
+
   describe "Connectivity presentation contracts" do
     setup do
       organization = organization_fixture()
