@@ -273,6 +273,14 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
     |> List.flatten()
   end
 
+  # One range request through the access view's own form, submitted the way a
+  # reader submits it rather than by calling an event handler directly.
+  defp check_range(view, first, last) do
+    view
+    |> form("#range-form", %{"range" => %{"first_date" => first, "last_date" => last}})
+    |> render_submit()
+  end
+
   describe "the moment access route" do
     setup :editor_setup
 
@@ -969,6 +977,81 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
 
       refute has_element?(view, "#preview-form")
       refute has_element?(view, "#preview-result")
+    end
+  end
+
+  describe "the range check and the moment preview" do
+    setup :editor_setup
+
+    test "a preview refresh neither replaces the range nor clears its stale label", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      %{station: station} = access_station(organization, version)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, access_path(version, station.stop_id, @friday, "12:00:00"))
+      render_async(view, 5_000)
+
+      # The access view checks one service date by default. Two windows are
+      # active on the Friday: the daytime elevator window and the overnight one
+      # whose 22:00 start lands after midnight local, so the covered span reaches
+      # 2:00 AM on Saturday.
+      check_range(view, "2027-01-15", "2027-01-15")
+      render_async(view, 5_000)
+
+      assert has_element?(
+               view,
+               "#range-result",
+               "Service dates Jan 15, 2027 · Jan 15 12:00 AM to Jan 16 2:00 AM (America/New_York)"
+             )
+
+      assert has_element?(view, "#range-computed", "2 periods with lost connections")
+      refute has_element?(view, "#range-stale")
+
+      # A range the context refuses leaves the retained range under its own
+      # stale label.
+      check_range(view, "2027-01-16", "2027-01-15")
+      render_async(view, 5_000)
+
+      assert has_element?(
+               view,
+               "#range-invalid",
+               "Choose a last date on or after the first date."
+             )
+
+      assert has_element?(view, "#range-stale", "Results are from an earlier check")
+
+      # Refreshing the moment is the preview's own request: it labels the
+      # retained moment under `#analysis-stale` and must not touch the range's
+      # label, its result or its refused entries.
+      render_patch(view, access_path(version, station.stop_id, @friday, "16:00:00"))
+
+      assert has_element?(view, "#analysis-stale", "Results are from an earlier check")
+      assert has_element?(view, "#range-stale", "Results are from an earlier check")
+
+      assert has_element?(
+               view,
+               "#range-stale-detail",
+               "showing service dates Jan 15, 2027"
+             )
+
+      assert has_element?(view, "#range-result", "Service dates Jan 15, 2027")
+
+      # The preview completes and its own stale label goes; the range's stays,
+      # because no range request replaced it.
+      render_async(view, 5_000)
+
+      refute has_element?(view, "#analysis-stale")
+      assert has_element?(view, "#range-stale", "Results are from an earlier check")
+      assert has_element?(view, "#range-result", "Service dates Jan 15, 2027")
+
+      # Both surfaces are still the same station's: the moment preview answers
+      # for 16:00 while the range still names its own Jan 15 span.
+      assert view |> element("#preview-time") |> render() =~ "16:00:00"
+      assert has_element?(view, "#preview-result-title", "No connection lost at this time")
     end
   end
 

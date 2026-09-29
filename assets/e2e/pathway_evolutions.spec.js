@@ -3755,3 +3755,388 @@ test.describe("timeline", () => {
     });
   });
 });
+
+// Step 28 (EV-8): the bounded range check under the moment preview. The seeded
+// station carries a daily 09:00-15:00 elevator closure, so whatever day the
+// suite runs on the range reports the step-free loss that window causes on each
+// service date it covers, with the exact local window, the closure that caused
+// it and a Show at link to the backend's own preview target.
+test.describe("range", () => {
+  // The zone the seeded version's agency runs in, so the dates the page
+  // resolved are named the way the page names them without depending on the
+  // runner's own timezone.
+  const AGENCY_TZ = "America/New_York";
+
+  async function agencyToday(page) {
+    return page.evaluate(
+      (timeZone) =>
+        new Intl.DateTimeFormat("en-CA", { timeZone }).format(new Date()),
+      AGENCY_TZ,
+    );
+  }
+
+  function shiftDays(iso, days) {
+    const [year, month, day] = iso.split("-").map(Number);
+
+    return new Date(Date.UTC(year, month - 1, day) + days * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+  }
+
+  // The page's own short span label for two dates: one date, a same-month
+  // range, a same-year range, or both years.
+  function shortRange(first, last) {
+    const [fy, fm, fd] = first.split("-").map(Number);
+    const [ly, lm, ld] = last.split("-").map(Number);
+    const month = (m) =>
+      new Intl.DateTimeFormat("en-US", { timeZone: "UTC", month: "short" })
+        .format(new Date(Date.UTC(2026, m - 1, 1)));
+
+    if (first === last) return `${month(fm)} ${fd}, ${fy}`;
+    if (fy !== ly) return `${month(fm)} ${fd}, ${fy}–${month(lm)} ${ld}, ${ly}`;
+    if (fm !== lm) return `${month(fm)} ${fd}–${month(lm)} ${ld}, ${ly}`;
+
+    return `${month(fm)} ${fd}–${ld}, ${ly}`;
+  }
+
+  async function checkRange(page, first, last) {
+    await page.fill("#range-first", first);
+    await page.fill("#range-last", last);
+    await page.locator("#check-range").click();
+  }
+
+  // The rows the wide layout shows. When the report groups, a row carries the
+  // number of days it covers; in the every-period view each row is one period.
+  async function periodCounts(page) {
+    return page
+      .locator("#range-periods-table tbody tr")
+      .evaluateAll((nodes) => nodes.map((node) => Number(node.dataset.periodCount)));
+  }
+
+  test.describe("the range check", () => {
+    test.beforeEach(async ({ page }) => {
+      await logIn(page);
+    });
+
+    test("checks the selected dates and lists every period the backend reported", async ({
+      page,
+    }) => {
+      const versionId = await seededVersionId(page);
+
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      // The form opens on the selected service date for both endpoints, and
+      // nothing has been checked yet.
+      const today = await agencyToday(page);
+      const tomorrow = shiftDays(today, 1);
+
+      await expect(page.locator("#range-first")).toHaveValue(today);
+      await expect(page.locator("#range-last")).toHaveValue(today);
+      await expect(page.locator("#range-empty")).toContainText("No range checked yet.");
+      await expect(page.locator("#range-result")).toHaveCount(0);
+
+      await checkRange(page, today, tomorrow);
+
+      // The summary names the exact service dates, the covered local span and
+      // the zone the service times count from.
+      await expect(page.locator("#range-result")).toContainText(
+        `Service dates ${shortRange(today, tomorrow)}`,
+      );
+      await expect(page.locator("#range-result")).toContainText("(America/New_York)");
+      await expect(page.locator("#range-computed")).toContainText(
+        "with lost connections · Checked ",
+      );
+      await expect(page.locator("#range-empty")).toHaveCount(0);
+      await expect(page.locator("#range-no-loss")).toHaveCount(0);
+      await expect(page.locator("#range-stale")).toHaveCount(0);
+
+      // The elevator's 09:00-15:00 window loses the step-free connection on
+      // every service date the range covers, so at least one period per date.
+      const counts = await periodCounts(page);
+      const periods = counts.reduce((total, count) => total + count, 0);
+
+      expect(counts.length).toBeGreaterThan(0);
+      expect(periods).toBeGreaterThanOrEqual(2);
+
+      const first = page.locator("#range-periods-table tbody tr").first();
+
+      await expect(first.locator("[id$='-when']")).toHaveText("9:00 AM – 3:00 PM");
+      await expect(first).toContainText("No step-free route to Platform 1");
+      await expect(first).toContainText(
+        "Step-free to platform · North entrance ↔ Platform 1",
+      );
+      await expect(first).toContainText("BROWSER_EVO/PW LIFT 1");
+      await expect(first).toContainText("09:00–15:00");
+      await expect(first.locator("[id$='-lost']")).not.toContainText("Walking");
+
+      // The Show at link names the pair the backend chose for the period, and
+      // following it lands the moment preview on that same instant.
+      const showAt = first.locator("a[id$='-show'], a[id*='range-show']").first();
+      const targetDate = await showAt.getAttribute("data-show-date");
+      const targetTime = await showAt.getAttribute("data-show-time");
+
+      expect(targetDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(targetTime).toBe("09:00");
+
+      await showAt.click();
+
+      await page.waitForURL(
+        (url) =>
+          url.pathname ===
+            `/gtfs/${versionId}/stops/${STATION}/evolutions/access` &&
+          url.searchParams.get("date") === targetDate &&
+          url.searchParams.get("time") === "09:00:00",
+      );
+
+      await expect(page.locator("#preview-moment")).toContainText(
+        "09:00 service time",
+      );
+
+      // The range is an earlier check of a different span now: it stays on
+      // screen under its own stale label rather than being replaced by the
+      // moment the preview just answered for.
+      await expect(page.locator("#range-stale")).toContainText(
+        "Results are from an earlier check",
+      );
+      await expect(page.locator("#range-stale-detail")).toContainText(
+        `service dates ${shortRange(today, tomorrow)}`,
+      );
+      await expect(page.locator("#range-result")).toContainText(
+        `Service dates ${shortRange(today, tomorrow)}`,
+      );
+
+      // List every period restores exactly the periods the backend returned:
+      // the grouped rows' own day counts add up to the every-period rows.
+      if ((await page.locator("#range-view").count()) > 0) {
+        const groupedRows = await counts.length;
+
+        await page.locator("#range-view-all").click();
+        await expect(page.locator("#range-view-all")).toHaveAttribute(
+          "aria-pressed",
+          "true",
+        );
+        await expect(page.locator("#range-periods-table tbody tr")).toHaveCount(
+          periods,
+        );
+
+        await page.locator("#range-view-grouped").click();
+        await expect(page.locator("#range-periods-table tbody tr")).toHaveCount(
+          groupedRows,
+        );
+        await expect(page.locator("#range-view-grouped")).toHaveAttribute(
+          "aria-pressed",
+          "true",
+        );
+      }
+    });
+
+    test("a refused span is inline invalid and keeps the earlier result", async ({
+      page,
+    }) => {
+      const versionId = await seededVersionId(page);
+
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      const today = await agencyToday(page);
+      const tomorrow = shiftDays(today, 1);
+
+      await checkRange(page, today, today);
+      await expect(page.locator("#range-result")).toContainText(
+        `Service dates ${shortRange(today, today)}`,
+      );
+      await expect(page.locator("#range-stale")).toHaveCount(0);
+
+      // A last date before the first: the message names the field and the
+      // earlier range stays under its stale label.
+      await checkRange(page, tomorrow, today);
+
+      await expect(page.locator("#range-invalid")).toContainText(
+        "Choose a last date on or after the first date.",
+      );
+      await expect(page.locator("#range-last")).toHaveAttribute(
+        "aria-invalid",
+        "true",
+      );
+      await expect(page.locator("#range-stale")).toContainText(
+        "Results are from an earlier check",
+      );
+      await expect(page.locator("#range-result")).toContainText(
+        `Service dates ${shortRange(today, today)}`,
+      );
+
+      // A span over 31 service days is the other refusal the context owns.
+      await checkRange(page, today, shiftDays(today, 31));
+
+      await expect(page.locator("#range-invalid")).toContainText(
+        "Choose 31 days or fewer.",
+      );
+      await expect(page.locator("#range-result")).toContainText(
+        `Service dates ${shortRange(today, today)}`,
+      );
+
+      // A valid range recovers and both the refusal and the stale label go.
+      await checkRange(page, today, today);
+
+      await expect(page.locator("#range-result")).toContainText(
+        `Service dates ${shortRange(today, today)}`,
+      );
+      await expect(page.locator("#range-invalid")).toHaveCount(0);
+      await expect(page.locator("#range-stale")).toHaveCount(0);
+    });
+
+    test("stays keyboard operable and inside the viewport at phone widths", async ({
+      page,
+    }) => {
+      const versionId = await seededVersionId(page);
+
+      await page.setViewportSize(MOBILE);
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      const today = await agencyToday(page);
+
+      // The form is a real form: the last date submits it on Enter.
+      await page.locator("#range-first").fill(today);
+      await page.locator("#range-last").fill(today);
+      await page.locator("#range-last").press("Enter");
+
+      await expect(page.locator("#range-result")).toContainText(
+        `Service dates ${shortRange(today, today)}`,
+      );
+
+      // Below `md` the rows are the list form, and every control keeps the
+      // 44px target floor.
+      await expect(page.locator("#range-periods-list > li").first()).toBeVisible();
+      await expect(page.locator("#range-periods-table")).toBeHidden();
+
+      for (const selector of ["#check-range", "#range-periods-list a[id*='range-show']"]) {
+        const box = await page.locator(selector).first().boundingBox();
+        if (box) expect(box.height).toBeGreaterThanOrEqual(44);
+      }
+
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      // At 320 the page still has no horizontal overflow and no row pushes its
+      // own content past its box.
+      await page.setViewportSize(NARROW);
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+      await checkRange(page, today, today);
+
+      await expect(page.locator("#range-result")).toBeVisible();
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      const rows = page.locator("#range-periods-list > li");
+      const rowOverflows = await rows.evaluateAll((nodes) =>
+        nodes.map((node) => node.scrollWidth - node.clientWidth),
+      );
+
+      for (const overflow of rowOverflows) {
+        expect(overflow).toBeLessThanOrEqual(1);
+      }
+    });
+  });
+
+  test.describe("rendered result", () => {
+    test.beforeEach(async ({ page }) => {
+      await logIn(page);
+    });
+
+    test("matches the reference range hierarchy with production fonts and tokens", async ({
+      page,
+    }, testInfo) => {
+      const versionId = await seededVersionId(page);
+      const today = await agencyToday(page);
+
+      await page.setViewportSize(DESKTOP);
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+      await checkRange(page, today, today);
+
+      await expect(page.locator("#range-title")).toBeVisible();
+      await expect(page.locator("#range-title")).toHaveCSS("font-family", /Gabarito/);
+      await expect(page.locator("#range-result")).toHaveCSS("font-family", /Figtree/);
+      await expect(page.locator("#range-periods-table tbody tr").first()).toBeVisible();
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-028-production-desktop.png"),
+        fullPage: true,
+      });
+
+      // Each width re-enters the route so the state is the route's own, not a
+      // client-side reflow of the desktop render.
+      await page.setViewportSize(MOBILE);
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+      await checkRange(page, today, today);
+
+      await expect(page.locator("#range-periods-list > li").first()).toBeVisible();
+      await expect(page.locator("#range-periods-table")).toBeHidden();
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-028-production-mobile.png"),
+        fullPage: true,
+      });
+
+      await page.setViewportSize(NARROW);
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+      await checkRange(page, today, today);
+
+      await expect(page.locator("#range-result")).toBeVisible();
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-028-production-320.png"),
+        fullPage: true,
+      });
+    });
+
+    // The reference is a self-contained file in the gitignored `.specs/`
+    // workspace, so this case skips (rather than fails) in a checkout without it.
+    test.describe("reference capture", () => {
+      test.skip(() => !fs.existsSync(ACCESS_REFERENCE_PATH), "reference file not present");
+
+      test("captures the reference range states at the same viewports", async ({
+        page,
+      }, testInfo) => {
+        await page.setViewportSize(DESKTOP);
+
+        for (const [state, name] of [
+          ["ideal", "ideal"],
+          ["range-invalid", "invalid"],
+          ["timeout", "timeout"],
+          ["range-no-loss", "no-loss"],
+        ]) {
+          await page.goto(`${pathToFileURL(ACCESS_REFERENCE_PATH).href}?state=${state}`);
+          await expect(page.locator("#range-section")).toBeVisible();
+          await page.locator("#range-section").scrollIntoViewIfNeeded();
+
+          await page.screenshot({
+            path: capturePath(testInfo, `step-028-reference-${name}-desktop.png`),
+            fullPage: true,
+          });
+        }
+
+        await page.setViewportSize(MOBILE);
+
+        for (const [state, name] of [
+          ["ideal", "ideal"],
+          ["range-invalid", "invalid"],
+        ]) {
+          await page.goto(`${pathToFileURL(ACCESS_REFERENCE_PATH).href}?state=${state}`);
+          await expect(page.locator("#range-section")).toBeVisible();
+
+          await page.screenshot({
+            path: capturePath(testInfo, `step-028-reference-${name}-mobile.png`),
+            fullPage: true,
+          });
+        }
+      });
+    });
+  });
+});
