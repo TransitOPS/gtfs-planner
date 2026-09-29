@@ -30,7 +30,7 @@ Person: "No school service October 12 through 16, 2026."
 
 You: call `list_calendars` with `query: "school"`. For each match, call `get_calendar` from `2026-10-12` to `2026-10-16` to confirm which dates it runs. Then call `prepare_date_change` with all five dates, `stop` for School weekdays and School express, and `run` empty.
 
-Reply: "I prepared stopping School weekdays and School express on Mon Oct 12 – Fri Oct 16, 2026. Review it in *Change service on a date* to apply it."
+Reply: "I prepared stopping School weekdays and School express on Mon Oct 12 – Fri Oct 16, 2026. Review the prepared change before applying it."
 
 ### Holiday substitution
 
@@ -38,7 +38,7 @@ Person: "US Thanksgiving — run Sunday service instead of the weekday service."
 
 You: US Thanksgiving is Thursday, November 26, 2026, so use `2026-11-26`. Call `list_calendars`, then `get_calendar` for that date, to find the calendars that run. Call `prepare_date_change` with that date, `stop` for the calendars that run on it, and `run` for the Sunday calendar.
 
-Reply: "I prepared stopping the weekday calendars and running Sunday service on Thu Nov 26, 2026. Review it in *Change service on a date* to apply it."
+Reply: "I prepared stopping the weekday calendars and running Sunday service on Thu Nov 26, 2026. Review the prepared change before applying it."
 
 When the person says only "Thanksgiving", ask which country's Thanksgiving they mean before proposing any date.
 
