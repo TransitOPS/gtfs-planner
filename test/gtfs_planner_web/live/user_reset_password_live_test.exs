@@ -33,8 +33,8 @@ defmodule GtfsPlannerWeb.UserResetPasswordLiveTest do
     } do
       {:ok, view, _html} = live(conn, ~p"/users/reset_password/#{token}")
 
-      assert page_title(view) == "Set new password · GTFS Planner · Pathways Studio"
-      assert has_element?(view, "h1", "Set new password")
+      assert page_title(view) == "Choose a new password · GTFS Planner · Pathways Studio"
+      assert has_element?(view, "h1", "Choose a new password")
 
       h1s =
         view
@@ -55,34 +55,40 @@ defmodule GtfsPlannerWeb.UserResetPasswordLiveTest do
 
       assert has_element?(view, ~s(#reset_password_form[class~="phx-submit-loading:opacity-60"]))
 
+      # Server validation is the one validation surface: the browser's own
+      # bubble would replace the inline message and skip the focus event.
+      assert has_element?(view, "#reset_password_form[novalidate]")
+
       assert has_element?(
                view,
-               ~s(#reset-password-new-password[name="user[password]"][type="password"][required][phx-debounce="blur"][phx-blur="validate"][aria-describedby="reset-password-new-password-help"])
+               ~s(#reset-password-new-password[name="user[password]"][type="password"][autocomplete="new-password"][required][phx-debounce="blur"][phx-blur="validate"][aria-describedby="reset-password-new-password-help"])
              )
 
       assert has_element?(
                view,
                "#reset-password-new-password-help",
-               "Use 12–72 characters."
+               "At least 12 characters. A short phrase of a few words works well."
              )
 
       assert has_element?(
                view,
-               ~s(#reset-password-confirmation[name="user[password_confirmation]"][type="password"][required][phx-debounce="blur"][phx-blur="validate"][aria-describedby="reset-password-confirmation-help"])
+               ~s(#reset-password-confirmation[name="user[password_confirmation]"][type="password"][autocomplete="new-password"][required][phx-debounce="blur"][phx-blur="validate"])
+             )
+
+      assert has_element?(view, "#reset-password-submit", "Save new password")
+
+      assert has_element?(
+               view,
+               ~s(#reset-password-submit[phx-disable-with="Saving password…"])
              )
 
       assert has_element?(
                view,
-               "#reset-password-confirmation-help",
-               "Must match the password above."
+               "#reset_password_form",
+               "Saving signs this account out on every device."
              )
 
-      assert has_element?(view, "#reset-password-submit", "Reset password")
-
-      assert has_element?(
-               view,
-               ~s(#reset-password-submit[phx-disable-with="Resetting password…"])
-             )
+      refute has_element?(view, "#reset-password-banner")
 
       refute has_element?(
                view,
@@ -91,7 +97,7 @@ defmodule GtfsPlannerWeb.UserResetPasswordLiveTest do
 
       assert has_element?(
                view,
-               ~s(#reset_password_form a[href="/users/log_in"]),
+               ~s(#reset-password-page a[href="/users/log_in"]),
                "Back to log in"
              )
 
@@ -148,7 +154,7 @@ defmodule GtfsPlannerWeb.UserResetPasswordLiveTest do
       assert has_element?(
                view,
                "#reset-password-new-password-error",
-               "should be at least 12 character(s)"
+               "Use at least 12 characters."
              )
 
       assert has_element?(view, ~s(#reset-password-confirmation[aria-invalid="false"]))
@@ -178,10 +184,24 @@ defmodule GtfsPlannerWeb.UserResetPasswordLiveTest do
       assert has_element?(
                view,
                "#reset-password-confirmation-error",
-               "does not match password"
+               "The two passwords don't match. Type the same one in both fields."
              )
 
       refute_push_event(view, "focus_form_error", @focus_payload)
+    end
+
+    test "blur with a password over 72 characters states the limit", %{conn: conn, token: token} do
+      {:ok, view, _html} = live(conn, ~p"/users/reset_password/#{token}")
+
+      view
+      |> element("#reset-password-new-password")
+      |> render_blur(%{"user" => %{"password" => String.duplicate("a", 73)}})
+
+      assert has_element?(
+               view,
+               "#reset-password-new-password-error",
+               "Use 72 characters or fewer."
+             )
     end
 
     test "blur with a valid pair stays clean", %{conn: conn, token: token} do
@@ -238,7 +258,7 @@ defmodule GtfsPlannerWeb.UserResetPasswordLiveTest do
       assert has_element?(
                view,
                "#reset-password-new-password-error",
-               "should be at least 12 character(s)"
+               "Use at least 12 characters."
              )
 
       assert has_element?(view, ~s(#reset-password-confirmation[aria-invalid="true"]))
@@ -246,7 +266,13 @@ defmodule GtfsPlannerWeb.UserResetPasswordLiveTest do
       assert has_element?(
                view,
                "#reset-password-confirmation-error",
-               "does not match password"
+               "The two passwords don't match. Type the same one in both fields."
+             )
+
+      assert has_element?(
+               view,
+               ~s(#reset-password-banner[role="alert"]),
+               "We couldn't save your new password"
              )
 
       refute render(view) =~ "secret-1"
@@ -273,6 +299,17 @@ defmodule GtfsPlannerWeb.UserResetPasswordLiveTest do
 
       refute has_element?(view, "#flash-info")
       refute has_element?(view, "#flash-error")
+    end
+
+    test "a blank password asks for one", %{conn: conn, token: token} do
+      {:ok, view, _html} = live(conn, ~p"/users/reset_password/#{token}")
+
+      view
+      |> element("#reset_password_form")
+      |> render_submit(%{"user" => %{"password" => "", "password_confirmation" => ""}})
+
+      assert has_element?(view, "#reset-password-new-password-error", "Enter a new password.")
+      assert_push_event(view, "focus_form_error", @focus_payload)
     end
 
     test "correcting the secrets after a failed submit clears the errors", %{

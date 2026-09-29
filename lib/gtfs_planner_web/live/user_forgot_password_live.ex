@@ -1,6 +1,8 @@
 defmodule GtfsPlannerWeb.UserForgotPasswordLive do
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.AuthComponents
+
   require Logger
 
   alias GtfsPlanner.Accounts
@@ -14,50 +16,48 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLive do
     ~H"""
     <Layouts.auth flash={@flash}>
       <div id="reset-password-request-page" phx-hook="FormErrorFocus">
-        <.header class="text-center">
-          Reset password
-          <:subtitle>We'll send a password reset link to your inbox</:subtitle>
-        </.header>
+        <.auth_title id="reset-password-request-title">
+          Reset your password
+          <:lede>Enter the email you log in with. We'll send a link to choose a new one.</:lede>
+        </.auth_title>
 
-        <.simple_form
+        <.form
           for={@form}
           id="reset_password_form"
           phx-change="validate"
           phx-submit="send_instructions"
-          class="phx-submit-loading:opacity-60"
+          novalidate
+          class="auth-form mt-6 phx-submit-loading:opacity-60"
         >
           <.input
             field={@form[:email]}
             id="reset-password-email"
             type="email"
             label="Email"
-            placeholder="your@email.com"
+            errors={email_errors(@form[:email])}
+            autocomplete="username"
+            autocapitalize="none"
+            spellcheck="false"
             phx-debounce="blur"
             phx-blur="validate"
             required
           />
 
-          <:actions>
-            <.link
-              navigate={~p"/users/log_in"}
-              class="text-sm font-semibold link link-hover text-base-content/70"
-            >
-              Back to log in
-            </.link>
-          </:actions>
+          <.auth_submit
+            id="reset-password-request-submit"
+            phx-disable-with="Sending reset link…"
+            class="mt-5"
+          >
+            Send reset link
+          </.auth_submit>
+        </.form>
 
-          <:actions>
-            <.button
-              id="reset-password-request-submit"
-              type="submit"
-              phx-disable-with="Sending reset link…"
-              variant="primary"
-            >
-              Send reset link
-            </.button>
-          </:actions>
-        </.simple_form>
+        <p class="-mb-2.5 mt-3">
+          <.auth_link navigate={~p"/users/log_in"}>Back to log in</.auth_link>
+        </p>
       </div>
+
+      <:footer>No account? Ask your organization administrator for an invitation.</:footer>
     </Layouts.auth>
     """
   end
@@ -103,6 +103,22 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLive do
          socket
          |> assign(form: to_form(changeset, as: :user))
          |> push_event("focus_form_error", %{form_id: "reset_password_form", fallback_id: nil})}
+    end
+  end
+
+  # Plain-language versions of the request form's changeset messages, chosen by
+  # the rule that failed rather than by its text. Errors show only once the
+  # field has been used, as `<.input>` does by default.
+  defp email_errors(field) do
+    if Phoenix.Component.used_input?(field), do: Enum.map(field.errors, &email_error/1), else: []
+  end
+
+  defp email_error({_message, opts} = error) do
+    case {opts[:validation], opts[:kind]} do
+      {:required, _kind} -> "Enter the email you log in with."
+      {:format, _kind} -> "Include an @ and no spaces, like name@agency.example."
+      {:length, :max} -> "Use an address of #{opts[:count]} characters or fewer."
+      _other -> translate_error(error)
     end
   end
 

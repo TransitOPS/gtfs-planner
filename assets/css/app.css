@@ -1085,6 +1085,85 @@ body {
   color: var(--color-warning-fg);
 }
 
+/* ── Signed-out form fields ──
+   The password-recovery pages keep `<.input>`, the app's one input
+   implementation, and restyle its daisyUI `fieldset` / `label` / `input`
+   structure inside `.auth-form` to the design system's signed-out field: a
+   14px/600 label over a 44px control, 13px help, and an icon-plus-sentence
+   error. These are the measurements login's native inputs use, so the two read
+   as one family. The rules are unlayered, so they win over daisyUI without
+   `!important`, and every other form keeps its stock look. */
+.auth-form .fieldset {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+}
+
+.auth-form .fieldset > label {
+  display: grid;
+  gap: 6px;
+}
+
+.auth-form .fieldset .label {
+  display: block;
+  height: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-strong);
+}
+
+.auth-form .fieldset .input {
+  width: 100%;
+  height: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--color-control);
+  border-radius: var(--radius-control);
+  background: var(--color-base-100);
+  box-shadow: none;
+  color: var(--color-strong);
+  font-size: 16px;
+}
+
+.auth-form .fieldset .input:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 0;
+  box-shadow: none;
+}
+
+/* An invalid control takes a 2px error-line border rather than a colour change
+   alone, so the state survives greyscale; the padding shrinks by the extra
+   pixel so the text does not move. */
+.auth-form .fieldset input[aria-invalid="true"] {
+  border: 2px solid var(--color-error-line);
+  padding: 0 11px;
+}
+
+.auth-form .fieldset > p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-muted);
+}
+
+.auth-form .fieldset > p[id$="-error"] {
+  color: var(--color-error-fg);
+}
+
+.auth-form .fieldset > p[id$="-error"] > span {
+  align-items: flex-start;
+}
+
+.auth-form .fieldset > p[id$="-error"] [class*="hero-"] {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+}
+
 /* ── Transfer rules list ── */
 
 /* The selected transfer rule takes the reference's own treatment: the theme's
