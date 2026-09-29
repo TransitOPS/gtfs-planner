@@ -173,7 +173,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponentsTest do
       assert ids(d, "#new-route-names-error") == ["new-route-names-error"]
 
       assert text(d, "#new-route-names-error") =~
-               "at least one of route_short_name or route_long_name must be present"
+               "Enter a route number, a route name, or both."
 
       assert ids(d, "#new-route-short-error") == []
     end
@@ -248,7 +248,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponentsTest do
 
       assert attrs(d, "#new-route-mode-other", "aria-invalid") == ["true"]
       assert attrs(d, "#new-route-mode-other", "aria-describedby") == ["new-route-mode-error"]
-      assert text(d, "#new-route-mode-error") == "can't be blank"
+      assert text(d, "#new-route-mode-error") == "Choose a mode."
     end
   end
 
@@ -493,7 +493,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponentsTest do
                "new-route-color-error new-route-color-help"
              ]
 
-      assert text(d, "#new-route-color-error") =~ "must be a valid 6-character hex color code"
+      assert text(d, "#new-route-color-error") =~ "Enter six hex digits for the route color"
       assert attrs(d, "#new-route-text", "aria-invalid") == ["false"]
     end
 

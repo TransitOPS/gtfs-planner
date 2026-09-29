@@ -74,9 +74,7 @@ defmodule GtfsPlanner.Gtfs.Routes.ValidationTest do
 
       refute changeset.valid?
 
-      assert "at least one of route_short_name or route_long_name must be present" in errors_on(
-               changeset
-             ).route_short_name
+      assert "Enter a route number, a route name, or both." in errors_on(changeset).route_short_name
 
       assert {:error, _changeset} = Repo.insert(changeset)
     end
@@ -99,9 +97,7 @@ defmodule GtfsPlanner.Gtfs.Routes.ValidationTest do
 
       refute changeset.valid?
 
-      assert "at least one of route_short_name or route_long_name must be present" in errors_on(
-               changeset
-             ).route_short_name
+      assert "Enter a route number, a route name, or both." in errors_on(changeset).route_short_name
 
       assert {:error, _changeset} = Repo.update(changeset)
 
@@ -150,9 +146,7 @@ defmodule GtfsPlanner.Gtfs.Routes.ValidationTest do
 
       refute data_held.valid?
 
-      assert "at least one of route_short_name or route_long_name must be present" in errors_on(
-               data_held
-             ).route_short_name
+      assert "Enter a route number, a route name, or both." in errors_on(data_held).route_short_name
 
       submitted =
         %Route{organization_id: organization.id, gtfs_version_id: version.id}
@@ -183,7 +177,7 @@ defmodule GtfsPlanner.Gtfs.Routes.ValidationTest do
       changeset = Route.editor_changeset(route, %{route_type: 99}, :edit)
 
       refute changeset.valid?
-      assert "is invalid" in errors_on(changeset).route_type
+      assert "Choose a mode from the list." in errors_on(changeset).route_type
     end
 
     test "rejects boarding values outside 0..3", %{route: route} do
@@ -197,24 +191,26 @@ defmodule GtfsPlanner.Gtfs.Routes.ValidationTest do
       negative = Route.editor_changeset(route, %{route_sort_order: -1}, :edit)
 
       refute negative.valid?
-      assert "must be greater than or equal to 0" in errors_on(negative).route_sort_order
+      assert "Enter a whole number, 0 or higher." in errors_on(negative).route_sort_order
 
       non_integer = Route.editor_changeset(route, %{route_sort_order: "first"}, :edit)
 
       refute non_integer.valid?
-      assert "is invalid" in errors_on(non_integer).route_sort_order
+      assert "Enter a whole number, 0 or higher." in errors_on(non_integer).route_sort_order
     end
 
     test "rejects URLs that are not HTTP(S) with a host", %{route: route} do
       ftp = Route.editor_changeset(route, %{route_url: "ftp://example.com/32"}, :edit)
 
       refute ftp.valid?
-      assert "must be an http(s) URL with a nonempty host" in errors_on(ftp).route_url
+
+      assert "Enter a full web address, starting with https:// or http://." in errors_on(ftp).route_url
 
       bare = Route.editor_changeset(route, %{route_url: "example.com/32"}, :edit)
 
       refute bare.valid?
-      assert "must be an http(s) URL with a nonempty host" in errors_on(bare).route_url
+
+      assert "Enter a full web address, starting with https:// or http://." in errors_on(bare).route_url
 
       clearing = Route.editor_changeset(route, %{route_url: ""}, :edit)
 
@@ -428,13 +424,15 @@ defmodule GtfsPlanner.Gtfs.Routes.ValidationTest do
       background = Route.editor_changeset(route, %{route_color: "12345"}, :edit)
 
       refute background.valid?
-      assert "must be a valid 6-character hex color code" in errors_on(background).route_color
+
+      assert "Enter six hex digits for the route color, like 1F5FBF." in errors_on(background).route_color
 
       text =
         Route.editor_changeset(route, %{route_text_color: "zzzzzz", text_mode: "custom"}, :edit)
 
       refute text.valid?
-      assert "must be a valid 6-character hex color code" in errors_on(text).route_text_color
+
+      assert "Enter six hex digits for the text color, like FFFFFF." in errors_on(text).route_text_color
 
       assert {:error, _changeset} = Repo.update(background)
 
