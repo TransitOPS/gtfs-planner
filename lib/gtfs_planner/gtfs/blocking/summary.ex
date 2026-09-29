@@ -27,12 +27,20 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
   @status_rank %{error: 0, warning: 1, notice: 2, ok: 3}
 
   # The code reported for the worst severity is the first one in this order
-  # (Copy: Overlap, Short layover, In-seat row, Empty move, Frequency, Time
-  # missing, Can't confirm).
+  # (Copy: the errors Overlap, Can't reach and Wrong type, then the warnings
+  # Short layover, In-seat row, Too long, No operator change, Route switch and
+  # Garage differs, then the notices Empty move, Frequency, Time missing and
+  # Can't confirm).
   @status_order [
     :overlap,
+    :cannot_reach,
+    :type_mismatch,
     :short_layover,
     :in_seat_stale,
+    :too_long,
+    :no_relief_opportunity,
+    :interlining_not_allowed,
+    :block_attributes_conflict,
     :repositions,
     :frequency_trip,
     :unplottable,

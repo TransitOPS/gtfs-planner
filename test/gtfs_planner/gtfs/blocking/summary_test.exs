@@ -16,7 +16,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
   - Natural order is `2 < 10 < 101 < A1`; status sorting puts errors first and
     breaks ties by natural block ID; `nil` values sort last in both directions.
   - A block's status is the worst severity of its own findings with the first code
-    of that severity in the fixed order, and hours are one decimal.
+    of that severity in the fixed order, and hours are one decimal. AC-16's order
+    puts the errors Overlap, Can't reach and Wrong type ahead of the warnings
+    Short layover, In-seat row, Too long, No operator change, Route switch and
+    Garage differs, and puts the notices last.
 
   The focused gate command is deferred to branch review:
   `mix test test/gtfs_planner/gtfs/blocking/summary_test.exs`. Every expected value
@@ -158,6 +161,64 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
         ])
 
       assert {summary.status, summary.status_code} == {:ok, nil}
+    end
+
+    # AC-16 and Copy: the errors are Overlap, Can't reach and Wrong type; the
+    # warnings follow in Copy order (Short layover, In-seat row, Too long, No
+    # operator change, Route switch, Garage differs); the notices come last.
+    test "orders the two errors of R9 after Overlap and before any warning" do
+      assert status([finding(:type_mismatch, :error), finding(:cannot_reach, :error)]) ==
+               {:error, :cannot_reach}
+
+      assert status([finding(:type_mismatch, :error), finding(:overlap, :error)]) ==
+               {:error, :overlap}
+
+      assert status([finding(:cannot_reach, :error), finding(:too_long, :warning)]) ==
+               {:error, :cannot_reach}
+    end
+
+    test "orders the warnings in Copy order" do
+      warnings = [
+        finding(:block_attributes_conflict, :warning),
+        finding(:interlining_not_allowed, :warning),
+        finding(:no_relief_opportunity, :warning),
+        finding(:too_long, :warning)
+      ]
+
+      assert status(warnings ++ [finding(:in_seat_stale, :warning)]) ==
+               {:warning, :in_seat_stale}
+
+      assert status(warnings ++ [finding(:short_layover, :warning)]) ==
+               {:warning, :short_layover}
+
+      assert status([
+               finding(:block_attributes_conflict, :warning),
+               finding(:too_long, :warning)
+             ]) == {:warning, :too_long}
+
+      assert status([
+               finding(:interlining_not_allowed, :warning),
+               finding(:no_relief_opportunity, :warning)
+             ]) == {:warning, :no_relief_opportunity}
+
+      assert status([
+               finding(:block_attributes_conflict, :warning),
+               finding(:interlining_not_allowed, :warning)
+             ]) == {:warning, :interlining_not_allowed}
+
+      assert status([
+               finding(:block_attributes_conflict, :warning),
+               finding(:repositions, :notice)
+             ]) == {:warning, :block_attributes_conflict}
+    end
+
+    test "reports a block with only a Garage differs conflict as a warning" do
+      summary =
+        Summary.block_summary("7", [trip("a", at(6, 0), at(8, 0))], [
+          finding(:block_attributes_conflict, :warning)
+        ])
+
+      assert {summary.status, summary.status_code} == {:warning, :block_attributes_conflict}
     end
   end
 
