@@ -1474,15 +1474,34 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Renders the block drawer: the block's identity, its trip count and span, each
-  trip of the block in the block's own order with the gap text between
-  consecutive trips and the trip's own findings, then the block's three actions.
+  Renders the block drawer as the vehicle's day: the day's summary line, the
+  block's problems as callouts, a Time · Activity · Details table of the vehicle's
+  whole day, then the block's three actions (AC-36).
 
-  The gap note prints the same sentence as the gap drawer from the block's own
-  `gaps/1` pairs, and it is the only way to open that drawer for an overlapping
-  pair, whose timeline bar is suppressed; every gap note keeps the block in the
-  URL, so both drawers offer “Back to block <id>”. “Inspect” opens the trip drawer
-  with the block kept, which is what gives that drawer its back link (AC-25).
+  The summary line is the day's own figures — the trip count, the *platform* span
+  from `Movements.build/3` (so a pull-out before midnight and a pull-back after it
+  are inside the range), the hours out of the garage and the day's two kilometre
+  totals. The `(est.)` mark follows the block's own legs rather than the day's: an
+  entered driving time is a human's real route, so a block whose every leg is
+  entered carries no mark (AC-7).
+
+  The table's rows come from the block's `Movements.build/3` result (R2, R3,
+  INV-8) in the order the vehicle does them: the pull-out from the resolved
+  garage, each trip of the `Checks.sequence/1` order, the drive and the wait
+  between two trips, and the pull-back. A block with no resolvable garage has no
+  pull rows at all, and an empty move, a drive the vehicle cannot make in time
+  and an overlap each say so rather than rounding away.
+
+  “Inspect” opens the trip drawer with the block kept, which is what gives that
+  drawer its back link (AC-25), and every drive, wait and overlap opens the gap
+  drawer with the block kept, so that drawer offers “Back to block <id>”. The
+  overlap row is the only way to open that drawer for an overlapping pair, whose
+  timeline bar is deliberately suppressed.
+
+  The problems are callouts, worst first, and a problem about one connection
+  carries “Open this connection” for the same gap drawer the row opens.
+  In-seat records stay read-only: the drawer adds no editing control and no
+  command for them (INV-3).
 
   The actions are the reference's “Rename block”, “Merge into…” and “Remove all
   trips” (AC-27). A rename renames this block's trips on the selected day type, a
@@ -1501,7 +1520,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :open, :boolean, required: true
   attr :block, :map, required: true
   attr :routes, :map, required: true
-  attr :findings_by_trip, :map, required: true
+
+  attr :movements, :map,
+    required: true,
+    doc: "the block's `Movements.build/3` result (R2, R3), which the day load already derived"
+
+  attr :max_piece_minutes, :integer,
+    default: nil,
+    doc: "the operator-change limit; with none set no wait can carry the change mark"
 
   attr :action, :map,
     default: nil,
@@ -1519,60 +1545,99 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     assigns =
       assigns
       |> assign(:summary, assigns.block.summary)
-      |> assign(:rows, block_trip_rows(assigns.block))
+      |> assign(:problems, block_problems(assigns.block))
+      |> assign(
+        :rows,
+        vehicle_day_rows(
+          assigns.block,
+          assigns.movements,
+          assigns.routes,
+          assigns.max_piece_minutes
+        )
+      )
+      |> assign(:estimated?, estimated_leg?(assigns.movements))
 
     ~H"""
     <.drawer id="block-drawer" open={@open} title={"Block " <> @summary.block_id}>
-      <p class="text-sm text-base-content/70">
-        {count_label(@summary.trip_count, "trip", "trips")} · {clock(@summary.start_secs)}–{clock(
+      <p id="block-day-summary" class="text-sm text-base-content/70">
+        {count_label(@summary.trip_count, "trip", "trips")} · {time_out(
+          @summary.start_secs,
           @summary.end_secs
-        )}
+        )} · {hours(@summary.hours)} h out of the garage · {km(@movements.service_km)} km with
+        riders, {km(@movements.deadhead_km)} km without{if @estimated?, do: " (est.)", else: ""}
       </p>
 
-      <div class="mt-4 divide-y divide-base-300 border-t border-base-300">
-        <div :for={row <- @rows} class="py-3">
-          <div
-            :if={row.gap}
-            class="rounded-box mb-2 border border-base-300 bg-base-200/40 px-3"
+      <div :if={@problems != []} id="block-problems" class="mt-4 grid gap-2">
+        <.callout
+          :for={problem <- @problems}
+          kind={severity_status(problem.severity)}
+          title={code_label(problem.code)}
+          data-role="block-problem"
+          data-code={problem.code}
+        >
+          {finding_detail(problem)}
+          <button
+            :if={connection = connection_gap(problem, @block)}
+            type="button"
+            data-role="block-open-connection"
+            phx-click="open_gap"
+            phx-value-from={connection.from_id}
+            phx-value-to={connection.to_id}
+            phx-value-block={@summary.block_id}
+            class="link link-primary min-h-11"
           >
-            <button
-              type="button"
-              data-role="block-gap"
-              data-minutes={div(row.gap.gap_secs, 60)}
-              phx-click="open_gap"
-              phx-value-from={row.gap.from_id}
-              phx-value-to={row.gap.to_id}
-              phx-value-block={@summary.block_id}
-              class="link link-primary min-h-11 text-left text-sm"
-            >
-              {gap_text(row.gap, row.from, row.trip)}
-            </button>
-          </div>
-
-          <div class="flex flex-wrap items-center gap-2">
-            <.route_badge_for route_id={row.trip.route_id} routes={@routes} />
-            <strong class="text-sm">
-              {row.trip.trip_id} · {clock(row.trip.first_departure)}–{clock(row.trip.last_arrival)}
-            </strong>
-            <button
-              type="button"
-              data-role="block-inspect"
-              phx-click="open_trip"
-              phx-value-trip={row.trip.trip_id}
-              phx-value-block={@summary.block_id}
-              class="link link-primary min-h-11"
-            >
-              Inspect
-            </button>
-          </div>
-
-          <p class="text-sm text-base-content/70">
-            {stop_name(row.trip.first_stop)} → {stop_name(row.trip.last_stop)}
-          </p>
-
-          <.issue_badges findings={Map.get(@findings_by_trip, row.trip.id, [])} />
-        </div>
+            Open this connection
+          </button>
+        </.callout>
       </div>
+
+      <h3 class="mt-6 border-t border-base-300 pt-4 text-sm font-semibold">Vehicle’s day</h3>
+
+      <table id="block-day" class="table table-sm mt-2 w-full">
+        <thead>
+          <tr>
+            <th scope="col">Time</th>
+            <th scope="col">Activity</th>
+            <th scope="col">Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr :for={row <- @rows} data-role="block-day-row" data-kind={row.kind}>
+            <td class="whitespace-nowrap tabular-nums text-sm">{row.time}</td>
+            <td class="text-sm font-medium">{row.activity}</td>
+            <td class={(row.error? && "text-sm font-semibold text-error") || "text-sm"}>
+              <%= if gap = row.gap do %>
+                <button
+                  type="button"
+                  data-role="block-gap"
+                  data-kind={row.kind}
+                  data-minutes={gap_minutes(gap)}
+                  phx-click="open_gap"
+                  phx-value-from={gap.from_id}
+                  phx-value-to={gap.to_id}
+                  phx-value-block={@summary.block_id}
+                  class="link min-h-11 text-left"
+                >
+                  {row.detail}
+                </button>
+              <% else %>
+                <span>{row.detail}</span>
+                <button
+                  :if={row.trip}
+                  type="button"
+                  data-role="block-inspect"
+                  phx-click="open_trip"
+                  phx-value-trip={row.trip.trip_id}
+                  phx-value-block={@summary.block_id}
+                  class="link link-primary ml-2 min-h-11"
+                >
+                  Inspect
+                </button>
+              <% end %>
+            </td>
+          </tr>
+        </tbody>
+      </table>
 
       <div class="mt-4 space-y-3 border-t border-base-300 pt-3">
         <h3 class="text-sm font-semibold">Block actions</h3>
@@ -1687,23 +1752,262 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp rename_errors(%{kind: :rename, error: error}) when is_binary(error), do: [error]
   defp rename_errors(_action), do: []
 
-  # The block drawer's rows: the block's own trip order with the gap that precedes
-  # each trip, taken from the block's `gaps/1` pairs by the later trip's UUID and
-  # kept only when the two trips are adjacent in that order, so a gap note always
-  # sits between the two trips it joins (and the first trip has none).
-  defp block_trip_rows(block) do
-    gaps = Map.new(block.gaps, &{&1.to_id, &1})
-    trips = block.trips
+  # The vehicle's day, as the reference's “Vehicle's day” table reads it: the
+  # pull-out from the resolved garage, the block's `Checks.sequence/1` trips each
+  # preceded by the drive and the wait its gap holds, the pull-back, and then the
+  # trips the sequence left out (a repeating or an untimed one) so a trip the
+  # block owns is never hidden from a drawer that names its count.
+  #
+  # The gaps, the drives and the waits are the block's own `Movements.build/3`
+  # result (R2, R3, INV-8) and `Checks.gaps/1` pairs, both built over the same
+  # sequence and therefore aligned by index, and the operator-change mark comes
+  # from the same `Relief.window`s the timeline reads — the later trip's sequence
+  # index is the window's own `gap_index`, as `plotted/1` uses it. Nothing here
+  # re-derives a movement or a window.
+  defp vehicle_day_rows(block, movements, routes, max_piece_minutes) do
+    sequence = Checks.sequence(block.trips)
+    sequenced = MapSet.new(sequence, & &1.id)
+    unplotted = Enum.reject(block.trips, &MapSet.member?(sequenced, &1.id))
+    relief = relief_gaps(block, max_piece_minutes)
+    garage = block.summary.garage_name || "the garage"
 
-    trips
-    |> Enum.with_index()
-    |> Enum.map(fn {trip, index} ->
-      previous = if index == 0, do: nil, else: Enum.at(trips, index - 1)
-      gap = if previous, do: Map.get(gaps, trip.id)
-      gap = if gap && gap.from_id == previous.id, do: gap
+    lead =
+      case movements.pull_out do
+        nil -> []
+        pull -> [leave_row(pull, List.first(sequence), garage)]
+      end
 
-      %{trip: trip, from: if(gap, do: previous), gap: gap}
-    end)
+    middle =
+      sequence
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {trip, index} ->
+        connection_rows(trip, index, block, movements, relief) ++ [trip_row(trip, routes)]
+      end)
+
+    tail =
+      case movements.pull_back do
+        nil -> []
+        pull -> [return_row(pull, List.last(sequence), garage)]
+      end
+
+    lead ++ middle ++ tail ++ Enum.map(unplotted, &trip_row(&1, routes, trip_note(block, &1)))
+  end
+
+  defp leave_row(pull, trip, garage) do
+    %{
+      kind: :leave,
+      time: clock(pull.start_secs),
+      activity: "Leave #{garage} garage",
+      detail: pull_detail(pull, stop_name(trip && trip.first_stop), :out),
+      error?: false,
+      trip: nil,
+      gap: nil
+    }
+  end
+
+  defp return_row(pull, _trip, garage) do
+    %{
+      kind: :return,
+      time: clock(pull.end_secs),
+      activity: "Return to #{garage} garage",
+      detail: pull_detail(pull, nil, :back),
+      error?: false,
+      trip: nil,
+      gap: nil
+    }
+  end
+
+  # The pull's own minutes and their source. An unknown drive has no minutes at
+  # all, so it says so rather than printing a zero-minute drive; an entered one
+  # carries no `est.` mark, because a person gave it (AC-3). The pull-out names
+  # the stop it reaches, and the pull-back has no destination to name.
+  defp pull_detail(%{drive_secs: nil}, to, :out), do: "Driving time unknown to #{to}"
+  defp pull_detail(%{drive_secs: nil}, _to, :back), do: "Driving time unknown"
+
+  defp pull_detail(%{drive_secs: secs, source: source}, to, :out),
+    do: "#{minutes(secs)}#{est_mark(source)} to #{to}"
+
+  defp pull_detail(%{drive_secs: secs, source: source}, _to, :back),
+    do: "#{minutes(secs)}#{est_mark(source)}"
+
+  defp trip_row(trip, routes, note \\ nil) do
+    stops = "#{stop_name(trip.first_stop)} → #{stop_name(trip.last_stop)}"
+
+    %{
+      kind: :trip,
+      time: time_out(trip.first_departure, trip.last_arrival),
+      activity: "Trip #{trip.trip_id} · route #{route_badge_name(routes, trip.route_id)}",
+      detail: if(note, do: "#{stops} · #{note}", else: stops),
+      error?: false,
+      trip: trip,
+      gap: nil
+    }
+  end
+
+  # The rows one gap contributes, in the order the vehicle meets them, and they
+  # stand *before* the later trip of the pair they join. The first trip has no gap
+  # before it; an overlap has no drive and no wait behind it, an
+  # infeasible drive has a wait that cannot happen, and an unknown drive claims
+  # nothing at all (FH-40). `index` is the later trip's own position in the
+  # sequence, so the movement — and the `Relief.window` that names it — is the one
+  # before it.
+  defp connection_rows(_trip, 0, _block, _movements, _relief), do: []
+
+  defp connection_rows(trip, index, block, movements, relief) do
+    movement = Enum.at(movements.gaps, index - 1)
+    gap = Enum.at(block.gaps, index - 1)
+    to_stop = stop_name(trip.first_stop)
+    change? = MapSet.member?(relief, index - 1)
+
+    cond do
+      is_nil(movement) ->
+        []
+
+      gap.gap_secs < 0 ->
+        [overlap_row(movement, gap)]
+
+      movement.kind == :layover ->
+        [wait_row(movement, gap, to_stop, change?)]
+
+      movement.feasible? == false ->
+        [drive_row(movement, gap, to_stop, true)]
+
+      movement.kind == :unknown ->
+        [drive_row(movement, gap, to_stop, false)]
+
+      true ->
+        [drive_row(movement, gap, to_stop, false), wait_row(movement, gap, to_stop, change?)]
+    end
+  end
+
+  # The drive before the next trip. An empty move has no known drive, so the row
+  # says that; a drive longer than the gap says how long and how little there is,
+  # in the error colour the reference marks it with.
+  defp drive_row(movement, gap, to_stop, error?) do
+    detail =
+      cond do
+        error? ->
+          "! Needs #{minutes(movement.drive_secs)}; has #{div(gap.gap_secs, 60)}"
+
+        movement.drive_secs == nil ->
+          "Driving time unknown"
+
+        true ->
+          "#{minutes(movement.drive_secs)}#{est_mark(movement.source)}"
+      end
+
+    %{
+      kind: :drive,
+      time: clock(movement.arrival_secs),
+      activity: "Drive to #{to_stop}",
+      detail: detail,
+      error?: error?,
+      trip: nil,
+      gap: gap
+    }
+  end
+
+  defp overlap_row(movement, gap) do
+    %{
+      kind: :overlap,
+      time: clock(movement.arrival_secs),
+      activity: "Overlap",
+      detail: "#{minutes(-gap.gap_secs)} overlap",
+      error?: true,
+      trip: nil,
+      gap: gap
+    }
+  end
+
+  # The wait a reachable drive leaves behind, which starts when the drive ends
+  # rather than when the earlier trip arrived. The `⇄` mark is the instant an
+  # operator change is possible at that stop (R5), so it follows the block's own
+  # relief windows and appears only while a limit is set.
+  defp wait_row(movement, gap, to_stop, relief?) do
+    %{
+      kind: :wait,
+      time: clock(movement.arrival_secs + (movement.drive_secs || 0)),
+      activity: "Wait at #{to_stop}",
+      detail:
+        "#{div(movement.wait_secs || gap.gap_secs, 60)} min" <>
+          if(relief?, do: " · operators can change ⇄", else: ""),
+      error?: false,
+      trip: nil,
+      gap: gap
+    }
+  end
+
+  # Why a trip the sequence left out is in the block but not in the vehicle's
+  # timed day. A repeating trip and a trip with no usable times are notices rather
+  # than problems, so they are the trip's own row's note rather than a callout
+  # above the table.
+  defp trip_note(block, trip) do
+    case block.findings
+         |> Enum.filter(
+           &(&1.code in [:frequency_trip, :unplottable] and &1.trip_ids == [trip.id])
+         )
+         |> Enum.map(&code_label(&1.code)) do
+      [] -> nil
+      labels -> Enum.join(labels, " · ")
+    end
+  end
+
+  # The block's own problems, worst first, as the callouts above the table. A
+  # notice is not a problem to act on here: an empty move or a repeating trip is
+  # already a row in the day below, and the callouts are the errors and warnings
+  # a planner works through.
+  defp block_problems(block) do
+    block.findings
+    |> Enum.filter(&(&1.severity in [:error, :warning]))
+    |> Enum.uniq_by(&Checks.finding_key/1)
+    |> Enum.sort_by(&issue_rank/1)
+  end
+
+  # The connection a problem is about, when the problem is one of a connection's
+  # own and names one of the block's gaps: the pair of trips that gap joins. A
+  # problem about a trip alone — a wrong type, an in-seat record, a block over
+  # its type's limit — has no connection to open, and a stretch with nowhere to
+  # change operators names the two trips it covers rather than the connection
+  # between them, so it carries no link either.
+  @gap_finding_codes [
+    :overlap,
+    :cannot_reach,
+    :short_layover,
+    :repositions,
+    :interlining_not_allowed
+  ]
+
+  defp connection_gap(%{code: code} = finding, block) when code in @gap_finding_codes do
+    pair = MapSet.new(finding.trip_ids)
+
+    if MapSet.size(pair) == 2 do
+      Enum.find(block.gaps, &(MapSet.new([&1.from_id, &1.to_id]) == pair))
+    end
+  end
+
+  defp connection_gap(_finding, _block), do: nil
+
+  # Whether any leg of the block is an estimate rather than an entered time, which
+  # is what the summary line's `est.` mark and the drive rows follow (AC-3).
+  defp estimated_leg?(movements) do
+    Enum.any?([movements.pull_out, movements.pull_back], &estimated_source?/1) or
+      Enum.any?(movements.gaps, &estimated_source?/1)
+  end
+
+  defp estimated_source?(%{source: :estimated}), do: true
+  defp estimated_source?(_leg), do: false
+
+  defp est_mark(:estimated), do: " est."
+  defp est_mark(_source), do: ""
+
+  defp gap_minutes(%{gap_secs: secs}), do: div(secs, 60)
+
+  # The route's badge name, the number a planner reads off the timeline. The
+  # short name is the badge; a route without one falls back to its stored ID
+  # rather than to its long name, which does not fit the cell.
+  defp route_badge_name(routes, route_id) do
+    route = Map.get(routes, route_id) || %{}
+    route[:short_name] || route_id
   end
 
   # Copy: the layover at one stop, the same station, a nearby stop with its
@@ -3284,6 +3588,31 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp code_label(:frequency_trip), do: "Frequency"
   defp code_label(:unplottable), do: "Time missing"
 
+  defp finding_detail(%{code: :cannot_reach, detail: %{drive_secs: drive, gap_secs: secs}}) do
+    "The drive between these two trips needs #{minutes(drive)} and there are #{minutes(secs)}."
+  end
+
+  defp finding_detail(%{code: :too_long, detail: detail}) do
+    "The vehicle is out of the garage #{duration(div(detail.platform_secs, 60))}; the limit is #{minutes(detail.limit_minutes)}."
+  end
+
+  defp finding_detail(%{code: :no_relief_opportunity, detail: detail}) do
+    "The vehicle runs #{duration(div(detail.secs, 60))} with no place to change operators; " <>
+      "the limit is #{minutes(detail.limit_secs)}."
+  end
+
+  defp finding_detail(%{code: :type_mismatch}) do
+    "A trip’s route requires a vehicle type this block does not have."
+  end
+
+  defp finding_detail(%{code: :interlining_not_allowed}) do
+    "These two trips are different routes, and the block settings do not allow switching there."
+  end
+
+  defp finding_detail(%{code: :block_attributes_conflict}) do
+    "This block’s calendars disagree about its garage; saving one sets it for all of them."
+  end
+
   defp finding_detail(%{code: :overlap, detail: %{overlap_secs: secs}}) do
     "Two trips in this block overlap by #{minutes(secs)}."
   end
@@ -3507,7 +3836,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         trip: trip,
         previous: if(index == 0, do: nil, else: Enum.at(sequence, index - 1)),
         gap: gap,
-        gap_index: index,
+        # The index of the movement for that pair, which is the `gap_index` a
+        # `Relief.window` carries; the trip's own position in the sequence is one
+        # higher for every gap after the first.
+        gap_index: index - 1,
         # The derived movement for the same pair, in the same order, so a drive
         # and the wait it leaves behind line up with the bars between them.
         movement: if(index == 0, do: nil, else: Enum.at(block.movements.gaps, index - 1)),
