@@ -131,6 +131,33 @@ defmodule GtfsPlannerWeb.Gtfs.TodsImportLiveTest do
       assert has_element?(view, "#garages-table", "garage_main")
     end
 
+    test "the apply action is marked unavailable only while nothing can be imported",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      view = open_import(conn, user, organization, version, @garages_path)
+
+      assert has_element?(view, "#apply-tods-import[disabled][data-unavailable]")
+
+      upload_fixture(view, @garage_file)
+
+      assert has_element?(view, "#apply-tods-import:not([disabled]):not([data-unavailable])")
+    end
+
+    test "counts read as plain nouns and errors are listed as rows to fix",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      content = """
+      stop_id,stop_name,stop_lat,stop_lon,TODS_location_type
+      garage_main,Main garage,45.5121,-122.6587,garage
+      garage_main,Main again,45.5121,-122.6587,garage
+      """
+
+      view = open_import(conn, user, organization, version, @garages_path)
+      upload_content(view, "repeated.txt", content)
+
+      assert has_element?(view, "#tods-import-count-add + span", "New garages")
+      assert has_element?(view, "#tods-import-count-error + span", "Errors")
+      assert has_element?(view, "#tods-import-preview h4", "Rows to fix (1)")
+    end
+
     test "a file with errors disables apply and names the row",
          %{conn: conn, user: user, organization: organization, version: version} do
       content = """
@@ -179,7 +206,7 @@ defmodule GtfsPlannerWeb.Gtfs.TodsImportLiveTest do
 
       refute has_element?(view, "#tods-import-preview")
       refute has_element?(view, "#tods-file-upload-rejected")
-      assert has_element?(view, "#apply-tods-import[disabled]", "Import 0 garages")
+      assert has_element?(view, "#apply-tods-import[disabled]", "Import garages")
 
       assert has_element?(
                view,
@@ -290,7 +317,7 @@ defmodule GtfsPlannerWeb.Gtfs.TodsImportLiveTest do
       assert has_element?(view, "#tods-import-skipped-more", "1 more")
       refute has_element?(view, "#tods-import-errors-more")
 
-      assert has_element?(view, "#apply-tods-import[disabled]", "Import 0 garages")
+      assert has_element?(view, "#apply-tods-import[disabled]", "Import garages")
 
       assert has_element?(
                view,
@@ -431,7 +458,7 @@ defmodule GtfsPlannerWeb.Gtfs.TodsImportLiveTest do
       assert has_element?(
                garages_view,
                "#tods-import-description",
-               "Choose stops_supplement.txt from your operations system."
+               "Add or update garages from a TODS file exported by your operations system."
              )
 
       garages_view |> element("#tods-import-drawer-close") |> render_click()
@@ -442,7 +469,7 @@ defmodule GtfsPlannerWeb.Gtfs.TodsImportLiveTest do
       assert has_element?(
                fleet_view,
                "#tods-import-description",
-               "Choose vehicles.txt from your operations system."
+               "Add or update vehicles from a TODS file exported by your operations system."
              )
 
       upload_fixture(fleet_view, @garage_file)

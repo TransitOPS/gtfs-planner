@@ -3,10 +3,11 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   Components from the TransitOps application design system that pages migrated
   to it share: the in-place outcome message, the form error summary, the
   choice cards used for options that carry consequences, the first-use
-  panel, the back link a child page carries above its heading, the
-  footer that keeps a drawer form's actions in view, a drawer's titled form
-  section and unsaved-changes badge, the link an aside leads on with, and the
-  check that keeps an imported address from becoming a link.
+  panel, the back link a child page carries above its heading, the scope line
+  under its title, the scrolling body and footer that keep a drawer form's
+  actions in view, a drawer's titled form section and unsaved-changes badge, the
+  link an aside leads on with, and the check that keeps an imported address from
+  becoming a link.
 
   They read the design-system tokens declared in `assets/css/app.css`
   (`text-strong`, `bg-soft`, `border-control`, `rounded-control`, and so on) and
@@ -60,6 +61,37 @@ defmodule GtfsPlannerWeb.PlannerComponents do
     >
       <.icon name="hero-chevron-left" class="size-4" /> {render_slot(@inner_block)}
     </.link>
+    """
+  end
+
+  @doc """
+  The line under a page's title that says what the page's data applies to: one
+  version, or every version of the organization. It reads as part of the
+  subtitle, so it goes inside the header's `:subtitle` slot, and the icon
+  names the kind of scope.
+
+  ## Examples
+
+      <.header>
+        Garages
+        <:subtitle>
+          Set where vehicles start and end the day.
+          <.scope_line id="garages-scope" icon="hero-square-3-stack-3d">
+            Applies to every service version at Acme Transit.
+          </.scope_line>
+        </:subtitle>
+      </.header>
+  """
+  attr :id, :string, required: true
+  attr :icon, :string, required: true
+  slot :inner_block, required: true
+
+  def scope_line(assigns) do
+    ~H"""
+    <span id={@id} class="mt-2 flex items-start gap-1.5">
+      <.icon name={@icon} class="mt-0.5 size-4 shrink-0" />
+      <span>{render_slot(@inner_block)}</span>
+    </span>
     """
   end
 
@@ -309,6 +341,20 @@ defmodule GtfsPlannerWeb.PlannerComponents do
         <span>{@error}</span>
       </p>
     </fieldset>
+    """
+  end
+
+  @doc """
+  The scrolling part of a drawer step, above its persistent footer: the fields
+  of a form, or the review a step asks the person to read.
+  """
+  slot :inner_block, required: true
+
+  def drawer_scroll(assigns) do
+    ~H"""
+    <div class="grid flex-1 content-start gap-5 overflow-y-auto px-5 py-5 sm:px-6">
+      {render_slot(@inner_block)}
+    </div>
     """
   end
 

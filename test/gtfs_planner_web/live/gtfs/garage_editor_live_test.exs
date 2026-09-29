@@ -42,7 +42,9 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
     live(conn, "/gtfs/#{version.id}#{path}")
   end
 
-  defp open_add(view), do: view |> element("#add-garage") |> render_click()
+  # Every add test starts from an organization with no garages, where the
+  # first-use panel carries the create action.
+  defp open_add(view), do: view |> element("#add-garage-empty") |> render_click()
 
   defp open_edit(view, garage) do
     view |> element("#garage-name-#{garage.id}") |> render_click()
@@ -132,6 +134,89 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
     end
   end
 
+  describe "drawer wording" do
+    setup :editor_setup
+
+    test "a new garage says its ID is filled in and offers Create garage", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      {:ok, view, _html} = open_editor(conn, user, organization, version)
+      open_add(view)
+
+      assert has_element?(view, "#garage-drawer-title", "Create garage")
+      assert has_element?(view, "#garage-drawer-scope", "Shared across all versions")
+      assert has_element?(view, "#garage_garage_id-help", "Filled in from the name.")
+      assert has_element?(view, "#garage-save", "Create garage")
+      refute has_element?(view, "#garage-delete")
+      refute has_element?(view, "#garage-assigned-vehicles")
+      refute has_element?(view, "#garage-id-change-hint")
+    end
+
+    test "a saved garage names itself, keeps its ID unfilled and offers Save changes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      garage = garage_fixture(organization.id, %{"garage_id" => "garage_main", "name" => "Main"})
+
+      {:ok, view, _html} = open_editor(conn, user, organization, version)
+      open_edit(view, garage)
+
+      assert has_element?(view, "#garage-drawer-title", "Edit garage")
+      assert has_element?(view, "#garage-drawer-scope", "Main · shared across all versions")
+      refute has_element?(view, "#garage_garage_id-help", "Filled in from the name.")
+      assert has_element?(view, "#garage-save", "Save changes")
+      assert has_element?(view, "#garage-delete", "Delete garage")
+    end
+
+    test "the vehicle note counts one vehicle, several and none in plain words", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      one = garage_fixture(organization.id, %{"garage_id" => "garage_one", "name" => "One"})
+      many = garage_fixture(organization.id, %{"garage_id" => "garage_many", "name" => "Many"})
+      none = garage_fixture(organization.id, %{"garage_id" => "garage_none", "name" => "None"})
+
+      vehicle_fixture(organization.id, %{"garage_id" => one.id})
+      vehicle_fixture(organization.id, %{"garage_id" => many.id})
+      vehicle_fixture(organization.id, %{"garage_id" => many.id})
+
+      {:ok, view, _html} = open_editor(conn, user, organization, version)
+
+      open_edit(view, one)
+
+      assert has_element?(
+               view,
+               "#garage-assigned-vehicles",
+               "1 vehicle uses this garage. To delete it, first move that vehicle to another garage in Fleet."
+             )
+
+      view |> element("#garage-drawer-close") |> render_click()
+      open_edit(view, many)
+
+      assert has_element?(
+               view,
+               "#garage-assigned-vehicles",
+               "2 vehicles use this garage. To delete it, first move them to another garage in Fleet."
+             )
+
+      view |> element("#garage-drawer-close") |> render_click()
+      open_edit(view, none)
+
+      assert has_element?(
+               view,
+               "#garage-assigned-vehicles",
+               "No vehicles use this garage, so you can delete it without moving anything."
+             )
+    end
+  end
+
   describe "address search" do
     setup :editor_setup
 
@@ -181,7 +266,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       assert has_element?(
                view,
                "#garage-address-unavailable",
-               "Address search is unavailable. Enter coordinates."
+               "Address search isn't available right now. Enter the coordinates instead."
              )
 
       change(
@@ -220,7 +305,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       assert has_element?(view, "#garage_name[value='Riverside storage']")
       assert has_element?(view, "#garage_lat[aria-invalid='true']")
       assert has_element?(view, "#garage_lon[aria-invalid='true']")
-      assert has_element?(view, "#garage-form-error", "Check the highlighted fields")
+      assert has_element?(view, "#garage-form-error", "Garage not saved")
 
       assert_push_event(view, "focus_form_error", %{
         form_id: "garage-form",
@@ -250,7 +335,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       {:ok, view, _html} = open_editor(conn, user, organization, version)
       open_edit(view, garage)
 
-      assert has_element?(view, "#garage-assigned-vehicles", "2 vehicles assigned")
+      assert has_element?(view, "#garage-assigned-vehicles", "2 vehicles use this garage.")
 
       render_submit(view, "save_garage", %{
         "garage" => %{
@@ -276,7 +361,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       })
 
       assert has_element?(view, "tr#garages-#{garage.id}", "garage_depot")
-      assert has_element?(view, "tr#garages-#{garage.id} td[data-label='Vehicles']", "2")
+      assert has_element?(view, "tr#garages-#{garage.id} td[data-label='Vehicles']", "2 vehicles")
       assert has_element?(view, "#garage-notice", "Main garage saved.")
     end
   end
@@ -307,7 +392,14 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       open_edit(view, in_use)
       view |> element("#garage-delete") |> render_click()
 
-      assert has_element?(view, "#garage-in-use-dialog", "Main garage has 2 vehicles")
+      assert has_element?(view, "#garage-in-use-dialog", "Can't delete Main garage")
+
+      assert has_element?(
+               view,
+               "#garage-in-use-dialog-body",
+               "2 vehicles use this garage. Move them to another garage in Fleet, then delete this garage."
+             )
+
       refute has_element?(view, "#garage-delete-confirm")
       assert Enum.count(Operations.list_garages(organization.id)) == 2
 
@@ -321,7 +413,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       assert has_element?(
                view,
                "#garage-delete-confirm-body",
-               "This removes the garage from all service versions."
+               "This removes the garage from every service version. You can't undo it."
              )
 
       # Cancelling keeps the garage.
@@ -367,7 +459,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
 
       assert has_element?(view, "#garages-table", "Riverside storage")
       assert has_element?(view, "#garages-table", "16 River Road")
-      assert has_element?(view, "#garages-status", "1 garages · 0 vehicles assigned")
+      assert has_element?(view, "#garages-status", "1 garage · 0 vehicles assigned")
 
       assert [garage] = Operations.list_garages(organization.id)
       assert garage.garage_id == "garage_river"

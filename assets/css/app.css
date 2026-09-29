@@ -1199,6 +1199,18 @@ body {
   cursor: wait;
 }
 
+/* An action the page has ruled out, such as an import with nothing to apply,
+   reads as unavailable: the design system's disabled control, a hairline border
+   on the canvas ground with muted ink (5.6:1). It is opt-in by attribute because
+   `phx-disable-with` disables the same button while its action is in flight,
+   and that state keeps the dark fill above. */
+:is(#admin-users-page, #admin-organizations-page, .ds-page) .btn-primary[data-unavailable]:disabled {
+  border-color: var(--color-subtle);
+  background: var(--color-canvas);
+  color: var(--color-muted);
+  cursor: not-allowed;
+}
+
 /* The destructive button reads in the design system's error ink (white text at
    8:1) instead of daisyUI's brighter red. A disabled one keeps daisyUI's grey, so
    an apply the page has ruled out, or one in flight, reads as unavailable. */
