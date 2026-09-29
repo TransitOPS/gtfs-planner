@@ -767,3 +767,163 @@ test.describe("Route details save and merge", () => {
     await sessionA.close();
   });
 });
+
+/**
+ * Route › Details dirty navigation (spec 16, step 25).
+ *
+ * `RouteDetailsEditor`'s guard intercepts tabs, internal links, browser back
+ * and version selection while the Details draft is dirty, and the server owns
+ * the "Leave without saving?" dialog. Keep editing restores the page untouched,
+ * Discard leaves writing nothing, and Save and continue commits the draft and
+ * only then navigates. A cancelled version change never dispatches the
+ * switcher's selected-version global state (localStorage) or the URL (AC-22).
+ *
+ * Stable ids this step publishes:
+ *   #route-details-leave / #route-details-leave-body
+ *   #route-details-leave-discard / #route-details-leave-cancel
+ *   #route-details-leave-save
+ */
+test.describe("Route details dirty navigation", () => {
+  test("cancelling a version change keeps the URL and the selected-version state intact", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+
+    const long = page.locator("#route-details-long");
+    const saved = await long.inputValue();
+    await long.fill(`${saved} navigation draft`);
+    await expect(page.locator("#route-details-save-bar")).toBeVisible();
+
+    const organizationId = await page
+      .locator("#gtfs-version-switcher")
+      .getAttribute("data-organization-id");
+    const storageKey = `gtfs_version_${organizationId}`;
+
+    // Pick any other published version from the switcher panel.
+    const options = page.locator("#gtfs-version-panel [data-version-option]");
+    const count = await options.count();
+    let targetIndex = -1;
+    for (let i = 0; i < count; i++) {
+      if ((await options.nth(i).getAttribute("data-version-id")) !== version) {
+        targetIndex = i;
+        break;
+      }
+    }
+    expect(
+      targetIndex,
+      "the lane seeds a second version to switch to",
+    ).toBeGreaterThanOrEqual(0);
+
+    await options.nth(targetIndex).click();
+
+    // The guard intercepts the option before the version hook dispatches: the
+    // dialog opens, and the URL and the stored selection both still name the
+    // version the page is on.
+    const leave = page.locator("#route-details-leave[data-open='true']");
+    await expect(leave).toBeVisible();
+    await expect(page.locator("#route-details-leave-title")).toHaveText(
+      "Leave without saving?",
+    );
+    expect(new URL(page.url()).pathname).toBe(
+      `/gtfs/${version}/routes/${DETAILS_ROUTE}`,
+    );
+    expect(
+      await page.evaluate((key) => localStorage.getItem(key), storageKey),
+    ).toBe(version);
+
+    // Keep editing: nothing is dispatched and the draft is still on screen.
+    await page.locator("#route-details-leave-cancel").click();
+    await expect(page.locator("#route-details-leave")).toBeHidden();
+    expect(new URL(page.url()).pathname).toBe(
+      `/gtfs/${version}/routes/${DETAILS_ROUTE}`,
+    );
+    expect(
+      await page.evaluate((key) => localStorage.getItem(key), storageKey),
+    ).toBe(version);
+    await expect(long).toHaveValue(`${saved} navigation draft`);
+  });
+
+  test("a tab and browser back ask before discarding, and discard writes nothing", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+
+    const long = page.locator("#route-details-long");
+    const saved = await long.inputValue();
+    const draft = `${saved} nav discard draft`;
+    await long.fill(draft);
+    await expect(page.locator("#route-details-save-bar")).toBeVisible();
+
+    // A route tab holds behind the dialog; Keep editing keeps the draft here.
+    await page
+      .locator('nav[aria-label="Route navigation"]')
+      .getByRole("link", { name: "Patterns" })
+      .click();
+    await expect(
+      page.locator("#route-details-leave[data-open='true']"),
+    ).toBeVisible();
+    await page.locator("#route-details-leave-cancel").click();
+    await expect(page).toHaveURL(new RegExp(`/routes/${DETAILS_ROUTE}$`));
+    await expect(long).toHaveValue(draft);
+
+    // Browser back asks the same way, and the restored URL keeps the editor.
+    await page.goBack();
+    await expect(
+      page.locator("#route-details-leave[data-open='true']"),
+    ).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`/routes/${DETAILS_ROUTE}$`));
+    await page.locator("#route-details-leave-cancel").click();
+    await expect(long).toHaveValue(draft);
+
+    // Discard navigates without a write: the route keeps its saved value.
+    await page
+      .locator('nav[aria-label="Route navigation"]')
+      .getByRole("link", { name: "Patterns" })
+      .click();
+    await expect(
+      page.locator("#route-details-leave[data-open='true']"),
+    ).toBeVisible();
+    await page.locator("#route-details-leave-discard").click();
+    await expect(page).toHaveURL(/\/patterns$/);
+
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await expect(long).toHaveValue(saved);
+  });
+
+  test("save and continue navigates only after the save commits", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+
+    const long = page.locator("#route-details-long");
+    const saved = await long.inputValue();
+    const draft = `${saved} saved and continued`;
+    await long.fill(draft);
+    await expect(page.locator("#route-details-save-bar")).toBeVisible();
+
+    await page
+      .locator('nav[aria-label="Route navigation"]')
+      .getByRole("link", { name: "Schedules" })
+      .click();
+    await expect(
+      page.locator("#route-details-leave[data-open='true']"),
+    ).toBeVisible();
+    await page.locator("#route-details-leave-save").click();
+    await expect(page).toHaveURL(/\/schedules$/);
+
+    // The commit landed before the navigation: the route now holds the draft.
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await expect(long).toHaveValue(draft);
+
+    // Leave the seeded route as it was found.
+    await long.fill(saved);
+    await page.locator("#route-save").click();
+    await expect(page.locator("#route-details-saved")).toContainText("saved");
+  });
+});

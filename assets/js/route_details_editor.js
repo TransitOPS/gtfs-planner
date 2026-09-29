@@ -21,6 +21,18 @@
  * Details save bar, which only Route › Details renders: the create drawer mounts
  * the same color field and keeps its own submit untouched.
  *
+ * Details also owns the dirty-navigation guard (AC-22), adapted from the
+ * RoutePatternEditor conventions: the server owns the dirty state and the
+ * "Leave without saving?" dialog, and this hook intercepts the departures the
+ * browser would otherwise dispatch — same-origin link clicks (tabs, the back
+ * button, header and list links), history traversal, a version-option click
+ * before the GtfsVersionHook can write the selected-version global state and
+ * navigate, and a native `beforeunload` warning for everything else. The guard
+ * is armed only when the element carries `data-nav-guard="true"` (Route ›
+ * Details); the create drawer mounts the same hook without it and keeps none of
+ * this behavior. No second router is installed: intercepted clicks hand the
+ * intended path to the LiveView, and the server decides.
+ *
  * `paint/0` derives every pixel it touches from the DOM's current values and
  * writes only properties the operator is not typing into — it never rewrites a
  * hex field, and it never replaces a node. That is what makes `updated/0` safe:
@@ -32,6 +44,16 @@ import {
   contrastRatio,
   normalizeHex,
 } from "./route_identity_preview.js";
+
+// Register before LiveSocket installs its history listener: a hook mounted
+// after connection is too late to stop the socket from starting a history
+// redirect. Only the active Details guard answers.
+let activeGuard = null;
+window.addEventListener(
+  "popstate",
+  (event) => activeGuard?.popStateHandler?.(event),
+  true,
+);
 
 // The pale-fill edge `RouteIdentity.route_badge/1` puts on a badge whose fill
 // is under 3:1 against white, so a previewed near-white route color keeps it.
@@ -105,11 +127,114 @@ const RouteDetailsEditor = {
       this.el.ownerDocument.addEventListener("keydown", this.onKeydown);
     }
 
+    if (this.el.dataset.navGuard === "true") this._mountGuard();
+
     this.paint();
+  },
+
+  // The dirty-navigation guard: same interception surface as the route pattern
+  // editor, with one addition — a version-option click is stopped before the
+  // version hook can dispatch the selection, so cancelling it leaves the
+  // selected-version global state and the current URL intact (AC-22).
+  _mountGuard() {
+    this.dirty = this.el.dataset.dirty === "true";
+    this.currentUrl = location.href;
+    this.currentHistoryState = history.state;
+    activeGuard = this;
+
+    this.beforeUnloadHandler = (event) => {
+      if (!this.dirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+      return "";
+    };
+
+    this.navigationHandler = (event) => {
+      if (
+        !this.dirty ||
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      )
+        return;
+
+      const option = event.target.closest("[data-version-option]");
+      if (option) {
+        const versionId = option.dataset.versionId;
+        const current = location.pathname.match(/^\/gtfs\/([^/]+)/)?.[1];
+        if (!versionId || versionId === current) return;
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this.pushEvent("guard_details_navigation", {
+          path: this._versionPath(versionId),
+        });
+        return;
+      }
+
+      const link = event.target.closest("a[href]");
+      if (
+        !link ||
+        link.target === "_blank" ||
+        link.hasAttribute("download") ||
+        link.dataset.phxLink === "patch"
+      )
+        return;
+      const url = new URL(link.href, location.href);
+      if (
+        url.origin !== location.origin ||
+        (url.pathname === location.pathname && url.search === location.search)
+      )
+        return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      this.pushEvent("guard_details_navigation", {
+        path: url.pathname + url.search + url.hash,
+      });
+    };
+
+    this.navigationCompleteHandler = () => {
+      this.currentUrl = location.href;
+      this.currentHistoryState = history.state;
+    };
+
+    this.popStateHandler = (event) => {
+      if (!this.dirty) return;
+      const destination = location.pathname + location.search + location.hash;
+      event.stopImmediatePropagation();
+      history.pushState(this.currentHistoryState, "", this.currentUrl);
+      this.pushEvent("guard_details_navigation", { path: destination });
+    };
+
+    document.addEventListener("click", this.navigationHandler, true);
+    window.addEventListener("beforeunload", this.beforeUnloadHandler);
+    window.addEventListener(
+      "phx:page-loading-stop",
+      this.navigationCompleteHandler,
+    );
+  },
+
+  _versionPath(versionId) {
+    return (
+      location.pathname.replace(/^\/gtfs\/[^/]+/, `/gtfs/${versionId}`) +
+      location.search +
+      location.hash
+    );
   },
 
   updated() {
     this.paint();
+
+    if (this.el.dataset.navGuard === "true") {
+      this.currentUrl = location.href;
+      this.currentHistoryState = history.state;
+      if (this.el.dataset.dirty !== undefined) {
+        this.dirty = this.el.dataset.dirty === "true";
+      }
+    }
   },
 
   destroyed() {
@@ -119,6 +244,19 @@ const RouteDetailsEditor = {
 
     if (this.saveBar && this.form) {
       this.el.ownerDocument.removeEventListener("keydown", this.onKeydown);
+    }
+
+    if (this.el.dataset.navGuard === "true") {
+      if (activeGuard === this) activeGuard = null;
+      document.removeEventListener("click", this.navigationHandler);
+      window.removeEventListener(
+        "phx:page-loading-stop",
+        this.navigationCompleteHandler,
+      );
+      if (this.beforeUnloadHandler) {
+        window.removeEventListener("beforeunload", this.beforeUnloadHandler);
+        this.beforeUnloadHandler = null;
+      }
     }
   },
 

@@ -521,8 +521,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       |> render_submit()
 
       # The comparison is displayed, nothing of mine is written, and the
-      # banner names the editor who actually saved.
-      assert has_element?(view, "#route-conflict", "saved this route while you were editing")
+      # banner names the editor who actually saved and when.
+      assert has_element?(view, "#route-conflict", "saved this route")
+      assert has_element?(view, "#route-conflict", "while you were editing")
       assert has_element?(view, "#route-conflict", other.email)
       assert has_element?(view, "#route-conflict-table", "Saved by the other editor first.")
       assert has_element?(view, "#route-conflict-table", "My disjoint rename")
@@ -722,6 +723,231 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       assert has_element?(view, "#route-details-save-bar[hidden]")
       assert render(view) =~ "Loaded the latest saved route. Your changes were discarded."
       assert saved_route(route).route_long_name == "Details long name"
+    end
+  end
+
+  # The dirty-navigation guard (AC-22). Every case mounts the ordinary public
+  # entrypoint and drives the same events the client guard sends — the version
+  # switch events and the intercepted link/back path — with the default catalog
+  # adapter, so the guard's decision and the command it can trigger are the
+  # production path. The browser half of the mechanics (native beforeunload,
+  # history restore, the intercepted option click) is the focused Playwright
+  # suite's job.
+  describe "dirty navigation guard" do
+    setup :shared_setup
+
+    test "cancelling a version change keeps the draft, the URL and the version selection intact",
+         %{
+           conn: conn,
+           organization: organization,
+           gtfs_version: version
+         } do
+      route = details_route(organization.id, version.id, %{})
+      other_version = gtfs_version_fixture(organization.id)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "Unsaved rename"},
+        text_mode: "automatic"
+      })
+      |> render_change()
+
+      # A dirty draft holds the switch behind the leave dialog instead of
+      # dispatching it: the dialog names the route and the field that would be
+      # lost, and the selection effect is never sent.
+      render_hook(view, "switch_gtfs_version", %{"version" => other_version.id})
+
+      assert has_element?(view, "#route-details-leave[data-open='true']", "Leave without saving?")
+      assert has_element?(view, "#route-details-leave-body", "Route PREVIEW1")
+      assert has_element?(view, "#route-details-leave-body", "Route name")
+      assert has_element?(view, "#route-details-leave-cancel", "Keep editing")
+      assert has_element?(view, "#route-details-leave-save", "Save and continue")
+
+      refute_push_event(view, "gtfs_version_selected", %{})
+
+      # Keep editing closes the dialog with the draft exactly as it was, on the
+      # same URL, with nothing written (AC-22).
+      view |> element("#route-details-leave-cancel") |> render_click()
+
+      refute has_element?(view, "#route-details-leave[data-open='true']")
+      assert has_element?(view, "input#route-details-long[value='Unsaved rename']")
+      refute has_element?(view, "#route-details-save-bar[hidden]")
+      assert saved_route(route).route_long_name == "Details long name"
+      assert saved_route(route).updated_at == route.updated_at
+    end
+
+    test "a dirty page holds both version-switch events and discard navigates without writing", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route = details_route(organization.id, version.id, %{})
+      other_version = gtfs_version_fixture(organization.id)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "Unsaved rename"},
+        text_mode: "automatic"
+      })
+      |> render_change()
+
+      render_hook(view, "gtfs_version_loaded", %{"version_id" => other_version.id})
+      assert has_element?(view, "#route-details-leave[data-open='true']")
+
+      # Discard navigates and writes nothing: the saved row is untouched, and a
+      # cross-version destination takes the switcher's stored selection with it,
+      # exactly as an unguarded switch would have.
+      view |> element("#route-details-leave-discard") |> render_click()
+
+      assert_redirect(view, "/gtfs/#{other_version.id}/routes/#{route.route_id}")
+      other_id = other_version.id
+      assert_push_event(view, "gtfs_version_selected", %{version_id: ^other_id})
+
+      assert saved_route(route).route_long_name == "Details long name"
+      assert saved_route(route).updated_at == route.updated_at
+
+      # The other switch event is guarded the same way on a fresh mount.
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "Unsaved rename"},
+        text_mode: "automatic"
+      })
+      |> render_change()
+
+      render_hook(view, "switch_gtfs_version", %{"version" => other_version.id})
+      assert has_element?(view, "#route-details-leave[data-open='true']")
+
+      view |> element("#route-details-leave-discard") |> render_click()
+      assert_redirect(view, "/gtfs/#{other_version.id}/routes/#{route.route_id}")
+    end
+
+    test "save and continue commits the draft and only then navigates", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route = details_route(organization.id, version.id, %{})
+      other_version = gtfs_version_fixture(organization.id)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "Saved on the way out"},
+        text_mode: "automatic"
+      })
+      |> render_change()
+
+      render_hook(view, "switch_gtfs_version", %{"version" => other_version.id})
+      assert has_element?(view, "#route-details-leave[data-open='true']")
+
+      view |> element("#route-details-leave-save") |> render_click()
+
+      assert_redirect(view, "/gtfs/#{other_version.id}/routes/#{route.route_id}")
+
+      saved = saved_route(route)
+      assert saved.route_long_name == "Saved on the way out"
+      assert saved.updated_at != route.updated_at
+    end
+
+    test "an invalid save-and-continue stays on the page with the draft and its errors", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route = details_route(organization.id, version.id, %{})
+      other_version = gtfs_version_fixture(organization.id)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "Never lands", route_color: "ZZZ"},
+        text_mode: "automatic"
+      })
+      |> render_change()
+
+      render_hook(view, "switch_gtfs_version", %{"version" => other_version.id})
+      assert has_element?(view, "#route-details-leave[data-open='true']")
+
+      # The command rejects the draft, so the navigation never happens: the
+      # operator stays here with the draft, its errors and a closed dialog.
+      view |> element("#route-details-leave-save") |> render_click()
+
+      assert has_element?(view, "#route-details-save-error", "Not saved")
+      assert has_element?(view, "input#route-details-long[value='Never lands']")
+      assert has_element?(view, "input#route-details-color[value='ZZZ']")
+      refute has_element?(view, "#route-details-leave[data-open='true']")
+      refute has_element?(view, "#route-details-save-bar[hidden]")
+
+      assert saved_route(route).route_long_name == "Details long name"
+      assert saved_route(route).updated_at == route.updated_at
+    end
+
+    test "an unchanged page navigates from the guard without a dialog, and a foreign path is ignored",
+         %{
+           conn: conn,
+           organization: organization,
+           gtfs_version: version
+         } do
+      route = details_route(organization.id, version.id, %{})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      # A clean page navigates straight away when the client guard reports a
+      # departure it intercepted before dispatch.
+      render_hook(view, "guard_details_navigation", %{"path" => "/gtfs/#{version.id}/routes"})
+
+      assert_redirect(view, "/gtfs/#{version.id}/routes")
+
+      # Only same-origin absolute paths are resolved; anything else changes
+      # nothing and opens nothing.
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      render_hook(view, "guard_details_navigation", %{"path" => "https://evil.example/routes"})
+
+      refute has_element?(view, "#route-details-leave[data-open='true']")
+      assert has_element?(view, "#route-details-heading")
+    end
+
+    test "an open merge counts as unsaved work, and discarding it writes nothing", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route = details_route(organization.id, version.id, %{})
+      other = other_editor(organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      assert {:ok, _saved} = other_editor_save(route, %{route_desc: "The latest saved."}, other)
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "A draft"},
+        text_mode: "automatic"
+      })
+      |> render_submit()
+
+      assert has_element?(view, "#route-conflict")
+
+      # An unresolved comparison is unsaved work: leaving is guarded, and the
+      # discard path navigates without writing either editor's values.
+      render_hook(view, "guard_details_navigation", %{"path" => "/gtfs/#{version.id}/routes"})
+
+      assert has_element?(view, "#route-details-leave[data-open='true']")
+
+      view |> element("#route-details-leave-discard") |> render_click()
+
+      assert_redirect(view, "/gtfs/#{version.id}/routes")
+      assert saved_route(route).route_long_name == "Details long name"
+      assert saved_route(route).route_desc == "The latest saved."
     end
   end
 

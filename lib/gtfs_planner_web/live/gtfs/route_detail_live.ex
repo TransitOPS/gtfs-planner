@@ -36,6 +36,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   the comparison was displayed with, so a third writer's save is re-presented
   as a fresh comparison instead of being overwritten. Lifecycle actions belong
   to later steps.
+
+  Dirty navigation is guarded (AC-22): the client hook intercepts tabs, internal
+  links, browser back and version selection before they dispatch, and this
+  LiveView owns the "Leave without saving?" dialog. Keep editing restores the
+  page untouched; Discard leaves writing nothing; Save and continue commits the
+  server-held draft and navigates only after the command succeeds. Cancelling a
+  version change never dispatches the selected-version global state, and a
+  native beforeunload warning covers every other full-page departure.
   """
   use GtfsPlannerWeb, :live_view
   alias Ecto.Changeset
@@ -97,7 +105,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
      |> assign(:route_text_mode, nil)
      |> assign(:changed_fields, [])
      |> assign(:merge, nil)
-     |> assign(:save_outcome, nil)}
+     |> assign(:save_outcome, nil)
+     |> assign(:pending_navigation, nil)}
   end
 
   @impl true
@@ -171,42 +180,128 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     {:noreply, reload_latest_saved(socket, @discard_reload_message)}
   end
 
+  # --- dirty navigation ------------------------------------------------------
+
   @impl true
-  def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
-    current_organization = socket.assigns.current_organization
-    current_version_id = to_string(socket.assigns.current_gtfs_version.id)
-    route_id = socket.assigns[:route_id]
+  def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket),
+    do: handle_version_switch(socket, version_id)
 
-    if version_id && version_id != current_version_id &&
-         Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
-      path =
-        if route_id,
-          do: ~p"/gtfs/#{version_id}/routes/#{route_id}",
-          else: "/gtfs/#{version_id}/routes"
+  @impl true
+  def handle_event("switch_gtfs_version", %{"version" => version_id}, socket),
+    do: handle_version_switch(socket, version_id)
 
-      {:noreply, push_navigate(socket, to: path)}
+  # The client guard intercepts a same-origin link (tabs, the back button in its
+  # click form, header and list links) before the browser dispatches it and asks
+  # the server what to do; the server owns the dialog. A clean page navigates
+  # straight away. Browser history traversal arrives through the same event
+  # after the client restored the URL, so the destination is guarded identically.
+  @impl true
+  def handle_event("guard_details_navigation", %{"path" => path}, socket) do
+    if String.starts_with?(path, "/") and not String.starts_with?(path, "//"),
+      do: guard_navigation(socket, path),
+      else: {:noreply, socket}
+  end
+
+  def handle_event("guard_details_navigation", _params, socket), do: {:noreply, socket}
+
+  # Keep editing closes the dialog with nothing dispatched and nothing written:
+  # the draft, the focused controls and the URL are exactly as they were (AC-22).
+  @impl true
+  def handle_event("leave_keep_editing", _params, socket) do
+    {:noreply, assign(socket, :pending_navigation, nil)}
+  end
+
+  # Discard leaves without saving: the draft dies with this navigation and the
+  # saved row is never touched. A cross-version destination keeps the switcher's
+  # selected-version state in step, exactly as an unguarded switch would.
+  @impl true
+  def handle_event("leave_discard", _params, socket) do
+    case socket.assigns.pending_navigation do
+      nil -> {:noreply, socket}
+      path -> {:noreply, guarded_navigate(socket, path)}
+    end
+  end
+
+  # "Save and continue" commits the server-held draft and only then navigates:
+  # run_details_save consumes the pending destination, so a rejected or conflicted
+  # save keeps the operator on the page with the draft and its errors (AC-22).
+  @impl true
+  def handle_event("leave_save_route", _params, socket) do
+    if socket.assigns.route_state == :ready do
+      attrs = draft_attrs(socket)
+      socket = assign_details_draft(socket, attrs, :validate)
+      run_details_save(socket, attrs, %{"leave_nav" => "true"})
     else
       {:noreply, socket}
     end
   end
 
-  @impl true
-  def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
-    current_organization = socket.assigns.current_organization
+  # The leave dialog submits the draft the server already validated: every
+  # keystroke reached it through the form's phx-change before the guard could
+  # open, so the stored params are the on-screen draft, never a second grammar.
+  defp draft_attrs(socket), do: socket.assigns.route_form.source.params
+
+  # Version selection is guarded like every other departure: a dirty draft holds
+  # the switch behind the leave dialog instead of dispatching it, so cancelling
+  # never moves the selected-version global state or the current URL (AC-22).
+  # An unchanged page navigates at once, with the switcher's stored selection
+  # following the navigation the server starts.
+  defp handle_version_switch(socket, version_id) do
+    organization_id = socket.assigns.current_organization.id
+    current_version_id = to_string(socket.assigns.current_gtfs_version.id)
     route_id = socket.assigns[:route_id]
 
-    if Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
-      socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
+    if version_id && version_id != current_version_id &&
+         Versions.published_gtfs_version_for_org?(organization_id, version_id) do
+      path = version_route_path(version_id, route_id)
 
-      path =
-        if route_id,
-          do: ~p"/gtfs/#{version_id}/routes/#{route_id}",
-          else: "/gtfs/#{version_id}/routes"
-
-      {:noreply, push_navigate(socket, to: path)}
+      if details_dirty?(socket) do
+        {:noreply, assign(socket, :pending_navigation, path)}
+      else
+        {:noreply, guarded_navigate(socket, path)}
+      end
     else
       {:noreply, socket}
     end
+  end
+
+  defp guard_navigation(socket, path) do
+    if details_dirty?(socket),
+      do: {:noreply, assign(socket, :pending_navigation, path)},
+      else: {:noreply, guarded_navigate(socket, path)}
+  end
+
+  # An open merge is unsaved work too: the honest discard is leaving without a
+  # write, and a save must resolve the conflict first (R4, step 24).
+  defp details_dirty?(socket),
+    do: socket.assigns.changed_fields != [] or socket.assigns.merge != nil
+
+  # Navigate to a guarded destination. A path into another version keeps the
+  # selected-version global state (the switcher's stored selection) in step with
+  # the navigation, the same write an unguarded switch would have made.
+  defp guarded_navigate(socket, path) do
+    current_version_id = to_string(socket.assigns.current_gtfs_version.id)
+
+    socket =
+      case Regex.run(~r{^/gtfs/([^/]+)(/|$)}, path) do
+        [_, version_id, _rest] ->
+          if version_id == current_version_id do
+            socket
+          else
+            push_event(socket, "gtfs_version_selected", %{version_id: version_id})
+          end
+
+        nil ->
+          socket
+      end
+
+    push_navigate(socket, to: path)
+  end
+
+  defp version_route_path(version_id, route_id) do
+    if route_id,
+      do: ~p"/gtfs/#{version_id}/routes/#{route_id}",
+      else: "/gtfs/#{version_id}/routes"
   end
 
   # One workspace read, one classification. A missing/foreign scope redirects to
@@ -256,9 +351,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # One command call, every outcome classified. `base` is the trusted source
   # minted when the workspace loaded, so a replaced UUID, a changed scope or a
   # third writer's save can never authorize a silent overwrite (AC-9, CL-3).
+  # A "Save and continue" submission carries the guarded destination: the save
+  # consumes it, so only a committed save navigates and every other outcome —
+  # rejection, conflict, a lost route — keeps the operator here with the draft.
   defp run_details_save(socket, attrs, params) do
+    pending = if params["leave_nav"] == "true", do: socket.assigns.pending_navigation, else: nil
+    socket = assign(socket, :pending_navigation, nil)
+
     choices =
-      if merge_submission?(params),
+      if merge_submission?(params) and socket.assigns.merge != nil,
         do: merge_choices(socket, params),
         else: %{}
 
@@ -269,6 +370,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
            choices,
            audit_context(socket)
          ) do
+      {:ok, %{route: _saved}} when is_binary(pending) ->
+        {:noreply, guarded_navigate(socket, pending)}
+
       {:ok, %{route: saved}} ->
         {:noreply, saved_details(socket, saved)}
 
@@ -449,13 +553,16 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
           %{}
       end
 
+    # The command's contract carries per-field resolutions at the top level of
+    # `choices` (compare_edit/4 picks the `@edit_fields` keys and ignores the
+    # caller-owned binding keys), so the panel's choices are flattened in.
     %{
       confirm_merge: true,
       # Bound to the revision the comparison was displayed with; the command
       # rechecks it against the freshly locked row on every submission (R4).
-      current_updated_at: socket.assigns.merge.source.updated_at,
-      fields: fields
+      current_updated_at: socket.assigns.merge.source.updated_at
     }
+    |> Map.merge(fields)
   end
 
   # The color pair is one edit unit, so the panel's single radio group names
@@ -511,6 +618,17 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     for {field, label} <- @detail_field_labels, field in fields, do: label
   end
 
+  # The dialog body names the draft the way the reference does — the route and
+  # the fields that would be lost; an open merge names the collision instead.
+  defp leave_message(_merge, route, fields) when fields != [] do
+    "Your changes to Route #{route.route_id} aren't saved: " <>
+      Enum.join(changed_field_labels(fields), ", ") <> "."
+  end
+
+  defp leave_message(_merge, _route, _fields) do
+    "Another editor saved this route while it was open. Leaving now discards your unresolved draft."
+  end
+
   # "Unsaved: Route color · Ctrl+S saves", with the reference's three-name
   # limit, so the bar stays one line at 375px.
   defp changed_fields_summary(fields) do
@@ -536,7 +654,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     mine_set = MapSet.new(mine)
     theirs_only = MapSet.difference(MapSet.union(compatible, divergent), mine_set)
 
-    mine
+    mine_set
     |> MapSet.union(theirs_only)
     |> MapSet.to_list()
     |> editor_order()
@@ -832,6 +950,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                         form={@route_form}
                         prefix="route-details"
                         text_mode={@route_text_mode}
+                        nav_guard
+                        nav_dirty={@changed_fields != [] or @merge != nil}
                       />
                     </section>
 
@@ -895,6 +1015,67 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                       </.button>
                     </div>
                   </.form>
+
+                  <%!-- The leave dialog the client guard opens: tabs, internal
+                         links, browser back and version selection hold here
+                         while a draft is dirty. Keep editing restores the page
+                         untouched, Discard leaves writing nothing, and Save and
+                         continue commits the server-held draft and only then
+                         navigates (AC-22). --%>
+                  <dialog
+                    id="route-details-leave"
+                    phx-mounted={JS.ignore_attributes("open")}
+                    phx-hook="OverlayDialog"
+                    data-open={to_string(@pending_navigation != nil)}
+                    data-close-on-backdrop="false"
+                    data-pending="false"
+                    aria-labelledby="route-details-leave-title"
+                    aria-describedby="route-details-leave-body"
+                    role={if @pending_navigation, do: "alertdialog", else: nil}
+                    aria-modal={if @pending_navigation, do: "true", else: nil}
+                    inert={if @pending_navigation, do: nil, else: ""}
+                    aria-hidden={if @pending_navigation, do: nil, else: "true"}
+                    class="m-0 border-0 w-full h-full bg-transparent p-0"
+                  >
+                    <div class="w-full h-full flex items-center justify-center p-4">
+                      <div class="w-full max-w-sm border border-base-300 bg-base-100 p-5">
+                        <h3 id="route-details-leave-title" class="font-semibold">
+                          Leave without saving?
+                        </h3>
+                        <div id="route-details-leave-body" class="mt-1 text-sm text-base-content/70">
+                          {leave_message(@merge, @route, @changed_fields)}
+                        </div>
+                        <div class="mt-4 flex flex-wrap items-center justify-end gap-2">
+                          <button
+                            id="route-details-leave-discard"
+                            type="button"
+                            class="mr-auto h-[44px] min-w-[44px] border border-control-border px-4 text-sm font-semibold"
+                            phx-click="leave_discard"
+                          >
+                            Discard changes
+                          </button>
+                          <button
+                            id="route-details-leave-cancel"
+                            type="button"
+                            data-dialog-dismiss
+                            class="h-[44px] min-w-[44px] border border-control-border px-4 text-sm font-semibold"
+                            phx-click="leave_keep_editing"
+                          >
+                            Keep editing
+                          </button>
+                          <button
+                            id="route-details-leave-save"
+                            type="button"
+                            class="h-[44px] min-w-[44px] bg-primary px-4 text-sm font-semibold text-primary-content"
+                            phx-click="leave_save_route"
+                            phx-disable-with="Saving…"
+                          >
+                            Save and continue
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </dialog>
 
                   <div class="mt-8 border-t border-subtle pt-4">
                     <p class="text-[13px] text-muted">
