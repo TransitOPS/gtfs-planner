@@ -4539,6 +4539,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :drawer_journal_now, :any, default: nil
   attr :drawer_journal_scope, :any, default: nil
   attr :journal_target_counts, :map, default: %{}
+  attr :child_stop_error, :any, default: nil
 
   def child_stop_drawer(assigns) do
     show_toggle =
@@ -4643,6 +4644,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <.child_stop_form
           :if={@pending_xy && !@reposition?}
           child_stop_form={@child_stop_form}
+          child_stop_error={@child_stop_error}
           platform_options={@platform_options}
           selected_stop_id={@selected_stop_id}
           pending_xy={@pending_xy}
@@ -4892,6 +4894,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   end
 
   attr :child_stop_form, :any, required: true
+  attr :child_stop_error, :any, default: nil
   attr :selected_stop_id, :any
   attr :pending_xy, :any, required: true
   attr :all_levels, :list, required: true
@@ -4944,6 +4947,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       class="flex min-h-0 flex-1 flex-col"
     >
       <.drawer_scroll>
+        <.deletion_refusal
+          :if={@child_stop_error}
+          id="child-stop-in-use-error"
+          refusal={@child_stop_error}
+        />
+
         <.input
           field={@child_stop_form[:stop_name]}
           type="text"
@@ -5405,6 +5414,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :pathway_form_dirty, :boolean, default: false
   attr :has_scale, :boolean, default: false
   attr :pathway_error, :string, default: nil
+  attr :pathway_in_use, :any, default: nil
   attr :history_open_for, :any, default: nil
   attr :history_entries, :list, default: []
   attr :history_state, :atom, default: :idle
@@ -5552,6 +5562,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           editing_pathway={@editing_pathway}
           has_scale={@has_scale}
           pathway_error={@pathway_error}
+          pathway_in_use={@pathway_in_use}
         />
       </div>
 
@@ -5947,10 +5958,46 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     """
   end
 
+  attr :id, :string, required: true
+  attr :refusal, :any, required: true
+
+  # AC-12: the shared refusal for a deletion the closure guard refused. It
+  # renders inside the surface that owns the action — the pathway drawer or the
+  # child-stop drawer — keeps that surface and its values open, and links each
+  # blocked pathway to its exact Evolutions filter. `phx-mounted` moves focus to
+  # the explanation when it appears; dismissing the confirmation returns focus to
+  # the trigger afterwards.
+  defp deletion_refusal(assigns) do
+    ~H"""
+    <.message
+      id={@id}
+      kind="error"
+      title={@refusal.title}
+      tabindex="-1"
+      phx-mounted={JS.focus()}
+    >
+      <p class="m-0">{@refusal.body}</p>
+      <ul :if={@refusal.links != []} class="m-0 mt-1 grid list-none gap-1 p-0">
+        <li :for={{link, index} <- Enum.with_index(@refusal.links)}>
+          <.link
+            id={"#{@id}-#{index}"}
+            href={link.href}
+            data-pathway-id={link.pathway_id}
+            class="inline-flex min-h-11 items-center font-semibold underline underline-offset-2"
+          >
+            {link.label}
+          </.link>
+        </li>
+      </ul>
+    </.message>
+    """
+  end
+
   attr :pathway_form, :any, required: true
   attr :editing_pathway, :any
   attr :has_scale, :boolean, default: false
   attr :pathway_error, :string, default: nil
+  attr :pathway_in_use, :any, default: nil
 
   defp pathway_form(assigns) do
     # Build pathway mode options using Pathway module functions
@@ -5985,6 +6032,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <.drawer_scroll>
         <%!-- ID is hidden as it's auto-managed or readonly --%>
         <.input field={@pathway_form[:pathway_id]} type="hidden" />
+        <.deletion_refusal
+          :if={@pathway_in_use}
+          id="pathway-in-use-error"
+          refusal={@pathway_in_use}
+        />
         <.message :if={@pathway_error} id="pathway-form-error" kind="error" title={@pathway_error} />
 
         <.pathway_preview

@@ -147,6 +147,10 @@ function evolutionsPath(versionId, stopId, query = "") {
   return `/gtfs/${versionId}/stops/${stopId}/evolutions${query}`;
 }
 
+function diagramPath(versionId, stopId) {
+  return `/gtfs/${versionId}/stops/${stopId}/diagram`;
+}
+
 function calendarPath(versionId, serviceId) {
   return `/gtfs/${versionId}/calendars/show?service_id=${encodeURIComponent(serviceId)}`;
 }
@@ -167,6 +171,33 @@ async function openCalendarActions(page) {
     if (disclosure) disclosure.open = true;
   });
   await expect(page.locator("#calendar-delete")).toBeVisible();
+}
+
+// The floorplan's pathways and child stops are lists beside the canvas; opening
+// one of their rows is the ordinary route into the drawer that owns Delete
+// pathway, Delete stop and Remove from diagram.
+async function openPathwayDrawer(page, modeLabel) {
+  await page
+    .locator("#pathways-table tr", { hasText: modeLabel })
+    .locator("button")
+    .first()
+    .click();
+  await expect(page.locator("#pathway-drawer-overlay")).toHaveAttribute(
+    "data-open",
+    "true",
+  );
+}
+
+async function openChildStopDrawer(page, stopId) {
+  await page
+    .locator("#child-stops-table tr", { hasText: stopId })
+    .locator("button")
+    .first()
+    .click();
+  await expect(page.locator("#child-stop-drawer-overlay")).toHaveAttribute(
+    "data-open",
+    "true",
+  );
 }
 
 const MONTH_NAMES = [
@@ -2230,6 +2261,238 @@ test.describe("guards", () => {
       await expect(page.locator("#calendar-date-error")).toBeVisible();
       await page.screenshot({
         path: capturePath(testInfo, "step-022-reference-mobile.png"),
+        fullPage: true,
+      });
+    });
+  });
+
+  // Step 23 / EV-25. Both floorplan deletion guards return :pathway_in_use for a
+  // closure-backed pathway; the refusal stays inside the drawer that owns the
+  // action, names the blocked pathways and links each one's Evolutions filter.
+  // These cases write nothing: the seeded lift and stair closures stay, so no
+  // later case sees a station whose closure set this group changed.
+  test.describe("floorplan deletions", () => {
+    test("refuses a closure-backed pathway delete and opens its scoped Evolutions filter", async ({
+      page,
+    }, testInfo) => {
+      const versionId = await seededVersionId(page);
+      await page.setViewportSize(DESKTOP);
+      await page.goto(diagramPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      await expect(page.locator("#pathways-table tr")).toHaveCount(3);
+
+      await openPathwayDrawer(page, "Elevator");
+      await expect(
+        page.locator("#pathway-form input[name='pathway_id']"),
+      ).toHaveValue(PUNCTUATED_PATHWAY);
+
+      await page.locator("#delete-pathway-button").click();
+      await expect(page.locator("#station-diagram-confirmation")).toHaveAttribute(
+        "data-open",
+        "true",
+      );
+      await page.locator("#station-diagram-confirmation-confirm").click();
+
+      const refusal = page.locator("#pathway-in-use-error");
+      await expect(refusal).toBeVisible();
+      await expect(refusal).toHaveAttribute("role", "alert");
+      await expect(refusal).toBeFocused();
+      await expect(refusal).toContainText("Pathway not deleted");
+      await expect(refusal).toContainText(
+        "This pathway has scheduled closures. Delete them on the Evolutions tab first.",
+      );
+
+      // The exact natural ID travels in the data attribute and in the encoded
+      // query of the scoped Evolutions address, not as a path segment.
+      const link = page.locator("#pathway-in-use-error-0");
+      await expect(link).toHaveCount(1);
+      await expect(link).toHaveAttribute(
+        "data-pathway-id",
+        PUNCTUATED_PATHWAY,
+      );
+      await expect(link).toHaveAttribute(
+        "href",
+        `/gtfs/${versionId}/stops/${STATION}/evolutions?pathway=BROWSER_EVO%2FPW+LIFT+1`,
+      );
+      await expect(link).toContainText("Open Evolutions");
+
+      // The drawer keeps the pathway it loaded, the confirmation it replaced is
+      // closed, and no pathway was removed.
+      await expect(page.locator("#pathway-drawer-overlay")).toHaveAttribute(
+        "data-open",
+        "true",
+      );
+      await expect(
+        page.locator("#pathway-form input[name='pathway_id']"),
+      ).toHaveValue(PUNCTUATED_PATHWAY);
+      await expect(page.locator("#station-diagram-confirmation")).toHaveAttribute(
+        "data-open",
+        "false",
+      );
+      await expect(page.locator("#pathways-table tr")).toHaveCount(3);
+
+      // The drawer is a native modal dialog in the top layer, so the refusal
+      // state is captured from the viewport rather than a full-page composite.
+      await page.screenshot({
+        path: capturePath(testInfo, "step-023-production-desktop.png"),
+      });
+
+      // The fix link opens the station's Evolutions page already filtered to
+      // this pathway: one matching row, its pathway marked current.
+      await link.click();
+      await waitForLiveView(page);
+      await expect(page.locator("#closures-search")).toHaveValue(
+        PUNCTUATED_PATHWAY,
+      );
+      await expect(
+        page.locator("#closures-list tr[data-closure-id]"),
+      ).toHaveCount(1);
+      await expect(
+        page.locator(
+          `#closure-pathway-list button[data-pathway-id="${PUNCTUATED_PATHWAY}"][aria-current="true"]`,
+        ),
+      ).toHaveCount(1);
+
+      // The same refusal at the phone width and at 320px, each with no
+      // horizontal page overflow.
+      for (const [viewport, name] of [
+        [MOBILE, "mobile"],
+        [NARROW, "320"],
+      ]) {
+        await page.setViewportSize(viewport);
+        await page.goto(diagramPath(versionId, STATION));
+        await waitForLiveView(page);
+        await openPathwayDrawer(page, "Elevator");
+        await page.locator("#delete-pathway-button").click();
+        await page.locator("#station-diagram-confirmation-confirm").click();
+
+        await expect(page.locator("#pathway-in-use-error")).toBeVisible();
+        expect(await bodyFitsViewport(page)).toBe(true);
+        await page.screenshot({
+          path: capturePath(testInfo, `step-023-production-${name}.png`),
+        });
+      }
+    });
+
+    test("refuses a closure-backed child-stop delete and lists each blocked pathway", async ({
+      page,
+    }, testInfo) => {
+      const versionId = await seededVersionId(page);
+      await page.setViewportSize(DESKTOP);
+      await page.goto(diagramPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      await openChildStopDrawer(page, "BROWSER_EVO_MEZZANINE");
+      await expect(page.locator("#child-stop-form input[name='stop_name']")).toHaveValue(
+        "Mezzanine hall",
+      );
+
+      await page.locator("#delete-child-stop-button").click();
+      await expect(page.locator("#station-diagram-confirmation")).toHaveAttribute(
+        "data-open",
+        "true",
+      );
+      await page.locator("#station-diagram-confirmation-confirm").click();
+
+      const refusal = page.locator("#child-stop-in-use-error");
+      await expect(refusal).toBeVisible();
+      await expect(refusal).toHaveAttribute("role", "alert");
+      await expect(refusal).toBeFocused();
+      await expect(refusal).toContainText("Stop not deleted");
+      await expect(refusal).toContainText(
+        "A pathway connected to this stop has scheduled closures. Delete them on the Evolutions tab first.",
+      );
+
+      // The mezzanine is an endpoint of both closure-backed pathways, so each
+      // one carries its own exact link and address.
+      await expect(refusal.locator("a")).toHaveCount(2);
+      await expect(
+        refusal.locator(`a[data-pathway-id="${PUNCTUATED_PATHWAY}"]`),
+      ).toHaveAttribute(
+        "href",
+        `/gtfs/${versionId}/stops/${STATION}/evolutions?pathway=BROWSER_EVO%2FPW+LIFT+1`,
+      );
+      await expect(
+        refusal.locator('a[data-pathway-id="BROWSER_EVO_PW_STAIR"]'),
+      ).toHaveAttribute(
+        "href",
+        `/gtfs/${versionId}/stops/${STATION}/evolutions?pathway=BROWSER_EVO_PW_STAIR`,
+      );
+
+      // The stop keeps its drawer, its loaded values, its placement and every
+      // pathway: the guard refused before anything was deleted.
+      await expect(page.locator("#child-stop-drawer-overlay")).toHaveAttribute(
+        "data-open",
+        "true",
+      );
+      await expect(page.locator("#child-stop-form input[name='stop_name']")).toHaveValue(
+        "Mezzanine hall",
+      );
+      await expect(page.locator("#child-stop-form input[name='x']")).toHaveValue(
+        "50.0",
+      );
+      await expect(page.locator("#child-stop-form input[name='y']")).toHaveValue(
+        "30.0",
+      );
+      await expect(page.locator("#pathways-table tr")).toHaveCount(3);
+      await expect(page.locator("#child-stops-table")).toContainText(
+        "BROWSER_EVO_MEZZANINE",
+      );
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-023-production-stop-desktop.png"),
+      });
+
+      // Narrow widths keep the refusal inside the drawer with no overflow.
+      for (const [viewport, name] of [
+        [MOBILE, "mobile"],
+        [NARROW, "320"],
+      ]) {
+        await page.setViewportSize(viewport);
+        await page.goto(diagramPath(versionId, STATION));
+        await waitForLiveView(page);
+        await openChildStopDrawer(page, "BROWSER_EVO_MEZZANINE");
+        await page.locator("#delete-child-stop-button").click();
+        await page.locator("#station-diagram-confirmation-confirm").click();
+
+        await expect(page.locator("#child-stop-in-use-error")).toBeVisible();
+        expect(await bodyFitsViewport(page)).toBe(true);
+        await page.screenshot({
+          path: capturePath(testInfo, `step-023-production-stop-${name}.png`),
+        });
+      }
+    });
+  });
+
+  // The reference is a self-contained file in the gitignored `.specs/`
+  // workspace, so this case skips (rather than fails) in a checkout without it.
+  test.describe("floorplan reference capture", () => {
+    test.skip(
+      () => !fs.existsSync(GUARDS_REFERENCE_PATH),
+      "reference file not present",
+    );
+
+    test("captures the floorplan guard states at both viewports", async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize(DESKTOP);
+      await page.goto(
+        `${pathToFileURL(GUARDS_REFERENCE_PATH).href}?state=floorplan-delete`,
+      );
+      await expect(page.locator("#pathway-form-error")).toBeVisible();
+      await page.screenshot({
+        path: capturePath(testInfo, "step-023-reference-desktop.png"),
+        fullPage: true,
+      });
+
+      await page.setViewportSize(MOBILE);
+      await page.goto(
+        `${pathToFileURL(GUARDS_REFERENCE_PATH).href}?state=floorplan-stop-delete`,
+      );
+      await expect(page.locator("#stop-form-error")).toBeVisible();
+      await page.screenshot({
+        path: capturePath(testInfo, "step-023-reference-mobile.png"),
         fullPage: true,
       });
     });

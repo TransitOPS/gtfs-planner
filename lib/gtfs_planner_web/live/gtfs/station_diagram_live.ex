@@ -150,6 +150,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:level_shared, false)
      |> assign(:level_id_manually_edited, false)
      |> assign(:pathway_error, nil)
+     |> assign(:pathway_in_use, nil)
+     |> assign(:child_stop_error, nil)
      |> assign(:diagram_error, nil)
      |> assign(:upload_phase, :idle)
      |> assign(:pending_diagram_upload, nil)
@@ -1220,6 +1222,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               )
           }
           child_stop_form={@child_stop_form}
+          child_stop_error={@child_stop_error}
           platform_options={@platform_options}
           stop_id_mode={@stop_id_mode}
           mode={@mode}
@@ -1266,6 +1269,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pathway_form_dirty={@pathway_form_dirty}
           has_scale={scale_configured?(@active_stop_level)}
           pathway_error={@pathway_error}
+          pathway_in_use={@pathway_in_use}
           history_open_for={@history_open_for}
           history_entries={@history_entries}
           history_state={@history_state}
@@ -1828,6 +1832,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            |> assign(:selected_stop_id, nil)
            |> assign(:editing_level, false)
            |> assign(:stop_id_mode, :auto)
+           |> assign(:child_stop_error, nil)
            |> assign(:child_stop_form, form)}
         end
 
@@ -1864,6 +1869,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:selected_stop_id, nil)
      |> assign(:editing_level, false)
      |> assign(:stop_id_mode, :auto)
+     |> assign(:child_stop_error, nil)
      |> assign(:child_stop_form, form)}
   end
 
@@ -1879,6 +1885,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:selected_stop_id, nil)
      |> assign(:active_point_id, nil)
      |> assign(:journal_form_context, nil)
+     |> assign(:child_stop_error, nil)
      |> assign(:child_stop_form, to_form(%{}))}
   end
 
@@ -2512,7 +2519,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
        |> assign(:pathway_form_dirty, false)
        |> assign(:editing_pathway, pathway)
        |> assign(:pathway_form, to_form(pathway_form_params(pathway)))
-       |> assign(:pathway_error, nil)}
+       |> clear_pathway_refusals()}
     else
       _ -> {:noreply, socket}
     end
@@ -2577,7 +2584,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                |> assign(:pathway_form_dirty, false)
                |> assign(:editing_pathway, loaded_pathway)
                |> assign(:pathway_form, to_form(pathway_form_params(loaded_pathway)))
-               |> assign(:pathway_error, nil)}
+               |> clear_pathway_refusals()}
 
             {:error, _changeset} ->
               {:noreply, assign(socket, :pathway_error, "Failed to create pathway")}
@@ -2658,7 +2665,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:pathway_form_dirty, false)
      |> assign(:editing_pathway, nil)
      |> assign(:journal_form_context, nil)
-     |> assign(:pathway_form, to_form(%{}))}
+     |> assign(:pathway_form, to_form(%{}))
+     |> clear_pathway_refusals()}
   end
 
   @impl true
@@ -2672,7 +2680,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply,
      socket
      |> assign(:pathway_form, to_form(one_way_when_exit_gate(form_params)))
-     |> assign(:pathway_error, nil)
+     |> clear_pathway_refusals()
      |> assign(:pathway_form_dirty, true)}
   end
 
@@ -3427,7 +3435,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:noreply,
              socket
              |> assign(:pathway_form, to_form(updated_params))
-             |> assign(:pathway_error, nil)}
+             |> clear_pathway_refusals()}
 
           _ ->
             {:noreply,
@@ -3613,7 +3621,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> assign(:active_pathway_tab, active_pathway_tab)
              |> assign(:pathway_form, to_form(pathway_form_params(reloaded)))
              |> assign(:pathway_form_dirty, false)
-             |> assign(:pathway_error, nil)
+             |> clear_pathway_refusals()
              |> maybe_refresh_history_entries("pathway", reloaded.id)}
 
           {:error, changeset} ->
@@ -4951,6 +4959,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:pathway_form, form)
     |> assign(:show_pathway_drawer, true)
     |> assign(:journal_form_context, nil)
+    |> clear_pathway_refusals()
   end
 
   defp setup_station_journal(socket) do
@@ -6960,7 +6969,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              :placement_status,
              "Pathway created #{stop_display_label(from_stop)} → #{stop_display_label(to_stop)}"
            )
-           |> assign(:pathway_error, nil)}
+           |> clear_pathway_refusals()}
 
         {:error, _changeset} ->
           {:noreply,
@@ -7228,6 +7237,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> stream_insert(:child_stops, stop)
     |> assign(:pending_xy, pending_xy)
     |> assign(:selected_stop_id, stop.id)
+    |> assign(:child_stop_error, nil)
     |> assign(:active_point_id, stop.id)
     |> assign(:editing_level, false)
     |> assign(:stop_id_mode, :manual)
@@ -7284,6 +7294,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:selected_stop_id, nil)
     |> assign(:active_point_id, nil)
     |> assign(:journal_form_context, nil)
+    |> assign(:child_stop_error, nil)
     |> assign(:child_stop_form, to_form(%{}))
   end
 
@@ -7299,7 +7310,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> assign(:editing_pathway, nil)
     |> assign(:journal_form_context, nil)
     |> assign(:pathway_form, to_form(%{}))
-    |> assign(:pathway_error, nil)
+    |> clear_pathway_refusals()
+  end
+
+  # AC-12: the closure-backed refusal clears with the plain failure message, so
+  # no stale explanation outlives the pathway it described. Callers reset it
+  # whenever the drawer, the edited pathway or the form changes.
+  defp clear_pathway_refusals(socket) do
+    assign(socket, pathway_error: nil, pathway_in_use: nil)
   end
 
   defp restream_mode_dependent_layers(socket) do
@@ -7375,8 +7393,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:pending_xy, nil)
          |> assign(:selected_stop_id, nil)
          |> assign(:active_point_id, nil)
+         |> assign(:child_stop_error, nil)
          |> assign(:child_stop_form, to_form(%{}))
          |> maybe_refresh_history_entries("stop", updated_stop.id)}
+
+      # AC-12: removing a closure-backed child stop is refused by the deletion
+      # guard; the drawer and the stop's placement stay exactly as they were.
+      {:error, :pathway_in_use} ->
+        {:noreply,
+         assign(
+           socket,
+           :child_stop_error,
+           child_stop_refusal(socket, stop_id, :remove_from_diagram)
+         )}
 
       {:error, :not_found} ->
         {:noreply,
@@ -7411,7 +7440,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:pending_xy, nil)
          |> assign(:selected_stop_id, nil)
          |> assign(:active_point_id, nil)
+         |> assign(:child_stop_error, nil)
          |> assign(:child_stop_form, to_form(%{}))}
+
+      # AC-12: a closure-backed pathway connected to this stop refuses the
+      # delete; the drawer keeps the stop and every entered value.
+      {:error, :pathway_in_use} ->
+        {:noreply,
+         assign(
+           socket,
+           :child_stop_error,
+           child_stop_refusal(socket, stop_id, :delete_child_stop)
+         )}
 
       {:error, :not_found} ->
         {:noreply,
@@ -7427,9 +7467,86 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket = clear_confirmation(socket)
 
     case pathway_for_deletion(socket, pathway_id) do
-      {:ok, pathway} -> delete_pathway_and_refresh(socket, pathway)
-      {:error, message} -> {:noreply, assign(socket, :pathway_error, message)}
+      {:ok, pathway} ->
+        delete_pathway_and_refresh(socket, pathway)
+
+      {:error, message} ->
+        {:noreply, socket |> assign(:pathway_error, message) |> assign(:pathway_in_use, nil)}
     end
+  end
+
+  # AC-12: the pathway and child-stop deletion guards return :pathway_in_use
+  # instead of deleting a closure-backed pathway. The refusal names the exact
+  # blocked pathways and links each one to its Evolutions filter; the drawer,
+  # the loaded pathway and the stop's placement are all left untouched.
+  defp pathway_in_use_refusal(socket, pathways) do
+    paths = Enum.uniq_by(pathways, & &1.pathway_id)
+
+    %{
+      title: "Pathway not deleted",
+      body: "This pathway has scheduled closures. Delete them on the Evolutions tab first.",
+      links: refusal_links(socket, paths)
+    }
+  end
+
+  defp child_stop_refusal(socket, stop_id, action) do
+    blocked_pathways =
+      case fetch_intent_stop(socket, stop_id) do
+        {:ok, stop} -> blocked_pathways_for_stop(socket, stop.stop_id)
+        {:error, _reason} -> []
+      end
+
+    %{
+      title: child_stop_refusal_title(action),
+      body:
+        "A pathway connected to this stop has scheduled closures. " <>
+          "Delete them on the Evolutions tab first.",
+      links: refusal_links(socket, blocked_pathways)
+    }
+  end
+
+  defp child_stop_refusal_title(:delete_child_stop), do: "Stop not deleted"
+  defp child_stop_refusal_title(_action), do: "Stop not removed from diagram"
+
+  # The blocked pathways are exactly the station's closure-backed pathways that
+  # touch this stop, read from the same scoped station-closure list the
+  # Evolutions page and the calendar guards use. One link per pathway id in a
+  # stable id order; a single blocked pathway keeps the reference's plain label,
+  # a stop with several names each exact pathway.
+  defp blocked_pathways_for_stop(socket, stop_id) do
+    case Gtfs.station_closures(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           socket.assigns.station.stop_id
+         ) do
+      {:ok, %{closures: closures}} ->
+        closures
+        |> Enum.map(& &1.pathway)
+        |> Enum.filter(&pathway_touches_stop?(&1, stop_id))
+        |> Enum.uniq_by(& &1.pathway_id)
+        |> Enum.sort_by(& &1.pathway_id)
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp pathway_touches_stop?(pathway, stop_id) do
+    pathway.from_stop_id == stop_id or pathway.to_stop_id == stop_id
+  end
+
+  defp refusal_links(socket, pathways) do
+    single? = length(pathways) == 1
+    Enum.map(pathways, &refusal_link(socket, &1.pathway_id, single?))
+  end
+
+  defp refusal_link(socket, pathway_id, single?) do
+    %{
+      pathway_id: pathway_id,
+      label: if(single?, do: "Open Evolutions", else: "Open Evolutions for #{pathway_id}"),
+      href:
+        ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/stops/#{socket.assigns.station.stop_id}/evolutions?#{%{"pathway" => pathway_id}}"
+    }
   end
 
   defp pathway_for_deletion(socket, pathway_id) do
@@ -7479,10 +7596,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
         next_socket = update_pathway_drawer(refreshed_socket, remaining_siblings)
 
-        {:noreply, assign(next_socket, :pathway_error, nil)}
+        {:noreply, clear_pathway_refusals(next_socket)}
+
+      {:error, :pathway_in_use} ->
+        {:noreply, assign(socket, :pathway_in_use, pathway_in_use_refusal(socket, [pathway]))}
 
       {:error, _changeset} ->
-        {:noreply, assign(socket, :pathway_error, "Failed to delete pathway")}
+        {:noreply,
+         socket
+         |> assign(:pathway_error, "Failed to delete pathway")
+         |> assign(:pathway_in_use, nil)}
     end
   end
 

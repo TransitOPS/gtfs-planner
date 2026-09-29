@@ -193,6 +193,409 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
     end
   end
 
+  describe "StationDiagramLive - closure-backed deletion refusals" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REFUSAL_STATION",
+          stop_name: "Refusal Station",
+          location_type: 1
+        })
+
+      level =
+        level_fixture(organization.id, gtfs_version.id, %{
+          level_id: "REFUSAL_LEVEL",
+          level_name: "Refusal Level",
+          level_index: 0.0
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id,
+          stop_id: station.id,
+          level_id: level.id,
+          diagram_filename: "refusal-level.png"
+        })
+
+      hub =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REFUSAL_HUB",
+          stop_name: "Refusal hub",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 12.0}
+        })
+
+      bay =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REFUSAL_BAY",
+          stop_name: "Refusal bay",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 30.0, "y" => 12.0}
+        })
+
+      mezzanine =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REFUSAL_MEZZ",
+          stop_name: "Refusal mezzanine",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 12.0, "y" => 40.0}
+        })
+
+      gate =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "REFUSAL_GATE",
+          stop_name: "Refusal gate",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 48.0, "y" => 24.0}
+        })
+
+      calendar =
+        calendar_fixture(organization.id, gtfs_version.id, %{service_id: "REFUSAL_CAL"})
+
+      lift =
+        pathway_fixture(organization.id, gtfs_version.id, hub.stop_id, bay.stop_id, %{
+          pathway_id: "REFUSAL/PW LIFT",
+          pathway_mode: 5,
+          is_bidirectional: true
+        })
+
+      stairs =
+        pathway_fixture(organization.id, gtfs_version.id, mezzanine.stop_id, bay.stop_id, %{
+          pathway_id: "REFUSAL_PW_STAIRS",
+          pathway_mode: 2,
+          is_bidirectional: true
+        })
+
+      walkway =
+        pathway_fixture(organization.id, gtfs_version.id, bay.stop_id, gate.stop_id, %{
+          pathway_id: "REFUSAL_PW_WALK",
+          pathway_mode: 1,
+          is_bidirectional: true
+        })
+
+      lift_closure =
+        pathway_evolution_fixture(organization.id, gtfs_version.id, %{
+          pathway_id: lift.pathway_id,
+          service_id: calendar.service_id,
+          start_time: "09:00",
+          end_time: "10:00"
+        })
+
+      stairs_closure =
+        pathway_evolution_fixture(organization.id, gtfs_version.id, %{
+          pathway_id: stairs.pathway_id,
+          service_id: calendar.service_id,
+          start_time: "23:00",
+          end_time: "26:00"
+        })
+
+      %{
+        user: user,
+        organization: organization,
+        gtfs_version: gtfs_version,
+        station: station,
+        level: level,
+        hub: hub,
+        bay: bay,
+        mezzanine: mezzanine,
+        gate: gate,
+        lift: lift,
+        stairs: stairs,
+        walkway: walkway,
+        lift_closure: lift_closure,
+        stairs_closure: stairs_closure
+      }
+    end
+
+    test "a closure-backed pathway delete is refused inside the drawer and opens its Evolutions filter",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           lift: lift,
+           lift_closure: lift_closure
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{lift.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      assert has_element?(
+               view,
+               "#pathway-form input[name='pathway_id'][value='#{lift.pathway_id}']"
+             )
+
+      view
+      |> element("#delete-pathway-button")
+      |> render_click()
+
+      assert has_element?(view, "#station-diagram-confirmation[data-open='true']")
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
+      |> render_click()
+
+      # The refusal is a focused alert inside the still-open drawer, and the
+      # confirmation it replaced is closed.
+      assert has_element?(view, "#pathway-in-use-error[role='alert'][tabindex='-1']")
+
+      assert has_element?(
+               view,
+               "#pathway-in-use-error",
+               "Pathway not deleted"
+             )
+
+      assert has_element?(
+               view,
+               "#pathway-in-use-error",
+               "This pathway has scheduled closures. Delete them on the Evolutions tab first."
+             )
+
+      assert has_element?(view, "#station-diagram-confirmation[data-open='false']")
+      assert has_element?(view, "#pathway-drawer")
+
+      assert has_element?(
+               view,
+               "#pathway-form input[name='pathway_id'][value='#{lift.pathway_id}']"
+             )
+
+      single_link = render(element(view, "#pathway-in-use-error-0"))
+      path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/evolutions"
+
+      assert single_link =~ "Open Evolutions"
+      refute single_link =~ "Open Evolutions for"
+      assert single_link =~ ~s(data-pathway-id="#{lift.pathway_id}")
+      assert single_link =~ ~s(href="#{path}?pathway=REFUSAL%2FPW+LIFT")
+
+      # Nothing was deleted, and the LiveView is still serving renders.
+      assert Gtfs.get_pathway(lift.id)
+      assert Repo.get(GtfsPlanner.Gtfs.PathwayEvolution, lift_closure.id)
+      assert has_element?(view, "#pathway-row-#{lift.id}")
+
+      # The fix link opens the station's Evolutions page filtered to exactly
+      # this pathway: two closures exist at the station, one matches.
+      {:ok, evolutions_view, _html} = live(conn, "#{path}?pathway=REFUSAL%2FPW+LIFT")
+
+      assert has_element?(evolutions_view, "#closures-count", "1 of 2 closures match")
+
+      assert has_element?(
+               evolutions_view,
+               "#closure-pathway-list button[data-pathway-id='#{lift.pathway_id}'][aria-current='true']"
+             )
+
+      assert has_element?(evolutions_view, "#closures-list tr[data-closure-id]")
+    end
+
+    test "a closure-backed child-stop delete lists each blocked pathway and keeps its placement",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level,
+           bay: bay,
+           lift: lift,
+           stairs: stairs,
+           walkway: walkway,
+           lift_closure: lift_closure,
+           stairs_closure: stairs_closure
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#child-stop-row-#{bay.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      assert has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      view
+      |> element("#delete-child-stop-button")
+      |> render_click()
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
+      |> render_click()
+
+      assert has_element?(view, "#child-stop-in-use-error[role='alert'][tabindex='-1']")
+      assert has_element?(view, "#child-stop-in-use-error", "Stop not deleted")
+
+      assert has_element?(
+               view,
+               "#child-stop-in-use-error",
+               "A pathway connected to this stop has scheduled closures. " <>
+                 "Delete them on the Evolutions tab first."
+             )
+
+      refusal = render(element(view, "#child-stop-in-use-error"))
+      path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/evolutions"
+
+      for pathway_id <- [lift.pathway_id, stairs.pathway_id] do
+        assert refusal =~ "Open Evolutions for #{pathway_id}"
+        assert refusal =~ ~s(data-pathway-id="#{pathway_id}")
+      end
+
+      assert refusal =~ ~s(href="#{path}?pathway=REFUSAL%2FPW+LIFT")
+      assert refusal =~ ~s(href="#{path}?pathway=REFUSAL_PW_STAIRS")
+
+      # The stop, its placement, its level and every pathway survive: the
+      # guard refused before deleting anything, including the closure-free
+      # walkway that shares this stop.
+      assert has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+      assert has_element?(view, "#child-stop-form input[name='stop_name'][value='Refusal bay']")
+      assert has_element?(view, "#child-stop-form input[name='x']")
+
+      kept_stop = Gtfs.get_stop!(bay.id)
+      assert kept_stop.diagram_coordinate == %{"x" => 30.0, "y" => 12.0}
+      assert kept_stop.level_id == level.level_id
+
+      assert has_element?(view, "#child-stop-row-#{bay.id}")
+      refute has_element?(view, "#unassigned-stop-row-#{bay.id}")
+
+      for pathway <- [lift, stairs, walkway] do
+        assert Gtfs.get_pathway(pathway.id)
+      end
+
+      assert Repo.get(GtfsPlanner.Gtfs.PathwayEvolution, lift_closure.id)
+      assert Repo.get(GtfsPlanner.Gtfs.PathwayEvolution, stairs_closure.id)
+    end
+
+    test "a closure-backed child-stop removal names the one blocked pathway and keeps its level",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level,
+           mezzanine: mezzanine,
+           stairs: stairs,
+           walkway: walkway
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#child-stop-row-#{mezzanine.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> element("#remove-from-diagram-button")
+      |> render_click()
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
+      |> render_click()
+
+      assert has_element?(view, "#child-stop-in-use-error", "Stop not removed from diagram")
+
+      assert has_element?(
+               view,
+               "#child-stop-in-use-error",
+               "A pathway connected to this stop has scheduled closures."
+             )
+
+      refusal = render(element(view, "#child-stop-in-use-error"))
+
+      assert refusal =~ ~s(data-pathway-id="#{stairs.pathway_id}")
+      assert refusal =~ "Open Evolutions"
+      refute refusal =~ "Open Evolutions for"
+
+      # Removing is not deleting: the stop stays on its level with its
+      # coordinate, its pathway and the closure that blocks the removal.
+      assert has_element?(view, "#child-stop-drawer-overlay[data-open='true']")
+
+      kept_stop = Gtfs.get_stop!(mezzanine.id)
+      assert kept_stop.diagram_coordinate == %{"x" => 12.0, "y" => 40.0}
+      assert kept_stop.level_id == level.level_id
+
+      assert has_element?(view, "#child-stop-row-#{mezzanine.id}")
+      refute has_element?(view, "#unassigned-stop-row-#{mezzanine.id}")
+      assert Gtfs.get_pathway(stairs.id)
+      assert Gtfs.get_pathway(walkway.id)
+    end
+
+    test "a closure-free pathway and child stop keep their existing deletion behavior",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           gate: gate,
+           walkway: walkway
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{walkway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> element("#delete-pathway-button")
+      |> render_click()
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
+      |> render_click()
+
+      refute Repo.get(GtfsPlanner.Gtfs.Pathway, walkway.id)
+      refute has_element?(view, "#pathway-in-use-error")
+      refute has_element?(view, "#pathway-form-error")
+
+      view
+      |> element("#child-stop-row-#{gate.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> element("#remove-from-diagram-button")
+      |> render_click()
+
+      view
+      |> element("#station-diagram-confirmation-confirm")
+      |> render_click()
+
+      refute has_element?(view, "#child-stop-in-use-error")
+      assert has_element?(view, "#unassigned-stop-row-#{gate.id}")
+      assert Gtfs.get_stop(gate.id)
+      assert Gtfs.get_stop(gate.id).diagram_coordinate == nil
+    end
+  end
+
   describe "StationDiagramLive - audited coordinate preview apply" do
     @describetag :alignment_audit_apply
 
