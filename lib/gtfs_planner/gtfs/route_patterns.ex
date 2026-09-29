@@ -2400,6 +2400,83 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end)
   end
 
+  @doc """
+  Returns the first free pasted timing name for a pattern.
+
+  `prefix` is the `"Pasted <Mon D>"` head (for example `"Pasted Sep 28"`);
+  candidates are `"<prefix> · <suffix>"` with the suffix sequence reusing
+  `alpha_name/1` (`A … Z, AA …`). Candidates compare case-insensitively
+  against the pattern's existing timings plus `pending`, the names already
+  assigned to this pattern in the current paste, so a second paste the same
+  day with an existing `"Pasted Sep 28 · A"` names `"Pasted Sep 28 · B"`
+  (R10, AC-12).
+
+  Read-only; call any time.
+  """
+  @spec next_free_timing_name(Ecto.UUID.t(), String.t(), [String.t()]) :: String.t()
+  def next_free_timing_name(pattern_id, prefix, pending) do
+    taken =
+      MapSet.new(
+        Enum.map(
+          Enum.map(pattern_timings(pattern_id), & &1.name) ++ List.wrap(pending),
+          &String.downcase(to_string(&1))
+        )
+      )
+
+    Stream.iterate(0, &(&1 + 1))
+    |> Enum.find_value(fn index ->
+      name = "#{prefix} · #{alpha_name(index)}"
+      unless MapSet.member?(taken, String.downcase(name)), do: name
+    end)
+  end
+
+  @doc """
+  Inserts a pasted timing with authored offsets inside the caller's transaction.
+
+  Inserts one `TimedPattern` named `name` with `headsign` via `insert_timing!/3`,
+  one row per pattern occurrence via `insert_timing_rows!/3` (`rows` zipped to
+  `pattern_occurrences/1`; each row carries `arrival_offset`, `departure_offset`,
+  `timepoint` and the service fields the paste resolved), and audits the
+  `:timed_pattern` `"created"` entry with the timing `after` snapshot, sharing
+  the caller's `operation_id` when one is set on the audit context (AC-22).
+
+  Call only inside `Repo.transaction/1`, after `lock_published_route!/2` and
+  `lock_pattern!/2`. A rows/occurrences count mismatch rolls the transaction
+  back, as does any changeset failure, which is why this is a bang function:
+  errors abort the enclosing transaction instead of returning tuples.
+  """
+  @spec create_pasted_timing!(
+          RoutePattern.t(),
+          String.t(),
+          [map()],
+          String.t() | nil,
+          AuditContext.t()
+        ) :: TimedPattern.t()
+  def create_pasted_timing!(
+        %RoutePattern{} = pattern,
+        name,
+        rows,
+        headsign,
+        %AuditContext{} = audit_context
+      ) do
+    occurrences = pattern_occurrences(pattern)
+
+    if length(rows) != length(occurrences), do: Repo.rollback(:timing_rows_mismatch)
+
+    timing = insert_timing!(pattern, name, headsign)
+    insert_timing_rows!(timing, occurrences, rows)
+
+    audit!(
+      audit_context,
+      :timed_pattern,
+      timing,
+      "created",
+      timing_audit_attrs(pattern, timing, %{after: audit_timing_snapshot(timing)})
+    )
+
+    timing
+  end
+
   # Derivation persists a signature key on each derived pattern/timing so a retry
   # can reuse them. A staff edit that changes the pattern structure, the pattern
   # direction or a timing vector clears the affected keys so a retry can never
