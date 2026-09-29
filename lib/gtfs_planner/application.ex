@@ -20,6 +20,10 @@ defmodule GtfsPlanner.Application do
          name: GtfsPlanner.Gtfs.Import.ChangeRunnerSupervisor, strategy: :one_for_one},
         {DynamicSupervisor,
          name: GtfsPlanner.Gtfs.Export.RunnerSupervisor, strategy: :one_for_one},
+        {Registry, keys: :unique, name: GtfsPlanner.Agents.Registry},
+        {DynamicSupervisor,
+         name: GtfsPlanner.Agents.SessionSupervisor, strategy: :one_for_one, max_children: 200},
+        {Task.Supervisor, name: GtfsPlanner.Agents.TurnSupervisor, max_children: 8},
         # Start a worker by calling: GtfsPlanner.Worker.start_link(arg)
         # {GtfsPlanner.Worker, arg},
         # Start to serve requests, typically the last entry

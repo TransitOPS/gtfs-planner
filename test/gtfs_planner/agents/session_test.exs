@@ -870,12 +870,58 @@ defmodule GtfsPlanner.Agents.SessionTest do
       attach(thirteenth)
       _thirteenth_stub = blocked_send(thirteenth, "After a timeout")
     end
+
+    test "terminating a session kills its turn and releases the shared capacity", context do
+      block_requests()
+      session = start_application_session(context, EchoPack)
+      attach(session)
+      _stub = blocked_send(session, "A blocked question")
+
+      task_pid = :sys.get_state(session).turn.task_pid
+      task_monitor = Process.monitor(task_pid)
+      session_monitor = Process.monitor(session)
+
+      assert :ok =
+               DynamicSupervisor.terminate_child(GtfsPlanner.Agents.SessionSupervisor, session)
+
+      assert_receive {:DOWN, ^session_monitor, :process, ^session, _reason}, 5_000
+      assert_receive {:DOWN, ^task_monitor, :process, ^task_pid, _reason}, 5_000
+      refute task_pid in Task.Supervisor.children(@turn_supervisor)
+    end
   end
 
   ## Fixtures and helpers
 
   defp start_session(context, pack, opts \\ []) do
-    scope = %Scope{
+    child =
+      Supervisor.child_spec({Session, [scope: session_scope(context, pack), pack: pack] ++ opts},
+        id: {Session, System.unique_integer([:positive])}
+      )
+
+    start_supervised!(child)
+  end
+
+  # Step 9 owns the application's session supervisor; a session started there is
+  # shut down the way production shuts it down, by its supervisor rather than by
+  # a call, so terminating it must release its turn capacity too (AC-30).
+  defp start_application_session(context, pack, opts \\ []) do
+    {:ok, session} =
+      DynamicSupervisor.start_child(
+        GtfsPlanner.Agents.SessionSupervisor,
+        {Session, [scope: session_scope(context, pack), pack: pack] ++ opts}
+      )
+
+    on_exit(fn ->
+      if Process.alive?(session) do
+        DynamicSupervisor.terminate_child(GtfsPlanner.Agents.SessionSupervisor, session)
+      end
+    end)
+
+    session
+  end
+
+  defp session_scope(context, pack) do
+    %Scope{
       organization_id: context.organization.id,
       gtfs_version_id: context.version.id,
       user_id: context.user.id,
@@ -883,13 +929,6 @@ defmodule GtfsPlanner.Agents.SessionTest do
       pack_id: pack.id(),
       version_name: context.version.name
     }
-
-    child =
-      Supervisor.child_spec({Session, [scope: scope, pack: pack] ++ opts},
-        id: {Session, System.unique_integer([:positive])}
-      )
-
-    start_supervised!(child)
   end
 
   defp ensure_turn_supervisor do
