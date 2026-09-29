@@ -63,6 +63,22 @@ async function awaitConnected(page) {
   await page.waitForSelector("[data-phx-main].phx-connected");
 }
 
+// Route tabs are in-app live navigations between LiveViews. The outgoing view
+// keeps `phx-connected` until the destination replaces it, so a bare connected
+// check right after a tab click can pass on the view being left. Wait for the
+// destination's own URL and marker, then for its connection.
+async function awaitRouteTab(page, path, marker) {
+  await expect(page).toHaveURL(new RegExp(`${path}$`));
+  await expect(page.locator(marker)).toBeVisible();
+  await awaitConnected(page);
+}
+
+function routeTab(page, name) {
+  return page
+    .locator('nav[aria-label="Route navigation"]')
+    .getByRole("link", { name });
+}
+
 async function logIn(page, user = CREATE_USER) {
   await page.goto("/users/log_in");
 
@@ -343,7 +359,9 @@ test.describe("Route color field", () => {
     const saved = await text.inputValue();
     await page.locator("label[for='route-details-text-mode-custom']").click();
     await expect(text).toHaveValue(saved);
-    await page.locator("label[for='route-details-text-mode-automatic']").click();
+    await page
+      .locator("label[for='route-details-text-mode-automatic']")
+      .click();
     await expect(text).toHaveValue(saved);
 
     const ids = await page
@@ -516,16 +534,17 @@ test.describe("Route details workspace", () => {
     await expect(short).toHaveValue("PR");
   });
 
-  test("details boarding warns with the seeded missing paths and unknown geometry stays unreported", async ({
+  test("details boarding warns with the seeded missing paths and located geometry stays unreported", async ({
     page,
   }) => {
     await logIn(page);
     const version = await versionId(page);
-    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    const unlocatedRoute = "BROWSER_ROUTE16_UNLOCATED";
+    await page.goto(`/gtfs/${version}/routes/${unlocatedRoute}`);
     await awaitConnected(page);
 
-    // BROWSER_PATTERNS_READY's two patterns run over stops stored without
-    // coordinates, so the saved geometry itself reports known-missing paths.
+    // BROWSER_ROUTE16_UNLOCATED's pattern runs over two stops stored without
+    // coordinates, so the saved geometry itself reports a known-missing path.
     // With boarding untouched, the imported values warn nothing.
     await expect(page.locator("#route-details-cont-warn")).toHaveCount(0);
 
@@ -538,14 +557,14 @@ test.describe("Route details workspace", () => {
     const contWarn = page.locator("#route-details-cont-warn");
     await expect(contWarn).toBeVisible();
     await expect(contWarn).toContainText(
-      "2 patterns have sections without a path",
+      "1 pattern has sections without a path",
     );
     await expect(contWarn).toContainText(
       "boarding between stops applies there",
     );
     await expect(contWarn.locator("a")).toHaveAttribute(
       "href",
-      `/gtfs/${version}/routes/${DETAILS_ROUTE}/patterns`,
+      `/gtfs/${version}/routes/${unlocatedRoute}/patterns`,
     );
 
     // Advisory, not a rejection: Save stays enabled while the warning stands.
@@ -553,6 +572,21 @@ test.describe("Route details workspace", () => {
 
     await page.locator("#route-details-discard").click();
     await expect(contWarn).toHaveCount(0);
+
+    // The control: every stop of BROWSER_PATTERNS_READY carries coordinates, so
+    // the same boarding change reports no missing path and warns nothing.
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
+    await page.locator("#route-details-additional summary").click();
+    await page
+      .locator("#route-details-pickup")
+      .selectOption({ label: "Anywhere along the route" });
+    await page.locator("#route-details-pickup").blur();
+    // The save bar shows once the server has validated the changed draft, so
+    // the absence below is the server's answer and not a read before it.
+    await expect(page.locator("#route-details-save-bar")).toBeVisible();
+    await expect(page.locator("#route-save")).toBeEnabled();
+    await expect(page.locator("#route-details-cont-warn")).toHaveCount(0);
   });
 });
 
@@ -644,9 +678,7 @@ test.describe("Route details draft preview", () => {
     const routeUrl = `/gtfs/${version}/routes/${DETAILS_ROUTE}`;
     await page.goto(routeUrl);
     await awaitConnected(page);
-    const originalName = await page
-      .locator("#route-details-long")
-      .inputValue();
+    const originalName = await page.locator("#route-details-long").inputValue();
 
     // Count the form's own submit events, wherever they come from.
     await page.evaluate(() => {
@@ -862,6 +894,7 @@ test.describe("Route details save and merge", () => {
 
     // Reload proves persistence through the ordinary read, not just echo.
     await page.reload();
+    await awaitConnected(page);
     await expect(page.locator("#route-details-long")).toHaveValue(renamed);
 
     // Leave the seeded route as it was found.
@@ -905,8 +938,11 @@ test.describe("Route details save and merge", () => {
 
     const conflict = pageA.locator("#route-conflict");
     await expect(conflict).toBeVisible();
-    // The landed surface names the saving actor and time beside the merge.
-    await expect(conflict).toContainText("while you were editing");
+    // The landed surface names the saving actor and time beside the merge:
+    // "<actor> saved this route at HH:MM while you were editing".
+    await expect(conflict).toContainText(
+      /\S+ saved this route at \d{2}:\d{2} while you were editing/,
+    );
     await expect(pageA.locator("#route-conflict-table")).toContainText(
       theirDesc,
     );
@@ -1016,6 +1052,19 @@ test.describe("Route details dirty navigation", () => {
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
     await awaitConnected(page);
+
+    // Reach Details through the route tabs, so the previous history entry is
+    // this same document: Back is then an in-app popstate the guard can hold.
+    // After a `goto`, Back would leave the document and only the browser's own
+    // beforeunload dialog could answer.
+    await routeTab(page, "Patterns").click();
+    await awaitRouteTab(page, "/patterns", "#pattern-editor");
+    await routeTab(page, "Details").click();
+    await awaitRouteTab(
+      page,
+      `/routes/${DETAILS_ROUTE}`,
+      "#route-details-form",
+    );
 
     const long = page.locator("#route-details-long");
     const saved = await long.inputValue();
@@ -1184,6 +1233,20 @@ test.describe("Route connectivity recovery", () => {
  * browser run proves the production composition end to end.
  */
 test.describe("Route status actions", () => {
+  // The cases below deactivate the shared seeded route. A failure mid-case must
+  // not leave it inactive, or every later case that needs an active
+  // BROWSER_PATTERNS_READY (and the composed export journey) fails with it.
+  test.afterEach(async ({ page }) => {
+    await logIn(page);
+    await page.goto(`/gtfs/${await versionId(page)}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
+
+    if ((await page.locator("#route-reactivate").count()) > 0) {
+      await page.locator("#route-reactivate").click();
+      await expect(page.locator("#route-inactive-banner")).toHaveCount(0);
+    }
+  });
+
   test("deactivate confirms, the banner follows the saved row, and Undo restores", async ({
     page,
   }) => {
@@ -1238,6 +1301,7 @@ test.describe("Route status actions", () => {
         `nav[aria-label='Route navigation'] a[href='/gtfs/${version}/routes/${DETAILS_ROUTE}/patterns']`,
       )
       .click();
+    await awaitRouteTab(page, "/patterns", "#pattern-editor");
     await expect(page.locator("#route-inactive-banner")).toBeVisible();
     await page.locator("#route-reactivate").click();
     await expect(page.locator("#flash-info")).toContainText("reactivated");
@@ -1376,7 +1440,9 @@ test.describe("Reviewed route deletion", () => {
   }) => {
     await logIn(page);
     const version = await versionId(page);
-    await page.goto(`/gtfs/${version}/routes/BROWSER_ROUTE16_DELETE`);
+    // This case only keeps the route, so it uses one no journey deletes:
+    // BROWSER_ROUTE16_DELETE is gone once the review case above applies.
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
     await awaitConnected(page);
 
     await page.fill("#route-details-long", "Renamed before delete");
@@ -1592,6 +1658,11 @@ test.describe("Other routes context", () => {
   // blocks do not share function scope.
   const TILE_PATTERN = /\/map\/tiles\//;
 
+  // The seeded context total for BROWSER_PATTERNS_READY's viewport: every other
+  // route of the version whose geometry falls in it. A seed change that adds or
+  // moves a route in that corner changes this number on purpose.
+  const SEEDED_CONTEXT_TOTAL = 66;
+
   function pngTile() {
     return Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP8z8DwnwEJMDEgAQBe" +
@@ -1686,16 +1757,19 @@ test.describe("Other routes context", () => {
 
     await page.locator("#route-map-context-more").click();
 
-    // The exhausted total is seed-dependent (later spec steps add lanes), so
-    // the assertion derives it from the payload the page itself announces.
+    // The status line announces the exhausted total once the second page has
+    // landed; the payload is read only after that, because it holds 50 routes
+    // until the page arrives. The total is the seeded one: the 55
+    // BROWSER_CTX_* routes plus the other seeded routes whose geometry falls in
+    // the viewport (see SEEDED_CONTEXT_TOTAL).
+    await expect(page.locator("#route-map-context-status")).toContainText(
+      `Showing all ${SEEDED_CONTEXT_TOTAL} nearby routes in this view.`,
+    );
     const context = JSON.parse(
       await page.locator("#route-map").getAttribute("data-map-context"),
     );
     const total = context.routes.length;
-    expect(total).toBeGreaterThan(50);
-    await expect(page.locator("#route-map-context-status")).toContainText(
-      `Showing all ${total} nearby routes in this view.`,
-    );
+    expect(total).toBe(SEEDED_CONTEXT_TOTAL);
 
     const ids = context.routes.map((route) => route.route_id);
     expect(ids).toEqual([...ids].sort());
