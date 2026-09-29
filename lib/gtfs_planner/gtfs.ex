@@ -5939,6 +5939,43 @@ defmodule GtfsPlanner.Gtfs do
     Blocking.apply_block_change(day_type_key, command, audit_context, confirmation)
   end
 
+  @doc """
+  Suggests blocks for one day type and returns the plan without writing anything.
+
+  `mode` is `:unassigned_only`, `{:selected, block_ids}` or `:replace_all`; the
+  day types come from the published version's own calendars, so `day_type_key`
+  names exactly one of them and nothing falls back to another (INV-6). The read
+  takes the version row `FOR SHARE` and no blocking lock, so it never waits on a
+  writer and never blocks one.
+
+  Returns `{:error, :not_found}` for a foreign or unpublished version,
+  `{:error, {:unknown_day_type, day_types}}` for a key the version does not derive,
+  `{:error, :no_selection}` for an empty or absent block selection, and
+  `{:error, {:too_large, n}}` when more than 3,000 trips are in scope; the bound is
+  checked before the generator runs, so an oversized day type is refused rather
+  than answered slowly and partially (AC-26).
+
+  The plan carries the moves, the new blocks and their attribute rows, the review
+  of what the moves change on every affected day type, the before and after
+  figures, the leftovers and the fingerprint a later `apply_block_plan/3` matches.
+  Applying it is a separate, confirmed write.
+  """
+  @spec suggest_blocks(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t() | nil,
+          GtfsPlanner.Gtfs.Blocking.Generator.mode()
+        ) ::
+          {:ok, GtfsPlanner.Gtfs.Blocking.Plan.t()}
+          | {:error,
+             :not_found
+             | {:unknown_day_type, [GtfsPlanner.Gtfs.Blocking.DayTypes.day_type()]}
+             | :no_selection
+             | {:too_large, pos_integer()}}
+  def suggest_blocks(organization_id, gtfs_version_id, day_type_key, mode) do
+    Blocking.suggest_blocks(organization_id, gtfs_version_id, day_type_key, mode)
+  end
+
   # ============================================================================
   # Station Naming
   # ============================================================================
