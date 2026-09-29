@@ -1641,18 +1641,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       view = ctx.view
       open_stop_drawer(view, "Entrance One")
 
-      view
-      |> form("#report-stop-edit-form",
-        stop: %{
-          stop_name: "Renamed But Rejected",
-          stop_lat: "91.5",
-          stop_lon: "-122.3",
-          level_id: "",
-          wheelchair_boarding: "",
-          platform_code: ""
+      # The level select offers no blank choice for a stop inside a station, so
+      # a blank level can only arrive as a crafted submit.
+      render_submit(view, "save_entity", %{
+        "stop" => %{
+          "stop_name" => "Renamed But Rejected",
+          "stop_lat" => "91.5",
+          "stop_lon" => "-122.3",
+          "level_id" => "",
+          "wheelchair_boarding" => "",
+          "platform_code" => ""
         }
-      )
-      |> render_submit()
+      })
 
       # The drawer does not close.
       assert has_element?(view, "dialog#report-entity-drawer-overlay[data-open='true']")
@@ -1693,7 +1693,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
           stop_name: "Entrance One",
           stop_lat: "91.5",
           stop_lon: "-122.3",
-          level_id: "",
+          level_id: "L1",
           wheelchair_boarding: "",
           platform_code: ""
         }
@@ -1899,6 +1899,219 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert has_element?(view, "#stop_stop_name[value='Late Arrival']")
     end
 
+    test "the level control offers this version's levels by name, and a required level has no blank choice",
+         ctx do
+      view = ctx.view
+      other_version = gtfs_version_fixture(ctx.organization.id)
+      other_organization = organization_fixture()
+      other_organization_version = gtfs_version_fixture(other_organization.id)
+
+      level_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+        level_id: "L2",
+        level_name: "Mezzanine",
+        level_index: 1.0
+      })
+
+      level_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+        level_id: "Z_UNNAMED",
+        level_name: nil,
+        level_index: 2.0
+      })
+
+      level_fixture(ctx.organization.id, other_version.id, %{
+        level_id: "OTHER_VERSION_LEVEL",
+        level_name: "Other Version"
+      })
+
+      level_fixture(other_organization.id, other_organization_version.id, %{
+        level_id: "OTHER_ORG_LEVEL",
+        level_name: "Other Organization"
+      })
+
+      open_stop_drawer(view, "Entrance One")
+
+      assert has_element?(view, "select#stop_level_id[name='stop[level_id]']")
+      refute has_element?(view, "input#stop_level_id")
+
+      assert level_options(view) == [
+               {"Mezzanine (L2)", "L2"},
+               {"Street (L1)", "L1"},
+               {"Z_UNNAMED", "Z_UNNAMED"}
+             ]
+
+      assert has_element?(view, "#stop_level_id option[value='L1'][selected]")
+    end
+
+    test "a stop that may have no level offers a blank choice", ctx do
+      view = ctx.view
+
+      stop_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+        stop_id: "FREE_1",
+        stop_name: "Free Standing",
+        location_type: 0,
+        parent_station: nil
+      })
+
+      render_click(view, "select_entity", %{"entity_id" => "FREE_1", "entity_type" => "stop"})
+
+      assert level_options(view) == [{"No level", ""}, {"Street (L1)", "L1"}]
+      assert has_element?(view, "#stop_level_id option[value=''][selected]")
+    end
+
+    test "choosing another existing level stores it", ctx do
+      view = ctx.view
+
+      level_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+        level_id: "L2",
+        level_name: "Mezzanine",
+        level_index: 1.0
+      })
+
+      open_stop_drawer(view, "Entrance One")
+
+      view
+      |> form("#report-stop-edit-form", stop: %{level_id: "L2"})
+      |> render_submit()
+
+      render_async(view, 5_000)
+
+      stored = Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1")
+      assert stored.level_id == "L2"
+    end
+
+    test "a crafted submit naming a missing level saves nothing and marks the level field",
+         ctx do
+      view = ctx.view
+      open_stop_drawer(view, "Entrance One")
+
+      render_submit(view, "save_entity", %{
+        "stop" => %{
+          "stop_name" => "Renamed But Rejected",
+          "level_id" => "NO_SUCH_LEVEL"
+        }
+      })
+
+      assert has_element?(view, "dialog#report-entity-drawer-overlay[data-open='true']")
+      assert has_element?(view, "#stop_level_id[aria-invalid='true']")
+
+      assert has_element?(
+               view,
+               "#stop_level_id-error",
+               "Choose a level that exists in this version."
+             )
+
+      assert has_element?(view, "#report-stop-form-error", "Check the highlighted fields")
+
+      assert_push_event(view, "focus_form_error", %{
+        form_id: "report-stop-edit-form",
+        fallback_id: "report-stop-form-error"
+      })
+
+      stored = Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1")
+      assert stored.level_id == "L1"
+      assert stored.stop_name == "Entrance One"
+    end
+
+    test "validating a crafted missing level marks the field without writing", ctx do
+      view = ctx.view
+      open_stop_drawer(view, "Entrance One")
+
+      render_change(view, "validate_entity", %{
+        "stop" => %{"level_id" => "NO_SUCH_LEVEL"}
+      })
+
+      assert has_element?(
+               view,
+               "#stop_level_id-error",
+               "Choose a level that exists in this version."
+             )
+
+      refute has_element?(view, "#report-stop-form-error")
+
+      stored = Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1")
+      assert stored.level_id == "L1"
+    end
+
+    test "a stored level the version lacks shows a prompt and must be replaced to save", ctx do
+      view = ctx.view
+
+      stop_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+        stop_id: "ENT_STALE",
+        stop_name: "Stale Level Entrance",
+        location_type: 2,
+        parent_station: "STATION_1",
+        level_id: "DOCQA_NO_SUCH_LEVEL"
+      })
+
+      render_click(view, "select_entity", %{"entity_id" => "ENT_STALE", "entity_type" => "stop"})
+
+      assert level_options(view) == [
+               {"Choose a level", "DOCQA_NO_SUCH_LEVEL"},
+               {"Street (L1)", "L1"}
+             ]
+
+      assert has_element?(
+               view,
+               "#stop_level_id option[value='DOCQA_NO_SUCH_LEVEL'][selected]",
+               "Choose a level"
+             )
+
+      assert has_element?(
+               view,
+               "#stop_level_id-help",
+               "Stored level DOCQA_NO_SUCH_LEVEL does not exist in this version."
+             )
+
+      # Saving with the prompt still selected is refused.
+      view |> form("#report-stop-edit-form") |> render_submit()
+
+      assert has_element?(
+               view,
+               "#stop_level_id-error",
+               "Choose a level that exists in this version."
+             )
+
+      stored = Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_STALE")
+      assert stored.level_id == "DOCQA_NO_SUCH_LEVEL"
+
+      view |> form("#report-stop-edit-form", stop: %{level_id: "L1"}) |> render_submit()
+      render_async(view, 5_000)
+
+      stored = Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_STALE")
+      assert stored.level_id == "L1"
+    end
+
+    test "an optional level that no longer exists offers the prompt and No level", ctx do
+      view = ctx.view
+
+      stop_fixture(ctx.organization.id, ctx.gtfs_version.id, %{
+        stop_id: "FREE_STALE",
+        stop_name: "Free Stale",
+        location_type: 0,
+        parent_station: nil,
+        level_id: "DOCQA_NO_SUCH_LEVEL"
+      })
+
+      render_click(view, "select_entity", %{
+        "entity_id" => "FREE_STALE",
+        "entity_type" => "stop"
+      })
+
+      assert level_options(view) == [
+               {"Choose a level", "DOCQA_NO_SUCH_LEVEL"},
+               {"No level", ""},
+               {"Street (L1)", "L1"}
+             ]
+
+      assert has_element?(view, "#stop_level_id option[value='DOCQA_NO_SUCH_LEVEL'][selected]")
+
+      view |> form("#report-stop-edit-form", stop: %{level_id: ""}) |> render_submit()
+      render_async(view, 5_000)
+
+      stored = Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "FREE_STALE")
+      assert is_nil(stored.level_id)
+    end
+
     test "the drawer names the exact opener so closing restores it", ctx do
       view = ctx.view
 
@@ -1957,6 +2170,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
   end
 
   defp element_count(doc, selector), do: doc |> LazyHTML.query(selector) |> Enum.count()
+
+  # The level select's options in order, as {label, value}.
+  defp level_options(view) do
+    view
+    |> element("#stop_level_id")
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("option")
+    |> Enum.map(fn option ->
+      {option |> LazyHTML.text() |> String.trim(), option |> LazyHTML.attribute("value") |> hd()}
+    end)
+  end
 
   defp extract_integer(html) do
     [value] = Regex.run(~r/(\d+)/, html, capture: :all_but_first)

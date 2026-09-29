@@ -409,7 +409,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
       %Stop{} = stop ->
         changeset =
           stop
-          |> Gtfs.change_stop(editable_stop_params(stop_params))
+          |> stop_changeset(editable_stop_params(stop_params), socket.assigns.drawer_levels)
           |> Map.put(:action, :validate)
 
         {:noreply, assign(socket, :drawer_form, to_form(changeset, as: :stop))}
@@ -441,7 +441,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   end
 
   defp save_stop(socket, stop, stop_params) do
-    case Gtfs.update_stop(stop, editable_stop_params(stop_params)) do
+    attrs = editable_stop_params(stop_params)
+    changeset = stop_changeset(stop, attrs, socket.assigns.drawer_levels)
+
+    # Only a valid changeset is written: `Gtfs.update_stop/2` builds its own
+    # changeset without the level check. A rejected one carries the action
+    # `Repo.update/1` would set, which the form needs to render field errors.
+    result =
+      if changeset.valid?,
+        do: Gtfs.update_stop(stop, attrs),
+        else: {:error, Map.put(changeset, :action, :update)}
+
+    case result do
       {:ok, _updated} ->
         {:noreply,
          socket
@@ -457,6 +468,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
            form_id: StationReportDrawerComponents.form_id(),
            fallback_id: StationReportDrawerComponents.error_summary_id()
          })}
+    end
+  end
+
+  # `Stop.changeset/2` is shared with import and other writers, so it cannot
+  # look levels up. The level select only offers this version's levels, but a
+  # crafted submit can name any text, and a stop pointing at a level missing
+  # from `levels.txt` disappears from every floorplan and breaks the export.
+  defp stop_changeset(stop, attrs, levels) do
+    changeset = Gtfs.change_stop(stop, attrs)
+    level_id = Ecto.Changeset.get_field(changeset, :level_id)
+
+    if level_id in [nil, ""] or Enum.any?(levels, &(&1.level_id == level_id)) do
+      changeset
+    else
+      Ecto.Changeset.add_error(
+        changeset,
+        :level_id,
+        "Choose a level that exists in this version."
+      )
     end
   end
 
@@ -482,6 +512,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         |> assign(:drawer_entity, stop)
         |> assign(:drawer_entity_id, entity_id)
         |> assign(:drawer_form, stop_form(stop))
+        |> assign(:drawer_levels, Gtfs.list_all_levels(org_id, version_id))
         |> assign(:drawer_error, nil)
     end
   end
@@ -571,6 +602,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
         drawer_entity_id={@drawer_entity_id}
         drawer_form={@drawer_form}
         drawer_error={@drawer_error}
+        drawer_levels={@drawer_levels}
         drawer_return_focus_id={@drawer_return_focus_id}
       />
     </Layouts.app>
@@ -699,6 +731,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
     |> assign(:drawer_entity, nil)
     |> assign(:drawer_entity_id, nil)
     |> assign(:drawer_form, nil)
+    |> assign(:drawer_levels, [])
     |> assign(:drawer_error, nil)
   end
 
