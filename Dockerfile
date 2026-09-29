@@ -63,6 +63,7 @@ RUN mkdir -p /app/var/gtfs-task-artifacts && \
 
 # Install runtime dependencies including Java 21 from Eclipse Temurin.
 # Avoid full distro upgrades during image builds to reduce CI disk pressure.
+# Release checks use build-only placeholders scoped to this RUN command.
 RUN apt-get update --allow-releaseinfo-change && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -74,7 +75,8 @@ RUN apt-get update --allow-releaseinfo-change && apt-get install -y --no-install
     && apt-get update \
     && apt-get install -y --no-install-recommends temurin-21-jre \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives && \
-    export DATABASE_URL= SECRET_KEY_BASE= GEOAPIFY_API_KEY= && \
+    export DATABASE_URL= SECRET_KEY_BASE= GEOAPIFY_API_KEY= \
+    OPENROUTER_API_KEY=build-only OPENROUTER_MODEL=build/smoke-check && \
     /app/bin/gtfs_planner eval "[_ | _] = :crypto.supports()" || exit 1 && \
     /app/bin/gtfs_planner eval ":ok = :public_key.cacerts_load()" || exit 1
 
