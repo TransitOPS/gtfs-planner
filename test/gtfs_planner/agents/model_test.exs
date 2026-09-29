@@ -387,14 +387,9 @@ defmodule GtfsPlanner.Agents.ModelTest do
     conn
   end
 
-  # Req parses the request body before the stub runs, so `read_body/1` keeps the
-  # raw payload only while the adapter still holds it; `body_params` is the same
-  # JSON already decoded by Plug.Parsers.
   defp captured_json(conn) do
-    case Plug.Conn.read_body(conn) do
-      {:ok, body, _conn} when body != "" -> Jason.decode!(body)
-      _empty_or_partial -> conn.body_params
-    end
+    {:ok, body, _conn} = Plug.Conn.read_body(conn)
+    Jason.decode!(body)
   end
 
   defp content_body(text), do: reply_body("stop", %{"content" => text})
