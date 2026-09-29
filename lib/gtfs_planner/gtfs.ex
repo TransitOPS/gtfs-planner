@@ -55,6 +55,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Location
   alias GtfsPlanner.Gtfs.Network
   alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.RecentChanges
   alias GtfsPlanner.Gtfs.RiderCategory
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteNetwork
@@ -3952,6 +3953,56 @@ defmodule GtfsPlanner.Gtfs do
   """
   @spec format_display_time(NaiveDateTime.t(), keyword()) :: String.t()
   defdelegate format_display_time(local_time, opts \\ []), to: DisplayClock, as: :format_time
+
+  # Recent change functions
+
+  @doc """
+  Returns up to five recent destination groups for one audience, newest first.
+
+  See `GtfsPlanner.Gtfs.RecentChanges.recent/4`.
+  """
+  @spec recent_changes(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          :everyone | {:actor, Ecto.UUID.t()},
+          DisplayClock.zone_resolution()
+        ) :: [RecentChanges.group()]
+  defdelegate recent_changes(organization_id, gtfs_version_id, audience, zone_resolution),
+    to: RecentChanges,
+    as: :recent
+
+  @doc """
+  Returns the actor's own recent groups, or the team's when the actor has none.
+
+  See `GtfsPlanner.Gtfs.RecentChanges.recent_for_user/4`.
+  """
+  @spec recent_changes_for_user(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          DisplayClock.zone_resolution()
+        ) :: %{scope: :own | :team, groups: [RecentChanges.group()]}
+  defdelegate recent_changes_for_user(
+                organization_id,
+                gtfs_version_id,
+                actor_id,
+                zone_resolution
+              ),
+              to: RecentChanges,
+              as: :recent_for_user
+
+  @doc """
+  Counts distinct operations and distinct non-null stations changed after `since`.
+
+  See `GtfsPlanner.Gtfs.RecentChanges.count_since/3`.
+  """
+  @spec count_changes_since(Ecto.UUID.t(), Ecto.UUID.t(), DateTime.t()) :: %{
+          changes: non_neg_integer(),
+          stations: non_neg_integer()
+        }
+  defdelegate count_changes_since(organization_id, gtfs_version_id, since),
+    to: RecentChanges,
+    as: :count_since
 
   # Area functions
 
