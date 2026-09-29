@@ -773,7 +773,7 @@ test.describe("calendar combination", () => {
     await other.waitForSelector("#calendar-editor");
     await expect(
       other.locator(`#calendar-exception-chips-${changedDate}`),
-    ).toContainText("Service removed");
+    ).toContainText("No service");
     await other.close();
 
     // The prepared review no longer describes the source, so confirming writes nothing and offers
@@ -833,9 +833,6 @@ test.describe("calendar combination", () => {
     );
     await other.waitForSelector("#calendar-editor");
     await other.waitForSelector("[data-phx-main].phx-connected");
-    // The editor's actions live behind a native disclosure; the reviewer opens it by clicking
-    // its own summary, which survives the LiveView patch that setting `.open` directly loses to.
-    await other.locator("#calendar-actions").click();
     await expect(other.locator("#calendar-delete")).toBeVisible();
     await other.click("#calendar-delete");
     await other.click("#calendar-review-dialog-confirm");

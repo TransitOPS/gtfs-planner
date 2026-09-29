@@ -685,24 +685,6 @@ function nextFriday(from = new Date()) {
   return shiftDays(from, offset);
 }
 
-// The reference groups duplication and deletion behind the "Calendar actions"
-// disclosure; opening it is a state change, not an assertion, so the journey can
-// reach the actions deterministically.
-async function openCalendarActions(page) {
-  await page.evaluate(() => {
-    const disclosure = Array.from(
-      document.querySelectorAll("#calendar-editor details"),
-    ).find((element) =>
-      (element.querySelector("summary")?.textContent || "").includes(
-        "Calendar actions",
-      ),
-    );
-
-    if (disclosure) disclosure.open = true;
-  });
-  await expect(page.locator("#calendar-delete")).toBeVisible();
-}
-
 async function openEditor(page, versionName, serviceId) {
   const versionId = await openCalendars(page, versionName);
   return openEditorFor(page, versionId, serviceId);
@@ -726,7 +708,7 @@ async function waitForEditorReady(page) {
 }
 
 test.describe("calendar editor", () => {
-  test("creates a weekly calendar from the list, previews three months and deletes it", async ({
+  test("creates a weekly calendar from the list, previews a month and deletes it", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 1440, height: 1000 });
@@ -757,28 +739,28 @@ test.describe("calendar editor", () => {
     );
     await expect(page.locator("#calendar-weekdays-monday")).toBeChecked();
     await expect(page.locator("#calendar-weekdays-saturday")).not.toBeChecked();
-    await expect(page.locator("#calendar-usage")).toContainText("0 trips");
+    await expect(page.locator("#calendar-usage")).toContainText(
+      "No trips use this calendar",
+    );
 
-    // Three months of the real derived preview, with symbols, text and a legend.
-    await expect(page.locator("#months table")).toHaveCount(3);
+    // One month of the real derived preview, with symbols, text and a legend.
+    await expect(page.locator("#months table")).toHaveCount(1);
+    await expect(page.locator("#months-legend")).toContainText("Runs");
+    await expect(page.locator("#months-legend")).toContainText("Day off");
     await expect(page.locator("#months-legend")).toContainText(
-      "Regular service",
+      "Extra service",
     );
     await expect(page.locator("#months-legend")).toContainText(
-      "Service removed",
-    );
-    await expect(page.locator("#months-legend")).toContainText("Service added");
-    await expect(page.locator("#months-legend")).toContainText(
-      "No service scheduled",
+      "Not a service day",
     );
     await expect(page.locator("#periods-timeline")).toBeVisible();
 
-    // Keyboard month navigation moves the window one month.
-    const firstTitle = await page.locator("#months h3").first().innerText();
+    // Keyboard month navigation moves the preview one month.
+    const firstTitle = await page.locator("#calendar-preview-month").innerText();
     await page.locator("#months").focus();
     await page.keyboard.press("ArrowRight");
     await expect
-      .poll(() => page.locator("#months h3").first().innerText(), {
+      .poll(() => page.locator("#calendar-preview-month").innerText(), {
         timeout: 5000,
       })
       .not.toBe(firstTitle);
@@ -796,7 +778,6 @@ test.describe("calendar editor", () => {
     }
 
     // The journey cleans up after itself so the shared list fixture is intact.
-    await openCalendarActions(page);
     await page.click("#calendar-delete");
     await expect(page.locator("#calendar-review-dialog")).toBeVisible();
     await page.click("#calendar-review-dialog-confirm");
@@ -821,7 +802,7 @@ test.describe("calendar editor", () => {
 
     await expect(page.locator("#calendar-review-dialog")).toBeVisible();
     await expect(page.locator("#calendar-review-dialog")).toContainText(
-      "Add this service date?",
+      "Add service on",
     );
     await page.click("#calendar-review-dialog-cancel");
     await expect(page.locator("#calendar-review-dialog")).toBeHidden();
@@ -832,7 +813,7 @@ test.describe("calendar editor", () => {
     await page.click("#calendar-add-date");
     await page.click("#calendar-review-dialog-confirm");
     await expect(page.locator("#calendar-status")).toContainText(
-      "date changes were stored",
+      "Extra service added.",
       {
         timeout: 8000,
       },
@@ -840,15 +821,26 @@ test.describe("calendar editor", () => {
     await expect(
       page.locator(`#calendar-exception-chips-${outside}`),
     ).toBeVisible();
+
+    // The preview shows one month, so step to the month the new date falls in.
+    const todayUtc = new Date();
+    const outsideUtc = new Date(`${outside}T00:00:00Z`);
+    const monthsAhead =
+      (outsideUtc.getUTCFullYear() - todayUtc.getUTCFullYear()) * 12 +
+      outsideUtc.getUTCMonth() -
+      todayUtc.getUTCMonth();
+    for (let step = 0; step < monthsAhead; step += 1) {
+      await page.click("#calendar-preview-next");
+    }
     await expect(page.locator(`#month-cell-${outside}`)).toHaveAttribute(
       "aria-label",
-      /Service added/,
+      /Extra service/,
     );
 
     // Restore the fixture state.
     await page.click(`#calendar-exception-chips-remove-${outside}`);
     await expect(page.locator("#calendar-status")).toContainText(
-      "date changes were removed",
+      "Regular schedule restored.",
       {
         timeout: 8000,
       },
@@ -859,11 +851,10 @@ test.describe("calendar editor", () => {
 
     // A dirty schedule asks before an independent action, and Escape returns focus.
     await page.fill("#calendar-name", "Renamed without saving");
-    await openCalendarActions(page);
     await page.click("#calendar-delete");
     await expect(page.locator("#calendar-dirty-dialog")).toBeVisible();
     await expect(page.locator("#calendar-dirty-dialog")).toContainText(
-      "unsaved schedule changes",
+      "haven’t saved it",
     );
 
     const focusedInDialog = await page.evaluate(() =>
@@ -880,12 +871,11 @@ test.describe("calendar editor", () => {
     );
 
     // Discarding the draft then runs the requested delete review, which is cancelled.
-    await openCalendarActions(page);
     await page.click("#calendar-delete");
     await page.click("#calendar-dirty-dialog-confirm");
     await expect(page.locator("#calendar-review-dialog")).toBeVisible();
     await expect(page.locator("#calendar-review-dialog")).toContainText(
-      "Delete CAL_UNUSED?",
+      "Delete Unused calendar?",
     );
     await page.click("#calendar-review-dialog-cancel");
     await expect(page.locator("#calendar-name")).toHaveValue("Unused calendar");
@@ -904,7 +894,7 @@ test.describe("calendar editor", () => {
 
     await expect(page.locator("#calendar-name-error")).toBeVisible();
     await expect(page.locator("#calendar-name-error")).toContainText(
-      "can’t be blank",
+      "Enter a calendar name.",
     );
     await expect(page.locator("#calendar-name")).toHaveAttribute(
       "aria-invalid",
@@ -914,17 +904,15 @@ test.describe("calendar editor", () => {
     // School days is used only on CAL_ROUTE; the Schedules scenario also runs
     // trips on CAL_DAILY, so that calendar's usage spans several routes.
     await openEditorFor(page, versionId, "CAL_SCHOOL");
-    await openCalendarActions(page);
     await page.click("#calendar-delete");
 
     await expect(page.locator("#calendar-delete-blocked")).toBeVisible();
     await expect(page.locator("#calendar-delete-blocked")).toContainText(
       "2 trips",
     );
-    await expect(page.locator("#calendar-delete-blocked a")).toHaveAttribute(
-      "href",
-      `/gtfs/${versionId}/routes/CAL_ROUTE`,
-    );
+    await expect(
+      page.locator("#calendar-delete-blocked-route-CAL_ROUTE"),
+    ).toHaveAttribute("href", `/gtfs/${versionId}/routes/CAL_ROUTE`);
     await expect(page.locator("#calendar-review-dialog")).toBeHidden();
     await expect(page.locator("#calendar-name")).toHaveValue("School days");
   });
@@ -1038,7 +1026,7 @@ test.describe("cross-calendar date change drawer", () => {
       ).toBeVisible();
       await expect(
         page.locator(`#calendar-exception-chips-${serviceDate}`),
-      ).toContainText("Service removed");
+      ).toContainText("No service");
 
       await openEditorFor(page, versionId, "CAL_UNUSED");
       await expect(
@@ -1046,12 +1034,12 @@ test.describe("cross-calendar date change drawer", () => {
       ).toBeVisible();
       await expect(
         page.locator(`#calendar-exception-chips-${serviceDate}`),
-      ).toContainText("Service added");
+      ).toContainText("Extra service");
 
       // Restore the fixture state through the same reviewed command.
       await page.click(`#calendar-exception-chips-remove-${serviceDate}`);
       await expect(page.locator("#calendar-status")).toContainText(
-        "date changes were removed",
+        "Regular schedule restored.",
         {
           timeout: 10000,
         },
@@ -1059,7 +1047,7 @@ test.describe("cross-calendar date change drawer", () => {
       await openEditorFor(page, versionId, "CAL_SCHOOL");
       await page.click(`#calendar-exception-chips-remove-${serviceDate}`);
       await expect(page.locator("#calendar-status")).toContainText(
-        "date changes were removed",
+        "Regular schedule restored.",
         {
           timeout: 10000,
         },
@@ -1144,9 +1132,9 @@ test("retains sequential dates, shows pending, recovers a stale write and guards
 
   await openEditorFor(other, versionId, "CAL_DAILY");
   for (const date of [first, second]) {
-    await expect(other.locator(`#calendar-exception-chips-${date}`)).toContainText("Service removed");
+    await expect(other.locator(`#calendar-exception-chips-${date}`)).toContainText("No service");
     await other.click(`#calendar-exception-chips-remove-${date}`);
-    await expect(other.locator("#calendar-status")).toContainText("date changes were removed");
+    await expect(other.locator("#calendar-status")).toContainText("Regular schedule restored.");
   }
   await other.fill("#calendar-name", "Every day service");
   await other.click("#calendar-save");

@@ -196,6 +196,59 @@ describe("CalendarEditor", () => {
   });
 
   // =========================================================================
+  // Optional fields in collapsed disclosures
+  // =========================================================================
+  describe("collapsed optional fields", () => {
+    function buildFormRoot() {
+      const root = document.createElement("div");
+      root.id = "guard-root";
+      root.innerHTML = `
+        <div class="form-error-summary">
+          <a href="#rating-end">The schedule period must end on or after it starts.</a>
+        </div>
+        <details id="more-details">
+          <summary>Details for the exported feed</summary>
+          <input id="rating-end" />
+        </details>
+        <input id="name" />`;
+      document.body.appendChild(root);
+      return root;
+    }
+
+    it("opens the disclosure holding a control before focusing it", () => {
+      const root = buildFormRoot();
+      hook = mountHook(root);
+
+      hook._attemptFocus(root.querySelector("#rating-end"));
+
+      expect(root.querySelector("#more-details").open).toBe(true);
+      expect(document.activeElement).toBe(root.querySelector("#rating-end"));
+    });
+
+    it("leaves other disclosures alone when the control is not inside one", () => {
+      const root = buildFormRoot();
+      hook = mountHook(root);
+
+      hook._attemptFocus(root.querySelector("#name"));
+
+      expect(root.querySelector("#more-details").open).toBe(false);
+      expect(document.activeElement).toBe(root.querySelector("#name"));
+    });
+
+    it("opens the disclosure and focuses the field when an error summary link is clicked", () => {
+      const root = buildFormRoot();
+      hook = mountHook(root);
+
+      const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+      root.querySelector(".form-error-summary a").dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(root.querySelector("#more-details").open).toBe(true);
+      expect(document.activeElement).toBe(root.querySelector("#rating-end"));
+    });
+  });
+
+  // =========================================================================
   // Teardown
   // =========================================================================
   describe("destroyed", () => {
