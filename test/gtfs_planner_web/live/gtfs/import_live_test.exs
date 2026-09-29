@@ -1282,7 +1282,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
         # The element names the file, the CSV row and the code's own sentence;
         # the text filter reads the rendered text, not the markup.
-        assert has_element?(view, "#import-evolution-rejection-#{run.id}", "Row #{run.failed_row}")
+        assert has_element?(
+                 view,
+                 "#import-evolution-rejection-#{run.id}",
+                 "Row #{run.failed_row}"
+               )
 
         assert has_element?(
                  view,

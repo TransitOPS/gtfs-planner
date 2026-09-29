@@ -1010,7 +1010,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   # and the finished result all render it from the same summary.
   defp ignored_closures_notice(assigns) do
     ~H"""
-    <.message id="diff-evolutions-ignored" kind="info" title="Closures in this upload stay as they are">
+    <.message
+      id="diff-evolutions-ignored"
+      kind="info"
+      title="Closures in this upload stay as they are"
+    >
       <code class="font-mono text-[13px]">pathway_evolutions.txt</code>
       is not applied by station merge. Existing scheduled closures are unchanged.
     </.message>

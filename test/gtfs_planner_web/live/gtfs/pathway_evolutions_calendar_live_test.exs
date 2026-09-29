@@ -303,19 +303,19 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsCalendarLiveTest do
           month
         )
 
-      assert cell_aria_label(html, removed_date) =~ "Service removed"
-      assert cell_aria_label(html, redundant_added_date) =~ "Regular service"
-      assert cell_aria_label(html, redundant_added_date) =~ "Service added recorded"
+      # The grid uses the calendar editor's words: a stored addition on a day
+      # that already runs reads as a day that runs.
+      assert cell_aria_label(html, removed_date) =~ "Day off, no service"
+      assert cell_aria_label(html, redundant_added_date) =~ "Runs"
 
       plain_day = Date.add(month, 13)
-      assert cell_aria_label(html, plain_day) =~ "Regular service"
-      refute cell_aria_label(html, plain_day) =~ "recorded"
+      assert cell_aria_label(html, plain_day) =~ "Runs"
 
       state_words = %{
-        service: "Regular service",
-        removed: "Service removed",
-        added: "Service added",
-        none: "No service scheduled"
+        service: "Runs",
+        removed: "Day off, no service",
+        added: "Extra service",
+        none: "Not a service day"
       }
 
       for week <- evaluator_grid.weeks, cell <- week, not is_nil(cell) do
@@ -382,9 +382,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsCalendarLiveTest do
 
       html = open_dates(view)
 
-      assert cell_aria_label(html, first_date) =~ "Service added"
-      assert cell_aria_label(html, second_date) =~ "Service added"
-      assert cell_aria_label(html, plain_date) =~ "No service scheduled"
+      # A chosen-dates calendar has no regular days, so its dates simply run.
+      assert cell_aria_label(html, first_date) =~ "Runs"
+      assert cell_aria_label(html, second_date) =~ "Runs"
+      assert cell_aria_label(html, plain_date) =~ "Not a service day"
       refute html =~ "month-cell-#{Date.to_iso8601(next_month_date)}"
 
       # The box names the calendar the grid belongs to, and there is no
@@ -401,8 +402,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsCalendarLiveTest do
 
       month = shift_month(first_of_month(agency_today()), 1)
       assert html =~ month_title(month)
-      assert cell_aria_label(html, next_month_date) =~ "Service added"
-      refute cell_aria_label(html, next_month_date) =~ "Service removed"
+      assert cell_aria_label(html, next_month_date) =~ "Runs"
+      refute cell_aria_label(html, next_month_date) =~ "Day off"
     end
 
     test "a calendar with no active service dates says so without a grid of guesses",
@@ -447,7 +448,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsCalendarLiveTest do
 
       # The month the calendar could not name is the agency's own month, and the
       # grid still states the effective state of every day in it.
-      assert render(view) =~ "No service scheduled"
+      assert render(view) =~ "Not a service day"
     end
 
     test "paging and closing the dates keeps the entered closure values",

@@ -1612,7 +1612,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
       # The usage strip keeps the trip count and adds the closure count with the
       # exact addresses of both references.
       assert has_element?(view, "#calendar-trips", "3 trips on 1 route")
-      assert has_element?(view, "#calendar-usage-closures", "1 scheduled closure uses this calendar")
+
+      assert has_element?(
+               view,
+               "#calendar-usage-closures",
+               "1 scheduled closure uses this calendar"
+             )
 
       assert attribute_values(html, "#calendar-usage-route-R_BOTH", "href") == [
                "/gtfs/#{version.id}/routes/R_BOTH"
