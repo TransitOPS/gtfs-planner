@@ -47,7 +47,19 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   import Ecto.Query, warn: false
 
   alias GtfsPlanner.Gtfs.AuditContext
-  alias GtfsPlanner.Gtfs.Blocking.{Checks, DayTypes, InSeat, Queries, Review, Summary}
+
+  alias GtfsPlanner.Gtfs.Blocking.{
+    Checks,
+    Context,
+    DayTypes,
+    DeadheadTimes,
+    Distance,
+    InSeat,
+    Queries,
+    Review,
+    Summary
+  }
+
   alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
@@ -111,6 +123,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           day_types: [DayTypes.day_type()],
           day_type: DayTypes.day_type() | nil,
           settings: settings(),
+          context: Context.t(),
           routes: %{String.t() => Queries.route_info()},
           blocks: [block()],
           pool: [Queries.trip_row()],
@@ -364,6 +377,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   by its `block_id` or in the pool. A trip without usable endpoint times is also
   listed in `unplottable` and counted (AC-2, AC-6). The query count does not grow
   with the trip count (AC-3).
+
+  The day also carries the version's `context`: its settings, garages, vehicle
+  types, route settings, block attributes, entered driving times, marked relief
+  stops, fleet summary and per-trip distances, gathered by `build_context!/4` in
+  a fixed number of reads. Nothing on the day consumes it yet, so it changes no
+  finding, count, peak or bin; step 16 resolves blocks against it.
   """
   @spec load_day(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
           {:ok, day()} | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]}}
@@ -657,11 +676,13 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     day_type = resolve_day_type!(day_types, day_type_key)
     trips = day_trips(organization_id, gtfs_version_id, day_type)
     settings = get_settings(organization_id, gtfs_version_id)
+    context = build_context!(organization_id, gtfs_version_id, settings, trips)
 
     day = %{
       day_types: day_types,
       day_type: day_type,
       settings: settings,
+      context: context,
       routes: Queries.routes(organization_id, gtfs_version_id, Enum.map(trips, & &1.route_id)),
       mixed_timezones?: Queries.mixed_timezones?(organization_id, gtfs_version_id)
     }
@@ -1141,6 +1162,147 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   defp finding_context_key(finding) do
     {finding.day_type_keys, Checks.finding_key(finding)}
+  end
+
+  # --- the planning context -------------------------------------------------
+
+  # The one place a `Context` is built. It lives here rather than in the pure
+  # module because it is the only function that needs both a version's settings
+  # and the reads behind them, and CR-1 keeps every database call in `Blocking`,
+  # `Blocking.Queries` and `Operations`.
+  #
+  # Step 16 passes this result into `assemble` and resolves blocks against it. The
+  # call from `read_day/3` is here rather than there only so that the builder is
+  # reachable from the real day load and its reads can be proved against it: an
+  # uncalled private function cannot compile under the `--warnings-as-errors` that
+  # `mix precommit` runs, and Elixir's `{:nowarn_unused_function, _}` compile option
+  # does not apply to `defp`. Nothing consumes the context yet, so this changes no
+  # finding, count, peak or bin that `load_day/3` returns today.
+  #
+  # `trips` are the `Queries.trip_rows/3` rows the caller has already read for
+  # its own purpose, and they carry the `shape_id` this needs. They are not read
+  # again: a day load already holds them, and a mutation holds the locked rows it
+  # will write. The services are taken from those trips, so the attribute rows
+  # are scoped to the services the read actually covers, and a trip's distance is
+  # measured only for a trip in hand.
+  #
+  # The cost is fixed: the four planning-input kinds, the garages, the vehicle
+  # types and the fleet summary, then one shape query and one stop-path query. It
+  # does not grow with the number of trips, routes, stops or shapes (AC-3).
+  #
+  # The bang marks a read that exits rather than answering with a partial
+  # context. A context missing an input would be indistinguishable from a version
+  # that has none of them, and would plan against a default without saying so —
+  # so the transaction is the caller's to roll back, and this must not return
+  # `nil` fields and continue.
+  defp build_context!(organization_id, gtfs_version_id, settings, trips) do
+    service_ids = trips |> Enum.map(& &1.service_id) |> Enum.uniq() |> Enum.sort()
+    rows = Queries.planning_rows(organization_id, gtfs_version_id, service_ids)
+
+    %Context{
+      min_layover_minutes: settings.min_layover_minutes,
+      max_block_minutes: settings.max_block_minutes,
+      pull_out_buffer_minutes: settings.pull_out_buffer_minutes,
+      interlining: settings.interlining,
+      default_garage_id: settings.default_garage_id,
+      deadhead_speed_kmh: settings.deadhead_speed_kmh,
+      deadhead_circuity: settings.deadhead_circuity,
+      max_piece_minutes: settings.max_piece_minutes,
+      garages: Operations.planning_garages(organization_id),
+      vehicle_types: Operations.planning_vehicle_types(organization_id),
+      route_settings: Map.new(rows.route_settings, &route_setting/1),
+      attributes: Map.new(rows.attributes, &attribute/1),
+      entered_minutes: entered_minutes(rows.deadhead),
+      relief_stop_ids: MapSet.new(rows.relief, & &1.stop_id),
+      fleet: fleet_buckets(Operations.fleet_summary(organization_id)),
+      trip_km: build_trip_km(organization_id, gtfs_version_id, trips)
+    }
+  end
+
+  # Both keys are always present, `nil` included. R4 distinguishes a route with
+  # no home garage from a route with no row at all, and a map that omitted the
+  # `nil` keys could not say which one it was.
+  defp route_setting(row) do
+    {row.route_id,
+     %{garage_id: row.garage_id, required_vehicle_type_id: row.required_vehicle_type_id}}
+  end
+
+  defp attribute(row) do
+    {{row.service_id, row.block_id},
+     %{garage_id: row.garage_id, vehicle_type_id: row.vehicle_type_id}}
+  end
+
+  # The stored refs are decoded here, and only here. `Context.entered_minutes` is
+  # keyed by `{ref, ref}` tuples, so keying it with the stored `"stop:S1"` strings
+  # would make every `DeadheadTimes.lookup/5` miss and silently degrade every
+  # entered driving time to an estimate — no error, just quietly wrong numbers.
+  # A row whose ref decodes to nothing (a hand-edited or corrupt row) is dropped
+  # for the same reason: it cannot answer a lookup as a string either.
+  defp entered_minutes(rows) do
+    for %{from_ref: from_ref, to_ref: to_ref, minutes: minutes} <- rows,
+        {:ok, decoded_from} <- [DeadheadTimes.decode_ref(from_ref)],
+        {:ok, decoded_to} <- [DeadheadTimes.decode_ref(to_ref)],
+        into: %{} do
+      {{decoded_from, decoded_to}, minutes}
+    end
+  end
+
+  # `fleet_summary/1` answers `%{garage: %Garage{} | nil, vehicle_type: %VehicleType{} | nil,
+  # count: n}` for the settings pages. The context keeps only the two IDs and the
+  # count, so a fleet bucket cannot drag a garage's correctable public ID or an
+  # unrelated column into a fingerprint (CR-7).
+  defp fleet_buckets(buckets) do
+    Enum.map(buckets, fn bucket ->
+      %{
+        garage_id: id_of(bucket.garage),
+        vehicle_type_id: id_of(bucket.vehicle_type),
+        count: bucket.count
+      }
+    end)
+  end
+
+  defp id_of(nil), do: nil
+  defp id_of(%{id: id}), do: id
+
+  # A trip's distance is its shape's length when it names one, and its own stop
+  # path when it does not (AC-7). Each distinct shape is measured once and shared
+  # by every trip naming it, and the two reads are asked for separately so the
+  # cost is two queries however many trips the day has.
+  defp build_trip_km(organization_id, gtfs_version_id, trips) do
+    {shaped, shapeless} = Enum.split_with(trips, &is_binary(&1.shape_id))
+
+    shape_km =
+      organization_id
+      |> Queries.shape_points(
+        gtfs_version_id,
+        shaped |> Enum.map(& &1.shape_id) |> Enum.uniq()
+      )
+      |> Map.new(fn {shape_id, points} -> {shape_id, Distance.path_km(points)} end)
+
+    stop_paths =
+      case Enum.map(shapeless, & &1.trip_id) do
+        [] -> %{}
+        trip_ids -> Queries.stop_paths(organization_id, gtfs_version_id, trip_ids)
+      end
+
+    Map.new(trips, &{&1.id, measured_trip(&1, shape_km, stop_paths)})
+  end
+
+  # A trip that names a shape is a shaped trip, and a shape the version does not
+  # describe measures zero — the same answer step 5's `Distance.path_km/1` gives
+  # a path of fewer than two points. It is deliberately not re-measured from its
+  # stops: a second measurement for the same trip would need another query and
+  # would report a number the feed never supplied. Such a shape is a malformed
+  # feed, and a malformed feed understates that one trip's kilometres.
+  #
+  # A shapeless trip with no walkable stop path — every stop without a coordinate
+  # of its own or of its parent's — is the same zero, and is marked `:path` so a
+  # reader can see the distance was not measured from a shape.
+  defp measured_trip(trip, shape_km, stop_paths) do
+    case trip.shape_id do
+      nil -> {Distance.path_km(Map.get(stop_paths, trip.trip_id, [])), :path}
+      shape_id -> {Map.get(shape_km, shape_id, 0.0), :shape}
+    end
   end
 
   defp assemble(organization_id, gtfs_version_id, day_types, service_dates, trips, min_layover) do
