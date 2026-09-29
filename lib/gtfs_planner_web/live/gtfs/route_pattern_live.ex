@@ -1313,7 +1313,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                 build_state={@build_state}
                 build_error={@build_error}
                 stale?={@stale?}
-                new_path={"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/new"}
+                new_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/new"}
                 editable?={@patterns_editable}
                 selected={@bulk_selected}
                 bulk_dialog={@bulk_dialog}
@@ -3297,15 +3297,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp blank_to_nil(_value), do: nil
 
   defp patterns_path(socket) do
-    "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns"
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns"
   end
 
   defp version_patterns_path(socket, version_id) do
-    "/gtfs/#{version_id}/routes/#{socket.assigns.route_id}/patterns"
+    ~p"/gtfs/#{version_id}/routes/#{socket.assigns.route_id}/patterns"
   end
 
   defp pattern_path(socket, pattern_id, query) do
-    "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns/#{pattern_id}#{query}"
+    "#{patterns_path(socket)}/#{pattern_id}#{query}"
   end
 
   defp task_path(socket, task) do

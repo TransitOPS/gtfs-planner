@@ -1342,7 +1342,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 }>
                   <span :if={index > 0}>, </span>
                   <.link
-                  navigate={"/gtfs/#{@current_gtfs_version.id}/routes/#{route_id}"}
+                  navigate={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{route_id}"}
                   class="link"
                 >
                     {route_id}

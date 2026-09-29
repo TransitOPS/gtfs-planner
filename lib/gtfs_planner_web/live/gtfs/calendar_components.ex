@@ -407,7 +407,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
         <li :for={route <- @usage.routes} class="text-base-content/70">
           <.link
             id={"#{@id}-route-#{route.route_id}"}
-            navigate={"/gtfs/#{@version_id}/routes/#{route.route_id}"}
+            navigate={~p"/gtfs/#{@version_id}/routes/#{route.route_id}"}
             class="link link-primary"
           >
             {route.route_id}

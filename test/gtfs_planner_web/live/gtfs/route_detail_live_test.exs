@@ -318,6 +318,58 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
     end
   end
 
+  describe "route ID with reserved URL characters" do
+    setup :shared_setup
+
+    test "encodes the Patterns and Schedules tab links and opens both pages", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route_fixture(organization.id, version.id, %{route_id: "QA/SLASH 1"})
+      base = "/gtfs/#{version.id}/routes/QA%2FSLASH%201"
+      nav = "nav[aria-label='Route navigation']"
+
+      {:ok, details_view, _html} = live(conn, base)
+
+      assert has_element?(
+               details_view,
+               "#{nav} a[href='#{base}'][aria-current='page']",
+               "Details"
+             )
+
+      assert has_element?(details_view, "#{nav} a[href='#{base}/patterns']", "Patterns")
+      assert has_element?(details_view, "#{nav} a[href='#{base}/schedules']", "Schedules")
+
+      [patterns_href] = tab_hrefs(details_view, "#{nav} a[href$='/patterns']")
+      [schedules_href] = tab_hrefs(details_view, "#{nav} a[href$='/schedules']")
+
+      {:ok, patterns_view, _html} = live(conn, patterns_href)
+
+      assert has_element?(
+               patterns_view,
+               "#{nav} a[href='#{base}/patterns'][aria-current='page']",
+               "Patterns"
+             )
+
+      {:ok, schedules_view, _html} = live(conn, schedules_href)
+
+      assert has_element?(
+               schedules_view,
+               "#{nav} a[href='#{base}/schedules'][aria-current='page']",
+               "Schedules"
+             )
+    end
+  end
+
+  defp tab_hrefs(view, selector) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(selector)
+    |> LazyHTML.attribute("href")
+  end
+
   describe "related transfers" do
     setup :shared_setup
 

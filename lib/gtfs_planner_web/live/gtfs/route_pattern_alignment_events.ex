@@ -11,6 +11,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   module never writes.
   """
 
+  use GtfsPlannerWeb, :verified_routes
+
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
@@ -1721,7 +1723,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   # Same Route › Patterns base the LiveView's own `patterns_path/1` builds;
   # kept local so the list cell never drifts from the router paths.
   defp patterns_path(socket) do
-    "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns"
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns"
   end
 
   defp alignment_dirty?(socket) do

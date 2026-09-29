@@ -87,7 +87,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
          Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       path =
         if route_id,
-          do: "/gtfs/#{version_id}/routes/#{route_id}",
+          do: ~p"/gtfs/#{version_id}/routes/#{route_id}",
           else: "/gtfs/#{version_id}/routes"
 
       {:noreply, push_navigate(socket, to: path)}
@@ -106,7 +106,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
       path =
         if route_id,
-          do: "/gtfs/#{version_id}/routes/#{route_id}",
+          do: ~p"/gtfs/#{version_id}/routes/#{route_id}",
           else: "/gtfs/#{version_id}/routes"
 
       {:noreply, push_navigate(socket, to: path)}

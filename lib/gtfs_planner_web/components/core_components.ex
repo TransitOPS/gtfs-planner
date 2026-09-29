@@ -28,6 +28,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   """
   use Phoenix.Component
   use Gettext, backend: GtfsPlannerWeb.Gettext
+  use GtfsPlannerWeb, :verified_routes
 
   alias Phoenix.LiveView.JS
 
@@ -1125,21 +1126,21 @@ defmodule GtfsPlannerWeb.CoreComponents do
       <div class="flex flex-wrap items-end justify-between gap-4 border-b border-base-300">
         <div class="flex flex-wrap items-end gap-1">
           <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}"}
             class={sub_nav_link_class(@active_tab == :details)}
             aria-current={@active_tab == :details && "page"}
           >
             Details
           </.link>
           <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/patterns"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/patterns"}
             class={sub_nav_link_class(@active_tab == :patterns)}
             aria-current={@active_tab == :patterns && "page"}
           >
             Patterns
           </.link>
           <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/schedules"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/schedules"}
             class={sub_nav_link_class(@active_tab == :schedules)}
             aria-current={@active_tab == :schedules && "page"}
           >

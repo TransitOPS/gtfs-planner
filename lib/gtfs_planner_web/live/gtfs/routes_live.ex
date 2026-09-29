@@ -687,7 +687,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
                   </td>
                   <td class="py-2 pl-4 pr-5">
                     <.link
-                      navigate={"/gtfs/#{@current_gtfs_version.id}/routes/#{route.route_id}"}
+                      navigate={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{route.route_id}"}
                       class="link link-primary font-mono font-semibold tabular-nums"
                     >
                       {route.route_id}
@@ -711,7 +711,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
               class="border-b border-subtle last:border-b-0"
             >
               <.link
-                navigate={"/gtfs/#{@current_gtfs_version.id}/routes/#{route.route_id}"}
+                navigate={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{route.route_id}"}
                 class="flex min-h-11 items-center gap-3 px-4 py-3 hover:bg-canvas"
               >
                 <RouteIdentity.route_badge
