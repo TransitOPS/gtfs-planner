@@ -38,6 +38,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.CatalogReadAdapter
   alias GtfsPlanner.Gtfs.Coordinates
+  alias GtfsPlanner.Gtfs.DeadheadTime
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FareLegJoinRule
@@ -4950,6 +4951,62 @@ defmodule GtfsPlanner.Gtfs do
           :ok | {:error, :not_found | {:invalid, [map()]}}
   def update_route_operating_settings(organization_id, gtfs_version_id, entries) do
     Blocking.update_route_operating_settings(organization_id, gtfs_version_id, entries)
+  end
+
+  @doc """
+  Lists every directional driving-time pair the day type's blocks connect.
+
+  Each pair carries the stored `from`/`to` reference strings, the stop or garage
+  labels, how many legs of the day drove that exact direction, the minutes and
+  their source (`:entered`, `:estimated` or `:unknown`), ordered by uses
+  descending and then by label. The pairs are derived from the day the page
+  already loads, so the drawer lists the drives the plan really has. An unknown
+  day type is `{:error, {:unknown_day_type, day_types}}` and a foreign or
+  unpublished version `{:error, :not_found}`.
+  """
+  @spec list_deadhead_pairs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
+          {:ok, [Blocking.pair()]}
+          | {:error,
+             :not_found | {:unknown_day_type, [GtfsPlanner.Gtfs.Blocking.DayTypes.day_type()]}}
+  def list_deadhead_pairs(organization_id, gtfs_version_id, day_type_key) do
+    Blocking.list_deadhead_pairs(organization_id, gtfs_version_id, day_type_key)
+  end
+
+  @doc """
+  Stores an entered driving time for one direction of one pair.
+
+  `{from_ref, to_ref}` is the ordered pair of stored reference strings the list
+  hands out, and `minutes` is 0–600. A stop ref that is not a stop of the version
+  or a garage ref that is not a garage of the organization is
+  `{:error, :invalid_ref}` with nothing stored; an out-of-range value is a
+  changeset error. The save takes `Blocking.lock_blocking!/1` and replaces the
+  minutes of exactly this direction — writing A→B never writes B→A. A staging or
+  foreign version is `{:error, :not_found}`.
+  """
+  @spec put_deadhead_time(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          {String.t(), String.t()},
+          non_neg_integer()
+        ) ::
+          {:ok, DeadheadTime.t()}
+          | {:error, :not_found | :invalid_ref | Ecto.Changeset.t()}
+  def put_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref}, minutes) do
+    Blocking.put_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref}, minutes)
+  end
+
+  @doc """
+  Removes the entered driving time of one direction, so the pair shows its
+  estimate again.
+
+  Only the named row is deleted, and a pair with no stored row is
+  `{:error, :not_found}`, as is a staging or foreign version. The delete takes
+  `Blocking.lock_blocking!/1`.
+  """
+  @spec clear_deadhead_time(Ecto.UUID.t(), Ecto.UUID.t(), {String.t(), String.t()}) ::
+          :ok | {:error, :not_found}
+  def clear_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref}) do
+    Blocking.clear_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref})
   end
 
   @doc """
