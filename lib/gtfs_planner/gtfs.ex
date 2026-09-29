@@ -5724,6 +5724,36 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns one entry per route of a version, with its stored home garage and
+  required vehicle type (`nil` when the planner has set neither).
+
+  The routes are the version's own, ordered by short name then route ID, so the
+  Block rules drawer lists every route whether or not a row exists for it.
+  """
+  @spec list_route_operating_settings(Ecto.UUID.t(), Ecto.UUID.t()) :: [Blocking.route_setting()]
+  def list_route_operating_settings(organization_id, gtfs_version_id) do
+    Blocking.list_route_operating_settings(organization_id, gtfs_version_id)
+  end
+
+  @doc """
+  Stores the home garage and required vehicle type of the given routes of an
+  organization's published version.
+
+  Each entry is a map with `route_id`, `garage_id` and
+  `required_vehicle_type_id`; a blank value is stored as `nil`. The batch is
+  all-or-nothing: a garage or type of another organization, or a route the
+  version does not have, returns
+  `{:error, {:invalid, [%{route_id: id, field: field, message: message}]}}` and
+  stores nothing. The save takes `Blocking.lock_blocking!/1`, and a staging or
+  foreign version is `{:error, :not_found}`.
+  """
+  @spec update_route_operating_settings(Ecto.UUID.t(), Ecto.UUID.t(), [map()]) ::
+          :ok | {:error, :not_found | {:invalid, [map()]}}
+  def update_route_operating_settings(organization_id, gtfs_version_id, entries) do
+    Blocking.update_route_operating_settings(organization_id, gtfs_version_id, entries)
+  end
+
+  @doc """
   Applies one block command on a day type of an organization's GTFS version.
 
   The command is an `:assign` or `:unassign` of trips or a `:rename` or `:merge`
