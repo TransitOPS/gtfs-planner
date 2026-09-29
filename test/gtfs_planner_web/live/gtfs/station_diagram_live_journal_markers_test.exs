@@ -82,8 +82,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveJournalMarkersTest do
       assert html =~ ~s(phx-update="stream")
 
       # Legend contains the two Journal rows
-      assert html =~ "Entry Pin"
-      assert html =~ "Entity Dot"
+      assert html =~ "Journal note placed on the plan"
+      assert html =~ "Journal note on a point or pathway"
     end
   end
 

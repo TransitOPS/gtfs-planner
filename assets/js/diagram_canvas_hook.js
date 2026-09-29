@@ -20,7 +20,9 @@ const OVERLAY_BASE = {
   rectRx: 0.2,
   stopLabelFontSize: 0.72,
   stopLabelStrokeWidth: 0.17,
-  stopLabelMinScale: 1.1,
+  stopLabelMinScale: 0.85,
+  stopLabelSmallPlanMinScale: 1.4,
+  stopLabelSmallPlanWidth: 600,
   pathwayLabelMinScale: 1.1,
   crossLevelStairsSize: 0.9,
   crossLevelStairsStepUnit: 0.3,
@@ -1445,6 +1447,15 @@ const DiagramCanvasHook = {
       hitTarget.setAttribute("height", `${rawSize}`);
     });
 
+    // Point names are how a mapper identifies a point, so they show from 85%
+    // zoom. On a plan narrower than 600px they crowd each other, so they wait
+    // for 140%. A width of 0 (not laid out) is not a narrow plan.
+    const planWidth = overlay.getBoundingClientRect().width;
+    const smallPlan = planWidth > 0 && planWidth < OVERLAY_BASE.stopLabelSmallPlanWidth;
+    const stopLabelMinScale = smallPlan
+      ? OVERLAY_BASE.stopLabelSmallPlanMinScale
+      : OVERLAY_BASE.stopLabelMinScale;
+
     overlay.querySelectorAll("[data-stop-label]").forEach((label) => {
       const cx = parseFloat(label.getAttribute("data-center-x"));
       const cy = parseFloat(label.getAttribute("data-center-y"));
@@ -1473,7 +1484,7 @@ const DiagramCanvasHook = {
         return;
       }
 
-      if (scale < OVERLAY_BASE.stopLabelMinScale) {
+      if (scale < stopLabelMinScale) {
         label.setAttribute("display", "none");
         if (labelBox) {
           labelBox.setAttribute("display", "none");

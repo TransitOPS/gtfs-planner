@@ -10,6 +10,10 @@ defmodule GtfsPlannerWeb.StationWorkspace do
 
   The header carries `station-sub-nav` and `station-tab-<view>` ids so the views
   stay reachable by the same hooks as the tab bar it replaces.
+
+  The floorplan editor fits its workspace to the viewport under the header, so it
+  passes `compact` to put the way back, the name and the identifier on one row
+  instead of three.
   """
   use Phoenix.Component
   use GtfsPlannerWeb, :verified_routes
@@ -55,6 +59,10 @@ defmodule GtfsPlannerWeb.StationWorkspace do
 
   attr :tabs?, :boolean, default: true, doc: "false for a stop that is not a station"
 
+  attr :compact, :boolean,
+    default: false,
+    doc: "one row for the way back, the name and the identifier line, with a smaller name"
+
   attr :back, :map,
     default: nil,
     doc: "`%{label: String.t(), navigate: String.t()}`; defaults to the stops list"
@@ -69,23 +77,36 @@ defmodule GtfsPlannerWeb.StationWorkspace do
       |> assign(:tabs, if(assigns.tabs? && assigns.stop_id, do: @tabs, else: []))
 
     ~H"""
-    <div id="station-sub-nav" class="station-workspace-header ds-page w-full">
-      <div class="pt-2">
+    <div
+      id="station-sub-nav"
+      class="station-workspace-header ds-page w-full"
+      data-compact={@compact || nil}
+    >
+      <div
+        :if={@compact}
+        class="flex flex-wrap items-center justify-between gap-x-6 pt-1.5"
+      >
+        <div class="flex min-w-0 flex-wrap items-center gap-x-3">
+          <.back_link id="station-back" navigate={@back.navigate}>{@back.label}</.back_link>
+          <h1 id="station-title" class="min-w-0 truncate leading-tight" title={@title}>
+            {@title}
+          </h1>
+          <.identifier_line meta={@meta} stop_id={@stop_id} class="max-sm:hidden" />
+        </div>
+        <div :if={@actions != []} class="flex min-h-11 items-center">
+          {render_slot(@actions)}
+        </div>
+      </div>
+      <div :if={!@compact} class="pt-2">
         <.back_link id="station-back" navigate={@back.navigate}>{@back.label}</.back_link>
       </div>
-      <div class="flex flex-wrap items-start justify-between gap-x-8 gap-y-4 pb-5 pt-1">
+      <div
+        :if={!@compact}
+        class="flex flex-wrap items-start justify-between gap-x-8 gap-y-4 pb-5 pt-1"
+      >
         <div class="min-w-0">
           <h1 id="station-title" class="break-words">{@title}</h1>
-          <p
-            :if={@meta != [] or @stop_id}
-            class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-muted"
-          >
-            <span :if={@meta != []}>{render_slot(@meta)}</span>
-            <span :if={@meta != [] and @stop_id} aria-hidden="true" class="max-sm:hidden">·</span>
-            <span :if={@stop_id} class="max-sm:basis-full">
-              ID <span class="font-mono text-[13px]">{@stop_id}</span>
-            </span>
-          </p>
+          <.identifier_line meta={@meta} stop_id={@stop_id} class="mt-1.5" />
         </div>
         <div
           :if={@actions != []}
@@ -108,6 +129,25 @@ defmodule GtfsPlannerWeb.StationWorkspace do
         </div>
       </nav>
     </div>
+    """
+  end
+
+  attr :meta, :list, required: true
+  attr :stop_id, :string, default: nil
+  attr :class, :any, default: nil
+
+  defp identifier_line(assigns) do
+    ~H"""
+    <p
+      :if={@meta != [] or @stop_id}
+      class={[@class, "flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-muted"]}
+    >
+      <span :if={@meta != []}>{render_slot(@meta)}</span>
+      <span :if={@meta != [] and @stop_id} aria-hidden="true" class="max-sm:hidden">·</span>
+      <span :if={@stop_id} class="max-sm:basis-full">
+        ID <span class="font-mono text-[13px]">{@stop_id}</span>
+      </span>
+    </p>
     """
   end
 

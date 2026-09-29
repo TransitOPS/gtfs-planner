@@ -134,14 +134,14 @@ test("Package 03 marker shell and legend", async ({ page }) => {
   const markerStream = page.locator("#journal-markers-svg");
   await expect(markerStream).toBeAttached();
 
-  const keyButton = page.getByRole("button", { name: "Show Key" });
+  const keyButton = page.getByRole("button", { name: "Key", exact: true });
   await expect(keyButton).toBeVisible();
   await keyButton.click();
 
   const legendPanel = page.locator("#diagram-legend-panel");
   await expect(legendPanel).toBeVisible();
-  await expect(legendPanel.getByText("Entry Pin")).toBeVisible();
-  await expect(legendPanel.getByText("Entity Dot")).toBeVisible();
+  await expect(legendPanel.getByText("Journal note placed on the plan")).toBeVisible();
+  await expect(legendPanel.getByText("Journal note on a point or pathway")).toBeVisible();
 
   await page.screenshot({
     path: resolve(pkg3ArtifactRoot, "production-marker-shell.png"),
@@ -192,6 +192,8 @@ test("renders the production ideal hierarchy and canonical photo", async ({ page
 
   const photo = row.locator('button[id^="journal-photo-"]');
   await expect(photo).toHaveCount(1);
+  // The list scrolls inside the docked panel, and thumbnails load lazily.
+  await photo.scrollIntoViewIfNeeded();
   await expect(photo).toHaveAttribute("phx-click", "open_journal_photo");
   await expect(photo.locator("img")).toHaveAttribute(
     "src",
@@ -349,7 +351,7 @@ test("keeps scrolled rows stable and applies one identity-based pending entry", 
 });
 
 for (const width of [1280, 1440, 1920]) {
-  test(`keeps the 340px push layout and minimum targets at ${width}px`, async ({ page }) => {
+  test(`docks the journal in the side panel and keeps minimum targets at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     const panel = await openJournal(page);
     await expect(journalRow(panel, PHOTO_ENTRY_ID)).toBeVisible();
@@ -369,7 +371,9 @@ for (const width of [1280, 1440, 1920]) {
       };
     });
 
-    expect(layout.panelWidth).toBe(340);
+    // The journal fills the docked panel: 376px at 1280px and wider, less its 1px border.
+    expect(layout.panelWidth).toBeGreaterThanOrEqual(350);
+    expect(layout.panelWidth).toBeLessThanOrEqual(376);
     expect(layout.canvasWidth).toBeLessThan(layout.workspaceWidth - 300);
     expect(layout.listOverflowY).toBe("auto");
     expect(layout.bodyOverflow).toBeLessThanOrEqual(2);
@@ -475,7 +479,8 @@ test("preserves the repository 200 percent zoom overflow contract", async ({ pag
     viewport: window.innerWidth,
   }));
 
-  expect(zoomed.panelWidth).toBe("340px");
+  // Zoomed to a 640px layout the panel stacks under the plan and fills its width.
+  expect(parseFloat(zoomed.panelWidth)).toBeGreaterThan(340);
   expect(zoomed.body).toBeLessThanOrEqual(zoomed.viewport + 2);
 });
 
@@ -618,7 +623,7 @@ test("Package 03 other-level Show on floorplan switches level and renders ring",
   const rings = page.locator('#journal-markers-svg [data-journal-ring="true"]');
   await expect(rings).toHaveCount(1);
 
-  const levelIndicator = page.locator("#level-control-trigger");
+  const levelIndicator = page.locator('#level-control [aria-current="true"]');
   await expect(levelIndicator).toContainText("Browser Level 2");
 });
 
@@ -859,6 +864,7 @@ test("Package 04 production stop and pathway captures", async ({ page }) => {
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await page.waitForTimeout(500);
 
+  await page.locator("#panel-tab-pathways").click();
   const pathwayLink = page.locator("#pathways-table button[phx-click=\"edit_pathway\"]").first();
   await expect(pathwayLink).toBeVisible({ timeout: 5000 });
   await pathwayLink.click();

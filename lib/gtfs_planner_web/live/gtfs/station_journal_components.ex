@@ -9,8 +9,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
   `journal_local_times` are already localized by the caller, while the stored
   UTC timestamps remain authoritative for every `<time datetime>` attribute.
 
-  This is deliberately a library-only boundary. `StationDiagramLive` integrates
-  the trigger and panel with the production workspace in journal package step 6.
+  This is deliberately a library-only boundary. `StationDiagramLive` places the
+  panel in the workspace's side panel, under the Journal tab.
   """
   use Phoenix.Component
 
@@ -98,38 +98,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
     Calendar.strftime(local, "%b %-d, %Y") <> " · " <> Gtfs.format_display_time(local)
   end
 
-  attr :entry_count, :integer, required: true
-  attr :panel_open?, :boolean, required: true
-
-  @doc """
-  Renders the journal panel's only toolbar trigger.
-  """
-  def journal_trigger(assigns) do
-    ~H"""
-    <button
-      id="journal-trigger"
-      type="button"
-      class={[
-        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-medium text-blue-900 transition-colors",
-        "hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-blue-50",
-        @panel_open? && "bg-blue-100"
-      ]}
-      phx-click={if @panel_open?, do: "close_journal", else: "open_journal"}
-      aria-expanded={to_string(@panel_open?)}
-      aria-controls="station-journal-panel"
-    >
-      <.icon name="hero-clipboard-document-list" class="size-4" />
-      <span>Journal</span>
-      <span
-        id="journal-trigger-count"
-        class="inline-flex min-w-4 items-center justify-center rounded-full border border-control-border bg-base-100 px-1.5 text-[11px] leading-4 tabular-nums text-base-content"
-      >
-        {@entry_count}
-      </span>
-    </button>
-    """
-  end
-
   attr :journal_scope, Scope, required: true
   attr :journal_entries, :any, required: true
 
@@ -185,14 +153,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       phx-remove={journal_panel_exit()}
       phx-window-keydown="close_journal"
       phx-key="escape"
-      class="journal-panel-shell flex min-h-0 w-[340px] min-w-[340px] max-w-[340px] shrink-0 flex-col overflow-hidden border-r border-base-300 bg-base-100 text-sm text-base-content"
+      class="journal-panel-shell flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden bg-white text-sm text-default"
     >
       <header class="flex items-center gap-2 px-4 pb-2 pt-3">
         <h2 class="text-base font-semibold leading-tight">Journal</h2>
         <span
           :if={!@first_loading? and !@first_load_error? and @total_count > 0}
           id="journal-count-summary"
-          class="min-w-0 text-xs tabular-nums text-base-content/70"
+          class="min-w-0 text-xs tabular-nums text-muted"
         >
           {@total_count} {if @total_count == 1, do: "entry", else: "entries"}
         </span>
@@ -212,9 +180,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       <div
         :if={@journal_target_scope}
         id="journal-target-scope"
-        class="flex items-center justify-between gap-2 border-y border-base-300 bg-base-200/50 px-4 py-2 text-xs"
+        class="flex items-center justify-between gap-2 border-y border-subtle bg-canvas px-4 py-2 text-xs"
       >
-        <span class="min-w-0 truncate font-medium text-base-content/80">
+        <span class="min-w-0 truncate font-medium text-default">
           {@journal_target_scope.label}
         </span>
         <.button
@@ -222,20 +190,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
           type="button"
           variant="quiet"
           size="sm"
-          class="h-auto min-h-0 shrink-0 p-0 font-normal text-primary underline hover:bg-transparent"
+          class="h-auto min-h-0 shrink-0 p-0 font-normal text-action underline hover:bg-transparent"
           phx-click="clear_journal_target_scope"
         >
           Show all entries
         </.button>
       </div>
 
-      <div :if={@pending_count > 0} class="border-y border-info/30 bg-info/10 px-3 py-2">
+      <div :if={@pending_count > 0} class="border-y border-subtle bg-soft px-3 py-2">
         <.button
           id="journal-pending-entries"
           type="button"
           variant="quiet"
           size="sm"
-          class="min-h-11 w-full justify-center text-info"
+          class="min-h-11 w-full justify-center text-cyan-800"
           phx-click="refresh_journal"
         >
           <.icon name="hero-arrow-up" class="size-4" />
@@ -277,7 +245,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
         :if={@journal_visible_count > 0}
         id="journal-entry-list"
         phx-update="stream"
-        class="min-h-0 flex-1 divide-y divide-base-300 overflow-y-auto overscroll-contain"
+        class="min-h-0 flex-1 divide-y divide-subtle overflow-y-auto overscroll-contain"
       >
         <.journal_entry_row
           :for={{dom_id, entry} <- @journal_entries}
@@ -323,9 +291,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       :if={@context}
       id="journal-form-context"
       data-role="journal-form-context"
-      class="mb-4 border-l-4 border-[color:var(--diagram-journal-open)] bg-base-200/60 px-3 py-2 text-sm"
+      class="mb-4 border-l-4 border-[color:var(--diagram-journal-open)] bg-canvas px-3 py-2 text-sm"
     >
-      <p class="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs font-medium text-base-content/70">
+      <p class="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs font-medium text-muted">
         <.icon name="hero-clipboard-document-list" class="size-3.5 shrink-0" />
         <span>Journal entry</span>
         <span aria-hidden="true">·</span>
@@ -333,7 +301,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
         <span :if={@context.captured_label} aria-hidden="true">·</span>
         <span :if={@context.captured_label}>{@context.captured_label}</span>
       </p>
-      <p class="mt-1 break-words leading-relaxed text-base-content [overflow-wrap:anywhere]">
+      <p class="mt-1 break-words leading-relaxed text-default [overflow-wrap:anywhere]">
         {note_body(@context.body)}
       </p>
     </div>
@@ -381,7 +349,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
         <button
           id="journal-photo-viewer-close"
           type="button"
-          class="absolute -right-2 -top-2 flex size-11 items-center justify-center rounded-full bg-base-100 text-base-content shadow-md hover:bg-base-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          class="absolute -right-2 -top-2 flex size-11 items-center justify-center rounded-full bg-white text-default shadow-md hover:bg-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           phx-click="close_journal_photo"
           aria-label="Close photo"
         >
@@ -454,7 +422,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       data-entry-id={@entry.id}
       tabindex="-1"
       class={[
-        "bg-base-100 px-4 py-3 transition-colors",
+        "bg-white px-4 py-3 transition-colors",
         "focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary",
         @new? && "journal-entry-motion"
       ]}
@@ -462,7 +430,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       <div class="flex items-start gap-2 text-xs">
         <span
           id={"journal-entry-target-#{@entry.id}"}
-          class="inline-flex min-w-0 items-center gap-1 font-medium text-base-content/70"
+          class="inline-flex min-w-0 items-center gap-1 font-medium text-muted"
         >
           <.icon name={@target.icon} class="size-3.5 shrink-0" />
           <span class="truncate">{@target.label}</span>
@@ -471,7 +439,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
 
       <p
         data-role="journal-note"
-        class="mt-1.5 break-words leading-relaxed text-base-content [overflow-wrap:anywhere]"
+        class="mt-1.5 break-words leading-relaxed text-default [overflow-wrap:anywhere]"
       >
         {note_body(@entry.body)}
       </p>
@@ -481,7 +449,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
           :for={{photo, index} <- Enum.with_index(@photos, 1)}
           id={"journal-photo-#{photo.id}"}
           type="button"
-          class="group relative size-14 overflow-hidden rounded-md border border-base-300 bg-base-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          class="group relative size-14 overflow-hidden rounded-md border border-subtle bg-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           phx-click="open_journal_photo"
           phx-value-photo_id={photo.id}
           phx-value-entry_id={@entry.id}
@@ -497,7 +465,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
         </button>
       </div>
 
-      <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-base-content/70">
+      <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
         <span class="min-w-0 truncate">
           <span>{@byline}</span>
           <span aria-hidden="true">·</span>
@@ -547,18 +515,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       aria-busy="true"
       class="journal-loading-delay min-h-0 flex-1 px-4 pb-4"
     >
-      <div class="divide-y divide-base-300">
+      <div class="divide-y divide-subtle">
         <div
           :for={width <- ["w-2/3", "w-1/2", "w-3/4"]}
           data-role="journal-skeleton-row"
           class="space-y-2 py-3"
         >
           <div class="flex gap-2">
-            <div class={["h-5 rounded-full bg-base-300", width]}></div>
-            <div class="ml-auto h-4 w-16 bg-base-300"></div>
+            <div class={["h-5 rounded-full bg-canvas", width]}></div>
+            <div class="ml-auto h-4 w-16 bg-canvas"></div>
           </div>
-          <div class="h-4 w-full bg-base-300"></div>
-          <div class="h-4 w-2/3 bg-base-300"></div>
+          <div class="h-4 w-full bg-canvas"></div>
+          <div class="h-4 w-2/3 bg-canvas"></div>
         </div>
       </div>
     </.skeleton>
@@ -573,7 +541,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       class="mx-4 mt-2 border-0 px-4 py-10"
     >
       <span class="journal-empty-icon">
-        <.icon name="hero-clipboard-document-list" class="size-8 text-base-content/40" />
+        <.icon name="hero-clipboard-document-list" class="size-8 text-muted" />
       </span>
       <span class="journal-empty-copy">
         Notes and photos captured at this station with the Pathways field companion appear here for review.
@@ -811,7 +779,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
       <div
         :if={@refreshing?}
         id={"#{@id_prefix}-refreshing"}
-        class="flex items-center gap-2 border border-base-300 bg-base-200 px-3 py-2 text-sm text-base-content"
+        class="flex items-center gap-2 border border-subtle bg-canvas px-3 py-2 text-sm text-default"
       >
         <.icon name="hero-arrow-path" class="size-4 motion-safe:animate-spin" />
         <span>Refreshing journal entries</span>
@@ -924,7 +892,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
           href={PhotoStorage.public_path(@scope, photo)}
           target="_blank"
           rel="noopener noreferrer"
-          class="block size-14 shrink-0 overflow-hidden rounded-md border border-base-300 bg-base-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          class="block size-14 shrink-0 overflow-hidden rounded-md border border-subtle bg-canvas focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           aria-label={"View journal photo #{photo.id}"}
         >
           <img
@@ -937,7 +905,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponents do
         </a>
       </div>
 
-      <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-base-content/70">
+      <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
         <span class="min-w-0 truncate">
           <span>{@byline}</span>
           <span aria-hidden="true">·</span>

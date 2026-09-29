@@ -1380,6 +1380,32 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
   end
 
   describe "segmented_control/1 experimental contract" do
+    test "an option's icon renders before its label and keeps the radio input" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.segmented_control
+          id="mode"
+          name="mode"
+          legend="Mode"
+          options={[%{label: "Select", value: "view", icon: "hero-map-pin"}, {"Align", "map"}]}
+          value="view"
+          event="switch_mode"
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert Enum.count(
+               LazyHTML.query(doc, "label[for='mode-option-view'] [class*='hero-map-pin']")
+             ) ==
+               1
+
+      assert Enum.empty?(LazyHTML.query(doc, "label[for='mode-option-map'] [class*='hero-']"))
+      assert Enum.count(LazyHTML.query(doc, "#mode input[type='radio']")) == 2
+    end
+
     test "renders fieldset with legend and radio inputs" do
       assigns = %{value: "list"}
 

@@ -6,23 +6,20 @@ import {
 } from "./station_diagram_helpers";
 
 test.describe("Station diagram workspace", () => {
-  test("returns focus to the level disclosure after switching levels", async ({
+  test("keeps focus on the level tab after switching levels", async ({
     page,
   }) => {
     await loginAndGoToDiagram(page);
     await selectSeededDiagramLevel(page, "BROWSER_L2");
 
-    const trigger = page.locator("#level-control-trigger");
-    const selected = page.locator(
-      '#level-control-panel [data-level-id="BROWSER_L2"]',
-    );
+    const selected = page.locator('#level-control [data-level-id="BROWSER_L2"]');
 
-    await expect(trigger).toBeFocused();
-    await expect(trigger).toHaveAttribute(
-      "aria-label",
-      "Level, Browser Level 2",
-    );
+    await expect(selected).toBeFocused();
     await expect(selected).toHaveAttribute("aria-current", "true");
+    await expect(selected).toContainText("Browser Level 2");
+    await expect(
+      page.locator('#level-control [aria-current="true"]'),
+    ).toHaveCount(1);
   });
 
   test("keeps context and explicit focus boundaries at tablet width", async ({

@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { loginAndGoToDiagram, onePixelPng } from "./station_diagram_helpers";
 
 async function openReplacementDrawer(page) {
-  await page.locator("#level-control-trigger").click();
+  await page.locator("#diagram-more-trigger").click();
   await page.locator("#replace-floorplan-action").click();
   await expect(page.locator("#diagram-upload-drawer-overlay")).toHaveAttribute(
     "data-open",
