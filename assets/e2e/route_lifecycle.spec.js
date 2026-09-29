@@ -1,5 +1,11 @@
 import { test, expect } from "@playwright/test";
-import { bodyFitsViewport } from "./browser_helpers";
+import { readFileSync } from "node:fs";
+import {
+  bodyFitsViewport,
+  captureShot,
+  logInAs,
+  readZipTextMember,
+} from "./browser_helpers";
 
 /**
  * Shared route identity controls (spec 16, step 18).
@@ -62,6 +68,10 @@ async function logIn(page, user = CREATE_USER) {
 
   if ((await page.locator('input[name="user[email]"]').count()) === 0) return;
 
+  // The form submits over the LiveView socket: wait for the connection so a
+  // fast click is never dropped before the view is joined.
+  await awaitConnected(page);
+
   await page.fill('input[name="user[email]"]', user.email);
   await page.fill('input[name="user[password]"]', user.password);
   await page.locator('button:has-text("Log in")').click();
@@ -86,6 +96,7 @@ test.describe("Route identity controls", () => {
   }) => {
     await logIn(page);
     await page.goto(`/gtfs/${await versionId(page)}/routes`);
+    await awaitConnected(page);
     await page.locator("#new-route-trigger").click();
     await expect(
       page.locator("#new-route-form #new-route-identity"),
@@ -147,6 +158,7 @@ test.describe("Route identity controls", () => {
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
     await expect(
       page.locator("#route-details-form #route-details-identity"),
     ).toBeVisible();
@@ -180,6 +192,7 @@ test.describe("Route identity controls", () => {
   }) => {
     await logIn(page);
     await page.goto(`/gtfs/${await versionId(page)}/routes`);
+    await awaitConnected(page);
     await page.locator("#new-route-trigger").click();
 
     // Submitting with both names blank is rejected, and the one message names
@@ -212,6 +225,7 @@ test.describe("Route color field", () => {
   }) => {
     await logIn(page);
     await page.goto(`/gtfs/${await versionId(page)}/routes`);
+    await awaitConnected(page);
     await page.locator("#new-route-trigger").click();
     await expect(
       page.locator("#new-route-form #new-route-color-fields"),
@@ -265,6 +279,7 @@ test.describe("Route color field", () => {
   }) => {
     await logIn(page);
     await page.goto(`/gtfs/${await versionId(page)}/routes`);
+    await awaitConnected(page);
     await page.locator("#new-route-trigger").click();
 
     await page.locator("#new-route-color").fill("5BC5F2");
@@ -297,6 +312,7 @@ test.describe("Route color field", () => {
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
     await expect(
       page.locator("#route-details-form #route-details-color-fields"),
     ).toBeVisible();
@@ -358,6 +374,7 @@ test.describe("Route details workspace", () => {
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
 
     // Saved identity, not a draft: the heading, the badge, the mode chip and the
     // attribution line all describe the stored route.
@@ -413,6 +430,7 @@ test.describe("Route details workspace", () => {
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
 
     await expect(page.locator("#route-details-form")).toBeVisible();
     await expect(page.locator("#route-details-heading")).toBeVisible();
@@ -437,6 +455,7 @@ test.describe("Route details workspace", () => {
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
 
     const short = page.locator("#route-details-short");
 
@@ -495,6 +514,7 @@ test.describe("Route details workspace", () => {
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
 
     // BROWSER_PATTERNS_READY's two patterns run over stops stored without
     // coordinates, so the saved geometry itself reports known-missing paths.
@@ -550,6 +570,7 @@ test.describe("Route details draft preview", () => {
     const version = await versionId(page);
     const routeUrl = `/gtfs/${version}/routes/${DETAILS_ROUTE}`;
     await page.goto(routeUrl);
+    await awaitConnected(page);
 
     const badge = page.locator("#route-details-badge > span");
     const bar = page.locator("#route-details-save-bar");
@@ -601,6 +622,7 @@ test.describe("Route details draft preview", () => {
     await expect(page.locator("#route-details-unsaved-preview")).toHaveCount(0);
 
     await page.goto(routeUrl);
+    await awaitConnected(page);
     await expect(color).toHaveValue(savedColor);
 
     expect(await bodyFitsViewport(page)).toBe(true);
@@ -613,6 +635,7 @@ test.describe("Route details draft preview", () => {
     const version = await versionId(page);
     const routeUrl = `/gtfs/${version}/routes/${DETAILS_ROUTE}`;
     await page.goto(routeUrl);
+    await awaitConnected(page);
 
     // Count the form's own submit events, wherever they come from.
     await page.evaluate(() => {
@@ -646,6 +669,7 @@ test.describe("Route details draft preview", () => {
       "Preview rename",
     );
     await page.goto(routeUrl);
+    await awaitConnected(page);
     await expect(page.locator("#route-details-long")).not.toHaveValue(
       "Preview rename",
     );
@@ -680,6 +704,7 @@ test.describe("Create route drawer", () => {
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes`);
+    await awaitConnected(page);
 
     // The ordinary list trigger is the only entrypoint; nothing else opens it.
     const trigger = page.locator("#new-route-trigger");
@@ -720,6 +745,7 @@ test.describe("Create route drawer", () => {
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes`);
+    await awaitConnected(page);
     await page.locator("#new-route-trigger").click();
 
     const number = `E2E-${Date.now().toString().slice(-6)}`;
@@ -728,7 +754,10 @@ test.describe("Create route drawer", () => {
     await page
       .locator("#new-route-long")
       .fill("Create drawer regression route");
-    await page.locator("#new-route-mode-3").check();
+    // The visible chip is the input's label: clicking it is the production
+    // interaction (the input itself is sr-only).
+    await page.locator("label:has(#new-route-mode-3)").click();
+    await expect(page.locator("#new-route-mode-3")).toBeChecked();
     await page.locator("#new-route-color").fill("0055A4");
 
     // The preview is the domain's own inference, and the drawer is now a draft.
@@ -766,6 +795,7 @@ test.describe("Create route drawer", () => {
 
     // The saved identifier is what the list shows afterwards.
     await page.goto(`/gtfs/${version}/routes?search=${savedId}`);
+    await awaitConnected(page);
     await expect(page.locator("#routes a").first()).toContainText(savedId);
   });
 });
@@ -793,12 +823,15 @@ test.describe("Route details save and merge", () => {
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
 
     const long = page.locator("#route-details-long");
     const saved = (await long.inputValue()) || "Route";
     const renamed = `${saved} extended`;
 
     await long.fill(renamed);
+    // The shared name input debounces on blur; leave the field to push the draft.
+    await page.locator("#route-details-heading").click();
     await expect(page.locator("#route-details-save-bar")).toBeVisible();
     await page.locator("#route-save").click();
 
@@ -812,6 +845,7 @@ test.describe("Route details save and merge", () => {
 
     // Leave the seeded route as it was found.
     await long.fill(saved);
+    await page.locator("#route-details-heading").click();
     await page.locator("#route-save").click();
     await expect(page.locator("#route-details-saved")).toContainText("saved");
   });
@@ -824,6 +858,7 @@ test.describe("Route details save and merge", () => {
     await logIn(pageA);
     const version = await versionId(pageA);
     await pageA.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(pageA);
 
     // Session B is an ordinary second session of the same editor: it saves a
     // disjoint field through the same Details surface while A is editing.
@@ -831,6 +866,7 @@ test.describe("Route details save and merge", () => {
     const pageB = await sessionB.newPage();
     await logIn(pageB);
     await pageB.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(pageB);
     const descB = pageB.locator("#route-details-desc");
     const theirDesc = `Saved by session B ${Date.now()}`;
     await descB.fill(theirDesc);
@@ -843,6 +879,7 @@ test.describe("Route details save and merge", () => {
     const longA = pageA.locator("#route-details-long");
     const originalName = await longA.inputValue();
     await longA.fill("Session A rename");
+    await pageA.locator("#route-details-heading").click();
     await pageA.locator("#route-save").click();
 
     const conflict = pageA.locator("#route-conflict");
@@ -862,6 +899,7 @@ test.describe("Route details save and merge", () => {
 
     // Leave the seeded route as it was found.
     await longA.fill(originalName);
+    await pageA.locator("#route-details-heading").click();
     await pageA.locator("#route-save").click();
     await expect(pageA.locator("#route-details-saved")).toContainText("saved");
     await sessionA.close();
@@ -890,10 +928,13 @@ test.describe("Route details dirty navigation", () => {
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
 
     const long = page.locator("#route-details-long");
     const saved = await long.inputValue();
     await long.fill(`${saved} navigation draft`);
+    // The shared name input debounces on blur; leave the field to push the draft.
+    await page.locator("#route-details-heading").click();
     await expect(page.locator("#route-details-save-bar")).toBeVisible();
 
     const organizationId = await page
@@ -951,11 +992,14 @@ test.describe("Route details dirty navigation", () => {
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
 
     const long = page.locator("#route-details-long");
     const saved = await long.inputValue();
     const draft = `${saved} nav discard draft`;
     await long.fill(draft);
+    // The shared name input debounces on blur; leave the field to push the draft.
+    await page.locator("#route-details-heading").click();
     await expect(page.locator("#route-details-save-bar")).toBeVisible();
 
     // A route tab holds behind the dialog; Keep editing keeps the draft here.
@@ -991,6 +1035,7 @@ test.describe("Route details dirty navigation", () => {
     await expect(page).toHaveURL(/\/patterns$/);
 
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
     await expect(long).toHaveValue(saved);
   });
 
@@ -1000,11 +1045,14 @@ test.describe("Route details dirty navigation", () => {
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
 
     const long = page.locator("#route-details-long");
     const saved = await long.inputValue();
     const draft = `${saved} saved and continued`;
     await long.fill(draft);
+    // The shared name input debounces on blur; leave the field to push the draft.
+    await page.locator("#route-details-heading").click();
     await expect(page.locator("#route-details-save-bar")).toBeVisible();
 
     await page
@@ -1019,10 +1067,12 @@ test.describe("Route details dirty navigation", () => {
 
     // The commit landed before the navigation: the route now holds the draft.
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
     await expect(long).toHaveValue(draft);
 
     // Leave the seeded route as it was found.
     await long.fill(saved);
+    await page.locator("#route-details-heading").click();
     await page.locator("#route-save").click();
     await expect(page.locator("#route-details-saved")).toContainText("saved");
   });
@@ -1045,11 +1095,13 @@ test.describe("Route connectivity recovery", () => {
   }) => {
     await logIn(page);
     await page.goto(`/gtfs/${await versionId(page)}/routes`);
+    await awaitConnected(page);
     await page.locator("#new-route-trigger").click();
     await expect(page.locator("#new-route-form")).toBeVisible();
 
     await page.fill("#new-route-short", "R9");
-    await page.context().setOffline(true);
+    // A real socket disconnect, the repository's offline-editor idiom.
+    await page.evaluate(() => window.liveSocket.disconnect());
 
     const submit = page.locator("#new-route-submit");
     await expect(submit).toBeDisabled();
@@ -1058,7 +1110,7 @@ test.describe("Route connectivity recovery", () => {
     );
     await expect(page.locator("#new-route-short")).toHaveValue("R9");
 
-    await page.context().setOffline(false);
+    await page.evaluate(() => window.liveSocket.connect());
     await expect(page.locator("#new-route-recovery")).toContainText(
       "Connection restored",
     );
@@ -1071,10 +1123,12 @@ test.describe("Route connectivity recovery", () => {
   }) => {
     await logIn(page);
     await page.goto(`/gtfs/${await versionId(page)}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
     await expect(page.locator("#route-details-form")).toBeVisible();
 
     await page.fill("#route-details-long", "Renamed while offline");
-    await page.context().setOffline(true);
+    // A real socket disconnect, the repository's offline-editor idiom.
+    await page.evaluate(() => window.liveSocket.disconnect());
 
     await expect(page.locator("#route-details-recovery")).toContainText(
       "Connection lost",
@@ -1084,7 +1138,7 @@ test.describe("Route connectivity recovery", () => {
       "Renamed while offline",
     );
 
-    await page.context().setOffline(false);
+    await page.evaluate(() => window.liveSocket.connect());
     await expect(page.locator("#route-details-recovery")).toContainText(
       "Connection restored",
     );
@@ -1108,6 +1162,7 @@ test.describe("Route status actions", () => {
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
 
     // An eligible route: no banner or chip anywhere, active status row.
     await expect(page.locator("#route-inactive-banner")).toHaveCount(0);
@@ -1167,8 +1222,11 @@ test.describe("Route status actions", () => {
     await logIn(page);
     const version = await versionId(page);
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
 
     await page.fill("#route-details-long", "Renamed before review");
+    // The shared name input debounces on blur; leave the field to push the draft.
+    await page.locator("#route-details-heading").click();
     await expect(page.locator("#route-details-save-bar")).toBeVisible();
 
     await page.locator("#route-deactivate").click();
@@ -1608,5 +1666,567 @@ test.describe("Other routes context", () => {
     expect(ids).toEqual([...ids].sort());
     expect(new Set(ids).size).toBe(55);
     await expect(page.locator("#route-map-context-more")).toHaveCount(0);
+  });
+});
+
+/**
+ * Complete browser workflow journeys (spec 16, step 33 — EV-5).
+ *
+ * The earlier describes pin the individual controls; these journeys compose
+ * them into the ordinary authenticated lifecycle: create → Details →
+ * pattern → schedule → deactivate/export/reactivate → reviewed delete, plus
+ * the denied, stale and recovered states around it. Everything runs through
+ * the production entrypoints — /gtfs/:version/routes (RoutesLive),
+ * /gtfs/:version/routes/:route_id (RouteDetailLive), the pattern and
+ * schedules tabs, Gtfs.ExportLive and the GtfsExportDownloadController
+ * download — with concrete internal adapters and no injected assigns. The
+ * only double is the tile HTTP boundary, stubbed before any Details page
+ * opens, so the map keeps its vectors without an upstream tile fetch.
+ *
+ * The journeys are stateful like the rest of the suite: the journey route is
+ * created and deleted by its own journey, the stale journey deletes the
+ * seeded BROWSER_ROUTE16_FLOW, and the membership journey restores the
+ * revoked member before it ends. A fresh reset-and-seeded database restores
+ * every record (the lane contract in spec.md).
+ *
+ * Seeded records consumed, from test/support/browser_seed.exs:
+ *   BROWSER_ROUTE16_FLOW     one pattern + one linked trip, deleted by the
+ *                            stale journey's final apply
+ *   BROWSER_ROUTE16_INACTIVE explicitly active: false, never mutated — the
+ *                            archive assertions use it as the unrelated
+ *                            excluded route in every snapshot
+ *   route16-admin@…          org admin whose /users surface revokes and
+ *                            restores the editor's membership
+ */
+
+const PATHWAYS_USER = {
+  email: "pathways-editor@gtfs-planner.test",
+  password: "PathwaysEditor123!",
+};
+
+const ROUTE16_ADMIN_USER = {
+  email: "route16-admin@gtfs-planner.test",
+  password: "route16-admin-browser-pass",
+};
+
+function pngTileStep033() {
+  // One grey 2x2 PNG; the pixels do not matter, only that the layer loads.
+  return Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP8z8DwnwEJMDEgAQBe" +
+      "4QEKd3hXFAAAAABJRU5ErkJggg==",
+    "base64",
+  );
+}
+
+function stubTiles(page) {
+  return page.route(/\/map\/tiles\//, (route) =>
+    route.fulfill({
+      status: 200,
+      body: pngTileStep033(),
+      contentType: "image/png",
+    }),
+  );
+}
+
+async function awaitConnectedStep033(page) {
+  await page.waitForSelector("[data-phx-main].phx-connected");
+}
+
+function csvValues(text, column) {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const header = lines[0].split(",");
+  const index = header.indexOf(column);
+  expect(
+    index,
+    `${column} is a column of the exported file`,
+  ).toBeGreaterThanOrEqual(0);
+  return lines.slice(1).map((line) => line.split(",")[index]);
+}
+
+test.describe("Complete route lifecycle journey", () => {
+  test.use({ viewport: { width: 1440, height: 1000 } });
+
+  // Runs one ordinary full-profile export through ExportLive and returns the
+  // downloaded archive bytes from the GtfsExportDownloadController response.
+  async function runExportZip(page, version) {
+    await page.goto(`/gtfs/${version}/export`);
+    await awaitConnectedStep033(page);
+    await expect(page.locator("#export-type-full")).toBeChecked();
+
+    const previousHref = await page
+      .locator("#export-download-link")
+      .getAttribute("href");
+    await page.locator("#start-export").click();
+    await expect
+      .poll(() => page.locator("#export-download-link").getAttribute("href"), {
+        timeout: 120_000,
+      })
+      .not.toBe(previousHref);
+
+    const responsePromise = page.waitForResponse((response) =>
+      /\/export-runs\/[^/]+\/download$/.test(new URL(response.url()).pathname),
+    );
+    const downloadPromise = page.waitForEvent("download");
+    await page.locator("#export-download-link").click();
+    const [response, download] = await Promise.all([
+      responsePromise,
+      downloadPromise,
+    ]);
+
+    expect(response.status()).toBe(200);
+    expect(await response.headerValue("content-disposition")).toMatch(
+      /^attachment; filename=/,
+    );
+    expect(download.suggestedFilename()).toMatch(/\.zip$/);
+
+    return readFileSync(await download.path());
+  }
+
+  test("create, edit, schedule, deactivate, export, reactivate and reviewed delete complete through ordinary routes", async ({
+    page,
+  }) => {
+    test.setTimeout(420_000);
+    await stubTiles(page);
+
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes`);
+    await awaitConnectedStep033(page);
+
+    // Only the seeded explicit-false twin reads as Inactive in the ordinary
+    // filtered list; its active sibling does not (INV-4's render half).
+    await page.goto(`/gtfs/${version}/routes?search=BROWSER_ROUTE16_INACTIVE`);
+    await awaitConnectedStep033(page);
+    await expect(
+      page
+        .locator("#routes tr")
+        .filter({ hasText: "BROWSER_ROUTE16_INACTIVE" }),
+    ).toContainText("Inactive");
+    await captureShot(page, "step-033-journey-list-inactive-1440");
+
+    await page.goto(`/gtfs/${version}/routes?search=BROWSER_ROUTE16_FLOW`);
+    await awaitConnectedStep033(page);
+    const flowRow = page
+      .locator("#routes tr")
+      .filter({ hasText: "BROWSER_ROUTE16_FLOW" });
+    await expect(flowRow).toHaveCount(1);
+    await expect(flowRow).not.toContainText("Inactive");
+
+    // Create through the ordinary drawer; the saved route's Details takes
+    // the focus (AC-7's keyboard path). The command allocates the identifier,
+    // so the URL — not the draft's preview — is the saved truth.
+    await page.goto(`/gtfs/${version}/routes`);
+    await awaitConnectedStep033(page);
+    await page.locator("#new-route-trigger").click();
+    await page.locator("#new-route-short").fill("L33");
+    await page.locator("#new-route-long").fill("Browser Route16 Journey");
+    // The visible chip is the input's label: clicking it is the production
+    // interaction (the input itself is sr-only).
+    await page.locator("label:has(#new-route-mode-3)").click();
+    await expect(page.locator("#new-route-mode-3")).toBeChecked();
+    await page.locator("#new-route-submit").click();
+    await page.waitForURL(/\/gtfs\/[^/]+\/routes\/[^/]+\?created=1$/);
+    await awaitConnectedStep033(page);
+    const routeId = decodeURIComponent(
+      page.url().split("/routes/")[1].split("?")[0],
+    );
+    expect(routeId.length).toBeGreaterThan(0);
+    await expect(page.locator("#route-details-heading")).toHaveText(
+      "Browser Route16 Journey",
+    );
+    await expect(page.locator("#route-details-heading")).toBeFocused();
+
+    // A recovered connection inside the journey: the socket drops with a
+    // dirty draft, the entries and the commit block survive, revalidation
+    // clears the block, and only then does Save commit (AC-23).
+    const desc = page.locator("#route-details-desc");
+    await desc.fill("Journeys composed end to end");
+    await page.locator("#route-details-heading").click();
+    await expect(page.locator("#route-details-save-bar")).toBeVisible();
+
+    // The repository's established idiom for an offline editor: a real socket
+    // disconnect, which is what a lost connection looks like to the client.
+    await page.evaluate(() => window.liveSocket.disconnect());
+    await expect(page.locator("#route-details-recovery")).toContainText(
+      "Connection lost",
+    );
+    await expect(page.locator("#route-save")).toBeDisabled();
+    await expect(desc).toHaveValue("Journeys composed end to end");
+
+    await page.evaluate(() => window.liveSocket.connect());
+    await expect(page.locator("#route-details-recovery")).toContainText(
+      "Connection restored",
+    );
+    await expect(page.locator("#route-save")).toBeEnabled();
+
+    await page.locator("#route-save").click();
+    await expect(page.locator("#route-details-saved")).toContainText("saved");
+
+    // Persistence through the ordinary read, not just the form echo.
+    await page.reload();
+    await expect(desc).toHaveValue("Journeys composed end to end");
+
+    // The first pattern is created through the Patterns tab's own editor:
+    // named in the details task, staged from the scoped stop search.
+    await page
+      .locator('nav[aria-label="Route navigation"]')
+      .getByRole("link", { name: "Patterns" })
+      .click();
+    await expect(page.locator("#patterns-empty")).toContainText(
+      "Add the first pattern",
+    );
+    await page.locator("#patterns-create-empty").click();
+
+    await page.waitForSelector("#pattern-task-details", { timeout: 10_000 });
+    await awaitConnectedStep033(page);
+    await page.locator("#pattern-task-details").click();
+    await page.locator("#pattern-details-name").fill("Journey Loop");
+    await page.locator("#pattern-task-stops").click();
+
+    const searchInput = page.locator('#pattern-stop-search input[type="text"]');
+    for (const stopId of ["BROWSER_PATTERN_STOP_1", "BROWSER_PATTERN_STOP_2"]) {
+      await searchInput.fill(`Pattern Stop ${stopId.slice(-1)}`);
+      await page.waitForSelector(`#pattern-stop-option-${stopId}`, {
+        timeout: 10_000,
+      });
+      await searchInput.press("ArrowDown");
+      await searchInput.press("Enter");
+    }
+
+    await expect(page.locator("#pattern-stops-empty")).toHaveCount(0);
+    await page.locator("#pattern-create").click();
+    await expect(page.locator("#flash-info")).toContainText(
+      "Pattern created with its first timing",
+    );
+    await page.waitForURL(/\/patterns\/[^/?]+\?task=timings$/);
+    const patternId = new URL(page.url()).pathname.split("/").pop();
+    await expect(page.locator("#timing-row-1")).toBeVisible();
+
+    // One trip is added to the new pattern through the schedules drawer,
+    // opened with the keyboard only.
+    await page
+      .locator('nav[aria-label="Route navigation"]')
+      .getByRole("link", { name: "Schedules" })
+      .click();
+    await awaitConnectedStep033(page);
+    await expect(page.locator("#schedules-add-trips")).toBeVisible();
+    await page.locator("#schedules-add-trips").focus();
+    await page.keyboard.press("Enter");
+    await page.locator("#trip-drawer").waitFor({ state: "visible" });
+    await page.selectOption("#trip-pattern", { label: "Journey Loop" });
+    await page.fill("#trip-start", "06:00");
+    await expect(page.locator("#trip-drawer-save")).toHaveText("Add 1 trip");
+    await page.locator("#trip-drawer-save").click();
+    await page.locator("#trip-drawer").waitFor({ state: "hidden" });
+    await expect(page).toHaveURL(/pattern=/);
+
+    // The trip is on the created pattern, not merely announced. (The drawer's
+    // focus return to #schedules-add-trips is pinned by the schedules suite's
+    // own journey; this first-add patch re-renders the workspace, so the
+    // focus-restored button is replaced before it can hold focus here.)
+    await expect(
+      page.locator(`#section-${patternId}-table tbody tr`),
+    ).toHaveCount(1);
+
+    // The composed workspace at the desktop breakpoint, before any status
+    // change: draft-free Details with its pattern and trip behind the tabs.
+    await page
+      .locator('nav[aria-label="Route navigation"]')
+      .getByRole("link", { name: "Details" })
+      .click();
+    await awaitConnectedStep033(page);
+    await expect(page.locator("#route-status-section")).toContainText(
+      "Active: included in exports",
+    );
+    await captureShot(page, "step-033-journey-details-1440");
+
+    // Deactivation is the reversible status write: the banner follows the
+    // saved row and survives an ordinary reload (INV-4: explicit false).
+    await page.locator("#route-deactivate").click();
+    await expect(
+      page.locator("#route-status-confirm[data-open='true']"),
+    ).toBeVisible();
+    await page.locator("#route-status-confirm-go").click();
+    await expect(page.locator("#route-inactive-banner")).toContainText(
+      "Inactive: left out of exports",
+    );
+    await expect(page.locator("#route-inactive-chip")).toContainText(
+      "Inactive",
+    );
+    await page.reload();
+    await expect(page.locator("#route-inactive-banner")).toContainText(
+      "left out of exports",
+    );
+
+    // The same composed workspace stays usable at 375x812 without horizontal
+    // overflow (AC-28's narrow-layout contract).
+    await page.setViewportSize({ width: 375, height: 812 });
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureShot(page, "step-033-journey-details-inactive-375");
+    await page.setViewportSize({ width: 1440, height: 1000 });
+
+    // The inactive snapshot leaves the route and its dependent service out of
+    // the archive while eligible service stays (AC-16/17, actual bytes).
+    const inactiveZip = await runExportZip(page, version);
+    const inactiveRoutes = csvValues(
+      readZipTextMember(inactiveZip, "routes.txt"),
+      "route_id",
+    );
+    expect(inactiveRoutes).not.toContain(routeId);
+    expect(inactiveRoutes).not.toContain("BROWSER_ROUTE16_INACTIVE");
+    expect(inactiveRoutes).toContain("BROWSER_PATTERNS_READY");
+
+    const inactiveTrips = csvValues(
+      readZipTextMember(inactiveZip, "trips.txt"),
+      "route_id",
+    );
+    expect(inactiveTrips).not.toContain(routeId);
+    expect(inactiveTrips).not.toContain("BROWSER_ROUTE16_INACTIVE");
+    expect(inactiveTrips).toContain("BROWSER_PATTERNS_READY");
+
+    // Reactivation restores the export inclusion of exactly this route; the
+    // unrelated explicit-false twin stays excluded in the same snapshot.
+    await page.goto(`/gtfs/${version}/routes/${routeId}`);
+    await awaitConnectedStep033(page);
+    await page.locator("#route-reactivate").click();
+    await expect(page.locator("#route-status-outcome")).toContainText(
+      "reactivated. The next export includes it",
+    );
+    await expect(page.locator("#route-inactive-banner")).toHaveCount(0);
+
+    const activeZip = await runExportZip(page, version);
+    const activeRoutes = csvValues(
+      readZipTextMember(activeZip, "routes.txt"),
+      "route_id",
+    );
+    expect(activeRoutes).toContain(routeId);
+    expect(activeRoutes).not.toContain("BROWSER_ROUTE16_INACTIVE");
+
+    const activeTrips = csvValues(
+      readZipTextMember(activeZip, "trips.txt"),
+      "route_id",
+    );
+    expect(activeTrips).toContain(routeId);
+    expect(activeTrips).not.toContain("BROWSER_ROUTE16_INACTIVE");
+
+    // The reviewed deletion closes the composed lifecycle: the review names
+    // the created pattern and trip, the acknowledgement gates the apply, and
+    // the scoped list reports the real counts with the focused trigger.
+    await page.goto(`/gtfs/${version}/routes/${routeId}`);
+    await awaitConnectedStep033(page);
+    await page.locator("#route-delete").click();
+    const review = page.locator("#route-delete-review[data-open='true']");
+    await expect(review).toContainText("Delete ");
+    await expect(review).toContainText("Browser Route16 Journey");
+    await expect(page.locator("#route-delete-impact")).toContainText(patternId);
+    await expect(page.locator("#route-delete-ack")).not.toBeChecked();
+    await captureShot(page, "step-033-journey-delete-review-1440", {
+      fullPage: false,
+    });
+
+    await page.locator("#route-delete-ack").check();
+    await page.locator("#route-delete-go").click();
+    await expect(page).toHaveURL(new RegExp(`/routes\\?deleted=1$`));
+    await expect(page.locator("#flash-info")).toContainText(
+      "deleted, with its 1 pattern and 1 trip",
+    );
+    await expect(page.locator("#new-route-trigger")).toBeFocused();
+
+    // The cascade is observable persistence: the ordinary scoped list holds
+    // no row, and the direct entrypoint denies the dead route.
+    await page.goto(`/gtfs/${version}/routes?search=${routeId}`);
+    await awaitConnected(page);
+    await expect(page.locator("#routes-constrained-empty")).toBeVisible();
+    await page.goto(`/gtfs/${version}/routes/${routeId}`);
+    await awaitConnected(page);
+    await expect(page.locator("#flash-error")).toContainText("Route not found");
+  });
+});
+
+test.describe("Lifecycle denial and stale review", () => {
+  test.use({ viewport: { width: 1440, height: 1000 } });
+
+  test("another tenant's editor is denied at the ordinary entrypoint without seeing the route", async ({
+    browser,
+  }) => {
+    test.setTimeout(120_000);
+
+    // The owner's session supplies the scoped URL under test.
+    const owner = await browser.newContext();
+    const ownerPage = await owner.newPage();
+    await logIn(ownerPage);
+    const version = await versionId(ownerPage);
+    await owner.close();
+
+    const outsider = await browser.newContext();
+    const outsiderPage = await outsider.newPage();
+    await logInAs(outsiderPage, PATHWAYS_USER);
+
+    // Another tenant's editor requesting the foreign route through the
+    // ordinary entrypoint is refused at the version boundary itself: the URL's
+    // version does not belong to their organization, so the mount hook pushes
+    // the dashboard with the truthful flash and nothing of the foreign
+    // version — its routes least of all — is rendered (AC-6).
+    await outsiderPage.goto(`/gtfs/${version}/routes/BROWSER_ROUTE16_FLOW`);
+    await expect(outsiderPage.locator("#flash-error")).toContainText(
+      "GTFS version not found",
+    );
+    expect(new URL(outsiderPage.url()).pathname).toBe("/");
+    await expect(outsiderPage.locator("body")).not.toContainText(
+      "Browser Route16 Flow",
+    );
+    await expect(outsiderPage.locator("body")).not.toContainText(
+      "BROWSER_ROUTE16_FLOW",
+    );
+    await captureShot(outsiderPage, "step-033-denied-foreign-1440");
+    await outsider.close();
+  });
+
+  test("a concurrent edit turns the delete review stale, and nothing deletes until the fresh review is re-acknowledged", async ({
+    browser,
+  }) => {
+    test.setTimeout(180_000);
+
+    const sessionA = await browser.newContext();
+    const pageA = await sessionA.newPage();
+    await stubTiles(pageA);
+    await logIn(pageA);
+    const version = await versionId(pageA);
+    await pageA.goto(`/gtfs/${version}/routes/BROWSER_ROUTE16_FLOW`);
+    await awaitConnectedStep033(pageA);
+
+    // The complete review names the seeded pattern and trip identities.
+    await pageA.locator("#route-delete").click();
+    const review = pageA.locator("#route-delete-review[data-open='true']");
+    await expect(review).toContainText("Delete F16");
+    await expect(pageA.locator("#route-delete-impact")).toContainText(
+      "BROWSER-F16-P1",
+    );
+    await expect(pageA.locator("#route-delete-impact")).toContainText(
+      "BROWSER_F16_T1",
+    );
+
+    // A second ordinary session renames the route while the review is open.
+    const sessionB = await browser.newContext();
+    const pageB = await sessionB.newPage();
+    await stubTiles(pageB);
+    await logIn(pageB);
+    await pageB.goto(`/gtfs/${version}/routes/BROWSER_ROUTE16_FLOW`);
+    await awaitConnectedStep033(pageB);
+    const longB = pageB.locator("#route-details-long");
+    await longB.fill("Browser Route16 Flow renamed");
+    await pageB.locator("#route-details-heading").click();
+    await pageB.locator("#route-save").click();
+    await expect(pageB.locator("#route-details-saved")).toContainText("saved");
+
+    // The acknowledged confirm is refused: the totals match, the contents
+    // moved, the fresh review says so, and the acknowledgement is cleared.
+    await pageA.locator("#route-delete-ack").check();
+    await pageA.locator("#route-delete-go").click();
+    await expect(pageA.locator("#route-delete-impact")).toContainText(
+      "contents changed",
+    );
+    await expect(pageA.locator("#route-delete-ack")).not.toBeChecked();
+    await captureShot(pageA, "step-033-stale-contents-changed-1440", {
+      fullPage: false,
+    });
+
+    // Nothing was deleted: the second session still reads the renamed route.
+    await pageB.reload();
+    await expect(pageB.locator("#route-details-long")).toHaveValue(
+      "Browser Route16 Flow renamed",
+    );
+
+    // The re-acknowledged fresh review applies the reviewed cascade.
+    await pageA.locator("#route-delete-ack").check();
+    await pageA.locator("#route-delete-go").click();
+    await expect(pageA).toHaveURL(/\/routes\?deleted=1$/);
+    await expect(pageA.locator("#flash-info")).toContainText(
+      "deleted, with its 1 pattern and 1 trip",
+    );
+
+    // The dead route is gone for the other session too.
+    await pageB.reload();
+    await expect(pageB.locator("#flash-error")).toContainText(
+      "Route not found",
+    );
+
+    await sessionA.close();
+    await sessionB.close();
+  });
+
+  test("a removed membership keeps the draft, refuses the write, and restores cleanly", async ({
+    browser,
+  }) => {
+    test.setTimeout(180_000);
+
+    // The never-mutated inactive twin hosts this journey: a refused save
+    // writes nothing, so the seeded row survives it untouched. The stale
+    // journey before this one deleted BROWSER_ROUTE16_FLOW.
+    const editor = await browser.newContext();
+    const editorPage = await editor.newPage();
+    await stubTiles(editorPage);
+    await logIn(editorPage);
+    const version = await versionId(editorPage);
+    await editorPage.goto(`/gtfs/${version}/routes/BROWSER_ROUTE16_INACTIVE`);
+    await awaitConnectedStep033(editorPage);
+
+    const long = editorPage.locator("#route-details-long");
+    const savedName = await long.inputValue();
+    await long.fill("Revoked draft rename");
+    await editorPage.locator("#route-details-heading").click();
+    await expect(editorPage.locator("#route-details-save-bar")).toBeVisible();
+
+    // The org admin removes the editor's membership through the real /users
+    // surface while the editor holds the dirty draft.
+    const admin = await browser.newContext();
+    const adminPage = await admin.newPage();
+    await logInAs(adminPage, ROUTE16_ADMIN_USER);
+    await adminPage.goto("/admin/users");
+    await awaitConnectedStep033(adminPage);
+    const memberRow = adminPage
+      .locator("tbody#members tr")
+      .filter({ hasText: "diagram-test@gtfs-planner.test" });
+    await memberRow
+      .locator('[aria-label="Deactivate diagram-test@gtfs-planner.test"]')
+      .click();
+    await adminPage.locator("#deactivate-user-dialog-confirm").click();
+    await expect(adminPage.locator("#member-action-feedback")).toContainText(
+      "diagram-test@gtfs-planner.test deactivated.",
+    );
+
+    // The socket survives, the write does not: the refusal speaks, and the
+    // draft is still on the page (AC-23's permission-loss half).
+    await editorPage.locator("#route-save").click();
+    await expect(editorPage.locator("#route-details-save-error")).toContainText(
+      "editor access was removed",
+    );
+    await expect(long).toHaveValue("Revoked draft rename");
+
+    // Restore access, then prove nothing was written: the saved row still
+    // holds the name the draft never overwrote.
+    await memberRow
+      .locator('[aria-label="Activate diagram-test@gtfs-planner.test"]')
+      .click();
+    await expect(adminPage.locator("#member-action-feedback")).toContainText(
+      "diagram-test@gtfs-planner.test activated.",
+    );
+    await admin.close();
+
+    // Deactivation revoked the editor's HTTP session with the membership: the
+    // reload lands on the ordinary login, and signing back in shows the saved
+    // row still holding the name the refused draft never overwrote.
+    await editorPage.reload();
+    await expect(editorPage.locator('input[name="user[email]"]')).toBeVisible();
+    await logIn(editorPage);
+    await editorPage.goto(`/gtfs/${version}/routes/BROWSER_ROUTE16_INACTIVE`);
+    await awaitConnectedStep033(editorPage);
+    await expect(editorPage.locator("#route-details-long")).toHaveValue(
+      savedName,
+    );
+    await editor.close();
   });
 });

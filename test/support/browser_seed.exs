@@ -1168,6 +1168,116 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: route lifecycle deletion routes (delete with 2 trips, empty)")
 
+    # ── Route lifecycle browser workflow fixtures (spec 16 step 33) ──
+    #
+    # BROWSER_ROUTE16_FLOW gives the composed stale-review and denial journeys
+    # their own record with real counts to disclose: one pattern (two stops),
+    # one linked trip and its stop times; its own journey deletes it.
+    # BROWSER_ROUTE16_INACTIVE is explicitly active: false with the same shape
+    # and is never mutated, so the export journeys can prove the archive
+    # excludes an unrelated inactive route in every snapshot while a
+    # reactivated route returns. Reseeding the lane restores both.
+    Enum.each(
+      [
+        {"BROWSER_ROUTE16_FLOW", "F16", "Browser Route16 Flow", true},
+        {"BROWSER_ROUTE16_INACTIVE", "I16", "Browser Route16 Inactive", false}
+      ],
+      fn {route_id, short_name, long_name, active} ->
+        {:ok, _route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3,
+            active: active
+          })
+
+        pattern =
+          GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
+            route_id: route_id,
+            route_pattern_id: "BROWSER-#{short_name}-P1",
+            route_pattern_name: "#{short_name} Local",
+            direction_id: 0
+          })
+
+        [first_stop, second_stop] = Enum.take(pattern_stops, 2)
+
+        first_occurrence =
+          GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(pattern, first_stop.stop_id, 1)
+
+        second_occurrence =
+          GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(pattern, second_stop.stop_id, 2)
+
+        timing = GtfsPlanner.GtfsFixtures.timed_pattern_fixture(pattern, %{name: "Weekday"})
+
+        GtfsPlanner.GtfsFixtures.timed_pattern_stop_fixture(timing, first_occurrence, %{
+          arrival_offset: 0,
+          departure_offset: 0
+        })
+
+        GtfsPlanner.GtfsFixtures.timed_pattern_stop_fixture(timing, second_occurrence, %{
+          arrival_offset: 0,
+          departure_offset: 240
+        })
+
+        {:ok, trip} =
+          Gtfs.create_trip(%{
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id,
+            route_id: route_id,
+            trip_id: "BROWSER_#{short_name}_T1",
+            service_id: "BROWSER_PATTERN_SERVICE",
+            trip_headsign: "Valley Hospital",
+            direction_id: 0
+          })
+
+        GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(trip, %{
+          route_pattern_id: "BROWSER-#{short_name}-P1",
+          timed_pattern_id: timing.id,
+          pattern_derivation_state: "linked"
+        })
+
+        Enum.each([{first_stop, 1}, {second_stop, 2}], fn {stop, sequence} ->
+          {:ok, _stop_time} =
+            Gtfs.create_stop_time(%{
+              organization_id: org.id,
+              gtfs_version_id: diagram_version.id,
+              trip_id: trip.trip_id,
+              stop_id: stop.stop_id,
+              stop_sequence: sequence,
+              arrival_time: "10:0#{sequence}:00",
+              departure_time: "10:0#{sequence}:00"
+            })
+        end)
+      end
+    )
+
+    IO.puts(
+      "Browser seed: route lifecycle workflow routes (flow with 1 pattern + 1 trip, inactive twin)"
+    )
+
+    # An organization admin beside the editor in Browser Test Org, so the
+    # membership-removal denial journey can revoke and restore editor access
+    # through the real /users admin surface instead of a fixture backdoor.
+    {:ok, workflow_admin} =
+      Accounts.register_user(%{
+        email: "route16-admin@gtfs-planner.test",
+        password: "route16-admin-browser-pass"
+      })
+
+    Repo.update!(User.confirm_changeset(workflow_admin))
+
+    {:ok, _workflow_admin_membership} =
+      Accounts.create_user_org_membership(%{
+        user_id: workflow_admin.id,
+        organization_id: org.id,
+        roles: ["pathways_studio_admin"]
+      })
+
+    IO.puts("Browser seed: route16 workflow admin #{workflow_admin.email} in #{org.name}")
+
     seed_pattern_trip_times = fn trip_id ->
       [
         {"BROWSER_PATTERN_STOP_1", "08:00:00", "08:00:00"},
