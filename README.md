@@ -225,6 +225,10 @@ For detailed documentation on authentication features:
 
 ### Running Tests
 
+Tests connect as the `gtfs_planner_test` Postgres role, which cannot reach `gtfs_planner_dev`.
+Create it once per machine with `bin/setup-test-db-role`, which connects as a Postgres superuser
+(`PGUSER`, default your own user); `mix test` then creates its own `gtfs_planner_exunit*` databases.
+
 ```bash
 # Run all tests
 mix test

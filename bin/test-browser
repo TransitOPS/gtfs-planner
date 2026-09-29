@@ -15,8 +15,11 @@
 #   bin/test-browser --keep e2e/blocks.spec.js    print the URL and leave the
 #                                                 database up for 4 hours idle
 #
-# On CI, a DATABASE_URL that is already set is used as is: the job's service
-# container is the disposable server.
+# The database reaches the app through GTFS_PLANNER_TEST_DATABASE_URL, which only
+# this script and the CI job set. config/test.exs accepts it only for a loopback
+# host and a database named `test` or `gtfs_planner_exunit*`, and ignores DATABASE_URL.
+# On CI, a GTFS_PLANNER_TEST_DATABASE_URL that is already set is used as is: the job's
+# service container is the disposable server.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -27,8 +30,8 @@ if [ "${1:-}" = "--keep" ]; then
   shift
 fi
 
-if [ -n "${CI:-}" ] && [ -n "${DATABASE_URL:-}" ]; then
-  echo "Postgres (from CI): ${DATABASE_URL}" >&2
+if [ -n "${CI:-}" ] && [ -n "${GTFS_PLANNER_TEST_DATABASE_URL:-}" ]; then
+  echo "Postgres (from CI): ${GTFS_PLANNER_TEST_DATABASE_URL}" >&2
 else
   if ! command -v pg_tmp >/dev/null; then
     echo "pg_tmp not found. Install it with: brew install ephemeralpg" >&2
@@ -58,14 +61,14 @@ else
 
   # -t listens on TCP with a free port; loopback only, since pg_tmp uses trust
   # authentication and would otherwise listen on every interface.
-  DATABASE_URL=$(pg_tmp -t -w "$timeout" -o "-c listen_addresses=127.0.0.1")
-  export DATABASE_URL
+  GTFS_PLANNER_TEST_DATABASE_URL=$(pg_tmp -t -w "$timeout" -o "-c listen_addresses=127.0.0.1")
+  export GTFS_PLANNER_TEST_DATABASE_URL
 
   if [ -n "$keep" ]; then
-    echo "Postgres (pg_tmp, kept until idle at a ${timeout}s check): ${DATABASE_URL}" >&2
-    echo "Connect with: psql '${DATABASE_URL}'" >&2
+    echo "Postgres (pg_tmp, kept until idle at a ${timeout}s check): ${GTFS_PLANNER_TEST_DATABASE_URL}" >&2
+    echo "Connect with: psql '${GTFS_PLANNER_TEST_DATABASE_URL}'" >&2
   else
-    echo "Postgres (pg_tmp): ${DATABASE_URL}" >&2
+    echo "Postgres (pg_tmp): ${GTFS_PLANNER_TEST_DATABASE_URL}" >&2
   fi
 fi
 

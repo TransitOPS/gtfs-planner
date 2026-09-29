@@ -33,8 +33,15 @@ Run these commands to set up the database for Phoenix:
 ```bash
 psql -d postgres -c "CREATE ROLE postgres WITH LOGIN PASSWORD 'postgres' CREATEDB;"
 psql -d postgres -c "CREATE DATABASE gtfs_planner_dev OWNER postgres;"
-psql -d postgres -c "CREATE DATABASE gtfs_planner_test OWNER postgres;"
 ```
+
+Tests connect as a separate `gtfs_planner_test` role that cannot reach the dev database. Create it once, as a Postgres superuser (`PGUSER`, default your own user, which owns a Homebrew server):
+
+```bash
+bin/setup-test-db-role
+```
+
+`mix test` creates its own `gtfs_planner_exunit*` databases as that role.
 
 ## Run Migrations
 
