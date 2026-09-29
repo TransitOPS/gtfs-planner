@@ -573,6 +573,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :fixed_problems, :integer, default: 0
   attr :repeating_trip_ids, :list, default: []
   attr :estimated_pairs, :integer, default: 0
+  attr :apply, :map, default: %{status: :none, title: nil, message: nil, reason: nil}
 
   def suggestion_panel(assigns) do
     assigns =
@@ -581,6 +582,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       |> assign(:metrics, suggestion_metrics(assigns))
       |> assign(:scope_note, scope_note(assigns))
       |> assign(:facts_note, facts_note(assigns))
+      |> assign(:apply_label, apply_label(assigns.apply))
+      |> assign(:apply_disabled?, apply_disabled?(assigns.apply))
+      |> assign(:suggest_primary?, assigns.apply.status == :stale)
 
     ~H"""
     <section
@@ -612,6 +616,18 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       </div>
 
       <div class="grid gap-3 px-5 py-4">
+        <.callout
+          :if={@apply.status != :none}
+          id="suggestion-apply-message"
+          kind={apply_kind(@apply.status)}
+          title={@apply.title}
+          tabindex="-1"
+          data-role="suggestion-apply-state"
+          data-state={@apply.status}
+        >
+          {@apply.message}
+        </.callout>
+
         <p id="suggestion-scope-note" class="text-sm">
           {@scope_note}
           <span :if={@facts_note}>{@facts_note}</span>
@@ -658,16 +674,22 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           <button
             id="apply-suggestion"
             type="button"
-            disabled
-            title="Applying a suggestion is not available in this build."
-            class="btn btn-sm btn-primary btn-disabled min-h-11"
+            phx-click="apply_suggestion"
+            disabled={@apply_disabled?}
+            title={@apply.reason}
+            class={[
+              "btn btn-sm min-h-11",
+              @apply_disabled? && "btn-disabled",
+              not @apply_disabled? && "btn-primary"
+            ]}
           >
-            Apply suggestion
+            {@apply_label}
           </button>
           <button
             id="discard-suggestion"
             type="button"
             phx-click="discard_suggestion"
+            disabled={@apply.status == :pending}
             class="btn btn-sm min-h-11"
           >
             Discard suggestion
@@ -676,16 +698,130 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             id="suggest-again"
             type="button"
             phx-click="suggest_again"
-            class="btn btn-sm min-h-11"
+            disabled={@apply.status == :pending}
+            class={["btn btn-sm min-h-11", @suggest_primary? && "btn-primary"]}
           >
             Suggest again
           </button>
-          <span :if={@scope == :replace_all} class="text-[13px] text-base-content/70">
+          <span
+            :if={@apply.reason}
+            id="suggestion-apply-reason"
+            class="text-[13px] text-base-content/70"
+          >
+            {@apply.reason}
+          </span>
+          <span
+            :if={@scope == :replace_all and @apply.status != :stale}
+            class="text-[13px] text-base-content/70"
+          >
             Applying asks you to confirm, because hand-tuned blocks may change.
           </span>
         </div>
       </div>
     </section>
+    """
+  end
+
+  # The Apply button's three labels and its two disabled states, from the result
+  # the last attempt produced. A busy or failed apply keeps the preview, so the
+  # next click repeats exactly the reviewed write and the button says so; a stale
+  # plan is not repeatable, so its label stays and its disabled reason is printed
+  # beside it (AC-45).
+  defp apply_label(%{status: status}) when status in [:busy, :failed], do: "Apply again"
+  defp apply_label(_apply), do: "Apply suggestion"
+
+  defp apply_disabled?(%{status: status}) when status in [:pending, :stale], do: true
+  defp apply_disabled?(_apply), do: false
+
+  defp apply_kind(:pending), do: "info"
+  defp apply_kind(:stale), do: "warning"
+  defp apply_kind(:busy), do: "warning"
+  defp apply_kind(_status), do: "error"
+
+  @doc """
+  Renders the applied message where the Suggested blocks panel was.
+
+  A successful apply drops the preview, so there is nothing left to inspect: what
+  remains is the sentence saying what changed and the reader's own Dismiss. It
+  takes focus so a keyboard reader lands on the outcome rather than on a button
+  that has gone.
+  """
+  attr :applied, :map, required: true
+
+  def suggestion_applied(assigns) do
+    ~H"""
+    <section
+      id="suggestion"
+      aria-labelledby="suggestion-applied-title"
+      phx-hook="FormErrorFocus"
+      data-focus-on-mount="suggestion-applied"
+      class="mt-4 rounded-box border border-success/40 bg-base-100"
+    >
+      <div
+        id="suggestion-applied"
+        tabindex="-1"
+        data-role="suggestion-applied"
+        class="flex flex-wrap items-start justify-between gap-3 border-l-4 border-success bg-success/10 px-5 py-4"
+      >
+        <div>
+          <h2 id="suggestion-applied-title" class="font-semibold text-base-content">
+            Suggestion applied.
+          </h2>
+          <p class="mt-0.5 text-sm text-base-content/70">{@applied.message}</p>
+        </div>
+        <button
+          id="dismiss-applied"
+          type="button"
+          phx-click="dismiss_applied"
+          class="btn btn-sm min-h-11"
+        >
+          Dismiss
+        </button>
+      </div>
+    </section>
+    """
+  end
+
+  @doc """
+  Renders the replace-all confirmation as the built review dialog.
+
+  A rebuild re-plans every scheduled trip in the day type, so it is confirmed
+  before it is written: the title and the confirm button both name the number of
+  trips the plan would move, and the cancel action is “Keep current blocks”,
+  which is what the reader chose by closing it. It is the shared `confirm_dialog`
+  rather than a second overlay, and its pending state is the panel's own, so the
+  confirm button cannot be pressed twice while a write runs (AC-45).
+  """
+  attr :replace, :map, required: true
+  attr :day_type, :map, required: true
+  attr :pending, :boolean, default: false
+
+  def suggestion_replace_dialog(assigns) do
+    assigns = assign(assigns, :label, "Replace blocks for #{assigns.replace.moves} trips")
+
+    ~H"""
+    <.confirm_dialog
+      id="suggestion-replace"
+      open={@replace.open?}
+      title={@label <> "?"}
+      confirm_label={@label}
+      pending_label="Applying…"
+      on_confirm="confirm_replace"
+      on_cancel="cancel_replace"
+      cancel_label="Keep current blocks"
+      pending={@pending}
+      described_by="suggestion-replace-body"
+      confirm_variant="primary"
+      return_focus_id="apply-suggestion"
+      data-initial-focus-id="suggestion-replace-body"
+    >
+      <p id="suggestion-replace-body">
+        Every scheduled trip in {@day_type.label} was planned again. {@replace.moves}
+        {if @replace.moves == 1, do: "trip changes", else: "trips change"} block,
+        including hand-tuned blocks, on {Enum.join(@replace.days, " and ")}. Each trip's change history keeps its
+        previous block.
+      </p>
+    </.confirm_dialog>
     """
   end
 
