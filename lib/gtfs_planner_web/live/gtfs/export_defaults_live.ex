@@ -139,72 +139,72 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLive do
           </:subtitle>
         </.header>
 
-      <.form
-        for={@form}
-        id="export-defaults-form"
-        novalidate
-        phx-change="validate"
-        phx-submit="save"
-        class="mt-6 max-w-2xl"
-      >
-        <fieldset class="border-t border-base-300 pt-5 first:mt-0 first:border-t-0 first:pt-0">
-          <legend class="pr-4 text-base font-semibold text-base-content">Flex services</legend>
+        <.form
+          for={@form}
+          id="export-defaults-form"
+          novalidate
+          phx-change="validate"
+          phx-submit="save"
+          class="mt-6 max-w-2xl"
+        >
+          <fieldset class="border-t border-base-300 pt-5 first:mt-0 first:border-t-0 first:pt-0">
+            <legend class="pr-4 text-base font-semibold text-base-content">Flex services</legend>
 
-          <div class="mt-4">
-            <.input
-              field={@form[:include_flex]}
-              type="checkbox"
-              id="flex-switch"
-              class="toggle toggle-primary"
-              label="Include flex services in exports"
-            />
+            <div class="mt-4">
+              <.input
+                field={@form[:include_flex]}
+                type="checkbox"
+                id="flex-switch"
+                class="toggle toggle-primary"
+                label="Include flex services in exports"
+              />
 
-            <p id="flex-switch-consequence" class="mt-2 text-sm text-base-content/70">
-              {switch_consequence(@include_flex)}
-            </p>
-          </div>
-        </fieldset>
+              <p id="flex-switch-consequence" class="mt-2 text-sm text-base-content/70">
+                {switch_consequence(@include_flex)}
+              </p>
+            </div>
+          </fieldset>
 
-        <fieldset class="mt-6 border-t border-base-300 pt-5">
-          <legend class="pr-4 text-base font-semibold text-base-content">Realtime</legend>
+          <fieldset class="mt-6 border-t border-base-300 pt-5">
+            <legend class="pr-4 text-base font-semibold text-base-content">Realtime</legend>
 
-          <%!-- The question is the reference's own wording and wraps on a narrow
+            <%!-- The question is the reference's own wording and wraps on a narrow
           screen: `input/1`'s own label renders in daisyUI's `label` span, which
           does not wrap, so the label is written here instead. --%>
-          <label for="realtime-source" class="mt-4 block text-sm font-semibold text-base-content">
-            Which file does your realtime vendor read?
-          </label>
+            <label for="realtime-source" class="mt-4 block text-sm font-semibold text-base-content">
+              Which file does your realtime vendor read?
+            </label>
 
-          <div class="mt-1 max-w-xs">
-            <.input
-              field={@form[:realtime_source]}
-              type="select"
-              id="realtime-source"
-              options={FlexComponents.realtime_options()}
-            />
+            <div class="mt-1 max-w-xs">
+              <.input
+                field={@form[:realtime_source]}
+                type="select"
+                id="realtime-source"
+                options={FlexComponents.realtime_options()}
+              />
+            </div>
+
+            <FlexComponents.realtime_note_card :if={@realtime_note} note={@realtime_note} />
+
+            <p class="mt-1 text-[13px] text-muted">
+              One answer for your agency. Every version uses it, and it applies to every route.
+            </p>
+          </fieldset>
+
+          <div class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-5">
+            <.button type="submit" class="min-h-11" phx-disable-with="Saving…">
+              Save changes
+            </.button>
           </div>
+        </.form>
 
-          <FlexComponents.realtime_note_card :if={@realtime_note} note={@realtime_note} />
-
-          <p class="mt-1 text-[13px] text-muted">
-            One answer for your agency. Every version uses it, and it applies to every route.
-          </p>
-        </fieldset>
-
-        <div class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-5">
-          <.button type="submit" class="min-h-11" phx-disable-with="Saving…">
-            Save changes
-          </.button>
-        </div>
-      </.form>
-
-      <p
-        id="export-defaults-more"
-        class="mt-8 max-w-2xl border-t border-base-300 pt-4 text-sm text-base-content/70"
-      >
-        More export defaults are coming. ID formats and stop times between timepoints will join this
-        page.
-      </p>
+        <p
+          id="export-defaults-more"
+          class="mt-8 max-w-2xl border-t border-base-300 pt-4 text-sm text-base-content/70"
+        >
+          More export defaults are coming. ID formats and stop times between timepoints will join this
+          page.
+        </p>
       </div>
     </Layouts.app>
     """

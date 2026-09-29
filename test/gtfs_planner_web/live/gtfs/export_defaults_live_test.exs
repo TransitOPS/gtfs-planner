@@ -102,7 +102,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
       # the design system replaced the settings tab bar with.
       refute has_element?(view, "#coming-soon")
       assert has_element?(view, "#settings-back", "Settings")
-      assert has_element?(view, "#settings-back[href='#{section_path(version)}']")
+      assert has_element?(view, "#settings-back[href='#{settings_path(version)}']")
 
       # Reading the page stores nothing.
       refute Repo.get_by(ExportDefault, organization_id: organization.id)
@@ -234,23 +234,23 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-all-versions li"), "id") ==
                [
-                 "settings-entry-export_defaults",
                  "settings-entry-garages",
                  "settings-entry-fleet",
+                 "settings-entry-export_defaults",
                  "settings-entry-feed_url"
                ]
 
       entry = LazyHTML.query(doc, "#settings-entry-export_defaults")
 
-      assert LazyHTML.text(LazyHTML.query(entry, "#settings-entry-export_defaults-title")) ==
-               "Export defaults"
+      assert LazyHTML.text(LazyHTML.query(entry, "#settings-entry-export_defaults-title"))
+             |> String.trim() == "Export defaults"
 
       assert LazyHTML.text(LazyHTML.query(entry, "a")) =~ "Export defaults"
 
       assert LazyHTML.attribute(LazyHTML.query(entry, "a"), "href") == [section_path(version)]
 
-      assert LazyHTML.text(LazyHTML.query(entry, "#settings-entry-export_defaults-summary")) ==
-               "Choose how future exports are written."
+      assert LazyHTML.text(LazyHTML.query(entry, "#settings-entry-export_defaults-summary"))
+             |> String.trim() == "Choose how future exports are written."
 
       # A built page is a working row, so it stays out of the Coming soon band.
       refute LazyHTML.text(entry) =~ "Coming soon"

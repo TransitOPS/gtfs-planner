@@ -152,7 +152,9 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         :working
       )
 
-      assert text_of(doc, "#settings-entry-export_defaults p") ==
+      # The design system renders each row's copy in spans, and a built page is a
+      # working row: no Coming soon badge.
+      assert words_of(doc, "#settings-entry-export_defaults-summary") ==
                "Choose how future exports are written."
 
       refute text_of(doc, "#settings-entry-export_defaults") =~ "Coming soon"
@@ -181,10 +183,12 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
 
       assert text_of(doc, "#settings-all-versions h3") == "Coming soon"
 
+      # Export defaults is a built page, so the band holds the one remaining
+      # placeholder and its row sits with the working rows above the band.
       assert LazyHTML.attribute(
                LazyHTML.query(doc, "#settings-all-versions ul:last-of-type li"),
                "id"
-             ) == ["settings-entry-export_defaults", "settings-entry-feed_url"]
+             ) == ["settings-entry-feed_url"]
     end
 
     test "each row is one link, so no control competes inside it",
