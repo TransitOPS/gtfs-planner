@@ -546,6 +546,457 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   defp count_label(1, singular, _plural), do: "1 #{singular}"
   defp count_label(count, _singular, plural), do: "#{count} #{plural}"
 
+  # -- access preview --------------------------------------------------------
+
+  @doc """
+  Renders the Evolutions view switch: the closure list and the moment access
+  preview as two routes of one LiveView.
+
+  This is navigation, not a client-side toggle, so both destinations are
+  `patch` links of the mounted view and the current one carries
+  `aria-current="page"`. The active segment is the design system's strong ink
+  with white text, which is the value the v2 reference uses for it.
+  """
+  attr :current, :atom, required: true, doc: "`:index` for the list, `:access` for the preview"
+  attr :closures_href, :string, required: true
+  attr :access_href, :string, required: true
+
+  def evolutions_view_nav(assigns) do
+    ~H"""
+    <nav
+      id="evolutions-view-nav"
+      aria-label="Evolutions views"
+      class="inline-flex h-11 overflow-hidden rounded-control border border-control bg-white"
+    >
+      <.link
+        id="evolutions-tab-closures"
+        patch={@closures_href}
+        aria-current={if @current == :access, do: "false", else: "page"}
+        class={view_tab_class(@current != :access, "")}
+      >
+        Schedule closures
+      </.link>
+      <.link
+        id="evolutions-tab-access"
+        patch={@access_href}
+        aria-current={if @current == :access, do: "page", else: "false"}
+        class={view_tab_class(@current == :access, "border-l border-control")}
+      >
+        Check access
+      </.link>
+    </nav>
+    """
+  end
+
+  defp view_tab_class(current?, extra) do
+    [
+      "flex min-h-11 items-center px-4 text-sm font-[650] no-underline",
+      extra,
+      current? && "bg-strong text-white",
+      !current? && "text-base-content hover:bg-canvas"
+    ]
+  end
+
+  # The four booleans a pair carries, in the order the table shows them: the
+  # step-free columns first, then walking, each with to then from the platform.
+  @pair_columns [
+    {:step_free_to_platform, :step_free, :to_platform},
+    {:step_free_to_exit, :step_free, :to_exit},
+    {:walking_to_platform, :walking, :to_platform},
+    {:walking_to_exit, :walking, :to_exit}
+  ]
+
+  # HEEx reads `@name` as an assign, so the column list is reached through a
+  # function inside the template.
+  defp pair_columns, do: @pair_columns
+
+  @doc """
+  Groups a moment preview's entrance/platform pairs by platform for the table.
+
+  A cell's state is derived from the comparison contract, never guessed: a
+  direction the base graph never reached is `:gap` (shown as `No route` and
+  never blamed on a closure), one the base reached and the closed set does not
+  is `:lost`, and anything still reachable is `:available`. Cells carry the
+  pair key and the state as data attributes, so a reader of the markup and a
+  browser assertion name the same four columns the domain does.
+  """
+  @spec preview_groups(map(), map()) :: [map()]
+  def preview_groups(snapshot, preview) do
+    base = Map.new(preview.base.pairs, &{{&1.platform_id, &1.entrance_id}, &1})
+    stops = Map.new(snapshot.child_stops, &{&1.stop_id, &1})
+    # The station snapshot's level rows carry the level with its stop count, so
+    # the row is unwrapped here rather than read as a level itself.
+    levels = Map.new(snapshot.levels, fn %{level: level} -> {level.level_id, level} end)
+
+    preview.effective.pairs
+    |> Enum.group_by(& &1.platform_id)
+    |> Enum.sort_by(fn {platform_id, _pairs} -> platform_id end)
+    |> Enum.map(fn {platform_id, pairs} ->
+      preview_group(platform_id, pairs, base, stops, levels)
+    end)
+  end
+
+  defp preview_group(platform_id, pairs, base, stops, levels) do
+    platform = Map.get(stops, platform_id)
+
+    %{
+      platform_id: platform_id,
+      platform_label: stop_label(platform),
+      level_label: level_label(platform, levels),
+      rows:
+        Enum.map(pairs, fn pair ->
+          %{
+            entrance_id: pair.entrance_id,
+            entrance_label: stop_label(Map.get(stops, pair.entrance_id)),
+            cells: Enum.map(@pair_columns, &preview_cell(pair, base, &1))
+          }
+        end)
+    }
+  end
+
+  defp preview_cell(pair, base, {key, _mode, _direction}) do
+    base_pair = Map.get(base, {pair.platform_id, pair.entrance_id})
+
+    %{key: key, state: preview_cell_state(base_pair, pair, key)}
+  end
+
+  # A direction the base graph reached and the closed set does not is the
+  # connection the check is reporting; one it still reaches is available. An
+  # unpaired base pair cannot claim a loss, so it follows the effective graph.
+  defp preview_cell_state(nil, effective_pair, key) do
+    if Map.fetch!(effective_pair, key), do: :available, else: :lost
+  end
+
+  defp preview_cell_state(base_pair, effective_pair, key) do
+    cond do
+      not Map.fetch!(base_pair, key) -> :gap
+      Map.fetch!(effective_pair, key) -> :available
+      true -> :lost
+    end
+  end
+
+  defp level_label(%{level_id: level_id}, levels) when is_binary(level_id) do
+    case Map.get(levels, level_id) do
+      %{level_name: name} when is_binary(name) and name != "" -> name
+      _level -> nil
+    end
+  end
+
+  defp level_label(_platform, _levels), do: nil
+
+  @doc """
+  Renders one connection state as a badge: an icon plus the state word, so no
+  status depends on color alone.
+  """
+  attr :state, :atom, required: true, values: [:available, :lost, :gap]
+  attr :id, :string, default: nil
+
+  def connection_badge(assigns) do
+    ~H"""
+    <span
+      id={@id}
+      data-connection-state={@state}
+      class={[
+        "inline-flex items-center gap-1.5 whitespace-nowrap rounded-evo-badge px-2 py-0.5 text-[13px] font-[650]",
+        badge_class(@state)
+      ]}
+    >
+      <.icon name={badge_icon(@state)} class="size-3.5" />{badge_label(@state)}
+    </span>
+    """
+  end
+
+  defp badge_class(:available), do: "bg-success/10 text-success"
+  defp badge_class(:lost), do: "bg-error/10 text-error"
+  defp badge_class(:gap), do: "bg-canvas text-muted ring-1 ring-inset ring-subtle"
+
+  defp badge_icon(:available), do: "hero-check-circle"
+  defp badge_icon(:lost), do: "hero-x-circle"
+  defp badge_icon(:gap), do: "hero-no-symbol"
+
+  defp badge_label(:available), do: "Available"
+  defp badge_label(:lost), do: "Lost"
+  defp badge_label(:gap), do: "No route"
+
+  @doc """
+  Renders the moment preview's findings: the per-platform connection table, its
+  below-`md` list form, the baseline-gap note, the active closures and the
+  coverage disclaimer.
+
+  The table and the list carry the same four columns and the same states, so a
+  narrow viewport reads the answer without horizontal overflow. An incomplete
+  evaluation says so in the header, and a station with no entrance/platform
+  pair says that instead of rendering an empty table.
+  """
+  attr :snapshot, :map, required: true
+  attr :preview, :map, required: true
+  attr :causes, :list, required: true, doc: "the active closures, prepared for display"
+  attr :moment, :string, required: true, doc: "the selected moment, short form"
+  attr :incomplete?, :boolean, required: true
+  attr :lost?, :boolean, required: true
+
+  def preview_findings(assigns) do
+    assigns =
+      assign(assigns,
+        groups: preview_groups(assigns.snapshot, assigns.preview),
+        gap_note?: assigns.preview.comparison.baseline_gaps != []
+      )
+
+    ~H"""
+    <section
+      id="preview-findings"
+      aria-labelledby="findings-title"
+      class="flex min-w-0 flex-col overflow-clip rounded-card border border-subtle bg-white"
+    >
+      <header class="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 border-b border-subtle px-5 py-3.5">
+        <div>
+          <h2
+            id="findings-title"
+            class="flex min-h-[26px] items-center font-display text-[18px] tracking-[-0.02em]"
+          >
+            Entrance ↔ platform connections
+          </h2>
+          <p class="mt-0.5 text-[13px] text-muted">
+            Compared with this station without scheduled closures.
+          </p>
+        </div>
+        <span
+          :if={@incomplete?}
+          id="findings-incomplete-badge"
+          class="inline-flex items-center gap-1.5 rounded-evo-badge bg-warning/10 px-2 py-0.5 text-[13px] font-[650] text-warning"
+        >
+          <.icon name="hero-exclamation-triangle" class="size-3.5" />Incomplete
+        </span>
+      </header>
+
+      <table
+        :if={@groups != []}
+        id="findings-table"
+        class="w-full border-collapse text-left text-sm max-md:hidden"
+      >
+        <thead>
+          <tr>
+            <th
+              scope="col"
+              rowspan="2"
+              class="w-[34%] border-b border-subtle bg-canvas py-2 pr-4 pl-5 align-bottom text-[13px] font-[650] text-base-content"
+            >
+              Entrance
+            </th>
+            <th
+              scope="colgroup"
+              colspan="2"
+              class="border-b border-subtle bg-canvas px-4 pt-2 pb-0 text-[13px] font-[650] text-base-content"
+            >
+              Step-free
+            </th>
+            <th
+              scope="colgroup"
+              colspan="2"
+              class="border-b border-subtle border-l bg-canvas px-4 pt-2 pb-0 text-[13px] font-[650] text-base-content"
+            >
+              Walking
+            </th>
+          </tr>
+          <tr>
+            <th
+              :for={{_key, mode, direction} <- pair_columns()}
+              scope="col"
+              class={[
+                "border-b border-subtle bg-canvas px-4 py-1.5 text-[13px] font-normal text-muted",
+                mode == :walking && direction == :to_platform && "border-l"
+              ]}
+            >
+              {direction_label(direction)}
+            </th>
+          </tr>
+        </thead>
+        <tbody :for={{group, index} <- Enum.with_index(@groups)} data-platform-id={group.platform_id}>
+          <tr>
+            <th
+              scope="rowgroup"
+              colspan="5"
+              class={[
+                "px-5 pt-3 pb-1 text-left text-[13px] font-[650] text-strong",
+                index > 0 && "border-t border-subtle"
+              ]}
+            >
+              {group.platform_label}
+              <span :if={group.level_label} class="font-normal text-muted">
+                · {group.level_label}
+              </span>
+            </th>
+          </tr>
+          <tr :for={{row, row_index} <- Enum.with_index(group.rows)}>
+            <th
+              scope="row"
+              class={[
+                "h-12 px-4 py-2 pr-4 pl-5 text-left align-middle font-normal text-strong",
+                row_index < length(group.rows) - 1 && "border-b border-subtle/60"
+              ]}
+            >
+              {row.entrance_label}
+            </th>
+            <td
+              :for={cell <- row.cells}
+              data-connection={cell.key}
+              data-state={cell.state}
+              class={[
+                "px-4 py-2",
+                row_index < length(group.rows) - 1 && "border-b border-subtle/60",
+                cell.key == :walking_to_platform && "border-l border-subtle"
+              ]}
+            >
+              <.connection_badge state={cell.state} />
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div :if={@groups != []} id="findings-list" class="md:hidden">
+        <section
+          :for={{group, index} <- Enum.with_index(@groups)}
+          data-platform-id={group.platform_id}
+          class={["px-4 pt-3 pb-1", index > 0 && "border-t border-subtle"]}
+        >
+          <h3 class="text-[13px] font-[650] text-strong">
+            {group.platform_label}
+            <span :if={group.level_label} class="font-normal text-muted">· {group.level_label}</span>
+          </h3>
+          <ul>
+            <li :for={row <- group.rows} class="border-t border-subtle/60 py-3 first:border-t-0">
+              <p class="text-sm font-[650] text-strong">{row.entrance_label}</p>
+              <div class="mt-1.5 grid grid-cols-[minmax(4.25rem,auto)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-x-2 gap-y-1.5 text-[13px]">
+                <span></span>
+                <span class="text-muted">To platform</span>
+                <span class="text-muted">From platform</span>
+                <span class="font-[650] text-base-content">Step-free</span>
+                <span :for={cell <- Enum.slice(row.cells, 0, 2)}>
+                  <.connection_badge state={cell.state} />
+                </span>
+                <span class="font-[650] text-base-content">Walking</span>
+                <span :for={cell <- Enum.slice(row.cells, 2, 2)}>
+                  <.connection_badge state={cell.state} />
+                </span>
+              </div>
+            </li>
+          </ul>
+        </section>
+      </div>
+
+      <p :if={@groups == []} id="findings-empty" class="px-5 py-6 text-sm text-muted">
+        This station has no entrance and platform pair to compare.
+      </p>
+
+      <p
+        :if={@gap_note?}
+        id="findings-gap-note"
+        class="flex items-start gap-2 border-t border-subtle px-5 py-2.5 text-[13px] text-muted"
+      >
+        <.connection_badge state={:gap} />
+        <span>Unreachable even without closures, so it is not counted as lost.</span>
+      </p>
+
+      <div id="preview-causes" class="flex-1 border-t border-subtle px-5 pt-4 pb-2">
+        <h3 class="text-sm font-[650] text-strong">
+          {if @lost?, do: "Active closures during this loss", else: "Closures at this moment"}
+        </h3>
+        <p :if={@causes == []} class="mt-1 text-sm text-muted">
+          No closure is active at {@moment}.
+        </p>
+        <ul :if={@causes != []} class="mt-1">
+          <li
+            :for={cause <- @causes}
+            id={"preview-cause-" <> cause.id}
+            class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-subtle/60 py-2 first:border-t-0"
+          >
+            <div class="min-w-0">
+              <p class="text-sm text-strong">
+                <span class="font-[650]">{cause.pathway_label}</span>
+                <span class="font-mono text-[13px] text-muted">{cause.pathway_id}</span>
+              </p>
+              <p class="text-[13px] tabular-nums text-muted">{cause.detail}</p>
+            </div>
+            <a
+              id={"preview-cause-link-" <> cause.id}
+              href={cause.href}
+              class="inline-flex min-h-11 items-center gap-1 text-sm font-[650] text-action no-underline hover:underline"
+            >
+              Review closure<.icon name="hero-chevron-right" class="size-4" />
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <p
+        id="preview-coverage"
+        class="flex items-start gap-2 border-t border-subtle bg-canvas/60 px-5 py-3 text-[13px] text-muted"
+      >
+        <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0" />
+        <span>
+          Directed paths and step-free connections at the selected moment. It does not certify
+          slopes, widths, or all wheelchair requirements.
+        </span>
+      </p>
+    </section>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :body, :string, required: true
+  attr :tone, :atom, required: true, values: [:loss, :ok]
+  attr :computed_label, :string, required: true
+  attr :moment_label, :string, required: true
+
+  @doc """
+  Renders the moment preview's result banner: its heading, the contributing
+  closures and what remains, the computed-at line and the moment it describes.
+  """
+  def preview_banner(assigns) do
+    ~H"""
+    <section
+      id={@id}
+      aria-labelledby="preview-result-title"
+      class={[
+        "flex gap-3 rounded-card px-5 py-4",
+        @tone == :loss && "bg-error/10",
+        @tone == :ok && "bg-success/10"
+      ]}
+    >
+      <.icon
+        name={if @tone == :loss, do: "hero-x-circle", else: "hero-check-circle"}
+        class={["mt-0.5 size-5", @tone == :loss && "text-error", @tone == :ok && "text-success"]}
+      />
+      <div class="min-w-0 flex-1">
+        <div class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+          <h2
+            id="preview-result-title"
+            tabindex="-1"
+            class={[
+              "font-display text-[20px] focus:outline-none",
+              @tone == :loss && "text-error",
+              @tone == :ok && "text-success"
+            ]}
+          >
+            {@title}
+          </h2>
+          <p id="preview-computed" class="text-[13px] tabular-nums max-sm:hidden">
+            {@computed_label}
+          </p>
+        </div>
+        <p id="preview-result-body" class="mt-1 text-sm text-strong">{@body}</p>
+        <p id="preview-moment" class="mt-1.5 text-[13px] tabular-nums text-base-content">
+          {@moment_label}<span class="sm:hidden"> · {@computed_label}</span>
+        </p>
+      </div>
+    </section>
+    """
+  end
+
+  defp direction_label(:to_platform), do: "To platform"
+  defp direction_label(:to_exit), do: "From platform"
+
   defp compact_time(seconds) do
     case String.split(GtfsTime.format(seconds), ":") do
       [hours, minutes, "00"] -> "#{hours}:#{minutes}"
