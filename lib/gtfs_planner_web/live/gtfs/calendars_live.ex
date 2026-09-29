@@ -37,6 +37,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   import GtfsPlannerWeb.AgentComponents, only: [agent_panel: 1]
 
+  alias GtfsPlanner.Agents
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendars
@@ -71,6 +72,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     %{value: "whole", label: "All dates"},
     %{value: "near", label: "Next 3 months"}
   ]
+  @prepared_missing_notice "One of these calendars is no longer in this service version. Refresh the list and ask again."
+  @prepared_edited_notice "The change you applied differs from the prepared change, so its card is not marked Applied."
 
   @impl true
   def mount(_params, _session, socket) do
@@ -324,6 +327,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   def handle_event("date_change_back", _params, socket) do
     {:noreply, assign(socket, :date_change_review, nil)}
   end
+
+  # The prepared card hands its proposal to this page's own drawer: the session
+  # releases the proposal and only this drawer's reviewed apply can write (INV-3).
+  # Every identity involved is server-held; the client contributes the entry id.
+  @impl true
+  def handle_event("agent_review_prepared", %{"entry" => id}, socket) do
+    {:noreply, review_prepared_change(socket, id)}
+  end
+
+  def handle_event("agent_review_prepared", _params, socket), do: {:noreply, socket}
 
   ## Selection and calendar combination
 
@@ -1335,6 +1348,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   defp open_date_change(socket, date_value) do
     socket
     |> assign(:date_change_open?, true)
+    |> assign(:date_change_origin, nil)
     |> assign(:date_change_sources, snapshot_sources(socket.assigns.all_calendars))
     |> assign(:date_change_mode, "single")
     |> assign(:date_change_manual?, false)
@@ -1368,6 +1382,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   # drawer always starts from the rows the list currently shows.
   defp close_date_change(socket) do
     socket
+    |> restore_agent_return_focus()
     |> assign(:date_change_open?, false)
     |> assign(:date_change_sources, %{})
     |> assign(:date_change_dates, [])
@@ -1377,7 +1392,128 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     |> assign(:date_change_review, nil)
     |> assign(:date_change_pending?, false)
     |> assign(:date_change_mode, "single")
+    |> assign(:date_change_origin, nil)
     |> assign_date_change_form("single", %{})
+  end
+
+  ## Prepared-change handoff
+
+  # A second handoff never replaces an open drawer's input (AC-28), and a forged
+  # or malformed entry id is ignored instead of reaching the session.
+  defp review_prepared_change(socket, id) do
+    cond do
+      socket.assigns.date_change_open? or socket.assigns.combine_open? ->
+        socket
+
+      not is_binary(id) ->
+        socket
+
+      true ->
+        case Integer.parse(id) do
+          {entry_id, ""} -> handoff_prepared_change(socket, entry_id)
+          _other -> socket
+        end
+    end
+  end
+
+  defp handoff_prepared_change(socket, entry_id) do
+    case Agents.prepared(
+           socket.assigns.agent_session,
+           socket.assigns.agent_conversation_id,
+           entry_id
+         ) do
+      {:ok, %{command: {:date_change, dates, remove_from, add_to}}} ->
+        open_prepared_change(socket, entry_id, dates, remove_from, add_to)
+
+      _stale_or_unknown ->
+        assign(socket, :agent_notice, @prepared_missing_notice)
+    end
+  end
+
+  # The snapshot membership check runs before `review_date_change/1`, because the
+  # drawer reviews against the loaded list's snapshot and `target_fingerprints/2`
+  # would raise on an unknown ID (FH-5). The pack's own catalog read can be fresher
+  # than this page, so a missing ID is a notice and no drawer, never a crash.
+  defp open_prepared_change(socket, entry_id, dates, remove_from, add_to) do
+    sources = snapshot_sources(socket.assigns.all_calendars)
+
+    if Enum.all?(Enum.uniq(remove_from ++ add_to), &Map.has_key?(sources, &1)) do
+      command = {:date_change, dates, remove_from, add_to}
+
+      socket
+      |> open_date_change(nil)
+      |> assign_date_change_form("several", %{})
+      |> assign(:date_change_mode, "several")
+      |> assign(:date_change_manual?, true)
+      |> assign(:date_change_remove, MapSet.new(remove_from))
+      |> assign(:date_change_add, MapSet.new(add_to))
+      |> assign(:date_change_origin, %{
+        session_pid: socket.assigns.agent_session,
+        conversation_id: socket.assigns.agent_conversation_id,
+        entry_id: entry_id,
+        command: command
+      })
+      |> assign(:date_change_return_focus, "agent-prepared-#{entry_id}")
+      |> put_date_change_dates(dates)
+      |> review_date_change()
+    else
+      assign(socket, :agent_notice, @prepared_missing_notice)
+    end
+  end
+
+  # One receipt per applied handoff: the exact reviewed command is compared with
+  # the proposal inside the originating conversation (INV-7). Everything that can
+  # fail here is presentation - the database write already succeeded - so a stale,
+  # reset or dead origin never turns the apply into an error and never touches
+  # another entry. An edited command leaves the card unconfirmed and says so.
+  defp record_prepared_applied(%{assigns: %{date_change_origin: nil}} = socket, _command),
+    do: socket
+
+  defp record_prepared_applied(%{assigns: assigns} = socket, command) do
+    origin = assigns.date_change_origin
+
+    case Agents.record_applied(
+           origin.session_pid,
+           origin.conversation_id,
+           origin.entry_id,
+           command
+         ) do
+      :ok ->
+        socket
+
+      {:error, :command_changed} ->
+        assign(socket, :agent_notice, @prepared_edited_notice)
+
+      _stale_or_ended ->
+        socket
+    end
+  end
+
+  # The handoff returns focus to the prepared card that opened the drawer - a
+  # stable focusable container that outlives its Review button. A conversation
+  # reset (this tab or another) removes the card while the drawer is open, so the
+  # surviving composer, or the header open button when the panel is closed,
+  # receives focus instead.
+  defp restore_agent_return_focus(
+         %{
+           assigns: %{date_change_origin: %{entry_id: entry_id, conversation_id: conversation_id}}
+         } =
+           socket
+       ) do
+    card_id = "agent-prepared-#{entry_id}"
+
+    if socket.assigns.date_change_return_focus == card_id and
+         conversation_id != socket.assigns.agent_conversation_id do
+      assign(socket, :date_change_return_focus, surviving_agent_focus(socket))
+    else
+      socket
+    end
+  end
+
+  defp restore_agent_return_focus(socket), do: socket
+
+  defp surviving_agent_focus(socket) do
+    if socket.assigns.agent_open?, do: "agent-composer-input", else: "agent-helper-open"
   end
 
   # The date-change command evaluates every target through `ServiceDates`, so an
@@ -1636,6 +1772,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
             socket
             |> assign(:date_change_pending?, false)
             |> assign(:date_change_status, date_change_result_message(result))
+            |> record_prepared_applied(command)
             |> close_date_change()
             |> reload_calendars()
 
