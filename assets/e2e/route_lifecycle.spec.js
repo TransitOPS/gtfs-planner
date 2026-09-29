@@ -223,8 +223,9 @@ test.describe("Route identity controls", () => {
 
     const error = page.locator("#new-route-names-error");
     await expect(error).toBeVisible();
-    await expect(error).toContainText("route_short_name");
-    await expect(error).toContainText("route_long_name");
+    await expect(error).toContainText(
+      "Enter a route number, a route name, or both.",
+    );
     await expect(page.locator("#new-route-short")).toHaveAttribute(
       "aria-invalid",
       "true",
@@ -385,8 +386,8 @@ test.describe("Route color field", () => {
  *
  * Stable ids this step publishes:
  *   #route-details-workspace / #route-details-form
- *   #route-details-header / #route-details-badge / #route-details-heading
- *   #route-details-mode-label / #route-details-saved-identity
+ *   #route-details-header / #route-badge / #route-title
+ *   #route-mode / #route-identifier
  *   #route-details-rider / #route-details-desc / #route-details-url
  *   #route-details-additional / #route-details-additional-summary
  *   #route-details-sort / #route-details-pickup / #route-details-dropoff
@@ -404,11 +405,11 @@ test.describe("Route details workspace", () => {
 
     // Saved identity, not a draft: the heading, the badge, the mode chip and the
     // attribution line all describe the stored route.
-    await expect(page.locator("#route-details-heading")).not.toBeEmpty();
-    await expect(page.locator("#route-details-badge")).toBeVisible();
-    await expect(page.locator("#route-details-mode-label")).not.toBeEmpty();
+    await expect(page.locator("#route-title")).not.toBeEmpty();
+    await expect(page.locator("#route-badge")).toBeVisible();
+    await expect(page.locator("#route-mode")).not.toBeEmpty();
 
-    const identity = page.locator("#route-details-saved-identity");
+    const identity = page.locator("#route-identifier");
     await expect(identity).toContainText(`Route ID ${DETAILS_ROUTE}`);
     await expect(identity).toContainText("Last saved");
 
@@ -459,7 +460,7 @@ test.describe("Route details workspace", () => {
     await awaitConnected(page);
 
     await expect(page.locator("#route-details-form")).toBeVisible();
-    await expect(page.locator("#route-details-heading")).toBeVisible();
+    await expect(page.locator("#route-title")).toBeVisible();
     await expect(page.locator("#route-details-short")).toBeVisible();
     await expect(page.locator("#route-details-desc")).toBeVisible();
 
@@ -602,7 +603,7 @@ test.describe("Route details workspace", () => {
  *
  * Stable ids this step publishes:
  *   #route-details-save-bar / #route-details-save-bar-text / #route-save
- *   #route-details-discard / #route-details-unsaved-preview
+ *   #route-details-discard / #route-unsaved-preview
  */
 test.describe("Route details draft preview", () => {
   test("a draft preview repaints the heading badge and names the changed fields", async ({
@@ -614,7 +615,7 @@ test.describe("Route details draft preview", () => {
     await page.goto(routeUrl);
     await awaitConnected(page);
 
-    const badge = page.locator("#route-details-badge > span");
+    const badge = page.locator("#route-badge > span");
     const bar = page.locator("#route-details-save-bar");
     const color = page.locator("#route-details-color");
     const savedColor = await color.inputValue();
@@ -624,7 +625,7 @@ test.describe("Route details draft preview", () => {
 
     // A saved row is not a draft: no bar, no chip, and the saved identity.
     await expect(bar).toBeHidden();
-    await expect(page.locator("#route-details-unsaved-preview")).toHaveCount(0);
+    await expect(page.locator("#route-unsaved-preview")).toHaveCount(0);
 
     // The colour the operator types reaches the route's own badge at once, with
     // no request: the picker feedback stays local (AC-19).
@@ -642,13 +643,13 @@ test.describe("Route details draft preview", () => {
     // The server then acknowledges the draft: the chip marks the header as a
     // preview and the bar names the fields a save would change.
     await color.blur();
-    await expect(page.locator("#route-details-unsaved-preview")).toBeVisible();
+    await expect(page.locator("#route-unsaved-preview")).toBeVisible();
     await expect(bar).toBeVisible();
     await expect(page.locator("#route-details-save-bar-text")).toContainText(
       "Unsaved: Route color",
     );
     await expect(page.locator("#route-details-save-bar-text")).toContainText(
-      "Ctrl+S saves",
+      "Press Ctrl+S or ⌘S to save.",
     );
     await expect(page.locator("#route-save")).toBeEnabled();
 
@@ -661,7 +662,7 @@ test.describe("Route details draft preview", () => {
       .poll(() => badge.evaluate((el) => getComputedStyle(el).backgroundColor))
       .toBe(savedBadge);
     await expect(bar).toBeHidden();
-    await expect(page.locator("#route-details-unsaved-preview")).toHaveCount(0);
+    await expect(page.locator("#route-unsaved-preview")).toHaveCount(0);
 
     await page.goto(routeUrl);
     await awaitConnected(page);
@@ -722,7 +723,7 @@ test.describe("Route details draft preview", () => {
       "Preview rename",
     );
     await page.locator("#route-details-long").fill(originalName);
-    await page.locator("#route-details-heading").click();
+    await page.locator("#route-title").click();
     await expect(page.locator("#route-details-save-bar")).toBeVisible();
     await page.locator("#route-save").click();
     await expect(page.locator("#route-details-saved")).toContainText("saved");
@@ -838,12 +839,12 @@ test.describe("Create route drawer", () => {
       page.url().split("/routes/")[1].split("?")[0],
     );
     expect(savedId.length).toBeGreaterThan(0);
-    await expect(page.locator("#route-details-heading")).toHaveText(
+    await expect(page.locator("#route-title")).toHaveText(
       "Create drawer regression route",
     );
     await expect(page.locator("#route-details-workspace")).toHaveAttribute(
       "data-focus-on-mount",
-      "route-details-heading",
+      "route-title",
     );
 
     // The saved identifier is what the list shows afterwards.
@@ -884,7 +885,7 @@ test.describe("Route details save and merge", () => {
 
     await long.fill(renamed);
     // The shared name input debounces on blur; leave the field to push the draft.
-    await page.locator("#route-details-heading").click();
+    await page.locator("#route-title").click();
     await expect(page.locator("#route-details-save-bar")).toBeVisible();
     await page.locator("#route-save").click();
 
@@ -899,7 +900,7 @@ test.describe("Route details save and merge", () => {
 
     // Leave the seeded route as it was found.
     await long.fill(saved);
-    await page.locator("#route-details-heading").click();
+    await page.locator("#route-title").click();
     await page.locator("#route-save").click();
     await expect(page.locator("#route-details-saved")).toContainText("saved");
   });
@@ -933,7 +934,7 @@ test.describe("Route details save and merge", () => {
     const longA = pageA.locator("#route-details-long");
     const originalName = await longA.inputValue();
     await longA.fill("Session A rename");
-    await pageA.locator("#route-details-heading").click();
+    await pageA.locator("#route-title").click();
     await pageA.locator("#route-save").click();
 
     const conflict = pageA.locator("#route-conflict");
@@ -955,7 +956,7 @@ test.describe("Route details save and merge", () => {
 
     // Leave the seeded route as it was found.
     await longA.fill(originalName);
-    await pageA.locator("#route-details-heading").click();
+    await pageA.locator("#route-title").click();
     await pageA.locator("#route-save").click();
     await expect(pageA.locator("#route-details-saved")).toContainText("saved");
     await sessionA.close();
@@ -990,7 +991,7 @@ test.describe("Route details dirty navigation", () => {
     const saved = await long.inputValue();
     await long.fill(`${saved} navigation draft`);
     // The shared name input debounces on blur; leave the field to push the draft.
-    await page.locator("#route-details-heading").click();
+    await page.locator("#route-title").click();
     await expect(page.locator("#route-details-save-bar")).toBeVisible();
 
     const organizationId = await page
@@ -1071,7 +1072,7 @@ test.describe("Route details dirty navigation", () => {
     const draft = `${saved} nav discard draft`;
     await long.fill(draft);
     // The shared name input debounces on blur; leave the field to push the draft.
-    await page.locator("#route-details-heading").click();
+    await page.locator("#route-title").click();
     await expect(page.locator("#route-details-save-bar")).toBeVisible();
 
     // A route tab holds behind the dialog; Keep editing keeps the draft here.
@@ -1124,7 +1125,7 @@ test.describe("Route details dirty navigation", () => {
     const draft = `${saved} saved and continued`;
     await long.fill(draft);
     // The shared name input debounces on blur; leave the field to push the draft.
-    await page.locator("#route-details-heading").click();
+    await page.locator("#route-title").click();
     await expect(page.locator("#route-details-save-bar")).toBeVisible();
 
     await page
@@ -1146,7 +1147,7 @@ test.describe("Route details dirty navigation", () => {
 
     // Leave the seeded route as it was found.
     await long.fill(saved);
-    await page.locator("#route-details-heading").click();
+    await page.locator("#route-title").click();
     await page.locator("#route-save").click();
     await expect(page.locator("#route-details-saved")).toContainText("saved");
   });
@@ -1258,25 +1259,25 @@ test.describe("Route status actions", () => {
     // An eligible route: no banner or chip anywhere, active status row.
     await expect(page.locator("#route-inactive-banner")).toHaveCount(0);
     await expect(page.locator("#route-status-section")).toContainText(
-      "Active: included in exports",
+      "Included when you export this version.",
     );
 
-    // The review names what stays editable, what the next export leaves out,
+    // The review names what the next export leaves out, what stays editable,
     // and says exports already run are unchanged.
     await page.locator("#route-deactivate").click();
     const review = page.locator("#route-status-confirm[data-open='true']");
-    await expect(review).toContainText("Deactivate PR?");
-    await expect(review).toContainText("stays in this version");
-    await expect(review).toContainText(
-      "Exports you already ran still include it",
-    );
+    await expect(review).toContainText("Deactivate Route PR?");
+    await expect(review).toContainText("The next export leaves out Route PR");
+    await expect(review).toContainText("stay in this version");
+    await expect(review).toContainText("Exports you already ran keep the route");
+    await expect(page.locator("#route-status-keep")).toBeFocused();
 
     await page.locator("#route-status-confirm-go").click();
 
     await expect(page.locator("#route-inactive-banner")).toContainText(
-      "Inactive: left out of exports",
+      "is inactive.",
     );
-    await expect(page.locator("#route-inactive-chip")).toContainText(
+    await expect(page.locator("#route-inactive")).toContainText(
       "Inactive",
     );
     await expect(page.locator("#route-status-outcome")).toContainText(
@@ -1291,7 +1292,7 @@ test.describe("Route status actions", () => {
     // The boolean persisted: the banner survives an ordinary reload.
     await page.reload();
     await expect(page.locator("#route-inactive-banner")).toContainText(
-      "left out of exports",
+      "The next export leaves it out",
     );
 
     // The banner follows the saved row to the other tabs, and its Reactivate
@@ -1318,7 +1319,7 @@ test.describe("Route status actions", () => {
 
     await page.fill("#route-details-long", "Renamed before review");
     // The shared name input debounces on blur; leave the field to push the draft.
-    await page.locator("#route-details-heading").click();
+    await page.locator("#route-title").click();
     await expect(page.locator("#route-details-save-bar")).toBeVisible();
 
     await page.locator("#route-deactivate").click();
@@ -1327,7 +1328,9 @@ test.describe("Route status actions", () => {
     await expect(
       page.locator("#route-details-leave[data-open='true']"),
     ).toContainText("Leave without saving?");
-    await expect(page.locator("#route-status-confirm-title")).toHaveCount(0);
+    await expect(
+      page.locator("#route-status-confirm[data-open='true']"),
+    ).toHaveCount(0);
 
     // Discard resolves the draft and opens the review; Keep active then
     // closes it without any write, so the banner never appears.
@@ -1368,8 +1371,19 @@ test.describe("Reviewed route deletion", () => {
     // count-only confirm.
     await page.locator("#route-delete").click();
     const review = page.locator("#route-delete-review[data-open='true']");
-    await expect(review).toContainText("Delete D16 Browser Route16 Delete?");
-    await expect(review).toContainText("You can't undo this");
+    await expect(review).toContainText("Delete Route D16?");
+    await expect(review).toContainText("This permanently deletes:");
+    await expect(page.locator("#route-delete-keep")).toBeFocused();
+
+    // The design system's count table leads; every record and its identifiers
+    // stay one disclosure away.
+    await expect(page.locator("#route-delete-summary")).toContainText("Trips");
+    await expect(page.locator("#route-delete-summary")).not.toContainText(
+      "Stop times",
+    );
+    await expect(page.locator("#route-delete-impact")).toBeHidden();
+    await page.locator("#route-delete-details summary").click();
+    await expect(page.locator("#route-delete-impact")).toBeVisible();
     await expect(page.locator("#route-delete-impact")).toContainText("Trips");
     await expect(page.locator("#route-delete-impact")).toContainText(
       "BROWSER_D16A, BROWSER_D16B",
@@ -1381,13 +1395,13 @@ test.describe("Reviewed route deletion", () => {
       "Shared stops retained",
     );
     await expect(page.locator("#route-delete-deactivate")).toContainText(
-      "Deactivate instead",
+      "deactivate it instead",
     );
 
-    // The acknowledgement is required: the unchecked box deletes nothing.
+    // The acknowledgement is required: Delete route stays unavailable until
+    // the box is checked, so an unchecked box deletes nothing.
     await expect(page.locator("#route-delete-ack")).not.toBeChecked();
-    await page.locator("#route-delete-go").click();
-    await expect(page.locator("#route-delete-ack-error")).toBeVisible();
+    await expect(page.locator("#route-delete-go")).toBeDisabled();
     await expect(page.locator("#route-delete-review-title")).toBeVisible();
 
     // Acknowledging and confirming applies the cascade and returns to the
@@ -1397,6 +1411,7 @@ test.describe("Reviewed route deletion", () => {
     // params, and the same change clears the shown acknowledgement error.
     await page.locator("#route-delete-ack").check();
     await expect(page.locator("#route-delete-ack-error")).toHaveCount(0);
+    await expect(page.locator("#route-delete-go")).toBeEnabled();
     await page.locator("#route-delete-go").click();
 
     await expect(page).toHaveURL(new RegExp(`/routes\\?deleted=1$`));
@@ -1421,7 +1436,7 @@ test.describe("Reviewed route deletion", () => {
     // is allowed and there is no acknowledgement checkbox (R5).
     await page.locator("#route-delete").click();
     const simple = page.locator("#route-delete-review[data-open='true']");
-    await expect(simple).toContainText("Delete E16?");
+    await expect(simple).toContainText("Delete Route E16?");
     await expect(simple).toContainText("has no patterns or trips");
     await expect(page.locator("#route-delete-form")).toHaveCount(0);
 
@@ -1448,7 +1463,7 @@ test.describe("Reviewed route deletion", () => {
     await page.fill("#route-details-long", "Renamed before delete");
     // The shared name input debounces on blur; leave the field to push the
     // draft.
-    await page.locator("#route-details-heading").click();
+    await page.locator("#route-title").click();
     await expect(page.locator("#route-details-save-bar")).toBeVisible();
 
     await page.locator("#route-delete").click();
@@ -1457,7 +1472,9 @@ test.describe("Reviewed route deletion", () => {
     await expect(
       page.locator("#route-details-leave[data-open='true']"),
     ).toContainText("Leave without saving?");
-    await expect(page.locator("#route-delete-review-title")).toHaveCount(0);
+    await expect(
+      page.locator("#route-delete-review[data-open='true']"),
+    ).toHaveCount(0);
 
     // Discard resolves the draft and opens the review; Keep route then
     // closes it and the route and its draft resolution are observable.
@@ -1943,17 +1960,17 @@ test.describe("Complete route lifecycle journey", () => {
       page.url().split("/routes/")[1].split("?")[0],
     );
     expect(routeId.length).toBeGreaterThan(0);
-    await expect(page.locator("#route-details-heading")).toHaveText(
+    await expect(page.locator("#route-title")).toHaveText(
       "Browser Route16 Journey",
     );
-    await expect(page.locator("#route-details-heading")).toBeFocused();
+    await expect(page.locator("#route-title")).toBeFocused();
 
     // A recovered connection inside the journey: the socket drops with a
     // dirty draft, the entries and the commit block survive, revalidation
     // clears the block, and only then does Save commit (AC-23).
     const desc = page.locator("#route-details-desc");
     await desc.fill("Journeys composed end to end");
-    await page.locator("#route-details-heading").click();
+    await page.locator("#route-title").click();
     await expect(page.locator("#route-details-save-bar")).toBeVisible();
 
     // The repository's established idiom for an offline editor: a real socket
@@ -2015,11 +2032,9 @@ test.describe("Complete route lifecycle journey", () => {
     await expect(page.locator("#timing-row-1")).toBeVisible();
 
     // One trip is added to the new pattern through the schedules drawer,
-    // opened with the keyboard only.
-    await page
-      .locator('nav[aria-label="Route navigation"]')
-      .getByRole("link", { name: "Schedules" })
-      .click();
+    // opened with the keyboard only. The pattern editor's location trail has no
+    // Schedules link, so the schedules page is opened by its address.
+    await page.goto(`/gtfs/${version}/routes/${routeId}/schedules`);
     await awaitConnectedStep033(page);
     await expect(page.locator("#schedules-add-trips")).toBeVisible();
     await page.locator("#schedules-add-trips").focus();
@@ -2048,7 +2063,7 @@ test.describe("Complete route lifecycle journey", () => {
       .click();
     await awaitConnectedStep033(page);
     await expect(page.locator("#route-status-section")).toContainText(
-      "Active: included in exports",
+      "Included when you export this version.",
     );
     await captureShot(page, "step-033-journey-details-1440");
 
@@ -2060,14 +2075,14 @@ test.describe("Complete route lifecycle journey", () => {
     ).toBeVisible();
     await page.locator("#route-status-confirm-go").click();
     await expect(page.locator("#route-inactive-banner")).toContainText(
-      "Inactive: left out of exports",
+      "is inactive.",
     );
-    await expect(page.locator("#route-inactive-chip")).toContainText(
+    await expect(page.locator("#route-inactive")).toContainText(
       "Inactive",
     );
     await page.reload();
     await expect(page.locator("#route-inactive-banner")).toContainText(
-      "left out of exports",
+      "The next export leaves it out",
     );
 
     // The same composed workspace stays usable at 375x812 without horizontal
@@ -2128,8 +2143,7 @@ test.describe("Complete route lifecycle journey", () => {
     await awaitConnectedStep033(page);
     await page.locator("#route-delete").click();
     const review = page.locator("#route-delete-review[data-open='true']");
-    await expect(review).toContainText("Delete ");
-    await expect(review).toContainText("Browser Route16 Journey");
+    await expect(review).toContainText("Delete Route ");
     await expect(page.locator("#route-delete-impact")).toContainText(patternId);
     await expect(page.locator("#route-delete-ack")).not.toBeChecked();
     await captureShot(page, "step-033-journey-delete-review-1440", {
@@ -2210,7 +2224,7 @@ test.describe("Lifecycle denial and stale review", () => {
     // The complete review names the seeded pattern and trip identities.
     await pageA.locator("#route-delete").click();
     const review = pageA.locator("#route-delete-review[data-open='true']");
-    await expect(review).toContainText("Delete F16");
+    await expect(review).toContainText("Delete Route F16?");
     await expect(pageA.locator("#route-delete-impact")).toContainText(
       "BROWSER-F16-P1",
     );
@@ -2227,7 +2241,7 @@ test.describe("Lifecycle denial and stale review", () => {
     await awaitConnectedStep033(pageB);
     const longB = pageB.locator("#route-details-long");
     await longB.fill("Browser Route16 Flow renamed");
-    await pageB.locator("#route-details-heading").click();
+    await pageB.locator("#route-title").click();
     await pageB.locator("#route-save").click();
     await expect(pageB.locator("#route-details-saved")).toContainText("saved");
 
@@ -2286,7 +2300,7 @@ test.describe("Lifecycle denial and stale review", () => {
     const long = editorPage.locator("#route-details-long");
     const savedName = await long.inputValue();
     await long.fill("Revoked draft rename");
-    await editorPage.locator("#route-details-heading").click();
+    await editorPage.locator("#route-title").click();
     await expect(editorPage.locator("#route-details-save-bar")).toBeVisible();
 
     // The org admin removes the editor's membership through the real /users
