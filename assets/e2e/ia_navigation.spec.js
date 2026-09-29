@@ -377,7 +377,7 @@ for (const { width, height, label } of VIEWPORTS) {
       ).toHaveText("Fares");
       await capture(page, testInfo, `settings-fares-${label}`);
 
-      // ── Garages returns by the Settings link; the moved Fleet page keeps the Settings bar ──
+      // ── Garages returns by the Settings link; Fleet leads back to Settings the same way ──
       await page.locator("#settings-tab-garages").click();
       await page.waitForURL(/\/settings\/garages$/);
       await waitForLiveView(page);
@@ -397,9 +397,11 @@ for (const { width, height, label } of VIEWPORTS) {
       await page.waitForURL(/\/settings\/fleet$/);
       await waitForLiveView(page);
       await expect(page.locator("h1")).toHaveText("Fleet");
+      await expect(page.locator("#settings-nav")).toHaveCount(0);
+      await expect(page.locator("#settings-back")).toHaveText("Settings");
       await expect(
-        page.locator("#settings-nav a[aria-current='page']"),
-      ).toHaveText("Fleet");
+        page.locator("#main-navigation a[aria-current='page']"),
+      ).toHaveCount(0);
       await capture(page, testInfo, `fleet-${label}`);
       await expectNoPageOverflow(page);
 

@@ -97,6 +97,8 @@ defmodule GtfsPlannerWeb.Gtfs.FleetBulkLiveTest do
       assert has_element?(view, "#select-all-vehicles[checked]")
       assert has_element?(view, "#select-vehicle-#{river.id}[checked]")
       assert has_element?(view, "#bulk-bar-count", "2 vehicles selected")
+      # The bulk bar takes the result count's row, so the table does not move.
+      refute has_element?(view, "#vehicles-count")
 
       open_bulk(view, "garage")
       assert has_element?(view, "#bulk-drawer-overlay[data-open='true']")
@@ -234,7 +236,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetBulkLiveTest do
 
       assert has_element?(view, "#bulk-drawer-title", "Set type")
       assert has_element?(view, "#bulk_value option[value='#{chosen_type.id}']")
-      assert has_element?(view, "#bulk_value option[value='']", "Not assigned")
+      assert has_element?(view, "#bulk_value option[value='']", "No type")
 
       submit_bulk(view, chosen_type.id)
 
@@ -250,7 +252,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetBulkLiveTest do
       assert has_element?(view, "tr#vehicles-#{first.id} td[data-label='Garage']", "Main garage")
     end
 
-    test "set garage changes only the garage, and Not assigned clears just it", %{
+    test "set garage changes only the garage, and No garage clears just it", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -292,7 +294,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetBulkLiveTest do
       assert has_element?(
                view,
                "tr#vehicles-#{vehicle.id} td[data-label='Garage']",
-               "Not assigned"
+               "No garage"
              )
 
       assert has_element?(view, "tr#vehicles-#{vehicle.id} td[data-label='Type']", "Cutaway")

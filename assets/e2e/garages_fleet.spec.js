@@ -47,6 +47,9 @@ const FILE_INPUT = "#tods-file-upload-input input";
 // page header does. Only one of the two is ever on the page.
 const ADD_GARAGE = "#add-garage, #add-garage-empty";
 
+// The same holds for vehicles: with none, the first-use panel carries Add vehicles.
+const ADD_VEHICLES = "#add-vehicles-header, #add-vehicles";
+
 // ── shared helpers ─────────────────────────────────────────────────────────
 
 async function logIn(page) {
@@ -400,9 +403,7 @@ test.describe("Garages, Fleet and operations export", () => {
     await page.goto(`/gtfs/${versionId}/settings/fleet`);
     await expect(page.locator("h1")).toContainText("Fleet");
 
-    // A type with a 10-hour limit: the disclosure opens, the drawer saves it.
-    await page.locator("#vehicle-types-summary").click();
-    await expect(page.locator("#vehicle-types")).toHaveAttribute("open", "");
+    // A type with a 10-hour limit: the drawer saves it and the matrix lists it.
     await openDrawer(page, "#add-vehicle-type", "vehicle-type-drawer");
 
     await page.fill("#vehicle_type_name", typeName);
@@ -410,7 +411,7 @@ test.describe("Garages, Fleet and operations export", () => {
     await page.getByRole("button", { name: "Save type" }).click();
     await expect(page.locator("#vehicle-type-notice")).toHaveText(`${typeName} saved.`);
     await expect(page.locator("#vehicle-types-table")).toContainText(typeName);
-    await expect(page.locator("#vehicle-types-table")).toContainText("10 hours");
+    await expect(page.locator("#vehicle-types-table")).toContainText("Up to 10 hours away");
 
     // Editing it redisplays the stored limit as hours.
     await page.locator("#vehicle-types-table button", { hasText: typeName }).click();
@@ -420,7 +421,7 @@ test.describe("Garages, Fleet and operations export", () => {
     await expect(page.locator("#vehicle-type-drawer-overlay")).toHaveAttribute("data-open", "false");
 
     // The saved type is selectable from the vehicle drawer.
-    await openDrawer(page, "#add-vehicles-header", "vehicle-drawer");
+    await openDrawer(page, ADD_VEHICLES, "vehicle-drawer");
     await expect(
       page.locator("#vehicle_vehicle_type_id option").filter({ hasText: typeName }),
     ).toHaveCount(1);
@@ -486,7 +487,7 @@ test.describe("Garages, Fleet and operations export", () => {
       if (selectedIds.includes(row.id)) {
         expect(row.garage, `${row.id} must keep the chosen garage`).toBe(garageName);
       } else {
-        expect(row.garage, `${row.id} must stay unassigned`).toBe("Not assigned");
+        expect(row.garage, `${row.id} must stay unassigned`).toBe("No garage");
       }
     }
 
@@ -547,23 +548,30 @@ test.describe("Garages, Fleet and operations export", () => {
     await expect(page.locator("h1")).toContainText("Fleet");
     await expect(page.locator("#vehicles-table")).toBeVisible();
     expect(await bodyFitsViewport(page), "Fleet overflows at 375px").toBe(true);
-    await expect(page.locator("#vehicles-table-container")).toHaveCSS("overflow-x", "auto");
 
-    const fleetTable = await page.evaluate(() => {
-      const container = document.getElementById("vehicles-table-container");
-      return { scrollWidth: container.scrollWidth, clientWidth: container.clientWidth };
-    });
-    expect(
-      fleetTable.scrollWidth,
-      "the vehicles table must scroll inside its own container",
-    ).toBeGreaterThan(fleetTable.clientWidth);
+    // Below the tablet width each vehicle is a card and each type a stacked
+    // record, so neither table scrolls sideways.
+    const fleetRows = await page.evaluate(() => ({
+      vehicles: [...document.querySelectorAll("#vehicles-table tr")].map(
+        (row) => getComputedStyle(row).display,
+      ),
+      types: [...document.querySelectorAll("#vehicle-types-rows tr")].map(
+        (row) => getComputedStyle(row).display,
+      ),
+    }));
+    expect(fleetRows.vehicles.length, "the vehicles table must have rows").toBeGreaterThan(0);
+    expect(new Set(fleetRows.vehicles), "each vehicle row is a grid card").toEqual(
+      new Set(["grid"]),
+    );
+    expect(new Set(fleetRows.types), "each type row stacks as a block").toEqual(new Set(["block"]));
 
     await expectActivationTargets(page, [
       "#import-tods",
       "#add-vehicles-header",
-      "#settings-nav a",
-      "#vehicle-types-summary",
-      // The checkbox input is the browser's own 24px box; the label around it
+      "#settings-back",
+      "#add-vehicle-type",
+      "#vehicle-types-table th[scope='row'] button",
+      // The checkbox input is the browser's own box; the label around it
       // carries the 44px activation area.
       "#vehicles-table-container thead label",
       "#vehicles-table td[data-label='Select'] label",
@@ -599,7 +607,9 @@ test.describe("Garages, Fleet and operations export", () => {
     await page.goto(`/gtfs/${versionId}/settings/fleet`);
     await expect(page.locator("h1")).toContainText("Fleet");
 
-    const fleetTrigger = "add-vehicles-header";
+    const fleetTrigger = (await page.locator("#add-vehicles-header").count())
+      ? "add-vehicles-header"
+      : "add-vehicles";
     expect(await tabTo(page, fleetTrigger), `${fleetTrigger} must be keyboard reachable`).not.toBeNull();
     await expect(page.locator(`#${fleetTrigger}`)).toBeFocused();
     expect(await focusVisible(page), `${fleetTrigger} must show visible focus`).toBe(true);
