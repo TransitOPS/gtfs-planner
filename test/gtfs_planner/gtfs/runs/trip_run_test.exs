@@ -182,13 +182,19 @@ defmodule GtfsPlanner.Gtfs.Runs.TripRunTest do
     } do
       # Written with `insert_all/2`, which sends only the columns named here, so
       # the values read back are the migration's column defaults and not the
-      # schema's own field defaults.
+      # schema's own field defaults. The timestamps are named because
+      # `timestamps/1` made them `NOT NULL`; the five crew columns are still the
+      # ones this row does not carry.
+      now = DateTime.utc_now()
+
       {1, nil} =
         Repo.insert_all(BlockingSetting, [
           %{
             id: Ecto.UUID.generate(),
             organization_id: organization.id,
-            gtfs_version_id: version.id
+            gtfs_version_id: version.id,
+            inserted_at: now,
+            updated_at: now
           }
         ])
 
@@ -246,13 +252,20 @@ defmodule GtfsPlanner.Gtfs.Runs.TripRunTest do
   end
 
   defp raw_run(organization, version, trip, day_type_key, run_id) do
+    now = DateTime.utc_now()
+
     %{
       id: Ecto.UUID.generate(),
       organization_id: organization.id,
       gtfs_version_id: version.id,
       trip_id: trip.id,
       day_type_key: day_type_key,
-      run_id: run_id
+      run_id: run_id,
+      # `timestamps/1` made these columns `NOT NULL`, and `insert_all/2` writes no
+      # schema defaults, so the raw rows carry them by hand. Everything else about
+      # the row stays the caller's: the run ID is the only thing varying.
+      inserted_at: now,
+      updated_at: now
     }
   end
 
