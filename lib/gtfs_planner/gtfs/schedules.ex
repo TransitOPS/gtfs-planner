@@ -461,6 +461,163 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     end
   end
 
+  @type paste_timing_row :: %{
+          arrival_offset: integer(),
+          departure_offset: integer(),
+          timepoint: 0 | 1 | nil,
+          pickup_type: integer() | nil,
+          drop_off_type: integer() | nil,
+          stop_headsign: String.t() | nil
+        }
+
+  @type paste_pattern :: %{
+          id: Ecto.UUID.t(),
+          route_pattern_id: String.t(),
+          name: String.t(),
+          headsign: String.t() | nil,
+          occurrences: [%{id: Ecto.UUID.t(), stop_id: String.t(), position: pos_integer()}],
+          timings: [
+            %{
+              id: Ecto.UUID.t(),
+              name: String.t(),
+              headsign: String.t() | nil,
+              rows: [paste_timing_row()],
+              trip_count: non_neg_integer()
+            }
+          ]
+        }
+
+  @type paste_trip :: %{
+          id: Ecto.UUID.t(),
+          trip_id: String.t(),
+          direction_id: 0 | 1 | nil,
+          route_pattern_id: String.t() | nil,
+          timed_pattern_id: Ecto.UUID.t() | nil,
+          pattern_derivation_state: String.t() | nil,
+          start_secs: non_neg_integer() | nil,
+          end_secs: non_neg_integer() | nil,
+          span: %{start_secs: non_neg_integer(), end_secs: non_neg_integer()} | nil,
+          spans: [map()],
+          frequencies: [map()],
+          frequency_rows: [map()],
+          stops_differ?: boolean(),
+          trip_short_name: String.t() | nil,
+          block_id: String.t() | nil,
+          trip_headsign: String.t() | nil,
+          updated_at: DateTime.t() | nil,
+          transfer_ids: [String.t()],
+          in_seat_transfer: boolean()
+        }
+
+  @type paste_scope :: %{
+          route: Route.t(),
+          calendar:
+            %{
+              service_id: String.t(),
+              name: String.t() | nil,
+              kind: Calendars.kind(),
+              first_active_date: Date.t() | nil,
+              last_active_date: Date.t() | nil,
+              trip_count: non_neg_integer()
+            }
+            | nil,
+          direction_id: 0 | 1,
+          pattern_id: Ecto.UUID.t() | nil,
+          patterns: [paste_pattern()],
+          stops: %{optional(String.t()) => %{stop_code: String.t() | nil, stop_name: String.t()}},
+          trips: [paste_trip()],
+          other_calendars?: boolean()
+        }
+
+  @doc """
+  Loads the paste scope for one route, calendar and direction.
+
+  `params` accepts `:service_id`, `:direction_id` (or `:direction`) and
+  `:pattern_id` (or `:pattern`, a route pattern UUID or its natural
+  `route_pattern_id`). Each is resolved like `load_route_schedule/4`: an
+  unknown calendar falls back to the one with the most trips on this route,
+  an unknown direction to one with trips, and an absent pattern to the
+  direction's most-used pattern (most trips on the resolved calendar, ties
+  keep pattern order). A requested pattern that is not one of the direction's
+  patterns is `{:error, :not_found}`; string keys are accepted so URL params
+  can be passed through.
+
+  The whole scope loads in one read transaction that holds the version row
+  `FOR SHARE` through `Calendars.list_calendars/3`, exactly like the Schedules
+  read, so a cooperating calendar write cannot interleave with it. Returns
+  `{:error, :not_found}` for a foreign, invalid or unpublished scope.
+
+  The scope is the plain map `TimetablePaste.review/2` and `Plan.build/6`
+  consume: `route`, `calendar` (`service_id`, `name`, `kind`, first/last active
+  dates, this route's trip count), `direction_id`, `pattern_id` (chosen),
+  `patterns` of the direction (each with `occurrences` in position order and
+  `timings` whose `rows` align positionally with the occurrences and carry the
+  calendar trip count), `stops` (`stop_id => %{stop_code, stop_name}`), `trips`
+  (every trip of the route on the calendar, both directions, with `start_secs`,
+  `span`/`spans` from `trip_bounds/1`/`spans_for/1`, frequency rows,
+  `stops_differ?` marked the way `Timetable.build/5` marks it, transfer ids
+  naming the trip and the in-seat transfer flag), and `other_calendars?` for
+  display (whether the route also runs on another calendar).
+  """
+  @spec load_paste_scope(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), map(), keyword()) ::
+          {:ok, paste_scope()} | {:error, error()}
+  def load_paste_scope(organization_id, version_id, route_id, params, _opts \\ []) do
+    case Repo.transaction(fn ->
+           read_paste_scope(organization_id, version_id, route_id, params)
+         end) do
+      {:ok, scope} -> {:ok, scope}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Loads the block rows a paste review warns about.
+
+  Delegates to `Blocking.Queries.trip_rows/3` with a `{:blocks, ids,
+  [service_id]}` filter, so the rows are the version's trips on those blocks
+  and the calendar — other routes included, because a block overlap is real
+  whatever route runs the other trip. `block_ids_or_params` is a plain list of
+  block IDs (every service of the version), a `{ids, service_id}` tuple, or a
+  `%{block_ids: ids, service_id: service_id}` map; an empty ID list reads
+  nothing and returns `[]`.
+  """
+  @spec load_block_rows(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t(),
+          [String.t()] | {[String.t()], String.t()} | map()
+        ) :: [Blocking.Checks.trip_row()]
+  def load_block_rows(organization_id, version_id, _route_id, block_ids)
+      when is_list(block_ids) do
+    if Enum.all?(block_ids, &(&1 in [nil, ""])) do
+      []
+    else
+      Blocking.Queries.trip_rows(organization_id, version_id, {:blocks, block_ids})
+    end
+  end
+
+  def load_block_rows(organization_id, version_id, route_id, {block_ids, service_id}) do
+    load_block_rows(organization_id, version_id, route_id, %{
+      block_ids: block_ids,
+      service_id: service_id
+    })
+  end
+
+  def load_block_rows(organization_id, version_id, _route_id, params) when is_map(params) do
+    block_ids = filter_value(params, :block_ids) || []
+    service_id = filter_value(params, :service_id)
+
+    if Enum.all?(List.wrap(block_ids), &(&1 in [nil, ""])) do
+      []
+    else
+      Blocking.Queries.trip_rows(
+        organization_id,
+        version_id,
+        {:blocks, List.wrap(block_ids), List.wrap(service_id)}
+      )
+    end
+  end
+
   defp read_route_schedule(organization_id, version_id, route_id, filters) do
     route = published_route!(organization_id, version_id, route_id)
 
@@ -530,6 +687,351 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       summary: summary(trip_data, direction),
       direction_labels: direction_labels(trips)
     }
+  end
+
+  # -- Paste scope ------------------------------------------------------------
+
+  defp read_paste_scope(organization_id, version_id, route_id, params) do
+    route = published_route!(organization_id, version_id, route_id)
+
+    summaries = load_calendars!(organization_id, version_id)
+    counts = route_trip_counts(organization_id, version_id, route_id)
+    calendars = attach_route_trip_counts(summaries, counts)
+
+    calendar = resolve_calendar(calendars, filter_value(params, :service_id))
+    trips = load_trips(organization_id, version_id, route_id, calendar)
+
+    direction =
+      resolve_direction(
+        filter_value(params, :direction_id) || filter_value(params, :direction),
+        trips
+      )
+
+    patterns = load_patterns(organization_id, version_id, route_id)
+    direction_patterns = Enum.filter(patterns, &(&1.direction_id == direction))
+
+    pattern_id =
+      resolve_paste_pattern(
+        filter_value(params, :pattern_id) || filter_value(params, :pattern),
+        direction_patterns,
+        trips
+      )
+
+    occurrences_by_pattern = load_occurrences(organization_id, version_id, patterns)
+    timings_by_pattern = load_paste_timings(organization_id, version_id, patterns)
+
+    stops_by_id =
+      load_stops(organization_id, version_id, occurrence_stop_ids(occurrences_by_pattern))
+
+    stop_times_by_trip = load_stop_times(organization_id, version_id, trips)
+    frequencies_by_trip = load_frequencies(organization_id, version_id, trips)
+    {transfers_by_trip, in_seat_trips} = paste_transfer_groups(organization_id, version_id, trips)
+    timing_use_counts = Enum.frequencies_by(trips, & &1.timed_pattern_id)
+
+    %{
+      route: route,
+      calendar: paste_calendar(calendar, summaries),
+      direction_id: direction,
+      pattern_id: pattern_id,
+      patterns:
+        Enum.map(direction_patterns, fn pattern ->
+          paste_pattern_entry(
+            pattern,
+            occurrences_by_pattern,
+            timings_by_pattern,
+            timing_use_counts
+          )
+        end),
+      stops:
+        Map.new(stops_by_id, fn {stop_id, stop} ->
+          {stop_id, %{stop_code: stop.stop_code, stop_name: stop.stop_name}}
+        end),
+      trips:
+        Enum.map(trips, fn trip ->
+          paste_trip_entry(
+            trip,
+            Map.get(stop_times_by_trip, trip.trip_id, []),
+            Map.get(frequencies_by_trip, trip.trip_id, []),
+            Map.get(transfers_by_trip, trip.trip_id, []),
+            MapSet.member?(in_seat_trips, trip.trip_id),
+            patterns,
+            occurrences_by_pattern,
+            timings_by_pattern
+          )
+        end),
+      other_calendars?: paste_other_calendars?(counts, calendar)
+    }
+  end
+
+  # A requested pattern may be the pattern's UUID or its natural
+  # `route_pattern_id`, like the Schedules read — but here a request naming no
+  # pattern of the chosen direction is a foreign scope, not an `:all` fallback.
+  # An absent request resolves to the direction's most-used pattern (most trips
+  # on the resolved calendar, ties keep pattern order), or nil when the
+  # direction has no pattern at all.
+  defp resolve_paste_pattern(requested, direction_patterns, _trips) when is_binary(requested) do
+    case Enum.find(direction_patterns, fn pattern ->
+           pattern.id == requested or pattern.route_pattern_id == requested
+         end) do
+      %RoutePattern{id: id} -> id
+      nil -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp resolve_paste_pattern(_requested, [], _trips), do: nil
+
+  defp resolve_paste_pattern(_requested, direction_patterns, trips) do
+    counts = Enum.frequencies_by(trips, &{&1.route_pattern_id, &1.direction_id})
+
+    direction_patterns
+    |> Enum.max_by(
+      &Map.get(counts, {&1.route_pattern_id, &1.direction_id}, 0),
+      fn -> hd(direction_patterns) end
+    )
+    |> Map.fetch!(:id)
+  end
+
+  defp paste_calendar(nil, _summaries), do: nil
+
+  defp paste_calendar(calendar, summaries) do
+    summary = Enum.find(summaries, &(&1.service_id == calendar.service_id))
+
+    %{
+      service_id: calendar.service_id,
+      name: calendar.name,
+      kind: calendar.kind,
+      first_active_date: summary && summary.first_active_date,
+      last_active_date: summary && summary.last_active_date,
+      trip_count: calendar.route_trip_count
+    }
+  end
+
+  defp paste_other_calendars?(counts, calendar) do
+    chosen = calendar && calendar.service_id
+    Enum.any?(counts, fn {service_id, count} -> count > 0 and service_id != chosen end)
+  end
+
+  defp paste_pattern_entry(pattern, occurrences_by_pattern, timings_by_pattern, timing_use_counts) do
+    occurrences = Map.get(occurrences_by_pattern, pattern.id, [])
+    timings = Map.get(timings_by_pattern, pattern.id, [])
+
+    %{
+      id: pattern.id,
+      route_pattern_id: pattern.route_pattern_id,
+      name: pattern.route_pattern_name || pattern.route_pattern_id,
+      headsign: pattern.headsign,
+      occurrences:
+        Enum.map(occurrences, fn occurrence ->
+          %{id: occurrence.id, stop_id: occurrence.stop_id, position: occurrence.position}
+        end),
+      timings:
+        Enum.map(timings, fn timing ->
+          Map.put(timing, :trip_count, Map.get(timing_use_counts, timing.id, 0))
+        end)
+    }
+  end
+
+  # Timing rows with every field the paste key covers, in occurrence position
+  # order so they align positionally with the pattern's occurrences (the shape
+  # RowResolver and Plan consume). `load_timings/3` stays untouched: the
+  # Schedules read never needs the per-stop attributes.
+  defp load_paste_timings(_organization_id, _version_id, []), do: %{}
+
+  defp load_paste_timings(organization_id, version_id, patterns) do
+    pattern_ids = Enum.map(patterns, & &1.id)
+
+    timings =
+      from(t in TimedPattern,
+        where:
+          t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+            t.route_pattern_id in ^pattern_ids,
+        order_by: [asc: t.route_pattern_id, asc: t.name, asc: t.id]
+      )
+      |> Repo.all()
+
+    rows_by_timing = paste_timing_rows(organization_id, version_id, Enum.map(timings, & &1.id))
+
+    timings
+    |> Enum.group_by(& &1.route_pattern_id)
+    |> Map.new(fn {pattern_id, pattern_timings} ->
+      {pattern_id,
+       Enum.map(pattern_timings, fn timing ->
+         %{
+           id: timing.id,
+           name: timing.name,
+           headsign: timing.headsign,
+           rows: Map.get(rows_by_timing, timing.id, [])
+         }
+       end)}
+    end)
+  end
+
+  defp paste_timing_rows(_organization_id, _version_id, []), do: %{}
+
+  defp paste_timing_rows(organization_id, version_id, timing_ids) do
+    from(row in TimedPatternStop,
+      join: occurrence in RoutePatternStop,
+      on: occurrence.id == row.route_pattern_stop_id,
+      where:
+        occurrence.organization_id == ^organization_id and
+          occurrence.gtfs_version_id == ^version_id and row.timed_pattern_id in ^timing_ids,
+      order_by: [asc: row.timed_pattern_id, asc: occurrence.position, asc: occurrence.id],
+      select: %{
+        timed_pattern_id: row.timed_pattern_id,
+        arrival_offset: row.arrival_offset,
+        departure_offset: row.departure_offset,
+        timepoint: row.timepoint,
+        pickup_type: row.pickup_type,
+        drop_off_type: row.drop_off_type,
+        stop_headsign: row.stop_headsign
+      }
+    )
+    |> Repo.all()
+    |> Enum.group_by(& &1.timed_pattern_id)
+    |> Map.new(fn {timing_id, rows} ->
+      {timing_id, Enum.map(rows, &Map.delete(&1, :timed_pattern_id))}
+    end)
+  end
+
+  defp paste_trip_entry(
+         trip,
+         stop_times,
+         frequencies,
+         transfer_ids,
+         in_seat?,
+         patterns,
+         occurrences_by_pattern,
+         timings_by_pattern
+       ) do
+    bounds = trip_bounds(stop_times)
+
+    {start_secs, end_secs} =
+      case bounds do
+        {:ok, start_secs, end_secs} -> {start_secs, end_secs}
+        :error -> {nil, nil}
+      end
+
+    # A frequency trip without stored stop times still refuses Replace: fall
+    # back to its earliest frequency window so pairing sees a real start.
+    start_secs = start_secs || paste_frequency_start(frequencies)
+
+    span =
+      if is_integer(start_secs) and is_integer(end_secs) do
+        %{start_secs: start_secs, end_secs: end_secs}
+      end
+
+    frequency_rows =
+      Enum.map(frequencies, fn frequency ->
+        %{
+          start_time: frequency.start_time,
+          end_time: frequency.end_time,
+          headway_secs: frequency.headway_secs,
+          exact_times: frequency.exact_times
+        }
+      end)
+
+    %{
+      id: trip.id,
+      trip_id: trip.trip_id,
+      direction_id: trip.direction_id,
+      route_pattern_id: trip.route_pattern_id,
+      timed_pattern_id: trip.timed_pattern_id,
+      pattern_derivation_state: trip.pattern_derivation_state,
+      start_secs: start_secs,
+      end_secs: end_secs,
+      span: span,
+      spans: spans_for(%{bounds: bounds, frequencies: frequencies}),
+      frequencies: frequency_rows,
+      frequency_rows: frequency_rows,
+      stops_differ?:
+        paste_stops_differ?(
+          trip,
+          patterns,
+          occurrences_by_pattern,
+          timings_by_pattern,
+          stop_times
+        ),
+      trip_short_name: trip.trip_short_name,
+      block_id: trip.block_id,
+      trip_headsign: trip.trip_headsign,
+      updated_at: trip.updated_at,
+      transfer_ids: transfer_ids,
+      in_seat_transfer: in_seat?
+    }
+  end
+
+  defp paste_frequency_start(frequencies) do
+    frequencies
+    |> frequency_windows()
+    |> Enum.map(& &1.start_secs)
+    |> Enum.min(fn -> nil end)
+  end
+
+  # The Timetable read-path rule: a trip off every timing of its own pattern is
+  # custom, and a custom trip whose ordered stops no longer match the pattern's
+  # occurrences differs. Trips with no pattern of their own have nothing to
+  # differ from.
+  defp paste_stops_differ?(trip, patterns, occurrences_by_pattern, timings_by_pattern, stop_times) do
+    case Enum.find(
+           patterns,
+           &(&1.route_pattern_id == trip.route_pattern_id and
+               &1.direction_id == trip.direction_id)
+         ) do
+      nil ->
+        false
+
+      pattern ->
+        timings = Map.get(timings_by_pattern, pattern.id, [])
+        custom? = is_nil(Enum.find(timings, &(&1.id == trip.timed_pattern_id)))
+        occurrences = Map.get(occurrences_by_pattern, pattern.id, [])
+
+        custom? and occurrences != [] and
+          Enum.map(stop_times, & &1.stop_id) != Enum.map(occurrences, & &1.stop_id)
+    end
+  end
+
+  # Transfers name the natural `trip_id`, never the UUID: group every transfer
+  # touching a scope trip by the trips it names, and collect the natural IDs on
+  # either side of an in-seat (type 4/5) transfer for the retime warning.
+  defp paste_transfer_groups(_organization_id, _version_id, []), do: {%{}, MapSet.new()}
+
+  defp paste_transfer_groups(organization_id, version_id, trips) do
+    natural_ids = trips |> Enum.map(& &1.trip_id) |> Enum.uniq()
+
+    rows =
+      from(t in Transfer,
+        where:
+          t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+            (t.from_trip_id in ^natural_ids or t.to_trip_id in ^natural_ids),
+        order_by: [asc: t.from_trip_id, asc: t.to_trip_id, asc: t.id],
+        select: %{
+          id: t.id,
+          from_trip_id: t.from_trip_id,
+          to_trip_id: t.to_trip_id,
+          transfer_type: t.transfer_type
+        }
+      )
+      |> Repo.all()
+
+    by_trip =
+      Map.new(natural_ids, fn natural_id ->
+        ids =
+          rows
+          |> Enum.filter(&(&1.from_trip_id == natural_id or &1.to_trip_id == natural_id))
+          |> Enum.map(& &1.id)
+          |> Enum.sort()
+
+        {natural_id, ids}
+      end)
+
+    in_seat =
+      rows
+      |> Enum.filter(&(&1.transfer_type in [4, 5]))
+      |> Enum.flat_map(&[&1.from_trip_id, &1.to_trip_id])
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    {by_trip, in_seat}
   end
 
   # -- Scoped loads -----------------------------------------------------------
