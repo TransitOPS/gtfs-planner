@@ -21,6 +21,10 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   `normalize/1` rejected as too large. `export_geojson/1` applies the output
   transform to geometry that is already stored or derived.
 
+  `stats/3` measures a draft area against one version (km², the stops inside and
+  the routes serving them), `overlaps/4` measures its intersection with other
+  active area services, and `compare/2` reports the change against a saved area.
+
   `put_geom/2` and `get_geojson/1` are the storage pair. Both run on the
   caller's connection, so a context can write geometry inside its own
   transaction.
@@ -72,6 +76,88 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
          FROM (SELECT ST_GeomFromGeoJSON($1) AS g) AS source
        ) AS simplified,
        LATERAL ST_IsValidDetail(simplified.geometry)
+  """
+
+  # A stop's coordinates are `numeric`; a point on the boundary counts as
+  # covered (`ST_Covers`, not `ST_Contains`), which is what AC-14 means by
+  # "stops inside" and what the boundary test pins.
+  @stats_sql """
+  WITH area AS (
+    SELECT ST_GeomFromGeoJSON($3) AS g
+  ),
+  covered AS (
+    SELECT s.stop_id
+    FROM stops s, area
+    WHERE s.organization_id = $1
+      AND s.gtfs_version_id = $2
+      AND s.stop_lat IS NOT NULL
+      AND s.stop_lon IS NOT NULL
+      AND ST_Covers(
+            area.g,
+            ST_SetSRID(ST_MakePoint(s.stop_lon::float8, s.stop_lat::float8), 4326)
+          )
+  )
+  SELECT ST_Area(area.g::geography) / 1e6,
+         ARRAY(SELECT stop_id FROM covered ORDER BY stop_id),
+         ARRAY(
+           SELECT DISTINCT t.route_id
+           FROM stop_times st
+           JOIN trips t
+             ON t.organization_id = st.organization_id
+            AND t.gtfs_version_id = st.gtfs_version_id
+            AND t.trip_id = st.trip_id
+           WHERE st.organization_id = $1
+             AND st.gtfs_version_id = $2
+             AND st.stop_id IN (SELECT stop_id FROM covered)
+           ORDER BY t.route_id
+         )
+  FROM area
+  """
+
+  # A service's stored areas are unioned before the intersection, so overlapping
+  # areas cannot count twice. A touching intersection is a line or point, so the
+  # polygonal parts are extracted before the geography cast; an empty result is
+  # 0 km². The threshold applies to the service's total intersection and the
+  # output order is stable.
+  @overlaps_sql """
+  WITH draft AS (
+    SELECT ST_GeomFromGeoJSON($3) AS g
+  ),
+  stored AS (
+    SELECT a.flex_service_id AS service_id, ST_Union(a.geom) AS geom
+    FROM flex_areas a
+    WHERE a.organization_id = $1
+      AND a.gtfs_version_id = $2
+      AND a.geom IS NOT NULL
+    GROUP BY a.flex_service_id
+  ),
+  overlap AS (
+    SELECT s.id AS service_id,
+           s.name AS name,
+           ST_Area(
+             ST_CollectionExtract(ST_Intersection(stored.geom, draft.g), 3)::geography
+           ) / 1e6 AS km2
+    FROM stored
+    JOIN flex_services s
+      ON s.id = stored.service_id
+     AND s.organization_id = $1
+     AND s.gtfs_version_id = $2
+    CROSS JOIN draft
+    WHERE s.active
+      AND s.kind = 'area'
+      AND ($4::uuid IS NULL OR s.id <> $4::uuid)
+      AND ST_Intersects(stored.geom, draft.g)
+  )
+  SELECT service_id::text, name, km2
+  FROM overlap
+  WHERE km2 >= 0.5
+  ORDER BY name, service_id
+  """
+
+  # The one-side area for `compare/2` when a caller passes geometry but no
+  # measured km².
+  @area_sql """
+  SELECT ST_Area(ST_GeomFromGeoJSON($1)::geography) / 1e6
   """
 
   @put_geom_sql """
@@ -145,6 +231,98 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
       {:error, {:invalid, reason, [lon, lat]}}
     end
   end
+
+  @doc """
+  Measures a draft area against one version.
+
+  Returns the area in km², the `stop_id`s of stops with coordinates that the
+  area covers (a stop exactly on the boundary counts), and the `route_id`s of
+  trips whose stop times visit those stops. Stops, stop times and trips are all
+  filtered to this organization and version. Both lists are sorted.
+  """
+  @spec stats(Ecto.UUID.t(), Ecto.UUID.t(), map()) :: %{
+          km2: float(),
+          stop_ids: [String.t()],
+          route_ids: [String.t()]
+        }
+  def stats(organization_id, version_id, geojson) do
+    %Postgrex.Result{rows: [[km2, stop_ids, route_ids]]} =
+      Repo.query!(@stats_sql, [
+        Ecto.UUID.dump!(organization_id),
+        Ecto.UUID.dump!(version_id),
+        Jason.encode!(geojson)
+      ])
+
+    %{km2: km2, stop_ids: stop_ids, route_ids: route_ids}
+  end
+
+  @doc """
+  Lists the other active area services whose stored areas intersect the draft.
+
+  `exclude_service_id` keeps the service being edited out of the list; pass
+  `nil` to compare against every active area service. A service appears once,
+  with its stored areas unioned first, and only when that intersection is at
+  least 0.5 km². Services that are inactive, of `:detour` kind, or without
+  stored geometry are left out. The list is ordered by name and id.
+  """
+  @spec overlaps(Ecto.UUID.t(), Ecto.UUID.t(), map(), Ecto.UUID.t() | nil) :: [
+          %{service_id: Ecto.UUID.t(), name: String.t(), km2: float()}
+        ]
+  def overlaps(organization_id, version_id, geojson, exclude_service_id) do
+    %Postgrex.Result{rows: rows} =
+      Repo.query!(@overlaps_sql, [
+        Ecto.UUID.dump!(organization_id),
+        Ecto.UUID.dump!(version_id),
+        Jason.encode!(geojson),
+        exclude_service_id && Ecto.UUID.dump!(exclude_service_id)
+      ])
+
+    Enum.map(rows, fn [service_id, name, km2] ->
+      %{service_id: service_id, name: name, km2: km2}
+    end)
+  end
+
+  @doc """
+  Compares a saved area with the draft.
+
+  Each side is `nil` or a map from `stats/3` (`:km2` and `:stop_ids`); a side
+  that carries `:geojson` but no measured `:km2` has its area computed here.
+  `nil` is 0 km² with no stops, so comparing a new area reports every stop in
+  the draft as joined. A stop that is in both sides, or in neither, is not
+  reported.
+  """
+  @spec compare(map() | nil, map()) :: %{
+          km2_before: float(),
+          km2_after: float(),
+          stops_joined: [String.t()],
+          stops_left: [String.t()]
+        }
+  def compare(saved, draft) do
+    before = side_stats(saved)
+    after_stats = side_stats(draft)
+
+    %{
+      km2_before: before.km2,
+      km2_after: after_stats.km2,
+      stops_joined: after_stats.stop_ids -- before.stop_ids,
+      stops_left: before.stop_ids -- after_stats.stop_ids
+    }
+  end
+
+  defp side_stats(nil), do: %{km2: 0.0, stop_ids: []}
+
+  defp side_stats(side) do
+    %{km2: side_km2(side), stop_ids: Map.get(side, :stop_ids, [])}
+  end
+
+  defp side_km2(%{km2: km2}) when is_number(km2), do: km2 * 1.0
+
+  defp side_km2(%{geojson: geojson}) do
+    %Postgrex.Result{rows: [[km2]]} = Repo.query!(@area_sql, [Jason.encode!(geojson)])
+    km2
+  end
+
+  defp side_km2(_side), do: 0.0
 
   @doc """
   Writes one area's geometry, replacing whatever was stored.
