@@ -117,15 +117,27 @@ async function waitForLiveView(page) {
 // masked regions are pinned to fixed inline sizes: the captured geometry is then
 // identical at 1:15 AM and 10:15 AM UTC and on any run date, and no comparison
 // tolerance is involved. Every pinned width is the two-digit-hour worst case
-// rounded up. The widths are asserted after pinning so a mask whose box stops
-// being fixed fails here instead of flaking the reviewed screenshot.
+// rounded up (`#fact-created` carries the seed run's account-created date). The
+// widths are asserted after pinning so a mask whose box stops being fixed fails
+// here instead of flaking the reviewed screenshot.
 const PINNED_MASK_WIDTHS = [
   ["#resume-list .tabular-nums.text-muted", 112],
   ["#check-time", 112],
   ["#export-meta", 176],
   ["#editing-now span", 152],
   ["#export-line", 128],
+  ["#fact-created", 104],
 ];
+
+// Playwright clips an element screenshot at the element's box, and a fractional
+// page scroll offset can move that clip boundary by one device pixel, so the
+// reviewed element screenshots are taken from the top of the page.
+async function scrollToTop(page) {
+  await page.evaluate(() =>
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" }),
+  );
+  await page.waitForFunction(() => window.scrollY === 0);
+}
 
 async function pinMaskGeometry(page) {
   await page.addStyleTag({
@@ -215,7 +227,7 @@ async function openSettings(page, user = EDITOR_USER) {
   await logIn(page, user);
   await page.goto("/users/settings");
   await waitForLiveView(page);
-  await page.waitForSelector("#account-settings");
+  await page.waitForSelector("#account-page");
 }
 
 async function captureFormFieldMetrics(page, formSelector) {
@@ -756,30 +768,29 @@ test.describe("account settings", () => {
     // Production settings.
     await page.goto("/users/settings");
     await waitForLiveView(page);
-    await page.waitForSelector("#account-settings");
+    await page.waitForSelector("#account-page");
 
     await expect(page).toHaveTitle(/Profile settings/);
     await expect(page.locator("#account-settings-title")).toHaveText(
       "Profile settings",
     );
     await expect(page.locator("#email-settings-title")).toHaveText(
-      "Change email",
+      "Email address",
     );
     await expect(page.locator("#password-settings-title")).toHaveText(
-      "Change password",
+      "Password",
     );
 
-    const h1Count = await page.locator("#account-settings h1").count();
+    const h1Count = await page.locator("#account-page h1").count();
     expect(h1Count).toBe(1);
-    const h2Count = await page.locator("#account-settings h2").count();
-    expect(h2Count).toBe(2);
+    const h2Count = await page.locator("#account-page h2").count();
+    expect(h2Count).toBe(4);
 
-    await expect(page.locator("#email-submit")).toHaveClass(/btn-outline/);
-    await expect(page.locator("#password-submit")).toHaveClass(/btn-outline/);
-    await expect(page.locator("#email-submit")).not.toHaveClass(/btn-primary/);
-    await expect(page.locator("#password-submit")).not.toHaveClass(
-      /btn-primary/,
-    );
+    // Each card's submit is its own primary action; the page carries no other
+    // primary, so the two card submits are the only two.
+    await expect(page.locator("#email-submit")).toHaveClass(/btn-primary/);
+    await expect(page.locator("#password-submit")).toHaveClass(/btn-primary/);
+    await expect(page.locator("#account-page .btn-primary")).toHaveCount(2);
 
     const emailMetrics = await captureFormFieldMetrics(page, "#email_form");
     const passwordMetrics = await captureFormFieldMetrics(
@@ -788,8 +799,8 @@ test.describe("account settings", () => {
     );
     expect(emailMetrics.labelAboveInput).toBe(true);
     expect(passwordMetrics.labelAboveInput).toBe(true);
-    expect(emailMetrics.buttonClass).toContain("btn-outline");
-    expect(passwordMetrics.buttonClass).toContain("btn-outline");
+    expect(emailMetrics.buttonClass).toContain("btn-primary");
+    expect(passwordMetrics.buttonClass).toContain("btn-primary");
     // Shared input stack: comparable control height to design demo (±12px tolerance).
     if (refFormMetrics.inputHeight > 0) {
       expect(
@@ -803,20 +814,42 @@ test.describe("account settings", () => {
       });
       await page.goto("/users/settings");
       await waitForLiveView(page);
-      await page.waitForSelector("#account-settings");
+      await page.waitForSelector("#account-page");
 
       expect(
         await bodyFitsViewport(page),
         `settings overflow at ${viewport.label}`,
       ).toBe(true);
 
+      // The redesign's grid puts the email and password cards in the fluid
+      // column and the access/facts rail in a fixed 20rem column at lg. Each
+      // card fills its column exactly, sits flush with the page container's
+      // left gutter, and never crosses its right gutter.
+      const pageBox = await page.locator("#account-page").boundingBox();
+
       for (const sectionId of ["#email-settings", "#password-settings"]) {
         const section = page.locator(sectionId);
         const box = await section.boundingBox();
+        const columnWidth = await section.evaluate(
+          (el) => el.parentElement.getBoundingClientRect().width,
+        );
         expect(box).not.toBeNull();
-        // Full available width up to 40rem (640px).
-        expect(box.width).toBeLessThanOrEqual(640 + 1);
         expect(box.width).toBeGreaterThan(0);
+        expect(Math.abs(box.width - columnWidth)).toBeLessThanOrEqual(1);
+        expect(Math.abs(box.x - pageBox.x)).toBeLessThanOrEqual(1);
+        expect(box.x + box.width).toBeLessThanOrEqual(
+          pageBox.x + pageBox.width + 1,
+        );
+      }
+
+      if (viewport.width >= 1024) {
+        const rail = await page.locator("#sign-in-facts").boundingBox();
+        const email = await page.locator("#email-settings").boundingBox();
+        expect(Math.abs(rail.width - 320)).toBeLessThanOrEqual(1);
+        expect(
+          Math.abs(rail.x + rail.width - (pageBox.x + pageBox.width)),
+        ).toBeLessThanOrEqual(1);
+        expect(rail.x - (email.x + email.width)).toBeGreaterThanOrEqual(16);
       }
 
       for (const controlId of [
@@ -880,10 +913,12 @@ test.describe("account settings", () => {
     ).toBe(true);
 
     // Failed email submit (valid email shape, wrong password): secret cleared,
-    // proposed email kept, first invalid focused. Avoid HTML5 type=email blocks.
+    // proposed email kept, and focus lands on the email error summary, which
+    // lists every problem and links to each field (`focus_scoped_target`,
+    // FormErrorFocus). Avoid HTML5 type=email blocks.
     await page.goto("/users/settings");
     await waitForLiveView(page);
-    await page.waitForSelector("#account-settings");
+    await page.waitForSelector("#account-page");
     const proposedEmail = "different-settings@example.com";
     await page.fill("#email-address", proposedEmail);
     await page.fill("#email-current-password", "wrong-password-value");
@@ -896,13 +931,7 @@ test.describe("account settings", () => {
       { timeout: 10_000 },
     );
     await page.waitForFunction(
-      () => {
-        const active = document.activeElement;
-        return (
-          active &&
-          ["email-address", "email-current-password"].includes(active.id)
-        );
-      },
+      () => document.activeElement?.id === "email-error-summary",
       null,
       { timeout: 10_000 },
     );
@@ -912,9 +941,7 @@ test.describe("account settings", () => {
     const focusedAfterEmail = await page.evaluate(
       () => document.activeElement && document.activeElement.id,
     );
-    expect(["email-address", "email-current-password"]).toContain(
-      focusedAfterEmail,
-    );
+    expect(focusedAfterEmail).toBe("email-error-summary");
 
     // Failed password submit: use long-enough values that pass minlength HTML
     // constraints but fail server confirmation/current-password checks.
@@ -931,17 +958,7 @@ test.describe("account settings", () => {
       { timeout: 10_000 },
     );
     await page.waitForFunction(
-      () => {
-        const active = document.activeElement;
-        return (
-          active &&
-          [
-            "password-current-password",
-            "password-new-password",
-            "password-confirmation",
-          ].includes(active.id)
-        );
-      },
+      () => document.activeElement?.id === "password-error-summary",
       null,
       { timeout: 10_000 },
     );
@@ -958,11 +975,7 @@ test.describe("account settings", () => {
     const focusedAfterPassword = await page.evaluate(
       () => document.activeElement && document.activeElement.id,
     );
-    expect([
-      "password-current-password",
-      "password-new-password",
-      "password-confirmation",
-    ]).toContain(focusedAfterPassword);
+    expect(focusedAfterPassword).toBe("password-error-summary");
 
     // No skeleton/placeholder during synchronous account context mount.
     await page.goto("/users/settings");
@@ -970,7 +983,7 @@ test.describe("account settings", () => {
     await expect(
       page.locator(".motion-safe\\:animate-pulse, [aria-busy='true']"),
     ).toHaveCount(0);
-    await expect(page.locator("#account-settings")).toBeVisible();
+    await expect(page.locator("#account-page")).toBeVisible();
   });
 
   test("reviewed account-settings screenshots at 320/1280/640 with email masked", async ({
@@ -982,6 +995,9 @@ test.describe("account settings", () => {
     const emailMask = [
       page.locator("#email-address"),
       page.locator(`text=${SETTINGS_USER.email}`),
+      // The account-created date is the seed run's date, so it is masked and
+      // width-pinned like the dashboard's seeded dates.
+      page.locator("#fact-created"),
     ];
 
     for (const { width, height, label } of [
@@ -992,7 +1008,8 @@ test.describe("account settings", () => {
       await page.setViewportSize({ width, height });
       await page.goto("/users/settings");
       await waitForLiveView(page);
-      const root = page.locator("#account-settings");
+      await pinMaskGeometry(page);
+      const root = page.locator("#account-page");
       await expect(root).toBeVisible();
       await expect(root).toHaveScreenshot(`account-settings-${label}.png`, {
         animations: "disabled",
@@ -1000,7 +1017,10 @@ test.describe("account settings", () => {
       });
     }
 
-    // Deterministic email task error root.
+    // Deterministic email task error root. The page is scrolled to the top
+    // before the element screenshot so the clip boundary lands on the same
+    // device row on every run (a fractional scroll offset shifts the card's
+    // top border by one pixel).
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto("/users/settings");
     await waitForLiveView(page);
@@ -1011,6 +1031,7 @@ test.describe("account settings", () => {
       () => document.querySelector("#email_form [aria-invalid='true']"),
     );
     await waitForLiveView(page);
+    await scrollToTop(page);
     await expect(page.locator("#email-settings")).toHaveScreenshot(
       "account-settings-email-error-1280.png",
       {
@@ -1028,6 +1049,7 @@ test.describe("account settings", () => {
       () => document.querySelector("#password_form [aria-invalid='true']"),
     );
     await waitForLiveView(page);
+    await scrollToTop(page);
     await expect(page.locator("#password-settings")).toHaveScreenshot(
       "account-settings-password-error-1280.png",
       {
@@ -1090,7 +1112,7 @@ test.describe("account motion and reconnect", () => {
   }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await openSettings(page, SETTINGS_USER);
-    await expect(page.locator("#account-settings")).toBeVisible();
+    await expect(page.locator("#account-page")).toBeVisible();
 
     await page.evaluate(() => window.liveSocket.disconnect());
     await page.waitForSelector("#client-error", { state: "visible", timeout: 10_000 });
@@ -1098,7 +1120,7 @@ test.describe("account motion and reconnect", () => {
 
     await page.evaluate(() => window.liveSocket.connect());
     await waitForLiveView(page);
-    await expect(page.locator("#account-settings")).toBeVisible();
+    await expect(page.locator("#account-page")).toBeVisible();
     await expect(page.locator("#email-submit")).toBeEnabled();
     await expect(page.locator("#client-error")).toBeHidden();
   });
@@ -1162,6 +1184,6 @@ test.describe("account password mutation", () => {
     await page.waitForURL((url) => !url.pathname.startsWith("/users/log_in"));
     await page.goto("/users/settings");
     await waitForLiveView(page);
-    await expect(page.locator("#account-settings")).toBeVisible();
+    await expect(page.locator("#account-page")).toBeVisible();
   });
 });
