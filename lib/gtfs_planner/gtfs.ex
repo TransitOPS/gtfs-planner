@@ -5811,6 +5811,53 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Lists every place an operator change may be made on one day type of a version.
+
+  The candidates are the day type's own trip endpoints, a stop with a
+  `parent_station` grouped under that station, each with the number of the day's
+  feasible waits that happen there, whether the version marks it, and — for a
+  station — the names of the day's stops beneath it. They are ordered by waits
+  descending, then name. A `nil` day type key selects the first day type; an
+  unknown key is `{:error, {:unknown_day_type, day_types}}`, and a staging or
+  foreign version is `{:error, :not_found}`.
+  """
+  @spec list_relief_candidates(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
+          {:ok, [Blocking.relief_candidate()]}
+          | {:error,
+             :not_found | {:unknown_day_type, [GtfsPlanner.Gtfs.Blocking.DayTypes.day_type()]}}
+  def list_relief_candidates(organization_id, gtfs_version_id, day_type_key) do
+    Blocking.list_relief_candidates(organization_id, gtfs_version_id, day_type_key)
+  end
+
+  @doc """
+  Stores the relief limit and which of the day type's candidates are marked.
+
+  `attrs` carries `max_piece_minutes` (60–720, or blank for "no limit", which
+  turns the `:no_relief_opportunity` checks off) and `marked`, the list of ticked
+  candidate IDs. The save is all-or-nothing, takes `Blocking.lock_blocking!/1`,
+  and writes only the `max_piece_minutes` column of the shared settings row, so
+  the other seven settings are untouched. Exactly the given IDs among the day
+  type's candidates end up marked: an ID that is not a candidate is ignored and a
+  mark on a stop outside the candidates stays. An out-of-range limit is a
+  changeset error and stores nothing; a staging or foreign version is
+  `{:error, :not_found}`.
+  """
+  @spec update_relief_settings(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          String.t() | nil,
+          map()
+        ) ::
+          {:ok, :ok}
+          | {:error,
+             :not_found
+             | {:unknown_day_type, [GtfsPlanner.Gtfs.Blocking.DayTypes.day_type()]}
+             | Ecto.Changeset.t()}
+  def update_relief_settings(organization_id, gtfs_version_id, day_type_key, attrs) do
+    Blocking.update_relief_settings(organization_id, gtfs_version_id, day_type_key, attrs)
+  end
+
+  @doc """
   Applies one block command on a day type of an organization's GTFS version.
 
   The command is an `:assign` or `:unassign` of trips or a `:rename` or `:merge`
