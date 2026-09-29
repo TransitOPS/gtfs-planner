@@ -1652,6 +1652,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     draft
     |> preselect_ada_distance(previous)
     |> reset_include_registered(previous)
+    |> keep_calendar_order(previous)
   end
 
   defp preselect_ada_distance(
@@ -1670,6 +1671,20 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
        do: %{draft | include_registered: false}
 
   defp reset_include_registered(draft, _previous), do: draft
+
+  # The detour calendars arrive in the checkbox list's order, not the author's.
+  # Keeping the stored order for the calendars that stay chosen stops an
+  # unrelated edit from reading (and saving) as a reordered rider line.
+  defp keep_calendar_order(
+         %FlexService{kind: :detour, calendar_service_ids: chosen} = draft,
+         %FlexService{kind: :detour, calendar_service_ids: stored}
+       ) do
+    kept = Enum.filter(stored, &(&1 in chosen))
+    added = Enum.reject(chosen, &(&1 in stored))
+    %{draft | calendar_service_ids: kept ++ added}
+  end
+
+  defp keep_calendar_order(draft, _previous), do: draft
 
   # --- saving ------------------------------------------------------------------
 
@@ -2277,7 +2292,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
         start_census_places(socket)
 
       :routes ->
-        put_area_routes(socket, socket.assigns.area_route_ids, socket.assigns.area_distance)
+        socket
+        |> put_area_name("")
+        |> put_area_routes(socket.assigns.area_route_ids, socket.assigns.area_distance)
 
       # Drawing is a tool on the map, so choosing it hands the map over to the
       # hook's draw mode; the other sources leave the hook's tools.
@@ -2402,9 +2419,13 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   end
 
   # The prototype names a route buffer after the route the editor measured from,
-  # so the where section has a name to show before the editor types one.
+  # and renames one already named after a corridor; a name the editor typed is
+  # left alone, so the where section has a name to show before the editor types
+  # one.
   defp maybe_name_corridor(socket, route_ids) do
-    if String.trim(socket.assigns.area_name) == "" do
+    name = String.trim(socket.assigns.area_name)
+
+    if name == "" or String.contains?(name, "corridor") do
       names =
         socket.assigns.area_routes
         |> Enum.filter(&(&1.id in route_ids))
@@ -2676,20 +2697,22 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
     case Geometry.normalize(replace_outer_ring(base.geojson, ring)) do
       {:ok, %{geojson: geojson}} ->
-        socket
-        |> assign(:area_crossing, nil)
-        |> assign(:area_simplify_note, nil)
-        |> measure_candidate(%{base | geojson: geojson})
-        |> push_event("flex_map:crossing", %{lon: nil, lat: nil, reason: nil})
+        {:noreply,
+         socket
+         |> assign(:area_crossing, nil)
+         |> assign(:area_simplify_note, nil)
+         |> measure_candidate(%{base | geojson: geojson})
+         |> push_event("flex_map:crossing", %{lon: nil, lat: nil, reason: nil})}
 
       {:error, {:invalid, reason, [lon, lat]}} ->
-        socket
-        |> assign(:area_error, nil)
-        |> assign(:area_crossing, %{lon: lon, lat: lat, reason: reason})
-        |> assign(:area_vertices, ring_vertices(ring))
-        |> assign(:area_simplify_note, nil)
-        |> assign_area_use_reason()
-        |> push_event("flex_map:crossing", %{lon: lon, lat: lat, reason: reason})
+        {:noreply,
+         socket
+         |> assign(:area_error, nil)
+         |> assign(:area_crossing, %{lon: lon, lat: lat, reason: reason})
+         |> assign(:area_vertices, ring_vertices(ring))
+         |> assign(:area_simplify_note, nil)
+         |> assign_area_use_reason()
+         |> push_event("flex_map:crossing", %{lon: lon, lat: lat, reason: reason})}
 
       {:error, reason} ->
         {:noreply,

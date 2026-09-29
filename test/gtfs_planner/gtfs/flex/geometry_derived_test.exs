@@ -236,6 +236,35 @@ defmodule GtfsPlanner.Gtfs.Flex.GeometryDerivedTest do
              ])
     end
 
+    test "runs a short turn that visits only the stretch's last stop from the pattern's start" do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+
+      insert_route_stops(organization, version)
+
+      # The short turn starts mid-route at B and ends at the service's last stop
+      # C, so it covers the B→C stretch without ever reaching A. The mirrored
+      # first-only case runs to the pattern's end; this one starts at its start.
+      insert_shape(organization, version, "shape-short-late", [
+        {"-124.01", "44.58", 1, 0},
+        {"-124.02", "44.58", 2, 1000}
+      ])
+
+      insert_pattern(organization, version, "pattern-short-late", "shape-short-late", [
+        {"B", 1, 0},
+        {"C", 2, 1000}
+      ])
+
+      service = detour_service(organization, version, %{"key" => "late"})
+
+      assert {:ok, zones} = Geometry.detour_zones(organization.id, version.id, service)
+
+      assert [%{zone_id: "flex-late-B-C", stop_a: "B", stop_b: "C"} = zone] = zones
+      assert valid?(zone.geojson)
+
+      assert buffer_equals?(zone.geojson, ["LINESTRING(-124.01 44.58, -124.02 44.58)"], 400)
+    end
+
     test "cuts a loop visit by shape_dist_traveled" do
       organization = organization_fixture()
       version = gtfs_version_fixture(organization.id)
@@ -380,9 +409,13 @@ defmodule GtfsPlanner.Gtfs.Flex.GeometryDerivedTest do
       assert buffer_equals?(a_b.geojson, ["POINT(-124.00 44.60)", "POINT(-124.01 44.60)"], 400)
       assert buffer_equals?(b_c.geojson, ["POINT(-124.01 44.60)", "POINT(-124.02 44.60)"], 400)
 
-      # Two 400 m circles per zone, measured on geography.
+      # Two 400 m circles per zone, measured on geography. The two congruent
+      # zones measure 4.1e-6 km² apart on PostGIS 3.6.4 — geography buffer and
+      # area rounding noise, not a derivation difference — so the symmetry check
+      # is looser than that noise while still rejecting a wrong radius or a
+      # missing stop (hundreds of m²).
       assert_in_delta km2(a_b.geojson), 1.0, 0.05
-      assert_in_delta km2(a_b.geojson), km2(b_c.geojson), 0.000_001
+      assert_in_delta km2(a_b.geojson), km2(b_c.geojson), 0.000_1
     end
 
     test "answers a stretch no active pattern visits, an unknown route and a missing distance" do

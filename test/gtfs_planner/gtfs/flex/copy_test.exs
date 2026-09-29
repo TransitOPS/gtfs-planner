@@ -74,7 +74,7 @@ defmodule GtfsPlanner.Gtfs.Flex.CopyTest do
         ]
       })
 
-      {:ok, detour} =
+      detour =
         create_and_save(organization, source, %{
           name: "Route 20 detours",
           kind: :detour,

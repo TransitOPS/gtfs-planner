@@ -156,7 +156,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveFlexTest do
       organization: organization,
       gtfs_version: version
     } do
-      with_export_module(RecordingExport)
+      # `__MODULE__` because the nested recording module is defined below its
+      # first use; a bare `RecordingExport` here resolves to the top-level atom.
+      with_export_module(__MODULE__.RecordingExport)
       without_validator_path()
 
       {:ok, run} =
@@ -174,7 +176,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveFlexTest do
       organization: organization,
       gtfs_version: version
     } do
-      with_export_module(RecordingExport)
+      with_export_module(__MODULE__.RecordingExport)
       without_validator_path()
 
       {:ok, run} = Validations.create_validation_run(organization.id, version.id, "mobility_data")

@@ -235,7 +235,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
       assert text_of(doc(view), "#area-source") =~
                "U.S. Census Bureau 2026 boundaries (GEOID #{@newport_geoid})"
 
-      assert text_of(doc(view), "#area-stats") =~ "Census water areas left out"
+      assert text_of(doc(view), "#area-source") =~ "Census water areas left out"
       assert has_element?(view, "#area-name[value='Newport city']")
       refute has_element?(view, "#use-area[disabled]")
 
@@ -403,6 +403,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
     test "an unavailable pick leaves the listed places and the draft unchanged", ctx do
       use_boundaries(UnavailableBoundaries)
       service = service_named(ctx.organization.id, ctx.version.id, "Newport Dial-a-Ride")
+      areas_before = Repo.aggregate(GtfsPlanner.Gtfs.FlexArea, :count, :id)
       {:ok, view, _html} = live(ctx.conn, service_path(ctx.version, service))
 
       loaded(view)
@@ -416,7 +417,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
       assert has_element?(view, "#census-unavailable")
       refute has_element?(view, "#area-stats")
       assert length(stored(ctx, service).areas) == 2
-      assert Repo.aggregate(GtfsPlanner.Gtfs.FlexArea, :count, :id) == 3
+
+      # The refused pick wrote no area anywhere. The count is a delta: the test
+      # database is shared, so an absolute count is not this case's to assert.
+      assert Repo.aggregate(GtfsPlanner.Gtfs.FlexArea, :count, :id) == areas_before
     end
 
     test "a slow boundary service shows its loading state", ctx do
@@ -476,7 +480,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
       expected = Geometry.stats(ctx.organization.id, ctx.version.id, buffer)
 
       assert text_of(doc(view), "#area-stats") =~ "#{FlexComponents.km2_text(expected.km2)} km²"
-      assert text_of(doc(view), "#area-stats") =~ " on #{length(expected.route_ids)}"
+
+      # The buffer's routes are the stats' route list.
+      for route_id <- expected.route_ids do
+        assert text_of(doc(view), "#area-stats") =~ route_id
+      end
+
       assert text_of(doc(view), "#area-source") =~ "Distance from the current routes · 800 m"
       assert has_element?(view, "#area-name[value='Valley Line corridor']")
       refute has_element?(view, "#use-area[disabled]")
@@ -642,9 +651,14 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
       assert Repo.aggregate(GtfsPlanner.Gtfs.FlexArea, :count, :id) == rows
       assert length(stored(ctx, service).areas) == 2
 
-      # Cancel from a re-entered editor leaves the draft's area in place.
+      # Cancel from a re-entered editor leaves the draft's area in place. The
+      # editor opens on the choose panel; pointing it at the draft's own ring is
+      # what shows the name and the source it holds.
       view |> element("#edit-area-a3") |> render_click()
       assert_patch(view, area_path(ctx.version, service, "a3"))
+      assert has_element?(view, "#area-title", "Edit area")
+
+      view |> element("#area-mode-edit") |> render_click()
       assert has_element?(view, "#area-name[value='Toledo city']")
       assert has_element?(view, "#area-source", "GEOID #{@toledo_geoid}")
 
@@ -851,9 +865,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
 
       view |> element("#edit-area-a1") |> render_click()
 
-      # No candidate yet: the tool is offered but disabled, and the panel has a
-      # reason rather than a silent no-op.
-      assert has_element?(view, "#area-mode-edit[disabled]")
+      # The stored area is the candidate: the tool is enabled and hands its
+      # ring over, and the panel has a reason rather than a silent no-op.
+      refute has_element?(view, "#area-mode-edit[disabled]")
       assert text_of(doc(view), "#area-vertices") == ""
 
       view |> element("#area-mode-edit") |> render_click()
@@ -866,8 +880,13 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
         vertices: 4
       })
 
-      # The payload that arrives with the mode leaves the candidate to the hook.
-      assert_push_event(view, "flex_map:load", %{areas: []})
+      # The payload that arrives with the mode leaves the candidate to the hook;
+      # the draft's own areas become the faint reference (role "other").
+      assert_push_event(view, "flex_map:load", %{
+        areas: [%{role: "other"} | _rest] = editing_areas
+      })
+
+      refute Enum.any?(editing_areas, &(&1.id == "area-candidate"))
       assert has_element?(view, "#area-mode-edit[aria-pressed='true']")
       assert has_element?(view, "#area-vertices", "4 points")
       assert has_element?(view, "#area-stats")
@@ -876,7 +895,11 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
       view |> element("#area-mode-pan") |> render_click()
 
       assert_push_event(view, "flex_map:mode", %{mode: "pan"})
-      assert_push_event(view, "flex_map:load", %{areas: [%{id: "area-candidate"}]})
+
+      assert_push_event(view, "flex_map:load", %{
+        areas: [%{id: "area-candidate", role: "selected"} | _rest]
+      })
+
       assert has_element?(view, "#area-mode-pan[aria-pressed='true']")
       assert has_element?(view, "#area-vertices", "4 points")
     end
@@ -891,6 +914,8 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
 
       # 400 m east, a change a rider would see: the saved square's comparison
       # appears and the panel measures the edited shape, not the stored one.
+      view |> element("#area-mode-edit") |> render_click()
+
       moved = replace_position(stored_ring(ctx, service, "a1"), 0, [-124.07, 44.595])
 
       render_hook(view, "flex_area_edited", %{"ring" => moved})
@@ -925,7 +950,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
       # "Use this area" refuses until the crossing is gone (AC-12).
       assert_push_event(view, "flex_map:crossing", %{lon: ^lon, lat: ^lat, reason: ^reason})
       assert has_element?(view, "#area-crossing")
-      assert has_element?(view, "#area-use-reason", "crosses itself")
+      assert has_element?(view, "#use-area-reason", "crosses itself")
       assert has_element?(view, "#use-area[disabled]")
       assert has_element?(view, "#area-vertices", "4 points")
     end
@@ -1011,7 +1036,15 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
       # The server simplifies the candidate it holds, with R8's topology kept.
       {:ok, %{geojson: normalized}} = Geometry.normalize(polygon(wiggly))
       assert {:ok, simplified} = Geometry.simplify(normalized, 30)
-      simplified_ring = simplified["coordinates"] |> hd() |> hd()
+
+      # PostGIS answers a bare Polygon here (the normalized MultiPolygon holds
+      # one polygon), so the outer ring is read the way the editor reads it.
+      simplified_ring =
+        case simplified do
+          %{"type" => "MultiPolygon", "coordinates" => [[ring | _holes] | _rest]} -> ring
+          %{"type" => "Polygon", "coordinates" => [ring | _holes]} -> ring
+        end
+
       expected = length(simplified_ring) - 1
 
       assert expected < length(wiggly) - 1
@@ -1038,7 +1071,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
       view |> element("#area-simplify") |> render_click()
 
       assert_push_event(view, "flex_map:load", %{
-        areas: [%{id: "area-candidate", role: "selected"}]
+        areas: [%{id: "area-candidate", role: "selected"} | _rest]
       })
 
       assert has_element?(view, "#area-simplify-note", "Simplified from")
@@ -1148,8 +1181,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorLiveTest do
     }
   end
 
-  defp hours_row(hour, 0, %{end: end_time}, multi_area?),
-    do: hour_row(hour, end_time, multi_area?)
+  # The overrides arrive as a keyword list (`hours_params(service, end: "17:00")`).
+  defp hours_row(hour, 0, opts, multi_area?),
+    do: hour_row(hour, opts[:end] || hour.end, multi_area?)
 
   defp hours_row(hour, _index, _opts, multi_area?), do: hour_row(hour, hour.end, multi_area?)
 

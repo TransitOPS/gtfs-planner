@@ -83,7 +83,11 @@ function boundsStub(extent = null) {
     extend(other) {
       const corners = other && other._extent ? other._extent : [other];
 
-      corners.forEach(([lat, lon]) => {
+      corners.forEach((corner) => {
+        // Leaflet's extend takes an array pair or a `LatLng` (what the circle
+        // markers' getLatLng() returns); both read as [lat, lon].
+        const [lat, lon] = Array.isArray(corner) ? corner : [corner.lat, corner.lng];
+
         if (bounds._extent === null) {
           bounds._extent = [
             [lat, lon],
@@ -115,7 +119,9 @@ function pointsExtent(points) {
   ];
 }
 
-// The extent of a test polygon, walked from its positions.
+// The extent of a test polygon, walked from its positions. GeoJSON positions
+// are [lon, lat] and a Leaflet bounds object reads [lat, lon], so the walk
+// swaps them, the way the hook's own toLatLng does.
 function polygonExtent(geojson) {
   const positions = [];
 
@@ -126,7 +132,7 @@ function polygonExtent(geojson) {
 
   walk(geojson.coordinates);
 
-  return pointsExtent(positions);
+  return pointsExtent(positions.map(([lon, lat]) => [lat, lon]));
 }
 
 function createLeaflet() {
@@ -234,6 +240,13 @@ function circlesOn(map) {
   return map.layers.filter((layer) => layer.latlng !== undefined);
 }
 
+// The stub's basemap tile adds itself to `map.layers` beside the hook's own
+// overlays; assertions about what the hook drew, removed or left behind count
+// only those overlays.
+function overlayLayers(map) {
+  return map.layers.filter((layer) => layer.url === undefined);
+}
+
 let originalLeaflet;
 let originalMatchMedia;
 
@@ -312,8 +325,8 @@ describe("mounting the hook", () => {
   });
 
   it("tears the map down on destroy", () => {
-    const { hook, map } = mount();
-    hook.load(LOAD);
+    const { hook, map, load } = mount();
+    load(LOAD);
 
     hook.destroyed();
 
@@ -354,7 +367,7 @@ describe("drawing a flex_map:load payload", () => {
     // One marker per stop, plus the connecting stop's core.
     const circles = circlesOn(map);
     expect(circles.map((circle) => circle.options.radius)).toEqual([6.5, 2.5, 4.5]);
-    expect(map.layers).toHaveLength(DRAWN_LAYERS);
+    expect(overlayLayers(map)).toHaveLength(DRAWN_LAYERS);
   });
 
   it("converts storage coordinates with toLatLng, for lines and markers both", () => {
@@ -445,7 +458,7 @@ describe("drawing a flex_map:load payload", () => {
     load({ areas: [], routes: [], stops: [] });
 
     expect(map.fitBounds).not.toHaveBeenCalled();
-    expect(map.layers).toEqual([]);
+    expect(overlayLayers(map)).toEqual([]);
   });
 
   it("skips an underived area, a stop without coordinates and a one-point line", () => {
@@ -483,7 +496,7 @@ describe("drawing a flex_map:load payload", () => {
     const tile = L.tileLayer.mock.results[0].value;
     expect(tile.on).not.toHaveBeenCalled();
     expect(pushes.map((push) => push.name)).toEqual(["flex_map_ready"]);
-    expect(map.layers).toHaveLength(DRAWN_LAYERS);
+    expect(overlayLayers(map)).toHaveLength(DRAWN_LAYERS);
   });
 });
 
@@ -494,7 +507,7 @@ describe("a second payload", () => {
     const { map, load } = mount();
 
     load(LOAD);
-    const first = [...map.layers];
+    const first = overlayLayers(map);
 
     load({
       areas: [{ id: "area-newport", geojson: NEWPORT, role: "selected" }],
@@ -504,20 +517,22 @@ describe("a second payload", () => {
 
     expect(map.removeLayer).toHaveBeenCalledTimes(first.length);
     expect(map.removeLayer.mock.calls.map(([layer]) => layer)).toEqual(first);
-    expect(map.layers).toHaveLength(1);
-    expect(map.fitBounds).toHaveBeenCalledTimes(1);
+    expect(overlayLayers(map)).toHaveLength(1);
+    // Each payload frames itself: the first load's three areas, then the
+    // second load's one.
+    expect(map.fitBounds).toHaveBeenCalledTimes(2);
   });
 
   it("clears everything for a payload with nothing to draw", () => {
     const { map, load } = mount();
 
     load(LOAD);
-    const drawn = map.layers.length;
+    const drawn = overlayLayers(map).length;
 
     load({});
 
     expect(map.removeLayer).toHaveBeenCalledTimes(drawn);
-    expect(map.layers).toEqual([]);
+    expect(overlayLayers(map)).toEqual([]);
   });
 });
 
