@@ -224,7 +224,7 @@ test.describe("Organization-admin invitation workflow", () => {
 
     const overlay = page.locator("#invite-drawer-overlay");
     await expect(overlay).toBeVisible();
-    await expect(page.getByRole("dialog", { name: "User invitation" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Invite user" })).toBeVisible();
     await expect(page.locator("#invite-email")).toBeFocused();
 
     // AC-12: the index stays rendered behind the drawer.
@@ -298,7 +298,7 @@ test.describe("Organization-admin invitation workflow", () => {
 
     await expect(page.locator("#invite-drawer-overlay")).toBeVisible();
     await expect(page.locator("#invite-roles-error")).toHaveText(
-      /must select at least one role/,
+      /Choose at least one access level/,
     );
     await expect(page.locator("#invite-roles")).toHaveAttribute(
       "aria-invalid",
@@ -310,9 +310,10 @@ test.describe("Organization-admin invitation workflow", () => {
     );
 
     // AC-9: focus moves to the first invalid control, which for a grouped
-    // control is the first checkbox inside the invalid group.
+    // control is the first checkbox inside the invalid group. Editor is listed
+    // first because it is the common choice.
     await expect(
-      page.locator("#invite-roles-pathways_studio_admin"),
+      page.locator("#invite-roles-pathways_studio_editor"),
     ).toBeFocused();
   });
 
@@ -327,9 +328,9 @@ test.describe("Organization-admin invitation workflow", () => {
 
     await page.keyboard.type(email);
     await page.keyboard.press("Tab");
-    await page.keyboard.press("Space"); // Pathways Studio Admin
-    await page.keyboard.press("Tab");
     await page.keyboard.press("Space"); // Pathways Studio Editor
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Space"); // Pathways Studio Admin
     await page.keyboard.press("Tab"); // Cancel
     await page.keyboard.press("Tab"); // Send invite
     await page.keyboard.press("Enter");
@@ -365,6 +366,8 @@ test.describe("Organization-admin invitation workflow", () => {
     await expect(page.locator("#invite-service-error")).toContainText(
       "already a member of this organization",
     );
+    // No field is invalid, so focus lands on the form-level message.
+    await expect(page.locator("#invite-service-error")).toBeFocused();
     await expect(page.locator("#invite-drawer-overlay")).toBeVisible();
 
     await page.keyboard.press("Escape");
@@ -761,7 +764,7 @@ test.describe("Administration layout constraints", () => {
       const cell = page
         .locator("tbody#members tr")
         .filter({ hasText: MEMBERS.longEmail })
-        .locator('td[data-label="Email"]');
+        .locator('td[data-label="User"]');
 
       await expect(cell).toBeVisible();
       const box = await cell.boundingBox();

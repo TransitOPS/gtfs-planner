@@ -199,6 +199,78 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert html =~ "phx-mounted"
       assert html =~ "phx-hook=\"OverlayDialog\""
     end
+
+    test "planner chrome keeps the panel, title, close and body IDs and the dismiss contract" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.drawer id="test-drawer" chrome="planner" open={true} title="Invite user">
+          <:lede>They get an email.</:lede>
+          <p>Content</p>
+        </.drawer>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      close = LazyHTML.query(doc, "button#test-drawer-close")
+
+      assert Enum.count(LazyHTML.query(doc, "aside#test-drawer")) == 1
+      assert Enum.count(LazyHTML.query(doc, "h2#test-drawer-title")) == 1
+      assert Enum.count(LazyHTML.query(doc, "#test-drawer-body")) == 1
+      assert LazyHTML.attribute(close, "data-dialog-dismiss") == [""]
+      assert LazyHTML.attribute(close, "phx-click") == ["close_drawer"]
+    end
+
+    test "planner chrome shows a text Close button at a 44px target and the lede under the title" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.drawer id="test-drawer" chrome="planner" open={true} title="Invite user">
+          <:lede>They get an email.</:lede>
+          <p>Content</p>
+        </.drawer>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      close = LazyHTML.query(doc, "button#test-drawer-close")
+
+      assert LazyHTML.text(close) =~ "Close"
+      assert LazyHTML.attribute(close, "class") |> hd() =~ "min-h-11"
+
+      assert LazyHTML.text(LazyHTML.query(doc, "aside#test-drawer header p")) =~
+               "They get an email."
+    end
+
+    test "planner chrome disables Close while a write is pending" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.drawer id="test-drawer" chrome="planner" open={true} pending={true} title="Invite user">
+          <p>Content</p>
+        </.drawer>
+        """)
+
+      close = html |> LazyHTML.from_fragment() |> LazyHTML.query("button#test-drawer-close")
+
+      assert LazyHTML.attribute(close, "disabled") == [""]
+    end
+
+    test "the default chrome has no lede and no text Close button" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.drawer id="test-drawer" open={true} title="Edit">
+          <p>Content</p>
+        </.drawer>
+        """)
+
+      close = html |> LazyHTML.from_fragment() |> LazyHTML.query("button#test-drawer-close")
+
+      assert LazyHTML.text(close) |> String.trim() == ""
+    end
   end
 
   describe "confirm_dialog/1" do
@@ -633,6 +705,39 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert confirm_class =~ "text-primary-content"
       refute confirm_class =~ "bg-error"
       refute confirm_class =~ "text-error-content"
+    end
+
+    test "planner chrome confirms in the action colour and keeps the alertdialog contract" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          chrome="planner"
+          open={true}
+          title="Deactivate sam@agency.org?"
+          confirm_label="Deactivate user"
+          pending_label="Deactivating user…"
+          cancel_label="Keep access"
+          on_confirm="confirm"
+          on_cancel="cancel"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+      dialog = LazyHTML.query(doc, "dialog#test-confirm")
+      confirm = LazyHTML.query(doc, "#test-confirm-confirm")
+      cancel = LazyHTML.query(doc, "#test-confirm-cancel")
+
+      assert LazyHTML.attribute(dialog, "role") == ["alertdialog"]
+      assert LazyHTML.attribute(cancel, "data-dialog-dismiss") == [""]
+      assert LazyHTML.text(cancel) =~ "Keep access"
+      assert LazyHTML.attribute(confirm, "class") |> hd() =~ "bg-action"
+      refute LazyHTML.attribute(confirm, "class") |> hd() =~ "bg-error"
+      assert LazyHTML.attribute(confirm, "phx-disable-with") == ["Deactivating user…"]
     end
 
     test "lg primary dialog retains alertdialog dismiss and pending semantics" do

@@ -876,8 +876,27 @@ defmodule GtfsPlannerWeb.CoreComponents do
         </.simple_form>
       </.drawer>
 
+  ## Planner chrome
+
+  `chrome="planner"` draws the panel the way the TransitOps application design
+  system does: a white header with the task title over an optional `:lede` line
+  and a text Close button, and a body the caller lays out. The caller owns the
+  body's padding and scrolling, so a form can keep its actions in a footer that
+  stays in view:
+
+      <.drawer id="invite-drawer" chrome="planner" title="Invite user" class="max-w-[480px]">
+        <:lede>They get an email with a link to set a password.</:lede>
+        <.form for={@form} class="flex min-h-0 flex-1 flex-col">
+          <div class="flex-1 overflow-y-auto px-5 py-5 sm:px-6">...fields...</div>
+          <footer class="flex justify-end gap-3 border-t border-subtle px-5 py-4 sm:px-6">
+            ...actions...
+          </footer>
+        </.form>
+      </.drawer>
+
   """
   attr :id, :string, required: true
+  attr :chrome, :string, values: ~w(default planner), default: "default"
   attr :pending, :boolean, default: false
   attr :open, :boolean, default: false
   attr :on_close, :string, default: "close_drawer"
@@ -890,6 +909,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :class, :string, default: "max-w-[min(100vw,48rem)]"
   slot :inner_block, required: true
   slot :header_actions
+  slot :lede, doc: "one muted line under the title; planner chrome only"
 
   def drawer(assigns) do
     ~H"""
@@ -912,12 +932,21 @@ defmodule GtfsPlannerWeb.CoreComponents do
         aria-labelledby={"#{@id}-title"}
         data-dialog-panel
         tabindex="-1"
-        class={[
-          "absolute top-0 right-0 h-full w-screen min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 overflow-x-hidden",
-          @class
-        ]}
+        class={[drawer_panel_class(@chrome), @class]}
       >
-        <div class="flex flex-col h-full">
+        <.planner_drawer_body
+          :if={@chrome == "planner"}
+          id={@id}
+          title={@title}
+          pending={@pending}
+          on_close={@on_close}
+          target={@target}
+        >
+          <:header_actions>{render_slot(@header_actions)}</:header_actions>
+          <:lede :if={@lede != []}>{render_slot(@lede)}</:lede>
+          {render_slot(@inner_block)}
+        </.planner_drawer_body>
+        <div :if={@chrome != "planner"} class="flex flex-col h-full">
           <%!-- Header --%>
           <header class="flex items-center justify-between px-6 py-4 bg-base-200 border-b border-base-300">
             <div class="flex items-center gap-3">
@@ -948,6 +977,57 @@ defmodule GtfsPlannerWeb.CoreComponents do
         </div>
       </aside>
     </dialog>
+    """
+  end
+
+  defp drawer_panel_class("planner"),
+    do:
+      "absolute top-0 right-0 flex h-full w-screen min-w-[320px] flex-col overflow-x-hidden border-l border-subtle bg-white text-default shadow-float sm:rounded-l-card"
+
+  defp drawer_panel_class(_default),
+    do:
+      "absolute top-0 right-0 h-full w-screen min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 overflow-x-hidden"
+
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :pending, :boolean, required: true
+  attr :on_close, :string, required: true
+  attr :target, :any, required: true
+  slot :inner_block, required: true
+  slot :header_actions
+  slot :lede
+
+  defp planner_drawer_body(assigns) do
+    ~H"""
+    <header class="flex items-start justify-between gap-3 border-b border-subtle px-5 py-4 sm:px-6">
+      <div class="min-w-0 pt-1">
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <h2
+            id={"#{@id}-title"}
+            tabindex="-1"
+            class="font-display text-[24px] font-semibold leading-tight tracking-[-0.025em] text-strong"
+          >
+            {@title}
+          </h2>
+          {render_slot(@header_actions)}
+        </div>
+        <p :if={@lede != []} class="mt-1 text-[13px] text-muted">{render_slot(@lede)}</p>
+      </div>
+      <button
+        type="button"
+        id={"#{@id}-close"}
+        disabled={@pending}
+        phx-click={@on_close}
+        phx-target={@target}
+        data-dialog-dismiss
+        class="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas disabled:cursor-wait disabled:text-muted"
+      >
+        <.icon name="hero-x-mark" class="size-4" /> Close
+      </button>
+    </header>
+    <div id={"#{@id}-body"} class="flex min-h-0 flex-1 flex-col">
+      {render_slot(@inner_block)}
+    </div>
     """
   end
 
@@ -2029,6 +2109,13 @@ defmodule GtfsPlannerWeb.CoreComponents do
   presentation axis would call for a dedicated review component instead
   of widening this one.
 
+  `chrome="planner"` draws the panel the way the TransitOps application design
+  system does: a rounded white panel with a display-font title, a muted body, and
+  a confirm in the action colour instead of `bg-error`. The consequence belongs in
+  the body and the confirm label repeats the verb and object, so colour is not what
+  tells the person the action is destructive. `confirm_variant` does not apply to
+  this chrome.
+
   ## Examples
 
       <.confirm_dialog
@@ -2077,6 +2164,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :close_on_backdrop, :boolean, default: false
   attr :size, :string, values: ~w(sm lg), default: "sm"
   attr :confirm_variant, :string, values: ~w(primary danger), default: "danger"
+  attr :chrome, :string, values: ~w(default planner), default: "default"
 
   attr :confirm_disabled, :boolean,
     default: false,
@@ -2106,15 +2194,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
         do: Map.merge(extra, %{role: "alertdialog", "aria-modal": "true"}),
         else: Map.merge(extra, %{inert: true, "aria-hidden": "true"})
 
-    {variant_bg, variant_text} = confirm_dialog_variant_classes(assigns.confirm_variant)
-
     assigns =
       assigns
       |> assign(:extra, extra)
-      |> assign(:panel_class, confirm_dialog_panel_class(assigns.size))
-      |> assign(:body_class, confirm_dialog_body_class(assigns.size))
-      |> assign(:variant_bg, variant_bg)
-      |> assign(:variant_text, variant_text)
+      |> assign(:ui, confirm_dialog_ui(assigns))
       |> assign(:pending, assigns.pending == true)
 
     ~H"""
@@ -2131,16 +2214,16 @@ defmodule GtfsPlannerWeb.CoreComponents do
       class="m-0 border-0 w-full h-full bg-transparent p-0"
     >
       <div class="w-full h-full flex items-center justify-center p-4">
-        <div class={@panel_class}>
-          <h3 id={"#{@id}-title"} class="font-semibold">{@title}</h3>
-          <div id={"#{@id}-body"} class={@body_class}>
+        <div class={@ui.panel}>
+          <h3 id={"#{@id}-title"} class={@ui.title}>{@title}</h3>
+          <div id={"#{@id}-body"} class={@ui.body}>
             {render_slot(@inner_block)}
           </div>
-          <div class="mt-4 flex justify-end gap-2">
+          <div class={@ui.actions}>
             <button
               id={"#{@id}-cancel"}
               type="button"
-              class="h-[44px] min-w-[44px] border border-control-border px-4 text-sm font-semibold"
+              class={@ui.cancel}
               phx-click={@on_cancel}
               phx-target={@target}
               data-dialog-dismiss
@@ -2152,13 +2235,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               :if={not @single_action}
               id={"#{@id}-confirm"}
               type="button"
-              class={[
-                "h-[44px] min-w-[44px]",
-                @variant_bg,
-                "px-4 text-sm font-semibold",
-                @variant_text,
-                "disabled:opacity-60"
-              ]}
+              class={@ui.confirm}
               phx-click={@on_confirm}
               phx-target={@target}
               phx-disable-with={@pending_label}
@@ -2171,6 +2248,43 @@ defmodule GtfsPlannerWeb.CoreComponents do
       </div>
     </dialog>
     """
+  end
+
+  # The class strings for each part of the dialog. The default chrome returns
+  # the original strings; the planner chrome is the design system's confirm,
+  # whose confirm button is the action colour whatever `confirm_variant` says.
+  defp confirm_dialog_ui(%{chrome: "planner"}) do
+    %{
+      panel:
+        "w-[min(440px,calc(100vw-32px))] rounded-card border border-subtle bg-white p-6 text-default shadow-float",
+      title:
+        "font-display text-[22px] font-semibold leading-tight tracking-[-0.02em] text-strong [overflow-wrap:anywhere]",
+      body: "mt-3 text-sm text-muted",
+      actions: "mt-6 flex flex-wrap justify-end gap-3",
+      cancel:
+        "inline-flex min-h-11 min-w-11 items-center justify-center rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas disabled:cursor-wait disabled:text-muted",
+      confirm:
+        "inline-flex min-h-11 min-w-11 items-center justify-center rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-action-hover disabled:cursor-wait disabled:bg-action-hover"
+    }
+  end
+
+  defp confirm_dialog_ui(%{size: size, confirm_variant: variant}) do
+    {variant_bg, variant_text} = confirm_dialog_variant_classes(variant)
+
+    %{
+      panel: confirm_dialog_panel_class(size),
+      title: "font-semibold",
+      body: confirm_dialog_body_class(size),
+      actions: "mt-4 flex justify-end gap-2",
+      cancel: "h-[44px] min-w-[44px] border border-control-border px-4 text-sm font-semibold",
+      confirm: [
+        "h-[44px] min-w-[44px]",
+        variant_bg,
+        "px-4 text-sm font-semibold",
+        variant_text,
+        "disabled:opacity-60"
+      ]
+    }
   end
 
   # Closed panel-width map for confirm_dialog. The default "sm" path returns
