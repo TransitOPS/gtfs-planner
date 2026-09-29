@@ -279,6 +279,46 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
     end
   end
 
+  @doc """
+  Renders the scheduled closures that use this calendar, beside the trips card.
+
+  The count and every pathway come from the same scoped usage read as the trips,
+  so the page names both kinds of reference. Each pathway links to the Closures
+  view of the station that owns it; a pathway the scope cannot place in a
+  station stays text.
+  """
+  attr :usage, :map, required: true
+  attr :version_id, :any, required: true
+
+  def closures_card(assigns) do
+    ~H"""
+    <section
+      id="calendar-closures"
+      aria-labelledby="calendar-closures-title"
+      class="min-w-0 overflow-hidden rounded-card border border-subtle bg-white lg:col-start-1"
+    >
+      <div class="border-b border-subtle bg-canvas px-4 py-4 sm:px-5">
+        <h2
+          id="calendar-closures-title"
+          class="text-lg font-bold leading-snug tracking-[-0.01em] text-strong"
+        >
+          Closures that use this calendar
+        </h2>
+        <p id="calendar-usage-closures" class="mt-0.5 text-[13px] text-muted">
+          {@usage.closure_count} {closure_usage_label(@usage.closure_count)}. The calendar can’t be deleted while they do.
+        </p>
+      </div>
+      <p class="m-0 px-4 py-3 text-sm text-default sm:px-5">
+        <.pathway_links
+          id="calendar-usage-pathways"
+          paths={@usage.closure_paths}
+          version_id={@version_id}
+        />
+      </p>
+    </section>
+    """
+  end
+
   ## Coverage presentation
 
   @doc """
@@ -904,6 +944,103 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   end
 
   defp gap_days(band), do: Date.diff(band.last_date, band.first_date) + 1
+
+  @doc """
+  Renders closure-referencing pathways as links to their station's Evolutions list.
+
+  `paths` is one `%{pathway_id, station_stop_ids}` entry per pathway, with the
+  station IDs resolved from scoped endpoint ancestry, so each link opens the
+  station that actually owns the pathway. A pathway the scope cannot place in a
+  station renders its ID as text instead of an invented destination, and a
+  pathway that two stations own renders one link per station, each naming the
+  station it opens. The result is plain inline content, so it flows inside the
+  sentence it belongs to and its closing punctuation stays with the last link.
+  The DOM id is an index — a natural ID may contain slashes or spaces, and the
+  exact value is what the link carries — so the pathway and station travel in
+  data attributes and in the encoded `?pathway=` address.
+  """
+  attr :id, :string, required: true
+  attr :paths, :list, required: true
+  attr :version_id, :any, required: true
+
+  attr :link_class, :string,
+    default: "font-mono text-[13px] font-[650] text-action no-underline hover:underline"
+
+  attr :text_class, :string, default: "font-mono text-[13px] font-[650] text-muted"
+
+  attr :suffix, :string,
+    default: "",
+    doc: "punctuation rendered directly after the last link, so it cannot wrap alone"
+
+  def pathway_links(assigns) do
+    assigns = assign(assigns, :entries, link_entries(assigns.paths))
+
+    ~H"""
+    <span id={@id}>
+      <span :for={{entry, index} <- Enum.with_index(@entries)}>
+        <a
+          :if={entry.station_stop_id}
+          id={"#{@id}-#{index}"}
+          href={evolutions_href(@version_id, entry.station_stop_id, entry.pathway_id)}
+          data-pathway-id={entry.pathway_id}
+          data-station-stop-id={entry.station_stop_id}
+          title={"#{entry.label} on the #{entry.station_stop_id} Evolutions tab"}
+          aria-label={"#{entry.label} on the #{entry.station_stop_id} Evolutions tab"}
+          class={@link_class}
+        >{entry.label}</a>{if is_binary(entry.station_stop_id),
+          do: entry_trailer(@entries, index, @suffix)}<span
+          :if={is_nil(entry.station_stop_id)}
+          data-pathway-id={entry.pathway_id}
+          class={@text_class}
+        >{entry.pathway_id}</span>{if is_nil(entry.station_stop_id),
+          do: entry_trailer(@entries, index, @suffix)}
+      </span>
+    </span>
+    """
+  end
+
+  # The comma that separates two links and the sentence punctuation that closes
+  # the last one both travel with the entry they end, so a wrapped line can never
+  # begin with either and no comma is ever preceded by a space.
+  defp entry_trailer(entries, index, suffix) do
+    if index == length(entries) - 1, do: suffix, else: ", "
+  end
+
+  # One entry per link: every known station of every pathway, and one text entry
+  # for a pathway the scope cannot place in a station.
+  defp link_entries(paths), do: Enum.flat_map(paths, &path_entries/1)
+
+  defp path_entries(%{station_stop_ids: []} = path) do
+    [%{pathway_id: path.pathway_id, station_stop_id: nil, label: path.pathway_id}]
+  end
+
+  defp path_entries(%{station_stop_ids: station_ids} = path) do
+    station_count = length(station_ids)
+
+    Enum.map(station_ids, fn station_stop_id ->
+      %{
+        pathway_id: path.pathway_id,
+        station_stop_id: station_stop_id,
+        label: entry_label(path.pathway_id, station_stop_id, station_count)
+      }
+    end)
+  end
+
+  # A pathway two stations own gets one link per station, so each link says which
+  # station it opens instead of repeating an ambiguous ID twice.
+  defp entry_label(pathway_id, station_stop_id, station_count) when station_count > 1 do
+    "#{pathway_id} at #{station_stop_id}"
+  end
+
+  defp entry_label(pathway_id, _station_stop_id, _station_count), do: pathway_id
+
+  @doc "Renders the pluralized closure count phrase the usage strip shows."
+  def closure_usage_label(1), do: "scheduled closure uses this calendar"
+  def closure_usage_label(_count), do: "scheduled closures use this calendar"
+
+  defp evolutions_href(version_id, station_stop_id, pathway_id) do
+    ~p"/gtfs/#{version_id}/stops/#{station_stop_id}/evolutions?#{%{"pathway" => pathway_id}}"
+  end
 
   ## Period helpers
 
