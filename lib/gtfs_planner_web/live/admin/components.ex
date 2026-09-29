@@ -141,7 +141,7 @@ defmodule GtfsPlannerWeb.Admin.Components do
             Activate user
           </.button>
           <.button
-            :if={member_status(member) != :deactivated}
+            :if={member_status(member) != :deactivated and "administrator" not in member.roles}
             id={"deactivate-user-#{member.user.id}"}
             variant="quiet"
             size="sm"
@@ -179,6 +179,20 @@ defmodule GtfsPlannerWeb.Admin.Components do
 
   def member_status(%{user: %{hashed_password: nil}}), do: :invitation_pending
   def member_status(_member), do: :active
+
+  @doc """
+  Explains why `GtfsPlanner.Organizations.deactivate_user_in_organization/2`
+  refused or failed, for the member action feedback.
+  """
+  def deactivation_error(:system_administrator, email),
+    do: "#{email} is a system administrator and can't be deactivated here."
+
+  def deactivation_error(:last_organization_admin, email),
+    do:
+      "#{email} is the only administrator of this organization. " <>
+        "Add another administrator before deactivating them."
+
+  def deactivation_error(_reason, email), do: "#{email} could not be deactivated."
 
   # A LiveStream yields {dom_id, item}; a plain list yields the item itself.
   defp row_member({_dom_id, member}), do: member

@@ -2,6 +2,7 @@ defmodule GtfsPlanner.OrganizationsTest do
   use GtfsPlanner.DataCase
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Accounts.UserToken
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.AdminReadAdapterMock
@@ -404,6 +405,124 @@ defmodule GtfsPlanner.OrganizationsTest do
 
       refute_receive %Phoenix.Socket.Broadcast{topic: ^topic}
       assert Accounts.get_user_by_session_token(web_token)
+    end
+
+    test "still deactivates an editor", %{organization: organization} do
+      editor = editor_fixture(organization)
+
+      assert {:ok, %{deactivated_at: %DateTime{}}} =
+               Organizations.deactivate_user_in_organization(editor.id, organization.id)
+
+      assert Organizations.user_deactivated_in_organization?(editor.id, organization.id)
+    end
+
+    test "refuses a membership holding administrator and changes nothing", %{
+      organization: organization
+    } do
+      system_administrator = user_fixture()
+
+      membership =
+        organization_membership_fixture(system_administrator, organization, [
+          "administrator",
+          "pathways_studio_editor"
+        ])
+
+      token = Accounts.generate_user_session_token(system_administrator)
+      topic = live_socket_topic(token)
+      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic)
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "organizations")
+
+      assert {:error, :system_administrator} =
+               Organizations.deactivate_user_in_organization(
+                 system_administrator.id,
+                 organization.id
+               )
+
+      membership_id = membership.id
+      refute_receive %Phoenix.Socket.Broadcast{topic: ^topic}
+      refute_receive {[:memberships, :deactivated], %{id: ^membership_id}}
+      assert Accounts.get_user_by_session_token(token)
+      assert Repo.reload!(membership).deactivated_at == nil
+    end
+
+    test "refuses the only active organization admin and changes nothing", %{
+      organization: organization
+    } do
+      admin = user_fixture()
+      membership = organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+      token = Accounts.generate_user_session_token(admin)
+      topic = live_socket_topic(token)
+      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic)
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "organizations")
+
+      assert {:error, :last_organization_admin} =
+               Organizations.deactivate_user_in_organization(admin.id, organization.id)
+
+      membership_id = membership.id
+      refute_receive %Phoenix.Socket.Broadcast{topic: ^topic}
+      refute_receive {[:memberships, :deactivated], %{id: ^membership_id}}
+      assert Accounts.get_user_by_session_token(token)
+      assert Repo.reload!(membership).deactivated_at == nil
+    end
+
+    test "deactivates an organization admin when another active admin has a password", %{
+      organization: organization
+    } do
+      admin = user_fixture()
+      other_admin = user_fixture()
+      organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+      organization_membership_fixture(other_admin, organization, ["pathways_studio_admin"])
+
+      assert {:ok, %{deactivated_at: %DateTime{}}} =
+               Organizations.deactivate_user_in_organization(admin.id, organization.id)
+
+      refute Organizations.user_deactivated_in_organization?(other_admin.id, organization.id)
+    end
+
+    test "refuses the last admin when the only other admin is a pending invitee", %{
+      organization: organization
+    } do
+      admin = user_fixture()
+      {:ok, invitee} = Repo.insert(User.invite_changeset(%User{}, %{email: unique_user_email()}))
+      organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+      organization_membership_fixture(invitee, organization, ["pathways_studio_admin"])
+
+      assert {:error, :last_organization_admin} =
+               Organizations.deactivate_user_in_organization(admin.id, organization.id)
+
+      refute Organizations.user_deactivated_in_organization?(admin.id, organization.id)
+    end
+
+    test "refuses the last admin when the only other admin is deactivated", %{
+      organization: organization
+    } do
+      admin = user_fixture()
+      former_admin = user_fixture()
+      organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+
+      former_admin
+      |> organization_membership_fixture(organization, ["pathways_studio_admin"])
+      |> deactivate_membership_fixture()
+
+      assert {:error, :last_organization_admin} =
+               Organizations.deactivate_user_in_organization(admin.id, organization.id)
+
+      refute Organizations.user_deactivated_in_organization?(admin.id, organization.id)
+    end
+
+    test "does not count an admin of another organization as another admin", %{
+      organization: organization
+    } do
+      admin = user_fixture()
+      foreign_admin = user_fixture()
+      organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+
+      organization_membership_fixture(foreign_admin, organization_fixture(), [
+        "pathways_studio_admin"
+      ])
+
+      assert {:error, :last_organization_admin} =
+               Organizations.deactivate_user_in_organization(admin.id, organization.id)
     end
   end
 

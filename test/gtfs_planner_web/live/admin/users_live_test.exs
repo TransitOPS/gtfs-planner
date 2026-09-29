@@ -631,6 +631,67 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       assert Organizations.user_deactivated_in_organization?(target.id, organization.id)
       refute Organizations.user_deactivated_in_organization?(bystander.id, organization.id)
     end
+
+    test "a member holding administrator has no Deactivate button", %{
+      conn: conn,
+      organization: organization
+    } do
+      system_administrator =
+        member_fixture(organization, %{roles: ["administrator", "pathways_studio_editor"]})
+
+      editor = member_fixture(organization, %{})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      assert has_element?(view, "#member-#{system_administrator.id}")
+      refute has_element?(view, "#deactivate-user-#{system_administrator.id}")
+      assert has_element?(view, "#deactivate-user-#{editor.id}")
+    end
+
+    test "a system administrator cannot be deactivated and the reason is shown", %{
+      conn: conn,
+      organization: organization
+    } do
+      system_administrator =
+        member_fixture(organization, %{email: "sysadmin@example.com", roles: ["administrator"]})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      render_click(view, "request_deactivation", %{"user-id" => system_administrator.id})
+      view |> element("#deactivate-user-dialog-confirm") |> render_click()
+
+      refute has_element?(view, "dialog#deactivate-user-dialog[data-open=true]")
+
+      assert has_element?(
+               view,
+               "#member-action-feedback",
+               "sysadmin@example.com is a system administrator and can't be deactivated here."
+             )
+
+      refute Organizations.user_deactivated_in_organization?(
+               system_administrator.id,
+               organization.id
+             )
+    end
+
+    test "the only organization administrator cannot deactivate themselves and the reason is shown",
+         %{conn: conn, admin_user: admin_user, organization: organization} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      view |> element("#deactivate-user-#{admin_user.id}") |> render_click()
+      view |> element("#deactivate-user-dialog-confirm") |> render_click()
+
+      refute has_element?(view, "dialog#deactivate-user-dialog[data-open=true]")
+
+      assert has_element?(
+               view,
+               "#member-action-feedback",
+               "#{admin_user.email} is the only administrator of this organization. " <>
+                 "Add another administrator before deactivating them."
+             )
+
+      refute Organizations.user_deactivated_in_organization?(admin_user.id, organization.id)
+    end
   end
 
   # ----------------------------------------------------------------------------

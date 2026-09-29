@@ -466,10 +466,14 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         |> put_feedback("success", "#{member.user.email} deactivated.", member.user.id)
         |> load_members()
 
-      {:error, _reason} ->
+      {:error, reason} ->
         socket
         |> assign(:pending_deactivation, nil)
-        |> put_feedback("error", "#{member.user.email} could not be deactivated.", member.user.id)
+        |> put_feedback(
+          "error",
+          Components.deactivation_error(reason, member.user.email),
+          member.user.id
+        )
         |> load_members()
     end
   end

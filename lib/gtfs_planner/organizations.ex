@@ -272,6 +272,15 @@ defmodule GtfsPlanner.Organizations do
   @doc """
   Deactivates a user in an organization by setting deactivated_at timestamp.
 
+  Refuses, and changes nothing, when the deactivation would remove platform
+  rights or leave the organization without a usable administrator:
+
+    * `{:error, :system_administrator}` - the membership holds `administrator`.
+    * `{:error, :last_organization_admin}` - the membership holds
+      `pathways_studio_admin` and no other active member of the organization
+      holds it with a password set. A pending invitee cannot sign in, so they do
+      not count.
+
   ## Examples
 
       iex> deactivate_user_in_organization(user_id, organization_id)
@@ -279,6 +288,9 @@ defmodule GtfsPlanner.Organizations do
 
       iex> deactivate_user_in_organization(user_id, organization_id)
       {:error, :not_found}
+
+      iex> deactivate_user_in_organization(system_administrator_id, organization_id)
+      {:error, :system_administrator}
   """
   def deactivate_user_in_organization(user_id, organization_id) do
     from(m in UserOrgMembership,
@@ -290,24 +302,8 @@ defmodule GtfsPlanner.Organizations do
         {:error, :not_found}
 
       membership ->
-        result =
-          membership
-          |> Ecto.Changeset.change(%{
-            deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)
-          })
-          |> Repo.update()
-
-        case result do
-          {:ok, _membership} = success ->
-            # Invalidate all user sessions and close the user's open LiveViews
-            user_id
-            |> GtfsPlanner.Accounts.delete_user_sessions()
-            |> GtfsPlannerWeb.UserAuth.disconnect_sessions()
-
-            broadcast(success, [:memberships, :deactivated])
-
-          error ->
-            error
+        with :ok <- check_deactivation_allowed(membership) do
+          deactivate_membership(membership)
         end
     end
   end
@@ -425,6 +421,58 @@ defmodule GtfsPlanner.Organizations do
   end
 
   # Private helper functions
+
+  defp deactivate_membership(%UserOrgMembership{user_id: user_id} = membership) do
+    result =
+      membership
+      |> Ecto.Changeset.change(%{
+        deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+      })
+      |> Repo.update()
+
+    case result do
+      {:ok, _membership} = success ->
+        # Invalidate all user sessions and close the user's open LiveViews
+        user_id
+        |> GtfsPlanner.Accounts.delete_user_sessions()
+        |> GtfsPlannerWeb.UserAuth.disconnect_sessions()
+
+        broadcast(success, [:memberships, :deactivated])
+
+      error ->
+        error
+    end
+  end
+
+  # An already-deactivated membership keeps the plain re-deactivation behavior.
+  # The last-admin check is read-then-write, so two administrators deactivating
+  # each other at the same instant can both pass it; closing that needs the
+  # organization's admin rows locked in one transaction.
+  defp check_deactivation_allowed(%UserOrgMembership{deactivated_at: %DateTime{}}), do: :ok
+
+  defp check_deactivation_allowed(%UserOrgMembership{roles: roles} = membership) do
+    cond do
+      "administrator" in roles ->
+        {:error, :system_administrator}
+
+      "pathways_studio_admin" in roles and not other_active_admin?(membership) ->
+        {:error, :last_organization_admin}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp other_active_admin?(%UserOrgMembership{id: id, organization_id: organization_id}) do
+    from(m in UserOrgMembership,
+      join: u in User,
+      on: u.id == m.user_id,
+      where:
+        m.organization_id == ^organization_id and m.id != ^id and is_nil(m.deactivated_at) and
+          ^"pathways_studio_admin" in m.roles and not is_nil(u.hashed_password)
+    )
+    |> Repo.exists?()
+  end
 
   # Resolved per call so tests and future runtime configuration take effect
   # without recompiling this context.
