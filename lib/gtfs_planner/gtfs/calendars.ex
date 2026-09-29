@@ -136,6 +136,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           calendar: Calendar.t() | nil,
           attributes: CalendarAttribute.t() | nil,
           exceptions: [CalendarDate.t()],
+          coverage_error: coverage_error() | nil,
           fingerprint: String.t()
         }
   @type write_result :: %{
@@ -284,6 +285,11 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   together with the resolved agency `:zone` (including its UTC fallback reason)
   and the grouped `:usage`. Deriving them here keeps the editor from re-implementing
   `ServiceDates` or resolving a second, disagreeing clock.
+
+  A weekly row whose range ends before it starts is classified as in
+  `list_calendars/3`: `:coverage_error` names it and the derived `:active_dates`,
+  `:periods` and `:warnings` are empty instead of raising, so the editor can open the
+  calendar and correct its dates. `:coverage_error` is `nil` for a readable calendar.
   """
   @spec get_calendar(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
           {:ok, payload()} | {:error, :not_found}
@@ -294,15 +300,19 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       clock = DisplayClock.today(organization_id, version_id)
       exceptions = source.exceptions
       calendar = source.calendar
+      usage = one_usage(organization_id, version_id, service_id)
+      input_errors = retained_input_errors(calendar, exceptions)
+      derived = derived_dates(input_errors, calendar, exceptions, usage, clock.date)
 
       source
       |> Map.put(:kind, kind_for(calendar))
-      |> Map.put(:active_dates, ServiceDates.active_dates(calendar, exceptions))
-      |> Map.put(:periods, ServiceDates.periods(calendar, exceptions))
-      |> Map.put(:warnings, ServiceDates.warnings(calendar, exceptions, clock.date))
+      |> Map.put(:coverage_error, List.first(input_errors))
+      |> Map.put(:active_dates, derived.active_dates)
+      |> Map.put(:periods, derived.periods)
+      |> Map.put(:warnings, derived.warnings)
       |> Map.put(:today, clock.date)
       |> Map.put(:zone, clock)
-      |> Map.put(:usage, one_usage(organization_id, version_id, service_id))
+      |> Map.put(:usage, usage)
     end)
   end
 

@@ -835,6 +835,83 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
     end
   end
 
+  describe "a calendar whose end date is before its start date" do
+    setup context do
+      seeded_weekly(context, "REVERSED", "Reversed range", %{
+        start_date: ~D[2026-03-31],
+        end_date: ~D[2026-03-02]
+      })
+
+      %{conn: log_in_user(context.conn, context.user, organization: context.organization)}
+    end
+
+    test "opens with the error callout and the stored dates in the form", context do
+      {:ok, view, html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      assert has_element?(view, "#calendar-range-error")
+      assert input_value(html, "calendar-start-date") == "2026-03-31"
+      assert input_value(html, "calendar-end-date") == "2026-03-02"
+      assert input_value(html, "calendar-name") == "Reversed range"
+    end
+
+    test "keeps rendering while the form still holds a reversed range", context do
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      # One date at a time: the range stays reversed after each edit.
+      start_moved =
+        view
+        |> form("#calendar-form", %{calendar: %{start_date: "2026-04-30"}})
+        |> render_change()
+
+      assert input_value(start_moved, "calendar-start-date") == "2026-04-30"
+      assert input_value(start_moved, "calendar-end-date") == "2026-03-02"
+      assert has_element?(view, "#calendar-range-error")
+
+      end_moved =
+        view
+        |> form("#calendar-form", %{calendar: %{end_date: "2026-04-01"}})
+        |> render_change()
+
+      assert input_value(end_moved, "calendar-end-date") == "2026-04-01"
+      assert has_element?(view, "#calendar-range-error")
+    end
+
+    test "saves a corrected range and drops the error callout", context do
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      view
+      |> form("#calendar-form", %{calendar: %{end_date: "2026-04-30"}})
+      |> render_change()
+
+      view
+      |> form("#calendar-form", %{calendar: %{end_date: "2026-04-30"}})
+      |> render_submit()
+
+      row = weekly_row(context, "REVERSED")
+      assert {row.start_date, row.end_date} == {~D[2026-03-31], ~D[2026-04-30]}
+      refute has_element?(view, "#calendar-range-error")
+      assert stored(context, "REVERSED").coverage_error == nil
+      assert stored(context, "REVERSED").active_dates != []
+    end
+
+    test "refuses a save that leaves the range reversed and writes nothing", context do
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      html =
+        view
+        |> form("#calendar-form", %{calendar: %{name: "Renamed range"}})
+        |> render_submit()
+
+      assert html =~ "calendar-end-date-error"
+      assert html =~ "must be on or after the start date"
+      assert has_element?(view, "#calendar-range-error")
+
+      row = weekly_row(context, "REVERSED")
+      assert {row.start_date, row.end_date} == {~D[2026-03-31], ~D[2026-03-02]}
+      assert stored(context, "REVERSED").attributes.service_description == "Reversed range"
+    end
+  end
+
   describe "dirty guards and independent actions" do
     test "a dirty schedule blocks break and date actions until save or discard", %{
       conn: conn,

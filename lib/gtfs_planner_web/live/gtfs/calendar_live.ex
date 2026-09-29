@@ -18,7 +18,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   States stay distinct: an unreadable scope renders not-found, a lost connection
   renders the retry callout with an explanation, and a failed or stale save keeps
   the draft. A calendar whose imported metadata has no name shows its service ID
-  as the fallback label and never invents a stored name.
+  as the fallback label and never invents a stored name. A calendar whose stored end
+  date is before its start date opens with an error callout and its stored dates, and
+  only a corrected range can be saved.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -503,9 +505,15 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     case {socket.assigns.params["kind"], weekly_attrs(socket.assigns.params)} do
       {"dates_only", _} -> nil
       {"weekly", {:ok, attrs}} -> struct(GtfsPlanner.Gtfs.Calendar, attrs)
-      _ -> source && source.calendar
+      _ -> stored_calendar(source)
     end
   end
+
+  # The form only falls back to the stored row while its own range is unusable. A
+  # stored reversed range has no dates to draw, so the preview stays empty until
+  # the form holds a valid range.
+  defp stored_calendar(%{coverage_error: nil, calendar: calendar}), do: calendar
+  defp stored_calendar(_source), do: nil
 
   defp move_preview(socket, month) do
     assign_preview(socket, month)
@@ -882,7 +890,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp save_weekly(socket, kind, params) do
     keys = ["kind", "weekdays", "start_date", "end_date"]
 
-    if socket.assigns.live_action == :show and
+    # A stored reversed range is never "unchanged": the save has to carry a valid
+    # range, because planning a save that keeps it would evaluate its dates.
+    if socket.assigns.live_action == :show and socket.assigns.source.coverage_error == nil and
          Map.take(params, keys) == Map.take(socket.assigns.baseline, keys),
        do: {:ok, %{}},
        else: weekly_attrs_for(kind, params)
@@ -1316,6 +1326,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 </button>
               </div>
             </details>
+          </div>
+
+          <div
+            :if={@live_action == :show and @source.coverage_error}
+            id="calendar-range-error"
+            class="mt-4"
+          >
+            <.callout kind="error" title="This calendar’s end date is before its start date.">
+              Correct the dates and save. Until then, no service dates can be worked out for it.
+            </.callout>
           </div>
 
           <div

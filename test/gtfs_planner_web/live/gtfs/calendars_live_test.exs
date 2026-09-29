@@ -1062,7 +1062,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       assert outside =~ "none of them is dropped"
     end
 
-    test "never routes an unreadable identity into the detail read or the date-change targets",
+    test "routes an unreadable identity to its detail page but never into the coverage inspector or the date-change targets",
          %{
            conn: conn,
            user: user,
@@ -1102,14 +1102,18 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
       {:ok, view, _html} = live(conn, list_path(version))
       html = loaded(view)
 
-      # The identity stays listed with its name and usage, but its name is plain text
-      # and it has no coverage control, so the detail read that evaluates the dates is
-      # unreachable from the row. The repair action stays.
+      # The identity stays listed with its name and usage and has no coverage control.
+      # The detail page opens it so the dates can be corrected, so the repair state
+      # links there beside the import action.
       assert html =~ "Reversed detail range"
-      refute has_element?(view, "#calendars-list [data-calendar-link='DETAIL_REVERSED']")
-      refute html =~ "/calendars/show?service_id=DETAIL_REVERSED"
       refute has_element?(view, "[data-calendar-coverage='DETAIL_REVERSED']")
       assert has_element?(view, "[data-calendar-coverage-repair='DETAIL_REVERSED']")
+
+      assert has_element?(
+               view,
+               "#calendar-coverage-fix-DETAIL_REVERSED[href='/gtfs/#{version.id}/calendars/show?service_id=DETAIL_REVERSED']",
+               "Fix dates"
+             )
 
       assert has_element?(
                view,
@@ -1145,6 +1149,15 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLiveTest do
                "group" => "add",
                "service-id" => "DETAIL_REVERSED"
              }) =~ "not in this service version"
+
+      # The repair link opens the detail page with its range error.
+      assert {:ok, detail, _html} =
+               view
+               |> element("#calendar-coverage-fix-DETAIL_REVERSED")
+               |> render_click()
+               |> follow_redirect(conn)
+
+      assert has_element?(detail, "#calendar-range-error")
     end
   end
 
