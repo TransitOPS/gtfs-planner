@@ -927,8 +927,10 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
       assert stored_layover(scope.organization.id, scope.version.id) == 5
       assert stored_layover(scope.organization.id, first_row_version.id) == nil
 
-      assert unboxed(fn -> Blocking.get_settings(scope.organization.id, first_row_version.id) end) ==
-               %{min_layover_minutes: 5}
+      # `get_settings/2` answers the whole eight-key Block rules map, defaults and
+      # all, for a version with no stored row.
+      assert unboxed(fn -> Blocking.get_settings(scope.organization.id, first_row_version.id) end).min_layover_minutes ==
+               5
 
       assert stored_layover(scope.organization.id, first_row_version.id) == nil
 
