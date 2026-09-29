@@ -5477,6 +5477,274 @@ case Accounts.register_first_admin(%{
         "4-warning check, expired pathways export"
     )
 
+    # ── Route-map workload fixtures (spec 16, step 32) ──
+    #
+    # A dedicated published version carries the deterministic 500-route geometry
+    # workload for the map timing procedure
+    # (assets/e2e/route_lifecycle_map.spec.js, EV-8's exact second procedure):
+    # BROWSER_MW_000 is the complete current route whose trunk spans the whole
+    # corridor, and BROWSER_MW_001..499 are context routes, each with its own
+    # distinct two-stop corridor and imported shape. The version's published_at
+    # is backdated so it never becomes the organization's current version, and
+    # no small interaction fixture on the Browser E2E Version moves (spec note
+    # C1). Bulk rows mirror the deterministic corridor the ExUnit workload in
+    # test/gtfs_planner/gtfs/routes/map_performance_test.exs builds.
+    {:ok, workload_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Map Workload"})
+
+    workload_version
+    |> Ecto.Changeset.change(published_at: ~U[2020-02-01 00:00:00.000000Z])
+    |> Repo.update!()
+
+    workload_now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    {:ok, workload_current} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: workload_version.id,
+        route_id: "BROWSER_MW_000",
+        route_short_name: "M0",
+        route_long_name: "Map workload current route",
+        route_type: 3,
+        route_color: "FF0000",
+        route_text_color: "FFFFFF"
+      })
+
+    workload_trunk =
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, workload_version.id, %{
+        route_id: "BROWSER_MW_000",
+        route_pattern_id: "BROWSER_MW_P1",
+        route_pattern_name: "Workload trunk",
+        route_pattern_sort_order: 0
+      })
+
+    workload_branch =
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, workload_version.id, %{
+        route_id: "BROWSER_MW_000",
+        route_pattern_id: "BROWSER_MW_P2",
+        route_pattern_name: "Workload branch",
+        route_pattern_sort_order: 1
+      })
+
+    [
+      {workload_trunk, "BROWSER_MW_STOP_000_A", 1, "1.0", "2.0"},
+      {workload_trunk, "BROWSER_MW_STOP_000_B", 2, "1.25", "2.25"},
+      {workload_trunk, "BROWSER_MW_STOP_000_C", 3, "1.5", "2.5"},
+      {workload_branch, "BROWSER_MW_STOP_000_D", 1, "1.1", "2.1"},
+      {workload_branch, "BROWSER_MW_STOP_000_E", 2, "1.2", "2.2"}
+    ]
+    |> Enum.each(fn {pattern, stop_id, position, lat, lon} ->
+      {:ok, _stop} =
+        Gtfs.create_stop(%{
+          organization_id: org.id,
+          gtfs_version_id: workload_version.id,
+          stop_id: stop_id,
+          stop_name: "Workload stop #{stop_id}",
+          stop_lat: Decimal.new(lat),
+          stop_lon: Decimal.new(lon),
+          location_type: 0
+        })
+
+      GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(pattern, stop_id, position)
+    end)
+
+    [{"1.0", "2.0", 1}, {"1.25", "2.25", 2}, {"1.5", "2.5", 3}]
+    |> Enum.each(fn {lat, lon, sequence} ->
+      Repo.insert!(%GtfsPlanner.Gtfs.Shape{
+        organization_id: org.id,
+        gtfs_version_id: workload_version.id,
+        shape_id: "BROWSER_MW_SH_000",
+        shape_pt_lat: Decimal.new(lat),
+        shape_pt_lon: Decimal.new(lon),
+        shape_pt_sequence: sequence
+      })
+    end)
+
+    {:ok, workload_trip} =
+      Gtfs.create_trip(%{
+        organization_id: org.id,
+        gtfs_version_id: workload_version.id,
+        route_id: "BROWSER_MW_000",
+        trip_id: "BROWSER_MW_TRIP_000",
+        service_id: "BROWSER_MW_SERVICE",
+        trip_headsign: "Workload current",
+        direction_id: 0,
+        shape_id: "BROWSER_MW_SH_000"
+      })
+
+    # Trip.changeset/2 does not cast route_pattern_id, so the link is set
+    # directly, exactly as the domain tests do.
+    Repo.update!(Ecto.Changeset.change(workload_trip, route_pattern_id: "BROWSER_MW_P1"))
+
+    # 499 context routes as bulk rows: route i owns the distinct corridor
+    # lat 1.02 + i*0.0009, lon 2.02 + i*0.0009 (plus one offset stop pair),
+    # strictly inside the current route's bounding box, so every route sits in
+    # the fitted map viewport and no two routes share geometry.
+    workload_pattern_ids =
+      Map.new(1..499, fn i -> {i, Ecto.UUID.generate()} end)
+
+    workload_route_rows =
+      Enum.map(1..499, fn i ->
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: org.id,
+          gtfs_version_id: workload_version.id,
+          route_id: "BROWSER_MW_#{String.pad_leading(Integer.to_string(i), 3, "0")}",
+          route_short_name: "M#{i}",
+          route_long_name: "Map workload route #{i}",
+          route_type: 3,
+          active: true,
+          inserted_at: workload_now,
+          updated_at: workload_now
+        }
+      end)
+
+    workload_pattern_rows =
+      Enum.map(1..499, fn i ->
+        %{
+          id: Map.fetch!(workload_pattern_ids, i),
+          organization_id: org.id,
+          gtfs_version_id: workload_version.id,
+          route_pattern_id: "BROWSER_MW_P_#{String.pad_leading(Integer.to_string(i), 3, "0")}",
+          route_id: "BROWSER_MW_#{String.pad_leading(Integer.to_string(i), 3, "0")}",
+          direction_id: 0,
+          route_pattern_name: "Workload context #{i}",
+          route_pattern_sort_order: 0,
+          inserted_at: workload_now,
+          updated_at: workload_now
+        }
+      end)
+
+    {workload_stop_rows, workload_occurrence_rows, workload_shape_rows, workload_trip_rows} =
+      Enum.reduce(1..499, {[], [], [], []}, fn i, {stops, occurrences, shapes, trips} ->
+        padded = String.pad_leading(Integer.to_string(i), 3, "0")
+        lat_a = 1.02 + i * 0.0009
+        lon_a = 2.02 + i * 0.0009
+        lat_b = lat_a + 0.0004
+        lon_b = lon_a + 0.0004
+
+        dec = fn value ->
+          value |> :erlang.float_to_binary(decimals: 4) |> Decimal.new()
+        end
+
+        stop_base = %{
+          organization_id: org.id,
+          gtfs_version_id: workload_version.id,
+          inserted_at: workload_now,
+          updated_at: workload_now
+        }
+
+        new_stops = [
+          Map.merge(stop_base, %{
+            id: Ecto.UUID.generate(),
+            stop_id: "BROWSER_MW_STOP_#{padded}_A",
+            stop_name: "Workload stop BROWSER_MW_#{padded} a",
+            stop_lat: dec.(lat_a),
+            stop_lon: dec.(lon_a),
+            location_type: 0
+          }),
+          Map.merge(stop_base, %{
+            id: Ecto.UUID.generate(),
+            stop_id: "BROWSER_MW_STOP_#{padded}_B",
+            stop_name: "Workload stop BROWSER_MW_#{padded} b",
+            stop_lat: dec.(lat_b),
+            stop_lon: dec.(lon_b),
+            location_type: 0
+          })
+          | stops
+        ]
+
+        pattern_id = Map.fetch!(workload_pattern_ids, i)
+
+        new_occurrences = [
+          %{
+            id: Ecto.UUID.generate(),
+            route_pattern_id: pattern_id,
+            organization_id: org.id,
+            gtfs_version_id: workload_version.id,
+            stop_id: "BROWSER_MW_STOP_#{padded}_A",
+            position: 1,
+            inserted_at: workload_now,
+            updated_at: workload_now
+          },
+          %{
+            id: Ecto.UUID.generate(),
+            route_pattern_id: pattern_id,
+            organization_id: org.id,
+            gtfs_version_id: workload_version.id,
+            stop_id: "BROWSER_MW_STOP_#{padded}_B",
+            position: 2,
+            inserted_at: workload_now,
+            updated_at: workload_now
+          }
+          | occurrences
+        ]
+
+        new_shapes = [
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: workload_version.id,
+            shape_id: "BROWSER_MW_SH_#{padded}",
+            shape_pt_lat: dec.(lat_a),
+            shape_pt_lon: dec.(lon_a),
+            shape_pt_sequence: 1,
+            inserted_at: workload_now,
+            updated_at: workload_now
+          },
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: workload_version.id,
+            shape_id: "BROWSER_MW_SH_#{padded}",
+            shape_pt_lat: dec.(lat_b),
+            shape_pt_lon: dec.(lon_b),
+            shape_pt_sequence: 2,
+            inserted_at: workload_now,
+            updated_at: workload_now
+          }
+          | shapes
+        ]
+
+        new_trips = [
+          %{
+            id: Ecto.UUID.generate(),
+            organization_id: org.id,
+            gtfs_version_id: workload_version.id,
+            trip_id: "BROWSER_MW_TRIP_#{padded}",
+            route_id: "BROWSER_MW_#{padded}",
+            service_id: "BROWSER_MW_SERVICE",
+            shape_id: "BROWSER_MW_SH_#{padded}",
+            route_pattern_id: "BROWSER_MW_P_#{padded}",
+            direction_id: 0,
+            inserted_at: workload_now,
+            updated_at: workload_now
+          }
+          | trips
+        ]
+
+        {new_stops, new_occurrences, new_shapes, new_trips}
+      end)
+
+    Enum.each(
+      [
+        {GtfsPlanner.Gtfs.Route, workload_route_rows},
+        {GtfsPlanner.Gtfs.RoutePattern, workload_pattern_rows},
+        {GtfsPlanner.Gtfs.Stop, workload_stop_rows},
+        {GtfsPlanner.Gtfs.RoutePatternStop, workload_occurrence_rows},
+        {GtfsPlanner.Gtfs.Shape, workload_shape_rows},
+        {GtfsPlanner.Gtfs.Trip, workload_trip_rows}
+      ],
+      fn {schema, rows} ->
+        Enum.each(Enum.chunk_every(rows, 500), &Repo.insert_all(schema, &1))
+      end
+    )
+
+    IO.puts(
+      "Browser seed: map workload version #{workload_version.id} " <>
+        "(BROWSER_MW_000 current route plus 499 distinct-geometry context routes)"
+    )
+
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"
 end

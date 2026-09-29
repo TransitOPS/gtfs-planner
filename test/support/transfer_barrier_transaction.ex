@@ -39,9 +39,12 @@ defmodule GtfsPlanner.Gtfs.TransferBarrierTransaction do
   @replacement_attempts 3
 
   @impl true
-  def run(transaction), do: run(transaction, @replacement_attempts)
+  def run(transaction), do: run(transaction, [])
 
-  defp run(transaction, attempts) do
+  @impl true
+  def run(transaction, _options), do: run_with_retries(transaction, @replacement_attempts)
+
+  defp run_with_retries(transaction, attempts) do
     Repo.transaction(fn ->
       Repo.query!("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
 
@@ -55,7 +58,7 @@ defmodule GtfsPlanner.Gtfs.TransferBarrierTransaction do
     # function is unchanged, so the production retry loop still owns the attempts.
     :exit, {:noproc, {DBConnection.Holder, :checkout, _opts}} when attempts > 0 ->
       replace_connection()
-      run(transaction, attempts - 1)
+      run_with_retries(transaction, attempts - 1)
   end
 
   defp replace_connection(attempts \\ @replacement_attempts) do
