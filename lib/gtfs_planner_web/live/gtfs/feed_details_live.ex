@@ -43,7 +43,16 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   import GtfsPlannerWeb.Gtfs.FeedSettingsComponents, only: [language_select: 1, unsaved_guard: 1]
 
   import GtfsPlannerWeb.PlannerComponents,
-    only: [back_link: 1, drawer_footer: 1, first_use: 1, message: 1]
+    only: [
+      aside_link: 1,
+      back_link: 1,
+      drawer_footer: 1,
+      first_use: 1,
+      form_section: 1,
+      message: 1,
+      safe_href: 2,
+      unsaved_badge: 1
+    ]
 
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
@@ -386,13 +395,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
         warning is readable without its colour.
       --%>
       <:header_actions>
-        <span
-          :if={@dirty?}
-          id="feed-details-unsaved"
-          class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-badge bg-warning-bg px-2 py-1 text-[13px] font-[650] leading-none text-warning-fg"
-        >
-          <.icon name="hero-exclamation-triangle" class="size-4" /> Unsaved changes
-        </span>
+        <.unsaved_badge :if={@dirty?} id="feed-details-unsaved" />
       </:header_actions>
       <:lede>
         <span id="feed-details-drawer-scope">{scope_line(@version, @organization)}</span>
@@ -536,24 +539,6 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
         </.form>
       </div>
     </.drawer>
-    """
-  end
-
-  # One drawer section: a legend over its fields, divided from the section above by
-  # a hairline. The divider lives on a wrapper because a fieldset border would run
-  # through the legend.
-  attr :title, :string, required: true
-  attr :first?, :boolean, default: false
-  slot :inner_block, required: true
-
-  defp form_section(assigns) do
-    ~H"""
-    <div class={["min-w-0", !@first? && "border-t border-subtle pt-6"]}>
-      <fieldset class="min-w-0">
-        <legend class="mb-4 text-base font-bold text-strong">{@title}</legend>
-        <div class="grid gap-5">{render_slot(@inner_block)}</div>
-      </fieldset>
-    </div>
     """
   end
 
@@ -718,7 +703,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
   attr :kind, :atom, values: [:text, :date, :web, :email], default: :text
 
   defp summary_value(assigns) do
-    assigns = assign(assigns, :href, link_href(assigns.kind, assigns.value))
+    assigns = assign(assigns, :href, safe_href(assigns.kind, assigns.value))
 
     ~H"""
     <span :if={is_nil(@value)} class="text-muted">Not set</span>
@@ -754,13 +739,9 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
           Phone numbers and websites riders use are set for each agency. These details describe the
           dataset itself.
         </p>
-        <.link
-          id="feed-details-manage-agencies"
-          navigate={agencies_path(@gtfs_version_id)}
-          class={aside_link_class()}
-        >
-          Manage agencies <.icon name="hero-arrow-right" class="size-4" />
-        </.link>
+        <.aside_link id="feed-details-manage-agencies" navigate={agencies_path(@gtfs_version_id)}>
+          Manage agencies
+        </.aside_link>
       </section>
 
       <section class="rounded-card bg-canvas p-5">
@@ -769,23 +750,12 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
           These details are included when this version is exported. Trip planners see them after
           you export the version and share the feed.
         </p>
-        <.link
-          id="feed-details-go-to-export"
-          navigate={export_path(@gtfs_version_id)}
-          class={aside_link_class()}
-        >
-          Go to export <.icon name="hero-arrow-right" class="size-4" />
-        </.link>
+        <.aside_link id="feed-details-go-to-export" navigate={export_path(@gtfs_version_id)}>
+          Go to export
+        </.aside_link>
       </section>
     </aside>
     """
-  end
-
-  defp aside_link_class do
-    [
-      "mt-2 inline-flex min-h-11 items-center gap-1.5 text-sm font-[650] text-action no-underline",
-      "hover:text-action-hover hover:underline"
-    ]
   end
 
   defp close_editor(socket) do
@@ -952,16 +922,6 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
 
   defp date(nil), do: nil
   defp date(%Date{} = date), do: Calendar.strftime(date, "%b %-d, %Y")
-
-  defp link_href(:web, value) when is_binary(value) do
-    if String.match?(value, ~r{\Ahttps?://\S+\z}i), do: value
-  end
-
-  defp link_href(:email, value) when is_binary(value) do
-    if String.match?(value, ~r/\A[^\s@]+@[^\s@]+\z/), do: "mailto:" <> value
-  end
-
-  defp link_href(_kind, _value), do: nil
 
   defp feed_details_path(version_id), do: "/gtfs/#{version_id}/settings/feed-details"
   defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"

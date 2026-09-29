@@ -254,9 +254,9 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyTimezoneLiveTest do
 
       assert has_element?(view, "#agencies-timezone-callout", "Agencies use different timezones")
 
-      # Both entry points reach the one drawer: the band's generic action and the
-      # callout's reason-specific one.
-      assert has_element?(view, "#agencies-change-timezone")
+      # An unresolved version has one entry point, the callout's reason-specific
+      # action: the panel's generic Change timezone would open the same drawer.
+      refute has_element?(view, "#agencies-change-timezone")
       assert has_element?(view, "#agencies-resolve-timezones")
 
       open_drawer(view, "#agencies-resolve-timezones")
@@ -301,7 +301,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyTimezoneLiveTest do
       conflicting_version(organization, version)
 
       {:ok, view, _html} = live(conn, agencies_path(version.id))
-      open_drawer(view, "#agencies-change-timezone")
+      open_drawer(view, "#agencies-resolve-timezones")
 
       review(view, "America/Chicago")
 
@@ -341,7 +341,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyTimezoneLiveTest do
       before = stored_zones(organization, version)
 
       {:ok, view, _html} = live(conn, agencies_path(version.id))
-      open_drawer(view, "#agencies-change-timezone")
+      open_drawer(view, "#agencies-resolve-timezones")
       review(view, "America/Chicago")
 
       apply_review(view, false)
@@ -381,11 +381,18 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyTimezoneLiveTest do
       assert %{timezone: "America/Chicago", fallback?: false} =
                DisplayClock.resolve_zone(organization.id, version.id)
 
-      # The page behind the drawer reloaded: one zone, named in the band.
-      doc = LazyHTML.from_fragment(render(view))
+      # The page behind the drawer reloaded: one zone, named in the panel, and
+      # the Change timezone action replaces the unresolved version's Resolve.
+      assert has_element?(view, "#agencies-timezone-value", "America/Chicago")
 
-      assert text_of(doc, "#agencies-timezone-band") =~
-               "America/Chicago · Used by all agencies and their schedules."
+      assert has_element?(
+               view,
+               "#agencies-timezone-band",
+               "Every agency in this version shares it."
+             )
+
+      assert has_element?(view, "#agencies-change-timezone")
+      refute has_element?(view, "#agencies-resolve-timezones")
 
       refute has_element?(view, "#agencies-timezone-callout")
       refute has_element?(view, "#agency-timezone-form")
@@ -397,7 +404,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyTimezoneLiveTest do
       conflicting_version(organization, version)
 
       {:ok, view, _html} = live(conn, agencies_path(version.id))
-      open_drawer(view, "#agencies-change-timezone")
+      open_drawer(view, "#agencies-resolve-timezones")
       review(view, "America/Chicago")
 
       # Another editor creates an agency while the review is on screen, so the
@@ -461,7 +468,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyTimezoneLiveTest do
       conflicting_version(organization, version)
 
       {:ok, view, _html} = live(conn, agencies_path(version.id))
-      open_drawer(view, "#agencies-change-timezone")
+      open_drawer(view, "#agencies-resolve-timezones")
 
       # The version has no single zone, so this drawer resolves one: the title
       # names that step, not a change to a zone the version does not have.
@@ -481,7 +488,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyTimezoneLiveTest do
       refute has_element?(view, "#agency-timezone-form")
 
       # Reopening starts from the stored state again, not from the draft.
-      open_drawer(view, "#agencies-change-timezone")
+      open_drawer(view, "#agencies-resolve-timezones")
 
       assert has_element?(view, "#agency-timezone-zone[value='']")
     end
@@ -528,7 +535,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyTimezoneLiveTest do
       before = stored_zones(organization, version)
 
       {:ok, view, _html} = live(conn, agencies_path(version.id))
-      open_drawer(view, "#agencies-change-timezone")
+      open_drawer(view, "#agencies-resolve-timezones")
       review(view, "America/Chicago")
 
       Accounts.get_user_org_membership(user.id, organization.id)
@@ -547,7 +554,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyTimezoneLiveTest do
       assert stored_zones(organization, version) == before
 
       # The same refusal covers the review step, which authorizes on its own.
-      open_drawer(view, "#agencies-change-timezone")
+      open_drawer(view, "#agencies-resolve-timezones")
       review(view, "America/Chicago")
 
       assert has_element?(view, @closed_drawer)

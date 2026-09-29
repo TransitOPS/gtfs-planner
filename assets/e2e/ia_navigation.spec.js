@@ -330,9 +330,9 @@ for (const { width, height, label } of VIEWPORTS) {
 
       await expect(page.locator("h1")).toHaveText("Agencies");
       await expect(page.locator("#coming-soon-status")).toHaveCount(0);
-      await expect(
-        page.locator("#settings-nav a[aria-current='page']"),
-      ).toHaveText("Agencies");
+      // A page moved to the design system returns by the Settings link, not the tab bar.
+      await expect(page.locator("#settings-nav")).toHaveCount(0);
+      await expect(page.locator("#settings-back")).toHaveText("Settings");
       await expectNoPageOverflow(page);
 
       // ── The two remaining allowlisted sections render their shared body ──
@@ -584,8 +584,8 @@ test.describe("header presentation", () => {
     await expect(page.locator("#settings-overview")).toBeVisible();
 
     // The overview has no tab bar; the pages that still carry one do.
-    await page.locator("#settings-entry-agencies a").click();
-    await page.waitForURL(new RegExp(`/settings/agencies$`));
+    await page.locator("#settings-entry-fares a").click();
+    await page.waitForURL(new RegExp(`/settings/fares$`));
     await waitForLiveView(page);
 
     // The Settings bar scrolls locally: the last tab must be reachable and

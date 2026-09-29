@@ -877,6 +877,13 @@ body {
   color: var(--color-strong);
 }
 
+/* A checkbox's label is its sentence, so the whole 44px row is the target and a
+   long sentence wraps instead of running off the panel on a phone. */
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .fieldset .label:has(input[type="checkbox"]) {
+  min-height: 44px;
+  white-space: normal;
+}
+
 :is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .fieldset :is(.input, .select) {
   height: 44px;
   min-height: 44px;
@@ -1190,6 +1197,20 @@ body {
   background: var(--color-action-hover);
   color: var(--color-primary-content);
   cursor: wait;
+}
+
+/* The destructive button reads in the design system's error ink (white text at
+   8:1) instead of daisyUI's brighter red. A disabled one keeps daisyUI's grey, so
+   an apply the page has ruled out, or one in flight, reads as unavailable. */
+.ds-page .btn-error:not(:disabled) {
+  border-color: var(--color-error-fg);
+  background: var(--color-error-fg);
+  color: #fff;
+}
+
+.ds-page .btn-error:not(:disabled):hover {
+  border-color: var(--color-error-fg);
+  background: color-mix(in oklab, var(--color-error-fg) 88%, black);
 }
 
 /* Member table. The whole row is one record on tablet and phone: the person on

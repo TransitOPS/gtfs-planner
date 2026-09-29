@@ -255,9 +255,10 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyCreateLiveTest do
       assert route_counts(organization, version) == %{"north_coast_transit" => 1}
       assert DisplayClock.resolve_zone(organization.id, version.id).timezone == "America/Chicago"
 
-      # The page behind the drawer reloaded: the list replaces the empty state.
+      # The page behind the drawer reloaded: the one agency's summary replaces the
+      # empty state.
       refute has_element?(view, "#agencies-empty")
-      assert has_element?(view, "#agencies", "North Coast Transit")
+      assert has_element?(view, "#agency-summary-name", "North Coast Transit")
       assert has_element?(view, "#agencies-create", "Create agency")
     end
   end

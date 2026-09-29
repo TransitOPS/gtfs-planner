@@ -383,8 +383,12 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyDeleteLiveTest do
       assert route_agency(organization, version, "r2") == "BETA"
       assert route_agency(organization, version, "r3") == "BETA"
       assert route_count(organization, version, "BETA") == 3
-      assert has_element?(view, "#agencies tr", "Beta Transit")
-      refute has_element?(view, "#agencies tr", "Alpha Transit")
+
+      # One agency is left, so the page behind the drawer is its summary.
+      assert has_element?(view, "#agency-summary-name", "Beta Transit")
+      assert has_element?(view, "#agency-summary-route-count", "3")
+      refute has_element?(view, "#agencies")
+      refute has_element?(view, "#agency-summary", "Alpha Transit")
     end
   end
 
@@ -465,14 +469,16 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyDeleteLiveTest do
       assert has_element?(view, "#agency-delete-blocked")
 
       # The blocker explanation reads as the prototype's sentence and names the
-      # reference the list below it carries. The title and the body are read from
-      # their own nodes, because the callout's own markup is what separates them.
+      # reference the list below it carries.
       blocked = LazyHTML.from_fragment(render(view))
 
-      assert text_of(blocked, "#agency-delete-blocked-callout > p") ==
+      assert text_of(blocked, "#agency-delete-blocked-callout p.font-bold") ==
                "Alpha Transit cannot be deleted yet"
 
-      assert text_of(blocked, "#agency-delete-blocked-callout div > p") ==
+      assert text_of(blocked, "#agency-delete-blocked-callout p.font-bold") ==
+               "Alpha Transit cannot be deleted yet"
+
+      assert text_of(blocked, "#agency-delete-blocked-callout") =~
                "A fare attribute still refers to this agency. Reassign those references " <>
                  "before moving routes and deleting the agency."
 
