@@ -47,6 +47,12 @@ defmodule GtfsPlannerWeb.ResultComponents do
       badge: "bg-canvas text-muted",
       text: "text-muted",
       icon: "hero-information-circle"
+    },
+    "muted" => %{
+      bar: "border-control",
+      badge: "bg-canvas text-muted",
+      text: "text-muted",
+      icon: "hero-x-circle"
     }
   }
 
@@ -55,11 +61,16 @@ defmodule GtfsPlannerWeb.ResultComponents do
   @doc """
   A short state label: the tone's icon and the state in words.
 
+  The `muted` tone is for a failure that follows from another one already shown,
+  so it reads as a consequence and not a second problem.
+
   ## Examples
 
       <.tone_badge tone="warning">Needs review</.tone_badge>
+      <.tone_badge tone="error" icon="hero-question-mark-circle">Couldn't check</.tone_badge>
   """
   attr :tone, :string, values: @tone_values, required: true
+  attr :icon, :string, default: nil, doc: "a hero icon name that replaces the tone's own icon"
   attr :rest, :global
   slot :inner_block, required: true
 
@@ -75,7 +86,7 @@ defmodule GtfsPlannerWeb.ResultComponents do
       data-tone={@tone}
       {@rest}
     >
-      <.icon name={@t.icon} class="size-[15px] shrink-0" /> {render_slot(@inner_block)}
+      <.icon name={@icon || @t.icon} class="size-[15px] shrink-0" /> {render_slot(@inner_block)}
     </span>
     """
   end
