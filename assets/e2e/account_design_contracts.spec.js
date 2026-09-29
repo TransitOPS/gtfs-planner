@@ -243,7 +243,7 @@ test.describe("account navigation", () => {
     const accountLink = page.locator("#user-menu-panel a[href='/users/settings']");
     await expect(accountLink).toBeVisible();
     await expect(accountLink).toHaveAttribute("aria-current", "page");
-    await expect(accountLink).toContainText("Account settings");
+    await expect(accountLink).toContainText("Profile settings");
 
     const accountMetrics = await captureTargetMetrics(accountLink);
     expect(accountMetrics.height).toBeGreaterThanOrEqual(44);
@@ -711,9 +711,9 @@ test.describe("account settings", () => {
     await waitForLiveView(page);
     await page.waitForSelector("#account-settings");
 
-    await expect(page).toHaveTitle(/Account settings/);
+    await expect(page).toHaveTitle(/Profile settings/);
     await expect(page.locator("#account-settings-title")).toHaveText(
-      "Account settings",
+      "Profile settings",
     );
     await expect(page.locator("#email-settings-title")).toHaveText(
       "Change email",
