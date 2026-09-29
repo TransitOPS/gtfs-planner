@@ -599,3 +599,106 @@ test("area-editor", async ({ page }) => {
   await captureReference(page, "flex-service-area-prototype.html", "choose", "area-choose");
   await captureReference(page, "flex-service-area-prototype.html", "town", "area-town");
 });
+
+// ── settings ────────────────────────────────────────────────────────────────
+
+// The Settings › Export defaults page holds the two settings a full export
+// reads: the flex switch and the realtime question. The case opens the page from
+// the flex list's own link, captures it at both viewports, turns flex off and
+// saves, then follows the switch into the flex list's export-state line — the
+// reference's "Exports leave flex out" state. The switch goes back on at the end
+// so the seeded version keeps the default the other cases read.
+test("export-defaults", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  const versionId = await openFlex(page);
+
+  await page.locator("#flex-exports a").click();
+  await waitForLiveView(page);
+
+  await expect(page).toHaveURL(
+    new RegExp(`/gtfs/${versionId}/settings/export-defaults$`),
+  );
+  await expect(page.locator("h1")).toHaveText("Export defaults");
+  await expect(page.locator("#flex-switch")).toBeChecked();
+
+  await expect(page.locator("#flex-switch-consequence")).toContainText(
+    "Exports also write a flex file",
+  );
+  await expect(page.locator("#realtime-source")).toBeVisible();
+  await expect(page.locator("#export-defaults-more")).toContainText(
+    "More export defaults are coming",
+  );
+
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "export-defaults");
+
+  // At 320 px the switch and the question still stack inside the page.
+  await page.setViewportSize(NARROW);
+  await expect(page.locator("#flex-switch")).toBeVisible();
+  await expect(page.locator("#realtime-source")).toBeVisible();
+
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "export-defaults");
+
+  // The switch's consequence follows it before anything is saved.
+  await page.setViewportSize(DESKTOP);
+  await page.locator("#flex-switch").uncheck();
+
+  await expect(page.locator("#flex-switch-consequence")).toContainText(
+    "Exports leave flex out.",
+  );
+
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.locator("#flash-group")).toContainText(
+    "Export defaults saved.",
+  );
+
+  // The Flex list reads the same row, so its export-state line is the warning
+  // that links back here.
+  await page.goto(`/gtfs/${versionId}/flex`);
+  await waitForLiveView(page);
+
+  await expect(page.locator("#flex-exports")).toContainText(
+    "Exports leave flex out.",
+  );
+  await expect(page.locator("#flex-exports")).toContainText(
+    "Change in Settings › Export defaults",
+  );
+
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "list-exports-off");
+
+  await captureReference(
+    page,
+    "flex-services-prototype.html",
+    "list-exports-off",
+    "list-exports-off",
+  );
+
+  await page.setViewportSize(NARROW);
+  await page.goto(`/gtfs/${versionId}/flex`);
+  await waitForLiveView(page);
+
+  await expect(page.locator("#flex-exports")).toContainText(
+    "Exports leave flex out.",
+  );
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "list-exports-off");
+
+  // Restore the switch, so the seeded version keeps the default every other
+  // case reads.
+  await page.setViewportSize(DESKTOP);
+  await page.goto(`/gtfs/${versionId}/settings/export-defaults`);
+  await waitForLiveView(page);
+
+  await page.locator("#flex-switch").check();
+  await page.getByRole("button", { name: "Save changes" }).click();
+
+  await expect(page.locator("#flash-group")).toContainText(
+    "Export defaults saved.",
+  );
+  await expect(page.locator("#flex-switch")).toBeChecked();
+});

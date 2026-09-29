@@ -46,11 +46,11 @@ const TASKS = [
   ["nav-gtfs", "GTFS", "export"],
 ];
 
-// The two remaining allowlisted placeholder sections: overview entry id, page
-// title, URL slug. Feed details, Agencies and Fares left this list when their
-// pages were built; the journey asserts each of them separately below.
+// The one remaining allowlisted placeholder section: overview entry id, page
+// title, URL slug. Feed details, Agencies, Flex, Export defaults and Fares left
+// this list when their pages were built; the journey asserts each of them
+// separately below.
 const SETTINGS_SECTIONS = [
-  ["settings-entry-export_defaults", "Export defaults", "export-defaults"],
   ["settings-entry-feed_url", "Published feed URL", "feed-url"],
 ];
 
@@ -336,13 +336,23 @@ for (const { width, height, label } of VIEWPORTS) {
       await expect(page.locator("#settings-back")).toHaveText("Settings");
       await expectNoPageOverflow(page);
 
-      // ── The two remaining allowlisted sections render their shared body ──
-      // Each opens from its overview row and returns by the Settings link that
-      // replaces the tab bar on a section page.
+      // ── Export defaults is a built page, not a placeholder ──
+      await page.locator("#settings-entry-export_defaults a").click();
+      await page.waitForURL(new RegExp(`/settings/export-defaults$`));
+      await waitForLiveView(page);
+
+      await expect(page.locator("h1")).toHaveText("Export defaults");
+      await expect(page.locator("#coming-soon-status")).toHaveCount(0);
+      await expect(page.locator("#flex-switch")).toBeVisible();
+      await expect(page.locator("#realtime-source")).toBeVisible();
+      // A page moved to the design system returns by the Settings link, not the tab bar.
+      await expect(page.locator("#settings-nav")).toHaveCount(0);
+      await expect(page.locator("#settings-back")).toHaveText("Settings");
+      await expectNoPageOverflow(page);
+
+      // ── The one remaining allowlisted section renders its shared body ──
       for (const [entry, title, slug] of SETTINGS_SECTIONS) {
-        await page.goto(`/gtfs/${versionId}/settings`);
-        await waitForLiveView(page);
-        await page.locator(`#${entry} a`).click();
+        await page.locator(`#${entry}`).click();
         await page.waitForURL(new RegExp(`/settings/${slug}$`));
         await waitForLiveView(page);
 

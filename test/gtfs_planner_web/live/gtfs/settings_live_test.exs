@@ -10,12 +10,11 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.ComingSoon
 
-  # The two allowlisted placeholder sections, their catalog key and the scope
-  # the catalog declares for them. Feed details, Agencies and Fares left this
-  # list as their pages shipped; they are built pages now and are asserted as
-  # Available entries.
+  # The one allowlisted placeholder section, its catalog key and the scope the
+  # catalog declares for it. Feed details, Agencies, Export defaults and Fares
+  # left this list as their pages shipped; they are built pages now and are
+  # asserted as Available entries.
   @placeholder_sections [
-    %{slug: "export-defaults", key: :export_defaults, scope: :all_versions},
     %{slug: "feed-url", key: :feed_url, scope: :all_versions}
   ]
 
@@ -150,8 +149,13 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         :export_defaults,
         "Export defaults",
         section_path(version.id, "export-defaults"),
-        :coming_soon
+        :working
       )
+
+      assert text_of(doc, "#settings-entry-export_defaults p") ==
+               "Choose how future exports are written."
+
+      refute text_of(doc, "#settings-entry-export_defaults") =~ "Coming soon"
 
       assert_entry(
         doc,

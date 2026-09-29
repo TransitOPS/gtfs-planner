@@ -83,14 +83,20 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   ]
 
   # The realtime answers `GtfsPlanner.Gtfs.ExportDefault` stores, labelled the
-  # way the reference labels them (AC-29, AC-15).
+  # way the reference labels them (AC-29, AC-15). Each entry is the label and the
+  # stored value, the order `options_for_select/2` expects, so the Settings page's
+  # `<.input type="select">` and the service page's own `<option>` loop read the
+  # same list. `realtime_options/0` hands them to both.
   @realtime_options [
-    {"main", "Main feed"},
-    {"flex", "Flex file"},
-    {"own", "Its own schedule file"},
-    {"none", "No realtime"},
-    {"unsure", "Not sure"}
+    {"Main feed", "main"},
+    {"Flex file", "flex"},
+    {"Its own schedule file", "own"},
+    {"No realtime", "none"},
+    {"Not sure", "unsure"}
   ]
+
+  @doc "The labelled realtime answers the service page and the settings page offer."
+  def realtime_options, do: @realtime_options
 
   @doc """
   Builds the row the services table renders for one service.
@@ -2148,7 +2154,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
             class="select select-lg w-full"
           >
             <option
-              :for={{value, label} <- @realtime_options}
+              :for={{label, value} <- @realtime_options}
               value={value}
               selected={value == to_string(@export_defaults.realtime_source)}
             >
@@ -2157,18 +2163,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
           </select>
         </div>
 
-        <p
-          :if={@realtime_note}
-          id="realtime-note"
-          class={realtime_note_class(@realtime_note)}
-        >
-          <.icon
-            :if={@realtime_note.icon}
-            name={@realtime_note.icon}
-            class="mt-0.5 size-4 shrink-0"
-          />
-          <span>{@realtime_note.text}</span>
-        </p>
+        <.realtime_note_card :if={@realtime_note} note={@realtime_note} />
 
         <p class="mt-1 text-[13px] text-muted">
           One answer for your agency; it applies to every route.
@@ -2984,7 +2979,43 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     do:
       "Goes in the flex file, published with your main feed from the same export. The main feed doesn’t change."
 
-  defp realtime_note(:own, route) do
+  @doc """
+  Renders the note one realtime answer carries (AC-15, AC-29).
+
+  The service page puts it under the question for a detour service; the Settings
+  page puts it under the same question for the organization's answer.
+  """
+  attr :id, :string, default: "realtime-note"
+  attr :note, :map, required: true
+
+  def realtime_note_card(assigns) do
+    ~H"""
+    <p id={@id} class={realtime_note_class(@note)}>
+      <.icon :if={@note.icon} name={@note.icon} class="mt-0.5 size-4 shrink-0" />
+      <span>{@note.text}</span>
+    </p>
+    """
+  end
+
+  @doc """
+  Returns the note one realtime answer carries, or nil when it needs none.
+
+  `route_id` is the route a detour service's trips belong to. The Settings page
+  answers for every service at once, so it passes nil: the warning names flex
+  trips rather than one route, and the two answers that match either file need
+  no note there.
+  """
+  @spec realtime_note(atom() | String.t() | nil, String.t() | nil) :: map() | nil
+  def realtime_note(:own, nil) do
+    %{
+      tone: :warning,
+      icon: "hero-exclamation-triangle",
+      text:
+        "Apps can’t match its updates to flex trips, because the vendor’s file uses its own trip IDs. Ask the vendor to use the trip IDs in your feeds."
+    }
+  end
+
+  def realtime_note(:own, route) do
     %{
       tone: :warning,
       icon: "hero-exclamation-triangle",
@@ -2993,7 +3024,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     }
   end
 
-  defp realtime_note(:unsure, _route) do
+  def realtime_note(:unsure, _route) do
     %{
       tone: :info,
       icon: "hero-information-circle",
@@ -3002,9 +3033,11 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     }
   end
 
-  defp realtime_note(:none, _route), do: nil
+  def realtime_note(:none, _route), do: nil
 
-  defp realtime_note(_source, _route) do
+  def realtime_note(source, nil) when source in [:main, :flex], do: nil
+
+  def realtime_note(_source, _route) do
     %{
       tone: :help,
       icon: nil,

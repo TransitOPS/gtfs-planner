@@ -170,14 +170,15 @@ defmodule GtfsPlannerWeb.Router do
       live "/flex/:service/area", Gtfs.FlexServiceLive, :area
       # Settings holds the version's rarely changed configuration, including its
       # organization-level group. Feed details and Agencies are version-scoped
-      # pages; Garages and Fleet list organization-wide data under the All
-      # versions group, where the version in their URL is navigation context, as
-      # the tables themselves ignore it. Their literal routes are declared ahead
-      # of the section route so they are never read as slugs, and there is no
-      # redirect from the Blocks paths they used before.
+      # pages; Export defaults, Garages and Fleet hold organization-wide settings
+      # under the All versions group, where the version in their URL is
+      # navigation context, as the pages themselves ignore it. Their literal
+      # routes are declared ahead of the section route so they are never read as
+      # slugs, and there is no redirect from the Blocks paths they used before.
       live "/settings", Gtfs.SettingsLive, :index
       live "/settings/feed-details", Gtfs.FeedDetailsLive, :index
       live "/settings/agencies", Gtfs.AgenciesLive, :index
+      live "/settings/export-defaults", Gtfs.ExportDefaultsLive, :index
       live "/settings/garages", Gtfs.GaragesLive, :index
       live "/settings/fleet", Gtfs.FleetLive, :index
       # The Fare zones workspace owns the Fares section. Its three destinations
