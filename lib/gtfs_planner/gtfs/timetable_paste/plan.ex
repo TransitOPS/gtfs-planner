@@ -80,12 +80,12 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   alias `:pattern`); a choice the row no longer fits is discarded and the
   row is withheld. The `stamp` is a display string such as
   `"Sep 28"` (built by the caller with `Calendar.strftime/2`); block rows
-  arrive as the sixth argument and are ignored until step 10 owns
-  block-overlap warnings.
+  arrive as the sixth argument as `Blocking.Checks.trip_row()` maps (atom
+  keys) and drive the step-10 `:block_overlap` warnings.
 
-  Pure: no Repo, clock or process state (INV-3). `vehicles` stays a
-  `%{before: nil, after: nil}` placeholder for step 10, which computes it
-  with `Summary.peak_vehicles/1`; `trips` is counted directly because it
+  Pure: no Repo, clock or process state (INV-3). `vehicles` is computed
+  with `Summary.peak_vehicles/1` over scope spans (both directions) and
+  the after-state spans; `trips` is counted directly because it
   needs no outside data.
 
   ## Metadata (R13, AC-16)
@@ -113,9 +113,10 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   whether kept or pasted) and `:custom_headsign_moved` (a kept custom
   headsign on a trip whose timed pattern or last stop changed — the
   route-pattern check is in place for pairing that spans patterns).
-  `:block_overlap` arrives in step 10 from the injected block rows (the
-  sixth `build/6` argument, ignored here); the warnings pass is where it
-  hooks in.
+  `:block_overlap` (step 10) marks an applied `:add`/`:change` whose
+  final block overlaps another trip on the same block and calendar
+  (`Checks.sequence/1` + `overlap_pairs/1` over the injected block rows
+  plus the planned rows for that block).
 
   ## Decision validation (critique S2 / PM-10)
 
@@ -132,6 +133,9 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   (`:not_a_duplicate`) and any decision for a row that is gone
   (`:unknown_row`). `"neither"` is always honoured silently.
   """
+
+  alias GtfsPlanner.Gtfs.Blocking.Checks
+  alias GtfsPlanner.Gtfs.Schedules.Summary
 
   @type change_op ::
           :add | :change | :unchanged | :remove | :duplicate | :skipped | :needs_decision
@@ -187,7 +191,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
           new_timings: [new_timing()],
           refusal: nil | {:frequency, map()} | {:stops_differ, map()} | :nothing_accepted,
           warnings: [term()],
-          vehicles: %{before: nil | non_neg_integer(), after: nil | non_neg_integer()},
+          vehicles: %{before: non_neg_integer(), after: non_neg_integer()},
           trips: %{before: non_neg_integer(), after: non_neg_integer()},
           transfers_removed: non_neg_integer(),
           replace_patterns: [term()],
@@ -204,7 +208,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   Raises `ArgumentError` for any other mode.
   """
   @spec build([map()], map(), :add | :replace, map(), String.t(), [map()]) :: plan()
-  def build(resolved_rows, scope, :add, input_or_decisions, stamp, _block_rows) do
+  def build(resolved_rows, scope, :add, input_or_decisions, stamp, block_rows) do
     rows = if(is_list(resolved_rows), do: resolved_rows, else: [])
     scope_map = if(is_map(scope), do: scope, else: %{})
     decisions = normalize_decisions(unwrap_decisions(input_or_decisions))
@@ -215,12 +219,18 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
     by_pattern = Map.new(patterns, &{&1.id, &1})
     trips = normalize_trips(Map.get(scope_map, :trips, Map.get(scope_map, "trips", [])))
     scope_trips = Enum.map(trips, & &1.trip)
+    raw_trips = raw_scope_trips(scope_map)
+    service_id = scope_service_id(scope_map)
 
     {misfit, pattern_discards} = validate_patterns(decisions, rows, by_pattern)
     {ranked, _accepted} = mark_rows(rows, by_pattern, trips, decisions, misfit)
     {changes, new_timings} = assign_timings(ranked, by_pattern, stamp)
 
-    final = changes |> apply_metadata(by_pattern) |> apply_warnings(by_pattern, scope_trips)
+    final =
+      changes
+      |> apply_metadata(by_pattern)
+      |> apply_warnings(by_pattern, scope_trips)
+      |> apply_block_overlaps(block_rows, service_id)
 
     discards =
       finalize_discards(
@@ -235,7 +245,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
       new_timings: new_timings,
       refusal: nil,
       warnings: [],
-      vehicles: %{before: nil, after: nil},
+      vehicles: plan_vehicles(raw_trips, final),
       trips: %{before: length(trips), after: length(trips) + count_op(final, :add)},
       transfers_removed: 0,
       replace_patterns: [],
@@ -244,7 +254,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
     }
   end
 
-  def build(resolved_rows, scope, :replace, input_or_decisions, stamp, _block_rows) do
+  def build(resolved_rows, scope, :replace, input_or_decisions, stamp, block_rows) do
     rows = if(is_list(resolved_rows), do: resolved_rows, else: [])
     scope_map = if(is_map(scope), do: scope, else: %{})
     decisions = normalize_decisions(unwrap_decisions(input_or_decisions))
@@ -255,6 +265,8 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
     by_pattern = Map.new(patterns, &{&1.id, &1})
     trips = normalize_trips(Map.get(scope_map, :trips, Map.get(scope_map, "trips", [])))
     all_trip_maps = Enum.map(trips, & &1.trip)
+    raw_trips = raw_scope_trips(scope_map)
+    service_id = scope_service_id(scope_map)
 
     {misfit, pattern_discards} = validate_patterns(decisions, rows, by_pattern)
     accepted = replace_accepted(rows, by_pattern, misfit)
@@ -280,7 +292,10 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
       |> Kernel.++(replace_removals(scope_trips, paired, withheld, refusal))
 
     final =
-      pre |> apply_metadata(by_pattern) |> apply_warnings(by_pattern, all_trip_maps)
+      pre
+      |> apply_metadata(by_pattern)
+      |> apply_warnings(by_pattern, all_trip_maps)
+      |> apply_block_overlaps(block_rows, service_id)
 
     discards =
       finalize_discards(
@@ -296,7 +311,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
       new_timings: new_timings,
       refusal: refusal,
       warnings: [],
-      vehicles: %{before: nil, after: nil},
+      vehicles: plan_vehicles(raw_trips, final),
       trips: %{
         before: length(trips),
         after: length(trips) + count_op(final, :add) - count_op(final, :remove)
@@ -1759,6 +1774,362 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   defp present?(value) when is_binary(value), do: String.trim(value) != ""
   defp present?(nil), do: false
   defp present?(_value), do: true
+
+  # --- Vehicles (step 10, R17 / AC-18) ---
+  #
+  # `vehicles.before` is the peak over every scope trip span (both
+  # directions live in `scope.trips`, so every entry counts). `after` is
+  # the before spans minus the old spans of `:remove` and `:change`
+  # trips plus the new spans of `:add` and `:change` rows. Rows that are
+  # not applied (`:unchanged`, `:duplicate`, `:skipped`,
+  # `:needs_decision`) never count: unchanged spans stay inside before,
+  # the rest contribute nothing. Both peaks use
+  # `Summary.peak_vehicles/1` over `%{start_secs:, end_secs:}` spans —
+  # the same term `Schedules` builds from `trip_bounds/1`/`spans_for/1`
+  # (frequency templates keep `headway_secs`/`until_secs` so the peak
+  # expands them the same way).
+  #
+  # Scope trips carry their span as `span` (`%{start_secs:, end_secs:}`
+  # with optional `headway_secs`/`until_secs`, or a `{start, end}`
+  # tuple), as `spans` (a list of those terms), or as `start_secs` plus
+  # `end_secs` directly on the trip. Trips without a usable span
+  # contribute no span. Planned spans derive from the row: `start_secs`
+  # (the first departure) to `start_secs` plus the last timing row's
+  # arrival offset (the last arrival, matching `trip_bounds/1` which runs
+  # first departure to last arrival).
+  @spec plan_vehicles([map()], [change()]) :: %{
+          before: non_neg_integer(),
+          after: non_neg_integer()
+        }
+  defp plan_vehicles(raw_trips, changes) do
+    before_spans = Enum.flat_map(raw_trips, &trip_spans/1)
+
+    removed =
+      for %{op: op, trip: trip} <- changes,
+          op in [:remove, :change],
+          is_map(trip),
+          do: trip
+
+    remaining =
+      Enum.reject(raw_trips, fn trip ->
+        Enum.any?(removed, &same_trip?(&1, trip))
+      end)
+
+    remaining_spans = Enum.flat_map(remaining, &trip_spans/1)
+
+    new_spans =
+      Enum.flat_map(changes, fn
+        %{op: op, row: row} when op in [:add, :change] and is_map(row) ->
+          case row_span(row) do
+            nil -> []
+            span -> [span]
+          end
+
+        _change ->
+          []
+      end)
+
+    before = Summary.peak_vehicles(before_spans)
+    after_peak = Summary.peak_vehicles(remaining_spans ++ new_spans)
+
+    %{before: before.count, after: after_peak.count}
+  end
+
+  @spec trip_spans(term()) :: [map()]
+  defp trip_spans(trip) when is_map(trip) do
+    spans = get(trip, :spans, "spans")
+    span = get(trip, :span, "span")
+
+    cond do
+      is_list(spans) ->
+        Enum.flat_map(spans, &span_term/1)
+
+      not is_nil(span) ->
+        span_term(span)
+
+      is_integer(get(trip, :start_secs, "start_secs")) and
+          is_integer(get(trip, :end_secs, "end_secs")) ->
+        [
+          %{
+            start_secs: get(trip, :start_secs, "start_secs"),
+            end_secs: get(trip, :end_secs, "end_secs")
+          }
+        ]
+
+      true ->
+        []
+    end
+  end
+
+  defp trip_spans(_trip), do: []
+
+  @spec span_term(term()) :: [map()]
+  defp span_term({start_secs, end_secs})
+       when is_integer(start_secs) and is_integer(end_secs) do
+    [%{start_secs: start_secs, end_secs: end_secs}]
+  end
+
+  defp span_term(span) when is_map(span) do
+    start_secs = get(span, :start_secs, "start_secs")
+    end_secs = get(span, :end_secs, "end_secs")
+
+    if is_integer(start_secs) and is_integer(end_secs) do
+      base = %{start_secs: start_secs, end_secs: end_secs}
+
+      base =
+        case get(span, :headway_secs, "headway_secs") do
+          headway when is_integer(headway) and headway > 0 ->
+            Map.put(base, :headway_secs, headway)
+
+          _headway ->
+            base
+        end
+
+      base =
+        case get(span, :until_secs, "until_secs") do
+          until_secs when is_integer(until_secs) ->
+            Map.put(base, :until_secs, until_secs)
+
+          _until ->
+            base
+        end
+
+      [base]
+    else
+      []
+    end
+  end
+
+  defp span_term(_span), do: []
+
+  @spec row_span(map()) :: map() | nil
+  defp row_span(row) when is_map(row) do
+    start_secs = get(row, :start_secs, "start_secs")
+    rows = get(row, :timing_rows, "timing_rows")
+
+    if is_integer(start_secs) and is_list(rows) and rows != [] do
+      last = List.last(rows)
+
+      offset =
+        case get(last, :arrival_offset, "arrival_offset") do
+          offset when is_integer(offset) ->
+            offset
+
+          _arrival ->
+            case get(last, :departure_offset, "departure_offset") do
+              offset when is_integer(offset) -> offset
+              _departure -> 0
+            end
+        end
+
+      %{start_secs: start_secs, end_secs: start_secs + offset}
+    else
+      nil
+    end
+  end
+
+  defp row_span(_row), do: nil
+
+  @spec raw_scope_trips(map()) :: [map()]
+  defp raw_scope_trips(scope_map) do
+    case get(scope_map, :trips, "trips") do
+      trips when is_list(trips) -> Enum.filter(trips, &is_map/1)
+      _trips -> []
+    end
+  end
+
+  @spec scope_service_id(map()) :: String.t() | nil
+  defp scope_service_id(scope_map) do
+    case get(scope_map, :calendar, "calendar") do
+      calendar when is_map(calendar) -> get(calendar, :service_id, "service_id")
+      _calendar -> nil
+    end
+  end
+
+  # --- Block overlaps (step 10, R16 / AC-17) ---
+  #
+  # For every applied `:add`/`:change` carrying a final block value, the
+  # planned trip becomes a `Checks.trip_row()` (same calendar as the
+  # scope) and joins the injected block rows for that block. `sequence/1`
+  # plus `overlap_pairs/1` over the combined list marks each planned trip
+  # in an overlapping pair with `:block_overlap`. The old version of a
+  # `:change` is excluded from its own block (it is replaced), so a
+  # retimed trip never overlaps itself. Two pasted trips on one block
+  # warn together even when no block row exists yet. Only same-calendar
+  # block rows count; when the scope carries no calendar every injected
+  # row counts. Block rows must be `trip_row` maps with atom keys (the
+  # shape `load_block_rows/4` returns); rows without the `Checks` keys
+  # are ignored.
+  @spec apply_block_overlaps([change()], term(), term()) :: [change()]
+  defp apply_block_overlaps(changes, block_rows, service_id) do
+    existing = normalize_block_rows(block_rows, service_id)
+    planned = planned_block_entries(changes, service_id)
+
+    if planned == [] do
+      changes
+    else
+      by_block = Enum.group_by(planned, fn {_idx, block_id, _row} -> block_id end)
+
+      overlapping =
+        Enum.reduce(by_block, MapSet.new(), fn {block_id, entries}, acc ->
+          overlap_planned_ids(entries, block_id, existing, changes, acc)
+        end)
+
+      changes
+      |> Enum.with_index()
+      |> Enum.map(fn {change, idx} ->
+        if MapSet.member?(overlapping, idx) and change.op in [:add, :change] and
+             :block_overlap not in change.warnings do
+          %{change | warnings: change.warnings ++ [:block_overlap]}
+        else
+          change
+        end
+      end)
+    end
+  end
+
+  @spec normalize_block_rows(term(), term()) :: [map()]
+  defp normalize_block_rows(block_rows, service_id) when is_list(block_rows) do
+    block_rows
+    |> Enum.filter(&is_map/1)
+    |> Enum.filter(fn row ->
+      is_map_key(row, :plottable?) and is_map_key(row, :frequency?) and
+        is_map_key(row, :first_arrival) and is_map_key(row, :last_departure) and
+        is_map_key(row, :id)
+    end)
+    |> Enum.filter(fn row ->
+      if is_binary(service_id) do
+        get(row, :service_id, "service_id") == service_id
+      else
+        true
+      end
+    end)
+  end
+
+  defp normalize_block_rows(_block_rows, _service_id), do: []
+
+  @spec planned_block_entries([change()], term()) :: [
+          {non_neg_integer(), String.t(), map()}
+        ]
+  defp planned_block_entries(changes, service_id) do
+    changes
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {change, idx} ->
+      if change.op in [:add, :change] and present?(change.block_id) and is_map(change.row) do
+        case planned_trip_row(change, idx, service_id) do
+          nil -> []
+          planned -> [{idx, change.block_id, planned}]
+        end
+      else
+        []
+      end
+    end)
+  end
+
+  @spec planned_trip_row(change(), non_neg_integer(), term()) :: map() | nil
+  defp planned_trip_row(change, idx, service_id) do
+    row = change.row
+    start_secs = get(row, :start_secs, "start_secs")
+    rows = get(row, :timing_rows, "timing_rows")
+
+    if is_integer(start_secs) and is_list(rows) and rows != [] do
+      first = List.first(rows)
+      last = List.last(rows)
+      {id, trip_id} = planned_identity(change, row, idx)
+
+      first_arrival = start_secs + offset_value(first, :arrival_offset)
+      first_departure = start_secs + offset_value(first, :departure_offset)
+      last_arrival = start_secs + offset_value(last, :arrival_offset)
+      last_departure = start_secs + offset_value(last, :departure_offset)
+
+      %{
+        id: id,
+        trip_id: trip_id,
+        route_id: nil,
+        service_id: service_id,
+        block_id: change.block_id,
+        trip_headsign: change.trip_headsign,
+        route_pattern_id: nil,
+        updated_at: nil,
+        frequency?: false,
+        headway_secs: nil,
+        first_arrival: first_arrival,
+        first_departure: first_departure,
+        last_arrival: last_arrival,
+        last_departure: last_departure,
+        first_stop: nil,
+        last_stop: nil,
+        plottable?: is_integer(first_arrival) and is_integer(last_departure)
+      }
+    else
+      nil
+    end
+  end
+
+  @spec offset_value(map(), atom()) :: integer()
+  defp offset_value(row, key) when is_map(row) do
+    string_key = Atom.to_string(key)
+
+    case get(row, key, string_key) do
+      offset when is_integer(offset) -> offset
+      _offset -> 0
+    end
+  end
+
+  defp offset_value(_row, _key), do: 0
+
+  @spec planned_identity(change(), map(), non_neg_integer()) :: {term(), String.t()}
+  defp planned_identity(%{op: :change, trip: trip}, _row, idx) when is_map(trip) do
+    id = get(trip, :id, "id") || "paste-change-#{idx}"
+    trip_id = get(trip, :trip_id, "trip_id") || to_string(id)
+    {id, trip_id}
+  end
+
+  defp planned_identity(%{row: row}, _row_arg, idx) do
+    number = if is_map(row), do: get(row, :row, "row") || idx, else: idx
+    {"paste-row-#{number}", "paste-row-#{number}"}
+  end
+
+  @spec overlap_planned_ids(
+          [{non_neg_integer(), String.t(), map()}],
+          String.t(),
+          [map()],
+          [change()],
+          MapSet.t()
+        ) :: MapSet.t()
+  defp overlap_planned_ids(entries, block_id, existing, changes, acc) do
+    planned_rows = Enum.map(entries, &elem(&1, 2))
+    id_to_idx = Map.new(entries, fn {idx, _block_id, planned} -> {planned.id, idx} end)
+
+    old_trips =
+      for {idx, _block_id, _planned} <- entries,
+          change = Enum.at(changes, idx),
+          change.op == :change,
+          is_map(change.trip),
+          do: change.trip
+
+    existing_here =
+      Enum.reject(existing, fn row ->
+        get(row, :block_id, "block_id") != block_id or
+          Enum.any?(old_trips, &same_trip?(&1, row))
+      end)
+
+    combined = existing_here ++ planned_rows
+    pairs = combined |> Checks.sequence() |> Checks.overlap_pairs()
+
+    Enum.reduce(pairs, acc, fn {earlier, later}, inner ->
+      inner =
+        case Map.fetch(id_to_idx, earlier.id) do
+          {:ok, idx} -> MapSet.put(inner, idx)
+          :error -> inner
+        end
+
+      case Map.fetch(id_to_idx, later.id) do
+        {:ok, idx} -> MapSet.put(inner, idx)
+        :error -> inner
+      end
+    end)
+  end
 
   # --- Normalization ---
 
