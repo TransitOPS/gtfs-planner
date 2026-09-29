@@ -374,6 +374,12 @@ defmodule GtfsPlanner.Agents.DispatchTest do
                  Jason.encode!(%{"query" => query, "offset" => 0})
                )
 
+      # The cap counts characters, so 100 two-byte characters stay within it.
+      multibyte = String.duplicate("é", 100)
+
+      assert {:ok, %{"query" => ^multibyte}} =
+               Dispatch.call(ProbePack, scope, "probe", Jason.encode!(%{"query" => multibyte}))
+
       assert_received {:probe_pack_called, "probe"}
     end
 

@@ -68,8 +68,20 @@ defmodule GtfsPlanner.Agents.ModelTest do
                ],
                "tool_choice" => "auto",
                "max_tokens" => 8_192,
-               "provider" => %{"data_collection" => "deny", "require_parameters" => true}
+               "provider" => %{"data_collection" => "deny", "require_parameters" => true},
+               "usage" => %{"include" => true}
              }
+    end
+
+    test "requests usage accounting so the reply can carry a known cost" do
+      Req.Test.expect(@owner, 1, fn conn ->
+        respond(conn, 200, reply_body("stop", %{"content" => "Hello"}, %{"cost" => 0.01}))
+      end)
+
+      assert {:ok, %{cost: 0.01}} = Model.complete(@messages, @tools)
+
+      assert_received {:model_request, request}
+      assert request.body["usage"] == %{"include" => true}
     end
 
     test "changing the configured model changes only the model field" do
@@ -127,6 +139,9 @@ defmodule GtfsPlanner.Agents.ModelTest do
       end)
 
       assert {:ok, reply} = Model.complete(@messages, @tools)
+
+      assert_received {:model_request, request}
+      assert request.body["usage"] == %{"include" => true}
 
       assert reply == %{
                content: nil,

@@ -136,11 +136,14 @@ defmodule GtfsPlanner.Agents.Dispatch do
       nil ->
         :ok
 
-      max_length when byte_size(value) > max_length ->
-        {:tool_error, "Argument #{key} must be at most #{max_length} characters."}
-
-      _max_length ->
-        :ok
+      max_length ->
+        # The cap counts characters, not bytes; the decoded argument is already
+        # bounded by the request body size limit.
+        if String.length(value) > max_length do
+          {:tool_error, "Argument #{key} must be at most #{max_length} characters."}
+        else
+          :ok
+        end
     end
   end
 

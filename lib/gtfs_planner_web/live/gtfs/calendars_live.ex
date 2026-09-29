@@ -73,7 +73,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     %{value: "near", label: "Next 3 months"}
   ]
   @prepared_missing_notice "One of these calendars is no longer in this service version. Refresh the list and ask again."
-  @prepared_edited_notice "The change you applied differs from the prepared change, so its card is not marked Applied."
+  @prepared_edited_notice "Your edited change was saved. The original prepared change was not applied."
 
   @impl true
   def mount(_params, _session, socket) do
