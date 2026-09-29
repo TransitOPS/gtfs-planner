@@ -1375,16 +1375,25 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Renders the read-only gap drawer: both trips with their times, the layover or
-  handoff sentence, the rider note for a handoff a rider can make on foot, and
-  any type 4/5 record for the pair.
+  Renders the gap drawer: the pair's times, the time available, the drive without
+  riders with its source, the wait behind it and whether an operator can change
+  there (AC-38), then the callout, the rider note for a handoff a rider can make
+  on foot, and any type 4/5 record for the pair.
 
-  The sentence and the note come from the block's own gap and handoff (R5), so the
-  drawer re-derives neither a distance nor a handoff kind: an empty move is the
-  only kind that never prints the rider note, and it is the only one that says the
-  driving time is unknown. A negative gap is an overlap, and its drawer prints the
-  overlap minutes; the timeline deliberately draws no bar for one, so this drawer
-  and the block drawer's own gap note are how an overlapping pair is read (AC-4).
+  The drive, the wait and the windows come from the block's own
+  `Movements.build/3` gap and the `Relief.windows/3` of that gap, so the drawer
+  re-derives neither a distance, a driving time nor a handoff kind (INV-8). The
+  source badge is the movement's own `:entered` or `:estimated`; a drive whose
+  time the version cannot compute says so rather than printing a zero, and a gap
+  that needs no drive at all says which handoff made it. A negative gap is an
+  overlap, and its drawer prints the overlap minutes; the timeline deliberately
+  draws no bar for one, so this drawer and the block drawer's own gap note are how
+  an overlapping pair is read (AC-4).
+
+  The two settings links are the reference's: the driving-time link names the pair
+  in the `stop:<id>|stop:<id>` form `Gtfs.list_deadhead_pairs/3` hands out, and it
+  is offered only for a gap that has a drive to enter. Operator changes are open
+  for every gap, because a layover is as much a place to change as a drive is.
 
   Anything the pair's record list leaves open is stated rather than left blank,
   and the two “Inspect” buttons open each trip's own drawer with this block kept,
@@ -1394,40 +1403,114 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :from, :map, required: true
   attr :to, :map, required: true
   attr :gap, :map, required: true
+  attr :movement, :map, default: nil
+  attr :windows, :list, default: []
+  attr :relief_checked?, :boolean, default: false
+  attr :day_label, :string, default: nil
   attr :block_id, :string, required: true
   attr :records, :list, required: true
   attr :short?, :boolean, default: false
   attr :back_block, :string, default: nil
 
   def gap_drawer(assigns) do
-    assigns = assign(assigns, :text, gap_text(assigns.gap, assigns.from, assigns.to))
+    assigns =
+      assigns
+      |> assign(:text, gap_text(assigns.gap, assigns.from, assigns.to, assigns.movement))
+      |> assign(:note, gap_note(assigns.movement, assigns.from, assigns.to))
+      |> assign(:places, window_places(assigns.windows, assigns.from, assigns.to))
+      |> assign(:pair, drive_pair(assigns.movement, assigns.from, assigns.to))
 
     ~H"""
-    <.drawer id="gap-drawer" open={@open} title="Time between trips">
+    <.drawer id="gap-drawer" open={@open} title={"Between trips #{@from.trip_id} and #{@to.trip_id}"}>
       <p class="text-sm text-base-content/70">
-        Block {@block_id} · {@from.trip_id} → {@to.trip_id}
+        Block {@block_id}{day_label(@day_label)}
       </p>
 
+      <%!-- A layover below the minimum is the block's own :short_layover finding,
+      which is also what outlines the timeline's gap bar. A drive the vehicle cannot
+      make in time is the block's own :cannot_reach finding, and it is the one notice
+      that asks for a decision rather than reporting a number, so it leads the drawer
+      the way the reference does. --%>
+      <div class="mt-4">
+        <.callout
+          id="gap-text"
+          data-short={to_string(@short?)}
+          kind={gap_kind(@movement, @short?)}
+          title={@text}
+        >
+          <p :if={@note}>{@note}</p>
+        </.callout>
+      </div>
+
       <dl class="mt-4 divide-y divide-base-300 border-y border-base-300 text-sm">
-        <.trip_field label="Arrival">
-          <strong>{clock(@from.last_arrival)}</strong> · {stop_name(@from.last_stop)}
+        <.trip_field label="Arrives">
+          <strong>{clock(@from.last_arrival)}</strong> at {stop_name(@from.last_stop)}
         </.trip_field>
-        <.trip_field label="Departure">
-          <strong>{clock(@to.first_departure)}</strong> · {stop_name(@to.first_stop)}
+        <.trip_field label="Next trip leaves">
+          <strong>{clock(@to.first_departure)}</strong> from {stop_name(@to.first_stop)}
+        </.trip_field>
+        <.trip_field label="Time available">
+          <span id="gap-available">{available_text(@gap)}</span>
+        </.trip_field>
+        <.trip_field label="Driving without riders">
+          <span id="gap-drive">{drive_text(@movement, @gap)}</span>
+          <.status_badge
+            :if={drive_source(@movement)}
+            id="gap-drive-source"
+            status={drive_badge_status(@movement)}
+            label={drive_source(@movement)}
+          />
+        </.trip_field>
+        <.trip_field label="Wait">
+          <span id="gap-wait">{wait_text(@movement)}</span>
+        </.trip_field>
+        <.trip_field label="Operators can change">
+          <span id="gap-operators">{operator_change_text(@relief_checked?, @places)}</span>
         </.trip_field>
       </dl>
 
-      <%!-- A layover below the minimum is the block's own :short_layover finding,
-      which is also what outlines the timeline's gap bar. --%>
-      <.callout
-        id="gap-text"
-        data-short={to_string(@short?)}
-        kind={if @short?, do: "warning", else: "info"}
-        title={@text}
-      />
-
       <p :if={rider_note?(@gap)} id="gap-rider-note" class="mt-3 text-sm">
         Trip planners such as Google Maps may tell riders they can stay on board.
+      </p>
+
+      <div class="mt-4 flex flex-wrap items-center gap-x-4">
+        <button
+          :if={@pair}
+          id="gap-open-driving-times"
+          type="button"
+          phx-click="open_drawer"
+          phx-value-key="driving_times"
+          phx-value-pair={@pair}
+          class="link link-primary inline-flex min-h-11 items-center"
+        >
+          {if @movement.source == :entered,
+            do: "Change the driving time",
+            else: "Enter a known driving time"}
+        </button>
+        <button
+          id="gap-open-operator-changes"
+          type="button"
+          phx-click="open_drawer"
+          phx-value-key="operator_changes"
+          class="link link-primary inline-flex min-h-11 items-center"
+        >
+          Review operator changes
+        </button>
+        <button
+          :if={@back_block}
+          id="gap-back-to-block"
+          type="button"
+          phx-click="open_block"
+          phx-value-block={@back_block}
+          class="link link-primary inline-flex min-h-11 items-center"
+        >
+          Open block {@back_block}
+        </button>
+      </div>
+
+      <p :if={length(@places) == 2 and @movement} id="gap-change-note" class="mt-3 text-sm">
+        Both stops are marked, but the {drive_minutes(@movement)} drive between them is
+        never a change: one operator drives it.
       </p>
 
       <section id="gap-transfers" class="mt-6 border-t border-base-300 pt-4">
@@ -1468,16 +1551,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           class="btn btn-sm min-h-11"
         >
           Inspect {trip.trip_id}
-        </button>
-        <button
-          :if={@back_block}
-          id="gap-back-to-block"
-          type="button"
-          phx-click="open_block"
-          phx-value-block={@back_block}
-          class="btn btn-sm min-h-11"
-        >
-          Back to block {@back_block}
         </button>
       </div>
     </.drawer>
@@ -2355,30 +2428,146 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   # Copy: the layover at one stop, the same station, a nearby stop with its
-  # distance and the time available, or the empty move, which alone says the
-  # driving time is unknown (and, without coordinates, that it cannot be estimated
-  # either).
-  defp gap_text(%{gap_secs: secs}, _from, _to) when secs < 0,
+  # distance and the time available, the empty move with the drive it needs, or a
+  # drive the vehicle cannot make in time.
+  defp gap_text(%{gap_secs: secs}, _from, _to, _movement) when secs < 0,
     do: "#{minutes(-secs)} overlap"
 
-  defp gap_text(%{handoff: :same_stop, gap_secs: secs}, _from, to),
+  # The gap the vehicle cannot cover: the drive it needs against the time there is,
+  # which is the sentence the reference leads the drawer with (AC-38). The minutes
+  # are the movement's own drive and the block's own gap, not a subtraction here.
+  defp gap_text(%{gap_secs: secs}, _from, to, %{feasible?: false, drive_secs: drive})
+       when is_integer(drive),
+       do: "Needs #{minutes(drive)} to reach #{stop_name(to.first_stop)}; has #{minutes(secs)}."
+
+  defp gap_text(%{handoff: :same_stop, gap_secs: secs}, _from, to, _movement),
     do: "#{minutes(secs)} layover at #{stop_name(to.first_stop)}"
 
-  defp gap_text(%{handoff: :same_station, gap_secs: secs}, from, _to),
+  defp gap_text(%{handoff: :same_station, gap_secs: secs}, from, _to, _movement),
     do: "Same station · #{minutes(secs)} at #{station_name(from.last_stop)}"
 
-  defp gap_text(%{handoff: {:nearby, meters}, gap_secs: secs}, _from, _to),
+  defp gap_text(%{handoff: {:nearby, meters}, gap_secs: secs}, _from, _to, _movement),
     do: "Nearby stop · #{meters} m · #{minutes(secs)} available"
 
-  defp gap_text(%{handoff: {:moves, nil}}, from, to),
+  defp gap_text(%{handoff: {:moves, nil}}, from, to, _movement),
     do: move_text(from, to, " (coordinates unavailable)")
 
-  defp gap_text(%{handoff: {:moves, _meters}}, from, to), do: move_text(from, to, "")
+  defp gap_text(%{handoff: {:moves, _meters}}, from, to, movement),
+    do: move_text(from, to, movement)
+
+  defp move_text(from, to, %{} = movement) do
+    "Moves empty: #{stop_name(from.last_stop)} → #{stop_name(to.first_stop)}. " <>
+      "#{drive_minutes(movement)}#{est_mark(movement.source)} to drive."
+  end
 
   defp move_text(from, to, qualifier) do
     "Moves empty: #{stop_name(from.last_stop)} → #{stop_name(to.first_stop)}. " <>
       "Driving time is unknown#{qualifier}."
   end
+
+  # The one line of advice an unreachability carries. A drive that could be made
+  # has no note: the drawer is there to report the pair, and the block drawer's own
+  # callouts carry the problems (CR-4).
+  defp gap_note(%{feasible?: false}, _from, _to),
+    do:
+      "Move one of the trips to another block, or enter a known driving time if the " <>
+        "estimate is too long."
+
+  defp gap_note(_movement, _from, _to), do: nil
+
+  # The callout's tone follows the block's own verdict: a drive the vehicle cannot
+  # make in time is the error the reader has to act on, a layover below the
+  # minimum is the warning the timeline's gap bar already outlines, and everything
+  # else is a note.
+  defp gap_kind(%{feasible?: false}, _short?), do: "error"
+  defp gap_kind(_movement, true), do: "warning"
+  defp gap_kind(_movement, _short?), do: "info"
+
+  # The time the pair has, which is the gap the block derived. An overlap has no
+  # time available to speak of — its own callout prints the overlap — so the row
+  # says so rather than printing a negative number of minutes.
+  defp available_text(%{gap_secs: secs}) when secs < 0, do: "—"
+  defp available_text(%{gap_secs: secs}), do: minutes(secs)
+
+  # The drive without riders, with the source the movement carries. A gap that
+  # needs no drive names the handoff that made it, and a drive whose time the
+  # version cannot compute says so rather than printing a zero, because a zero
+  # would read as a drive that costs nothing (FH-40).
+  defp drive_text(%{kind: :layover}, %{handoff: handoff}), do: "None · #{handoff_label(handoff)}"
+  defp drive_text(%{drive_secs: secs}, _gap) when is_integer(secs), do: minutes(secs)
+  defp drive_text(_movement, _gap), do: "Unknown · no driving time"
+
+  defp handoff_label(:same_stop), do: "same stop"
+  defp handoff_label(:same_station), do: "same station"
+  defp handoff_label({:nearby, _meters}), do: "nearby stop"
+  defp handoff_label({:moves, _meters}), do: "empty move"
+
+  defp drive_source(%{drive_secs: secs, source: source}) when is_integer(secs),
+    do: source_text(source)
+
+  defp drive_source(_movement), do: nil
+
+  defp source_text(:entered), do: "Entered"
+  defp source_text(:estimated), do: "Estimated"
+  defp source_text(_source), do: nil
+
+  # One badge vocabulary for both sources: an estimate is informational, an
+  # entered time is a real one.
+  defp drive_badge_status(%{source: :entered}), do: "active"
+  defp drive_badge_status(_movement), do: "info"
+
+  defp drive_minutes(%{drive_secs: secs}) when is_integer(secs), do: minutes(secs)
+  defp drive_minutes(_movement), do: "an unknown number of"
+
+  # The wait a reachable gap leaves behind. A drive the vehicle cannot make and a
+  # drive whose length is unknown both leave no wait to report, so the row says so
+  # rather than printing a number the movements never derived.
+  defp wait_text(%{wait_secs: secs}) when is_integer(secs) and secs >= 0, do: minutes(secs)
+
+  defp wait_text(_movement), do: "—"
+
+  # Whether an operator can change over this gap (R5). With no relief limit set
+  # there is no piece of work to hand over, so the row says the checks are off
+  # rather than claiming a change is impossible. Otherwise the pair's own windows
+  # answer it: the places they name, or plainly no.
+  defp operator_change_text(false, _places), do: "Not checked"
+  defp operator_change_text(true, []), do: "No"
+  defp operator_change_text(true, places), do: "Yes, at " <> Enum.join(places, "; ")
+
+  # Where each of the pair's own windows happens, named the way the drawer names
+  # every other stop. A window is always one of the pair's two endpoints or their
+  # shared station, so the endpoint stops carry the name; anything else falls back
+  # to the stored ID rather than to a stop the day load did not describe.
+  defp window_places(windows, from, to) do
+    windows
+    |> Enum.map(&window_place(&1, from, to))
+    |> Enum.uniq()
+  end
+
+  defp window_place(%{stop_id: stop_id}, %{last_stop: %{stop_id: stop_id} = stop}, _to),
+    do: station_name(stop)
+
+  defp window_place(%{stop_id: stop_id}, _from, %{first_stop: %{stop_id: stop_id} = stop}),
+    do: station_name(stop)
+
+  defp window_place(%{stop_id: stop_id}, _from, _to), do: stop_id
+
+  # The pair a driving-time entry names, in the stored `stop:<id>` form
+  # `Gtfs.list_deadhead_pairs/3` hands out, so the drawer the link opens can
+  # highlight and focus that row. Only a gap with a drive of its own can have one.
+  defp drive_pair(%{kind: :drive, drive_secs: secs}, %{last_stop: %{stop_id: from_id}}, %{
+         first_stop: %{stop_id: to_id}
+       })
+       when is_integer(secs),
+       do: "stop:#{from_id}|stop:#{to_id}"
+
+  defp drive_pair(_movement, _from, _to), do: nil
+
+  # The drawer names the day type the gap was read from, so a pair is read in the
+  # scope it was derived in. A day type with no label falls back to no suffix
+  # rather than to a blank line.
+  defp day_label(nil), do: ""
+  defp day_label(label), do: " · " <> label
 
   # The station a same-station handoff shares is the stops' parent station; a stop
   # reference carries the parent's ID rather than its name, so the ID stands for

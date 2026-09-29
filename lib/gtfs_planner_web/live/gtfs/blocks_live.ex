@@ -36,6 +36,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   drawers offer “Back to block <id>”. The top of the stack is the one drawer
   rendered open (trip, then gap, then block), one URL change resolves it against
   the loaded day and no drawer reaches into the day in `render/1` (CR-6).
+
+  `drawer=driving_times&pair=stop:<id>|stop:<id>` and `drawer=operator_changes`
+  are the planning-input drawers the gap drawer links to (AC-38). They are page
+  drawers rather than a stack entry, so the link that opens one clears the stack:
+  one open panel over the page, and a link that reopens the same drawer.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -60,7 +65,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     # maps to the same drawer so an older link still opens the page's plan
     # summary rather than a drawer that no longer exists.
     "plan_summary" => :plan_summary,
-    "peak" => :plan_summary
+    "peak" => :plan_summary,
+    # The two planning-input drawers are reached from a link that names them in
+    # the URL, so `?drawer=driving_times&pair=…` opens the same drawer a click
+    # does (step 41, step 42). Nothing renders them until those steps build them.
+    "driving_times" => :driving_times,
+    "operator_changes" => :operator_changes
   }
 
   # The settings save keeps the reader's value when the save is refused, so the
@@ -400,6 +410,23 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {:noreply, put_layover(socket, layover_params(params), nil)}
   end
 
+  # The two planning-input drawers are part of the URL, because a link names what
+  # it opens: the gap drawer's “Enter a known driving time” names the pair it is
+  # about, so the drawer can highlight and focus that row (AC-38, step 41). They
+  # are page drawers, so the drawer stack is dropped rather than stacked under
+  # them — the reference opens one drawer over another, and two open panels would
+  # cover the page twice.
+  def handle_event("open_drawer", %{"key" => key} = params, socket)
+      when key in ["driving_times", "operator_changes"] do
+    patch(socket, %{
+      trip: nil,
+      gap: nil,
+      block: nil,
+      drawer: key,
+      pair: blank_to_nil(params["pair"])
+    })
+  end
+
   def handle_event("open_drawer", %{"key" => key}, socket) do
     case key do
       "unassigned" ->
@@ -441,8 +468,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         do: assign(socket, :assign, nil),
         else: socket
 
-    if socket.assigns.state.trip || socket.assigns.state.gap || socket.assigns.state.block do
-      patch(socket, %{trip: nil, gap: nil, block: nil}, clear_command: true)
+    state = socket.assigns.state
+
+    if state.trip || state.gap || state.block || state.drawer || state.pair do
+      patch(socket, %{trip: nil, gap: nil, block: nil, drawer: nil, pair: nil},
+        clear_command: true
+      )
     else
       {:noreply, socket}
     end
@@ -571,7 +602,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       pool_page: page_number(params["pool_page"]),
       trip: blank_to_nil(params["trip"]),
       gap: blank_to_nil(params["gap"]),
-      block: blank_to_nil(params["block"])
+      block: blank_to_nil(params["block"]),
+      drawer: blank_to_nil(params["drawer"]),
+      pair: blank_to_nil(params["pair"])
     }
   end
 
@@ -625,7 +658,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       {"pool_page", page_param(state.pool_page)},
       {"trip", state.trip},
       {"gap", state.gap},
-      {"block", state.block}
+      {"block", state.block},
+      {"drawer", state.drawer},
+      {"pair", state.pair}
     ]
     |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
   end
@@ -936,7 +971,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       {true, day} when not is_nil(day) ->
         state = socket.assigns.state
         block = find_block(day, state.block)
-        gap = resolve_gap(day, state.gap)
+        gap = resolve_gap(day, state.gap, not is_nil(socket.assigns.max_piece_minutes))
         {socket, trip} = resolve_trip_view(socket, day, state.trip)
 
         socket
@@ -944,6 +979,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         |> assign(:gap_view, if(is_nil(trip), do: gap))
         |> assign(:block_view, if(is_nil(trip) and is_nil(gap), do: block))
         |> assign(:back_block, if(block, do: block.summary.block_id))
+        |> assign(:open_drawer, Map.get(@drawers, state.drawer) || socket.assigns.open_drawer)
         |> assign(:block_action, block_action_state(socket.assigns.block_action, block))
         |> assign(
           :block_attributes,
@@ -997,38 +1033,62 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # A `gap` deep link names the pair of consecutive trips; the drawer reads the
-  # block's own gap entry (R5's handoff and the layover seconds) and the day's
-  # own records for the pair, so neither is recomputed or re-derived here.
-  defp resolve_gap(_day, nil), do: nil
+  # block's own gap entry (R5's handoff and the layover seconds), the block's own
+  # movement for that gap (its drive, its source and the wait behind it) and the
+  # relief windows of that same gap, so neither is recomputed or re-derived here.
+  # Operator changes are read as "checked" only while a relief limit is set, which
+  # is the same rule the timeline's own relief mark follows.
+  defp resolve_gap(_day, nil, _relief_checked?), do: nil
 
-  defp resolve_gap(day, gap) do
+  defp resolve_gap(day, gap, relief_checked?) do
     case String.split(gap, "|") do
-      [from_id, to_id] -> find_gap(day, from_id, to_id)
+      [from_id, to_id] -> find_gap(day, from_id, to_id, relief_checked?)
       _other -> nil
     end
   end
 
-  defp find_gap(day, from_id, to_id) do
+  defp find_gap(day, from_id, to_id, relief_checked?) do
     Enum.find_value(day.blocks, fn block ->
-      gap_entry(day, block, from_id, to_id)
+      gap_entry(day, block, from_id, to_id, relief_checked?)
     end)
   end
 
-  defp gap_entry(day, block, from_id, to_id) do
+  defp gap_entry(day, block, from_id, to_id, relief_checked?) do
     with from when not is_nil(from) <- Enum.find(block.trips, &(&1.id == from_id)),
          to when not is_nil(to) <- Enum.find(block.trips, &(&1.id == to_id)),
          gap when not is_nil(gap) <-
            Enum.find(block.gaps, &(&1.from_id == from_id and &1.to_id == to_id)) do
+      {movement, index} = movement_gap(block, from_id, to_id)
+
       %{
         block_id: block.summary.block_id,
         from: from,
         to: to,
         gap: gap,
+        movement: movement,
+        windows: if(index, do: Enum.filter(block.windows, &(&1.gap_index == index)), else: []),
+        relief_checked?: relief_checked?,
+        day_label: day.day_type && day.day_type.label,
         records: pair_records(day.in_seat, from, to),
         short?: short_layover?(block, from_id, to_id)
       }
     else
       _other -> nil
+    end
+  end
+
+  # The block's own movement for the pair and the index its relief windows carry.
+  # The windows name their gap by that index, so the drawer reads the two together
+  # rather than matching a window's trip IDs that it does not hold.
+  defp movement_gap(block, from_id, to_id) do
+    block.movements.gaps
+    |> Enum.with_index()
+    |> Enum.find(fn {movement, _index} ->
+      movement.from_id == from_id and movement.to_id == to_id
+    end)
+    |> case do
+      nil -> {nil, nil}
+      {movement, index} -> {movement, index}
     end
   end
 
@@ -2278,6 +2338,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                     from={gap.from}
                     to={gap.to}
                     gap={gap.gap}
+                    movement={gap.movement}
+                    windows={gap.windows}
+                    relief_checked?={gap.relief_checked?}
+                    day_label={gap.day_label}
                     block_id={gap.block_id}
                     records={gap.records}
                     short?={gap.short?}
