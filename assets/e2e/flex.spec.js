@@ -77,6 +77,26 @@ async function routeBlankTiles(page) {
   );
 }
 
+// Leaflet fades each tile in, so a capture taken as the first tiles land shows
+// bands of half-opacity ground. A map capture waits for its tile layer to
+// settle first, which keeps the ground one colour and the drawn areas the only
+// thing the comparison sees change.
+async function waitForTiles(page, mapSelector) {
+  await page.waitForFunction((selector) => {
+    const tiles = [...document.querySelectorAll(`${selector} img.leaflet-tile`)];
+
+    return (
+      tiles.length > 0 &&
+      tiles.every(
+        (tile) =>
+          tile.complete &&
+          tile.naturalWidth > 0 &&
+          getComputedStyle(tile).opacity === "1",
+      )
+    );
+  }, mapSelector);
+}
+
 // Resolves any seeded version by its exact name through the version panel, so a
 // journey reads the fixture it names instead of whichever version is the default.
 async function versionIdByName(page, name) {
@@ -191,6 +211,55 @@ test("list", async ({ page }) => {
 
   await page.setViewportSize(DESKTOP);
   await captureReference(page, "flex-services-prototype.html", "list", "list");
+});
+
+// ── list map ──────────────────────────────────────────────────────────────
+
+// The map card is the server's map payload drawn by the FlexAreaMap hook: the
+// version's stored areas, its fixed route lines and its connecting stops, on the
+// street basemap, with the legend under the stage. Tiles are blank in tests, so
+// the areas and the lines are what the capture shows.
+test("list-map", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  await openFlex(page);
+
+  const map = page.locator("#flex-list-map");
+
+  // The hook drew the payload: the area is an SVG path in Leaflet's overlay
+  // pane, the route line is drawn beside it, and the connecting stop is named
+  // on the map rather than on hover.
+  await map.locator("path.flex-map-area").first().waitFor({ timeout: 60_000 });
+  await waitForTiles(page, "#flex-list-map");
+  await expect(map.locator("path.flex-map-area")).toHaveCount(1);
+  await expect(map.locator(".leaflet-overlay-pane path")).toHaveCount(4);
+  // Read-only: nothing on the map takes a click the map itself should get.
+  await expect(map.locator("path.leaflet-interactive")).toHaveCount(0);
+  await expect(
+    map.locator(".flex-map-stop-label", { hasText: "Newport City Center" }),
+  ).toBeVisible();
+
+  // The legend names what is drawn, and the attribution stays visible.
+  await expect(page.locator("#flex-list-map-legend")).toContainText("Flex area");
+  await expect(page.locator("#flex-list-map-legend")).toContainText("Fixed route");
+  await expect(page.locator("#flex-list-map-legend")).toContainText("Connecting stop");
+  await expect(map.locator(".leaflet-control-attribution")).toContainText(
+    "OpenStreetMap",
+  );
+
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "list-map");
+
+  await page.setViewportSize(NARROW);
+  await page.waitForSelector("#flex-list-map path.flex-map-area");
+  await waitForTiles(page, "#flex-list-map");
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "list-map");
+
+  await page.setViewportSize(DESKTOP);
+  await captureReference(page, "flex-services-prototype.html", "list", "list-map");
 });
 
 // ── export ────────────────────────────────────────────────────────────────

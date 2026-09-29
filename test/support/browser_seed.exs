@@ -2652,8 +2652,11 @@ case Accounts.register_first_admin(%{
     # two services the flex list, the service page and the area editor render:
     #
     #   * "Newport Dial-a-Ride", an area service with one drawn Newport area,
-    #     weekday 07:00–18:00 and Saturday 09:00–16:00 hours and an earlier-day
-    #     booking rule, following the prototype's dial-a-ride fixture;
+    #     weekday 07:00–18:00 and Saturday 09:00–16:00 hours, an earlier-day
+    #     booking rule and one connecting stop, following the prototype's
+    #     dial-a-ride fixture; the connecting stop is the representative flex
+    #     fixture's own arrangement (`flex_fixtures.ex` gives its dial-a-ride
+    #     two), and it is what the flex map's "Connecting stop" legend names;
     #   * "Valley Line detours", a detour service on Route 20 over the Newport
     #     Heights–Toledo Junction stretch, ¾ mile (1200 m), wording set, one
     #     same-day booking rule, on the weekday and Saturday calendars.
@@ -3384,6 +3387,7 @@ case Accounts.register_first_admin(%{
           phone: "(541) 555-0142",
           phone_hours: %{"days" => "Mon–Fri", "from" => "08:00", "to" => "17:00"},
           info_url: "https://northcoast.example/dial-a-ride",
+          hub_stop_ids: ["BROWSER_FLEX_NP1"],
           hours: [
             %{area_key: "a1", service_id: "weekday", start: "07:00", end: "18:00"},
             %{area_key: "a1", service_id: "saturday", start: "09:00", end: "16:00"}
@@ -3476,6 +3480,11 @@ case Accounts.register_first_admin(%{
     )
 
     flex_expect.(
+      flex_area_saved.hub_stop_ids == ["BROWSER_FLEX_NP1"],
+      "unexpected dial-a-ride connecting stops: #{inspect(flex_area_saved.hub_stop_ids)}"
+    )
+
+    flex_expect.(
       length(flex_area_saved.booking_rules) == 1,
       "expected one dial-a-ride booking rule, got #{length(flex_area_saved.booking_rules)}"
     )
@@ -3515,7 +3524,8 @@ case Accounts.register_first_admin(%{
         Enum.map_join(flex_statuses, ", ", fn {name, label} -> "#{name}: #{label}" end) <>
         "; Route 20 weekday trips #{inspect(flex_weekday_trips)}, " <>
         "#{length(elem(flex_zones, 1))} detour zones, " <>
-        "#{length(flex_area_saved.areas)} drawn area with #{length(flex_area_saved.hours)} hours rows"
+        "#{length(flex_area_saved.areas)} drawn area with #{length(flex_area_saved.hours)} hours rows, " <>
+        "#{length(flex_area_saved.hub_stop_ids)} connecting stops"
     )
 
     diagram_version
