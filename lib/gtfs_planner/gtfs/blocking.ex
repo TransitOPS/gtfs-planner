@@ -64,6 +64,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     Summary
   }
 
+  alias GtfsPlanner.Gtfs.BlockAttribute
   alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.DeadheadTime
@@ -112,6 +113,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # here replaces only this one of them: writing the limit must not blank a stored
   # layover, interlining rule or default garage (AC-4, R12).
   @replace_piece_columns [:max_piece_minutes, :updated_at]
+
+  # The two value columns of one block's row on one service, plus the write
+  # timestamp. A save replaces both: clearing a garage and setting a type must
+  # never leave the earlier value behind on the same row, and a repeated save of
+  # the same values is the same row rather than a second one (AC-19).
+  @replace_attribute_columns [:garage_id, :vehicle_type_id, :updated_at]
 
   # The pair sources a Movements leg can carry. Every leg of the day is listed for
   # the Driving times drawer; only an estimated one is counted as "N estimated"
@@ -232,6 +239,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           | {:unassign, [Ecto.UUID.t()]}
           | {:rename, String.t(), String.t()}
           | {:merge, String.t(), String.t()}
+          | {:attributes, String.t(), Ecto.UUID.t() | nil, Ecto.UUID.t() | nil}
 
   @type change :: %{trip: Queries.trip_row(), from: String.t() | nil, to: String.t() | nil}
 
@@ -1626,6 +1634,62 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     case validate_command(command) do
       {:ok, command} ->
         run_write(fn -> apply_command!(day_type_key, command, audit, confirmation) end)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Reviews and stores one block's garage and required vehicle type (AC-19, R12).
+
+  `attrs` carries `garage_id` and `vehicle_type_id`; a blank value is stored as
+  `nil`, and a value that is not a UUID is a changeset error raised before the
+  transaction opens. The save is reviewed, not applied blind: a block's row is
+  keyed `(service_id, block_id)`, so a service another day type shares is read
+  there too, and the review names every day type the rows reach with its date
+  count and the problems the saved value adds.
+
+  The write takes the same prefix as a block command — the scoped version `FOR
+  SHARE` and its published check, the calendars and their derived day types
+  (INV-6), `lock_blocking!/1` (INV-1) and then the block's own trip rows `FOR
+  UPDATE` in UUID order — rebuilds the planning context under that lock and
+  compares `Context.digest/1` of it through the review's fingerprint (INV-7), so
+  a driving time, a route setting or another attribute entered after the review
+  makes the confirmation stale rather than silently overwriting.
+
+  A block the selected day type does not run is `{:error, :not_found}`, as is a
+  garage or a vehicle type of another organization; a value of this organization
+  is the only one that can be stored. A save that reaches a day type other than
+  the selected one, or that adds a problem, returns `{:needs_confirmation,
+  review}` and writes nothing; calling it again with `review.fingerprint` writes
+  the rows and returns `{:ok, %{review: review}}`, and a fingerprint that no
+  longer matches returns `{:error, {:stale_review, review}}` and writes nothing.
+
+  No trip row changes, so no `"trip"` change log is written and no `transfers`
+  row is ever inserted, updated or deleted (INV-3).
+  """
+  @spec set_block_attributes(String.t(), String.t(), map(), AuditContext.t(), String.t() | nil) ::
+          {:ok, %{review: Review.review()}}
+          | {:needs_confirmation, Review.review()}
+          | {:error,
+             {:stale_review, Review.review()}
+             | {:unknown_day_type, [DayTypes.day_type()]}
+             | :not_found
+             | :busy
+             | Ecto.Changeset.t()}
+  def set_block_attributes(
+        day_type_key,
+        block_id,
+        attrs,
+        %AuditContext{} = audit,
+        confirmation \\ nil
+      ) do
+    case attribute_values(attrs) do
+      {:ok, values} ->
+        run_write(fn ->
+          write_attributes!(day_type_key, block_id, values, audit, confirmation)
+        end)
 
       {:error, reason} ->
         {:error, reason}
@@ -3153,6 +3217,212 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   defp resolved_block_id({:rename, _from, target}), do: target
   defp resolved_block_id({:merge, _from, target}), do: target
   defp resolved_block_id(_command), do: nil
+
+  # The two stored values, validated before the transaction opens: a blank is
+  # "unset" and a value the schema cannot cast is a changeset error, so a malformed
+  # value never reaches a lock. The schema's own cast is the only rule here (CR-3).
+  defp attribute_values(attrs) do
+    changeset =
+      BlockAttribute.changeset(%BlockAttribute{}, %{
+        garage_id: value(attrs, :garage_id),
+        vehicle_type_id: value(attrs, :vehicle_type_id)
+      })
+
+    if changeset.valid? do
+      {:ok,
+       %{
+         garage_id: Ecto.Changeset.get_field(changeset, :garage_id),
+         vehicle_type_id: Ecto.Changeset.get_field(changeset, :vehicle_type_id)
+       }}
+    else
+      {:error, changeset}
+    end
+  end
+
+  # The attribute write takes the same prefix as a block command — the scoped
+  # version `FOR SHARE` and its published check, the calendars and the day types
+  # derived from them (INV-6), `lock_blocking!/1` (INV-1) and then the block's own
+  # trip rows `FOR UPDATE` in UUID order — and only then decides what to write, so
+  # a confirmation is compared against the same locked state it reviewed.
+  #
+  # `run_write/2` wraps the closure's own return value, so every refusal leaves
+  # here as a rollback and reaches the caller as `{:error, reason}` rather than as
+  # a success carrying an error tuple (AC-5).
+  defp write_attributes!(day_type_key, block_id, values, %AuditContext{} = audit, confirmation) do
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+
+    version = Versions.lock_for_input_write!(organization_id, version_id)
+
+    if version.publication_status == @published_status do
+      calendars = load_calendars!(organization_id, version_id)
+      day_types = DayTypes.derive(calendars)
+      day_type = resolve_day_type!(day_types, day_type_key)
+      service_dates = DayTypes.service_dates(calendars)
+
+      if is_nil(day_type), do: Repo.rollback({:unknown_day_type, day_types})
+
+      lock_blocking!(version_id)
+
+      services = attribute_services!(audit, day_type, block_id)
+      affected = attribute_day_types(audit, day_types, services, block_id)
+      check_attribute_owners!(organization_id, values)
+
+      rows = lock_attribute_rows!(audit, block_id, affected)
+
+      {before, after_context} =
+        attribute_contexts(organization_id, version_id, rows, block_id, services, values)
+
+      review =
+        Review.build(%{
+          command: {:attributes, block_id, values.garage_id, values.vehicle_type_id},
+          target: nil,
+          selected_key: day_type.key,
+          affected: affected,
+          rows: rows,
+          changes: [],
+          touched: [block_id],
+          context: before,
+          context_after: after_context,
+          inputs_digest: Context.digest(before),
+          in_seat: in_seat_context(organization_id, version_id, affected, service_dates, rows),
+          service_dates: service_dates
+        })
+
+      cond do
+        review.needs_confirmation? and is_nil(confirmation) ->
+          {:needs_confirmation, review}
+
+        not is_nil(confirmation) and confirmation != review.fingerprint ->
+          Repo.rollback({:stale_review, review})
+
+        true ->
+          store_attributes!(organization_id, version_id, block_id, services, values)
+          %{review: review}
+      end
+    else
+      Repo.rollback(:not_found)
+    end
+  end
+
+  # The row keys of the save: the services of the block's trips on the selected day
+  # type, read inside the version's own scope. A block the day type does not run has
+  # no row to write, and neither has a block of another organization or version.
+  defp attribute_services!(%AuditContext{} = audit, day_type, block_id) do
+    case day_type_block_trips(audit, day_type, [block_id]) do
+      [] -> Repo.rollback(:not_found)
+      trips -> trips |> Enum.map(& &1.service_id) |> Enum.uniq() |> Enum.sort()
+    end
+  end
+
+  # The day types the rows reach: every day type containing one of those services
+  # and holding a trip of this block, in derived order. A day type that shares the
+  # service but runs no trip of the block reads no row, so it is not affected and
+  # the operator is not asked to confirm for a date the save cannot change (AC-19).
+  defp attribute_day_types(%AuditContext{} = audit, day_types, services, block_id) do
+    candidates =
+      services
+      |> Enum.flat_map(&DayTypes.containing(day_types, &1))
+      |> Enum.uniq_by(& &1.key)
+
+    service_ids = candidates |> Enum.flat_map(& &1.service_ids) |> Enum.uniq()
+
+    held =
+      audit.organization_id
+      |> Queries.trip_rows(audit.gtfs_version_id, {:blocks, [block_id], service_ids})
+      |> MapSet.new(& &1.service_id)
+
+    Enum.filter(candidates, &holds_block?(&1, held))
+  end
+
+  # The day type holds a trip of this block when one of the trips carrying the
+  # block ID runs in one of its services.
+  defp holds_block?(day_type, held),
+    do: Enum.any?(day_type.service_ids, &MapSet.member?(held, &1))
+
+  # A garage or a vehicle type of another organization is `:not_found`, the same
+  # answer an unknown value gives. Stored, it would resolve as nothing at every
+  # consumer (R4) and the block would silently plan from its route or the default
+  # garage instead of the one the operator chose.
+  defp check_attribute_owners!(organization_id, values) do
+    if owned_garage?(organization_id, values.garage_id) and
+         owned_vehicle_type?(organization_id, values.vehicle_type_id) do
+      :ok
+    else
+      Repo.rollback(:not_found)
+    end
+  end
+
+  defp owned_garage?(_organization_id, nil), do: true
+
+  defp owned_garage?(organization_id, garage_id) do
+    not is_nil(Operations.get_garage(organization_id, garage_id))
+  end
+
+  defp owned_vehicle_type?(_organization_id, nil), do: true
+
+  defp owned_vehicle_type?(organization_id, vehicle_type_id) do
+    not is_nil(Operations.get_vehicle_type(organization_id, vehicle_type_id))
+  end
+
+  # The rows the review reads are the block's own trips on every affected service,
+  # taken in UUID order after the blocking lock and re-read, so the review and its
+  # fingerprint describe the locked state rather than the pre-lock read (INV-1).
+  defp lock_attribute_rows!(%AuditContext{} = audit, block_id, affected) do
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+    service_ids = affected |> Enum.flat_map(& &1.service_ids) |> Enum.uniq()
+
+    organization_id
+    |> Queries.lock_trips!(version_id, [], [block_id], service_ids)
+    |> then(&Queries.trip_rows(organization_id, version_id, {:uuids, &1}))
+  end
+
+  # The planning context the review read and the one this save leaves behind. Only
+  # the rows of the saved services differ: every other planning input is held stable
+  # by the lock, and recomputing it would make the after context disagree with the
+  # digest the confirmation matched (INV-7).
+  defp attribute_contexts(organization_id, version_id, rows, block_id, services, values) do
+    before =
+      build_context!(organization_id, version_id, get_settings(organization_id, version_id), rows)
+
+    row = %{garage_id: values.garage_id, vehicle_type_id: values.vehicle_type_id}
+    attributes = Enum.reduce(services, before.attributes, &Map.put(&2, {&1, block_id}, row))
+
+    {before, %{before | attributes: attributes}}
+  end
+
+  # One row per service, replacing both value columns and the write timestamp: a
+  # save that clears a garage and sets a type must not leave the earlier garage
+  # behind, and a repeated save is the same row rather than a second one. The
+  # scoping fields are set on the struct and never cast (CR-3).
+  #
+  # A refused insert is a rollback rather than a raised constraint error: the
+  # ownership check above already refused a value this organization does not own,
+  # so what is left is a garage or a type deleted between that read and this write,
+  # and the caller's answer to it is the changeset it already knows how to show.
+  defp store_attributes!(organization_id, version_id, block_id, services, values) do
+    Enum.each(services, fn service_id ->
+      changeset =
+        BlockAttribute.changeset(
+          %BlockAttribute{
+            organization_id: organization_id,
+            gtfs_version_id: version_id,
+            service_id: service_id,
+            block_id: block_id
+          },
+          values
+        )
+
+      case Repo.insert(changeset,
+             on_conflict: {:replace, @replace_attribute_columns},
+             conflict_target: [:organization_id, :gtfs_version_id, :service_id, :block_id]
+           ) do
+        {:ok, _row} -> :ok
+        {:error, refused} -> Repo.rollback(refused)
+      end
+    end)
+  end
 
   # The configured transaction boundary is retried as a whole: a serialization
   # failure or a deadlock is transient, every other failure is reported or re-raised
