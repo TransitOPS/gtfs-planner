@@ -34,7 +34,9 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   `put_geom/2` and `get_geojson/1` are the storage pair: `put_geom/2` replaces
   one area's geometry (a `nil` clears it) and `get_geojson/1` reads the stored
   geometry of the given areas. Both run on the caller's connection, so a
-  context can write geometry inside its own transaction.
+  context can write geometry inside its own transaction. `copy_areas/4` copies
+  one service's stored areas into another service with one `INSERT … SELECT`, so
+  `geom` never becomes an Elixir value.
   """
 
   alias GtfsPlanner.Gtfs.FlexService
@@ -462,6 +464,54 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   WHERE id = ANY($1) AND geom IS NOT NULL
   """
 
+  # Copies every area of $1 into the service $2 with one statement. The source
+  # rows are fenced to the organization ($3) and the source version ($4); the
+  # new rows take their scope from the new service row, so a copy can never
+  # write into another organization or version. A NULL geometry (a
+  # `:route_distance` area) copies as NULL. `gen_random_uuid()` is core in
+  # PostgreSQL 13+, so CI's PostgreSQL 17 needs no extension.
+  @copy_areas_sql """
+  INSERT INTO flex_areas (
+    id,
+    flex_service_id,
+    organization_id,
+    gtfs_version_id,
+    key,
+    position,
+    name,
+    source,
+    census_geoid,
+    census_layer,
+    census_vintage,
+    route_ids,
+    distance_m,
+    inserted_at,
+    updated_at,
+    geom
+  )
+  SELECT gen_random_uuid(),
+         s.id,
+         s.organization_id,
+         s.gtfs_version_id,
+         a.key,
+         a.position,
+         a.name,
+         a.source,
+         a.census_geoid,
+         a.census_layer,
+         a.census_vintage,
+         a.route_ids,
+         a.distance_m,
+         (now() AT TIME ZONE 'UTC'),
+         (now() AT TIME ZONE 'UTC'),
+         a.geom
+  FROM flex_areas a
+  JOIN flex_services s ON s.id = $2
+  WHERE a.flex_service_id = $1
+    AND a.organization_id = $3
+    AND a.gtfs_version_id = $4
+  """
+
   @doc """
   Normalises a GeoJSON area to a stored-ready MultiPolygon.
 
@@ -794,6 +844,33 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
     %Postgrex.Result{rows: rows} = Repo.query!(@get_geojson_sql, [ids])
 
     Map.new(rows, fn [id, geojson] -> {id, Jason.decode!(geojson)} end)
+  end
+
+  @doc """
+  Copies every area of one service into another service, geometry included.
+
+  `copy_from_version/4` uses this for R14: the rows are copied in the database
+  with one `INSERT … SELECT`, so `geom` never leaves SQL (CR-1) and a stored
+  polygon arrives byte-for-byte, which `ST_Equals` confirms. The source rows are
+  fenced to the organization and the source version; the new rows take their
+  `flex_service_id`, `organization_id` and `gtfs_version_id` from the new
+  service row, and their ids and timestamps are new. A `:route_distance` area,
+  whose `geom` is NULL, copies without geometry.
+
+  `source_version_id` is the version the areas come from, not the target: the
+  target's scope is the new service's own. The source data does not change, and
+  a service with no areas copies nothing.
+  """
+  @spec copy_areas(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) :: :ok
+  def copy_areas(old_service_id, new_service_id, organization_id, source_version_id) do
+    Repo.query!(@copy_areas_sql, [
+      Ecto.UUID.dump!(old_service_id),
+      Ecto.UUID.dump!(new_service_id),
+      Ecto.UUID.dump!(organization_id),
+      Ecto.UUID.dump!(source_version_id)
+    ])
+
+    :ok
   end
 
   defp decode(input) when is_binary(input) do
