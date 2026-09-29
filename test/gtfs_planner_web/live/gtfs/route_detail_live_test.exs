@@ -492,8 +492,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       # message, and the badge keeps the neutral surface `route_badge/1` renders
       # for a value the application cannot draw (R7, AC-2).
       assert has_element?(view, "input#route-details-color[value='ZZZ']")
-      assert has_element?(view, "#route-details-color-error", "hex color code")
-      assert has_element?(view, "#route-details-badge span.bg-canvas")
+      assert has_element?(view, "#route-details-color-error", "Enter six hex digits for the route color")
+      assert has_element?(view, "#route-badge span.bg-canvas")
       refute render(view) =~ "background-color: #ZZZ"
       assert saved_route(route).route_color == "0B6E4F"
       assert saved_route(route).updated_at == route.updated_at

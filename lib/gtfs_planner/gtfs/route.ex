@@ -7,6 +7,12 @@ defmodule GtfsPlanner.Gtfs.Route do
   @foreign_key_type :binary_id
 
   @route_types [0, 1, 2, 3, 4, 5, 6, 7, 11, 12]
+
+  # The messages the shared validation adds, named so the editor changeset can
+  # recognize them and say what to enter instead.
+  @missing_name_message "at least one of route_short_name or route_long_name must be present"
+  @hex_message "must be a valid 6-character hex color code"
+  @url_message "must be an http(s) URL with a nonempty host"
   @editor_fields [
     :route_short_name,
     :route_long_name,
@@ -128,6 +134,7 @@ defmodule GtfsPlanner.Gtfs.Route do
     |> validate_route_fields(:editor)
     |> validate_route_url()
     |> route_constraints()
+    |> editor_error_copy()
   end
 
   @doc "Returns human-readable label for route_type."
@@ -173,6 +180,42 @@ defmodule GtfsPlanner.Gtfs.Route do
     |> validate_hex_color(:route_text_color)
   end
 
+  # The editor's messages say what to enter, in words an operator can act on.
+  # They replace the generic wording only on the editor changeset; the import
+  # changeset keeps the messages other callers already read.
+  defp editor_error_copy(changeset) do
+    %{changeset | errors: Enum.map(changeset.errors, &editor_error/1)}
+  end
+
+  defp editor_error({:route_short_name, {@missing_name_message, opts}}),
+    do: {:route_short_name, {"Enter a route number, a route name, or both.", opts}}
+
+  defp editor_error({:route_type, {"can't be blank", opts}}),
+    do: {:route_type, {"Choose a mode.", opts}}
+
+  defp editor_error({:route_type, {"is invalid", opts}}),
+    do: {:route_type, {"Choose a mode from the list.", opts}}
+
+  defp editor_error({:route_id, {"can't be blank", opts}}),
+    do: {:route_id, {"Enter a route ID.", opts}}
+
+  defp editor_error({:route_color, {@hex_message, opts}}),
+    do: {:route_color, {"Enter six hex digits for the route color, like 1F5FBF.", opts}}
+
+  defp editor_error({:route_text_color, {@hex_message, opts}}),
+    do: {:route_text_color, {"Enter six hex digits for the text color, like FFFFFF.", opts}}
+
+  defp editor_error({:route_url, {@url_message, opts}}),
+    do: {:route_url, {"Enter a full web address, starting with https:// or http://.", opts}}
+
+  defp editor_error({:route_sort_order, {"is invalid", opts}}),
+    do: {:route_sort_order, {"Enter a whole number, 0 or higher.", opts}}
+
+  defp editor_error({:route_sort_order, {"must be greater than or equal to" <> _, opts}}),
+    do: {:route_sort_order, {"Enter a whole number, 0 or higher.", opts}}
+
+  defp editor_error(error), do: error
+
   defp route_constraints(changeset) do
     # routes_organization_id_gtfs_version_id_route_id_index binds to :route_id.
     changeset
@@ -208,11 +251,7 @@ defmodule GtfsPlanner.Gtfs.Route do
   end
 
   defp missing_route_name_error(changeset) do
-    add_error(
-      changeset,
-      :route_short_name,
-      "at least one of route_short_name or route_long_name must be present"
-    )
+    add_error(changeset, :route_short_name, @missing_name_message)
   end
 
   defp validate_hex_color(changeset, field) do
@@ -221,9 +260,7 @@ defmodule GtfsPlanner.Gtfs.Route do
         changeset
 
       _value ->
-        validate_format(changeset, field, ~r/^[0-9A-Fa-f]{6}$/,
-          message: "must be a valid 6-character hex color code"
-        )
+        validate_format(changeset, field, ~r/^[0-9A-Fa-f]{6}$/, message: @hex_message)
     end
   end
 
@@ -235,7 +272,7 @@ defmodule GtfsPlanner.Gtfs.Route do
       if blank_value?(url) or valid_route_url?(url) do
         []
       else
-        [route_url: "must be an http(s) URL with a nonempty host"]
+        [route_url: @url_message]
       end
     end)
   end
