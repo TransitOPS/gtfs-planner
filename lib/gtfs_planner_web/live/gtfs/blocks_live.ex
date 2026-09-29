@@ -1607,7 +1607,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       counts: day.counts,
       peak: day.peak,
       bins: day.bins,
-      axis: day.axis,
+      axis: timeline_axis(day),
+      max_piece_minutes: day.settings.max_piece_minutes,
       routes: day.routes,
       findings: day.findings,
       in_seat: day.in_seat,
@@ -1620,6 +1621,37 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     )
   end
 
+  # The timeline's axis spans the day's *platform* spans, not only its trips, so
+  # a garage pull-out before the first departure and a pull-back after the last
+  # arrival are on the track rather than clipped off its left and right edges.
+  # The movements are the platform spans R2 and R3 already derived, and the
+  # hours are snapped outwards so the axis keeps the whole-hour ticks the axis
+  # has always printed. A day with no plottable trip has no span and no axis.
+  defp timeline_axis(%{axis: nil}), do: nil
+
+  defp timeline_axis(day) do
+    Enum.reduce(day.blocks, day.axis, fn block, axis ->
+      movements = block.movements
+
+      case {movements.platform_start_secs, movements.platform_end_secs} do
+        {start, finish} when is_integer(start) and is_integer(finish) ->
+          %{
+            start_secs: min(axis.start_secs, hour_floor(start)),
+            end_secs: max(axis.end_secs, hour_ceil(finish))
+          }
+
+        _no_span ->
+          axis
+      end
+    end)
+  end
+
+  defp hour_floor(secs), do: Integer.floor_div(secs, 3600) * 3600
+
+  defp hour_ceil(secs) do
+    if rem(secs, 3600) == 0, do: secs, else: hour_floor(secs) + 3600
+  end
+
   defp assign_empty_derived(socket) do
     socket
     |> assign(
@@ -1629,6 +1661,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       peak: @empty_peak,
       bins: [],
       axis: nil,
+      max_piece_minutes: nil,
       routes: %{},
       findings: [],
       in_seat: %{},
@@ -1784,6 +1817,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   untimed_trips={@untimed_trips}
                   findings_by_trip={@findings_by_trip}
                   axis={@axis}
+                  max_piece_minutes={@max_piece_minutes}
                   routes={@routes}
                   selected_ids={@selection}
                   bulk={@bulk}

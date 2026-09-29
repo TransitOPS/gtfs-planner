@@ -169,6 +169,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           # consumer (the page, the export, the plan) reads the same answer.
           resolution: Context.resolve_result(),
           movements: Movements.t(),
+          # The instants an operator change may happen in this block, attached
+          # beside the stretches R6 measures from them, so a consumer that marks
+          # where a change is possible reads the same windows the checks did.
+          windows: [Relief.window()],
           stretches: [Relief.stretch()]
         }
 
@@ -3214,6 +3218,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       findings: findings,
       resolution: resolution,
       movements: movements,
+      windows: windows,
       stretches: Relief.stretches(movements, windows, limit_secs)
     }
   end
