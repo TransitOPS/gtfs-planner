@@ -17,6 +17,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   import GtfsPlannerWeb.Gtfs.ExportComponents,
     only: [
       check_panel: 1,
+      closures_omitted: 1,
       contents: 1,
       guide: 1,
       operations_note: 1,
@@ -48,6 +49,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:operations?, false)
      |> assign(:include_flex, true)
      |> assign(:file_inventory, [])
+     |> assign(:closure_count, 0)
      |> assign(:export_run, nil)
      |> assign(:export_notice, nil)
      |> assign(:validation_run_id, nil)
@@ -332,6 +334,10 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 export_type={@export_type}
                 operations?={@operations?}
               />
+              <.closures_omitted
+                :if={@export_type == :pathways and @closure_count > 0}
+                count={@closure_count}
+              />
               <.operations_note :if={@export_type == :operations} file_inventory={@file_inventory} />
               <.contents export_type={@export_type} file_inventory={@file_inventory} />
               <.run_status
@@ -580,8 +586,14 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
       |> Kernel.++(tods_inventory(organization_id, export_type))
       |> Enum.sort_by(fn {filename, _count} -> filename end)
 
-    assign(socket, :file_inventory, file_inventory)
+    # The omission notice reads the published closure count through the same
+    # scope the Evolutions surface uses; the route only mounts a published
+    # version, so it matches the rows the full inventory reports.
+    socket
+    |> assign(:file_inventory, file_inventory)
+    |> assign(:closure_count, Gtfs.count_closures(organization_id, version_id))
   end
+
 
   defp tods_inventory(organization_id, :operations),
     do: Operations.tods_file_inventory(organization_id)

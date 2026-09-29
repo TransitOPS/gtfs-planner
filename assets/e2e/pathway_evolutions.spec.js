@@ -1,7 +1,8 @@
 // Scheduled pathway closures on the Evolutions station route (EV-21, step 15),
 // the station-merge closure-file disclosure (EV-20, step 16), the fingerprinted
-// delete confirmation (EV-31, step 20), and the calendar reference refusals
-// (EV-24, step 22).
+// delete confirmation (EV-31, step 20), the calendar reference refusals
+// (EV-24, step 22), the rejected-closure import recovery (EV-26, step 24) and
+// the Pathways export omission notice (EV-27, step 25).
 //
 // Runs against the reset-and-seeded browser database the repository's Playwright
 // configuration already uses (`mise run prepare:browser`, workers: 1, retries: 0)
@@ -153,6 +154,10 @@ function diagramPath(versionId, stopId) {
 
 function calendarPath(versionId, serviceId) {
   return `/gtfs/${versionId}/calendars/show?service_id=${encodeURIComponent(serviceId)}`;
+}
+
+function exportPath(versionId, query = "") {
+  return `/gtfs/${versionId}/export${query}`;
 }
 
 // The calendar page keeps its actions behind a disclosure whose open state is a
@@ -1391,6 +1396,18 @@ function rejectionCard(page, code) {
   return page.locator(`[data-evolution-rejection="${code}"]`);
 }
 
+// Step 25 / EV-27. The full inventory streams the version's own closure count in
+// the pathway_evolutions.txt row, above the extension sub-line; the Pathways
+// notice has to quote that same count.
+async function closureInventoryCount(page) {
+  const row = page
+    .locator("#export-inventory tbody tr")
+    .filter({ hasText: "pathway_evolutions.txt" });
+
+  await expect(row).toHaveCount(1);
+  return Number((await row.locator("td").nth(1).innerText()).trim());
+}
+
 // Upload a minimal full feed whose closure row fails phase one, submit it, and
 // wait for the durable rejection element the Import page rebuilds from the run.
 async function submitRejectedClosureImport(page, { name, code, file }) {
@@ -1666,6 +1683,163 @@ test.describe("exchange", () => {
     await expect(page.locator("#import-recovery-runs")).not.toContainText(
       "Browser rejected service",
     );
+  });
+
+  // Step 25 / EV-27. The Pathways omission notice quotes the same count the full
+  // inventory streams, the closure row is labeled as an extension, and Choose
+  // Full export restores the closure file without leaving the page.
+  test("the Pathways export names the closures it omits and offers the full export", async ({
+    page,
+  }, testInfo) => {
+    await logIn(page);
+    const versionId = await seededVersionId(page);
+
+    await page.setViewportSize(DESKTOP);
+    await page.goto(exportPath(versionId, "?type=full"));
+    await waitForLiveView(page);
+
+    const count = await closureInventoryCount(page);
+    // The seed carries two saved closures; whole-file runs let the authoring
+    // group add closures on other stations and the delete group remove one
+    // seeded row, so this case reads the version's own count instead of
+    // hard-coding it. The ExUnit cases pin the exact 0/1/n copy.
+    expect(count).toBeGreaterThanOrEqual(1);
+
+    const closureRow = page
+      .locator("#export-inventory tbody tr")
+      .filter({ hasText: "pathway_evolutions.txt" });
+    await expect(closureRow).toContainText("Scheduled closures · extension, not core GTFS");
+
+    await page.locator("#export-type-pathways").check();
+    await page.waitForURL(/type=pathways/);
+    await waitForLiveView(page);
+
+    const notice = page.locator("#export-pathways-closures-omitted");
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText(
+      `This version has ${count} scheduled closures. Pathways export does not include them. Choose Full export to include closures and their calendars.`,
+    );
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-025-production-desktop.png"),
+      fullPage: true,
+    });
+
+    // Choose Full export patches the URL and the selection; the notice that has
+    // no truth left disappears instead of staying as a stale warning.
+    await page.locator("#export-choose-full").click();
+    await expect(page).toHaveURL(/type=full/);
+    await expect(page.locator("#export-type-full")).toBeChecked();
+    await expect(notice).toHaveCount(0);
+    await expect(closureRow).toHaveCount(1);
+    await expect(page.locator("#export-type-full")).toBeFocused();
+
+    // Mobile and the 320px overflow check keep the notice and the file list.
+    await page.locator("#export-type-pathways").check();
+    await page.waitForURL(/type=pathways/);
+    await waitForLiveView(page);
+    await page.setViewportSize(MOBILE);
+    await page.reload();
+    await waitForLiveView(page);
+    await expect(notice).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-025-production-mobile.png"),
+      fullPage: true,
+    });
+
+    await page.setViewportSize(NARROW);
+    await page.reload();
+    await waitForLiveView(page);
+    await expect(notice).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-025-production-320.png"),
+      fullPage: true,
+    });
+  });
+
+  test("a version without closures shows no Pathways omission", async ({ page }) => {
+    await logIn(page);
+    const versionId = await seededVersionId(page, NO_CALENDARS_VERSION_NAME);
+
+    await page.setViewportSize(DESKTOP);
+    await page.goto(exportPath(versionId, "?type=full"));
+    await waitForLiveView(page);
+
+    expect(await closureInventoryCount(page)).toBe(0);
+    await expect(page.locator("#export-pathways-closures-omitted")).toHaveCount(0);
+
+    await page.locator("#export-type-pathways").check();
+    await page.waitForURL(/type=pathways/);
+    await waitForLiveView(page);
+
+    await expect(page.locator("#export-type-pathways")).toBeChecked();
+    await expect(page.locator("#export-pathways-closures-omitted")).toHaveCount(0);
+    expect(await bodyFitsViewport(page)).toBe(true);
+  });
+
+  test("the Export GTFS action sits above the file list and starts a durable run at 390", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await seededVersionId(page);
+
+    await page.setViewportSize(MOBILE);
+    await page.goto(exportPath(versionId, "?type=pathways"));
+    await waitForLiveView(page);
+
+    const action = page.locator("#start-export");
+    await expect(action).toBeVisible();
+
+    expect(
+      await page.evaluate(() =>
+        Boolean(
+          document
+            .querySelector("#start-export")
+            .compareDocumentPosition(document.querySelector("#export-inventory")) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+      ),
+    ).toBe(true);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    await action.click();
+
+    // The durable run reaches its ready artifact through the real runner.
+    await expect(page.locator("#export-download-link")).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator("#export-run-status")).toContainText("Ready to download");
+    await expect(page.locator("#export-inventory")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+  });
+
+  test.describe("export reference capture", () => {
+    test.skip(() => !fs.existsSync(EXCHANGE_REFERENCE_PATH), "reference file not present");
+
+    test("captures the export reference states at both viewports", async ({ page }, testInfo) => {
+      const states = [
+        { state: "export-pathways", suffix: "" },
+        { state: "export-full", suffix: "-full" },
+        { state: "export-no-closures", suffix: "-no-closures" },
+      ];
+
+      for (const { state, suffix } of states) {
+        for (const [viewport, label] of [
+          [DESKTOP, "desktop"],
+          [MOBILE, "mobile"],
+        ]) {
+          await page.setViewportSize(viewport);
+          await page.goto(`${pathToFileURL(EXCHANGE_REFERENCE_PATH).href}?state=${state}`);
+          await page.waitForSelector("#export-inventory", { state: "visible" });
+          await page.screenshot({
+            path: capturePath(testInfo, `step-025-reference${suffix}-${label}.png`),
+            fullPage: true,
+          });
+        }
+      }
+    });
   });
 
   test.describe("rejection reference capture", () => {
