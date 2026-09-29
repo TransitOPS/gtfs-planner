@@ -85,3 +85,43 @@ test.describe("helper panel layout", () => {
     });
   }
 });
+
+test.describe("drawer review", () => {
+  test("hands the prepared change to the existing drawer review", async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openCalendars(page);
+
+    await page.locator("#agent-helper-open").click();
+    await expect(page.locator("#agent-panel")).toBeVisible();
+
+    // A conversation from an earlier test persists for this user and version.
+    await page.locator("#agent-new-conversation").click();
+
+    await page
+      .locator("#agent-composer-input")
+      .fill("No school service next Monday and Tuesday");
+    await page.locator("#agent-send").click();
+
+    const reviewButton = page.locator('[id^="agent-review-prepared-"]').last();
+    await expect(reviewButton).toBeVisible({ timeout: 30_000 });
+
+    await reviewButton.click();
+
+    const reviewPanel = page.locator("#calendar-date-change-review-panel");
+    await expect(reviewPanel).toBeVisible();
+    await expect(reviewPanel).toContainText("School weekdays");
+    await expect(reviewPanel).toContainText("School express");
+
+    // Fast-forward the drawer's slide-in so the capture shows the settled state.
+    await page.screenshot({
+      path: testInfo.outputPath("drawer-review-1440.png"),
+      animations: "disabled",
+    });
+
+    await page.locator("#calendar-date-change-drawer-close").click();
+
+    await expect(reviewPanel).toHaveCount(0);
+    // Focus returns to the stable prepared-card container the handoff came from.
+    await expect(page.locator('[id^="agent-prepared-"]').last()).toBeFocused();
+  });
+});
