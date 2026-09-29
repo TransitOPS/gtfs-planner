@@ -9,27 +9,40 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   `#station-tab-evolutions` id are unchanged, only the destination behind them
   is real.
 
-  Everything on the page is a read of saved domain state. The list is built from
-  `Gtfs.station_closures/3`, whose `:not_found` refusal covers an unknown,
-  foreign, non-station or unpublished target: those never reach a render, so no
-  row, count or label can leak from another organization, version or stop. The
-  native calendar options come from `Gtfs.closure_calendars/2` in the same
-  scope; that read cannot refuse once `station_closures/3` has succeeded, because
-  both validate the same scope, so its result is matched rather than defaulted to
-  an empty list that would claim the version has no calendars.
+  Everything on the page is a scoped read of saved domain state, plus the write
+  the editor performs. The list is built from `Gtfs.station_closures/3`, whose
+  `:not_found` refusal covers an unknown, foreign, non-station or unpublished
+  target: those never reach a render, so no row, count or label can leak from
+  another organization, version or stop. The native calendar options come from
+  `Gtfs.closure_calendars/2` in the same scope; that read cannot refuse once
+  `station_closures/3` has succeeded, because both validate the same scope, so
+  its result is matched rather than defaulted to an empty list that would claim
+  the version has no calendars.
 
   Row identity is the closure UUID, and each row's exact `pathway_id` and
   `service_id` travel in text and data attributes, so a natural ID containing a
   slash, percent sign, space or other punctuation round-trips through a link
   without conflation. `?pathway=` filters the visible, clearable search to one
   exact pathway of this station; `?closure=` selects one closure of this station
-  by UUID. A value outside the scope is ignored rather than resolved, so a
-  foreign closure id exposes nothing. `?closure` is applied after `?pathway` and
-  clears the filter, because a selected row has to be visible to be selected.
+  by UUID and opens the editor on it. A value outside the scope is ignored rather
+  than resolved, so a foreign closure id exposes nothing. `?closure` is applied
+  after `?pathway` and clears the filter, because a selected row has to be
+  visible to be selected.
 
-  The page writes nothing. Saving, deleting and access analysis are later steps;
-  until then the inspector is absent, and every control here either filters the
-  list or announces what it did in the polite `#evolutions-status` region.
+  The editor writes through the trusted `Gtfs` mutations only, with the audit
+  scope taken from the socket: the organization and version come from the
+  mounted session and the page's own station is the `station_stop_id`, so a
+  submitted form can never choose its own scope. Create and update keep every
+  entered string when the save is rejected — a field error, a duplicate tuple, a
+  stale fingerprint, a revoked role — and a stale result keeps the entries until
+  the user explicitly reloads the closure. Saving a closure that overlaps another
+  window on the same pathway and service says so, as does saving against a
+  calendar with no active service dates; neither is a rejection.
+
+  The access preview link is exposed only for a persisted, unchanged closure
+  whose calendar and agency zone allow a date to be chosen, and it carries the
+  exact `HH:MM:SS` service time. Everything else states why the preview is not
+  available instead of offering a link that cannot answer.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -37,6 +50,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   import GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Layouts
 
@@ -62,6 +78,19 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
      |> assign(:match_count, 0)
      |> assign(:pathway_groups, [])
      |> assign(:closure_counts, %{})
+     |> assign(:editor_mode, nil)
+     |> assign(:editor_id, nil)
+     |> assign(:editor_fingerprint, nil)
+     |> assign(:saved_values, nil)
+     |> assign(:form, nil)
+     |> assign(:form_errors, [])
+     |> assign(:form_submitted?, false)
+     |> assign(:duplicate_id, nil)
+     |> assign(:stale?, false)
+     |> assign(:notices, [])
+     |> assign(:dirty?, false)
+     |> assign(:preview_href, nil)
+     |> assign(:preview_reason, nil)
      |> stream_configure(:closures, dom_id: &"closure-#{&1.id}")
      |> stream(:closures, [])}
   end
@@ -122,16 +151,34 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   end
 
   def handle_event("select_closure", %{"id" => id}, socket) when is_binary(id) do
-    case Enum.find(socket.assigns.station_data.closures, &(to_string(&1.evolution.id) == id)) do
+    case find_closure_row(socket, id) do
       nil ->
         {:noreply, socket}
 
-      %{evolution: evolution, pathway: pathway} ->
-        {:noreply,
-         socket
-         |> assign(:selected_closure_id, evolution.id)
-         |> assign(:status_message, "Selected closure on #{pathway_label(pathway)}.")
-         |> refresh_rows()}
+      row ->
+        cond do
+          # Re-selecting the closure that is already open only puts focus back
+          # on the editor it belongs to; it never throws away typed values.
+          socket.assigns.editor_id == row.evolution.id ->
+            {:noreply, focus_scoped(socket, "closure-editor-title")}
+
+          socket.assigns.dirty? ->
+            {:noreply,
+             assign(
+               socket,
+               :status_message,
+               "Your unsaved changes are still here. Save or discard them before switching closures."
+             )}
+
+          true ->
+            {:noreply,
+             socket
+             |> put_editor(edit_editor(row))
+             |> assign(:selected_closure_id, row.evolution.id)
+             |> assign(:status_message, "Selected closure on #{pathway_label(row.pathway)}.")
+             |> refresh_rows()
+             |> focus_scoped("closure-editor-title")}
+        end
     end
   end
 
@@ -141,27 +188,89 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
         {:noreply, socket}
 
       pathway ->
-        # The locator is also a filter: choosing a pathway fills the visible
-        # search with its exact ID, so the table shows that pathway's closures
-        # and the filter can be cleared without leaving the page.
-        {:noreply,
-         socket
-         |> assign(:selected_pathway_id, pathway.id)
-         |> assign(:search, pathway.pathway_id)
-         |> assign(:selected_closure_id, nil)
-         |> assign(:status_message, "Filtered to #{pathway_label(pathway)}.")
-         |> render_closures()}
+        {:noreply, choose_pathway(socket, pathway)}
     end
   end
 
   def handle_event("start_closure", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:search, "")
-     |> assign(:selected_pathway_id, nil)
-     |> assign(:selected_closure_id, nil)
-     |> assign(:status_message, "Choose a pathway below to schedule a closure.")
-     |> render_closures()}
+    {:noreply, choose_pathway(socket, nil)}
+  end
+
+  def handle_event("validate_closure", %{"closure" => params}, socket) when is_map(params) do
+    {:noreply, assign_entered_params(socket, params)}
+  end
+
+  def handle_event("save_closure", %{"closure" => params}, socket) when is_map(params) do
+    # The outcome of this attempt replaces whatever the editor said before it,
+    # so a selection or creation line never sits beside a rejection.
+    socket = assign(socket, :status_message, nil)
+
+    case socket.assigns.editor_mode do
+      nil ->
+        {:noreply, socket}
+
+      :new ->
+        changeset = PathwayEvolution.changeset(%PathwayEvolution{}, params)
+        socket = assign(socket, :form_submitted?, true)
+
+        cond do
+          not changeset.valid? ->
+            {:noreply, show_form_errors(socket, params, changeset)}
+
+          duplicate = duplicate_closure(socket, params) ->
+            {:noreply, show_duplicate(socket, params, duplicate)}
+
+          true ->
+            {:noreply, submit_create(socket, params)}
+        end
+
+      :edit ->
+        # The fingerprint compare runs in the context before any field
+        # validation, so a row that moved under the editor is reported as stale
+        # even when the entered window is also invalid. That precedence is the
+        # contract this editor renders against.
+        {:noreply, submit_update(assign(socket, :form_submitted?, true), params)}
+    end
+  end
+
+  def handle_event("reload_closure", _params, socket) do
+    socket = reload_station(socket)
+
+    case find_closure_row(socket, socket.assigns.editor_id) do
+      nil ->
+        {:noreply,
+         socket
+         |> put_editor(nil)
+         |> assign(:status_message, "This closure no longer exists in this service version.")
+         |> render_closures()}
+
+      row ->
+        {:noreply,
+         socket
+         |> put_editor(edit_editor(row))
+         |> assign(:status_message, "Closure reloaded.")
+         |> render_closures()
+         |> focus_scoped("closure-editor-title")}
+    end
+  end
+
+  def handle_event("open_existing_closure", _params, socket) do
+    case find_closure_row(socket, socket.assigns.duplicate_id) do
+      nil ->
+        {:noreply,
+         socket
+         |> put_editor(nil)
+         |> assign(:status_message, "That closure is no longer scheduled at this station.")}
+
+      row ->
+        {:noreply,
+         socket
+         |> put_editor(edit_editor(row))
+         |> assign(:selected_closure_id, row.evolution.id)
+         |> assign(:status_message, "Selected closure on #{pathway_label(row.pathway)}.")
+         |> refresh_rows()
+         |> focus_scoped("closure-editor-title")}
+    end
   end
 
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
@@ -231,18 +340,18 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   defp maybe_select_pathway(socket, _other), do: socket
 
   defp maybe_select_closure(socket, closure_id) when is_binary(closure_id) do
-    case Enum.find(
-           socket.assigns.station_data.closures,
-           &(to_string(&1.evolution.id) == closure_id)
-         ) do
+    case find_closure_row(socket, closure_id) do
       nil ->
         socket
 
-      %{evolution: evolution, pathway: pathway} ->
+      row ->
+        # A deep link opens the editor on the row it names, but does not move
+        # focus: the reader asked for the page, not for the form.
         socket
-        |> assign(:selected_closure_id, evolution.id)
+        |> put_editor(edit_editor(row))
+        |> assign(:selected_closure_id, row.evolution.id)
         |> assign(:search, "")
-        |> assign(:status_message, "Selected closure on #{pathway_label(pathway)}.")
+        |> assign(:status_message, "Selected closure on #{pathway_label(row.pathway)}.")
     end
   end
 
@@ -287,6 +396,453 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   defp refresh_rows(socket) do
     Enum.reduce(socket.assigns.rows, socket, &stream_insert(&2, :closures, &1, update_only: true))
   end
+
+  # A closure row is addressed by its own UUID inside this station's snapshot;
+  # looking it up here is what keeps a deep link, a duplicate link and a save
+  # from ever reaching a row outside the mounted scope.
+  defp find_closure_row(socket, id) when is_binary(id) do
+    Enum.find(socket.assigns.station_data.closures, &(to_string(&1.evolution.id) == id))
+  end
+
+  defp find_closure_row(_socket, _id), do: nil
+
+  # -- editor ----------------------------------------------------------------
+
+  # Choosing a pathway opens the new-closure form on it, or re-points the one
+  # already open. Switching away from typed values is never silent: while any
+  # unsaved input exists the form is kept and the status says why.
+  defp choose_pathway(socket, pathway) do
+    cond do
+      socket.assigns.editor_mode == :new ->
+        values = Map.put(socket.assigns.form.params, "pathway_id", pathway_id(pathway))
+
+        socket
+        |> assign_entered_params(values)
+        |> assign(:selected_pathway_id, pathway && pathway.id)
+        |> assign(:status_message, "Choose a calendar and a window for this closure.")
+        |> focus_scoped("closure-calendar")
+
+      socket.assigns.dirty? ->
+        assign(
+          socket,
+          :status_message,
+          "Your unsaved changes are still here. Save or discard them before starting another closure."
+        )
+
+      true ->
+        socket
+        |> put_editor(new_editor(pathway_id(pathway)))
+        |> assign(:selected_pathway_id, pathway && pathway.id)
+        |> assign(:selected_closure_id, nil)
+        |> assign(:search, "")
+        |> assign(:status_message, "Scheduling a new closure.")
+        |> render_closures()
+        |> focus_new_closure(pathway)
+    end
+  end
+
+  # With a pathway already chosen the calendar is the next field to fill in;
+  # without one, the pathway picker is.
+  defp focus_new_closure(socket, nil), do: focus_scoped(socket, "closure-pathway")
+  defp focus_new_closure(socket, _pathway), do: focus_scoped(socket, "closure-calendar")
+
+  defp pathway_id(nil), do: ""
+  defp pathway_id(pathway), do: pathway.pathway_id
+
+  # The editor's two shapes: a new closure with nothing saved to compare against
+  # and an existing row carrying the fingerprint a save must present.
+  defp new_editor(pathway_id) do
+    values = %{
+      "pathway_id" => pathway_id || "",
+      "service_id" => "",
+      "start_time" => "",
+      "end_time" => "",
+      "note" => ""
+    }
+
+    %{mode: :new, id: nil, fingerprint: nil, saved: empty_values(), values: values}
+  end
+
+  defp edit_editor(row) do
+    values = saved_values(row.evolution)
+
+    %{
+      mode: :edit,
+      id: row.evolution.id,
+      fingerprint: row.fingerprint,
+      saved: values,
+      values: values
+    }
+  end
+
+  defp empty_values do
+    %{"pathway_id" => "", "service_id" => "", "start_time" => "", "end_time" => "", "note" => ""}
+  end
+
+  defp saved_values(%PathwayEvolution{} = evolution) do
+    %{
+      "pathway_id" => evolution.pathway_id || "",
+      "service_id" => evolution.service_id || "",
+      "start_time" => format_service_time(evolution.start_time),
+      "end_time" => format_service_time(evolution.end_time),
+      "note" => evolution.note || ""
+    }
+  end
+
+  defp format_service_time(seconds) when is_integer(seconds), do: service_time_value(seconds)
+  defp format_service_time(_seconds), do: ""
+
+  # Opening the idle editor, a new form or an existing row resets every outcome
+  # from the previous one, so a stale flag, a duplicate panel or a notice can
+  # never outlive the row it described.
+  defp put_editor(socket, editor) do
+    {preview_href, preview_reason} = preview_state(socket, editor)
+
+    socket
+    |> assign(:editor_mode, editor && editor.mode)
+    |> assign(:editor_id, editor && editor.id)
+    |> assign(:editor_fingerprint, editor && editor.fingerprint)
+    |> assign(:saved_values, editor && editor.saved)
+    |> assign(:form, editor && closure_form(editor.values))
+    |> assign(:form_errors, [])
+    |> assign(:form_submitted?, false)
+    |> assign(:duplicate_id, nil)
+    |> assign(:stale?, false)
+    |> assign(:notices, [])
+    |> assign(:dirty?, editor != nil and dirty?(editor.values, editor.saved))
+    |> assign(:preview_href, preview_href)
+    |> assign(:preview_reason, preview_reason)
+  end
+
+  # A form change keeps every entered string and re-checks the fields only once
+  # the user has already been told about a problem, so a half-filled form never
+  # shouts "can't be blank" at someone still typing. Duplicate and notice
+  # outcomes belong to the submitted tuple and are dropped by any edit.
+  defp assign_entered_params(socket, params) do
+    changeset = PathwayEvolution.changeset(%PathwayEvolution{}, params)
+    errors = if socket.assigns.form_submitted?, do: changeset.errors, else: []
+
+    socket
+    |> assign(:form, closure_form(params, errors))
+    |> assign(
+      :form_errors,
+      if(socket.assigns.form_submitted?, do: field_errors(changeset), else: [])
+    )
+    |> assign(:dirty?, dirty?(params, socket.assigns.saved_values))
+    |> assign(:duplicate_id, nil)
+    |> assign(:notices, [])
+  end
+
+  defp show_form_errors(socket, params, %Ecto.Changeset{} = changeset) do
+    socket
+    |> assign(:form, closure_form(params, changeset.errors))
+    |> assign(:form_errors, field_errors(changeset))
+    |> assign(:dirty?, dirty?(params, socket.assigns.saved_values))
+    |> assign(:duplicate_id, nil)
+    |> assign(:notices, [])
+    |> push_event("focus_form_error", %{form_id: "closure-form", fallback_id: "closure-errors"})
+  end
+
+  defp field_errors(changeset) do
+    Enum.map(changeset.errors, fn {field, {message, opts}} ->
+      %{id: field_id(field), message: error_message(field, message, opts)}
+    end)
+  end
+
+  # A field message is the changeset's own sentence, which reads on its own
+  # under the field; in the summary list it needs the field it belongs to. A
+  # base error already names its subject and stays as it is.
+  defp error_message(field, message, opts) do
+    case closure_field_label(field) do
+      nil -> translate_error({message, opts})
+      label -> "#{label}: #{translate_error({message, opts})}"
+    end
+  end
+
+  defp closure_field_label(:pathway_id), do: "Pathway"
+  defp closure_field_label(:service_id), do: "Calendar"
+  defp closure_field_label(:start_time), do: "Starts at"
+  defp closure_field_label(:end_time), do: "Ends at"
+  defp closure_field_label(:note), do: "Note"
+  defp closure_field_label(_base), do: nil
+
+  # The stable ids of the editor's controls, so an error summary entry can focus
+  # the field it names. A base error has no field and stays plain text.
+  defp field_id(:pathway_id), do: "closure-pathway"
+  defp field_id(:service_id), do: "closure-calendar"
+  defp field_id(:start_time), do: "closure-start"
+  defp field_id(:end_time), do: "closure-end"
+  defp field_id(:note), do: "closure-note"
+  defp field_id(_base), do: nil
+
+  # The form renders the entered parameters verbatim: the changeset normalizes
+  # service times to seconds inside its own params, so rendering from the
+  # changeset would show "32400" where the reader typed "09:00". The changeset
+  # still owns the messages, which are attached to the parameters-only form.
+  defp closure_form(params, errors \\ []) do
+    to_form(params, as: :closure, errors: errors)
+  end
+
+  # Entered values are compared after the same normalization the changeset
+  # applies, so 9:00, 09:00 and 09:00:00 are one value and a trailing space in a
+  # note is not an edit.
+  defp dirty?(params, saved) do
+    comparable_values(params) != comparable_values(saved)
+  end
+
+  defp comparable_values(nil), do: comparable_values(%{})
+
+  defp comparable_values(params) do
+    %{
+      pathway_id: to_string(params["pathway_id"] || ""),
+      service_id: to_string(params["service_id"] || ""),
+      start_time: comparable_time(params["start_time"]),
+      end_time: comparable_time(params["end_time"]),
+      note: String.trim(to_string(params["note"] || ""))
+    }
+  end
+
+  defp comparable_time(value) do
+    case PathwayEvolution.parse_service_time(value) do
+      {:ok, seconds} -> seconds
+      {:error, :invalid_time} -> String.trim(to_string(value || ""))
+    end
+  end
+
+  # The saved tuple is looked up in the rows this station already has, so the
+  # duplicate panel can only ever point at a closure of the mounted scope.
+  defp duplicate_closure(socket, params) do
+    tuple = {
+      params["pathway_id"],
+      params["service_id"],
+      comparable_time(params["start_time"]),
+      comparable_time(params["end_time"])
+    }
+
+    Enum.find(socket.assigns.station_data.closures, fn row ->
+      row.evolution.id != socket.assigns.editor_id and
+        {row.evolution.pathway_id, row.evolution.service_id, row.evolution.start_time,
+         row.evolution.end_time} == tuple
+    end)
+  end
+
+  defp submit_create(socket, params) do
+    case Gtfs.create_pathway_evolution(params, audit_context(socket)) do
+      {:ok, result} ->
+        applied_closure(socket, result)
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        rejected_changeset(socket, params, changeset)
+
+      {:error, reason} ->
+        rejected_save(socket, reason)
+    end
+  end
+
+  defp submit_update(socket, params) do
+    submitted_fingerprint = socket.assigns.editor_fingerprint
+
+    case Gtfs.update_pathway_evolution(
+           socket.assigns.editor_id,
+           params,
+           submitted_fingerprint,
+           audit_context(socket)
+         ) do
+      {:ok, result} ->
+        applied_closure(socket, result, unchanged?: result.fingerprint == submitted_fingerprint)
+
+      {:error, :stale_review} ->
+        rejected_save(socket, params, :stale_review)
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        rejected_changeset(socket, params, changeset)
+
+      {:error, reason} ->
+        rejected_save(socket, reason)
+    end
+  end
+
+  # A rejected tuple that matches a row this station already has is a duplicate
+  # with a scoped way out; any other rejection renders its field errors.
+  defp rejected_changeset(socket, params, changeset) do
+    case duplicate_closure(socket, params) do
+      nil -> show_form_errors(socket, params, changeset)
+      duplicate -> show_duplicate(socket, params, duplicate)
+    end
+  end
+
+  defp show_duplicate(socket, params, duplicate) do
+    socket
+    |> assign_entered_params(params)
+    |> assign(:duplicate_id, duplicate.evolution.id)
+    |> focus_scoped("closure-errors")
+  end
+
+  # A committed write is re-read rather than patched from the mutation result:
+  # the list, the row and the editor then all describe the row the database now
+  # holds, including a no-op save that wrote nothing.
+  defp applied_closure(socket, result, opts \\ []) do
+    socket = reload_station(socket)
+
+    case find_closure_row(socket, result.evolution.id) do
+      nil ->
+        socket
+        |> assign(:status_message, "Closure saved.")
+        |> render_closures()
+
+      row ->
+        socket
+        |> put_editor(edit_editor(row))
+        |> assign(:notices, notice_views(result.notices, row))
+        |> assign(
+          :status_message,
+          if(Keyword.get(opts, :unchanged?, false),
+            do: "No changes to save.",
+            else: "Closure saved."
+          )
+        )
+        |> assign(:selected_closure_id, row.evolution.id)
+        |> render_closures()
+    end
+  end
+
+  # A stale fingerprint keeps every entered string and disables the save until
+  # the user has seen the current row; nothing is written either way.
+  defp rejected_save(socket, params, :stale_review) do
+    socket
+    |> assign(:form, closure_form(params))
+    |> assign(:form_errors, [])
+    |> assign(:dirty?, dirty?(params, socket.assigns.saved_values))
+    |> assign(:duplicate_id, nil)
+    |> assign(:notices, [])
+    |> assign(:stale?, true)
+    |> focus_scoped("closure-stale")
+  end
+
+  defp rejected_save(socket, %Ecto.Changeset{} = changeset) do
+    show_form_errors(socket, changeset.params || %{}, changeset)
+  end
+
+  defp rejected_save(socket, :forbidden) do
+    put_flash(socket, :error, "You no longer have permission to edit closures.")
+  end
+
+  defp rejected_save(socket, :not_found) do
+    put_flash(socket, :error, "This closure is no longer available in this service version.")
+  end
+
+  defp notice_views(notices, row) do
+    Enum.map(notices, fn
+      {:overlaps, others} -> overlap_notice(row.pathway, others, row.calendar)
+      :no_active_dates -> no_active_dates_notice(row.calendar)
+    end)
+  end
+
+  defp reload_station(socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    case Gtfs.station_closures(organization_id, gtfs_version_id, socket.assigns.stop_id) do
+      {:ok, station_data} -> assign(socket, :station_data, station_data)
+      {:error, :not_found} -> socket
+    end
+  end
+
+  # The editor's context line and copy follow whichever pathway the form holds;
+  # the lookup stays inside this station's snapshot.
+  defp editor_pathway(assigns) do
+    with %{params: params} when is_map(params) <- assigns.form,
+         pathway_id when is_binary(pathway_id) <- params["pathway_id"],
+         pathway when not is_nil(pathway) <-
+           Enum.find(assigns.station_data.pathways, &(&1.pathway_id == pathway_id)) do
+      pathway
+    else
+      _other -> nil
+    end
+  end
+
+  defp editor_calendar(assigns) do
+    with %{params: params} when is_map(params) <- assigns.form,
+         service_id when is_binary(service_id) <- params["service_id"],
+         option when not is_nil(option) <-
+           Enum.find(assigns.calendars, &(&1.service_id == service_id)) do
+      option
+    else
+      _other -> nil
+    end
+  end
+
+  # The preview link exists for one case only: a persisted closure whose
+  # calendar, agency zone and active dates let a single exact instant be named.
+  # Everything else carries the reason instead.
+  defp preview_state(_socket, nil), do: {nil, nil}
+  defp preview_state(_socket, %{mode: :new}), do: {nil, nil}
+
+  defp preview_state(socket, %{mode: :edit, saved: saved}) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    case Gtfs.get_calendar(organization_id, gtfs_version_id, saved["service_id"]) do
+      {:ok, %{zone: %{fallback?: false}} = calendar} ->
+        case preview_date(calendar) do
+          nil ->
+            {nil,
+             "#{calendar.label} has no active service dates, so there is nothing to preview."}
+
+          date ->
+            {access_path(socket, date, saved["start_time"]), nil}
+        end
+
+      {:ok, %{zone: %{fallback_reason: reason}}} ->
+        {nil,
+         "The agency time zone is unavailable (#{zone_reason(reason)}), so a preview " <>
+           "date cannot be chosen. Closure authoring still works."}
+
+      {:error, :not_found} ->
+        {nil, "This closure's calendar is no longer in this service version."}
+    end
+  end
+
+  # The earliest active date on or after the agency's today, or the earliest
+  # active date when the calendar has already ended; nil when it has none.
+  defp preview_date(%{active_dates: [], today: _today}), do: nil
+
+  defp preview_date(%{active_dates: dates, today: today}) do
+    Enum.find(dates, &(Date.compare(&1, today) != :lt)) || List.first(dates)
+  end
+
+  defp zone_reason(:missing), do: "no agency in this version has one"
+  defp zone_reason(:invalid), do: "the agency time zone is not recognized"
+  defp zone_reason(:conflicting), do: "this version's agencies disagree"
+  defp zone_reason(_reason), do: "it could not be resolved"
+
+  # The access view itself lands in a later step; this step's link is the exact
+  # address it will answer, with the service time as HH:MM:SS and the station
+  # and query encoded exactly as the router decodes them.
+  defp access_path(socket, date, start_time) do
+    version_id = socket.assigns.current_gtfs_version.id
+
+    query =
+      URI.encode_query([
+        {"date", Date.to_iso8601(date)},
+        {"time", GtfsTime.format(comparable_time(start_time))}
+      ])
+
+    "/gtfs/#{version_id}/stops/#{URI.encode(socket.assigns.stop_id)}/evolutions/access?#{query}"
+  end
+
+  defp audit_context(socket) do
+    %AuditContext{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      station_stop_id: socket.assigns.stop_id,
+      actor_id: socket.assigns.current_user.id,
+      actor_email: socket.assigns.current_user.email
+    }
+  end
+
+  # The scoped focus hook only focuses an element the editor already owns.
+  defp focus_scoped(socket, id), do: push_event(socket, "focus_scoped_target", %{id: id})
 
   defp closure_rows(closures) do
     closures
@@ -369,6 +925,16 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   @impl true
   def render(assigns) do
+    assigns =
+      assigns
+      |> assign(:editor_pathway, editor_pathway(assigns))
+      |> assign(:editor_calendar, editor_calendar(assigns))
+      |> assign(:preview_unavailable, preview_unavailable(assigns))
+      |> assign(
+        :preview_href,
+        if(preview_unavailable(assigns), do: nil, else: assigns.preview_href)
+      )
+
     ~H"""
     <Layouts.app
       flash={@flash}
@@ -388,226 +954,502 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
       </:sub_header>
 
       <div id="evolutions" class="mt-5">
-        <p
-          id="evolutions-status"
-          role="status"
-          aria-live="polite"
+        <div
+          id="closures-workspace"
           class={[
-            "mb-4 rounded-control border border-subtle bg-canvas px-4 py-2.5 text-sm",
-            @status_message && "text-strong",
-            !@status_message && "hidden"
+            "grid items-start gap-6",
+            is_nil(@blocked) && "lg:grid-cols-[minmax(0,1fr)_440px] lg:grid-rows-[auto_1fr]"
           ]}
         >
-          {@status_message}
-        </p>
+          <section
+            id="closures-card"
+            aria-labelledby="closures-title"
+            class="min-w-0 rounded-card border border-subtle bg-white lg:col-start-1 lg:row-start-1"
+          >
+            <div class="flex flex-wrap items-end justify-between gap-x-4 gap-y-3 border-b border-subtle px-4 py-4 md:px-5">
+              <div class="min-w-0 self-center">
+                <h2
+                  id="closures-title"
+                  class="font-sans text-[18px] font-[650] leading-snug tracking-normal"
+                >
+                  Closures at this station
+                </h2>
+                <p
+                  :if={list_visible?(@blocked, @first_use?)}
+                  id="closures-count"
+                  class="text-[13px] tabular-nums text-muted"
+                >
+                  {count_text(@match_count, @closure_count, @search)}
+                </p>
+              </div>
 
-        <section
-          id="closures-card"
-          aria-labelledby="closures-title"
-          class="min-w-0 rounded-card border border-subtle bg-white"
-        >
-          <div class="flex flex-wrap items-end justify-between gap-x-4 gap-y-3 border-b border-subtle px-4 py-4 md:px-5">
-            <div class="min-w-0 self-center">
+              <div
+                :if={list_visible?(@blocked, @first_use?)}
+                id="closures-tools"
+                class="flex w-full flex-wrap items-end gap-3 sm:w-auto"
+              >
+                <div class="grid min-w-0 flex-1 gap-1.5 sm:w-60 sm:flex-none">
+                  <label for="closures-search" class="text-[13px] font-[650] text-base-content">
+                    Find pathway or calendar
+                  </label>
+                  <form
+                    id="closures-search-form"
+                    phx-change="search"
+                    phx-debounce="200"
+                    class="contents"
+                  >
+                    <div class="relative">
+                      <.icon
+                        name="hero-magnifying-glass"
+                        class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted"
+                      />
+                      <input
+                        id="closures-search"
+                        type="search"
+                        name="search"
+                        value={@search}
+                        autocomplete="off"
+                        aria-label="Find pathway or calendar"
+                        class="h-11 w-full rounded-control border border-control bg-white pr-3 pl-9 text-sm text-strong"
+                      />
+                    </div>
+                  </form>
+                </div>
+                <.button
+                  id="new-closure"
+                  type="button"
+                  phx-click="start_closure"
+                  variant="secondary"
+                  class="h-11 min-h-11 gap-2 rounded-control border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
+                >
+                  <.icon name="hero-plus" class="size-4" /> Create closure
+                </.button>
+              </div>
+            </div>
+
+            <table
+              :if={is_nil(@blocked) and @match_count > 0}
+              id="closures-table"
+              class="w-full border-collapse text-left text-sm"
+            >
+              <thead>
+                <tr>
+                  <th
+                    scope="col"
+                    class="w-[46%] border-b border-subtle bg-canvas py-2.5 pr-3 pl-5 text-[13px] font-[650] text-base-content"
+                  >
+                    Pathway
+                  </th>
+                  <th
+                    scope="col"
+                    class="border-b border-subtle bg-canvas px-3 py-2.5 text-[13px] font-[650] text-base-content"
+                  >
+                    Calendar
+                  </th>
+                  <th
+                    scope="col"
+                    class="w-[152px] border-b border-subtle bg-canvas py-2.5 pr-5 pl-3 text-[13px] font-[650] text-base-content"
+                  >
+                    Window
+                  </th>
+                </tr>
+              </thead>
+              <tbody
+                id="closures-list"
+                phx-update="stream"
+                tabindex="-1"
+                class="focus-visible:outline-offset-[-2px]"
+              >
+                <tr
+                  :for={{dom_id, row} <- @streams.closures}
+                  id={dom_id}
+                  data-closure-id={row.id}
+                  class={closure_row_class(row, @selected_closure_id)}
+                >
+                  <.closure_cells row={row} selected={to_string(row.id) == @selected_closure_id} />
+                </tr>
+              </tbody>
+            </table>
+
+            <.closures_state
+              :if={@first_use?}
+              id="closures-empty"
+              title={"No closures scheduled at " <> station_name(@station)}
+              message="A closure takes a pathway out of service during a daily window on a calendar’s service days, for example elevator maintenance."
+            >
+              <:action>
+                <.button
+                  id="new-closure"
+                  type="button"
+                  phx-click="start_closure"
+                  class="h-11 min-h-11 gap-2 rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-evo-action-hover"
+                >
+                  <.icon name="hero-plus" class="size-4" /> Create closure
+                </.button>
+              </:action>
+            </.closures_state>
+
+            <.closures_state
+              :if={@filtered_empty?}
+              id="closures-filtered-empty"
+              title={"No closures match “" <> String.trim(@search) <> "”"}
+              message={"Check the spelling, or clear the search to see all " <> @closure_count <> "."}
+            >
+              <:action>
+                <.button
+                  id="closures-clear-search"
+                  type="button"
+                  phx-click={JS.push("clear_search") |> JS.focus(to: "#closures-search")}
+                  variant="secondary"
+                  class="h-11 min-h-11 rounded-control border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
+                >
+                  Clear search
+                </.button>
+              </:action>
+            </.closures_state>
+
+            <.closures_state
+              :if={@blocked == :no_pathways}
+              id="closures-no-pathways"
+              title={station_name(@station) <> " has no pathways yet"}
+              message="A closure takes a pathway out of service. Add pathways between the station’s stops on its floorplan, then schedule closures here."
+            >
+              <:action>
+                <.button
+                  id="closures-open-floorplans"
+                  navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/#{@stop_id}/diagram"}
+                  class="h-11 min-h-11 rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-evo-action-hover"
+                >
+                  Open floorplans
+                </.button>
+              </:action>
+            </.closures_state>
+
+            <.closures_state
+              :if={@blocked == :no_calendars}
+              id="closures-no-calendars"
+              title={"No calendars in " <> @current_gtfs_version.name}
+              message="A closure applies on a calendar’s service days. Create a calendar with the dates of the work, then schedule the closure here."
+            >
+              <:action>
+                <.button
+                  id="closures-open-calendars"
+                  navigate={~p"/gtfs/#{@current_gtfs_version.id}/calendars"}
+                  class="h-11 min-h-11 rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-evo-action-hover"
+                >
+                  Open calendars
+                </.button>
+              </:action>
+            </.closures_state>
+          </section>
+
+          <%!--
+          The editor stays non-modal beside the list: it is a form for the row the
+          list selected, and on the access step it is the surface a preview link
+          returns to.
+          --%>
+          <aside
+            :if={is_nil(@blocked)}
+            id="closure-editor"
+            phx-hook="FormErrorFocus"
+            data-dirty={to_string(@dirty?)}
+            data-closure-id={@editor_id}
+            aria-labelledby={if @editor_mode, do: "closure-editor-title", else: "closure-idle-title"}
+            class="flex min-w-0 flex-col overflow-clip rounded-card border border-subtle bg-white lg:sticky lg:top-4 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:max-h-[calc(100dvh-2rem)]"
+          >
+            <p
+              id="evolutions-status"
+              role="status"
+              aria-live="polite"
+              class={[
+                "items-center gap-2 border-b border-subtle px-5 py-2.5 text-sm",
+                @status_message && "text-strong",
+                !@status_message && "hidden"
+              ]}
+            >
+              {@status_message}
+            </p>
+
+            <div :if={is_nil(@editor_mode)} id="closure-idle" class="px-5 py-5">
               <h2
-                id="closures-title"
+                id="closure-idle-title"
+                tabindex="-1"
                 class="font-sans text-[18px] font-[650] leading-snug tracking-normal"
               >
-                Closures at this station
+                No closure selected
               </h2>
-              <p
-                :if={list_visible?(@blocked, @first_use?)}
-                id="closures-count"
-                class="text-[13px] tabular-nums text-muted"
-              >
-                {count_text(@match_count, @closure_count, @search)}
+              <p id="closure-idle-guidance" class="mt-1.5 text-sm text-default">
+                Choose a closure to edit it, or choose a pathway to schedule a new one.
+              </p>
+              <p class="mt-4 border-t border-subtle pt-4 text-[13px] text-muted">
+                Saving updates this version immediately. Full exports include closures.
               </p>
             </div>
 
-            <div
-              :if={list_visible?(@blocked, @first_use?)}
-              id="closures-tools"
-              class="flex w-full flex-wrap items-end gap-3 sm:w-auto"
+            <.form
+              :if={@editor_mode}
+              for={@form}
+              id="closure-form"
+              novalidate
+              phx-change="validate_closure"
+              phx-submit="save_closure"
+              class="flex min-h-0 flex-1 flex-col"
             >
-              <div class="grid min-w-0 flex-1 gap-1.5 sm:w-60 sm:flex-none">
-                <label for="closures-search" class="text-[13px] font-[650] text-base-content">
-                  Find pathway or calendar
-                </label>
-                <form
-                  id="closures-search-form"
-                  phx-change="search"
-                  phx-debounce="200"
-                  class="contents"
+              <header class="border-b border-subtle px-5 py-4">
+                <h2
+                  id="closure-editor-title"
+                  tabindex="-1"
+                  class="font-sans text-[20px] font-[650] leading-tight tracking-normal"
                 >
-                  <div class="relative">
-                    <.icon
-                      name="hero-magnifying-glass"
-                      class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted"
-                    />
-                    <input
-                      id="closures-search"
-                      type="search"
-                      name="search"
-                      value={@search}
+                  {if @editor_mode == :new, do: "New closure", else: "Edit closure"}
+                </h2>
+                <p id="closure-editor-context" class="mt-1 text-[13px] text-muted">
+                  <span :if={@editor_pathway}>
+                    {pathway_full_label(@editor_pathway)} ·
+                    <span class="font-mono text-[12px]">{@editor_pathway.pathway_id}</span>
+                  </span>
+                  <span :if={is_nil(@editor_pathway)}>
+                    {station_name(@station)} · {@current_gtfs_version.name}
+                  </span>
+                </p>
+              </header>
+
+              <div
+                id="closure-body"
+                class="grid content-start gap-5 px-5 py-5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto"
+              >
+                <.callout
+                  :if={@duplicate_id || @form_errors != []}
+                  id="closure-errors"
+                  kind="error"
+                  title={
+                    if @duplicate_id, do: "This closure already exists.", else: "Closure not saved"
+                  }
+                  tabindex="-1"
+                >
+                  <ul :if={is_nil(@duplicate_id)} id="closure-errors-list" class="grid gap-0.5">
+                    <li :for={error <- @form_errors}>
+                      <button
+                        :if={error.id}
+                        type="button"
+                        phx-click={JS.focus(to: "#" <> error.id)}
+                        class="inline-flex min-h-11 items-center text-left text-error-fg underline underline-offset-4"
+                      >
+                        {error.message}
+                      </button>
+                      <span :if={is_nil(error.id)} class="text-error-fg">{error.message}</span>
+                    </li>
+                  </ul>
+                  <div :if={@duplicate_id}>
+                    <p id="closure-duplicate" class="text-sm">
+                      Another closure has the same pathway, calendar and window.
+                    </p>
+                    <button
+                      id="closure-open-existing"
+                      type="button"
+                      phx-click="open_existing_closure"
+                      class="-mb-2 inline-flex min-h-11 items-center gap-1.5 text-sm font-[650] text-error-fg underline underline-offset-4"
+                    >
+                      Open existing closure
+                    </button>
+                  </div>
+                </.callout>
+
+                <.callout
+                  :if={@stale?}
+                  id="closure-stale"
+                  kind="warning"
+                  title="Closure changed after you opened it"
+                  tabindex="-1"
+                >
+                  <p class="text-sm">
+                    Nothing was saved and your entries are kept. Reload the closure to see the current version, then make your change again.
+                  </p>
+                  <button
+                    id="closure-reload"
+                    type="button"
+                    phx-click="reload_closure"
+                    class="mt-3 inline-flex min-h-11 items-center justify-center gap-2 rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
+                  >
+                    <.icon name="hero-arrow-path" class="size-4" /> Reload closure
+                  </button>
+                </.callout>
+
+                <div :if={@notices != []} id="closure-notices" class="grid gap-2">
+                  <.callout
+                    :for={notice <- @notices}
+                    id={notice.id}
+                    data-notice={notice.kind}
+                    kind={notice.kind}
+                    title={notice.title}
+                  >
+                    {notice.body}
+                  </.callout>
+                </div>
+
+                <.input
+                  field={@form[:pathway_id]}
+                  id="closure-pathway"
+                  type="select"
+                  label="Pathway"
+                  prompt="Choose a pathway"
+                  options={pathway_options(@station_data.pathways)}
+                  help={pathway_help(@editor_pathway)}
+                  class={control_class()}
+                />
+
+                <.input
+                  field={@form[:service_id]}
+                  id="closure-calendar"
+                  type="select"
+                  label="Calendar"
+                  prompt="Choose a calendar"
+                  options={calendar_options(@calendars)}
+                  help={calendar_usage_line(@editor_calendar)}
+                  class={control_class()}
+                />
+
+                <fieldset class="min-w-0">
+                  <legend class="text-[13px] font-[650] text-base-content">Closure window</legend>
+                  <div class="mt-2 flex flex-wrap items-end gap-x-3 gap-y-2">
+                    <.input
+                      field={@form[:start_time]}
+                      id="closure-start"
+                      type="text"
+                      label="Starts at"
+                      inputmode="numeric"
                       autocomplete="off"
-                      aria-label="Find pathway or calendar"
-                      class="h-11 w-full rounded-control border border-control bg-white pr-3 pl-9 text-sm text-strong"
+                      spellcheck="false"
+                      class={time_class()}
+                      phx-debounce="blur"
+                    />
+                    <.input
+                      field={@form[:end_time]}
+                      id="closure-end"
+                      type="text"
+                      label="Ends at"
+                      inputmode="numeric"
+                      autocomplete="off"
+                      spellcheck="false"
+                      help="Service time. Use 24-hour time. For 2 AM the next day, enter 26:00."
+                      class={time_class()}
+                      phx-debounce="blur"
                     />
                   </div>
-                </form>
+                </fieldset>
+
+                <.input
+                  field={@form[:note]}
+                  id="closure-note"
+                  type="textarea"
+                  rows="2"
+                  label="Note (optional)"
+                  help="For your team. Not included in GTFS exports."
+                  class={textarea_class()}
+                  phx-debounce="blur"
+                />
+
+                <div class="rounded-control bg-canvas px-4 py-3">
+                  <p id="closure-summary" class="text-sm text-strong">
+                    {closure_summary(@form.params, @editor_pathway, @editor_calendar)}
+                  </p>
+                  <a
+                    :if={is_nil(@preview_unavailable)}
+                    id="preview-closure-impact"
+                    href={@preview_href}
+                    class="-mb-1.5 inline-flex min-h-11 items-center gap-1.5 text-sm font-[650] text-action no-underline hover:underline"
+                  >
+                    Preview access impact<.icon name="hero-arrow-right" class="size-4" />
+                  </a>
+                  <p
+                    :if={@preview_unavailable}
+                    id="closure-preview-unavailable"
+                    class="mt-1.5 text-[13px] text-muted"
+                  >
+                    {@preview_unavailable}
+                  </p>
+                </div>
+
+                <p id="closure-scope" class="text-[13px] text-muted">
+                  Saving updates this version immediately. Full exports include this closure.
+                </p>
               </div>
-              <.button
-                id="new-closure"
-                type="button"
-                phx-click="start_closure"
-                variant="secondary"
-                class="h-11 min-h-11 gap-2 rounded-control border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
+
+              <footer
+                id="closure-actions"
+                class="sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 border-t border-subtle bg-white px-5 py-4"
               >
-                <.icon name="hero-plus" class="size-4" /> Create closure
-              </.button>
+                <.button
+                  id="save-closure"
+                  type="submit"
+                  disabled={@stale?}
+                  title={@stale? && "Reload the closure before saving"}
+                  phx-disable-with="Saving…"
+                  class="min-h-11 min-w-[7.5rem] rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-evo-action-hover disabled:pointer-events-none disabled:opacity-60"
+                >
+                  Save closure
+                </.button>
+              </footer>
+            </.form>
+          </aside>
+
+          <section
+            :if={is_nil(@blocked)}
+            id="closure-locator"
+            aria-labelledby="closure-locator-title"
+            class="min-w-0 rounded-card border border-subtle bg-white lg:col-start-1 lg:row-start-2"
+          >
+            <div class="border-b border-subtle px-4 py-4 md:px-5">
+              <h2
+                id="closure-locator-title"
+                class="font-sans text-[18px] font-[650] leading-snug tracking-normal"
+              >
+                Choose a pathway
+              </h2>
+              <p class="text-[13px] text-muted">Any pathway type can close.</p>
             </div>
-          </div>
 
-          <table
-            :if={is_nil(@blocked) and @match_count > 0}
-            id="closures-table"
-            class="w-full border-collapse text-left text-sm"
-          >
-            <thead>
-              <tr>
-                <th
-                  scope="col"
-                  class="w-[46%] border-b border-subtle bg-canvas py-2.5 pr-3 pl-5 text-[13px] font-[650] text-base-content"
-                >
-                  Pathway
-                </th>
-                <th
-                  scope="col"
-                  class="border-b border-subtle bg-canvas px-3 py-2.5 text-[13px] font-[650] text-base-content"
-                >
-                  Calendar
-                </th>
-                <th
-                  scope="col"
-                  class="w-[152px] border-b border-subtle bg-canvas py-2.5 pr-5 pl-3 text-[13px] font-[650] text-base-content"
-                >
-                  Window
-                </th>
-              </tr>
-            </thead>
-            <tbody
-              id="closures-list"
-              phx-update="stream"
-              tabindex="-1"
-              class="focus-visible:outline-offset-[-2px]"
-            >
-              <tr
-                :for={{dom_id, row} <- @streams.closures}
-                id={dom_id}
-                data-closure-id={row.id}
-                class={closure_row_class(row, @selected_closure_id)}
-              >
-                <.closure_cells row={row} selected={to_string(row.id) == @selected_closure_id} />
-              </tr>
-            </tbody>
-          </table>
-
-          <.closures_state
-            :if={@first_use?}
-            id="closures-empty"
-            title={"No closures scheduled at " <> station_name(@station)}
-            message="A closure takes a pathway out of service during a daily window on a calendar’s service days, for example elevator maintenance."
-          >
-            <:action>
-              <.button
-                id="new-closure"
-                type="button"
-                phx-click="start_closure"
-                class="h-11 min-h-11 gap-2 rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-evo-action-hover"
-              >
-                <.icon name="hero-plus" class="size-4" /> Create closure
-              </.button>
-            </:action>
-          </.closures_state>
-
-          <.closures_state
-            :if={@filtered_empty?}
-            id="closures-filtered-empty"
-            title={"No closures match “" <> String.trim(@search) <> "”"}
-            message={"Check the spelling, or clear the search to see all " <> @closure_count <> "."}
-          >
-            <:action>
-              <.button
-                id="closures-clear-search"
-                type="button"
-                phx-click={JS.push("clear_search") |> JS.focus(to: "#closures-search")}
-                variant="secondary"
-                class="h-11 min-h-11 rounded-control border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
-              >
-                Clear search
-              </.button>
-            </:action>
-          </.closures_state>
-
-          <.closures_state
-            :if={@blocked == :no_pathways}
-            id="closures-no-pathways"
-            title={station_name(@station) <> " has no pathways yet"}
-            message="A closure takes a pathway out of service. Add pathways between the station’s stops on its floorplan, then schedule closures here."
-          >
-            <:action>
-              <.button
-                id="closures-open-floorplans"
-                navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/#{@stop_id}/diagram"}
-                class="h-11 min-h-11 rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-evo-action-hover"
-              >
-                Open floorplans
-              </.button>
-            </:action>
-          </.closures_state>
-
-          <.closures_state
-            :if={@blocked == :no_calendars}
-            id="closures-no-calendars"
-            title={"No calendars in " <> @current_gtfs_version.name}
-            message="A closure applies on a calendar’s service days. Create a calendar with the dates of the work, then schedule the closure here."
-          >
-            <:action>
-              <.button
-                id="closures-open-calendars"
-                navigate={~p"/gtfs/#{@current_gtfs_version.id}/calendars"}
-                class="h-11 min-h-11 rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-evo-action-hover"
-              >
-                Open calendars
-              </.button>
-            </:action>
-          </.closures_state>
-        </section>
-
-        <section
-          :if={is_nil(@blocked)}
-          id="closure-locator"
-          aria-labelledby="closure-locator-title"
-          class="mt-6 min-w-0 rounded-card border border-subtle bg-white"
-        >
-          <div class="border-b border-subtle px-4 py-4 md:px-5">
-            <h2
-              id="closure-locator-title"
-              class="font-sans text-[18px] font-[650] leading-snug tracking-normal"
-            >
-              Choose a pathway
-            </h2>
-            <p class="text-[13px] text-muted">Any pathway type can close.</p>
-          </div>
-
-          <.pathway_list
-            groups={@pathway_groups}
-            closure_counts={@closure_counts}
-            selected_id={@selected_pathway_id}
-          />
-        </section>
+            <.pathway_list
+              groups={@pathway_groups}
+              closure_counts={@closure_counts}
+              selected_id={@selected_pathway_id}
+            />
+          </section>
+        </div>
       </div>
     </Layouts.app>
     """
+  end
+
+  # The editor's controls carry the design system's control treatment, plus the
+  # invalid state the input component marks with `aria-invalid`.
+  defp control_class do
+    "h-11 w-full rounded-control border border-control bg-white px-3 text-sm text-strong " <>
+      "aria-[invalid=true]:border-2 aria-[invalid=true]:border-error"
+  end
+
+  defp time_class do
+    "h-11 w-[6.5rem] rounded-control border border-control bg-white px-3 font-mono " <>
+      "text-sm tabular-nums text-strong aria-[invalid=true]:border-2 aria-[invalid=true]:border-error"
+  end
+
+  defp textarea_class do
+    "min-h-16 w-full resize-y rounded-control border border-control bg-white px-3 py-2.5 text-sm " <>
+      "text-strong aria-[invalid=true]:border-2 aria-[invalid=true]:border-error"
+  end
+
+  # Why the access preview cannot be offered yet, or nil when it can. A new
+  # closure has nothing saved to preview, a stale one has to be reloaded first,
+  # and a dirty one has to be saved or discarded; only then can the calendar's
+  # own reason (no active dates, no usable zone) apply.
+  defp preview_unavailable(assigns) do
+    cond do
+      assigns.editor_mode == nil -> nil
+      assigns.editor_mode == :new -> "Save the closure to preview its access impact."
+      assigns.stale? -> "Reload the closure before previewing the saved result."
+      assigns.dirty? -> "Save or discard your edits to preview the saved closure."
+      true -> assigns.preview_reason
+    end
   end
 
   defp station_name(%{stop_name: name}) when is_binary(name) and name != "", do: name

@@ -78,15 +78,20 @@ async function logIn(page, account = EDITOR) {
 }
 
 // A click or key press that lands before the LiveView joins is dropped, so each
-// navigation waits for the mounted view first.
+// navigation waits for the mounted view first. The socket reports connected
+// before its view channel can push, so the wait has to name the view itself.
 async function waitForLiveView(page) {
   await page.waitForSelector("[data-phx-main]", { state: "attached" });
   await page.waitForFunction(() => {
     const main = document.querySelector("[data-phx-main]");
+    const view = window.liveSocket?.main;
+
     return Boolean(
       main &&
-      !main.hasAttribute("data-phx-pending") &&
-      window.liveSocket?.isConnected(),
+        view &&
+        view.isConnected() &&
+        !view.joinPending &&
+        !main.hasAttribute("data-phx-pending"),
     );
   });
 }
@@ -218,7 +223,7 @@ test.describe("authoring", () => {
       }
     });
 
-    test("the row list is keyboard operable and keeps focus on the selected row", async ({
+    test("the row list is keyboard operable and moves focus into the editor", async ({
       page,
     }) => {
       const versionId = await seededVersionId(page);
@@ -229,6 +234,7 @@ test.describe("authoring", () => {
         .locator("#closures-list tr[data-closure-id]")
         .first();
       const rowButton = firstRow.locator("button[aria-current]");
+      const rowId = await firstRow.getAttribute("data-closure-id");
       await expect(rowButton).toHaveAttribute("aria-current", "false");
 
       await rowButton.focus();
@@ -239,8 +245,14 @@ test.describe("authoring", () => {
       await expect(page.locator("#evolutions-status")).toContainText(
         "Selected closure on Elevator",
       );
-      // Focus stays on the row the keyboard user activated, not on the body.
-      await expect(rowButton).toBeFocused();
+      // Choosing a row opens the editor on it and the editor takes focus, which
+      // is the reference's behaviour; the row keeps its id as the return path.
+      await expect(page.locator("#closure-editor")).toHaveAttribute(
+        "data-closure-id",
+        rowId,
+      );
+      await expect(page.locator("#closure-editor-title")).toBeFocused();
+      await expect(page.locator("#closure-start")).toHaveValue("09:00");
       await expect(
         page.locator("#closures-list tr[data-closure-id]"),
       ).toHaveCount(2);
@@ -517,6 +529,305 @@ test.describe("authoring", () => {
         await expect(page.locator("#closures-card")).toBeVisible();
         await page.screenshot({
           path: capturePath(testInfo, "step-015-reference-mobile.png"),
+          fullPage: true,
+        });
+      });
+    });
+  });
+
+  // Step 18 / EV-22. The create-and-edit inspector through the ordinary route:
+  // a persisted row reloads identically, a rejected save keeps the entered
+  // strings and lands focus on the first invalid field, a duplicate tuple links
+  // to the closure this station already has, a stale row asks for an explicit
+  // reload, and the overlap notice names the window it overlaps. The cases
+  // write only into the version's own empty station, so the seeded station the
+  // other groups read keeps its two closures.
+  test.describe("the closure editor", () => {
+    test.beforeEach(async ({ page }) => {
+      await logIn(page);
+    });
+
+    test("creates a closure, reloads it unchanged, edits it, and names an overlap", async ({
+      page,
+    }, testInfo) => {
+      const versionId = await seededVersionId(page);
+      await page.setViewportSize(DESKTOP);
+      await page.goto(evolutionsPath(versionId, EMPTY_STATION));
+      await waitForLiveView(page);
+
+      await expect(page.locator("#closures-empty")).toBeVisible();
+      await page.locator("#closures-empty #new-closure").click();
+      await expect(page.locator("#closure-editor-title")).toHaveText("New closure");
+      // With no pathway chosen yet, the picker is the field that takes focus.
+      await expect(page.locator("#closure-pathway")).toBeFocused();
+
+      await page.selectOption("#closure-pathway", "BROWSER_EVO_EMPTY_PW");
+      await page.selectOption("#closure-calendar", "CAL_DAILY");
+      await page.fill("#closure-start", "09:00");
+      await page.fill("#closure-end", "10:00");
+      await page.fill("#closure-note", "Morning lift check.");
+      await expect(page.locator("#closure-summary")).toContainText(
+        "closes 09:00–10:00 on each service day of Every day service",
+      );
+
+      await page.locator("#save-closure").click();
+
+      await expect(page.locator("#evolutions-status")).toContainText("Closure saved.");
+      await expect(page.locator("#closures-empty")).toHaveCount(0);
+      await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(1);
+      await expect(page.locator("#closure-editor")).toHaveAttribute(
+        "data-closure-id",
+        /[0-9a-f-]{36}/,
+      );
+      await expect(page.locator("#closure-start")).toHaveValue("09:00");
+      await expect(page.locator("#closure-end")).toHaveValue("10:00");
+      await expect(page.locator("#closure-note")).toHaveValue("Morning lift check.");
+      // The saved row carries a real preview address with its exact service time.
+      await expect(page.locator("#preview-closure-impact")).toHaveAttribute(
+        "href",
+        /\/evolutions\/access\?date=\d{4}-\d{2}-\d{2}&time=09%3A00%3A00$/,
+      );
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-018-production-desktop.png"),
+        fullPage: true,
+      });
+
+      // The stored row rebuilds identically after a reload.
+      await page.reload();
+      await waitForLiveView(page);
+      await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(1);
+      await expect(page.locator("#closures-list")).toContainText("09:00–10:00");
+
+      // Editing the note persists and reloads through the same route.
+      await page.locator("#closures-list tr[data-closure-id] button").first().click();
+      await expect(page.locator("#closure-note")).toHaveValue("Morning lift check.");
+      await page.fill("#closure-note", "Lift check moved to the afternoon.");
+      await page.locator("#save-closure").click();
+      await expect(page.locator("#evolutions-status")).toContainText("Closure saved.");
+
+      await page.reload();
+      await waitForLiveView(page);
+      await page.locator("#closures-list tr[data-closure-id] button").first().click();
+      await expect(page.locator("#closure-note")).toHaveValue(
+        "Lift check moved to the afternoon.",
+      );
+
+      // A second window on the same pathway and calendar names the one it
+      // overlaps, in words and in service times.
+      await page.locator("#new-closure").click();
+      await page.selectOption("#closure-pathway", "BROWSER_EVO_EMPTY_PW");
+      await page.selectOption("#closure-calendar", "CAL_DAILY");
+      await page.fill("#closure-start", "09:30");
+      await page.fill("#closure-end", "10:30");
+      await page.locator("#save-closure").click();
+
+      await expect(page.locator("#closure-notice-overlap")).toContainText(
+        "Overlaps another closure.",
+      );
+      await expect(page.locator("#closure-notice-overlap")).toContainText(
+        "also closes 09:00–10:00",
+      );
+      await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(2);
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-018-production-overlap.png"),
+        fullPage: true,
+      });
+
+      // Mobile and the narrow overflow check keep the editor usable.
+      await page.setViewportSize(MOBILE);
+      await page.reload();
+      await waitForLiveView(page);
+      await page.locator("#closures-list tr[data-closure-id] button").first().click();
+      await expect(page.locator("#closure-form")).toBeVisible();
+      await expect(page.locator("#closure-start")).toHaveValue("09:00");
+      expect(await bodyFitsViewport(page)).toBe(true);
+      await page.screenshot({
+        path: capturePath(testInfo, "step-018-production-mobile.png"),
+        fullPage: true,
+      });
+
+      await page.setViewportSize(NARROW);
+      await page.reload();
+      await waitForLiveView(page);
+      await page.locator("#closures-list tr[data-closure-id] button").first().click();
+      await expect(page.locator("#closure-form")).toBeVisible();
+      expect(await bodyFitsViewport(page)).toBe(true);
+      await page.screenshot({
+        path: capturePath(testInfo, "step-018-production-320.png"),
+        fullPage: true,
+      });
+    });
+
+    test("a rejected save keeps the entered strings and focuses the first invalid field", async ({
+      page,
+    }, testInfo) => {
+      const versionId = await seededVersionId(page);
+      await page.setViewportSize(DESKTOP);
+      await page.goto(evolutionsPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      await page.locator("#closures-list tr[data-closure-id] button").first().click();
+      await expect(page.locator("#closure-editor-title")).toHaveText("Edit closure");
+      await expect(page.locator("#closure-start")).toHaveValue("09:00");
+
+      await page.fill("#closure-end", "02:00");
+      await page.locator("#save-closure").click();
+
+      await expect(page.locator("#closure-errors")).toContainText("Closure not saved");
+      await expect(page.locator("#closure-errors-list")).toContainText(
+        "must be later than the start time",
+      );
+      await expect(page.locator("#closure-start")).toHaveValue("09:00");
+      await expect(page.locator("#closure-end")).toHaveValue("02:00");
+      await expect(page.locator("#closure-end")).toHaveAttribute("aria-invalid", "true");
+      // The scoped focus hook lands on the first invalid field.
+      await expect(page.locator("#closure-end")).toBeFocused();
+      // The kept entry is unsaved input, so no preview is offered for it.
+      await expect(page.locator("#preview-closure-impact")).toHaveCount(0);
+      await expect(page.locator("#closure-preview-unavailable")).toContainText(
+        "Save or discard your edits to preview the saved closure.",
+      );
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-018-production-validation.png"),
+        fullPage: true,
+      });
+
+      // The rejected save wrote nothing; restoring the saved window is a no-op.
+      await page.fill("#closure-end", "15:00");
+      await page.locator("#save-closure").click();
+      await expect(page.locator("#evolutions-status")).toContainText("No changes to save.");
+      await expect(page.locator("#closures-list")).toContainText("09:00–15:00");
+      await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(2);
+    });
+
+    test("a duplicate tuple links to the closure this station already has", async ({
+      page,
+    }, testInfo) => {
+      const versionId = await seededVersionId(page);
+      await page.setViewportSize(DESKTOP);
+      await page.goto(evolutionsPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      await page.locator("#new-closure").click();
+      await page.selectOption("#closure-pathway", PUNCTUATED_PATHWAY);
+      await page.selectOption("#closure-calendar", "CAL_DAILY");
+      await page.fill("#closure-start", "09:00");
+      await page.fill("#closure-end", "15:00");
+      await page.locator("#save-closure").click();
+
+      await expect(page.locator("#closure-errors")).toContainText(
+        "This closure already exists.",
+      );
+      await expect(page.locator("#closure-duplicate")).toContainText(
+        "Another closure has the same pathway, calendar and window.",
+      );
+      await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(2);
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-018-production-duplicate.png"),
+        fullPage: true,
+      });
+
+      await page.locator("#closure-open-existing").click();
+      await expect(page.locator("#closure-editor-title")).toHaveText("Edit closure");
+      await expect(page.locator("#closure-start")).toHaveValue("09:00");
+      await expect(page.locator("#closure-end")).toHaveValue("15:00");
+      // It is the lift's own saved closure, not a copy.
+      await expect(page.locator("#closure-note")).toHaveValue("Quarterly inspection.");
+      await expect(page.locator("#closure-duplicate")).toHaveCount(0);
+    });
+
+    test("a stale save keeps the entries until Reload closure is chosen", async ({
+      page,
+      context,
+    }, testInfo) => {
+      const versionId = await seededVersionId(page);
+      await page.setViewportSize(DESKTOP);
+      await page.goto(evolutionsPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      const stairsRow = page
+        .locator("#closures-list tr[data-closure-id]")
+        .filter({ hasText: "BROWSER_EVO_PW_STAIR" });
+      await stairsRow.locator("button").first().click();
+      await expect(page.locator("#closure-end")).toHaveValue("26:00");
+
+      // Another signed-in session changes the same row through the ordinary
+      // route while this editor is open.
+      const other = await context.newPage();
+      await other.goto(evolutionsPath(versionId, STATION));
+      await waitForLiveView(other);
+      await other
+        .locator("#closures-list tr[data-closure-id]")
+        .filter({ hasText: "BROWSER_EVO_PW_STAIR" })
+        .locator("button")
+        .first()
+        .click();
+      await other.fill("#closure-end", "26:30");
+      await other.locator("#save-closure").click();
+      await expect(other.locator("#evolutions-status")).toContainText("Closure saved.");
+      await other.close();
+
+      // The first editor still holds the row it loaded: its save is stale.
+      await page.fill("#closure-end", "27:00");
+      await page.locator("#save-closure").click();
+
+      await expect(page.locator("#closure-stale")).toContainText(
+        "Closure changed after you opened it",
+      );
+      await expect(page.locator("#closure-end")).toHaveValue("27:00");
+      await expect(page.locator("#save-closure")).toBeDisabled();
+      await expect(page.locator("#closure-stale")).toBeFocused();
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-018-production-stale.png"),
+        fullPage: true,
+      });
+
+      await page.locator("#closure-reload").click();
+
+      await expect(page.locator("#closure-stale")).toHaveCount(0);
+      await expect(page.locator("#closure-end")).toHaveValue("26:30");
+      await expect(page.locator("#evolutions-status")).toContainText("Closure reloaded.");
+      await expect(page.locator("#save-closure")).toBeEnabled();
+    });
+
+    // The reference is a self-contained file in the gitignored `.specs/`
+    // workspace, so this case skips (rather than fails) in a checkout without it.
+    test.describe("reference capture", () => {
+      test.skip(
+        () => !fs.existsSync(REFERENCE_PATH),
+        "reference file not present",
+      );
+
+      test("captures the reference editor states", async ({ page }, testInfo) => {
+        await page.setViewportSize(DESKTOP);
+
+        for (const [state, name] of [
+          ["creating", "desktop"],
+          ["validation", "validation"],
+          ["duplicate", "duplicate"],
+          ["stale", "stale"],
+          ["forbidden", "forbidden"],
+          ["saved-overlap", "saved-overlap"],
+          ["saved-no-dates", "saved-no-dates"],
+        ]) {
+          await page.goto(`${pathToFileURL(REFERENCE_PATH).href}?state=${state}`);
+          await expect(page.locator("#closure-editor")).toBeVisible();
+          await page.screenshot({
+            path: capturePath(testInfo, `step-018-reference-${name}.png`),
+            fullPage: true,
+          });
+        }
+
+        await page.setViewportSize(MOBILE);
+        await page.goto(`${pathToFileURL(REFERENCE_PATH).href}?state=editing`);
+        await expect(page.locator("#closure-editor")).toBeVisible();
+        await page.screenshot({
+          path: capturePath(testInfo, "step-018-reference-mobile.png"),
           fullPage: true,
         });
       });

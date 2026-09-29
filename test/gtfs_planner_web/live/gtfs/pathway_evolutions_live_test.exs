@@ -15,6 +15,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.PathwayEvolution
+  alias GtfsPlanner.Gtfs.PathwayEvolutions
+  alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
   @station_stop %{
@@ -73,6 +78,59 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
     |> LazyHTML.query("#closures-list tr[data-closure-id]")
     |> Enum.map(&LazyHTML.attribute(&1, "data-closure-id"))
     |> List.flatten()
+  end
+
+  # Fills the open editor's form and submits it, the way an editor does after
+  # choosing Create closure or a row in the list. Values default to the tuple
+  # the fixture station already holds, so a caller only names what it changes.
+  defp save_new_closure(view, overrides) do
+    view |> element("#new-closure") |> render_click()
+
+    params =
+      Map.merge(
+        %{
+          "pathway_id" => "PW-WALK",
+          "service_id" => "CAL_DAILY",
+          "start_time" => "10:00",
+          "end_time" => "12:00",
+          "note" => ""
+        },
+        overrides
+      )
+
+    view |> form("#closure-form", %{"closure" => params}) |> render_submit()
+  end
+
+  # One closure row of this station's snapshot, addressed by its exact natural
+  # ID and service-day start rather than by a UUID the caller cannot know.
+  defp closure_on!(organization, version, stop_id, pathway_id, start_time) do
+    {:ok, station_data} = Gtfs.station_closures(organization.id, version.id, stop_id)
+
+    Enum.find(station_data.closures, fn row ->
+      row.evolution.pathway_id == pathway_id and row.evolution.start_time == start_time
+    end) || flunk("no closure on #{pathway_id} starting at #{start_time}")
+  end
+
+  # A change committed by another session through the ordinary context, using
+  # the fingerprint the row had when this test read it.
+  defp edit_from_another_session!(organization, version, user, stop_id, id, attrs) do
+    row = Repo.get!(PathwayEvolution, id)
+
+    audit = %AuditContext{
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      station_stop_id: stop_id,
+      actor_id: user.id,
+      actor_email: user.email
+    }
+
+    {:ok, _result} =
+      Gtfs.update_pathway_evolution(id, attrs, PathwayEvolutions.fingerprint(row), audit)
+  end
+
+  defp revoke_editor_role!(user, organization) do
+    membership = Accounts.get_user_org_membership(user.id, organization.id)
+    {:ok, _revoked} = Accounts.update_user_org_membership(membership, %{roles: []})
   end
 
   # One station with an entrance, a mezzanine and a platform, three pathways
@@ -196,7 +254,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
 
       assert has_element?(
                view,
-               "#closure-open-#{daytime.evolution.id}",
+               "#closure-open-#{daytime.id}",
                "Elevator · Mezzanine hall ↔ Platform 1"
              )
 
@@ -221,11 +279,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
 
-      assert has_element?(view, "#closure-open-#{daytime.evolution.id}[aria-current='false']")
+      assert has_element?(view, "#closure-open-#{daytime.id}[aria-current='false']")
 
       html =
         view
-        |> element("#closure-open-#{daytime.evolution.id}")
+        |> element("#closure-open-#{daytime.id}")
         |> render_click()
 
       assert html =~ ~s(aria-current="true")
@@ -360,10 +418,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
 
       conn = log_in_user(conn, user, organization: organization)
 
-      linked = evolutions_path(version, station.stop_id) <> "?closure=#{daytime.evolution.id}"
+      linked = evolutions_path(version, station.stop_id) <> "?closure=#{daytime.id}"
       {:ok, view, _html} = live(conn, linked)
 
-      assert has_element?(view, "#closure-open-#{daytime.evolution.id}[aria-current='true']")
+      assert has_element?(view, "#closure-open-#{daytime.id}[aria-current='true']")
       assert has_element?(view, "#evolutions-status", "Selected closure on Elevator")
       assert row_ids(view) |> length() == 2
 
@@ -465,6 +523,512 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
                "#closures-open-calendars[href='/gtfs/#{version.id}/calendars']",
                "Open calendars"
              )
+    end
+  end
+
+  describe "the closure editor" do
+    setup :editor_setup
+
+    test "creating a closure persists one audited row that reloads identically",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      # The idle editor says nothing is selected and offers no form to save.
+      assert has_element?(view, "#closure-idle", "No closure selected")
+      refute has_element?(view, "#closure-form")
+
+      view |> element("#new-closure") |> render_click()
+
+      assert has_element?(view, "#closure-editor-title", "New closure")
+      assert_push_event(view, "focus_scoped_target", %{id: "closure-pathway"})
+
+      # The pickers offer this station's pathways and the version's native
+      # calendars, by their exact natural IDs.
+      assert has_element?(view, "#closure-pathway option[value='#{@punctuated_pathway_id}']")
+      assert has_element?(view, "#closure-calendar option[value='CAL_DAILY']")
+
+      html =
+        view
+        |> form("#closure-form", %{
+          "closure" => %{
+            "pathway_id" => @punctuated_pathway_id,
+            "service_id" => "CAL_DAILY",
+            "start_time" => "10:00",
+            "end_time" => "11:30",
+            "note" => "Morning inspection."
+          }
+        })
+        |> render_submit()
+
+      assert html =~ "Closure saved."
+      assert has_element?(view, "#closure-editor-title", "Edit closure")
+      assert has_element?(view, "#closure-start[value='10:00']")
+      assert has_element?(view, "#closure-end[value='11:30']")
+      assert render(view) =~ "Morning inspection."
+      assert row_ids(view) |> length() == 3
+
+      created =
+        closure_on!(organization, version, station.stop_id, @punctuated_pathway_id, 36_000)
+
+      assert created.evolution.end_time == 41_400
+      assert created.evolution.note == "Morning inspection."
+
+      assert [log] =
+               Gtfs.list_change_logs_for_entity(
+                 organization.id,
+                 version.id,
+                 "pathway_evolution",
+                 created.evolution.id
+               )
+
+      assert log.action == "created"
+      assert log.actor_id == user.id
+      assert log.organization_id == organization.id
+      assert log.gtfs_version_id == version.id
+      assert log.station_stop_id == station.stop_id
+      assert log.changed_fields["after"]["start_time"] == 36_000
+      assert log.changed_fields["after"]["pathway_id"] == @punctuated_pathway_id
+
+      # A second mount rebuilds the same row from stored state.
+      {:ok, reloaded, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      assert reloaded |> row_ids() |> length() == 3
+      assert has_element?(reloaded, "#closure-#{created.evolution.id}", "10:00–11:30")
+    end
+
+    test "an invalid window keeps the entered strings and marks the first invalid field",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      assert has_element?(view, "#closure-editor[data-closure-id='#{daytime.id}']")
+      assert has_element?(view, "#closure-start[value='09:00']")
+
+      html =
+        view
+        |> form("#closure-form", %{
+          "closure" => %{
+            "pathway_id" => @punctuated_pathway_id,
+            "service_id" => "CAL_DAILY",
+            "start_time" => "23:00",
+            "end_time" => "02:00",
+            "note" => ""
+          }
+        })
+        |> render_submit()
+
+      assert html =~ "Closure not saved"
+      assert has_element?(view, "#closure-start[value='23:00']")
+      assert has_element?(view, "#closure-end[value='02:00']")
+      assert has_element?(view, "#closure-end[aria-invalid='true']")
+      assert has_element?(view, "#closure-errors-list", "must be later than the start time")
+
+      assert_push_event(view, "focus_form_error", %{
+        form_id: "closure-form",
+        fallback_id: "closure-errors"
+      })
+
+      # The refused save wrote nothing.
+      assert Repo.get!(PathwayEvolution, daytime.id).end_time == 54_000
+    end
+
+    test "editing persists the new window with one updated audit and a no-op save writes nothing",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      submitted_at = Repo.get!(PathwayEvolution, daytime.id).updated_at
+
+      html =
+        view
+        |> form("#closure-form", %{
+          "closure" => %{
+            "pathway_id" => @punctuated_pathway_id,
+            "service_id" => "CAL_DAILY",
+            "start_time" => "09:00",
+            "end_time" => "16:00",
+            "note" => "Extended."
+          }
+        })
+        |> render_submit()
+
+      assert html =~ "Closure saved."
+      assert has_element?(view, "#closure-end[value='16:00']")
+      assert Repo.get!(PathwayEvolution, daytime.id).end_time == 57_600
+
+      assert [update_log] =
+               Gtfs.list_change_logs_for_entity(
+                 organization.id,
+                 version.id,
+                 "pathway_evolution",
+                 daytime.id
+               )
+
+      assert update_log.action == "updated"
+      assert update_log.station_stop_id == station.stop_id
+      assert update_log.changed_fields["before"]["end_time"] == 54_000
+      assert update_log.changed_fields["after"]["end_time"] == 57_600
+
+      # The same values again are a no-op: no row write and no new audit.
+      html =
+        view
+        |> form("#closure-form", %{
+          "closure" => %{
+            "pathway_id" => @punctuated_pathway_id,
+            "service_id" => "CAL_DAILY",
+            "start_time" => "09:00",
+            "end_time" => "16:00",
+            "note" => "Extended."
+          }
+        })
+        |> render_submit()
+
+      assert html =~ "No changes to save."
+
+      assert length(
+               Gtfs.list_change_logs_for_entity(
+                 organization.id,
+                 version.id,
+                 "pathway_evolution",
+                 daytime.id
+               )
+             ) == 1
+
+      assert Repo.get!(PathwayEvolution, daytime.id).updated_at == submitted_at
+    end
+
+    test "a duplicate tuple opens the existing closure of this station and writes nothing",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#new-closure") |> render_click()
+
+      html =
+        view
+        |> form("#closure-form", %{
+          "closure" => %{
+            "pathway_id" => @punctuated_pathway_id,
+            "service_id" => "CAL_DAILY",
+            "start_time" => "09:00",
+            "end_time" => "15:00",
+            "note" => ""
+          }
+        })
+        |> render_submit()
+
+      assert html =~ "This closure already exists."
+      assert has_element?(view, "#closure-duplicate", "Another closure has the same pathway")
+      assert has_element?(view, "#closure-open-existing", "Open existing closure")
+      assert_push_event(view, "focus_scoped_target", %{id: "closure-errors"})
+
+      # Nothing was written and no row was added.
+      assert row_ids(view) |> length() == 2
+
+      assert Gtfs.list_change_logs_for_entity(
+               organization.id,
+               version.id,
+               "pathway_evolution",
+               daytime.id
+             ) == []
+
+      view |> element("#closure-open-existing") |> render_click()
+
+      # The link opens exactly the scoped tuple that already exists here.
+      assert has_element?(view, "#closure-editor[data-closure-id='#{daytime.id}']")
+      assert has_element?(view, "#closure-editor-title", "Edit closure")
+      assert has_element?(view, "#closure-start[value='09:00']")
+      assert has_element?(view, "#closure-end[value='15:00']")
+      refute has_element?(view, "#closure-duplicate")
+    end
+
+    test "a stale save keeps the entries and Reload closure adopts the persisted row",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      # Another session changes the row after this editor loaded it.
+      edit_from_another_session!(organization, version, user, station.stop_id, daytime.id, %{
+        end_time: "16:00",
+        note: "Changed elsewhere."
+      })
+
+      html =
+        view
+        |> form("#closure-form", %{
+          "closure" => %{
+            "pathway_id" => @punctuated_pathway_id,
+            "service_id" => "CAL_DAILY",
+            "start_time" => "09:00",
+            "end_time" => "17:00",
+            "note" => ""
+          }
+        })
+        |> render_submit()
+
+      assert html =~ "Closure changed after you opened it"
+      assert has_element?(view, "#closure-end[value='17:00']")
+      assert has_element?(view, "#save-closure[disabled]")
+      assert_push_event(view, "focus_scoped_target", %{id: "closure-stale"})
+
+      # The stale submission wrote nothing: the other session's value stands.
+      assert Repo.get!(PathwayEvolution, daytime.id).end_time == 57_600
+
+      view |> element("#closure-reload") |> render_click()
+
+      refute has_element?(view, "#closure-stale")
+      assert has_element?(view, "#closure-end[value='16:00']")
+      assert render(view) =~ "Closure reloaded."
+      refute has_element?(view, "#save-closure[disabled]")
+    end
+
+    test "a revoked role keeps the entered values and shows the forbidden outcome",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+      revoke_editor_role!(user, organization)
+
+      html =
+        view
+        |> form("#closure-form", %{
+          "closure" => %{
+            "pathway_id" => @punctuated_pathway_id,
+            "service_id" => "CAL_DAILY",
+            "start_time" => "09:00",
+            "end_time" => "17:00",
+            "note" => "Still mine."
+          }
+        })
+        |> render_submit()
+
+      assert html =~ "You no longer have permission to edit closures."
+
+      # The mounted page survives and the entered values are kept.
+      assert has_element?(view, "#closure-end[value='17:00']")
+      assert render(view) =~ "Still mine."
+      assert Repo.get!(PathwayEvolution, daytime.id).end_time == 54_000
+    end
+
+    test "overlap and no-active-dates notices are truthful after a save",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station} = station_with_closures(organization, version)
+
+      # A calendar whose only weekly days never fall inside its range: it has no
+      # active service dates at all.
+      calendar_fixture(organization.id, version.id, %{
+        service_id: "CAL_DARK",
+        start_date: ~D[2026-01-03],
+        end_date: ~D[2026-01-04]
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      # A first closure on the walkway has nothing to warn about.
+      save_new_closure(view, %{
+        "pathway_id" => "PW-WALK",
+        "service_id" => "CAL_DAILY",
+        "start_time" => "10:00",
+        "end_time" => "12:00"
+      })
+
+      assert row_ids(view) |> length() == 3
+      refute has_element?(view, "#closure-notice-overlap")
+
+      # A second window on the same pathway and service names the window it
+      # overlaps.
+      save_new_closure(view, %{
+        "pathway_id" => "PW-WALK",
+        "service_id" => "CAL_DAILY",
+        "start_time" => "11:00",
+        "end_time" => "13:00"
+      })
+
+      assert has_element?(view, "#closure-notice-overlap", "also closes 10:00–12:00")
+      assert has_element?(view, "#closure-notice-overlap", "Every day service")
+
+      # A calendar with no active dates saves and says the closure does not
+      # apply yet.
+      save_new_closure(view, %{
+        "pathway_id" => "PW-WALK",
+        "service_id" => "CAL_DARK",
+        "start_time" => "10:00",
+        "end_time" => "12:00"
+      })
+
+      assert has_element?(view, "#closure-notice-no-active-dates", "does not run on any date")
+      refute has_element?(view, "#closure-notice-overlap")
+      assert row_ids(view) |> length() == 5
+    end
+
+    test "a saved closure links to its exact preview instant; an unsaved or dirty one does not",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, walkway: walkway} = station_with_closures(organization, version)
+
+      # One agency zone pinned to UTC and a dates-only calendar with exactly two
+      # active dates, one either side of today, so the expected link is exact.
+      agency_fixture(organization.id, version.id, %{agency_timezone: "UTC"})
+
+      today = Date.utc_today()
+      past = Date.add(today, -30)
+      future = Date.add(today, 30)
+
+      for date <- [past, future] do
+        calendar_date_fixture(organization.id, version.id, %{
+          service_id: "CAL_SPAN",
+          date: date,
+          exception_type: 1
+        })
+      end
+
+      closure =
+        pathway_evolution_fixture(organization.id, version.id, %{
+          pathway_id: walkway.pathway_id,
+          service_id: "CAL_SPAN",
+          start_time: 32_400,
+          end_time: 54_000
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      refute has_element?(view, "#preview-closure-impact")
+      refute has_element?(view, "#closure-preview-unavailable")
+
+      # An unsaved closure cannot claim an instant.
+      view |> element("#new-closure") |> render_click()
+
+      assert has_element?(
+               view,
+               "#closure-preview-unavailable",
+               "Save the closure to preview its access impact."
+             )
+
+      refute has_element?(view, "#preview-closure-impact")
+
+      # A persisted unchanged closure links to the earliest active date on or
+      # after the agency's today, at its exact service time.
+      view |> element("#closure-open-#{closure.id}") |> render_click()
+
+      expected =
+        "/gtfs/#{version.id}/stops/#{station.stop_id}/evolutions/access" <>
+          "?date=#{Date.to_iso8601(future)}&time=09%3A00%3A00"
+
+      assert has_element?(view, "#preview-closure-impact[href='#{expected}']")
+      refute has_element?(view, "#closure-preview-unavailable")
+
+      # Editing a field withholds the link until the entry is saved or
+      # discarded, so a preview never describes unsaved input.
+      view
+      |> form("#closure-form", %{
+        "closure" => %{
+          "pathway_id" => walkway.pathway_id,
+          "service_id" => "CAL_SPAN",
+          "start_time" => "09:00",
+          "end_time" => "16:00",
+          "note" => ""
+        }
+      })
+      |> render_change()
+
+      assert has_element?(
+               view,
+               "#closure-preview-unavailable",
+               "Save or discard your edits"
+             )
+
+      refute has_element?(view, "#preview-closure-impact")
+    end
+
+    test "a calendar with no active dates says why a preview cannot be chosen",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, walkway: walkway} = station_with_closures(organization, version)
+      agency_fixture(organization.id, version.id, %{agency_timezone: "UTC"})
+
+      calendar_fixture(organization.id, version.id, %{
+        service_id: "CAL_DARK",
+        start_date: ~D[2026-01-03],
+        end_date: ~D[2026-01-04]
+      })
+
+      closure =
+        pathway_evolution_fixture(organization.id, version.id, %{
+          pathway_id: walkway.pathway_id,
+          service_id: "CAL_DARK",
+          start_time: 32_400,
+          end_time: 54_000
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{closure.id}") |> render_click()
+
+      assert has_element?(
+               view,
+               "#closure-preview-unavailable",
+               "has no active service dates"
+             )
+
+      refute has_element?(view, "#preview-closure-impact")
+    end
+
+    test "a missing agency zone withholds the preview without blocking authoring",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, walkway: walkway} = station_with_closures(organization, version)
+
+      closure =
+        pathway_evolution_fixture(organization.id, version.id, %{
+          pathway_id: walkway.pathway_id,
+          service_id: "CAL_DAILY",
+          start_time: 32_400,
+          end_time: 54_000
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{closure.id}") |> render_click()
+
+      assert has_element?(
+               view,
+               "#closure-preview-unavailable",
+               "agency time zone is unavailable"
+             )
+
+      assert has_element?(view, "#closure-preview-unavailable", "authoring still works")
+      refute has_element?(view, "#preview-closure-impact")
+
+      # The form itself is untouched and still saves.
+      save_new_closure(view, %{
+        "pathway_id" => walkway.pathway_id,
+        "service_id" => "CAL_DAILY",
+        "start_time" => "14:00",
+        "end_time" => "15:00"
+      })
+
+      assert render(view) =~ "Closure saved."
     end
   end
 
