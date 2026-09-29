@@ -289,8 +289,11 @@ body {
 /* ── Blocks timeline ──
    The timeline is a table of 36px rows inside one scroll container, so the
    header row stays put while the rows scroll and the block columns stay put
-   while the track scrolls sideways (AC-22). The five block columns have fixed
+   while the track scrolls sideways (AC-22). The six block columns have fixed
    widths, which is what lets each header and body cell stick at its own offset.
+   The Select column carries the block checkboxes and the page select-all
+   (AC-42); its width is the 44px its target needs, and the other five keep the
+   widths they had before it.
    Garage · type and Time out replaced the Trips, Start and End columns (AC-32):
    the garage column is the widest so the longest garage and type names fit or
    ellipsize into their `title`, and Time out holds a whole platform span on one
@@ -304,16 +307,18 @@ body {
    page. The chrome above the timeline is ~430px, which leaves 15 rows at
    1440x1000 and 13 at 1280x900. */
 #blocks-page {
+  --blocks-meta-select: 44px;
   --blocks-meta-block: 86px;
   --blocks-meta-garage: 132px;
   --blocks-meta-out: 140px;
   --blocks-meta-hours: 46px;
   --blocks-meta-status: 152px;
   --blocks-meta-width: calc(
-    var(--blocks-meta-block) + var(--blocks-meta-garage) + var(--blocks-meta-out) +
-      var(--blocks-meta-hours) + var(--blocks-meta-status)
+    var(--blocks-meta-select) + var(--blocks-meta-block) + var(--blocks-meta-garage) +
+      var(--blocks-meta-out) + var(--blocks-meta-hours) + var(--blocks-meta-status)
   );
-  --blocks-meta-offset-2: var(--blocks-meta-block);
+  --blocks-meta-offset-1: var(--blocks-meta-select);
+  --blocks-meta-offset-2: calc(var(--blocks-meta-offset-1) + var(--blocks-meta-block));
   --blocks-meta-offset-3: calc(var(--blocks-meta-offset-2) + var(--blocks-meta-garage));
   --blocks-meta-offset-4: calc(var(--blocks-meta-offset-3) + var(--blocks-meta-out));
   --blocks-meta-offset-5: calc(var(--blocks-meta-offset-4) + var(--blocks-meta-hours));
@@ -340,6 +345,7 @@ body {
   min-width: calc(var(--blocks-meta-width) + 2 * var(--blocks-track-min));
 }
 
+#blocks-timeline .blocks-col-select { width: var(--blocks-meta-select); }
 #blocks-timeline .blocks-col-block { width: var(--blocks-meta-block); }
 #blocks-timeline .blocks-col-garage { width: var(--blocks-meta-garage); }
 #blocks-timeline .blocks-col-out { width: var(--blocks-meta-out); }
@@ -368,7 +374,8 @@ body {
   background: inherit;
 }
 
-#blocks-timeline .blocks-meta-block { left: 0; }
+#blocks-timeline .blocks-meta-select { left: 0; }
+#blocks-timeline .blocks-meta-block { left: var(--blocks-meta-offset-1); }
 #blocks-timeline .blocks-meta-garage { left: var(--blocks-meta-offset-2); }
 #blocks-timeline .blocks-meta-out { left: var(--blocks-meta-offset-3); }
 #blocks-timeline .blocks-meta-hours { left: var(--blocks-meta-offset-4); }
