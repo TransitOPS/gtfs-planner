@@ -1053,6 +1053,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
          {:ok, current} <- current_entity(run, decision),
          :ok <- fingerprint_matches?(decision, current),
          :ok <- dependencies_satisfied?(run, decision),
+         :ok <- no_dependents?(run, decision),
          :ok <- invoke_step(opts, :before_mutation),
          {:ok, entity} <- apply_mutation(run, decision, current),
          :ok <- invoke_step(opts, :before_audit),
@@ -1133,6 +1134,23 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   defp dependency_entity_type("stop"), do: :stop
   defp dependency_entity_type("pathway"), do: :pathway
   defp dependency_entity_type(_), do: :unknown
+
+  # A removal never cascades: stop times, transfers and other records that name the stop or
+  # level are outside a station review, so the decision fails while any of them remain. A
+  # dependent removed earlier in this apply is already gone when this runs.
+  defp no_dependents?(run, %ChangeDecision{action: :remove} = decision) do
+    dependents =
+      Gtfs.import_dependent_counts(
+        decision.entity_type,
+        run.organization_id,
+        run.gtfs_version_id,
+        [decision.natural_key]
+      )
+
+    if dependents == %{}, do: :ok, else: {:error, :has_dependents}
+  end
+
+  defp no_dependents?(_run, _decision), do: :ok
 
   defp apply_mutation(run, decision, current) do
     attrs =

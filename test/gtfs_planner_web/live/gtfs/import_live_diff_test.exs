@@ -403,6 +403,87 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     refute has_element?(view, "#diff-failed-decisions li[data-decision-id='stop:DONE']")
   end
 
+  test "a removal row states what still uses the stop and omits the line when nothing does", %{
+    conn: conn,
+    organization: organization,
+    version: version
+  } do
+    stop_fixture(organization.id, version.id, %{stop_id: "central"})
+    stop_fixture(organization.id, version.id, %{stop_id: "lonely"})
+    stop_time_fixture(organization.id, version.id, "T1", "central")
+    stop_time_fixture(organization.id, version.id, "T2", "central")
+
+    transfer_fixture(organization.id, version.id, %{
+      from_stop_id: "central",
+      to_stop_id: "central"
+    })
+
+    run = insert_run!(organization, version, :review, %{finished_at: nil})
+    central = insert_removal!(run, :stop, "central")
+    lonely = insert_removal!(run, :stop, "lonely")
+
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    assert has_element?(
+             view,
+             "#diff-decision-dependents-#{central.id}",
+             "Used by 2 stop times and 1 transfer. Removal will be refused while they exist."
+           )
+
+    refute has_element?(view, "#diff-decision-dependents-#{lonely.id}")
+    assert has_element?(view, "button[phx-click='approve-decision'][phx-value-id='stop:central']")
+  end
+
+  test "a level removal row states how many stops use the level", %{
+    conn: conn,
+    organization: organization,
+    version: version
+  } do
+    level_fixture(organization.id, version.id, %{level_id: "L1"})
+    stop_fixture(organization.id, version.id, %{stop_id: "platform-a", level_id: "L1"})
+    stop_fixture(organization.id, version.id, %{stop_id: "platform-b", level_id: "L1"})
+
+    run = insert_run!(organization, version, :review, %{finished_at: nil})
+    level = insert_removal!(run, :level, "L1")
+
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    assert has_element?(
+             view,
+             "#diff-decision-dependents-#{level.id}",
+             "Used by 2 stops. Removal will be refused while they exist."
+           )
+  end
+
+  test "an approved removal of a stop that trips use is listed as failed with its reason", %{
+    conn: conn,
+    organization: organization,
+    version: version
+  } do
+    stop_fixture(organization.id, version.id, %{stop_id: "central"})
+    stop_time_fixture(organization.id, version.id, "T1", "central")
+
+    run = insert_run!(organization, version, :review, %{finished_at: nil})
+    insert_removal!(run, :stop, "central")
+
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    view
+    |> element("button[phx-click='approve-decision'][phx-value-id='stop:central']")
+    |> render_click()
+
+    view |> element("#diff-apply-btn") |> render_click()
+    await_change_task(view)
+
+    assert Gtfs.get_stop_by_stop_id(organization.id, version.id, "central")
+
+    assert has_element?(
+             view,
+             "#diff-failed-decisions li[data-decision-id='stop:central']",
+             "Still used by trips, transfers, pathways or other records in this version"
+           )
+  end
+
   test "the failed decision list stops at 50 and counts the rest", %{
     conn: conn,
     organization: organization,
@@ -520,6 +601,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       )
     )
     |> Repo.insert!()
+  end
+
+  defp insert_removal!(run, entity_type, key) do
+    insert_decision!(run, key, %{
+      decision_id: "#{entity_type}:#{key}",
+      entity_type: entity_type,
+      action: :remove,
+      status: :pending,
+      apply_failure_code: nil
+    })
   end
 
   defp insert_failed_decisions!(run, count) do

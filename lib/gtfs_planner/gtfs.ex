@@ -60,6 +60,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
@@ -5942,6 +5943,71 @@ defmodule GtfsPlanner.Gtfs do
     do: Repo.delete(current)
 
   def apply_import_entity(_, _, _, _), do: {:error, :invalid_decision}
+
+  # Tables that hold a stop's or level's GTFS ID as a plain string, as
+  # {kind, schema, column, column already counted}. There are no foreign keys, so a
+  # removal leaves these rows pointing at a missing record. A row naming one stop in
+  # both columns is counted once, by the first column.
+  @stop_references [
+    {:stop_times, StopTime, :stop_id, nil},
+    {:transfers, Transfer, :from_stop_id, nil},
+    {:transfers, Transfer, :to_stop_id, :from_stop_id},
+    {:pathways, Pathway, :from_stop_id, nil},
+    {:pathways, Pathway, :to_stop_id, :from_stop_id},
+    {:child_stops, Stop, :parent_station, nil},
+    {:stop_areas, StopArea, :stop_id, nil},
+    {:route_pattern_stops, RoutePatternStop, :stop_id, nil},
+    {:fare_leg_join_rules, FareLegJoinRule, :from_stop_id, nil},
+    {:fare_leg_join_rules, FareLegJoinRule, :to_stop_id, :from_stop_id}
+  ]
+  @level_references [{:stops, Stop, :level_id, nil}]
+
+  # Counts the records of one organization and version that still use each of the given
+  # stops or levels, as `%{natural_key => %{kind => count}}`. Keys nothing uses are absent.
+  @doc false
+  @spec import_dependent_counts(atom(), Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) ::
+          %{String.t() => %{atom() => pos_integer()}}
+  def import_dependent_counts(_entity_type, _organization_id, _gtfs_version_id, []), do: %{}
+
+  def import_dependent_counts(:stop, organization_id, gtfs_version_id, natural_keys),
+    do: dependent_counts(@stop_references, organization_id, gtfs_version_id, natural_keys)
+
+  def import_dependent_counts(:level, organization_id, gtfs_version_id, natural_keys),
+    do: dependent_counts(@level_references, organization_id, gtfs_version_id, natural_keys)
+
+  def import_dependent_counts(_entity_type, _organization_id, _gtfs_version_id, _natural_keys),
+    do: %{}
+
+  defp dependent_counts(references, organization_id, gtfs_version_id, natural_keys) do
+    Enum.reduce(references, %{}, fn {kind, schema, column, counted_in}, counts ->
+      from(row in schema,
+        where:
+          row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id and
+            field(row, ^column) in ^natural_keys,
+        group_by: field(row, ^column),
+        select: {field(row, ^column), count(row.id)}
+      )
+      |> skip_counted_column(counted_in, column)
+      |> Repo.all()
+      |> Enum.reduce(counts, &add_dependent_count(&2, kind, &1))
+    end)
+  end
+
+  defp add_dependent_count(counts, kind, {key, count}) do
+    Map.update(counts, key, %{kind => count}, fn kinds ->
+      Map.update(kinds, kind, count, &(&1 + count))
+    end)
+  end
+
+  defp skip_counted_column(query, nil, _column), do: query
+
+  defp skip_counted_column(query, counted_in, column) do
+    where(
+      query,
+      [row],
+      is_nil(field(row, ^counted_in)) or field(row, ^counted_in) != field(row, ^column)
+    )
+  end
 
   defp import_entity_schema(:level), do: {Level, :level_id}
   defp import_entity_schema(:stop), do: {Stop, :stop_id}

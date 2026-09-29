@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   import Ecto.Query, only: [from: 2]
 
+  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.Import
 
@@ -117,6 +118,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:diff_preview_count, 0)
      |> assign(:apply_results, [])
      |> assign(:decisions_by_id, %{})
+     |> assign(:decision_dependents, %{})
      |> stream(:diff_decisions, [])
      |> stream(:diff_preview_decisions, [])
      |> stream(:import_recovery_runs, recoverable_runs,
@@ -790,6 +792,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         |> assign(:diff_parse_failures, run_diagnostics(run))
         |> assign(:diff_preview_count, length(previews))
         |> assign(:decisions_by_id, Map.new(applicable, &{&1.decision_id, &1}))
+        |> assign(:decision_dependents, decision_dependents(run, filtered))
         |> stream(:diff_decisions, filtered, reset: true)
         |> stream(:diff_preview_decisions, previews, reset: true)
 
@@ -797,6 +800,28 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         socket
     end
   end
+
+  # Counts what still uses each stop or level a review removes. Apply refuses a removal
+  # while anything uses it, so the row warns before the user approves. The rows only render
+  # in the review step. One grouped query per referencing table covers every removal.
+  defp decision_dependents(%ChangeRun{state: :review} = run, decisions) do
+    decisions
+    |> Enum.filter(&(&1.action == :remove and &1.status != :applied))
+    |> Enum.group_by(& &1.entity_type, & &1.natural_key)
+    |> Enum.reduce(%{}, fn {entity_type, natural_keys}, dependents ->
+      counts =
+        Gtfs.import_dependent_counts(
+          entity_type,
+          run.organization_id,
+          run.gtfs_version_id,
+          natural_keys
+        )
+
+      Map.merge(dependents, Map.new(counts, fn {key, kinds} -> {{entity_type, key}, kinds} end))
+    end)
+  end
+
+  defp decision_dependents(_run, _decisions), do: %{}
 
   defp update_change_decision(socket, decision_id, status) do
     with %ChangeRun{} = run <- socket.assigns[:change_run],
@@ -1222,6 +1247,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   dependency_keys={decision.dependency_keys}
                   edited?={decision.user_edited}
                 >
+                  <:note :if={dependents_note(@decision_dependents, decision)}>
+                    <p
+                      id={"diff-decision-dependents-#{decision.id}"}
+                      class="mt-1 text-xs font-medium text-warning"
+                    >
+                      {dependents_note(@decision_dependents, decision)}
+                    </p>
+                  </:note>
                   <:actions :if={decision.status in [:pending, :approved, :rejected]}>
                     <button
                       type="button"
@@ -1523,7 +1556,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         <span class="font-medium">
           <span class="capitalize">{decision.entity_type}</span> {decision.natural_key}
         </span>
-        · {decision.action} · {decision_failure_reason(decision.apply_failure_code)}
+        · {decision.action} · {decision_failure_reason(decision)}
       </li>
       <li :if={@hidden_count > 0} id="diff-failed-decisions-more">and {@hidden_count} more</li>
     </ul>
@@ -1942,12 +1975,56 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     |> Enum.sort_by(& &1.decision_id)
   end
 
-  defp decision_failure_reason("drifted"), do: "Changed since the review was computed"
+  defp decision_failure_reason(%{apply_failure_code: "drifted"}),
+    do: "Changed since the review was computed"
 
-  defp decision_failure_reason("dependencies_unmet"),
+  defp decision_failure_reason(%{apply_failure_code: "dependencies_unmet"}),
     do: "Depends on a change that was not applied"
 
-  defp decision_failure_reason(_code), do: "Could not be applied"
+  defp decision_failure_reason(%{apply_failure_code: "has_dependents", entity_type: :level}),
+    do: "Still used by stops in this version"
+
+  defp decision_failure_reason(%{apply_failure_code: "has_dependents"}),
+    do: "Still used by trips, transfers, pathways or other records in this version"
+
+  defp decision_failure_reason(_decision), do: "Could not be applied"
+
+  defp dependents_note(dependents, decision) do
+    case Map.fetch(dependents, {decision.entity_type, decision.natural_key}) do
+      {:ok, kinds} -> dependents_sentence(kinds)
+      :error -> nil
+    end
+  end
+
+  defp dependents_sentence(kinds) do
+    phrases =
+      kinds
+      |> Enum.sort()
+      |> Enum.map(fn {kind, count} -> "#{count} #{dependent_noun(kind, count)}" end)
+
+    "Used by #{to_sentence(phrases)}. Removal will be refused while they exist."
+  end
+
+  defp dependent_noun(:stop_times, count), do: ngettext("stop time", "stop times", count)
+  defp dependent_noun(:transfers, count), do: ngettext("transfer", "transfers", count)
+  defp dependent_noun(:pathways, count), do: ngettext("pathway", "pathways", count)
+  defp dependent_noun(:child_stops, count), do: ngettext("child stop", "child stops", count)
+  defp dependent_noun(:stop_areas, count), do: ngettext("stop area", "stop areas", count)
+
+  defp dependent_noun(:route_pattern_stops, count),
+    do: ngettext("route pattern stop", "route pattern stops", count)
+
+  defp dependent_noun(:fare_leg_join_rules, count),
+    do: ngettext("fare leg join rule", "fare leg join rules", count)
+
+  defp dependent_noun(:stops, count), do: ngettext("stop", "stops", count)
+
+  defp to_sentence([phrase]), do: phrase
+
+  defp to_sentence(phrases) do
+    {leading, [last]} = Enum.split(phrases, -1)
+    Enum.join(leading, ", ") <> " and " <> last
+  end
 
   defp approved_decision_count(decisions_by_id) do
     decisions_by_id
