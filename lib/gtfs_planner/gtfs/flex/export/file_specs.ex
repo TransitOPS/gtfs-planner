@@ -4,15 +4,12 @@ defmodule GtfsPlanner.Gtfs.Flex.Export.FileSpecs do
 
   The flex `stop_times.txt` is the full profile's file with the six flex
   columns in their GTFS reference positions, because the flex zip writes the
-  fixed trips and the flex rows through one header. The three extra CSVs are
-  written from rows `GtfsPlanner.Gtfs.Flex.Export.Areas` and
-  `GtfsPlanner.Gtfs.Flex.Export.Detours` build, keyed by GTFS column atoms, so
-  `GtfsPlanner.Gtfs.Export.CsvWriter.write_row/4` resolves them; none of them
-  is read back from the database, so `schema` is nil.
-
-  `booking_rules.txt` carries `pickup_message` and `drop_off_message` even
-  though only a detour service sets the latter: GTFS defines both columns and an
-  omitted key would write no column at all.
+  fixed trips and the flex rows through one header. The two location group
+  CSVs are written from rows `GtfsPlanner.Gtfs.Flex.Export.Areas` builds, keyed
+  by GTFS column atoms, so `GtfsPlanner.Gtfs.Export.CsvWriter.write_row/4`
+  resolves them; none of them is read back from the database, so `schema` is
+  nil. The flex booking rules are appended to the stored `booking_rules.txt`
+  through its own spec in `GtfsPlanner.Gtfs.Export.FileSpec`.
   """
 
   alias GtfsPlanner.Gtfs.StopTime
@@ -46,35 +43,6 @@ defmodule GtfsPlanner.Gtfs.Flex.Export.FileSpecs do
         {"timepoint", :timepoint},
         {"pickup_booking_rule_id", :pickup_booking_rule_id},
         {"drop_off_booking_rule_id", :drop_off_booking_rule_id}
-      ]
-    }
-  end
-
-  @doc """
-  `booking_rules.txt` in the GTFS reference column order. The rows come from
-  `GtfsPlanner.Gtfs.Flex.Export.Areas.booking_rule_rows/2` (plus the detour
-  service's `drop_off_message`), never from the imported `booking_rules` table.
-  """
-  def booking_rules_spec do
-    %{
-      filename: "booking_rules.txt",
-      schema: nil,
-      fields: [
-        {"booking_rule_id", :booking_rule_id},
-        {"booking_type", :booking_type},
-        {"prior_notice_duration_min", :prior_notice_duration_min},
-        {"prior_notice_duration_max", :prior_notice_duration_max},
-        {"prior_notice_last_day", :prior_notice_last_day},
-        {"prior_notice_last_time", :prior_notice_last_time},
-        {"prior_notice_start_day", :prior_notice_start_day},
-        {"prior_notice_start_time", :prior_notice_start_time},
-        {"prior_notice_service_id", :prior_notice_service_id},
-        {"message", :message},
-        {"pickup_message", :pickup_message},
-        {"drop_off_message", :drop_off_message},
-        {"phone_number", :phone_number},
-        {"info_url", :info_url},
-        {"booking_url", :booking_url}
       ]
     }
   end

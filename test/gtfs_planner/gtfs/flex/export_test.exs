@@ -24,10 +24,12 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Gtfs.Blocking
+  alias GtfsPlanner.Gtfs.BookingRule
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Flex
   alias GtfsPlanner.Gtfs.Flex.Geometry
+  alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
@@ -401,6 +403,118 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
     end
   end
 
+  describe "stored flex files" do
+    test "a stored booking rule and the flex rules share one booking_rules.txt", context do
+      flex_representative_fixture(context.organization, context.version)
+
+      %BookingRule{
+        organization_id: context.organization_id,
+        gtfs_version_id: context.gtfs_version_id
+      }
+      |> BookingRule.changeset(%{booking_rule_id: "imported-book", booking_type: 0})
+      |> Repo.insert!()
+
+      assert {:ok, %{flex: flex}, _warnings} =
+               Export.build_zips(context.organization_id, context.gtfs_version_id, :full,
+                 include_flex: true
+               )
+
+      {:ok, entries} = :zip.unzip(flex, [:memory])
+      booking_files = for {~c"booking_rules.txt", content} <- entries, do: content
+
+      assert [content] = booking_files
+
+      ids = content |> csv_rows() |> Enum.map(& &1["booking_rule_id"])
+      assert "imported-book" in ids
+      assert "flex-valley-line-detours-book" in ids
+      assert length(ids) == length(Enum.uniq(ids))
+    end
+  end
+
+  describe "inactive routes" do
+    test "a detour on an inactive route is left out with a warning and adds no zone rows",
+         context do
+      flex_representative_fixture(context.organization, context.version)
+      deactivate_routes(context, ["20"])
+
+      assert {:ok, %{main: main, flex: flex}, warnings} =
+               Export.build_zips(context.organization_id, context.gtfs_version_id, :full,
+                 include_flex: true
+               )
+
+      warning = Enum.find(warnings, &(&1.detail =~ "Valley Line detours"))
+      assert warning.code == "flex_service_excluded"
+      assert warning.detail =~ "inactive"
+
+      refute zip_files(main)["routes.txt"] =~ "Valley Line"
+
+      files = zip_files(flex)
+      refute files["stop_times.txt"] =~ "flex-valley-line-detours"
+      refute files["locations.geojson"] =~ "flex-valley-line-detours"
+      refute files["booking_rules.txt"] =~ "flex-valley-line-detours"
+    end
+
+    test "a version whose routes are all inactive makes the flex zip its only feed", context do
+      flex_representative_fixture(context.organization, context.version)
+      deactivate_routes(context, ["1", "20"])
+
+      assert {:ok, %{main: nil, flex: flex}, warnings} =
+               Export.build_zips(context.organization_id, context.gtfs_version_id, :full,
+                 include_flex: true
+               )
+
+      assert warning_code?(warnings, "main_feed_not_produced")
+
+      routes = flex |> zip_files() |> Map.fetch!("routes.txt") |> csv_rows()
+      assert Enum.all?(routes, &String.starts_with?(&1["route_id"], "flex-"))
+    end
+  end
+
+  describe "when the flex zip is built" do
+    test "a version without flex services builds the main zip only", context do
+      flex_feed_fixture(context.organization, context.version)
+
+      assert {:ok, %{main: main, flex: nil}, []} =
+               Export.build_zips(context.organization_id, context.gtfs_version_id, :full,
+                 include_flex: true
+               )
+
+      assert is_binary(main)
+    end
+
+    test "a flex build that fails in PostgreSQL leaves the main zip and warns", context do
+      feed = flex_representative_fixture(context.organization, context.version)
+
+      assert {:ok, plain, _warnings} =
+               Export.build_zip(context.organization_id, context.gtfs_version_id, :full)
+
+      # A bow-tie ring written past `Flex.Geometry`'s validation: the export's
+      # `ST_ReducePrecision` raises on it inside the snapshot transaction.
+      [area | _rest] = load_service(context, feed.services.area.id).areas
+
+      Repo.query!(
+        "UPDATE flex_areas SET geom = ST_Multi(ST_GeomFromText(" <>
+          "'POLYGON((-124.09 44.57, -124.08 44.58, -124.08 44.57, -124.09 44.58, -124.09 44.57))'" <>
+          ", 4326)) WHERE id = $1",
+        [Ecto.UUID.dump!(area.id)]
+      )
+
+      assert {:ok, %{main: main, flex: nil}, warnings} =
+               Export.build_zips(context.organization_id, context.gtfs_version_id, :full,
+                 include_flex: true
+               )
+
+      assert Enum.map(warnings, & &1.code) == ["flex_build_failed"]
+
+      assert Map.delete(zip_files(main), "stop_times.txt") ==
+               Map.delete(zip_files(plain), "stop_times.txt")
+
+      # The snapshot transaction rolled back to its savepoint, so the
+      # connection still answers.
+      assert Repo.aggregate(Trip, :count) > 0
+    end
+  end
+
   describe "no fixed routes (R15)" do
     test "the flex zip is the run's only feed with a main_feed_not_produced warning", context do
       agency_fixture(context.organization_id, context.gtfs_version_id, %{
@@ -708,6 +822,15 @@ defmodule GtfsPlanner.Gtfs.Flex.ExportTest do
       day_trips: day.counts.trips,
       calendar_usage: usage
     }
+  end
+
+  defp deactivate_routes(context, route_ids) do
+    from(r in Route,
+      where:
+        r.organization_id == ^context.organization_id and
+          r.gtfs_version_id == ^context.gtfs_version_id and r.route_id in ^route_ids
+    )
+    |> Repo.update_all(set: [active: false])
   end
 
   defp delete_services(context) do

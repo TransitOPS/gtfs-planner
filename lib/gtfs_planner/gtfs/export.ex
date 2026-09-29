@@ -15,7 +15,8 @@ defmodule GtfsPlanner.Gtfs.Export do
   - Doubles the `stop_sequence` of trips on an active detour service's route in
     every `stop_times.txt` it writes (R3, through `Flex.Export.sequence_mapper/2`)
   - Builds the flex zip (fixed routes plus flex rows) beside the main zip from
-    the same snapshot when `include_flex` is set
+    the same snapshot when `include_flex` is set and the version has an active
+    flex service; a flex build failure leaves the main zip intact
 
   ## Export Types
 
@@ -31,6 +32,7 @@ defmodule GtfsPlanner.Gtfs.Export do
   alias GtfsPlanner.Gtfs.Extensions
   alias GtfsPlanner.Gtfs.Flex.Export, as: FlexExport
   alias GtfsPlanner.Gtfs.Flex.Export.FileSpecs, as: FlexFileSpecs
+  alias GtfsPlanner.Gtfs.FlexService
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Operations
@@ -134,14 +136,16 @@ defmodule GtfsPlanner.Gtfs.Export do
   repeatable-read snapshot.
 
   The flex zip is the full file set written again with the R3 mapper, the flex
-  rows appended to `routes.txt`, `trips.txt` and `stop_times.txt`, and the
-  extra files `Flex.Export.build_entries/2` returns (`locations.geojson`,
-  `booking_rules.txt`, `location_groups.txt`, `location_group_stops.txt`). A
-  service with a readiness error or failed derived geometry is left out with a
-  warning and never changes the main zip (R4); a version with no fixed routes
-  and at least one exportable flex service answers `%{main: nil, flex: zip}`
-  with a `main_feed_not_produced` warning (R15). Include `include_flex: false`
-  for a main zip only.
+  rows appended to `routes.txt`, `trips.txt`, `stop_times.txt` and
+  `booking_rules.txt`, and the extra files `Flex.Export.build_entries/2`
+  returns (`locations.geojson`, `location_groups.txt`,
+  `location_group_stops.txt`). A service with a readiness error or failed
+  derived geometry is left out with a warning and never changes the main zip
+  (R4); a version with no fixed routes and at least one exportable flex service
+  answers `%{main: nil, flex: zip}` with a `main_feed_not_produced` warning
+  (R15). A version without an active flex service answers `flex: nil`, and a
+  flex build that raises answers `flex: nil` with a `flex_build_failed` warning
+  and the main zip unchanged. Include `include_flex: false` for a main zip only.
 
   `:operations` keeps its TODS files in the main zip only: the flex zip carries
   the main feed's files plus the flex files.
@@ -169,17 +173,17 @@ defmodule GtfsPlanner.Gtfs.Export do
           # writer runs, so the main and flex files share one answer.
           mapper = FlexExport.sequence_mapper(organization_id, gtfs_version_id)
 
+          main_result =
+            build_main(temp_dir, organization_id, gtfs_version_id, export_type, mapper)
+
           {flex_zip, flex_entries, flex_warnings} =
             build_flex_result(
-              include_flex,
+              include_flex and flex_services?(organization_id, gtfs_version_id),
               flex_dir,
               organization_id,
               gtfs_version_id,
               mapper
             )
-
-          main_result =
-            build_main(temp_dir, organization_id, gtfs_version_id, export_type, mapper)
 
           main_zip = main_zip(main_result, flex_entries)
 
@@ -212,19 +216,68 @@ defmodule GtfsPlanner.Gtfs.Export do
   defp main_warnings({:ok, _zip, warnings}), do: warnings
   defp main_warnings({:error, _reason}), do: []
 
-  # Builds the flex zip and its warnings when flex is included, and the empty
-  # answer otherwise. A flex zip with no content at all is nil.
+  # Builds the flex zip and its warnings when flex is included and the version
+  # has an active flex service, and the empty answer otherwise: without a
+  # service the flex zip would repeat the main zip. A flex zip with no content
+  # at all is nil.
+  #
+  # The main zip is already built when this runs, and a flex failure must not
+  # take it down (R4). The build runs under a savepoint, so a raise, including
+  # a PostgreSQL error that aborts the statement, rolls back to it and leaves
+  # the snapshot usable; the run then has no flex zip and a `flex_build_failed`
+  # warning. The savepoint keeps the outer repeatable-read snapshot, so both
+  # zips still read one committed revision.
   defp build_flex_result(false, _flex_dir, _organization_id, _gtfs_version_id, _mapper) do
     {nil, nil, []}
   end
 
   defp build_flex_result(true, flex_dir, organization_id, gtfs_version_id, mapper) do
+    Repo.query!("SAVEPOINT gtfs_flex_build")
+
+    try do
+      result = build_flex(flex_dir, organization_id, gtfs_version_id, mapper)
+      Repo.query!("RELEASE SAVEPOINT gtfs_flex_build")
+      result
+    rescue
+      error ->
+        Repo.query!("ROLLBACK TO SAVEPOINT gtfs_flex_build")
+
+        Logger.error(
+          "GTFS flex export failed: " <> Exception.format(:error, error, __STACKTRACE__)
+        )
+
+        {nil, nil, [flex_build_failed_warning()]}
+    end
+  end
+
+  defp build_flex(flex_dir, organization_id, gtfs_version_id, mapper) do
     {:ok, entries, warnings} = FlexExport.build_entries(organization_id, gtfs_version_id)
 
     case write_flex_zip(flex_dir, organization_id, gtfs_version_id, mapper, entries) do
       {:ok, zip} -> {zip, entries, warnings}
       {:error, :no_data} -> {nil, entries, warnings}
     end
+  end
+
+  defp flex_build_failed_warning do
+    %{
+      code: "flex_build_failed",
+      detail:
+        "The flex file could not be built, so this run has no flex file. The main feed " <>
+          "was built as usual.",
+      file: "gtfs-flex.zip",
+      entity_type: "feed"
+    }
+  end
+
+  defp flex_services?(organization_id, gtfs_version_id) do
+    import Ecto.Query
+
+    FlexService
+    |> where([s], s.organization_id == ^organization_id)
+    |> where([s], s.gtfs_version_id == ^gtfs_version_id)
+    |> where([s], s.active)
+    |> Repo.exists?()
   end
 
   @doc """
@@ -313,15 +366,17 @@ defmodule GtfsPlanner.Gtfs.Export do
   end
 
   # The flex zip: the full specs written from the same snapshot with the R3
-  # mapper, the flex rows appended, then the extra flex files. A spec is
-  # written when the version has records for it or the flex row list is not
-  # empty, so an area service's generated route reaches a version without
-  # fixed routes (R15).
+  # mapper, the flex rows appended after the stored rows (so an imported
+  # booking rule and a flex one share one `booking_rules.txt`), then the extra
+  # flex files. A spec is written when the version has records for it or the
+  # flex row list is not empty, so an area service's generated route reaches a
+  # version without fixed routes (R15).
   defp write_flex_zip(temp_dir, organization_id, gtfs_version_id, mapper, entries) do
     appended_rows = %{
       "routes.txt" => entries.rows.routes,
       "trips.txt" => entries.rows.trips,
-      "stop_times.txt" => entries.rows.stop_times
+      "stop_times.txt" => entries.rows.stop_times,
+      "booking_rules.txt" => entries.rows.booking_rules
     }
 
     file_paths =

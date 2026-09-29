@@ -32,6 +32,18 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
     |> repo.stream(max_rows: 1000)
   end
 
+  @doc """
+  Applies `stream_records/4`'s inactive-route exclusion for `schema` to a query
+  whose root binding is named `:row`.
+
+  Readers that select their own columns (the flex export's trip and route
+  reads) use it so they leave out exactly the routes and trips the exported
+  files leave out. A route is inactive only when `active` is explicitly false.
+  """
+  def exclude_inactive(query, schema, organization_id, gtfs_version_id) do
+    exclude_inactive_service(query, schema, organization_id, gtfs_version_id)
+  end
+
   # R6 export selection: exclude whole rows in the inactive route closure. The
   # closure is an explicitly `active = false` route and the trips naming it;
   # relationship rows referencing either are removed whole. Each exclusion is a

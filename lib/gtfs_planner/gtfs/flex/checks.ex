@@ -65,7 +65,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   @type facts :: %{
           service_ids: MapSet.t(),
           stop_ids: MapSet.t(),
-          routes: %{String.t() => %{continuous?: boolean()}},
+          routes: %{String.t() => %{continuous?: boolean(), active?: boolean()}},
           gtfs_ids: %{atom() => MapSet.t()}
         }
 
@@ -96,8 +96,10 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   `calendars` row or a `calendar_dates` exception — `stop_ids` its stops,
   `routes` its routes keyed by natural ID with `continuous?` true when
   `continuous_pickup` or `continuous_drop_off` allows boarding anywhere (GTFS 0,
-  2 or 3), and `gtfs_ids` the natural IDs already used in the files the flex
-  export appends to (`routes`, `trips`, `stops` and `booking_rules`; R11).
+  2 or 3) and `active?` false when the route is explicitly inactive (the export
+  leaves it out with its trips), and `gtfs_ids` the natural IDs already used in
+  the files the flex export appends to (`routes`, `trips`, `stops` and
+  `booking_rules`; R11).
 
   Every read is scoped to the organization and version (R10, INV-4).
   """
@@ -128,11 +130,12 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   defp routes(organization_id, version_id) do
     from(r in Route,
       where: r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id,
-      select: {r.route_id, r.continuous_pickup, r.continuous_drop_off}
+      select: {r.route_id, r.continuous_pickup, r.continuous_drop_off, r.active}
     )
     |> Repo.all()
-    |> Map.new(fn {route_id, pickup, drop_off} ->
-      {route_id, %{continuous?: continuous?(pickup) or continuous?(drop_off)}}
+    |> Map.new(fn {route_id, pickup, drop_off, active} ->
+      {route_id,
+       %{continuous?: continuous?(pickup) or continuous?(drop_off), active?: active != false}}
     end)
   end
 
@@ -267,17 +270,25 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
   end
 
   defp missing_route_checks(areas, version_facts) do
-    areas
-    |> Enum.flat_map(& &1.route_ids)
-    |> missing_ids(version_facts.gtfs_ids.routes)
-    |> Enum.map(fn id ->
-      check(
-        :error,
-        :where,
-        :routes,
-        "Route “#{id}” is not in this version. Choose a route this version has."
-      )
-    end)
+    route_ids = Enum.flat_map(areas, & &1.route_ids)
+
+    missing =
+      route_ids
+      |> missing_ids(version_facts.gtfs_ids.routes)
+      |> Enum.map(fn id ->
+        check(
+          :error,
+          :where,
+          :routes,
+          "Route “#{id}” is not in this version. Choose a route this version has."
+        )
+      end)
+
+    missing ++
+      (route_ids
+       |> Enum.uniq()
+       |> Enum.filter(&inactive_route?(&1, version_facts))
+       |> Enum.map(&check(:error, :where, :routes, inactive_route_text(&1))))
   end
 
   defp missing_stop_checks(stop_ids, version_facts) do
@@ -298,7 +309,27 @@ defmodule GtfsPlanner.Gtfs.Flex.Checks do
 
     choice ++
       missing_route_check(route_id, version_facts) ++
+      inactive_route_check(route_id, version_facts) ++
       continuous_boarding_checks(service, version_facts)
+  end
+
+  # An inactive route leaves the export with its trips, so a detour on it, or
+  # an area that follows it, would describe service the feed does not carry.
+  defp inactive_route_check(route_id, version_facts) do
+    if present?(route_id) and inactive_route?(route_id, version_facts) do
+      [check(:error, :where, :route, inactive_route_text(route_id))]
+    else
+      []
+    end
+  end
+
+  defp inactive_route?(route_id, version_facts) do
+    get_in(version_facts.routes, [route_id, :active?]) == false
+  end
+
+  defp inactive_route_text(route_id) do
+    "Route “#{route_id}” is inactive, so exports leave it out. Make the route active or " <>
+      "choose another route."
   end
 
   defp missing_route_check(route_id, version_facts) do

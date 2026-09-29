@@ -8,9 +8,10 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
   artifact store and only become ready when `ExportRuns` verifies and commits
   their metadata: the main zip and, when the run includes flex, the flex zip
   published beside it.  A pair whose bytes exceed the configured run budget
-  closes the run before either file is written.  A garage/stop ID collision is
-  durable as one warning per conflicting garage and closes the run with its own
-  failure code.
+  publishes the main zip alone with a `flex_artifact_too_large` warning; a
+  main zip that exceeds the budget by itself closes the run before any file is
+  written.  A garage/stop ID collision is durable as one warning per
+  conflicting garage and closes the run with its own failure code.
   """
 
   alias GtfsPlanner.Gtfs.Export
@@ -52,6 +53,8 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
   defp build_artifact(run, generation, token, preflight_warnings) do
     case build_export(run) do
       {:ok, zips, export_warnings} ->
+        {zips, export_warnings} = fit_run_capacity(zips, export_warnings)
+
         with {:ok, _run} <-
                persist_export_warnings(
                  run,
@@ -205,7 +208,33 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
   end
 
   # The published pair shares one run budget: a main zip and a flex zip that
-  # each fit can still exceed the configured per-run limit together.
+  # each fit can still exceed the configured per-run limit together. The flex
+  # zip never costs the run its main feed, so a pair over the budget drops the
+  # flex zip with a `flex_artifact_too_large` warning and publishes the main
+  # zip alone. A flex zip standing in for a missing main feed (R15) is the
+  # primary artifact and is judged alone by `within_run_capacity/1`.
+  defp fit_run_capacity(%{main: main, flex: flex} = zips, warnings)
+       when is_binary(main) and is_binary(flex) do
+    if byte_size(main) + byte_size(flex) <= configured_max_run_bytes() do
+      {zips, warnings}
+    else
+      {%{zips | flex: nil}, [flex_too_large_warning() | warnings]}
+    end
+  end
+
+  defp fit_run_capacity(zips, warnings), do: {zips, warnings}
+
+  defp flex_too_large_warning do
+    %{
+      code: "flex_artifact_too_large",
+      detail:
+        "The flex file was left out of this run because the main feed and the flex file " <>
+          "together exceed the export size limit. The main feed was published as usual.",
+      file: "gtfs-flex.zip",
+      entity_type: "feed"
+    }
+  end
+
   defp within_run_capacity(%{main: main, flex: flex}) do
     total_bytes = byte_size(main || <<>>) + byte_size(flex || <<>>)
 

@@ -180,12 +180,14 @@ function createLeafletStub({ zoom = 13, scale = 1000, size = { x: 800, y: 500 } 
         marker.options = { ...marker.options, ...style };
         return marker;
       }),
-      bindTooltip: vi.fn((text, tooltipOptions) => {
-        marker.tooltip = { text, options: tooltipOptions };
+      // The hook hands Leaflet an element; `text` is what a rider reads and
+      // `content` what Leaflet would insert.
+      bindTooltip: vi.fn((content, tooltipOptions) => {
+        marker.tooltip = { text: content.textContent, content, options: tooltipOptions };
         return marker;
       }),
-      setTooltipContent: vi.fn((text) => {
-        marker.tooltip = { ...(marker.tooltip || {}), text };
+      setTooltipContent: vi.fn((content) => {
+        marker.tooltip = { ...(marker.tooltip || {}), text: content.textContent, content };
         return marker;
       }),
       bringToFront: vi.fn(() => marker),
@@ -354,6 +356,19 @@ describe("idsInBounds", () => {
 });
 
 describe("FareZoneMap mounted lifecycle", () => {
+  it("writes an imported stop name into its tooltip as text, never as markup", () => {
+    const stub = createLeafletStub();
+    window.L = stub;
+    const name = "<img src=x onerror=alert(1)>";
+    const points = [["stop-x", "SX", name, 0.05, 0.05, null, null]];
+
+    const { map } = mount({ reply: { ...READY, points } });
+    const [marker] = pointMarkersOn(map);
+
+    expect(marker.tooltip.content.textContent).toBe(`${name} · Unassigned`);
+    expect(marker.tooltip.content.querySelector("img")).toBeNull();
+  });
+
   it("asks for its snapshot on mount and draws the reply's points", () => {
     const stub = createLeafletStub();
     window.L = stub;

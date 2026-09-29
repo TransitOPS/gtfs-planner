@@ -132,6 +132,33 @@ defmodule GtfsPlanner.Gtfs.FlexServiceTest do
       refute zero.valid?
       assert %{distance_m: ["must be greater than 0"]} = errors_on(zero)
     end
+
+    test "a detour and a route-distance area refuse a distance over 50 km", %{
+      organization: organization,
+      version: version
+    } do
+      detour =
+        build_service(organization, version, %{
+          "kind" => "detour",
+          "route_id" => "20",
+          "distance_m" => 50_001
+        })
+
+      assert %{distance_m: ["Choose a distance of 50 km or less."]} = errors_on(detour)
+
+      area_attrs = %{
+        "key" => "a1",
+        "position" => 0,
+        "name" => "Corridor",
+        "source" => "route_distance",
+        "route_ids" => ["20"]
+      }
+
+      area = FlexArea.changeset(%FlexArea{}, Map.put(area_attrs, "distance_m", 50_001))
+      assert %{distance_m: ["Choose a distance of 50 km or less."]} = errors_on(area)
+
+      assert FlexArea.changeset(%FlexArea{}, Map.put(area_attrs, "distance_m", 50_000)).valid?
+    end
   end
 
   describe "creation requirements" do

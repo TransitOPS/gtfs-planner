@@ -418,7 +418,7 @@ const FareZoneMap = {
       const marker = this._leaflet
         .circleMarker([record.lat, record.lon], this._markerStyle(record))
         .addTo(this._map);
-      marker.bindTooltip(this._tooltipCopy(record), {
+      marker.bindTooltip(this._tooltipLabel(record), {
         direction: "top",
         offset: [0, -MARKER_RADIUS],
       });
@@ -452,7 +452,7 @@ const FareZoneMap = {
 
   _restyleMarker(entry) {
     entry.marker.setStyle(this._markerStyle(entry.record));
-    entry.marker.setTooltipContent(this._tooltipCopy(entry.record));
+    entry.marker.setTooltipContent(this._tooltipLabel(entry.record));
   },
 
   _syncSelectionRings() {
@@ -524,6 +524,14 @@ const FareZoneMap = {
     if (zoneId === null || zoneId === undefined) return UNASSIGNED_COLOR;
     const zone = this._zones[zoneId];
     return (zone && zone.color) || UNASSIGNED_COLOR;
+  },
+
+  // Stop and zone names come from imported feeds; Leaflet writes a string
+  // tooltip as HTML, so the copy goes in as a text node.
+  _tooltipLabel(record) {
+    const label = document.createElement("span");
+    label.textContent = this._tooltipCopy(record);
+    return label;
   },
 
   _tooltipCopy(record) {
