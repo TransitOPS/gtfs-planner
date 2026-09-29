@@ -29,6 +29,7 @@ end
 defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
   use GtfsPlannerWeb.ConnCase
 
+  import Ecto.Query
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.GtfsFixtures
@@ -37,6 +38,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Repo
   alias GtfsPlannerWeb.Gtfs.StationReport2LiveTest.ControlledSnapshotSource
 
   @long_stop_name "Northbound Interchange Concourse Generic Circulation Node Under Reconstruction"
@@ -1779,6 +1781,82 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert has_element?(view, "#stop_wheelchair_boarding option[value='0'][selected]")
     end
 
+    test "saving a changed stop name writes one history entry naming the old and new value",
+         ctx do
+      view = ctx.view
+      open_stop_drawer(view, "Entrance One")
+
+      view
+      |> form("#report-stop-edit-form", stop: %{stop_name: "Renamed Entrance"})
+      |> render_submit()
+
+      render_async(view, 5_000)
+
+      assert [log] = stop_change_logs(ctx)
+      assert log.action == "updated"
+      assert log.entity_external_id == "ENT_1"
+      assert log.station_stop_id == "STATION_1"
+      assert log.actor_id == ctx.user.id
+      assert log.actor_email == ctx.user.email
+
+      assert log.changed_fields == %{
+               "stop_name" => %{"from" => "Entrance One", "to" => "Renamed Entrance"}
+             }
+    end
+
+    test "saving a stop with no changes writes no history entry", ctx do
+      view = ctx.view
+      open_stop_drawer(view, "Entrance One")
+
+      view
+      |> form("#report-stop-edit-form")
+      |> render_submit()
+
+      render_async(view, 5_000)
+
+      refute has_element?(view, "#report-stop-edit-form")
+      assert stop_change_logs(ctx) == []
+    end
+
+    test "a rejected save writes no history entry", ctx do
+      view = ctx.view
+      open_stop_drawer(view, "Entrance One")
+
+      view
+      |> form("#report-stop-edit-form", stop: %{stop_name: "Rejected Rename", stop_lat: "91.5"})
+      |> render_submit()
+
+      assert has_element?(view, "#report-stop-form-error")
+      assert stop_change_logs(ctx) == []
+    end
+
+    test "history can roll a drawer save back to the old stop name", ctx do
+      view = ctx.view
+      open_stop_drawer(view, "Entrance One")
+
+      view
+      |> form("#report-stop-edit-form", stop: %{stop_name: "Renamed Entrance"})
+      |> render_submit()
+
+      render_async(view, 5_000)
+
+      [log] = stop_change_logs(ctx)
+
+      audit_ctx = %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: ctx.organization.id,
+        gtfs_version_id: ctx.gtfs_version.id,
+        station_stop_id: "STATION_1",
+        actor_id: ctx.user.id,
+        actor_email: ctx.user.email
+      }
+
+      assert {:ok, restored} = Gtfs.rollback_entity(log, audit_ctx)
+      assert restored.stop_name == "Entrance One"
+
+      assert Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1").stop_name ==
+               "Entrance One"
+    end
+
     test "submitted scope and identity fields cannot move the stop", ctx do
       view = ctx.view
       other_organization = organization_fixture()
@@ -2228,6 +2306,16 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       })
 
     station
+  end
+
+  defp stop_change_logs(ctx) do
+    Repo.all(
+      from(cl in GtfsPlanner.Gtfs.ChangeLog,
+        where:
+          cl.organization_id == ^ctx.organization.id and
+            cl.gtfs_version_id == ^ctx.gtfs_version.id and cl.entity_type == "stop"
+      )
+    )
   end
 
   defp open_stop_drawer(view, entity_name) do

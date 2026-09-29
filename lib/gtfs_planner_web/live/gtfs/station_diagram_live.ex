@@ -296,7 +296,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
         socket = load_station_stop_levels_cache(socket)
 
-        socket = assign(socket, :audit_ctx, build_audit_ctx(socket))
+        socket = assign(socket, :audit_ctx, AuditContext.from_assigns(socket.assigns))
 
         socket =
           if connected?(socket) do
@@ -381,23 +381,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     socket
     |> load_level_data(level)
     |> load_station_stop_levels_cache()
-  end
-
-  defp build_audit_ctx(socket) do
-    %{
-      current_organization: %{id: organization_id},
-      current_gtfs_version: %{id: gtfs_version_id},
-      current_user: %{id: actor_id, email: actor_email},
-      station: %{stop_id: station_stop_id}
-    } = socket.assigns
-
-    %AuditContext{
-      organization_id: organization_id,
-      gtfs_version_id: gtfs_version_id,
-      station_stop_id: station_stop_id,
-      actor_id: actor_id,
-      actor_email: actor_email
-    }
   end
 
   defp pending_diagram_upload_value(nil, _key), do: nil
@@ -7315,8 +7298,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     version_id = socket.assigns.current_gtfs_version.id
     station_stop_id = socket.assigns.station.stop_id
 
-    case Gtfs.remove_child_stop_from_diagram(org_id, version_id, station_stop_id, stop_id) do
-      {:ok, _stop} ->
+    case Gtfs.remove_child_stop_from_diagram(
+           org_id,
+           version_id,
+           station_stop_id,
+           stop_id,
+           socket.assigns.audit_ctx
+         ) do
+      {:ok, updated_stop} ->
         {:noreply,
          socket
          |> refresh_lists()
@@ -7324,7 +7313,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:pending_xy, nil)
          |> assign(:selected_stop_id, nil)
          |> assign(:active_point_id, nil)
-         |> assign(:child_stop_form, to_form(%{}))}
+         |> assign(:child_stop_form, to_form(%{}))
+         |> maybe_refresh_history_entries("stop", updated_stop.id)}
 
       {:error, :not_found} ->
         {:noreply,
@@ -7333,6 +7323,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:pending_xy, nil)
          |> assign(:selected_stop_id, nil)
          |> assign(:child_stop_form, to_form(%{}))}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to remove stop from diagram")}
     end
   end
 

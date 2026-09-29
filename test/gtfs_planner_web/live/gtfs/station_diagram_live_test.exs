@@ -3256,6 +3256,98 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       # The pathway should be deleted (no dangling pathways)
       refute Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id)
     end
+
+    test "removing a stop records its cleared level and coordinate and each deleted pathway to the actor",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      removed =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_RM_AUDIT",
+          stop_name: "Removed Stop",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      other_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OTHER_RM_AUDIT_A",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
+        })
+
+      other_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OTHER_RM_AUDIT_B",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 70.0, "y" => 70.0}
+        })
+
+      pathway_a =
+        pathway_fixture(organization.id, gtfs_version.id, removed.stop_id, other_a.stop_id)
+
+      pathway_b =
+        pathway_fixture(organization.id, gtfs_version.id, other_b.stop_id, removed.stop_id)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{removed.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view |> element("#remove-from-diagram-button") |> render_click()
+      view |> element("#station-diagram-confirmation-confirm") |> render_click()
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.organization_id == ^organization.id and cl.gtfs_version_id == ^gtfs_version.id
+          )
+        )
+
+      assert [stop_log] = Enum.filter(logs, &(&1.entity_type == "stop"))
+      assert stop_log.action == "updated"
+      assert stop_log.entity_id == removed.id
+      assert stop_log.actor_id == user.id
+      assert stop_log.actor_email == user.email
+
+      assert stop_log.changed_fields == %{
+               "level_id" => %{"from" => level.level_id, "to" => nil},
+               "diagram_coordinate" => %{"from" => %{"x" => 10.0, "y" => 10.0}, "to" => nil}
+             }
+
+      pathway_logs = Enum.filter(logs, &(&1.entity_type == "pathway"))
+      assert Enum.all?(pathway_logs, &(&1.action == "deleted" and &1.actor_id == user.id))
+
+      assert Map.new(pathway_logs, &{&1.entity_external_id, &1.snapshot["from_stop_id"]}) == %{
+               pathway_a.pathway_id => removed.stop_id,
+               pathway_b.pathway_id => other_b.stop_id
+             }
+
+      audit_ctx = %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+
+      assert {:ok, restored} = Gtfs.rollback_entity(stop_log, audit_ctx)
+      assert restored.level_id == level.level_id
+      assert restored.diagram_coordinate == %{"x" => 10.0, "y" => 10.0}
+    end
   end
 
   describe "StationDiagramLive - cross-level pathway creation" do

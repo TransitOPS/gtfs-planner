@@ -27,6 +27,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
   import GtfsPlannerWeb.Gtfs.StationReport2Components
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Stop
 
   alias GtfsPlanner.Gtfs.StationReport2.{
@@ -454,6 +455,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
 
     case result do
       {:ok, _updated} ->
+        record_stop_update(socket, stop, changeset.changes)
+
         {:noreply,
          socket
          |> reset_drawer()
@@ -469,6 +472,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Live do
            fallback_id: StationReportDrawerComponents.error_summary_id()
          })}
     end
+  end
+
+  # The changeset holds only the editable fields whose cast value differs from the
+  # stored one, so a save that changes nothing writes no History entry.
+  defp record_stop_update(_socket, _stop, changes) when map_size(changes) == 0, do: :ok
+
+  defp record_stop_update(socket, stop, changes) do
+    Gtfs.record_change(AuditContext.from_assigns(socket.assigns), :stop, stop, "updated", changes)
   end
 
   # `Stop.changeset/2` is shared with import and other writers, so it cannot

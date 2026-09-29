@@ -339,6 +339,18 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  defp remove_audit_ctx(organization, gtfs_version, station) do
+    user = GtfsPlanner.AccountsFixtures.user_fixture()
+
+    %GtfsPlanner.Gtfs.AuditContext{
+      organization_id: organization.id,
+      gtfs_version_id: gtfs_version.id,
+      station_stop_id: station.stop_id,
+      actor_id: user.id,
+      actor_email: user.email
+    }
+  end
+
   describe "stops" do
     setup do
       organization = organization_fixture()
@@ -632,7 +644,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert fetched_stop.platform_code == "Platform C"
     end
 
-    test "remove_child_stop_from_diagram/4 clears fields and deletes connected pathways", %{
+    test "remove_child_stop_from_diagram/5 clears fields and deletes connected pathways", %{
       organization: org,
       gtfs_version: version
     } do
@@ -672,7 +684,8 @@ defmodule GtfsPlanner.GtfsTest do
                  org.id,
                  version.id,
                  station.stop_id,
-                 child_a.id
+                 child_a.id,
+                 remove_audit_ctx(org, version, station)
                )
 
       assert is_nil(updated.diagram_coordinate)
@@ -680,7 +693,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert is_nil(Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id))
     end
 
-    test "remove_child_stop_from_diagram/4 clears nested boarding area and deletes connected pathways",
+    test "remove_child_stop_from_diagram/5 clears nested boarding area and deletes connected pathways",
          %{
            organization: org,
            gtfs_version: version
@@ -733,7 +746,8 @@ defmodule GtfsPlanner.GtfsTest do
                  org.id,
                  version.id,
                  station.stop_id,
-                 boarding_area.id
+                 boarding_area.id,
+                 remove_audit_ctx(org, version, station)
                )
 
       assert is_nil(updated.diagram_coordinate)
@@ -741,7 +755,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert is_nil(Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id))
     end
 
-    test "remove_child_stop_from_diagram/4 returns :not_found for wrong station scope", %{
+    test "remove_child_stop_from_diagram/5 returns :not_found for wrong station scope", %{
       organization: org,
       gtfs_version: version
     } do
@@ -768,13 +782,187 @@ defmodule GtfsPlanner.GtfsTest do
                  org.id,
                  version.id,
                  other_station.stop_id,
-                 child.id
+                 child.id,
+                 remove_audit_ctx(org, version, other_station)
                )
 
       # Verify the stop is unchanged
       unchanged = Gtfs.get_stop!(child.id)
       assert unchanged.diagram_coordinate == %{"x" => 5.0, "y" => 5.0}
       assert unchanged.level_id == level.level_id
+    end
+
+    test "remove_child_stop_from_diagram/5 records the stop update and each deleted pathway", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station = stop_fixture(org.id, version.id, %{stop_id: "STATION_RM_LOG", location_type: 1})
+
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_RM_LOG",
+          level_name: "Platform",
+          level_index: 0.0
+        })
+
+      removed =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD_RM_LOG",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      other_a =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "OTHER_RM_LOG_A",
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      other_b =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "OTHER_RM_LOG_B",
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      pathway_a = pathway_fixture(org.id, version.id, removed.stop_id, other_a.stop_id)
+      pathway_b = pathway_fixture(org.id, version.id, other_b.stop_id, removed.stop_id)
+      audit_ctx = remove_audit_ctx(org, version, station)
+
+      assert {:ok, _stop} =
+               Gtfs.remove_child_stop_from_diagram(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 removed.id,
+                 audit_ctx
+               )
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where: cl.organization_id == ^org.id and cl.gtfs_version_id == ^version.id
+          )
+        )
+
+      assert [stop_log] = Enum.filter(logs, &(&1.entity_type == "stop"))
+      assert stop_log.action == "updated"
+      assert stop_log.entity_id == removed.id
+      assert stop_log.station_stop_id == station.stop_id
+      assert stop_log.actor_id == audit_ctx.actor_id
+      assert stop_log.snapshot["level_id"] == "L_RM_LOG"
+
+      assert stop_log.changed_fields == %{
+               "level_id" => %{"from" => "L_RM_LOG", "to" => nil},
+               "diagram_coordinate" => %{"from" => %{"x" => 10.0, "y" => 20.0}, "to" => nil}
+             }
+
+      pathway_logs = Enum.filter(logs, &(&1.entity_type == "pathway"))
+      assert length(pathway_logs) == 2
+      assert Enum.all?(pathway_logs, &(&1.action == "deleted"))
+      assert Enum.all?(pathway_logs, &(&1.actor_id == audit_ctx.actor_id))
+
+      assert pathway_logs |> Enum.map(& &1.entity_id) |> Enum.sort() ==
+               Enum.sort([pathway_a.id, pathway_b.id])
+
+      assert Enum.all?(pathway_logs, &is_map(&1.snapshot))
+    end
+
+    test "remove_child_stop_from_diagram/5 records no second stop entry when the stop is already off the diagram",
+         %{organization: org, gtfs_version: version} do
+      station = stop_fixture(org.id, version.id, %{stop_id: "STATION_RM_TWICE", location_type: 1})
+
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_RM_TWICE",
+          level_name: "Platform",
+          level_index: 0.0
+        })
+
+      removed =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD_RM_TWICE",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      audit_ctx = remove_audit_ctx(org, version, station)
+
+      for _attempt <- 1..2 do
+        assert {:ok, _stop} =
+                 Gtfs.remove_child_stop_from_diagram(
+                   org.id,
+                   version.id,
+                   station.stop_id,
+                   removed.id,
+                   audit_ctx
+                 )
+      end
+
+      assert [%{entity_type: "stop", action: "updated", entity_id: entity_id}] =
+               Repo.all(
+                 from(cl in GtfsPlanner.Gtfs.ChangeLog,
+                   where: cl.organization_id == ^org.id and cl.gtfs_version_id == ^version.id
+                 )
+               )
+
+      assert entity_id == removed.id
+    end
+
+    test "remove_child_stop_from_diagram/5 removes nothing when a change log cannot be written",
+         %{
+           organization: org,
+           gtfs_version: version
+         } do
+      station = stop_fixture(org.id, version.id, %{stop_id: "STATION_RM_FAIL", location_type: 1})
+
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_RM_FAIL",
+          level_name: "Platform",
+          level_index: 0.0
+        })
+
+      removed =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD_RM_FAIL",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      other =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "OTHER_RM_FAIL",
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      pathway = pathway_fixture(org.id, version.id, removed.stop_id, other.stop_id)
+      unloggable_ctx = %{remove_audit_ctx(org, version, station) | actor_email: nil}
+
+      assert {:error, %Ecto.Changeset{}} =
+               Gtfs.remove_child_stop_from_diagram(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 removed.id,
+                 unloggable_ctx
+               )
+
+      unchanged = Gtfs.get_stop!(removed.id)
+      assert unchanged.level_id == "L_RM_FAIL"
+      assert unchanged.diagram_coordinate == %{"x" => 10.0, "y" => 20.0}
+      assert Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id)
+
+      assert Repo.all(
+               from(cl in GtfsPlanner.Gtfs.ChangeLog,
+                 where: cl.organization_id == ^org.id and cl.gtfs_version_id == ^version.id
+               )
+             ) == []
     end
 
     test "delete_child_stop/4 deletes the child stop and connected pathways", %{

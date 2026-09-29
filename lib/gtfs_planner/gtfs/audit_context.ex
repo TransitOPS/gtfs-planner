@@ -12,4 +12,24 @@ defmodule GtfsPlanner.Gtfs.AuditContext do
           actor_id: Ecto.UUID.t(),
           actor_email: String.t()
         }
+
+  @doc """
+  Builds the context from LiveView assigns that hold the organization, GTFS version,
+  signed-in user and the station whose editor recorded the change.
+  """
+  @spec from_assigns(map()) :: t()
+  def from_assigns(%{
+        current_organization: %{id: organization_id},
+        current_gtfs_version: %{id: gtfs_version_id},
+        current_user: %{id: actor_id, email: actor_email},
+        station: %{stop_id: station_stop_id}
+      }) do
+    %__MODULE__{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id,
+      station_stop_id: station_stop_id,
+      actor_id: actor_id,
+      actor_email: actor_email
+    }
+  end
 end

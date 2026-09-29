@@ -3318,12 +3318,26 @@ defmodule GtfsPlanner.Gtfs do
   `diagram_coordinate` and `level_id`, and deletes connected pathways
   so no dangling references remain.
 
+  Records an "updated" change log for the stop and a "deleted" one for each
+  deleted pathway in the same transaction, so a failed log rolls the removal back.
+
   Scopes the update to the given organization, version, and parent station
   to prevent cross-tenant mutations.
   """
-  @spec remove_child_stop_from_diagram(integer(), integer(), String.t(), integer()) ::
-          {:ok, Stop.t()} | {:error, :not_found | term()}
-  def remove_child_stop_from_diagram(organization_id, gtfs_version_id, station_stop_id, stop_id) do
+  @spec remove_child_stop_from_diagram(
+          integer(),
+          integer(),
+          String.t(),
+          integer(),
+          AuditContext.t()
+        ) :: {:ok, Stop.t()} | {:error, :not_found | term()}
+  def remove_child_stop_from_diagram(
+        organization_id,
+        gtfs_version_id,
+        station_stop_id,
+        stop_id,
+        %AuditContext{} = audit_ctx
+      ) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     descendants = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
 
@@ -3349,6 +3363,9 @@ defmodule GtfsPlanner.Gtfs do
         |> Ecto.Multi.update_all(:stop, update_query,
           set: [diagram_coordinate: nil, level_id: nil, updated_at: now]
         )
+        |> Ecto.Multi.run(:audit, fn _repo, %{pathways: {_count, deleted_pathways}} ->
+          record_diagram_removal(audit_ctx, stop, deleted_pathways)
+        end)
         |> Repo.transaction()
         |> case do
           {:ok, _} ->
@@ -3360,6 +3377,33 @@ defmodule GtfsPlanner.Gtfs do
             {:error, reason}
         end
     end
+  end
+
+  defp record_diagram_removal(audit_ctx, %Stop{} = stop, deleted_pathways) do
+    with {:ok, _} <- record_diagram_clear(audit_ctx, stop) do
+      record_pathway_deletions(audit_ctx, deleted_pathways)
+    end
+  end
+
+  # Skipped when the stop had neither a level nor a coordinate to clear, so History
+  # never shows an update with no changed fields.
+  defp record_diagram_clear(_audit_ctx, %Stop{level_id: nil, diagram_coordinate: nil}),
+    do: {:ok, :unchanged}
+
+  defp record_diagram_clear(audit_ctx, %Stop{} = stop) do
+    record_change_in_transaction(audit_ctx, :stop, stop, "updated", %{
+      diagram_coordinate: nil,
+      level_id: nil
+    })
+  end
+
+  defp record_pathway_deletions(audit_ctx, pathways) do
+    Enum.reduce_while(pathways, {:ok, :recorded}, fn pathway, acc ->
+      case record_change_in_transaction(audit_ctx, :pathway, pathway, "deleted") do
+        {:ok, _log} -> {:cont, acc}
+        {:error, _changeset} = error -> {:halt, error}
+      end
+    end)
   end
 
   @doc """
@@ -5082,7 +5126,8 @@ defmodule GtfsPlanner.Gtfs do
         where:
           p.organization_id == ^organization_id and
             p.gtfs_version_id == ^gtfs_version_id and
-            (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id)
+            (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id),
+        select: p
       )
 
     Ecto.Multi.delete_all(multi, :pathways, pathway_query)
