@@ -147,7 +147,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
 
       {:ok, _view, html} = live(conn, ~p"/gtfs/#{gtfs_version.id}/import")
 
-      assert html =~ "Import GTFS"
+      assert html =~ "Import data"
     end
 
     test "editor can access stops", %{

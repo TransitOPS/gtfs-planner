@@ -1709,7 +1709,7 @@ test.describe("@import-findings", () => {
 
     const result = page.locator("#gtfs-import-result");
 
-    await expect(result).toContainText("Import successful", { timeout: 120_000 });
+    await expect(result).toContainText("Imported", { timeout: 120_000 });
 
     // The finding describes the version just published, not the URL version.
     const findings = page.locator("#gtfs-import-agency-findings");

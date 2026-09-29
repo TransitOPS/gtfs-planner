@@ -10,7 +10,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.Import.{Failure, Recovery, Result, Run}
+  alias GtfsPlanner.Gtfs.Import.{ChangeRun, ChangeRuns, Failure, Recovery, Result, Run}
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
@@ -177,9 +177,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       {:ok, _view, html} = live(conn, "/gtfs/#{version.id}/import")
 
-      assert html =~ "Import GTFS"
-      assert html =~ "GTFS files"
-      assert html =~ ".zip archive"
+      assert html =~ "Import data"
+      assert html =~ "Feed files"
+      assert html =~ "One .zip, or up to 50 .txt or .csv files"
     end
 
     test "redirects with error for invalid version UUID", %{
@@ -267,7 +267,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
 
       assert has_element?(view, "#gtfs-import-version-name")
-      assert has_element?(view, "#gtfs-import-destination")
+      assert has_element?(view, "#gtfs-import-reason", "Choose a feed file to import.")
       assert has_element?(view, "#gtfs-import-submit", "Import feed")
       assert render(view) =~ version.name
     end
@@ -282,12 +282,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
 
       assert has_element?(view, "#gtfs-import-upload[data-upload-state='idle']")
-      assert has_element?(view, "#gtfs-import-upload-label", "GTFS files")
+      assert has_element?(view, "#gtfs-import-upload-label", "Feed files")
       assert has_element?(view, "#gtfs-import-upload-help")
       assert has_element?(view, "#diff-upload[data-upload-state='idle']")
       assert has_element?(view, "#diff-upload-label", "Station data files")
       assert has_element?(view, "#diff-upload-help")
-      assert has_element?(view, "#diff-compute-btn[disabled]", "Compute diff")
+      assert has_element?(view, "#diff-compute-btn[disabled]", "Review changes")
       assert has_element?(view, "#import-recovery-empty")
     end
 
@@ -316,7 +316,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
 
-      refute render(view) =~ "Version name is required"
+      refute render(view) =~ "Enter a name for the new version."
 
       view |> element("#gtfs-import-version-name") |> render_blur()
 
@@ -324,7 +324,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       |> element("#gtfs-import-form")
       |> render_change(%{"gtfs_import_form" => %{"version_name" => ""}})
 
-      assert render(view) =~ "Version name is required"
+      assert render(view) =~ "Enter a name for the new version."
     end
   end
 
@@ -340,17 +340,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, html} = live(conn, "/gtfs/#{version.id}/import")
 
-      # The persistent destination summary appears before file selection.
-      assert has_element?(view, "#gtfs-import-destination")
-
-      # It names the prospective new version and the currently available one.
-      assert html =~ "Destination: New version"
-      assert html =~ version.name
-      assert html =~ "remains available until import succeeds"
+      # Before any file is chosen the workspace already says a feed creates a new
+      # version and leaves the current one alone.
+      assert has_element?(view, "#import-workspace")
+      assert html =~ "Creates a new version. #{version.name} isn’t changed."
 
       # The reviewed-diff destination separately names the existing-version target.
-      assert has_element?(view, "#diff-destination")
-      assert render(view) =~ "Reviewed changes apply to version"
+      assert has_element?(view, "#diff-destination", "Approved changes go into #{version.name}.")
     end
 
     test "version name input has a programmatic label and error association", %{
@@ -372,9 +368,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       html = render(view)
 
       assert html =~ "id=\"gtfs-import-version-name-error\""
-      assert html =~ ~r/aria-describedby="gtfs-import-version-name-error"/
+      assert html =~ ~r/aria-describedby="[^"]*gtfs-import-version-name-error"/
       assert html =~ ~r/aria-invalid="true"/
-      assert html =~ "Version name is required"
+      assert html =~ "Enter a name for the new version."
     end
 
     test "primary CTA shows pending state and disables while publication is active", %{
@@ -422,7 +418,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       # The published outcome is announced in an assertive live region.
       assert has_element?(view, "#gtfs-import-result[aria-live='assertive']")
-      assert html =~ "Import successful"
+      assert has_element?(view, "#gtfs-import-result-title", "Imported “Announced Version”")
       assert html =~ "Announced Version"
 
       # View version is a navigation link to the published target.
@@ -451,7 +447,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       # One alert container associated with the field; no duplicate markup.
       assert length(Regex.scan(~r/id="gtfs-import-version-name-error"/, html)) == 1
-      assert html =~ "already exists"
+      assert html =~ "You already have a version named “Taken”. Choose a different name."
 
       # The form is still keyboard-reachable for correction.
       assert has_element?(view, "#gtfs-import-version-name")
@@ -520,8 +516,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert route_after.published_at == route_published_at
 
       # Result names the target and links to it.
-      assert html =~ "Import successful"
-      assert html =~ "Spring 2025"
+      assert html =~ "Imported “Spring 2025”"
       assert has_element?(view, "#gtfs-import-view-version[href='/gtfs/#{target.id}/routes']")
     end
 
@@ -575,7 +570,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       # No lifecycle row was created and no task was started.
       assert length(all_versions(organization.id)) == before_count
       assert Task.Supervisor.children(GtfsPlanner.TaskSupervisor) == []
-      assert html =~ "already exists"
+      assert html =~ "You already have a version named “Existing”"
 
       # The selected upload entry is preserved.
       assert has_element?(view, "button[phx-click='cancel-upload']")
@@ -605,7 +600,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       assert length(all_versions(organization.id)) == before_count
       assert Task.Supervisor.children(GtfsPlanner.TaskSupervisor) == []
-      assert render(view) =~ "can&#39;t be blank" or render(view) =~ "blank"
+
+      assert has_element?(
+               view,
+               "#gtfs-import-version-name-error",
+               "Enter a name for the new version."
+             )
+
       assert has_element?(view, "button[phx-click='cancel-upload']")
     end
   end
@@ -711,8 +712,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       refute Gtfs.get_level_by_level_id(organization.id, route_version.id, "L1")
       refute Gtfs.get_level_by_level_id(organization.id, target.id, "L1")
 
-      assert html =~ "Import failed"
-      assert html =~ "Consume Fail"
+      assert has_element?(view, "#gtfs-import-result", "“Consume Fail” wasn’t imported.")
+      assert html =~ "Nothing was published"
     end
   end
 
@@ -801,7 +802,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert html =~ "Discard failed import"
       assert html =~ "Publish version"
       # partial/failed/interrupted/cleanup_failed share discard only
-      assert html =~ "counts are uncertain" or render(view) =~ "counts are uncertain"
+      assert html =~ "we can’t tell how much was saved"
     end
 
     test "partial cards show durable counts and sanitized file/row; interrupted states uncertainty",
@@ -837,14 +838,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert html =~ "row 7"
 
       # Interrupted states uncertainty, no counts rendered.
-      assert html =~ "uncertain"
+      assert html =~ "we can’t tell how much was saved"
       refute html =~ "inspect("
       refute html =~ "Ecto"
       refute html =~ ~s(SQL)
       refute html =~ "/tmp/"
     end
 
-    test "discard uses two-step inline confirmation naming the version and focuses the upload", %{
+    test "discard confirms in a dialog naming the version, then focuses the upload", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -860,28 +861,39 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
 
-      # No confirm button until "Discard failed import" is clicked.
-      refute has_element?(view, "#delete-version-#{run.id}")
+      # The confirmation stays closed until "Discard failed import" is clicked.
+      assert has_element?(view, "#import-discard-dialog[data-open='false']")
 
       view
       |> element("#discard-#{run.id}")
       |> render_click()
 
-      # Now the confirm button names the version consequence.
-      assert has_element?(view, "#delete-version-#{run.id}", "Delete failed version")
-      assert render(view) =~ "ToDiscard"
+      # Now the dialog names the version and the consequence, and its confirm
+      # button repeats the verb and object.
+      assert has_element?(view, "#import-discard-dialog[data-open='true']")
+      assert has_element?(view, "#import-discard-dialog-body", "“ToDiscard” stopped before")
+      assert has_element?(view, "#import-discard-dialog-confirm", "Delete failed version")
+      assert has_element?(view, "#import-discard-dialog-cancel", "Keep version")
 
       # Confirming discards the failed version and removes the card.
       view
-      |> element("#delete-version-#{run.id}")
+      |> element("#import-discard-dialog-confirm")
       |> render_click()
 
       await_cleanup_task(view)
 
-      assert render(view) =~ "No recoverable imports for this organization."
+      assert has_element?(view, "#import-recovery-empty")
+      assert has_element?(view, "#import-discard-dialog[data-open='false']")
 
-      # The removed version name is prefilled into the new-upload name field.
-      assert render(view) =~ "ToDiscard"
+      # The removed version name is prefilled into the new-upload name field, and
+      # the page says it deleted the version.
+      assert has_element?(view, "#gtfs-import-version-name[value='ToDiscard']")
+
+      assert has_element?(
+               view,
+               "#gtfs-import-discarded",
+               "Deleted the failed version “ToDiscard”."
+             )
 
       # Focus is pushed to the upload control.
       assert_push_event(view, "focus_gtfs_import_files", %{})
@@ -918,7 +930,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
       view |> element("#discard-#{run.id}") |> render_click()
-      view |> element("#delete-version-#{run.id}") |> render_click()
+      view |> element("#import-discard-dialog-confirm") |> render_click()
 
       assert_receive {:blocking_cleanup_worker_started, worker_pid}
 
@@ -950,7 +962,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       refute Versions.get_gtfs_version_for_lifecycle(organization.id, failed_version.id)
     end
 
-    test "opening a second discard confirmation closes the first", %{
+    test "opening a second discard confirmation replaces the first", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -977,12 +989,65 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
 
       view |> element("#discard-#{first_run.id}") |> render_click()
-      assert has_element?(view, "#delete-version-#{first_run.id}")
+      assert has_element?(view, "#import-discard-dialog-body", "“Discard First”")
 
       view |> element("#discard-#{second_run.id}") |> render_click()
 
-      refute has_element?(view, "#delete-version-#{first_run.id}")
-      assert has_element?(view, "#delete-version-#{second_run.id}")
+      refute has_element?(view, "#import-discard-dialog-body", "Discard First")
+      assert has_element?(view, "#import-discard-dialog-body", "“Discard Second”")
+      assert :sys.get_state(view.pid).socket.assigns.pending_discard_run_id == second_run.id
+    end
+
+    test "keeping the version closes the dialog and deletes nothing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, failed_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "Keep Me"})
+      {:ok, failed_v} = Versions.fail_unpublished_gtfs_version(organization.id, failed_v.id)
+      run = insert_run(organization.id, failed_v, "failed")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      view |> element("#discard-#{run.id}") |> render_click()
+      assert has_element?(view, "#import-discard-dialog[data-open='true']")
+
+      view |> element("#import-discard-dialog-cancel") |> render_click()
+
+      assert has_element?(view, "#import-discard-dialog[data-open='false']")
+      assert has_element?(view, "#import-run-#{run.id}")
+      assert Versions.get_gtfs_version_for_lifecycle(organization.id, failed_v.id)
+    end
+
+    test "a delete that cannot start says so in the list", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, failed_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "Claimed"})
+      {:ok, failed_v} = Versions.fail_unpublished_gtfs_version(organization.id, failed_v.id)
+      run = insert_run(organization.id, failed_v, "failed")
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+      view |> element("#discard-#{run.id}") |> render_click()
+
+      # Another session claims the cleanup between opening the dialog and confirming.
+      {:ok, _run, _version, _token} =
+        GtfsPlanner.Gtfs.ImportRuns.claim_cleanup(organization.id, run.id, %{
+          id: user.id,
+          email: user.email
+        })
+
+      view |> element("#import-discard-dialog-confirm") |> render_click()
+
+      assert has_element?(view, "#import-recovery-error", "That version couldn’t be deleted.")
+      assert has_element?(view, "#import-discard-dialog[data-open='false']")
     end
 
     test "publication retry clears processing state and removes the recovery card", %{
@@ -1102,12 +1167,19 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
 
       view |> element("#discard-#{run.id}") |> render_click()
-      view |> element("#delete-version-#{run.id}") |> render_click()
+      view |> element("#import-discard-dialog-confirm") |> render_click()
 
       await_cleanup_task(view)
 
       assert has_element?(view, "#import-run-#{run.id}")
-      assert render(view) =~ "Cleanup failed — can be retried by discarding."
+      assert has_element?(view, "#import-run-#{run.id}", "Delete failed")
+
+      assert has_element?(
+               view,
+               "#import-run-#{run.id}",
+               "We couldn’t finish deleting this version."
+             )
+
       assert Repo.get!(Run, run.id).state == "cleanup_failed"
     end
 
@@ -1145,7 +1217,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       html = render(view)
 
       refute has_element?(view, "#import-run-#{run.id}")
-      assert html =~ "No recoverable imports for this organization."
+      assert html =~ "None. If an import stops before it publishes"
+      assert has_element?(view, "#import-recovery-empty")
     end
   end
 
@@ -1263,9 +1336,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       # interrupted run as a recoverable card (AC-6/AC-7).
       {:ok, view2, html2} = live(conn, "/gtfs/#{route_version.id}/import")
 
-      assert html2 =~ "Import recovery"
+      assert has_element?(view2, "#import-recovery-section-title", "Unfinished imports")
       assert has_element?(view2, "#import-run-#{run.id}")
-      assert html2 =~ "Durable counts are uncertain"
+      assert html2 =~ "we can’t tell how much was saved"
 
       # Prior published version rows + diagram file are byte-identical.
       assert GtfsPlanner.Gtfs.list_levels(organization.id, prior.id) != []
@@ -1286,13 +1359,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
       assert has_element?(view, "#import-run-#{run.id}")
 
-      # Discard through the two-step UI confirmation.
+      # Discard through the UI confirmation.
       view |> element("#discard-#{run.id}") |> render_click()
-      view |> element("#delete-version-#{run.id}") |> render_click()
+      view |> element("#import-discard-dialog-confirm") |> render_click()
 
       await_cleanup_task(view)
 
-      assert render(view) =~ "No recoverable imports for this organization."
+      assert has_element?(view, "#import-recovery-empty")
       refute Versions.get_gtfs_version_for_lifecycle(organization.id, failed_v.id)
 
       before_versions = length(all_versions(organization.id))
@@ -1348,7 +1421,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       target = version_by_name(organization.id, "Live Reconcile")
       assert target
       assert target.publication_status == "published"
-      assert render(view) =~ "Import successful"
+      assert has_element?(view, "#gtfs-import-result-title", "Imported “Live Reconcile”")
       assert has_element?(view, "#gtfs-import-view-version[href='/gtfs/#{target.id}/routes']")
     end
   end
@@ -1673,15 +1746,236 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       |> render_click()
 
       view |> element("#diff-apply-btn") |> render_click()
-      html = await_import_task(view)
+      await_import_task(view)
 
-      assert html =~ "Applied 1 · Failed 0 · Unapplied 0"
+      assert has_element?(view, "#diff-count-applied", "1")
+      assert has_element?(view, "#diff-count-failed", "0")
+      assert has_element?(view, "#diff-count-unapplied", "0")
 
       # The change landed on the route version and created no new version rows.
       child = Gtfs.get_stop_by_stop_id(organization.id, version.id, "CHILD_DIFF_NO_LEVEL")
       assert child.parent_station == "PARENT_STATION_DIFF"
       assert length(all_versions(organization.id)) == before_versions
       assert length(published_versions(organization.id)) == before_published
+    end
+  end
+
+  describe "choosing what to import" do
+    setup :editor_context
+
+    test "shows one workflow at a time and keeps each form's chosen files", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      # A complete feed is the common job, so it is chosen and the other form waits.
+      assert has_element?(view, "#import-source-feed[checked]")
+      assert has_element?(view, "#import-workspace-title", "Import a feed")
+      refute has_element?(view, "#gtfs-import-form[hidden]")
+      assert has_element?(view, "#diff-upload-form[hidden]")
+
+      upload_gtfs(view, [%{name: "levels.txt", content: @levels_content, type: "text/plain"}])
+
+      view |> element("#import-source-form") |> render_change(%{"source" => "station"})
+
+      assert has_element?(view, "#import-source-station[checked]")
+      assert has_element?(view, "#import-workspace-title", "Update station data")
+      assert has_element?(view, "#gtfs-import-form[hidden]")
+      refute has_element?(view, "#diff-upload-form[hidden]")
+
+      # Going back finds the file that was chosen.
+      view |> element("#import-source-form") |> render_change(%{"source" => "feed"})
+
+      refute has_element?(view, "#gtfs-import-form[hidden]")
+      assert has_element?(view, "#gtfs-import-upload-entries", "levels.txt")
+    end
+
+    test "an unknown source changes nothing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      render_hook(view, "select_source", %{"source" => "everything"})
+
+      assert :sys.get_state(view.pid).socket.assigns.source == :feed
+    end
+
+    test "a review in progress opens on the station workflow", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, _run} =
+        ChangeRuns.create_pending_compute(
+          organization.id,
+          version.id,
+          %{id: user.id, email: user.email},
+          []
+        )
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      assert has_element?(view, "#import-source-station[checked]")
+      assert has_element?(view, "#diff-run-state[data-state='pending_compute']")
+      # The running review is the page's subject, so the form steps aside.
+      assert has_element?(view, "#import-workspace[hidden]")
+    end
+
+    test "a finished review does not take over the page on open", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      actor = %{id: user.id, email: user.email}
+
+      {:ok, run} = ChangeRuns.create_pending_compute(organization.id, version.id, actor, [])
+
+      run
+      |> ChangeRun.system_changeset(%{
+        state: :completed,
+        started_at: DateTime.add(DateTime.utc_now(), -60, :second),
+        finished_at: DateTime.utc_now(),
+        summary: %{"applied" => 3, "failed" => 0, "unapplied" => 0}
+      })
+      |> Repo.update!()
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      # The feed form is what is showing; the finished review is one choice away.
+      assert has_element?(view, "#import-source-feed[checked]")
+      refute has_element?(view, "#import-workspace[hidden]")
+      refute has_element?(view, "#diff-done")
+
+      # Choosing station changes starts a new review instead of showing the old one.
+      view |> element("#import-source-form") |> render_change(%{"source" => "station"})
+
+      refute has_element?(view, "#diff-done")
+      refute has_element?(view, "#import-workspace[hidden]")
+      refute has_element?(view, "#diff-upload-form[hidden]")
+      assert has_element?(view, "#diff-compute-btn[disabled]")
+    end
+
+    test "a refused file says what to do about it", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      upload =
+        file_input(view, "#gtfs-import-form", :gtfs_files, [
+          %{name: "stop-times.xlsx", content: "x", type: "application/vnd.ms-excel"}
+        ])
+
+      render_upload(upload, "stop-times.xlsx")
+
+      assert has_element?(
+               view,
+               "#gtfs-import-upload-entries",
+               "Spreadsheets can’t be imported. Save it as a .csv or .txt file, or include it in a .zip."
+             )
+
+      assert has_element?(view, "#gtfs-import-upload[data-upload-state='failed']")
+    end
+  end
+
+  describe "after an import" do
+    setup :editor_context
+
+    test "Import another feed returns to an empty form and clears the result", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      upload_gtfs(view, [
+        gtfs_zip([{"levels.txt", @levels_content}, {"stops.txt", @stops_content}])
+      ])
+
+      submit_import(view, "First Feed")
+      await_import_task(view)
+
+      # The result replaces the form.
+      assert has_element?(view, "#gtfs-import-result")
+      assert has_element?(view, "#import-workspace[hidden]")
+
+      view |> element("#gtfs-import-another") |> render_click()
+
+      refute has_element?(view, "#gtfs-import-result")
+      refute has_element?(view, "#import-workspace[hidden]")
+      refute has_element?(view, "#gtfs-import-version-name[value='First Feed']")
+      assert_push_event(view, "focus_gtfs_import_files", %{})
+    end
+
+    test "the counts of levels, stops and pathways come from the run", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+      upload_gtfs(view, [
+        gtfs_zip([{"levels.txt", @levels_content}, {"stops.txt", @stops_content}])
+      ])
+
+      submit_import(view, "Counted Feed")
+      await_import_task(view)
+
+      assert has_element?(view, "#gtfs-import-count-levels", "1")
+      assert has_element?(view, "#gtfs-import-count-stops", "1")
+      assert has_element?(view, "#gtfs-import-count-pathways", "0")
+      assert has_element?(view, "#gtfs-import-check-version[href$='/export']")
+    end
+  end
+
+  describe "an import that stops" do
+    setup :editor_context
+
+    test "returns the page to the form and lists the stopped import", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      {:ok, failed_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "Stops"})
+      {:ok, failed_v} = Versions.fail_unpublished_gtfs_version(organization.id, failed_v.id)
+      run = insert_run(organization.id, failed_v, "failed")
+
+      # The import this page started is running.
+      put_socket_assigns(view, %{importing: true, import_target: failed_v})
+
+      send(view.pid, {:import_run_changed, run.id})
+      html = render(view)
+
+      # The progress card does not wait for a result that will not come.
+      refute :sys.get_state(view.pid).socket.assigns.importing
+      refute has_element?(view, "#gtfs-importing-card")
+      refute has_element?(view, "#import-workspace[hidden]")
+      assert has_element?(view, "#import-run-#{run.id}", "Failed")
+      assert html =~ "Delete this version and import again."
     end
   end
 
@@ -1702,9 +1996,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert has_element?(view, "#gtfs-tab-export[href='/gtfs/#{version.id}/export']")
       refute has_element?(view, "#gtfs-tab-export[aria-current='page']")
 
-      assert html =~ "Import GTFS"
+      assert html =~ "Import data"
       assert has_element?(view, "#gtfs-import-form")
-      assert has_element?(view, "#gtfs-import-destination")
+      assert has_element?(view, "#import-workspace")
     end
   end
 
@@ -1735,7 +2029,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       html = await_import_task(view)
 
       # Publication is unaffected: the new version is published and announced.
-      assert html =~ "Import successful"
+      assert has_element?(view, "#gtfs-import-result-title", "Imported “Findings Missing Agency”")
 
       published = version_by_name(organization.id, "Findings Missing Agency")
       assert published
@@ -1852,7 +2146,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert published
       assert published.publication_status == "published"
 
-      assert html =~ "Import successful"
+      assert has_element?(view, "#gtfs-import-result-title", "Imported “Findings Clean Feed”")
       refute has_element?(view, "#gtfs-import-agency-findings")
       refute html =~ "No agency in this feed"
       refute html =~ "Choose one timezone for this version."
@@ -1897,7 +2191,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
       html = await_import_task(view)
 
-      assert html =~ "Import successful"
+      assert has_element?(view, "#gtfs-import-result-title", "Imported “Findings Second Feed”")
       refute has_element?(view, "#gtfs-import-agency-findings")
       refute html =~ "No agency in this feed"
     end

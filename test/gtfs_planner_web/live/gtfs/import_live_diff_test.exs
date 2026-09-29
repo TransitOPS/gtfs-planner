@@ -44,7 +44,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
              ChangeRuns.latest_for_version(organization.id, version.id)
 
     assert version_id == version.id
-    assert has_element?(view, "#diff-decisions [data-version-diff-row]")
+    assert has_element?(view, "#diff-decisions [data-review-row]")
 
     assert has_element?(
              view,
@@ -53,7 +53,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
 
     {:ok, reconnected, _html} = live(conn, "/gtfs/#{version.id}/import")
 
-    assert has_element?(reconnected, "#diff-decisions [data-version-diff-row]")
+    assert has_element?(reconnected, "#diff-decisions [data-review-row]")
 
     assert has_element?(
              reconnected,
@@ -76,7 +76,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     |> element("button[phx-click='approve-decision'][phx-value-id='level:DURABLE']")
     |> render_click()
 
-    assert has_element?(view, "#diff-apply-btn", "Apply Approved (1)")
+    assert has_element?(view, "#diff-apply-btn", "Apply 1 change")
 
     assert [%{status: :approved}] =
              ChangeRuns.latest_for_version(organization.id, version.id)
@@ -103,6 +103,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
 
     reconnected |> element("#diff-cancel-btn") |> render_click()
     assert %{state: :cancelled} = ChangeRuns.get_for_version(organization.id, version.id, run.id)
+
+    # The stopped review says so and offers the retry and a way to start over.
+    assert has_element?(
+             reconnected,
+             "#diff-run-state[data-state='cancelled']",
+             "The review was cancelled"
+           )
+
+    assert has_element?(reconnected, "#diff-retry-btn", "Retry review")
+    assert has_element?(reconnected, "#diff-start-over-btn", "Choose corrected files")
   end
 
   test "storage failures render a recoverable blocker instead of crashing", %{view: view} do
@@ -129,7 +139,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
   } do
     submit_diff(view, "levels.txt", "level_index,level_name\n1.0,Missing ID")
     await_change_task(view)
-    assert has_element?(view, "#diff-degraded-region", "missing natural key header")
+
+    assert has_element?(
+             view,
+             "#diff-degraded-region",
+             "levels.txt: the file is missing its ID column."
+           )
 
     duplicate_zip =
       zip!([
@@ -141,7 +156,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     {:ok, duplicate_view, _html} = live(conn, "/gtfs/#{duplicate_version.id}/import")
     submit_diff(duplicate_view, "duplicate.zip", duplicate_zip)
     await_change_task(duplicate_view)
-    assert has_element?(duplicate_view, "#diff-degraded-region", "duplicate entity file")
+
+    assert has_element?(
+             duplicate_view,
+             "#diff-degraded-region",
+             "More than one levels.txt was included."
+           )
 
     inner_zip = zip!([{~c"levels.txt", "level_id,level_index,level_name\nL1,1.0,One"}])
     nested_zip = zip!([{~c"inner.zip", inner_zip}])
@@ -150,7 +170,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     {:ok, nested_view, _html} = live(conn, "/gtfs/#{nested_version.id}/import")
     submit_diff(nested_view, "nested.zip", nested_zip)
     await_change_task(nested_view)
-    assert has_element?(nested_view, "#diff-degraded-region", "nested archive")
+
+    assert has_element?(
+             nested_view,
+             "#diff-degraded-region",
+             "nested.zip: the zip contains another zip."
+           )
 
     previous_limit = Application.get_env(:gtfs_planner, :import_max_zip_uncompressed_bytes)
     Application.put_env(:gtfs_planner, :import_max_zip_uncompressed_bytes, 10)
@@ -169,7 +194,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     {:ok, oversized_view, _html} = live(conn, "/gtfs/#{oversized_version.id}/import")
     submit_diff(oversized_view, "oversized.zip", oversized_zip)
     await_change_task(oversized_view)
-    assert has_element?(oversized_view, "#diff-degraded-region", "archive too large")
+
+    assert has_element?(
+             oversized_view,
+             "#diff-degraded-region",
+             "oversized.zip: the zip is too large once unpacked."
+           )
 
     assert ChangeRuns.latest_for_version(organization.id, version.id)
   end
@@ -207,7 +237,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
 
     view |> element("#diff-filter-remove") |> render_click()
     assert has_element?(view, "#diff-filter-remove[aria-pressed='true']")
-    refute has_element?(view, "#diff-decisions [data-version-diff-row]")
+    refute has_element?(view, "#diff-decisions [data-review-row]")
 
     view |> element("#diff-filter-all") |> render_click()
 
@@ -232,7 +262,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     run = ChangeRuns.latest_for_version(organization.id, version.id)
 
     render_click(view, "approve-decision", %{"id" => "level:UNKNOWN"})
-    assert has_element?(view, "#diff-apply-btn", "Apply Approved (0)")
+    assert has_element?(view, "#diff-apply-btn", "Apply changes")
 
     other_organization = organization_fixture()
 
@@ -249,7 +279,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     |> render_click()
 
     render_click(view, "approve-decision", %{"id" => "level:SAFE"})
-    assert has_element?(view, "#diff-apply-btn", "Apply Approved (1)")
+    assert has_element?(view, "#diff-apply-btn", "Apply 1 change")
   end
 
   test "stale conflicts surface exact partial counts and a retry action", %{
@@ -278,8 +308,69 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     await_change_task(view)
 
     assert has_element?(view, "#diff-run-state[data-state='partial']")
-    assert has_element?(view, "#diff-run-counts", "Applied 0 · Failed 1 · Unapplied 0")
-    assert has_element?(view, "#diff-retry-btn")
+    assert has_element?(view, "#diff-count-applied", "0")
+    assert has_element?(view, "#diff-count-failed", "1")
+    assert has_element?(view, "#diff-count-unapplied", "0")
+    assert has_element?(view, "#diff-retry-btn", "Retry 1 change")
+    assert has_element?(view, "#diff-run-state", "0 changes were applied")
+  end
+
+  test "the list of everything bulk-approves only additions and changes; removals are approved from their own tab",
+       %{view: view, organization: organization, version: version} do
+    stop_fixture(organization.id, version.id, %{stop_id: "GONE", stop_name: "Gone"})
+
+    submit_diff(
+      view,
+      "stops.txt",
+      "stop_id,stop_name,stop_lat,stop_lon,location_type\nNEW,New,40.0,-74.0,0"
+    )
+
+    await_change_task(view)
+
+    # All offers the safe kinds only.
+    assert has_element?(view, "#diff-approve-all-add", "Approve all 1 added")
+    refute has_element?(view, "#diff-approve-all-remove")
+    refute has_element?(view, "#diff-approve-all-conflict")
+
+    # The removal is approved from its own tab, under a note that says what it does.
+    view |> element("#diff-filter-remove") |> render_click()
+    assert has_element?(view, "#diff-filter-note", "Approving deletes them from the version.")
+    assert has_element?(view, "#diff-approve-all-remove", "Approve all 1 removals")
+
+    assert has_element?(
+             view,
+             "button[phx-click='approve-decision'][phx-value-id='stop:GONE'][aria-label='Approve removal: Stop GONE']",
+             "Approve removal"
+           )
+
+    refute has_element?(view, "#diff-consequence")
+
+    view |> element("#diff-approve-all-remove") |> render_click()
+
+    # The apply bar names the removal and the count it will apply.
+    assert has_element?(view, "#diff-consequence", "Includes 1 removal.")
+    assert has_element?(view, "#diff-apply-btn", "Apply 1 change")
+    assert has_element?(view, "#diff-approve-all-remove[disabled]", "All removals approved")
+  end
+
+  test "each change kind is counted and named for the reviewer", %{view: view} do
+    submit_diff(view, "levels.txt", "level_id,level_index,level_name\nADDED,1.0,Added")
+    await_change_task(view)
+
+    assert has_element?(view, "#diff-summary-add", "1")
+    assert has_element?(view, "#diff-summary-modify", "0")
+    assert has_element?(view, "#diff-summary-conflict", "0")
+    assert has_element?(view, "#diff-summary-remove", "0")
+
+    assert has_element?(view, "#diff-filter-add", "Added")
+    assert has_element?(view, "#diff-filter-conflict", "Edited here")
+    assert has_element?(view, "#diff-review-summary", "Approve at least one change to apply.")
+
+    view
+    |> element("button[phx-click='approve-decision'][phx-value-id='level:ADDED']")
+    |> render_click()
+
+    assert has_element?(view, "#diff-review-summary", "1 of 1 changes approved.")
   end
 
   test "a partial run offers Start over, which returns to upload and survives a reload", %{
@@ -341,7 +432,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     submit_diff(view, "levels.txt", "level_id,level_index,level_name\nRESTART,1.0,Restart")
     await_change_task(view)
 
-    assert has_element?(view, "#diff-decisions [data-version-diff-row]")
+    assert has_element?(view, "#diff-decisions [data-review-row]")
 
     assert %{state: :review, id: new_id} =
              ChangeRuns.latest_for_version(organization.id, version.id)
@@ -352,7 +443,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
              ChangeRuns.get_for_version(organization.id, version.id, partial.id)
 
     {:ok, reloaded, _html} = live(conn, "/gtfs/#{version.id}/import")
-    assert has_element?(reloaded, "#diff-decisions [data-version-diff-row]")
+    assert has_element?(reloaded, "#diff-decisions [data-review-row]")
   end
 
   test "a partial run lists each failed decision with a plain reason", %{

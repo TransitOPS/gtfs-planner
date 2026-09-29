@@ -79,6 +79,16 @@ test("import upload presentation stays usable at desktop and mobile widths", asy
       fullPage: true,
     });
 
+    // Station changes are the other choice; only its form shows once chosen.
+    await page.locator("#import-source-station").check();
+    await expect(diffUpload).toBeVisible();
+    await expect(fullUpload).toBeHidden();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: `test-results/import-upload-station-${viewport.name}.png`,
+      fullPage: true,
+    });
+
   }
 });
 
@@ -100,6 +110,7 @@ test("durable diff review remains readable at desktop and mobile widths", async 
     await page.setViewportSize(viewport);
     await logInAndOpenImport(page);
     await selectVersion(page, viewport.version);
+    await page.locator("#import-source-station").check();
 
     await page.locator("#diff-upload-input input").setInputFiles({
       name: "levels.txt",
@@ -108,10 +119,14 @@ test("durable diff review remains readable at desktop and mobile widths", async 
     });
 
     await page.locator("#diff-compute-btn").click();
-    await page.locator("#diff-decisions [data-version-diff-row]").waitFor();
+    await page.locator("#diff-decisions [data-review-row]").waitFor();
 
     await expect(page.locator("#diff-decisions")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeVisible();
+    await expect(
+      page
+        .locator("#diff-decisions [data-review-row] button[phx-click='approve-decision']")
+        .first(),
+    ).toBeVisible();
     expect(await bodyFitsViewport(page)).toBe(true);
 
     await page.screenshot({

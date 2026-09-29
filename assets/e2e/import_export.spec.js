@@ -69,8 +69,17 @@ async function openRoute(page, route, { authenticate = true } = {}) {
   await page.waitForURL(/\/gtfs\/[^/]+\/export$/);
   await page.locator(`#gtfs-tab-${route}`).click();
   await page.waitForURL(new RegExp(`/gtfs/[^/]+/${route}$`));
-  await page.locator(`#gtfs-${route}-form`).waitFor({ state: "visible" });
+  // Import shows a review in progress in place of its forms, so its page, not
+  // its feed form, is what says the route has loaded.
+  const ready = route === "import" ? "#import-page" : `#gtfs-${route}-form`;
+  await page.locator(ready).waitFor({ state: "visible" });
   await waitForLiveView(page);
+}
+
+// Import shows one workflow at a time; choosing station changes reveals its form.
+async function chooseStationChanges(page) {
+  await page.locator("#import-source-station").check();
+  await expect(page.locator("#diff-upload-form")).toBeVisible();
 }
 
 async function selectVersion(page, name) {
@@ -127,10 +136,14 @@ test.describe("durable import and export browser journeys", () => {
     const attempt = `${Date.now()}-${testInfo.retry}`;
     const resetDiff = page.locator("#diff-reset-btn");
 
+    // A review left over from an earlier run opens on its own; start over so
+    // the upload form is showing.
     if (await resetDiff.count()) {
       await resetDiff.click();
       await expect(resetDiff).toHaveCount(0);
     }
+
+    await chooseStationChanges(page);
 
     await setLiveUploadFiles(
       page,
@@ -159,9 +172,10 @@ test.describe("durable import and export browser journeys", () => {
     await page.waitForFunction(() => !window.liveSocket?.isConnected());
     await page.context().setOffline(false);
     await page.reload();
+    await waitForLiveView(page);
 
     const firstDecision = page
-      .locator("#diff-decisions [data-version-diff-row]")
+      .locator("#diff-decisions [data-review-row]")
       .first();
     await expect(firstDecision).toBeVisible();
     const conflictFilter = page.locator("#diff-filter-conflict");
@@ -174,7 +188,7 @@ test.describe("durable import and export browser journeys", () => {
       await expect(page.locator("#diff-decisions-empty")).toBeVisible();
     } else {
       await expect(
-        page.locator("#diff-decisions [data-version-diff-row]").first(),
+        page.locator("#diff-decisions [data-review-row]").first(),
       ).toBeVisible();
     }
 
@@ -192,9 +206,13 @@ test.describe("durable import and export browser journeys", () => {
     await page.evaluate(() => window.liveSocket.disconnect());
     await page.waitForFunction(() => !window.liveSocket?.isConnected());
     await page.reload();
-    await expect(page.locator("#diff-reset-btn")).toBeVisible({
-      timeout: 30_000,
-    });
+    // A finished review no longer takes over the page, so completion shows as
+    // the run no longer applying, whether the page reopens on its result or on
+    // the feed form.
+    await expect(page.locator("#import-page")).toBeVisible();
+    await expect(
+      page.locator("#diff-run-state[data-state='applying']"),
+    ).toHaveCount(0, { timeout: 30_000 });
 
     await openRoute(page, "export");
     await selectVersion(page, "Browser E2E Version");
@@ -281,7 +299,7 @@ test.describe("durable import and export browser journeys", () => {
     await expect(page.locator("#diff-cancel-btn")).toBeVisible();
     await page.locator("#diff-cancel-btn").click();
     await expect(page.locator("#diff-run-state")).toContainText(
-      "Review cancelled",
+      "The review was cancelled",
     );
     await expect(page.locator("#diff-retry-btn")).toBeVisible();
   });
@@ -308,7 +326,7 @@ test.describe("durable import and export browser journeys", () => {
       page.locator(`#gtfs-import-upload-entries [title='${longFilename}']`),
     ).toBeVisible();
     await expect(
-      page.getByRole("button", { name: `Cancel ${longFilename}` }),
+      page.getByRole("button", { name: `Remove ${longFilename}` }),
     ).toBeVisible();
     await expectNoHorizontalOverflow(page);
 
@@ -336,17 +354,31 @@ test.describe("durable import and export browser journeys", () => {
       await page.setViewportSize(viewport);
       if (index > 0) await openRoute(page, "import", { authenticate: false });
 
+      // A complete feed is chosen first; the station form waits, hidden.
       await expect(page.locator("#gtfs-import-form")).toBeVisible();
-      await expect(page.locator("#diff-upload-form")).toBeVisible();
+      await expect(page.locator("#diff-upload-form")).toBeHidden();
       await expect(page.locator("#gtfs-import-upload-label")).toHaveText(
-        "GTFS files",
+        "Feed files",
       );
+      await expect(page.locator("#gtfs-import-submit")).toBeDisabled();
+      await expectKeyboardAccess(page, "#gtfs-import-version-name");
+      await expectMinimumTargetSize(
+        page,
+        "#gtfs-import-upload label:has(#gtfs-import-upload-input)",
+      );
+      await expectNoHorizontalOverflow(page);
+
+      await page.screenshot({
+        path: `test-results/import-export-import-${viewport.label}.png`,
+        fullPage: true,
+      });
+
+      await chooseStationChanges(page);
+      await expect(page.locator("#gtfs-import-form")).toBeHidden();
       await expect(page.locator("#diff-upload-label")).toHaveText(
         "Station data files",
       );
-      await expect(page.locator("#gtfs-import-submit")).toBeDisabled();
       await expect(page.locator("#diff-compute-btn")).toBeDisabled();
-      await expectKeyboardAccess(page, "#gtfs-import-version-name");
       await expectKeyboardAccess(page, "#diff-upload-input input", {
         visible: false,
       });
@@ -355,11 +387,6 @@ test.describe("durable import and export browser journeys", () => {
         "#diff-upload label:has(#diff-upload-input)",
       );
       await expectNoHorizontalOverflow(page);
-
-      await page.screenshot({
-        path: `test-results/import-export-import-${viewport.label}.png`,
-        fullPage: true,
-      });
 
       await openRoute(page, "export", { authenticate: false });
       await expect(page.locator("#gtfs-export-form")).toBeVisible();
