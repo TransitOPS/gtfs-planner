@@ -106,6 +106,7 @@
 
   --color-success-bg: #e3f4e9;
   --color-success-fg: #0f7a3e;
+  --color-success-line: #2ba86c; /* status dot */
   --color-warning-bg: #fcf1db;
   --color-warning-fg: #8a5a0e;
   --color-error-bg: #fbe3e3;
@@ -852,7 +853,7 @@ body {
    app's own component is restyled here instead of being replaced, and every
    other form in the app keeps working. `.label` is an inline element by default
    and `input-lg` is 48px; both are reset to the design system's measurements. */
-#account-page .fieldset {
+:is(#account-page, #admin-users-page) .fieldset {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -860,14 +861,14 @@ body {
   padding: 0;
 }
 
-#account-page .fieldset > label {
+:is(#account-page, #admin-users-page) .fieldset > label {
   display: flex;
   flex-direction: column;
   gap: 6px;
   min-width: 0;
 }
 
-#account-page .fieldset .label {
+:is(#account-page, #admin-users-page) .fieldset .label {
   min-height: 0;
   height: auto;
   padding: 0;
@@ -876,7 +877,7 @@ body {
   color: var(--color-strong);
 }
 
-#account-page .fieldset .input {
+:is(#account-page, #admin-users-page) .fieldset .input {
   height: 44px;
   min-height: 44px;
   border: 1px solid var(--color-control);
@@ -891,7 +892,7 @@ body {
    than a colour change alone, so the state survives greyscale and the 3:1
    component-boundary floor in WCAG 1.4.11. The selector is a descendant of
    `#account-page` so it outranks daisyUI's single-class `.input-error`. */
-#account-page .fieldset input[aria-invalid="true"] {
+:is(#account-page, #admin-users-page) .fieldset input[aria-invalid="true"] {
   border: 2px solid var(--color-error-line);
   padding: 9px 11px;
 }
@@ -953,7 +954,7 @@ body {
 
 /* The help text `<.input>` renders below its control is muted at 13px, the
    design system's help weight. daisyUI ships it at 14px/70% base-content. */
-#account-page .fieldset > p {
+:is(#account-page, #admin-users-page) .fieldset > p {
   margin: 0;
   font-size: 13px;
   font-weight: 400;
@@ -975,7 +976,7 @@ body {
    after a rejected submit, which is why it is focusable at all — hence the
    `:focus` ring, not `:focus-visible`: a programmatic focus must still show
    where the reader landed. */
-#account-page .account-error-summary {
+:is(#account-page, #admin-users-page) .form-error-summary {
   border: 1px solid var(--color-error-line);
   border-radius: var(--radius-control);
   background: var(--color-error-bg);
@@ -983,15 +984,15 @@ body {
   padding: 12px 14px;
 }
 
-#account-page .account-error-summary strong,
-#account-page .account-error-summary a {
+:is(#account-page, #admin-users-page) .form-error-summary strong,
+:is(#account-page, #admin-users-page) .form-error-summary a {
   display: flex;
   min-height: 44px;
   align-items: center;
   font-size: 14px;
 }
 
-#account-page .account-error-summary strong {
+:is(#account-page, #admin-users-page) .form-error-summary strong {
   min-height: 0;
   align-items: flex-start;
   line-height: 1.45;
@@ -1000,18 +1001,18 @@ body {
 /* The summary's links are the reader's route to the broken field, so they are
    targets, not prose: at 44px they can be hit and followed by touch, and
    focusing one scrolls the field it names into view. */
-#account-page .account-error-summary a {
+:is(#account-page, #admin-users-page) .form-error-summary a {
   color: inherit;
   text-decoration: underline;
   text-underline-offset: 2px;
   transition: background-color 120ms ease-out;
 }
 
-#account-page .account-error-summary a:hover {
+:is(#account-page, #admin-users-page) .form-error-summary a:hover {
   background: color-mix(in oklab, var(--color-error-fg) 8%, transparent);
 }
 
-#account-page .account-error-summary:focus {
+:is(#account-page, #admin-users-page) .form-error-summary:focus {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
@@ -1083,6 +1084,153 @@ body {
 #account-page .account-badge.warning {
   background: var(--color-warning-bg);
   color: var(--color-warning-fg);
+}
+
+/* ── Users page theme ──
+   /admin/users adopts the application design system's fonts, ink and action
+   colour on the terms `#account-page` does: scoped to its own id so the header
+   and every other page keep the daisyUI palette, and `--color-primary` mapped to
+   the action colour so a filled `<.button>` inside the page, its drawers and its
+   confirmation paints #C81870. Only `h1` takes the display face here: the page's
+   `h2`s are card and dialog titles that set their own size, and an unlayered
+   heading rule would override the utilities that size them.
+
+   The field grammar (`.fieldset`, help text, the 2px invalid border) and the
+   `.form-error-summary` are shared with `#account-page` above. */
+#admin-users-page {
+  --color-primary: var(--color-action);
+  font-family: var(--font-ds);
+  color: var(--color-strong);
+}
+
+#admin-users-page h1 {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+#admin-users-page header p {
+  margin-top: 3px;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+/* Buttons keep their own ring; links and text fields take the design system's
+   focus outline. A checkbox inside a choice card shows the ring on the card. */
+#admin-users-page :is(a:not(.btn), summary, input:not([type="checkbox"])):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+#admin-users-page input[type="checkbox"]:focus-visible {
+  outline: 0;
+}
+
+/* A form-level message takes focus when a rejected submit has no invalid field
+   to land on, so a programmatic focus must show where the reader landed. */
+#admin-users-page [role="alert"][tabindex="-1"]:focus {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* A field error reads in the error ink: the shared `.fieldset > p` rule mutes
+   every paragraph under a field, help and error alike. */
+#admin-users-page .fieldset > p[id$="-error"] {
+  color: var(--color-error-fg);
+  font-weight: 600;
+}
+
+#admin-users-page .fieldset > p[id$="-error"] [class*="hero-"] {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+}
+
+/* Buttons on this page follow the design system's 650 weight, and its
+   secondary control: a hairline `--color-control` boundary on white with ink
+   text, instead of daisyUI's outline in the text colour. */
+#admin-users-page .btn {
+  font-weight: 650;
+}
+
+#admin-users-page .btn-outline {
+  border-color: var(--color-control);
+  background: var(--color-base-100);
+  color: var(--color-strong);
+}
+
+#admin-users-page .btn-outline:hover {
+  border-color: var(--color-control);
+  background: var(--color-canvas);
+  color: var(--color-strong);
+}
+
+/* While a primary action is in flight `phx-disable-with` disables it: keep the
+   label legible, with a darker fill and a wait cursor, instead of daisyUI's
+   washed-out disabled button. */
+#admin-users-page .btn-primary:disabled {
+  background: var(--color-action-hover);
+  color: var(--color-primary-content);
+  cursor: wait;
+}
+
+/* Member table. The whole row is one record on tablet and phone: the person on
+   top, then their access and status, then what can be done to them. It replaces
+   the stacked "label: value" layout of `.ds-stack-table`, so its `::before`
+   labels are dropped and the rules below out-rank that pattern's phone rules. */
+@media (max-width: 1023px) {
+  .member-table.ds-stack-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
+  .member-table.ds-stack-table tbody tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 12px;
+    padding: 16px;
+  }
+
+  .member-table.ds-stack-table tbody td {
+    display: block;
+    flex: 0 1 auto;
+    min-width: 0;
+    padding: 0;
+    text-align: left;
+    border-bottom: 0;
+  }
+
+  .member-table.ds-stack-table tbody td::before {
+    content: none;
+  }
+
+  .member-table.ds-stack-table tbody td[data-label="Actions"] {
+    flex: 1 0 100%;
+  }
+
+  .member-table.ds-stack-table tbody td:first-child {
+    flex: 1 0 100%;
+  }
+
+  .member-table.ds-stack-table tbody td[data-label="Actions"] > div {
+    justify-content: flex-start;
+    gap: 8px;
+  }
+
+  /* A quiet action sits flush with the person's email above it. */
+  .member-table.ds-stack-table tbody td[data-label="Actions"] .btn-ghost {
+    padding-inline: 0;
+  }
 }
 
 /* ── Signed-out form fields ──

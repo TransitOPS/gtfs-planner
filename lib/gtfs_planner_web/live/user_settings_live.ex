@@ -36,6 +36,8 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Authorization.Roles
 
+  import GtfsPlannerWeb.PlannerComponents, only: [form_error_summary: 1]
+
   @months ~w(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)
 
   def render(assigns) do
@@ -120,7 +122,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
       </div>
 
       <div class="account-card-body">
-        <.error_summary
+        <.form_error_summary
           id="email-error-summary"
           failures={@failures}
           title="We couldn't change your email address"
@@ -209,7 +211,7 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
           </p>
         </div>
 
-        <.error_summary
+        <.form_error_summary
           id="password-error-summary"
           failures={@failures}
           title="We couldn't change your password"
@@ -288,29 +290,6 @@ defmodule GtfsPlannerWeb.UserSettingsLive do
         </.form>
       </div>
     </section>
-    """
-  end
-
-  # ── Error summary ─────────────────────────────────────────────────────────
-  attr :id, :string, required: true
-  attr :failures, :list, required: true
-  attr :title, :string, required: true
-
-  # The summary is the landing place after a rejected submit: it lists every
-  # problem at once and links to each field, so the reader does not have to
-  # hunt for a second error. Live validation is not a rejection and never
-  # produces one.
-  defp error_summary(%{failures: []} = assigns) do
-    ~H"""
-    """
-  end
-
-  defp error_summary(assigns) do
-    ~H"""
-    <div id={@id} role="alert" tabindex="-1" class="account-error-summary mb-5">
-      <strong class="font-bold">{@title}</strong>
-      <a :for={failure <- @failures} href={failure.href}>{failure.msg}</a>
-    </div>
     """
   end
 

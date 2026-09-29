@@ -204,6 +204,53 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       refute has_element?(view, "#deactivate-user-#{deactivated.id}")
     end
 
+    test "summarises the list as a count with a breakdown by status", %{
+      conn: conn,
+      organization: organization
+    } do
+      member_fixture(organization, %{email: "active@example.com"})
+      member_fixture(organization, %{email: "pending@example.com", invited?: true})
+      member_fixture(organization, %{email: "gone@example.com", deactivated?: true})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      summary = view |> element("#members-summary") |> render() |> LazyHTML.from_fragment()
+
+      assert LazyHTML.text(summary) =~ "4 users"
+      assert LazyHTML.text(summary) =~ "2 active · 1 invitation pending · 1 deactivated"
+    end
+
+    test "the only-you list shows a panel with its own invite button and no header primary", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      assert has_element?(view, "#members-first-use")
+      assert has_element?(view, "#first-use-invite")
+      refute has_element?(view, "#invite-user-trigger")
+    end
+
+    test "the only-you drawer returns focus to the panel's invite button", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/invite")
+
+      assert has_element?(
+               view,
+               "dialog#invite-drawer-overlay[data-return-focus-id='first-use-invite']"
+             )
+    end
+
+    test "a list with another user has no only-you panel and keeps the header primary", %{
+      conn: conn,
+      organization: organization
+    } do
+      member_fixture(organization, %{email: "colleague@example.com"})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      refute has_element?(view, "#members-first-use")
+      assert has_element?(view, "#invite-user-trigger")
+    end
+
     test "renders the member empty state with one invitation call to action", %{conn: conn} do
       use_read_mock()
       stub(AdminReadAdapterMock, :list_users, fn _organization_id -> {:ok, []} end)
@@ -272,8 +319,8 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
         |> form("#invite-form", invite: %{email: "not-an-email"})
         |> render_submit()
 
-      assert html =~ "must have the @ sign and no spaces"
-      assert html =~ "must select at least one role"
+      assert html =~ "Enter a valid email address, such as name@agency.org."
+      assert html =~ "Choose at least one access level."
 
       assert has_element?(view, "#invite-email[aria-invalid=true]")
       assert has_element?(view, "#invite-roles[aria-invalid=true]")
@@ -283,6 +330,32 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
 
       # Nothing was committed.
       refute Accounts.get_user_by_email("not-an-email")
+    end
+
+    test "lists a rejected submit in a summary that links to each invalid field", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/invite")
+
+      view
+      |> form("#invite-form", invite: %{email: "not-an-email"})
+      |> render_submit()
+
+      summary = view |> element("#invite-error-summary") |> render() |> LazyHTML.from_fragment()
+      links = LazyHTML.query(summary, "a")
+
+      assert LazyHTML.attribute(links, "href") == [
+               "#invite-email",
+               "#invite-roles-pathways_studio_editor"
+             ]
+    end
+
+    test "shows no summary while the person is still typing", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/invite")
+
+      view
+      |> form("#invite-form", invite: %{email: "not-an-email"})
+      |> render_change()
+
+      refute has_element?(view, "#invite-error-summary")
     end
 
     test "moves focus to the first invalid control after a failed submit", %{conn: conn} do
@@ -323,8 +396,9 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
         )
         |> render_submit()
 
-      assert has_element?(view, "#invite-service-error")
+      assert has_element?(view, "#invite-service-error[tabindex='-1']")
       assert html =~ "already a member of this organization"
+      assert_push_event(view, "focus_first_invite_error", %{})
 
       # The drawer stays open on the invite route so the operator can correct it.
       assert has_element?(view, "dialog#invite-drawer-overlay[data-open=true]")
@@ -347,7 +421,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
           "invite" => %{"email" => "sneaky@example.com", "roles" => ["administrator"]}
         })
 
-      assert html =~ "contains an invalid role"
+      assert html =~ "Choose a valid access level."
       refute Accounts.get_user_by_email("sneaky@example.com")
     end
   end
@@ -383,6 +457,21 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
                "newmember@example.com"
     end
 
+    test "the success message says what happens next for a new invitee", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/invite")
+
+      view
+      |> form("#invite-form",
+        invite: %{email: "fresh@example.com", roles: ["pathways_studio_editor"]}
+      )
+      |> render_submit()
+
+      feedback = view |> element("#member-action-feedback") |> render()
+
+      assert feedback =~ "Invitation pending"
+      assert feedback =~ "7 days"
+    end
+
     test "an account that already has a password is added without an invitation", %{
       conn: conn,
       organization: organization
@@ -410,6 +499,10 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       feedback = view |> element("#member-action-feedback") |> render()
       assert feedback =~ "existing@example.com now has access to #{organization.name}."
       refute feedback =~ "Invitation sent"
+      assert feedback =~ "show as Active"
+
+      assert view |> element("#member-#{existing.id} [data-role=member-status]") |> render() =~
+               "Active"
     end
 
     test "a failed notice to an account with a password keeps the membership without offering Resend invite",
@@ -519,6 +612,24 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
              )
     end
 
+    test "the row an outcome names is tinted until the next action clears it", %{
+      conn: conn,
+      organization: organization
+    } do
+      pending = member_fixture(organization, %{email: "pending@example.com", invited?: true})
+      other = member_fixture(organization, %{email: "other@example.com"})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+      view |> element("#resend-invite-#{pending.id}") |> render_click()
+
+      assert has_element?(view, "#member-#{pending.id}[data-marked]")
+      refute has_element?(view, "#member-#{other.id}[data-marked]")
+
+      view |> element("#deactivate-user-#{other.id}") |> render_click()
+
+      refute has_element?(view, "tr[data-marked]")
+    end
+
     test "activation clears the deactivation and refreshes the stream", %{
       conn: conn,
       organization: organization
@@ -566,6 +677,33 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
 
       # Nothing has been mutated by opening the dialog.
       refute Organizations.user_deactivated_in_organization?(member.id, organization.id)
+    end
+
+    test "the dialog for someone who has not accepted names no session to end", %{
+      conn: conn,
+      organization: organization
+    } do
+      pending = member_fixture(organization, %{email: "pending@example.com", invited?: true})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+      view |> element("#deactivate-user-#{pending.id}") |> render_click()
+
+      body = view |> element("#deactivate-user-dialog-body") |> render()
+
+      assert body =~ "has not accepted their invitation yet"
+      refute body =~ "session"
+    end
+
+    test "the dialog offers Keep access as its cancel action", %{
+      conn: conn,
+      organization: organization
+    } do
+      member = member_fixture(organization, %{email: "target@example.com"})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+      view |> element("#deactivate-user-#{member.id}") |> render_click()
+
+      assert view |> element("#deactivate-user-dialog-cancel") |> render() =~ "Keep access"
     end
 
     test "the dialog returns focus to the row trigger it was opened from", %{
@@ -756,8 +894,11 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
   describe "drawers" do
     test "the invitation drawer keeps the member list behind it and names its trigger", %{
       conn: conn,
-      admin_user: admin_user
+      admin_user: admin_user,
+      organization: organization
     } do
+      member_fixture(organization, %{email: "colleague@example.com"})
+
       {:ok, view, _html} = live(conn, ~p"/admin/users/invite")
 
       assert has_element?(view, "dialog#invite-drawer-overlay[data-open=true]")
@@ -814,9 +955,35 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
         |> form("#organization-settings-form", organization: %{name: ""})
         |> render_submit()
 
-      assert html =~ "can&#39;t be blank"
+      assert html =~ "Enter an organization name."
       assert has_element?(view, "dialog#organization-settings-drawer-overlay[data-open=true]")
       assert Organizations.get_organization!(organization.id).name == organization.name
+    end
+
+    test "a rejected save lists the invalid name in a summary and moves focus to it", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
+
+      view
+      |> form("#organization-settings-form", organization: %{name: ""})
+      |> render_submit()
+
+      summary =
+        view |> element("#organization-error-summary") |> render() |> LazyHTML.from_fragment()
+
+      assert LazyHTML.attribute(LazyHTML.query(summary, "a"), "href") == ["#organization-name"]
+      assert_push_event(view, "focus_first_organization_error", %{})
+    end
+
+    test "shows no summary while the name is being edited", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users/organization-settings")
+
+      view
+      |> form("#organization-settings-form", organization: %{name: ""})
+      |> render_change()
+
+      refute has_element?(view, "#organization-error-summary")
     end
 
     test "the organization form ignores a crafted alias", %{

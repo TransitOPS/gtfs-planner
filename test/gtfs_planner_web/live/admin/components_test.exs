@@ -53,6 +53,9 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
           members: members,
           empty?: members == [],
           invite_path: "/admin/users/invite",
+          counts: nil,
+          marked_id: nil,
+          first_use?: false,
           resend_event: "resend_invite",
           activate_event: "activate_user",
           deactivate_event: "request_deactivation"
@@ -65,6 +68,9 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
       id={@id}
       members={@members}
       empty?={@empty?}
+      counts={@counts}
+      marked_id={@marked_id}
+      first_use?={@first_use?}
       invite_path={@invite_path}
       resend_event={@resend_event}
       activate_event={@activate_event}
@@ -286,7 +292,7 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
       assert LazyHTML.text(activate) =~ "Activate user"
     end
 
-    test "renders actions through the shared quiet small button at a 44 px target" do
+    test "renders actions through the shared button at a 44 px target" do
       html = render_view([active_member()])
 
       class =
@@ -296,7 +302,6 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
         |> List.first()
 
       assert class =~ "btn"
-      assert class =~ "btn-sm"
       assert class =~ "btn-ghost"
       assert class =~ "min-h-11"
     end
@@ -334,6 +339,106 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
 
       assert Enum.empty?(LazyHTML.query(document, "#members-empty"))
       assert Enum.count(LazyHTML.query(document, "table")) == 1
+    end
+  end
+
+  describe "member_data_view/1 — summary, legend and row markers" do
+    test "counts users by status with the same precedence as the row badges" do
+      counts =
+        Components.count_members([active_member(), pending_member(), deactivated_member()])
+
+      assert counts == %{total: 3, active: 1, invitation_pending: 1, deactivated: 1}
+    end
+
+    test "renders the count and a breakdown that leaves out empty statuses" do
+      members = [active_member(), pending_member(), pending_member()]
+
+      html = render_view(members, %{counts: Components.count_members(members)})
+
+      document = doc(html)
+
+      assert LazyHTML.text(LazyHTML.query(document, "#members-count")) =~ "3 users"
+      assert LazyHTML.text(LazyHTML.query(document, "#members-summary")) =~ "1 active"
+
+      assert LazyHTML.text(LazyHTML.query(document, "#members-summary")) =~
+               "2 invitations pending"
+
+      refute LazyHTML.text(LazyHTML.query(document, "#members-summary")) =~ "deactivated"
+    end
+
+    test "renders one user without a breakdown" do
+      members = [active_member()]
+
+      html = render_view(members, %{counts: Components.count_members(members)})
+
+      summary =
+        doc(html) |> LazyHTML.query("#members-summary") |> LazyHTML.text() |> String.trim()
+
+      assert summary == "1 user"
+    end
+
+    test "leaves out the breakdown when every user is active" do
+      members = [active_member(), active_member()]
+
+      html = render_view(members, %{counts: Components.count_members(members)})
+
+      summary =
+        doc(html) |> LazyHTML.query("#members-summary") |> LazyHTML.text() |> String.trim()
+
+      assert summary == "2 users"
+    end
+
+    test "renders no summary line when the parent supplies no counts" do
+      html = render_view([active_member()])
+
+      assert Enum.empty?(LazyHTML.query(doc(html), "#members-summary"))
+    end
+
+    test "renders the legend naming each access level once, editor first" do
+      html = render_view([active_member()])
+
+      terms = doc(html) |> LazyHTML.query("#members-legend dt") |> LazyHTML.text()
+
+      assert terms == "Pathways Studio EditorPathways Studio Admin"
+    end
+
+    test "tints only the row an outcome is about" do
+      html = render_view([active_member(), pending_member()], %{marked_id: @pending_id})
+
+      document = doc(html)
+
+      assert Enum.count(LazyHTML.query(document, "tr[data-marked]")) == 1
+      assert Enum.count(LazyHTML.query(document, "tr#member-#{@pending_id}[data-marked]")) == 1
+    end
+
+    test "renders Deactivated as a neutral badge, not an error" do
+      html = render_view([deactivated_member()])
+
+      class =
+        doc(html)
+        |> LazyHTML.query("tr#member-#{@deactivated_id} [data-role=member-status]")
+        |> LazyHTML.attribute("class")
+        |> List.first()
+
+      refute class =~ "error"
+      assert class =~ "text-muted"
+    end
+
+    test "renders the first-use panel with its own invite button when the list holds only the viewer" do
+      html = render_view([active_member()], %{first_use?: true})
+
+      document = doc(html)
+
+      assert Enum.count(LazyHTML.query(document, "#members-first-use")) == 1
+
+      assert LazyHTML.attribute(LazyHTML.query(document, "#first-use-invite"), "data-phx-link") ==
+               ["patch"]
+    end
+
+    test "renders no first-use panel by default" do
+      html = render_view([active_member()])
+
+      assert Enum.empty?(LazyHTML.query(doc(html), "#members-first-use"))
     end
   end
 
