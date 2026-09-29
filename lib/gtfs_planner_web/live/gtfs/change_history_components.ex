@@ -36,6 +36,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlannerWeb.Components.TransitPresentation
+  alias GtfsPlannerWeb.Home.ChangeLinks
 
   @system_noise_diff_fields MapSet.new(
                               ~w(organization_id gtfs_version_id id inserted_at updated_at)
@@ -854,17 +855,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     ]
   end
 
-  defp display_name(nil), do: "Unknown"
-  defp display_name(""), do: "Unknown"
-
-  defp display_name(email) when is_binary(email) do
-    email
-    |> String.split("@")
-    |> List.first()
-    |> String.replace(~r/[._\-]+/, " ")
-    |> String.split(" ", trim: true)
-    |> Enum.map_join(" ", &:string.titlecase/1)
-  end
+  defp display_name(email), do: ChangeLinks.display_name(email)
 
   defp display_initials(email) do
     email

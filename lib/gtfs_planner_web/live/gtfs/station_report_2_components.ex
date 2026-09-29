@@ -31,6 +31,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     only: [icon: 1, status_badge: 1, callout: 1, empty_state: 1, count_strip: 1, metric: 1]
 
   alias GtfsPlanner.Gtfs.{Pathway, Stop}
+  alias GtfsPlanner.Gtfs.StationReport2.Outcome
 
   @toc_sections [
     %{
@@ -170,27 +171,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   end
 
   # The report owns this vocabulary; `count_strip/1` owns only the structure.
-  defp outcome_count_items(nil), do: outcome_items_for([])
+  defp outcome_count_items(nil), do: outcome_items(Outcome.counts([]))
 
   defp outcome_count_items(model) do
-    outcome_items_for(
-      Enum.map(
-        model.data_quality_items ++ model.gps_items ++ model.naming_convention_checks,
-        & &1.status
-      )
-    )
+    (model.data_quality_items ++ model.gps_items ++ model.naming_convention_checks)
+    |> Outcome.counts()
+    |> outcome_items()
   end
 
-  defp outcome_items_for(statuses) do
+  defp outcome_items(counts) do
     [
-      %{key: "passed", label: "Passed", count: count_status(statuses, :pass), tone: :success},
-      %{key: "warnings", label: "Warnings", count: count_status(statuses, :warn), tone: :warning},
-      %{key: "failed", label: "Failed", count: count_status(statuses, :fail), tone: :error},
-      %{key: "info", label: "Info", count: count_status(statuses, :info), tone: :neutral}
+      %{key: "passed", label: "Passed", count: counts.passed, tone: :success},
+      %{key: "warnings", label: "Warnings", count: counts.warnings, tone: :warning},
+      %{key: "failed", label: "Failed", count: counts.failed, tone: :error},
+      %{key: "info", label: "Info", count: counts.info, tone: :neutral}
     ]
   end
-
-  defp count_status(statuses, status), do: Enum.count(statuses, &(&1 == status))
 
   # -- Station inventory -----------------------------------------------------
 
@@ -366,8 +362,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   attr :expanded, :any, required: true
 
   defp check_section(assigns) do
-    assigns =
-      assign(assigns, :count_items, outcome_items_for(Enum.map(assigns.items, & &1.status)))
+    assigns = assign(assigns, :count_items, outcome_items(Outcome.counts(assigns.items)))
 
     ~H"""
     <section id={@id} class="scroll-mt-4">
@@ -691,11 +686,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
   attr :expanded, :any, required: true, doc: "MapSet of server-owned open disclosure keys"
 
   def naming_conventions_section(assigns) do
-    statuses = Enum.map(assigns.checks, & &1.status)
+    counts = Outcome.counts(assigns.checks)
 
     count_items = [
-      %{key: "passed", label: "Passed", count: count_status(statuses, :pass), tone: :success},
-      %{key: "failed", label: "Failed", count: count_status(statuses, :fail), tone: :error}
+      %{key: "passed", label: "Passed", count: counts.passed, tone: :success},
+      %{key: "failed", label: "Failed", count: counts.failed, tone: :error}
     ]
 
     assigns = assign(assigns, :count_items, count_items)

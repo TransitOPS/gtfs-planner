@@ -55,6 +55,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Location
   alias GtfsPlanner.Gtfs.Network
   alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.RecentChanges
   alias GtfsPlanner.Gtfs.RiderCategory
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteNetwork
@@ -64,6 +65,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Shape
+  alias GtfsPlanner.Gtfs.StationBoard
   alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Gtfs.StationJournal
   alias GtfsPlanner.Gtfs.StationJournal.Scope
@@ -2590,6 +2592,49 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns a map of station stop_id to the routes serving its child platforms.
+
+  A station's lines come from the stop_times of its child stops, so a child stop
+  (`parent_station` equal to a requested station) contributes only when it is a
+  platform (`location_type` `0` or `nil`); a stop_time on the station row itself
+  contributes nothing. Stops, stop_times, trips and routes from another organization
+  or version are ignored, and the result is distinct on station and route. An empty
+  `station_stop_ids` list returns `%{}` without querying.
+  """
+  @spec routes_by_station(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) ::
+          %{String.t() => [%{route_id: String.t(), route_short_name: String.t() | nil}]}
+  def routes_by_station(_organization_id, _gtfs_version_id, []), do: %{}
+
+  def routes_by_station(organization_id, gtfs_version_id, station_stop_ids) do
+    from(s in Stop,
+      join: st in StopTime,
+      on:
+        st.stop_id == s.stop_id and st.organization_id == s.organization_id and
+          st.gtfs_version_id == s.gtfs_version_id,
+      join: t in Trip,
+      on:
+        st.trip_id == t.trip_id and st.organization_id == t.organization_id and
+          st.gtfs_version_id == t.gtfs_version_id,
+      join: r in Route,
+      on:
+        t.route_id == r.route_id and t.organization_id == r.organization_id and
+          t.gtfs_version_id == r.gtfs_version_id,
+      where: s.organization_id == ^organization_id,
+      where: s.gtfs_version_id == ^gtfs_version_id,
+      where: s.parent_station in ^station_stop_ids,
+      where: is_nil(s.location_type) or s.location_type == 0,
+      distinct: [s.parent_station, r.route_id],
+      order_by: [asc: s.parent_station, asc: r.route_id],
+      select: {s.parent_station, %{route_id: r.route_id, route_short_name: r.route_short_name}}
+    )
+    |> Repo.all()
+    |> Enum.group_by(
+      fn {station_stop_id, _route} -> station_stop_id end,
+      fn {_station_stop_id, route} -> route end
+    )
+  end
+
+  @doc """
   Returns a list of routes that serve at least one station (stop with no parent).
   """
   def list_routes_serving_stations(organization_id, gtfs_version_id) do
@@ -2727,6 +2772,46 @@ defmodule GtfsPlanner.Gtfs do
       preload: [:user]
     )
     |> Repo.one()
+  end
+
+  @doc """
+  Lists the station editing statuses for an organization and GTFS version.
+
+  Each entry names its station and user, and the list is ordered by `started_at`
+  ascending. A status whose station belongs to another organization or version is
+  omitted.
+  """
+  @spec list_station_editors(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          [
+            %{
+              station_id: Ecto.UUID.t(),
+              station_stop_id: String.t(),
+              station_name: String.t() | nil,
+              user_id: Ecto.UUID.t(),
+              email: String.t(),
+              started_at: DateTime.t()
+            }
+          ]
+  def list_station_editors(organization_id, gtfs_version_id) do
+    from(s in StationEditingStatus,
+      join: station in Stop,
+      on:
+        station.id == s.station_id and station.organization_id == ^organization_id and
+          station.gtfs_version_id == ^gtfs_version_id,
+      join: user in Accounts.User,
+      on: user.id == s.user_id,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: s.started_at],
+      select: %{
+        station_id: s.station_id,
+        station_stop_id: station.stop_id,
+        station_name: station.stop_name,
+        user_id: s.user_id,
+        email: user.email,
+        started_at: s.started_at
+      }
+    )
+    |> Repo.all()
   end
 
   @doc """
@@ -3952,6 +4037,68 @@ defmodule GtfsPlanner.Gtfs do
   """
   @spec format_display_time(NaiveDateTime.t(), keyword()) :: String.t()
   defdelegate format_display_time(local_time, opts \\ []), to: DisplayClock, as: :format_time
+
+  # Recent change functions
+
+  @doc """
+  Returns up to five recent destination groups for one audience, newest first.
+
+  See `GtfsPlanner.Gtfs.RecentChanges.recent/4`.
+  """
+  @spec recent_changes(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          :everyone | {:actor, Ecto.UUID.t()},
+          DisplayClock.zone_resolution()
+        ) :: [RecentChanges.group()]
+  defdelegate recent_changes(organization_id, gtfs_version_id, audience, zone_resolution),
+    to: RecentChanges,
+    as: :recent
+
+  @doc """
+  Returns the actor's own recent groups, or the team's when the actor has none.
+
+  See `GtfsPlanner.Gtfs.RecentChanges.recent_for_user/4`.
+  """
+  @spec recent_changes_for_user(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          DisplayClock.zone_resolution()
+        ) :: %{scope: :own | :team, groups: [RecentChanges.group()]}
+  defdelegate recent_changes_for_user(
+                organization_id,
+                gtfs_version_id,
+                actor_id,
+                zone_resolution
+              ),
+              to: RecentChanges,
+              as: :recent_for_user
+
+  @doc """
+  Counts distinct operations and distinct non-null stations changed after `since`.
+
+  See `GtfsPlanner.Gtfs.RecentChanges.count_since/3`.
+  """
+  @spec count_changes_since(Ecto.UUID.t(), Ecto.UUID.t(), DateTime.t()) :: %{
+          changes: non_neg_integer(),
+          stations: non_neg_integer()
+        }
+  defdelegate count_changes_since(organization_id, gtfs_version_id, since),
+    to: RecentChanges,
+    as: :count_since
+
+  # Station board functions
+
+  @doc """
+  Returns one station board summary per station of the version, sorted by `stop_id`.
+
+  See `GtfsPlanner.Gtfs.StationBoard.base/2`.
+  """
+  @spec station_board_base(Ecto.UUID.t(), Ecto.UUID.t()) :: [StationBoard.base()]
+  defdelegate station_board_base(organization_id, gtfs_version_id),
+    to: StationBoard,
+    as: :base
 
   # Area functions
 

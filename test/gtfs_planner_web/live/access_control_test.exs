@@ -187,6 +187,7 @@ defmodule GtfsPlannerWeb.AccessControlTest do
 
       {:ok, view, _html} = live(conn, ~p"/")
 
+      assert has_element?(view, "#dashboard-system-administrator")
       assert has_element?(view, "a", "Organizations")
     end
 

@@ -9,6 +9,18 @@
 #   and its deterministic active/deactivated/pending/multi-role/long-email members.
 # User 4 (Pathways editor): pathways-editor@gtfs-planner.test — used by
 #   product_branding.spec.js, in "Browser Pathways Org" (product: :pathways).
+# User 5 (homepage, planner): home-planner@gtfs-planner.test and
+#   home-planner-member@gtfs-planner.test — used by home.spec.js, in
+#   "Home Planner Org" (calendars ending ten days after the seed date, a
+#   stopped import, the administrator's recent destinations, a check with
+#   warnings and an expired export).
+# User 6 (homepage, pathways): home-pathways@gtfs-planner.test — used by
+#   home.spec.js, in "Home Pathways Org" (product: :pathways) with a 14-station
+#   board covering every stage and reachability outcome.
+# User 7 (homepage, access states): account-admin@gtfs-planner.test — the
+#   active organization administrator for "Account No Version Org" and
+#   "Account No Task Org", so those states draw the contact card home.spec.js
+#   and the references expect.
 #
 # Both users belong to the same org. The editor user can access GTFS routes
 # because it has the pathways_studio_editor role and a session-scoped
@@ -23,8 +35,10 @@ alias GtfsPlanner.Accounts
 alias GtfsPlanner.Accounts.User
 alias GtfsPlanner.Accounts.UserToken
 alias GtfsPlanner.Gtfs
+alias GtfsPlanner.Gtfs.ChangeLog
 alias GtfsPlanner.Gtfs.DiagramStorage
 alias GtfsPlanner.Gtfs.Export.ArtifactStorage
+alias GtfsPlanner.Gtfs.Export.Run, as: ExportRun
 alias GtfsPlanner.Gtfs.ExportRuns
 alias GtfsPlanner.Gtfs.FareAttribute
 alias GtfsPlanner.Gtfs.FareRule
@@ -32,12 +46,14 @@ alias GtfsPlanner.Gtfs.FareZones
 alias GtfsPlanner.Gtfs.FeedInfo
 alias GtfsPlanner.Gtfs.FloorplanTransform
 alias GtfsPlanner.Gtfs.Import.ChangeRuns
+alias GtfsPlanner.Gtfs.Import.Run, as: ImportRun
 alias GtfsPlanner.Gtfs.Stop
 alias GtfsPlanner.Gtfs.Transfer
 alias GtfsPlanner.Organizations
 alias GtfsPlanner.Repo
 alias GtfsPlanner.Validations.{ValidationRun, WalkabilityTest, WalkabilityTestRunResult}
 alias GtfsPlanner.Versions
+alias GtfsPlanner.Versions.GtfsVersion
 
 import Ecto.Query
 
@@ -4779,6 +4795,564 @@ case Accounts.register_first_admin(%{
         "onboarding version #{onboarding_version.id} (no agencies, no routes), " <>
         "unassigned routes version #{unassigned_routes_version.id} (2 routes with no agency), " <>
         "default kept as #{agencies_default_before.name}"
+    )
+
+    # ── Homepage fixtures (26-homepage; home.spec.js, EV-21) ──
+    #
+    # Two organizations carry the logged-in homepage's seeded states:
+    #
+    #   * Home Planner Org (planner product) — home-planner@gtfs-planner.test
+    #     (editor and admin) sees the attention state: calendars ending ten days
+    #     after the seed date, a stopped import, the administrator's own recent
+    #     destinations, a check with warnings and an expired export.
+    #     home-planner-member@gtfs-planner.test (editor, no changes of their
+    #     own) sees the team's changes with author emails.
+    #   * Home Pathways Org (product: :pathways) — home-pathways@gtfs-planner.test
+    #     (editor and admin) sees a 14-station board: one clean station, five in
+    #     progress (stale passed, warning, no run, failed and not-applicable
+    #     reachability), eight stations without pathways, one editing status by
+    #     another user, a check with warnings and an expired export.
+    #
+    # Every seeded version is created published after its organization's
+    # automatically created default, and the default is then backdated so the
+    # seeded service version is unambiguously the organization's latest
+    # published version. Versions are organization-scoped, so no existing
+    # organization's latest published default changes.
+    home_password = "BrowserTest123!"
+    home_today = Date.utc_today()
+
+    home_member = fn org, email, roles ->
+      user =
+        case Accounts.get_user_by_email(email) do
+          nil ->
+            {:ok, user} = Accounts.register_user(%{email: email, password: home_password})
+            Repo.update!(User.confirm_changeset(user))
+            user
+
+          existing ->
+            existing
+        end
+
+      unless Accounts.get_user_org_membership(user.id, org.id) do
+        {:ok, _membership} =
+          Accounts.create_user_org_membership(%{
+            user_id: user.id,
+            organization_id: org.id,
+            roles: roles
+          })
+      end
+
+      user
+    end
+
+    home_pin_default_version = fn org ->
+      from(v in GtfsVersion, where: v.organization_id == ^org.id)
+      |> Repo.update_all(set: [published_at: ~U[2020-01-01 00:00:00.000000Z]])
+    end
+
+    home_change_log = fn org, version, attrs ->
+      row =
+        Map.merge(
+          %{
+            id: Ecto.UUID.generate(),
+            entity_type: "trip",
+            entity_id: Ecto.UUID.generate(),
+            entity_external_id: Ecto.UUID.generate(),
+            station_stop_id: nil,
+            actor_id: Ecto.UUID.generate(),
+            actor_email: "editor@example.test",
+            snapshot: nil,
+            changed_fields: nil,
+            action: "updated",
+            organization_id: org.id,
+            gtfs_version_id: version.id,
+            inserted_at: DateTime.utc_now()
+          },
+          attrs
+        )
+
+      Repo.insert_all(ChangeLog, [row])
+    end
+
+    home_feed_check = fn org, version, errors, warnings ->
+      %ValidationRun{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: version.id
+      }
+      |> ValidationRun.changeset(%{
+        run_type: "mobility_data",
+        status: "completed",
+        errors_count: errors,
+        warnings_count: warnings,
+        infos_count: 0,
+        started_at: DateTime.add(DateTime.utc_now(), -40, :minute)
+      })
+      |> Repo.insert!()
+    end
+
+    home_expired_export = fn org, version, export_type, finished_at ->
+      Repo.insert!(
+        struct!(ExportRun, %{
+          id: Ecto.UUID.generate(),
+          organization_id: org.id,
+          gtfs_version_id: version.id,
+          export_type: export_type,
+          state: :ready,
+          phase: :cleanup,
+          artifact_key: "exports/#{Ecto.UUID.generate()}.zip",
+          artifact_filename: "browser-home-export.zip",
+          artifact_sha256: String.duplicate("a", 64),
+          artifact_size_bytes: 1024,
+          artifact_expires_at: DateTime.add(DateTime.utc_now(), -3, :minute),
+          started_at: DateTime.add(finished_at, -10, :minute),
+          finished_at: finished_at,
+          inserted_at: finished_at,
+          updated_at: finished_at
+        })
+      )
+    end
+
+    home_stopped_import = fn org, version_name ->
+      {:ok, staging_version} =
+        Versions.create_staging_gtfs_version(org.id, %{name: version_name})
+
+      Repo.insert!(
+        struct!(ImportRun, %{
+          id: Ecto.UUID.generate(),
+          organization_id: org.id,
+          gtfs_version_id: staging_version.id,
+          version_name: version_name,
+          state: "failed",
+          failed_file: "stop_times.txt",
+          failed_row: 18_204,
+          committed_counts: %{},
+          counts_complete: true,
+          finished_at: DateTime.add(DateTime.utc_now(), -5, :hour)
+        })
+      )
+    end
+
+    # ── Home Planner Org: the attention and new-member states ──
+    {:ok, home_planner_org} =
+      Organizations.create_organization(%{name: "Home Planner Org", alias: "home-planner-org"})
+
+    home_pin_default_version.(home_planner_org)
+
+    {:ok, home_planner_version} =
+      Versions.create_gtfs_version(home_planner_org.id, %{name: "September 2026 service"})
+
+    home_planner_admin =
+      home_member.(home_planner_org, "home-planner@gtfs-planner.test", [
+        "pathways_studio_editor",
+        "pathways_studio_admin"
+      ])
+
+    _home_planner_member =
+      home_member.(home_planner_org, "home-planner-member@gtfs-planner.test", [
+        "pathways_studio_editor"
+      ])
+
+    _home_planner_route =
+      GtfsPlanner.GtfsFixtures.route_fixture(home_planner_org.id, home_planner_version.id, %{
+        route_id: "H12",
+        route_short_name: "12",
+        route_long_name: "Downtown – Riverside",
+        route_color: "0B6BCB",
+        route_text_color: "FFFFFF"
+      })
+
+    # Two calendars without Sunday service, ending ten days from the seed date:
+    # the version's horizon is inside the service-end window, so the homepage
+    # raises "service ends" from the horizon and never from the Saturday gap.
+    for {service_id, description, saturday} <- [
+          {"WKDY", "Weekday", 0},
+          {"SAT", "Saturday", 1}
+        ] do
+      GtfsPlanner.GtfsFixtures.calendar_fixture(home_planner_org.id, home_planner_version.id, %{
+        service_id: service_id,
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: saturday,
+        sunday: 0,
+        start_date: Date.add(home_today, -30),
+        end_date: Date.add(home_today, 10)
+      })
+
+      GtfsPlanner.GtfsFixtures.calendar_attribute_fixture(
+        home_planner_org.id,
+        home_planner_version.id,
+        %{service_id: service_id, service_description: description}
+      )
+    end
+
+    _home_planner_level =
+      GtfsPlanner.GtfsFixtures.level_fixture(home_planner_org.id, home_planner_version.id, %{
+        level_id: "L1",
+        level_name: "Concourse",
+        level_index: 0.0
+      })
+
+    _home_planner_station =
+      GtfsPlanner.GtfsFixtures.stop_fixture(home_planner_org.id, home_planner_version.id, %{
+        stop_id: "HUB",
+        stop_name: "Hubbard Street",
+        location_type: 1
+      })
+
+    _home_planner_platform =
+      GtfsPlanner.GtfsFixtures.stop_fixture(home_planner_org.id, home_planner_version.id, %{
+        stop_id: "HUB_platform_1",
+        stop_name: "Hubbard Street Platform",
+        location_type: 0,
+        parent_station: "HUB",
+        level_id: "L1"
+      })
+
+    _home_planner_stop =
+      GtfsPlanner.GtfsFixtures.stop_fixture(home_planner_org.id, home_planner_version.id, %{
+        stop_id: "H440",
+        stop_name: "Harbor Loop",
+        location_type: 0
+      })
+
+    # Nine trips retimed in three operations on one destination. The resume's
+    # featured item is this destination: "9 trips changed on Weekday" and
+    # "3 changes that day". The operations are minutes apart, so they share one
+    # local day whatever hour the seed runs; the reviewed screenshot shows the
+    # count unmasked.
+    for {operation_id, first_index, last_index, minutes_ago} <- [
+          {"HOME-OP-RETIME-A", 1, 6, 3},
+          {"HOME-OP-RETIME-B", 7, 8, 2},
+          {"HOME-OP-RETIME-C", 9, 9, 1}
+        ] do
+      for index <- first_index..last_index do
+        trip_id = "H12_TRIP_#{index}"
+
+        GtfsPlanner.GtfsFixtures.trip_fixture(
+          home_planner_org.id,
+          home_planner_version.id,
+          "H12",
+          %{trip_id: trip_id, service_id: "WKDY", trip_headsign: "Downtown"}
+        )
+
+        home_change_log.(home_planner_org, home_planner_version, %{
+          entity_type: "trip",
+          entity_external_id: trip_id,
+          actor_id: home_planner_admin.id,
+          actor_email: home_planner_admin.email,
+          changed_fields: %{
+            "after" => %{"route_id" => "H12", "service_id" => "WKDY"},
+            "operation_id" => operation_id
+          },
+          inserted_at: DateTime.add(DateTime.utc_now(), -minutes_ago, :minute)
+        })
+      end
+    end
+
+    # Four more destinations, one operation each: a calendar end-date change, a
+    # pattern build, a station edit (whose GTFS level L1 the resume links with)
+    # and a plain stop edit. Together with the trips that is the five-item
+    # resume.
+    home_change_log.(home_planner_org, home_planner_version, %{
+      entity_type: "calendar",
+      entity_external_id: "WKDY",
+      actor_id: home_planner_admin.id,
+      actor_email: home_planner_admin.email,
+      changed_fields: %{
+        "before" => %{"weekly" => %{"end_date" => Date.to_iso8601(Date.add(home_today, 10))}},
+        "after" => %{"weekly" => %{"end_date" => Date.to_iso8601(Date.add(home_today, 60))}}
+      },
+      inserted_at: DateTime.add(DateTime.utc_now(), -1, :day)
+    })
+
+    home_change_log.(home_planner_org, home_planner_version, %{
+      entity_type: "route_pattern_build",
+      entity_external_id: "H12",
+      actor_id: home_planner_admin.id,
+      actor_email: home_planner_admin.email,
+      inserted_at: DateTime.add(DateTime.utc_now(), -2, :day)
+    })
+
+    home_change_log.(home_planner_org, home_planner_version, %{
+      entity_type: "stop",
+      entity_external_id: "HUB_platform_1",
+      station_stop_id: "HUB",
+      snapshot: %{"level_id" => "L1"},
+      actor_id: home_planner_admin.id,
+      actor_email: home_planner_admin.email,
+      changed_fields: %{"stop_name" => %{"from" => "Hubbard", "to" => "Hubbard Street"}},
+      inserted_at: DateTime.add(DateTime.utc_now(), -3, :day)
+    })
+
+    home_change_log.(home_planner_org, home_planner_version, %{
+      entity_type: "stop",
+      entity_external_id: "H440",
+      actor_id: home_planner_admin.id,
+      actor_email: home_planner_admin.email,
+      changed_fields: %{
+        "stop_lat" => %{"from" => "40.71", "to" => "40.72"},
+        "stop_lon" => %{"from" => "-74.00", "to" => "-74.01"}
+      },
+      inserted_at: DateTime.add(DateTime.utc_now(), -4, :day)
+    })
+
+    home_feed_check.(home_planner_org, home_planner_version, 0, 12)
+
+    # Finished five days ago, so every seeded change is "since then" and the
+    # artifact expiry has passed without a sweep having run.
+    home_expired_export.(
+      home_planner_org,
+      home_planner_version,
+      :full,
+      DateTime.add(DateTime.utc_now(), -5, :day)
+    )
+
+    home_stopped_import.(home_planner_org, "October 2026 service")
+
+    # The no-version and no-task states draw the organization's active
+    # administrators, so both existing access organizations get the same
+    # confirmed administrator; without one those pages render no contact card
+    # at all.
+    for access_alias <- ["account-no-version", "account-no-task"] do
+      access_org = Organizations.get_organization_by_alias(access_alias)
+
+      _home_access_admin =
+        home_member.(access_org, "account-admin@gtfs-planner.test", ["pathways_studio_admin"])
+    end
+
+    IO.puts(
+      "Browser seed: #{home_planner_org.name} ready — home-planner@ attention " <>
+        "(calendars to #{Date.add(home_today, 10)}, stopped import, 5 resume destinations, " <>
+        "12-warning check, expired export) and home-planner-member@ team list"
+    )
+
+    # ── Home Pathways Org: the 14-station board ──
+    {:ok, home_pathways_org} =
+      Organizations.create_organization(%{
+        name: "Home Pathways Org",
+        alias: "home-pathways-org",
+        product: :pathways
+      })
+
+    home_pin_default_version.(home_pathways_org)
+
+    {:ok, home_pathways_version} =
+      Versions.create_gtfs_version(home_pathways_org.id, %{
+        name: "September 2026 feed"
+      })
+
+    home_pathways_admin =
+      home_member.(home_pathways_org, "home-pathways@gtfs-planner.test", [
+        "pathways_studio_editor",
+        "pathways_studio_admin"
+      ])
+
+    home_pathways_other =
+      home_member.(home_pathways_org, "priya.n@bayline.example", ["pathways_studio_editor"])
+
+    home_pathways_level =
+      GtfsPlanner.GtfsFixtures.level_fixture(home_pathways_org.id, home_pathways_version.id, %{
+        level_id: "L1",
+        level_name: "Concourse",
+        level_index: 0.0
+      })
+
+    home_station = fn stop_id, name ->
+      GtfsPlanner.GtfsFixtures.stop_fixture(home_pathways_org.id, home_pathways_version.id, %{
+        stop_id: stop_id,
+        stop_name: name,
+        location_type: 1
+      })
+    end
+
+    # Child-stop ids follow the station report's own naming convention
+    # (`<station>_entrance_<n>` / `<station>_platform_<n>`), so a mapped station
+    # with a connecting pathway really has no report issues.
+    home_child = fn stop_id, parent, location_type, name ->
+      GtfsPlanner.GtfsFixtures.stop_fixture(home_pathways_org.id, home_pathways_version.id, %{
+        stop_id: stop_id,
+        stop_name: name,
+        location_type: location_type,
+        parent_station: parent,
+        level_id: "L1"
+      })
+    end
+
+    home_mapped_station = fn stop_id, name ->
+      station = home_station.(stop_id, name)
+      entrance = home_child.("#{stop_id}_entrance_1", stop_id, 2, "#{name} Entrance")
+      platform = home_child.("#{stop_id}_platform_1", stop_id, 0, "#{name} Platform")
+
+      GtfsPlanner.GtfsFixtures.pathway_fixture(
+        home_pathways_org.id,
+        home_pathways_version.id,
+        entrance.stop_id,
+        platform.stop_id,
+        %{pathway_mode: 5}
+      )
+
+      {station, platform}
+    end
+
+    home_unmapped_station = fn stop_id, name ->
+      station = home_station.(stop_id, name)
+      platform = home_child.("#{stop_id}_platform_1", stop_id, 0, "#{name} Platform")
+      {station, platform}
+    end
+
+    home_reachability = fn station_stop_id, outcome, reachable, pair_count, completed_at ->
+      %ValidationRun{
+        organization_id: home_pathways_org.id,
+        gtfs_version_id: home_pathways_version.id
+      }
+      |> ValidationRun.changeset(%{
+        run_type: "station_reachability",
+        status: "completed",
+        started_at: completed_at,
+        completed_at: completed_at,
+        error_details: nil,
+        result_json: %{
+          "metadata" => %{"station_stop_id" => station_stop_id},
+          "outcome" => outcome,
+          "totals" => %{"reachable" => reachable, "pair_count" => pair_count}
+        }
+      })
+      |> Ecto.Changeset.put_change(:inserted_at, completed_at)
+      |> Repo.insert!()
+    end
+
+    home_serve = fn route_short_name, trip_id, stop_id ->
+      route =
+        GtfsPlanner.GtfsFixtures.route_fixture(
+          home_pathways_org.id,
+          home_pathways_version.id,
+          %{
+            route_id: "R#{route_short_name}",
+            route_short_name: route_short_name,
+            route_long_name: "Route #{route_short_name}"
+          }
+        )
+
+      trip =
+        GtfsPlanner.GtfsFixtures.trip_fixture(
+          home_pathways_org.id,
+          home_pathways_version.id,
+          route.route_id,
+          %{trip_id: trip_id, service_id: "WKDY"}
+        )
+
+      GtfsPlanner.GtfsFixtures.stop_time_fixture(
+        home_pathways_org.id,
+        home_pathways_version.id,
+        trip.trip_id,
+        stop_id
+      )
+    end
+
+    # UNS: the clean station — two routes through its platform, a floorplan and
+    # a passed run newer than its latest change.
+    {home_uns, home_uns_platform} = home_mapped_station.("UNS", "Union Station")
+    home_serve.("5", "UNS-T5", home_uns_platform.stop_id)
+    home_serve.("7", "UNS-T7", home_uns_platform.stop_id)
+
+    {:ok, _home_uns_floorplan} =
+      Gtfs.create_stop_level(%{
+        organization_id: home_pathways_org.id,
+        gtfs_version_id: home_pathways_version.id,
+        stop_id: home_uns.id,
+        level_id: home_pathways_level.id,
+        diagram_filename: "UNS-L1.png"
+      })
+
+    home_reachability.("UNS", "passed", 5, 5, DateTime.add(DateTime.utc_now(), -1, :hour))
+
+    # HBP: a failing report (an isolated second entrance) and a passed run the
+    # station's later change came after — "Edited since run".
+    _home_hbp = home_mapped_station.("HBP", "Harbor Point")
+    _home_hbp_entrance = home_child.("HBP_entrance_2", "HBP", 2, "Harbor Point Side Entrance")
+
+    home_reachability.("HBP", "passed", 6, 6, DateTime.add(DateTime.utc_now(), -20, :day))
+
+    home_change_log.(home_pathways_org, home_pathways_version, %{
+      station_stop_id: "HBP",
+      entity_external_id: "HBP_entrance_2",
+      actor_email: "priya.n@bayline.example",
+      inserted_at: DateTime.add(DateTime.utc_now(), -10, :day)
+    })
+
+    # MKT: a warning run newer than its last change, so the cell reads "2 of 4".
+    {home_mkt, _home_mkt_platform} = home_mapped_station.("MKT", "Market Street")
+    home_reachability.("MKT", "warning", 2, 4, DateTime.add(DateTime.utc_now(), -5, :day))
+
+    home_change_log.(home_pathways_org, home_pathways_version, %{
+      station_stop_id: "MKT",
+      entity_external_id: "MKT_platform_1",
+      actor_email: "priya.n@bayline.example",
+      inserted_at: DateTime.add(DateTime.utc_now(), -6, :day)
+    })
+
+    # CEN has pathways but no run; PNS's run failed; RVS's is not applicable;
+    # the remaining eight stations have no pathways yet.
+    _home_cen = home_mapped_station.("CEN", "Central Station")
+    _home_pns = home_mapped_station.("PNS", "Pine Street")
+    home_reachability.("PNS", "failed", 1, 4, DateTime.add(DateTime.utc_now(), -8, :day))
+    _home_rvs = home_mapped_station.("RVS", "Riverside")
+    home_reachability.("RVS", "not_applicable", 0, 0, DateTime.add(DateTime.utc_now(), -4, :day))
+
+    for {stop_id, name} <- [
+          {"CDG", "Cedar Grove"},
+          {"ELM", "Elm Park"},
+          {"WGT", "Westgate"},
+          {"APT", "Airport"},
+          {"BYF", "Bayfront"},
+          {"CVC", "Civic Center"},
+          {"GRV", "Grove Hill"},
+          {"STQ", "Quarry Road"}
+        ] do
+      _home_unmapped = home_unmapped_station.(stop_id, name)
+    end
+
+    # One editing status by another user: the board row reads "editing now" and
+    # the rail lists priya.n, never this viewer.
+    {:ok, _home_editing_status} =
+      Gtfs.set_station_editing_status(
+        home_pathways_org.id,
+        home_pathways_version.id,
+        home_uns,
+        home_pathways_other
+      )
+
+    # The admin's own change: the rail's Continue item, linking to the station's
+    # floorplan at GTFS level L1.
+    home_change_log.(home_pathways_org, home_pathways_version, %{
+      entity_type: "stop",
+      entity_external_id: "UNS_platform_1",
+      station_stop_id: "UNS",
+      snapshot: %{"level_id" => "L1"},
+      actor_id: home_pathways_admin.id,
+      actor_email: home_pathways_admin.email,
+      changed_fields: %{"stop_name" => %{"from" => "Union", "to" => "Union Station"}},
+      inserted_at: DateTime.add(DateTime.utc_now(), -3, :day)
+    })
+
+    home_feed_check.(home_pathways_org, home_pathways_version, 0, 4)
+
+    # Finished a week ago: the two later changes count as "since then".
+    home_expired_export.(
+      home_pathways_org,
+      home_pathways_version,
+      :pathways,
+      DateTime.add(DateTime.utc_now(), -7, :day)
+    )
+
+    IO.puts(
+      "Browser seed: #{home_pathways_org.name} ready — home-pathways@ 14 stations " <>
+        "(1 clean, 5 in progress, 8 not started), priya.n editing UNS, " <>
+        "4-warning check, expired pathways export"
     )
 
   {:error, changeset} ->

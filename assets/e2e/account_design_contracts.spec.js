@@ -37,6 +37,24 @@ const NO_TASK_USER = {
   password: "AccountNoTask123!",
 };
 
+// 26-homepage seeds (test/support/browser_seed.exs). The homepage body's states
+// are the planner attention page, the planner team list, the pathways board and
+// the access states above/below.
+const PLANNER_HOME_USER = {
+  email: "home-planner@gtfs-planner.test",
+  password: "BrowserTest123!",
+};
+
+const PLANNER_MEMBER_USER = {
+  email: "home-planner-member@gtfs-planner.test",
+  password: "BrowserTest123!",
+};
+
+const PATHWAYS_HOME_USER = {
+  email: "home-pathways@gtfs-planner.test",
+  password: "BrowserTest123!",
+};
+
 const SETTINGS_USER = {
   email: "account-settings@gtfs-planner.test",
   password: "AccountSettings123!",
@@ -50,11 +68,13 @@ const PASSWORD_MUTATE_USER = {
 
 const DASHBOARD_STATE_ROOTS = [
   "#dashboard-system-administrator",
-  "#dashboard-organization",
+  "#home-planner",
+  "#home-pathways",
   "#dashboard-no-version",
   "#dashboard-no-organization",
   "#dashboard-organization-unavailable",
   "#dashboard-no-task-access",
+  "#home-admin-only",
 ];
 
 async function logIn(page, user = EDITOR_USER) {
@@ -81,24 +101,6 @@ async function visibleDashboardRoot(page) {
   return null;
 }
 
-async function captureSharedMetrics(locator) {
-  return locator.evaluate((el) => {
-    const style = window.getComputedStyle(el);
-    const rect = el.getBoundingClientRect();
-    return {
-      tag: el.tagName.toLowerCase(),
-      height: rect.height,
-      width: rect.width,
-      minHeight: style.minHeight,
-      fontSize: style.fontSize,
-      fontWeight: style.fontWeight,
-      borderLeftWidth: style.borderLeftWidth,
-      borderLeftStyle: style.borderLeftStyle,
-      className: typeof el.className === "string" ? el.className : "",
-    };
-  });
-}
-
 async function waitForLiveView(page) {
   await page.waitForSelector("[data-phx-main]", { state: "attached" });
   await page.waitForFunction(() => {
@@ -110,6 +112,61 @@ async function waitForLiveView(page) {
   });
 }
 
+// The seeded clock and date strings move with the seed run, and a masked box
+// follows the masked text's width in a proportional font, so the content-sized
+// masked regions are pinned to fixed inline sizes: the captured geometry is then
+// identical at 1:15 AM and 10:15 AM UTC and on any run date, and no comparison
+// tolerance is involved. Every pinned width is the two-digit-hour worst case
+// rounded up (`#fact-created` carries the seed run's account-created date). The
+// widths are asserted after pinning so a mask whose box stops being fixed fails
+// here instead of flaking the reviewed screenshot.
+const PINNED_MASK_WIDTHS = [
+  ["#resume-list .tabular-nums.text-muted", 112],
+  ["#check-time", 112],
+  ["#export-meta", 176],
+  ["#editing-now span", 152],
+  ["#export-line", 128],
+  ["#fact-created", 104],
+];
+
+// Playwright clips an element screenshot at the element's box, and a fractional
+// page scroll offset can move that clip boundary by one device pixel, so the
+// reviewed element screenshots are taken from the top of the page.
+async function scrollToTop(page) {
+  await page.evaluate(() =>
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" }),
+  );
+  await page.waitForFunction(() => window.scrollY === 0);
+}
+
+async function pinMaskGeometry(page) {
+  await page.addStyleTag({
+    content: PINNED_MASK_WIDTHS.map(
+      ([selector, width]) => `${selector} { inline-size: ${width}px; }`,
+    ).join("\n"),
+  });
+
+  const pinned = await page.evaluate(
+    (specs) =>
+      specs.map(([selector, expected]) => ({
+        selector,
+        expected,
+        boxes: [...document.querySelectorAll(selector)].map((el) => ({
+          width: Math.round(el.getBoundingClientRect().width),
+          overflow: el.scrollWidth - el.clientWidth,
+        })),
+      })),
+    PINNED_MASK_WIDTHS,
+  );
+
+  for (const { selector, expected, boxes } of pinned) {
+    for (const { width, overflow } of boxes) {
+      expect(width, `${selector} masked width is pinned`).toBe(expected);
+      expect(overflow, `${selector} content fits its pinned masked box`).toBeLessThanOrEqual(0);
+    }
+  }
+}
+
 async function captureTargetMetrics(locator) {
   return locator.evaluate((el) => {
     const style = window.getComputedStyle(el);
@@ -118,6 +175,31 @@ async function captureTargetMetrics(locator) {
       height: rect.height,
       width: rect.width,
       fontWeight: style.fontWeight,
+    };
+  });
+}
+
+// The homepage's regions load asynchronously once the client is connected, so
+// every homepage measurement waits for the connected marker and for the
+// region skeletons to be gone before it reads geometry.
+async function waitForHomeRegions(page) {
+  await waitForLiveView(page);
+  await page.waitForSelector("[data-phx-main].phx-connected", { state: "attached" });
+  await expect(
+    page.locator(
+      "#resume-loading, #share-loading, #attention-loading, #board-loading",
+    ),
+  ).toHaveCount(0);
+}
+
+async function capturePrimaryMetrics(locator) {
+  return locator.evaluate((el) => {
+    const style = window.getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return {
+      backgroundColor: style.backgroundColor,
+      height: rect.height,
+      width: rect.width,
     };
   });
 }
@@ -145,7 +227,7 @@ async function openSettings(page, user = EDITOR_USER) {
   await logIn(page, user);
   await page.goto("/users/settings");
   await waitForLiveView(page);
-  await page.waitForSelector("#account-settings");
+  await page.waitForSelector("#account-page");
 }
 
 async function captureFormFieldMetrics(page, formSelector) {
@@ -216,7 +298,7 @@ test.describe("account navigation", () => {
     const accountLink = page.locator("#user-menu-panel a[href='/users/settings']");
     await expect(accountLink).toBeVisible();
     await expect(accountLink).toHaveAttribute("aria-current", "page");
-    await expect(accountLink).toContainText("Account settings");
+    await expect(accountLink).toContainText("Profile settings");
 
     const accountMetrics = await captureTargetMetrics(accountLink);
     expect(accountMetrics.height).toBeGreaterThanOrEqual(44);
@@ -313,129 +395,155 @@ test.describe("account navigation", () => {
 });
 
 test.describe("dashboard", () => {
-  test("shared header button and callout metrics match design references", async ({
+  test("homepage states use design-system tokens and one primary action", async ({
     page,
   }) => {
-    await logIn(page, EDITOR_USER);
+    // Planner attention state (the seeded calendars end in ten days).
+    await openDashboard(page, PLANNER_HOME_USER);
+    await waitForHomeRegions(page);
+    await page.waitForSelector("#attention");
+    await expect(page.locator("#home-planner")).toBeVisible();
 
-    await page.goto("/design/navigation");
-    await waitForLiveView(page);
-    await page.waitForSelector("#ds-header-demo");
-    const refHeaderH1 = page.locator("#ds-header-demo h1").first();
-    await expect(refHeaderH1).toBeVisible();
-    const refHeaderMetrics = await captureSharedMetrics(refHeaderH1);
+    const plannerH1 = page.locator("#home-planner h1").first();
+    await expect(plannerH1).toBeVisible();
+    const plannerH1Metrics = await plannerH1.evaluate((el) => {
+      const style = window.getComputedStyle(el);
+      return { family: style.fontFamily, size: style.fontSize };
+    });
+    expect(plannerH1Metrics.family).toContain("Gabarito");
+    expect(plannerH1Metrics.size).toBe("30px");
 
-    await page.goto("/design/buttons");
-    await waitForLiveView(page);
-    await page.waitForSelector("#ds-page-buttons");
-    const refPrimary = page
-      .locator("#ds-page-buttons a.btn-primary, #ds-page-buttons button.btn-primary")
-      .first();
-    await expect(refPrimary).toBeVisible();
-    const refPrimaryMetrics = await captureSharedMetrics(refPrimary);
+    await expect(page.locator("#home-page .bg-action:visible")).toHaveCount(1);
+    const plannerPrimary = page.locator("#home-page .bg-action:visible").first();
+    await expect(plannerPrimary).toContainText("Open calendars");
+    const plannerPrimaryMetrics = await capturePrimaryMetrics(plannerPrimary);
+    expect(plannerPrimaryMetrics.backgroundColor).toBe("rgb(200, 24, 112)");
+    expect(plannerPrimaryMetrics.height).toBeGreaterThanOrEqual(44);
+    expect(plannerPrimaryMetrics.width).toBeGreaterThanOrEqual(44);
 
-    await page.goto("/design/feedback");
-    await waitForLiveView(page);
-    await page.waitForSelector("#ds-callout-demo");
-    const refWarning = page
-      .locator("#ds-callout-demo .border-warning, #ds-callout-demo [class*='border-warning']")
-      .first();
-    const refInfo = page
-      .locator("#ds-callout-demo .border-info, #ds-callout-demo [class*='border-info']")
-      .first();
-    await expect(refWarning).toBeVisible();
-    await expect(refInfo).toBeVisible();
-    const refWarningMetrics = await captureSharedMetrics(refWarning);
+    // The homepage body must not leak daisyUI button styling (FH-12).
+    await expect(
+      page.locator(
+        "#home-page .btn, #home-page .btn-primary, #home-page .btn-outline",
+      ),
+    ).toHaveCount(0);
 
-    // Ideal organization (editor + published version)
-    await page.goto("/");
-    await waitForLiveView(page);
-    await page.waitForSelector("#dashboard-organization");
-    const prodH1 = page.locator("#dashboard-organization h1").first();
-    const prodPrimary = page
-      .locator("#dashboard-organization a.btn-primary")
-      .first();
-    await expect(prodH1).toBeVisible();
-    await expect(prodPrimary).toBeVisible();
-    await expect(prodPrimary).toContainText("View routes");
+    const plannerFocus = await focusVisible(page, plannerPrimary);
+    expect(plannerFocus.isFocused).toBe(true);
+    expect(plannerFocus.outlineVisible || plannerFocus.ringVisible).toBe(true);
 
-    const prodH1Metrics = await captureSharedMetrics(prodH1);
-    expect(prodH1Metrics.fontSize).toBe(refHeaderMetrics.fontSize);
-    expect(prodH1Metrics.fontWeight).toBe(refHeaderMetrics.fontWeight);
-
-    const prodPrimaryMetrics = await captureSharedMetrics(prodPrimary);
-    expect(prodPrimaryMetrics.className).toContain("btn-primary");
-    expect(prodPrimaryMetrics.height).toBeGreaterThanOrEqual(44);
-    expect(prodPrimaryMetrics.width).toBeGreaterThanOrEqual(44);
-    expect(Number.parseInt(prodPrimaryMetrics.fontWeight, 10)).toBeGreaterThanOrEqual(
-      500,
+    // Pathways board state.
+    await page.context().clearCookies();
+    await openDashboard(page, PATHWAYS_HOME_USER);
+    await waitForHomeRegions(page);
+    await page.waitForSelector("#board-rows tr");
+    await expect(page.locator("#home-pathways h1")).toHaveText("Stations");
+    await expect(page.locator("#home-page .bg-action:visible")).toHaveCount(1);
+    const pathwaysPrimary = page.locator("#home-page .bg-action:visible").first();
+    await expect(pathwaysPrimary).toContainText("Open floorplan");
+    expect((await capturePrimaryMetrics(pathwaysPrimary)).backgroundColor).toBe(
+      "rgb(200, 24, 112)",
     );
-    // Shared button stack should share semantic primary class with reference.
-    expect(refPrimaryMetrics.className).toContain("btn-primary");
 
-    const focus = await focusVisible(page, prodPrimary);
-    expect(focus.isFocused).toBe(true);
-    expect(focus.outlineVisible || focus.ringVisible).toBe(true);
-
-    // System administrator primary action
+    // System administrator primary action.
     await page.context().clearCookies();
     await openDashboard(page, SYSTEM_ADMIN_USER);
+    await waitForHomeRegions(page);
     await page.waitForSelector("#dashboard-system-administrator");
     const adminPrimary = page.locator(
-      "#dashboard-system-administrator a.btn-primary[href='/admin/organizations']",
+      "#dashboard-system-administrator .bg-action[href='/admin/organizations']",
     );
     await expect(adminPrimary).toContainText("Manage organizations");
-    await expect(adminPrimary).not.toHaveClass(/btn-active/);
-    const adminMetrics = await captureSharedMetrics(adminPrimary);
-    expect(adminMetrics.height).toBeGreaterThanOrEqual(44);
+    expect((await capturePrimaryMetrics(adminPrimary)).height).toBeGreaterThanOrEqual(
+      44,
+    );
 
-    // Dedicated no-version seed: warning callout, no GTFS destination.
+    // Dedicated no-version seed: the warning callout, no GTFS destination and
+    // no primary action.
     await page.context().clearCookies();
     await openDashboard(page, NO_VERSION_USER);
     await page.waitForSelector("#dashboard-no-version");
     await expect(page.locator("a[href^='/gtfs/']")).toHaveCount(0);
-    const callout = page.locator("#dashboard-no-version .border-warning").first();
-    await expect(callout).toBeVisible();
-    await expect(callout).toContainText("No published GTFS version");
-    const calloutMetrics = await captureSharedMetrics(callout);
-    expect(calloutMetrics.borderLeftStyle).not.toBe("none");
-    expect(parseFloat(calloutMetrics.borderLeftWidth)).toBeGreaterThanOrEqual(
-      parseFloat(refWarningMetrics.borderLeftWidth) - 0.5,
+    await expect(page.locator("#dashboard-no-version")).toContainText(
+      "There is no service data to work on yet",
     );
+    await expect(page.locator("#dashboard-no-version .bg-warning-bg")).toHaveCount(1);
+    await expect(page.locator("#home-page .bg-action")).toHaveCount(0);
 
-    // Organization admin without editor: Manage users when a published version exists.
+    // Organization admin without editor: Manage users is the only primary.
     await page.context().clearCookies();
     await openDashboard(page, ORG_ADMIN_USER);
-    const orgAdminRoot = await visibleDashboardRoot(page);
-    expect(orgAdminRoot).toBe("#dashboard-organization");
-    await expect(
-      page.locator(`${orgAdminRoot} a.btn-primary[href='/admin/users']`),
-    ).toContainText("Manage users");
+    await waitForHomeRegions(page);
+    await page.waitForSelector("#home-admin-only");
+    const orgAdminPrimary = page.locator(
+      "#home-admin-only .bg-action[href='/admin/users']",
+    );
+    await expect(orgAdminPrimary).toContainText("Manage users");
+    expect((await capturePrimaryMetrics(orgAdminPrimary)).height).toBeGreaterThanOrEqual(
+      44,
+    );
+    await expect(page.locator("#home-admin-only")).toContainText(
+      "needs the Editor role",
+    );
+    await expect(page.locator("a[href^='/gtfs/']")).toHaveCount(0);
+
+    // No task access: no primary and no administration destination.
+    await page.context().clearCookies();
+    await openDashboard(page, NO_TASK_USER);
+    await page.waitForSelector("#dashboard-no-task-access");
+    await expect(page.locator("#dashboard-no-task-access")).toContainText(
+      "cannot edit yet",
+    );
+    await expect(page.locator("#home-page .bg-action")).toHaveCount(0);
     await expect(page.locator("a[href^='/gtfs/']")).toHaveCount(0);
   });
 
-  test("representative states reflow without overflow at required viewports", async ({
+  test("each homepage state reflows without overflow at required viewports", async ({
     page,
   }) => {
+    test.setTimeout(600_000);
+
     const scenarios = [
       {
-        user: EDITOR_USER,
-        root: "#dashboard-organization",
-        label: "organization",
+        user: PLANNER_HOME_USER,
+        root: "#home-planner",
+        ready: "#attention",
+        label: "planner-attention",
+      },
+      {
+        user: PLANNER_MEMBER_USER,
+        root: "#home-planner",
+        ready: "#resume-list li:not(#resume-empty)",
+        label: "planner-new-member",
+      },
+      {
+        user: PATHWAYS_HOME_USER,
+        root: "#home-pathways",
+        ready: "#board-rows tr",
+        label: "pathways-board",
+      },
+      {
+        user: ORG_ADMIN_USER,
+        root: "#home-admin-only",
+        ready: "#home-admin-only",
+        label: "admin-only",
       },
       {
         user: SYSTEM_ADMIN_USER,
         root: "#dashboard-system-administrator",
+        ready: "#dashboard-system-administrator",
         label: "system-admin",
       },
       {
         user: NO_VERSION_USER,
         root: "#dashboard-no-version",
+        ready: "#dashboard-no-version",
         label: "no-version",
       },
       {
         user: NO_TASK_USER,
         root: "#dashboard-no-task-access",
+        ready: "#dashboard-no-task-access",
         label: "no-task",
       },
     ];
@@ -443,7 +551,12 @@ test.describe("dashboard", () => {
     for (const scenario of scenarios) {
       await page.context().clearCookies();
       await openDashboard(page, scenario.user);
+      await waitForHomeRegions(page);
       await page.waitForSelector(scenario.root);
+
+      expect(await visibleDashboardRoot(page), `${scenario.label} root`).toBe(
+        scenario.root,
+      );
 
       for (const viewport of VIEWPORTS) {
         await page.setViewportSize({
@@ -451,8 +564,9 @@ test.describe("dashboard", () => {
           height: viewport.height,
         });
         await page.goto("/");
-        await waitForLiveView(page);
+        await waitForHomeRegions(page);
         await page.waitForSelector(scenario.root);
+        await page.waitForSelector(scenario.ready, { state: "visible" });
 
         expect(
           await bodyFitsViewport(page),
@@ -460,20 +574,21 @@ test.describe("dashboard", () => {
         ).toBe(true);
 
         const actions = page.locator(
-          `${scenario.root} a.btn, ${scenario.root} button.btn`,
+          "#home-page a:visible, #home-page button:visible, #home-page input:visible",
         );
         const count = await actions.count();
         for (let i = 0; i < count; i++) {
           const action = actions.nth(i);
-          if (!(await action.isVisible())) continue;
           const box = await action.boundingBox();
           expect(box).not.toBeNull();
           expect(box.height).toBeGreaterThanOrEqual(44);
-          expect(box.width).toBeGreaterThanOrEqual(44);
         }
 
         const h1Count = await page.locator(`${scenario.root} h1`).count();
         expect(h1Count).toBe(1);
+
+        const primaries = await page.locator("#home-page .bg-action:visible").count();
+        expect(primaries).toBeLessThanOrEqual(1);
       }
     }
   });
@@ -486,71 +601,123 @@ test.describe("dashboard", () => {
     await expect(page.locator("#dashboard-no-version")).toBeVisible();
     await expect(page.locator("a[href^='/gtfs/']")).toHaveCount(0);
     await expect(page.locator("#dashboard-no-version")).toContainText(
-      "No published GTFS version",
+      "There is no service data to work on yet",
     );
     // Authorized org name may appear; GTFS destinations must not.
     await expect(page.locator("#dashboard-no-version h1")).toHaveCount(1);
+    await expect(page.locator("#home-page .bg-action")).toHaveCount(0);
 
     await page.context().clearCookies();
     await openDashboard(page, NO_TASK_USER);
     await page.waitForSelector("#dashboard-no-task-access");
     await expect(page.locator("#dashboard-no-task-access")).toBeVisible();
-    await expect(page.locator("#dashboard-no-task-access a.btn")).toHaveCount(0);
+    await expect(page.locator("#dashboard-no-task-access")).toContainText(
+      "cannot edit yet",
+    );
+    await expect(page.locator("#dashboard-no-task-access h1")).toHaveCount(1);
+    await expect(page.locator("#home-page .bg-action")).toHaveCount(0);
     await expect(page.locator("a[href^='/gtfs/']")).toHaveCount(0);
     await expect(page.locator("a[href='/admin/users']")).toHaveCount(0);
     await expect(page.locator("a[href='/admin/organizations']")).toHaveCount(0);
   });
 
   test("reviewed dashboard state screenshots", async ({ page }) => {
-    // Ideal organization (editor seed has published version + Browser Test Org name).
-    await openDashboard(page, EDITOR_USER);
-    await page.waitForSelector("#dashboard-organization");
-    await page.setViewportSize({ width: 1280, height: 800 });
-    await page.goto("/");
-    await waitForLiveView(page);
-    const orgRoot = page.locator("#dashboard-organization");
-    await expect(orgRoot).toBeVisible();
-    // Do not mask tenant name: presence of authorized org name is the contract.
-    await expect(orgRoot).toHaveScreenshot("dashboard-organization-1280.png", {
-      animations: "disabled",
-    });
+    test.setTimeout(180_000);
 
-    // System administrator
-    await page.context().clearCookies();
-    await openDashboard(page, SYSTEM_ADMIN_USER);
-    await page.waitForSelector("#dashboard-system-administrator");
-    await page.setViewportSize({ width: 1280, height: 800 });
-    await page.goto("/");
-    await waitForLiveView(page);
-    await expect(page.locator("#dashboard-system-administrator")).toHaveScreenshot(
-      "dashboard-system-administrator-1280.png",
+    // The seeded dates move with the seed run date, so the planner page's
+    // lede, attention copy and clock times are masked; its layout, chrome,
+    // tones and single primary stay reviewed.
+    const openAt1280 = async (user, root, ready) => {
+      await page.context().clearCookies();
+      await openDashboard(page, user);
+      await waitForHomeRegions(page);
+      await page.waitForSelector(ready, { state: "visible" });
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await page.goto("/");
+      await waitForHomeRegions(page);
+      await page.waitForSelector(ready, { state: "visible" });
+      await expect(page.locator(root)).toBeVisible();
+      await pinMaskGeometry(page);
+    };
+
+    await openAt1280(PLANNER_HOME_USER, "#home-planner", "#attention");
+    await expect(page.locator("#home-planner")).toHaveScreenshot(
+      "home-planner-1280.png",
       {
         animations: "disabled",
         mask: [
-          page.locator("#dashboard-system-administrator p").first(),
+          page.locator("#home-lede"),
+          page.locator("#attention h3"),
+          page.locator("#attention p"),
+          page.locator("#check-time"),
+          page.locator("#export-meta"),
+          page.locator("#resume-latest-context"),
+          // The row clock, not the route badges: `RouteIdentity.route_badge`
+          // also carries `tabular-nums`, so the mask pins the muted time span.
+          // The row's kind-and-change line carries seeded dates too, such as
+          // "Calendar · end date moved to Nov 28".
+          page.locator("#resume-list .tabular-nums.text-muted"),
+          page.locator("#resume-list span.block.truncate.text-muted"),
         ],
       },
     );
 
-    // Dedicated no-version seed
-    await page.context().clearCookies();
-    await openDashboard(page, NO_VERSION_USER);
-    await page.waitForSelector("#dashboard-no-version");
-    await page.setViewportSize({ width: 1280, height: 800 });
-    await page.goto("/");
-    await waitForLiveView(page);
+    // The board's last-edited times and the rail's clock times move with the
+    // seed run date.
+    await openAt1280(PATHWAYS_HOME_USER, "#home-pathways", "#board-rows tr");
+    await expect(page.locator("#home-pathways")).toHaveScreenshot(
+      "home-pathways-1280.png",
+      {
+        animations: "disabled",
+        mask: [
+          page.locator(
+            "#board-table tbody td:last-child span.block:not(.truncate)",
+          ),
+          page.locator("#resume-latest-context"),
+          page.locator("#editing-now span"),
+          page.locator("#export-line"),
+        ],
+      },
+    );
+
+    // System administrator: the organization count follows the seed.
+    await openAt1280(
+      SYSTEM_ADMIN_USER,
+      "#dashboard-system-administrator",
+      "#dashboard-system-administrator",
+    );
+    await expect(page.locator("#dashboard-system-administrator")).toHaveScreenshot(
+      "dashboard-system-administrator-1280.png",
+      {
+        animations: "disabled",
+        mask: [page.locator("#dashboard-system-administrator p").first()],
+      },
+    );
+
+    // Organization admin without editor.
+    await openAt1280(ORG_ADMIN_USER, "#home-admin-only", "#home-admin-only");
+    await expect(page.locator("#home-admin-only")).toHaveScreenshot(
+      "home-admin-only-1280.png",
+      { animations: "disabled" },
+    );
+
+    // Dedicated no-version seed.
+    await openAt1280(
+      NO_VERSION_USER,
+      "#dashboard-no-version",
+      "#dashboard-no-version",
+    );
     await expect(page.locator("#dashboard-no-version")).toHaveScreenshot(
       "dashboard-no-version-1280.png",
       { animations: "disabled" },
     );
 
-    // Dedicated no-task seed
-    await page.context().clearCookies();
-    await openDashboard(page, NO_TASK_USER);
-    await page.waitForSelector("#dashboard-no-task-access");
-    await page.setViewportSize({ width: 1280, height: 800 });
-    await page.goto("/");
-    await waitForLiveView(page);
+    // Dedicated no-task seed.
+    await openAt1280(
+      NO_TASK_USER,
+      "#dashboard-no-task-access",
+      "#dashboard-no-task-access",
+    );
     await expect(page.locator("#dashboard-no-task-access")).toHaveScreenshot(
       "dashboard-no-task-access-1280.png",
       { animations: "disabled" },
@@ -596,30 +763,29 @@ test.describe("account settings", () => {
     // Production settings.
     await page.goto("/users/settings");
     await waitForLiveView(page);
-    await page.waitForSelector("#account-settings");
+    await page.waitForSelector("#account-page");
 
-    await expect(page).toHaveTitle(/Account settings/);
+    await expect(page).toHaveTitle(/Profile settings/);
     await expect(page.locator("#account-settings-title")).toHaveText(
-      "Account settings",
+      "Profile settings",
     );
     await expect(page.locator("#email-settings-title")).toHaveText(
-      "Change email",
+      "Email address",
     );
     await expect(page.locator("#password-settings-title")).toHaveText(
-      "Change password",
+      "Password",
     );
 
-    const h1Count = await page.locator("#account-settings h1").count();
+    const h1Count = await page.locator("#account-page h1").count();
     expect(h1Count).toBe(1);
-    const h2Count = await page.locator("#account-settings h2").count();
-    expect(h2Count).toBe(2);
+    const h2Count = await page.locator("#account-page h2").count();
+    expect(h2Count).toBe(4);
 
-    await expect(page.locator("#email-submit")).toHaveClass(/btn-outline/);
-    await expect(page.locator("#password-submit")).toHaveClass(/btn-outline/);
-    await expect(page.locator("#email-submit")).not.toHaveClass(/btn-primary/);
-    await expect(page.locator("#password-submit")).not.toHaveClass(
-      /btn-primary/,
-    );
+    // Each card's submit is its own primary action; the page carries no other
+    // primary, so the two card submits are the only two.
+    await expect(page.locator("#email-submit")).toHaveClass(/btn-primary/);
+    await expect(page.locator("#password-submit")).toHaveClass(/btn-primary/);
+    await expect(page.locator("#account-page .btn-primary")).toHaveCount(2);
 
     const emailMetrics = await captureFormFieldMetrics(page, "#email_form");
     const passwordMetrics = await captureFormFieldMetrics(
@@ -628,8 +794,8 @@ test.describe("account settings", () => {
     );
     expect(emailMetrics.labelAboveInput).toBe(true);
     expect(passwordMetrics.labelAboveInput).toBe(true);
-    expect(emailMetrics.buttonClass).toContain("btn-outline");
-    expect(passwordMetrics.buttonClass).toContain("btn-outline");
+    expect(emailMetrics.buttonClass).toContain("btn-primary");
+    expect(passwordMetrics.buttonClass).toContain("btn-primary");
     // Shared input stack: comparable control height to design demo (±12px tolerance).
     if (refFormMetrics.inputHeight > 0) {
       expect(
@@ -643,20 +809,42 @@ test.describe("account settings", () => {
       });
       await page.goto("/users/settings");
       await waitForLiveView(page);
-      await page.waitForSelector("#account-settings");
+      await page.waitForSelector("#account-page");
 
       expect(
         await bodyFitsViewport(page),
         `settings overflow at ${viewport.label}`,
       ).toBe(true);
 
+      // The redesign's grid puts the email and password cards in the fluid
+      // column and the access/facts rail in a fixed 20rem column at lg. Each
+      // card fills its column exactly, sits flush with the page container's
+      // left gutter, and never crosses its right gutter.
+      const pageBox = await page.locator("#account-page").boundingBox();
+
       for (const sectionId of ["#email-settings", "#password-settings"]) {
         const section = page.locator(sectionId);
         const box = await section.boundingBox();
+        const columnWidth = await section.evaluate(
+          (el) => el.parentElement.getBoundingClientRect().width,
+        );
         expect(box).not.toBeNull();
-        // Full available width up to 40rem (640px).
-        expect(box.width).toBeLessThanOrEqual(640 + 1);
         expect(box.width).toBeGreaterThan(0);
+        expect(Math.abs(box.width - columnWidth)).toBeLessThanOrEqual(1);
+        expect(Math.abs(box.x - pageBox.x)).toBeLessThanOrEqual(1);
+        expect(box.x + box.width).toBeLessThanOrEqual(
+          pageBox.x + pageBox.width + 1,
+        );
+      }
+
+      if (viewport.width >= 1024) {
+        const rail = await page.locator("#sign-in-facts").boundingBox();
+        const email = await page.locator("#email-settings").boundingBox();
+        expect(Math.abs(rail.width - 320)).toBeLessThanOrEqual(1);
+        expect(
+          Math.abs(rail.x + rail.width - (pageBox.x + pageBox.width)),
+        ).toBeLessThanOrEqual(1);
+        expect(rail.x - (email.x + email.width)).toBeGreaterThanOrEqual(16);
       }
 
       for (const controlId of [
@@ -720,10 +908,12 @@ test.describe("account settings", () => {
     ).toBe(true);
 
     // Failed email submit (valid email shape, wrong password): secret cleared,
-    // proposed email kept, first invalid focused. Avoid HTML5 type=email blocks.
+    // proposed email kept, and focus lands on the email error summary, which
+    // lists every problem and links to each field (`focus_scoped_target`,
+    // FormErrorFocus). Avoid HTML5 type=email blocks.
     await page.goto("/users/settings");
     await waitForLiveView(page);
-    await page.waitForSelector("#account-settings");
+    await page.waitForSelector("#account-page");
     const proposedEmail = "different-settings@example.com";
     await page.fill("#email-address", proposedEmail);
     await page.fill("#email-current-password", "wrong-password-value");
@@ -736,13 +926,7 @@ test.describe("account settings", () => {
       { timeout: 10_000 },
     );
     await page.waitForFunction(
-      () => {
-        const active = document.activeElement;
-        return (
-          active &&
-          ["email-address", "email-current-password"].includes(active.id)
-        );
-      },
+      () => document.activeElement?.id === "email-error-summary",
       null,
       { timeout: 10_000 },
     );
@@ -752,9 +936,7 @@ test.describe("account settings", () => {
     const focusedAfterEmail = await page.evaluate(
       () => document.activeElement && document.activeElement.id,
     );
-    expect(["email-address", "email-current-password"]).toContain(
-      focusedAfterEmail,
-    );
+    expect(focusedAfterEmail).toBe("email-error-summary");
 
     // Failed password submit: use long-enough values that pass minlength HTML
     // constraints but fail server confirmation/current-password checks.
@@ -771,17 +953,7 @@ test.describe("account settings", () => {
       { timeout: 10_000 },
     );
     await page.waitForFunction(
-      () => {
-        const active = document.activeElement;
-        return (
-          active &&
-          [
-            "password-current-password",
-            "password-new-password",
-            "password-confirmation",
-          ].includes(active.id)
-        );
-      },
+      () => document.activeElement?.id === "password-error-summary",
       null,
       { timeout: 10_000 },
     );
@@ -798,11 +970,7 @@ test.describe("account settings", () => {
     const focusedAfterPassword = await page.evaluate(
       () => document.activeElement && document.activeElement.id,
     );
-    expect([
-      "password-current-password",
-      "password-new-password",
-      "password-confirmation",
-    ]).toContain(focusedAfterPassword);
+    expect(focusedAfterPassword).toBe("password-error-summary");
 
     // No skeleton/placeholder during synchronous account context mount.
     await page.goto("/users/settings");
@@ -810,7 +978,7 @@ test.describe("account settings", () => {
     await expect(
       page.locator(".motion-safe\\:animate-pulse, [aria-busy='true']"),
     ).toHaveCount(0);
-    await expect(page.locator("#account-settings")).toBeVisible();
+    await expect(page.locator("#account-page")).toBeVisible();
   });
 
   test("reviewed account-settings screenshots at 320/1280/640 with email masked", async ({
@@ -822,6 +990,9 @@ test.describe("account settings", () => {
     const emailMask = [
       page.locator("#email-address"),
       page.locator(`text=${SETTINGS_USER.email}`),
+      // The account-created date is the seed run's date, so it is masked and
+      // width-pinned like the dashboard's seeded dates.
+      page.locator("#fact-created"),
     ];
 
     for (const { width, height, label } of [
@@ -832,7 +1003,8 @@ test.describe("account settings", () => {
       await page.setViewportSize({ width, height });
       await page.goto("/users/settings");
       await waitForLiveView(page);
-      const root = page.locator("#account-settings");
+      await pinMaskGeometry(page);
+      const root = page.locator("#account-page");
       await expect(root).toBeVisible();
       await expect(root).toHaveScreenshot(`account-settings-${label}.png`, {
         animations: "disabled",
@@ -840,7 +1012,10 @@ test.describe("account settings", () => {
       });
     }
 
-    // Deterministic email task error root.
+    // Deterministic email task error root. The page is scrolled to the top
+    // before the element screenshot so the clip boundary lands on the same
+    // device row on every run (a fractional scroll offset shifts the card's
+    // top border by one pixel).
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto("/users/settings");
     await waitForLiveView(page);
@@ -851,6 +1026,7 @@ test.describe("account settings", () => {
       () => document.querySelector("#email_form [aria-invalid='true']"),
     );
     await waitForLiveView(page);
+    await scrollToTop(page);
     await expect(page.locator("#email-settings")).toHaveScreenshot(
       "account-settings-email-error-1280.png",
       {
@@ -868,6 +1044,7 @@ test.describe("account settings", () => {
       () => document.querySelector("#password_form [aria-invalid='true']"),
     );
     await waitForLiveView(page);
+    await scrollToTop(page);
     await expect(page.locator("#password-settings")).toHaveScreenshot(
       "account-settings-password-error-1280.png",
       {
@@ -930,7 +1107,7 @@ test.describe("account motion and reconnect", () => {
   }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await openSettings(page, SETTINGS_USER);
-    await expect(page.locator("#account-settings")).toBeVisible();
+    await expect(page.locator("#account-page")).toBeVisible();
 
     await page.evaluate(() => window.liveSocket.disconnect());
     await page.waitForSelector("#client-error", { state: "visible", timeout: 10_000 });
@@ -938,7 +1115,7 @@ test.describe("account motion and reconnect", () => {
 
     await page.evaluate(() => window.liveSocket.connect());
     await waitForLiveView(page);
-    await expect(page.locator("#account-settings")).toBeVisible();
+    await expect(page.locator("#account-page")).toBeVisible();
     await expect(page.locator("#email-submit")).toBeEnabled();
     await expect(page.locator("#client-error")).toBeHidden();
   });
@@ -1002,6 +1179,6 @@ test.describe("account password mutation", () => {
     await page.waitForURL((url) => !url.pathname.startsWith("/users/log_in"));
     await page.goto("/users/settings");
     await waitForLiveView(page);
-    await expect(page.locator("#account-settings")).toBeVisible();
+    await expect(page.locator("#account-page")).toBeVisible();
   });
 });
