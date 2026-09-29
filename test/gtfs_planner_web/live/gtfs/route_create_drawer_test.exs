@@ -19,6 +19,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Repo
@@ -769,6 +771,160 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       refute has_element?(view, "#new-route-unsaved")
       refute has_element?(view, "#new-route-failure")
     end
+  end
+
+  describe "recovering uncertain client state" do
+    # R3's uncertain-result recovery, driven through the LiveView's own public
+    # recovery event with the drawer's signed attempt. The "server committed,
+    # the drawer never heard" state is reproduced by committing through the
+    # real audited command with the same verified attempt the drawer minted.
+    test "a committed create recovers to its original UUID without another insert or audit", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      north_coast(organization, version)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+      open_drawer(view)
+      token = attempt_value(view)
+
+      assert {:ok, %{route: route}} =
+               Gtfs.create_editor_route(
+                 draft_params(%{
+                   "route_short_name" => "W1",
+                   "route_long_name" => "North Coast",
+                   "route_type" => "3",
+                   "agency_id" => "NCT"
+                 }),
+                 verified_attempt(token),
+                 audit_context(user, organization, version)
+               )
+
+      view |> render_click("recover_new_route", %{"_attempt" => token})
+
+      # Recovery lands on the original UUID, and the retained create log is
+      # still the only audit: reconcile never inserts and never re-audits.
+      assert_redirect(view, "/gtfs/#{version.id}/routes/#{route.route_id}?created=1")
+      assert scoped_route_count(organization, version) == 1
+
+      assert Repo.one!(
+               from l in ChangeLog,
+                 where:
+                   l.organization_id == ^organization.id and
+                     l.gtfs_version_id == ^version.id and l.entity_type == "route" and
+                     l.action == "created",
+                 select: count(l.id)
+             ) == 1
+    end
+
+    test "a before-commit loss keeps the same attempt retryable", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      north_coast(organization, version)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+      open_drawer(view)
+      token = attempt_value(view)
+
+      view |> render_click("recover_new_route", %{"_attempt" => token})
+
+      # Nothing committed, so the offline block clears and the drawer keeps
+      # its entries and its original signed attempt.
+      assert_push_event(view, "route_recovery", %{state: "retryable"})
+      assert has_element?(view, "#new-route-form")
+      assert attempt_value(view) == token
+
+      # The same attempt still creates, exactly once.
+      drawer_submit(view, %{"route_short_name" => "7", "route_type" => "3", "agency_id" => "NCT"})
+      assert [_one] = scoped_routes(organization, version)
+    end
+
+    test "revoked access keeps the draft without an enabled commit", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      north_coast(organization, version)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+      open_drawer(view)
+      token = attempt_value(view)
+
+      render_change(view, "validate_new_route", %{
+        "route" => draft_params(%{"route_short_name" => "W9"}),
+        "text_mode" => "automatic"
+      })
+
+      Accounts.get_user_org_membership(user.id, organization.id)
+      |> Ecto.Changeset.change(roles: [])
+      |> Repo.update!()
+
+      view |> render_click("recover_new_route", %{"_attempt" => token})
+
+      # The draft and every typed value stay on screen with the attempt, but
+      # the commit is disabled: recovery never re-enables what access forbids.
+      assert_push_event(view, "route_recovery", %{state: "blocked"})
+      assert has_element?(view, "#new-route-form")
+      assert has_element?(view, "#new-route-failure", "no longer have editor access")
+      assert attempt_value(view) == token
+      assert element(view, "#new-route-short") |> render() =~ "W9"
+      assert element(view, "#new-route-submit") |> render() =~ "disabled"
+
+      # A crafted submit cannot sneak past the block.
+      render_submit(view, "save_new_route", %{
+        "_attempt" => token,
+        "text_mode" => "automatic",
+        "route" => draft_params(%{"route_short_name" => "W9", "route_type" => "3"})
+      })
+
+      assert scoped_route_count(organization, version) == 0
+    end
+
+    test "an unknown attempt keeps the draft without an enabled commit", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      north_coast(organization, version)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+      open_drawer(view)
+
+      render_change(view, "validate_new_route", %{
+        "route" => draft_params(%{"route_short_name" => "X1"}),
+        "text_mode" => "automatic"
+      })
+
+      view |> render_click("recover_new_route", %{"_attempt" => "tampered-token"})
+
+      assert_push_event(view, "route_recovery", %{state: "blocked"})
+      assert has_element?(view, "#new-route-form")
+      assert has_element?(view, "#new-route-failure", "no longer valid")
+      assert element(view, "#new-route-submit") |> render() =~ "disabled"
+      assert scoped_route_count(organization, version) == 0
+    end
+  end
+
+  # The drawer's signed-attempt contract: the same production verification the
+  # LiveView performs before any domain call, used here only to reproduce the
+  # uncertain "committed but unheard" state with the real command.
+  defp verified_attempt(token) do
+    {:ok, attempt} =
+      Phoenix.Token.verify(GtfsPlannerWeb.Endpoint, "route_creation_attempt", token,
+        max_age: 14_400
+      )
+
+    attempt
+  end
+
+  defp audit_context(user, organization, version) do
+    %AuditContext{
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      actor_id: user.id,
+      actor_email: user.email
+    }
   end
 
   defp attempt_value(view) do

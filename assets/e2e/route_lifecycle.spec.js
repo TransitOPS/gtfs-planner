@@ -927,3 +927,67 @@ test.describe("Route details dirty navigation", () => {
     await expect(page.locator("#route-details-saved")).toContainText("saved");
   });
 });
+
+/**
+ * Route connectivity recovery (spec 16, step 26).
+ *
+ * Both route forms carry `data-recovery`: the RouteDetailsEditor hook blocks
+ * the form's commit controls locally the moment the socket drops, leaves every
+ * entry untouched, and re-enables nothing by itself — reconnect asks the
+ * server, and only the server's post-revalidation `retryable` answer clears
+ * the block. `context.setOffline(true)` severs the LiveView socket the same
+ * way a dropped network does, so the recovery cycle runs against the real
+ * page: disable on drop, ask on reconnect, re-enable only after the answer.
+ */
+test.describe("Route connectivity recovery", () => {
+  test("a dropped create drawer keeps its entries and re-enables only after revalidation", async ({
+    page,
+  }) => {
+    await logIn(page);
+    await page.goto(`/gtfs/${await versionId(page)}/routes`);
+    await page.locator("#new-route-trigger").click();
+    await expect(page.locator("#new-route-form")).toBeVisible();
+
+    await page.fill("#new-route-short", "R9");
+    await page.context().setOffline(true);
+
+    const submit = page.locator("#new-route-submit");
+    await expect(submit).toBeDisabled();
+    await expect(page.locator("#new-route-recovery")).toContainText(
+      "Connection lost",
+    );
+    await expect(page.locator("#new-route-short")).toHaveValue("R9");
+
+    await page.context().setOffline(false);
+    await expect(page.locator("#new-route-recovery")).toContainText(
+      "Connection restored",
+    );
+    await expect(submit).toBeEnabled();
+    await expect(page.locator("#new-route-short")).toHaveValue("R9");
+  });
+
+  test("a dropped Details workspace preserves the draft and clears the block after revalidation", async ({
+    page,
+  }) => {
+    await logIn(page);
+    await page.goto(`/gtfs/${await versionId(page)}/routes/${DETAILS_ROUTE}`);
+    await expect(page.locator("#route-details-form")).toBeVisible();
+
+    await page.fill("#route-details-long", "Renamed while offline");
+    await page.context().setOffline(true);
+
+    await expect(page.locator("#route-details-recovery")).toContainText(
+      "Connection lost",
+    );
+    await expect(page.locator("#route-save")).toBeDisabled();
+    await expect(page.locator("#route-details-long")).toHaveValue(
+      "Renamed while offline",
+    );
+
+    await page.context().setOffline(false);
+    await expect(page.locator("#route-details-recovery")).toContainText(
+      "Connection restored",
+    );
+    await expect(page.locator("#route-save")).toBeEnabled();
+  });
+});

@@ -951,6 +951,98 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
     end
   end
 
+  describe "recovering uncertain client state" do
+    setup :shared_setup
+
+    test "reconnect with intact access clears the offline block and keeps the draft", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route = details_route(organization.id, version.id, %{})
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{text_mode: "automatic"})
+      |> render_change(route: %{"route_long_name" => "Renamed while offline"})
+
+      view |> render_click("recover_route_details", %{})
+
+      # Access revalidated, so the block clears — and the workspace was never
+      # re-read: the draft is still the unsaved work on screen.
+      assert_push_event(view, "route_recovery", %{state: "retryable"})
+      assert has_element?(view, "#route-details-save-bar", "Route name")
+      assert element(view, "#route-details-long") |> render() =~ "Renamed while offline"
+      refute element(view, "#route-save") |> render() =~ "disabled"
+    end
+
+    test "revoked access keeps the draft and blocks the commit", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route = details_route(organization.id, version.id, %{})
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{text_mode: "automatic"})
+      |> render_change(route: %{"route_long_name" => "Renamed while offline"})
+
+      Accounts.get_user_org_membership(user.id, organization.id)
+      |> Ecto.Changeset.change(roles: [])
+      |> Repo.update!()
+
+      view |> render_click("recover_route_details", %{})
+
+      assert_push_event(view, "route_recovery", %{state: "blocked"})
+      assert has_element?(view, "#route-details-save-error", "no longer have editor access")
+      assert has_element?(view, "#route-details-save-bar", "Route name")
+      assert element(view, "#route-details-long") |> render() =~ "Renamed while offline"
+      assert element(view, "#route-save") |> render() =~ "disabled"
+
+      # A crafted submit cannot write past the block.
+      view
+      |> form("#route-details-form", %{text_mode: "automatic"})
+      |> render_submit()
+
+      assert saved_route(route).route_long_name == route.route_long_name
+      assert saved_route(route).updated_at == route.updated_at
+    end
+
+    test "recovery never rebases the draft on a fresh read", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route = details_route(organization.id, version.id, %{})
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{text_mode: "automatic"})
+      |> render_change(route: %{"route_long_name" => "My offline draft"})
+
+      # While this socket is "offline", another editor saves the same field.
+      other = other_editor(organization)
+      assert {:ok, _saved} = other_editor_save(route, %{route_long_name: "Their rename"}, other)
+
+      view |> render_click("recover_route_details", %{})
+      assert_push_event(view, "route_recovery", %{state: "retryable"})
+
+      # The draft still carries the base it was loaded with, so the save meets
+      # the other editor's change as a conflict instead of a silent overwrite.
+      assert has_element?(view, "#route-details-save-bar", "Route name")
+      assert element(view, "#route-details-long") |> render() =~ "My offline draft"
+
+      view
+      |> form("#route-details-form", %{text_mode: "automatic"})
+      |> render_submit()
+
+      assert has_element?(view, "#route-conflict")
+      assert saved_route(route).route_long_name == "Their rename"
+    end
+  end
+
   defp other_editor(organization) do
     user =
       user_fixture(%{email: "other-editor-#{System.unique_integer([:positive])}@example.com"})

@@ -81,6 +81,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
      |> assign(:new_route_dirty?, false)
      |> assign(:new_route_pending?, false)
      |> assign(:new_route_failure, nil)
+     |> assign(:new_route_blocked?, false)
      |> assign(:new_route_confirm_discard?, false)
      |> assign(:new_route_agency_required?, false)
      |> assign(:agency_health, %{
@@ -466,6 +467,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         # A replayed or late submit after the drawer closed must not insert.
         {:noreply, socket}
 
+      # A drawer recovery blocked after revalidation stays blocked: a stale or
+      # crafted submit cannot re-enable it. The honest path is a fresh drawer.
+      socket.assigns.new_route_blocked? ->
+        {:noreply, socket}
+
       # The reference disables the whole form while a save is in flight, so a
       # double click is one create rather than two.
       socket.assigns.new_route_pending? ->
@@ -487,6 +493,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   @impl true
   def handle_event("save_new_route", _params, socket), do: {:noreply, socket}
+
+  # The client pushes this once its socket is back after a disconnect while the
+  # drawer held a signed attempt (R3's uncertain-result recovery). Before any
+  # control is re-enabled, the scope and membership are revalidated here, and
+  # the signed attempt decides what the lost window actually did: a committed
+  # create is reconciled to its original route, an uncommitted attempt may
+  # retry, and an unknown or unverifiable attempt keeps the draft with the
+  # commit disabled. Nothing here writes a route.
+  @impl true
+  def handle_event("recover_new_route", params, socket) do
+    if is_nil(socket.assigns.new_route_form) or socket.assigns.new_route_blocked? do
+      {:noreply, socket}
+    else
+      recover_new_route(socket, params["_attempt"])
+    end
+  end
 
   @impl true
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
@@ -910,6 +932,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         text_mode={@new_route_text_mode}
         dirty?={@new_route_dirty?}
         pending?={@new_route_pending?}
+        blocked?={@new_route_blocked?}
         failure={@new_route_failure}
         agency_required?={@new_route_agency_required?}
         version={@current_gtfs_version}
@@ -1112,6 +1135,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   attr :text_mode, :string, default: nil
   attr :dirty?, :boolean, default: false
   attr :pending?, :boolean, default: false
+  attr :blocked?, :boolean, default: false
   attr :failure, :any, default: nil
   attr :agency_required?, :boolean, default: false
   attr :version, :any, required: true
@@ -1207,12 +1231,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
           novalidate
           phx-change="validate_new_route"
           phx-submit="save_new_route"
+          data-recovery="true"
+          data-recovery-event="recover_new_route"
           class="mt-5 grid gap-6"
         >
           <%!-- One signed attempt per drawer opening, minted by the server and
                 verified before the command runs: field edits never mint a new
                 one, and the domain never sees a browser-claimed actor (R3). --%>
           <input type="hidden" name="_attempt" id="new-route-attempt" value={@attempt} />
+
+          <%!-- Connectivity state the client hook owns: hidden while connected,
+                filled locally while offline and with the server's revalidation
+                outcome after reconnect. The server never writes it, so a
+                queued stale event cannot present a stale connectivity state. --%>
+          <p id="new-route-recovery" role="status" hidden class="text-[13px] text-default"></p>
 
           <div :if={new_route_save_failed?(@form)}>
             <.callout
@@ -1357,7 +1389,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
               type="submit"
               id="new-route-submit"
               class="min-h-11"
-              disabled={@pending?}
+              disabled={@pending? or @blocked?}
               phx-disable-with="Creating…"
             >
               Create route
@@ -1692,6 +1724,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       |> assign(:new_route_dirty?, false)
       |> assign(:new_route_pending?, false)
       |> assign(:new_route_failure, nil)
+      |> assign(:new_route_blocked?, false)
       |> assign(:new_route_confirm_discard?, false)
       |> assign(:new_route_agency_required?, false)
       |> assign(:new_route_form, nil)
@@ -1834,6 +1867,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     |> assign(:new_route_dirty?, false)
     |> assign(:new_route_pending?, false)
     |> assign(:new_route_failure, nil)
+    |> assign(:new_route_blocked?, false)
     |> assign(:new_route_confirm_discard?, false)
     |> assign(:new_route_agency_required?, false)
   end
@@ -1874,14 +1908,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   # reach `Gtfs.create_editor_route/3`, which reauthorizes, locks the published
   # version, resolves the agency, allocates the identifier and writes the route
   # audit in one serializable transaction. Nothing is written by this function.
+  # Drawer save-state messages. They live here because `create_new_route/4`
+  # and the recovery path below both speak them (R3).
+  @consumed_message "Nothing was created: this drawer already created a route that has since been deleted. Open a fresh Create route to create another."
+
+  @invalid_attempt_message "This create attempt is no longer valid, so nothing was created. Check the route list, then choose Create route to start a fresh one."
+
+  @recovery_forbidden_message "Connection restored, but you no longer have editor access to this organization. Your entries are still here, but you can't save them."
+
+  @busy_message "Nothing was created and your entries are still here. Choose Create route to try again."
+
   defp create_new_route(socket, params, text_mode, token) do
     case verify_creation_attempt(token) do
       :error ->
         {:noreply,
          socket
          |> assign(:new_route_failure, %{
-           message:
-             "This create attempt is no longer valid, so nothing was created. Check the route list, then choose Create route to start a fresh one.",
+           message: @invalid_attempt_message,
            link: nil,
            reason: :invalid_attempt
          })
@@ -1903,10 +1946,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
 
   defp strip_managed_route_id(attrs, :manual), do: attrs
   defp strip_managed_route_id(attrs, :auto), do: Map.delete(attrs, "route_id")
-
-  @consumed_message "Nothing was created: this drawer already created a route that has since been deleted. Open a fresh Create route to create another."
-
-  @busy_message "Nothing was created and your entries are still here. Choose Create route to try again."
 
   defp run_creation(socket, attrs, attempt) do
     case Gtfs.create_editor_route(attrs, attempt, audit_context(socket)) do
@@ -1966,6 +2005,76 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     socket
     |> assign(:new_route_failure, %{message: message, link: link, reason: reason})
     |> push_event("focus_scoped_target", %{id: "new-route-failure"})
+  end
+
+  # --- uncertain-result recovery (R3) ----------------------------------------
+
+  # One revalidation, one outcome. Access is rechecked before anything else, so
+  # a removed editor keeps the draft with the commit disabled even when the
+  # attempt itself would still reconcile. The attempt's own verification makes
+  # the "unknown source" case a blocked drawer, never a save.
+  defp recover_new_route(socket, token) do
+    cond do
+      not editor_access?(socket) ->
+        {:noreply, block_new_route(socket, @recovery_forbidden_message)}
+
+      true ->
+        case verify_creation_attempt(token) do
+          :error ->
+            {:noreply, block_new_route(socket, @invalid_attempt_message)}
+
+          attempt ->
+            case Gtfs.reconcile_creation(attempt, audit_context(socket)) do
+              {:ok, route} ->
+                {:noreply, finish_recovered_creation(socket, route)}
+
+              # Nothing committed during the lost window: the same verified
+              # attempt may retry, so the offline block clears and the form
+              # keeps its draft and its attempt untouched.
+              {:error, :not_started} ->
+                {:noreply, retry_new_route(socket)}
+
+              {:error, :attempt_consumed} ->
+                {:noreply, block_new_route(socket, @consumed_message)}
+
+              {:error, :forbidden} ->
+                {:noreply, block_new_route(socket, @recovery_forbidden_message)}
+
+              {:error, _other} ->
+                {:noreply, block_new_route(socket, @invalid_attempt_message)}
+            end
+        end
+    end
+  end
+
+  # A blocked recovery keeps every typed value visible with the commit
+  # disabled: the operator reviews the current values and deliberately starts
+  # a fresh drawer rather than retrying blind (R3).
+  defp block_new_route(socket, message) do
+    socket
+    |> assign(:new_route_failure, %{message: message, link: nil, reason: :recovery_blocked})
+    |> assign(:new_route_blocked?, true)
+    |> push_event("route_recovery", %{state: "blocked", message: message})
+  end
+
+  defp retry_new_route(socket) do
+    socket
+    |> assign(:new_route_failure, nil)
+    |> assign(:new_route_blocked?, false)
+    |> push_event("route_recovery", %{
+      state: "retryable",
+      message: "Connection restored. Your entries are preserved — you can create the route again."
+    })
+  end
+
+  # The lost window had committed: recovery lands on the original UUID through
+  # `reconcile_creation/2`, which reports the retained result without another
+  # insert or audit (AC-6).
+  defp finish_recovered_creation(socket, route) do
+    socket
+    |> close_new_route()
+    |> put_flash(:info, "Connection restored — Route #{route.route_id} was created.")
+    |> push_navigate(to: new_route_details_path(socket, route))
   end
 
   # A created route opens its own Details, because the next step is the stops

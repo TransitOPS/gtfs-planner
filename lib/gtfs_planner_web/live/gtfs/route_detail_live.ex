@@ -47,6 +47,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   """
   use GtfsPlannerWeb, :live_view
   alias Ecto.Changeset
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Route
@@ -106,7 +108,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
      |> assign(:changed_fields, [])
      |> assign(:merge, nil)
      |> assign(:save_outcome, nil)
-     |> assign(:pending_navigation, nil)}
+     |> assign(:pending_navigation, nil)
+     |> assign(:details_blocked?, false)}
   end
 
   @impl true
@@ -143,12 +146,28 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # the workspace was loaded with — decides what the submission means (R4).
   @impl true
   def handle_event("save_route_details", params, socket) do
-    if socket.assigns.route_state == :ready do
+    if socket.assigns.route_state == :ready and not socket.assigns.details_blocked? do
       attrs = detail_attrs(params)
       socket = assign_details_draft(socket, attrs, :validate)
       run_details_save(socket, attrs, params)
     else
       {:noreply, socket}
+    end
+  end
+
+  # The client pushes this once its socket is back after a disconnect with the
+  # workspace on screen (AC-23). Before the offline block clears, the scope and
+  # membership are revalidated here: a revoked editor keeps the draft with the
+  # save disabled, and a still-authorized editor gets the block cleared. The
+  # workspace is never re-read for this — the trusted base source this socket
+  # loaded stays the save's base, so a fresh read can never silently rebase a
+  # draft the operator has not reviewed (R2, CL-7).
+  @impl true
+  def handle_event("recover_route_details", _params, socket) do
+    if socket.assigns.route_state != :ready or socket.assigns.details_blocked? do
+      {:noreply, socket}
+    else
+      recover_route_details(socket)
     end
   end
 
@@ -240,6 +259,41 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # keystroke reached it through the form's phx-change before the guard could
   # open, so the stored params are the on-screen draft, never a second grammar.
   defp draft_attrs(socket), do: socket.assigns.route_form.source.params
+
+  defp recover_route_details(socket) do
+    if editor_access?(socket) do
+      {:noreply,
+       socket
+       |> assign(:details_blocked?, false)
+       |> push_event("route_recovery", %{
+         state: "retryable",
+         message: "Connection restored. Your changes are preserved — you can save again."
+       })}
+    else
+      message =
+        "Connection restored, but you no longer have editor access to this organization. Your changes are still here, but you can't save them."
+
+      {:noreply,
+       socket
+       |> assign(:details_blocked?, true)
+       |> assign(:save_outcome, {:error, message})
+       |> push_event("route_recovery", %{state: "blocked", message: message})}
+    end
+  end
+
+  # Mount-time access is not enough for a write: the membership may have lost
+  # the editor role or been deactivated since this socket connected.
+  defp editor_access?(socket) do
+    with %{id: user_id} <- socket.assigns[:current_user],
+         %{id: organization_id} <- socket.assigns[:current_organization],
+         %UserOrgMembership{} = membership <-
+           Accounts.get_user_org_membership(user_id, organization_id),
+         true <- is_nil(membership.deactivated_at) do
+      GtfsPlannerWeb.EnsureRole.has_role?(membership.roles, :pathways_studio_editor)
+    else
+      _other -> false
+    end
+  end
 
   # Version selection is guarded like every other departure: a dirty draft holds
   # the switch behind the leave dialog instead of dispatching it, so cancelling
@@ -334,6 +388,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         |> assign(:merge, nil)
         |> assign(:save_outcome, nil)
         |> assign(:route_state, :ready)
+        |> assign(:details_blocked?, false)
         |> assign(
           :transfer_count,
           related_transfers(organization_id, gtfs_version_id, workspace.route)
@@ -884,8 +939,22 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                     novalidate
                     phx-change="validate_route_details"
                     phx-submit="save_route_details"
+                    data-recovery="true"
+                    data-recovery-event="recover_route_details"
                     class="mt-5 grid gap-8"
                   >
+                    <%!-- Connectivity state the client hook owns: hidden while
+                           connected, filled locally while offline and with the
+                           server's revalidation outcome after reconnect. The
+                           server never writes it, so a queued stale event
+                           cannot present a stale connectivity state. --%>
+                    <p
+                      id="route-details-recovery"
+                      role="status"
+                      hidden
+                      class="text-[13px] text-default"
+                    >
+                    </p>
                     <%!-- One announcement region for the outcomes a save can
                            have: a saved confirmation, a rejected-save error,
                            or the merge comparison another editor's save
@@ -1009,6 +1078,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                         type="submit"
                         id="route-save"
                         class="min-h-11 min-w-[140px]"
+                        disabled={@details_blocked?}
                         phx-disable-with="Saving…"
                       >
                         Save changes
