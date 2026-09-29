@@ -259,7 +259,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLiveTest do
   describe "settings overview entry" do
     setup :editor_setup
 
-    test "lists Feed details as an Available page linking to its literal route",
+    test "lists Feed details as a working page linking to its literal route",
          %{conn: conn, user: user, organization: organization, version: version} do
       conn = log_in_user(conn, user, organization: organization)
 
@@ -272,12 +272,12 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLiveTest do
                feed_details_path(version.id)
              ]
 
-      assert text_of(doc, "#settings-entry-feed_details a") == "Feed details"
+      assert text_of(doc, "#settings-entry-feed_details-title") == "Feed details"
 
-      assert text_of(doc, "#settings-entry-feed_details p") ==
-               "Describe this version’s feed for data consumers."
+      assert text_of(doc, "#settings-entry-feed_details-summary") ==
+               "Who publishes this schedule data, the dates it covers, and who apps can contact about it."
 
-      assert has_element?(view, "#settings-entry-feed_details", "Available")
+      refute text_of(doc, "#settings-entry-feed_details") =~ "Coming soon"
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-version li"), "id") ==
                ["settings-entry-feed_details", "settings-entry-agencies", "settings-entry-fares"]

@@ -10,14 +10,19 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   The Users page keeps its own `/admin/users` layout and authorization, so the
   overview links to it rather than moving it.
 
+  The overview is a directory, so it carries no tab bar: its rows are the
+  navigation between sections. A section page names its way back instead, with a
+  "Settings" link above its heading (`PlannerComponents.back_link/1`). Pages that
+  still render the tab bar drop it as they move to the same link.
+
   The two unbuilt sections render the shared `GtfsPlannerWeb.ComingSoon` body,
   and the overview reads those titles and summaries from the same catalog, so the
   two surfaces cannot drift apart. A section slug is looked up in a fixed map:
   no request string becomes an atom, and an unknown slug flashes and returns to
   the overview instead of rendering a page nobody described. Feed details,
   Agencies and Fares are built, so their literal routes are declared ahead of the
-  section route and the overview lists them as Available pages beside the
-  placeholders.
+  section route and the overview lists them above the placeholders, which
+  sit last under a "Coming soon" band.
 
   Access follows the other GTFS pages. The `:gtfs_routes` session supplies the
   user, organization and published version, and this LiveView declares the editor
@@ -33,6 +38,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.ComingSoon, only: [coming_soon: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1]
 
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.ComingSoon
@@ -68,19 +74,21 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       key: :feed_details,
       slug: "feed-details",
       title: "Feed details",
-      summary: "Describe this version’s feed for data consumers."
+      summary:
+        "Who publishes this schedule data, the dates it covers, and who apps can contact about it."
     },
     %{
       key: :agencies,
       slug: "agencies",
       title: "Agencies",
-      summary: "Manage the agencies that operate this version’s routes."
+      summary:
+        "The agencies that operate your routes: names, websites and the timezone your schedules run in."
     },
     %{
       key: :fares,
       slug: "fares",
       title: "Fares",
-      summary: "Set up fare zones and the fare rules that use them."
+      summary: "Group stops into fare zones, then set the fare rules that use them."
     }
   ]
 
@@ -89,13 +97,13 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       key: :garages,
       slug: "garages",
       title: "Garages",
-      summary: "Set where your vehicles start and end the day."
+      summary: "Where your vehicles start and end the day."
     },
     %{
       key: :fleet,
       slug: "fleet",
       title: "Fleet",
-      summary: "List your vehicles to check that a plan fits your fleet."
+      summary: "Your vehicles, so you can check that a plan fits your fleet."
     }
   ]
 
@@ -103,14 +111,14 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
     %{
       key: :organization_name,
       title: "Organization name",
-      summary: "Change your organization’s name.",
+      summary: "Change how your organization’s name appears in the app.",
       path: "/admin/users/organization-settings",
       status: :active
     },
     %{
       key: :users,
       title: "Users",
-      summary: "Manage organization members and access.",
+      summary: "Invite people, set their roles and turn off access.",
       path: "/admin/users",
       status: :active
     }
@@ -121,7 +129,6 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
     {:ok,
      socket
      |> assign(:page_title, "Settings")
-     |> assign(:active_tab, :index)
      |> assign(:section_key, nil)
      |> assign(:section_slug, nil)}
   end
@@ -132,7 +139,6 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       {:ok, key} ->
         {:noreply,
          socket
-         |> assign(:active_tab, key)
          |> assign(:section_key, key)
          |> assign(:section_slug, slug)
          |> assign(:page_title, ComingSoon.feature(key).title)}
@@ -140,7 +146,10 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       :error ->
         {:noreply,
          socket
-         |> put_flash(:error, "Settings section not found")
+         |> put_flash(
+           :error,
+           "That settings section doesn’t exist. Choose one from the list below."
+         )
          |> push_navigate(to: settings_path(socket.assigns.current_gtfs_version.id))}
     end
   end
@@ -189,62 +198,185 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <:sub_header>
-        <.settings_nav
-          gtfs_version_id={@current_gtfs_version.id}
-          active_tab={@active_tab}
-          organization={@current_organization}
-        />
-      </:sub_header>
+      <div id="settings-page">
+        <%= if @section_key do %>
+          <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+            Settings
+          </.back_link>
+          <div class="mt-2">
+            <.coming_soon feature={@feature} scope_label={@scope_label} />
+          </div>
+        <% else %>
+          <.header class="pb-8">
+            Settings
+            <:subtitle>
+              Setup you change only occasionally. Each group says what a change affects.
+            </:subtitle>
+          </.header>
 
-      <%= if @section_key do %>
-        <.coming_soon feature={@feature} scope_label={@scope_label} />
-      <% else %>
-        <.header>
-          Settings
-          <:subtitle>Rarely changed configuration and reference data, grouped by scope.</:subtitle>
-        </.header>
-
-        <.settings_overview groups={
-          overview_groups(@current_gtfs_version, @user_roles, @current_organization)
-        } />
-      <% end %>
+          <.settings_overview
+            groups={overview_groups(@current_gtfs_version, @user_roles, @current_organization)}
+            version_id={@current_gtfs_version.id}
+          />
+        <% end %>
+      </div>
     </Layouts.app>
     """
   end
 
   attr :groups, :list, required: true
+  attr :version_id, :any, required: true
+
+  defp settings_overview(%{groups: []} = assigns) do
+    ~H"""
+    <section
+      id="settings-empty"
+      aria-labelledby="settings-empty-title"
+      class="border-t border-subtle py-10"
+    >
+      <div class="max-w-[60ch]">
+        <h2
+          id="settings-empty-title"
+          class="font-display text-2xl font-semibold tracking-[-0.025em] text-strong"
+        >
+          No settings are available for your role
+        </h2>
+        <p class="mt-3 text-[15px]">
+          Pathways Studio organizations don’t have version or fleet settings. Organization settings, such as the name and users, are limited to organization admins.
+        </p>
+        <.button id="settings-empty-action" class="mt-6 min-h-11" navigate={stops_path(@version_id)}>
+          Open stops & stations
+        </.button>
+      </div>
+    </section>
+    """
+  end
 
   defp settings_overview(assigns) do
     ~H"""
-    <p :if={@groups == []} id="settings-empty" class="text-sm text-muted">
-      No settings are available for this organization.
-    </p>
-    <div
-      :if={@groups != []}
-      id="settings-overview"
-      class={["grid gap-6 sm:grid-cols-2", length(@groups) == 3 && "xl:grid-cols-3"]}
-    >
-      <section :for={group <- @groups} id={group.id}>
-        <h2 class="text-sm font-semibold text-base-content">{group.scope}</h2>
-        <ul class="mt-3 space-y-4">
-          <li
-            :for={entry <- group.entries}
-            id={"settings-entry-#{entry.key}"}
-            class="rounded-box border border-base-300 p-4"
-          >
-            <.link
-              navigate={entry.path}
-              class="font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-            >
-              {entry.title}
-            </.link>
-            <p class="mt-1 text-sm text-base-content/70">{entry.summary}</p>
-            <.status_badge status={entry.status} label={status_label(entry.status)} class="mt-3" />
-          </li>
-        </ul>
-      </section>
+    <div id="settings-overview">
+      <.settings_group :for={group <- @groups} group={group} />
     </div>
+    """
+  end
+
+  # One scope: its name and what a change in it affects on the left, a bordered
+  # list of directory rows on the right. Rows that do not work yet follow the
+  # working ones under a "Coming soon" band and stay links, so the placeholder page
+  # can explain them.
+  attr :group, :map, required: true
+
+  defp settings_group(assigns) do
+    {ready, soon} = Enum.split_with(assigns.group.entries, &(&1.status == :active))
+    assigns = assign(assigns, ready: ready, soon: soon)
+
+    ~H"""
+    <section
+      id={@group.id}
+      aria-labelledby={"#{@group.id}-title"}
+      class="grid gap-x-12 gap-y-4 border-t border-subtle py-8 lg:grid-cols-[17.5rem_minmax(0,1fr)]"
+    >
+      <div class="min-w-0">
+        <h2
+          id={"#{@group.id}-title"}
+          class="font-display text-2xl font-semibold tracking-[-0.025em] text-strong"
+        >
+          {@group.title}
+        </h2>
+        <p id={"#{@group.id}-summary"} class="mt-2 text-sm">
+          <.group_summary group={@group} />
+        </p>
+        <p class="mt-3 text-[13px] text-muted">{@group.note}</p>
+      </div>
+      <div class="min-w-0 overflow-hidden rounded-card border border-subtle bg-white">
+        <ul :if={@ready != []} class="divide-y divide-subtle">
+          <.directory_row :for={entry <- @ready} entry={entry} />
+        </ul>
+        <h3
+          :if={@soon != []}
+          class={[
+            "bg-canvas px-5 py-2.5 text-[13px] font-semibold text-muted",
+            @ready != [] && "border-t border-subtle"
+          ]}
+        >
+          Coming soon
+        </h3>
+        <ul :if={@soon != []} class="divide-y divide-subtle border-t border-subtle">
+          <.directory_row :for={entry <- @soon} entry={entry} />
+        </ul>
+      </div>
+    </section>
+    """
+  end
+
+  attr :group, :map, required: true
+
+  defp group_summary(%{group: %{key: :version}} = assigns) do
+    ~H"""
+    Changes apply to <strong class="font-semibold text-strong">{@group.version_name}</strong>
+    only. Other versions keep their own.
+    """
+  end
+
+  defp group_summary(%{group: %{key: :all_versions}} = assigns) do
+    ~H"""
+    Shared by every version. A change here shows up in all of them.
+    """
+  end
+
+  defp group_summary(%{group: %{key: :organization}} = assigns) do
+    ~H"""
+    Your organization’s name and the people who can sign in.
+    """
+  end
+
+  # The whole row is the link, so hover, focus and click share one target and
+  # nothing inside it competes. Focus is drawn inside the row because the list
+  # clips its overflow.
+  attr :entry, :map, required: true
+
+  defp directory_row(assigns) do
+    ~H"""
+    <li id={"settings-entry-#{@entry.key}"}>
+      <.link
+        navigate={@entry.path}
+        class={[
+          "group grid grid-cols-[minmax(0,1fr)_1rem] items-center gap-x-6 gap-y-3 px-5 py-4 no-underline",
+          "hover:bg-canvas sm:grid-cols-[minmax(0,1fr)_auto_1rem]",
+          "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus"
+        ]}
+      >
+        <span class="min-w-0">
+          <span
+            id={"settings-entry-#{@entry.key}-title"}
+            class="block text-base font-semibold leading-snug text-strong underline-offset-4 group-hover:underline"
+          >
+            {@entry.title}
+          </span>
+          <span
+            id={"settings-entry-#{@entry.key}-summary"}
+            class={[
+              "mt-1 block max-w-[62ch] text-pretty text-sm leading-relaxed",
+              if(@entry.status == :active, do: "text-default", else: "text-muted")
+            ]}
+          >
+            {@entry.summary}
+          </span>
+        </span>
+        <.icon
+          name="hero-chevron-right"
+          class="size-4 text-muted sm:col-start-3 sm:row-start-1"
+        />
+        <span
+          :if={@entry.status == :coming_soon}
+          class="col-span-2 sm:col-span-1 sm:col-start-2 sm:row-start-1"
+        >
+          <span class="inline-flex items-center gap-1.5 rounded-badge bg-canvas px-2 py-0.5 text-[13px] font-[650] text-muted">
+            <.icon name="hero-clock" class="size-4" /> Coming soon
+          </span>
+        </span>
+      </.link>
+    </li>
     """
   end
 
@@ -280,14 +412,36 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
 
     groups =
       [
-        %{id: "settings-version", scope: scope_here(version), entries: version_entries},
-        %{id: "settings-all-versions", scope: "All versions", entries: all_version_entries}
+        %{
+          id: "settings-version",
+          key: :version,
+          title: "This version",
+          version_name: version.name,
+          note: "Switch versions from the header to change another one.",
+          entries: version_entries
+        },
+        %{
+          id: "settings-all-versions",
+          key: :all_versions,
+          title: "All versions",
+          note:
+            "Garages and fleet describe your organization, so they stay the same when you switch versions.",
+          entries: all_version_entries
+        }
       ]
       |> Enum.reject(&(&1.entries == []))
 
     if "pathways_studio_admin" in user_roles do
       groups ++
-        [%{id: "settings-organization", scope: "Organization", entries: @organization_entries}]
+        [
+          %{
+            id: "settings-organization",
+            key: :organization,
+            title: "Organization",
+            note: "Only organization admins see this group.",
+            entries: @organization_entries
+          }
+        ]
     else
       groups
     end
@@ -316,9 +470,6 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
     }
   end
 
-  defp status_label(:coming_soon), do: "Coming soon"
-  defp status_label(:active), do: "Available"
-
   defp scope_here(version), do: "This version: #{version.name}"
 
   defp version_target(socket, version_id) do
@@ -329,6 +480,8 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   end
 
   defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
+
+  defp stops_path(version_id), do: "/gtfs/#{version_id}/stops"
 
   defp section_path(version_id, slug), do: "/gtfs/#{version_id}/settings/#{slug}"
 end

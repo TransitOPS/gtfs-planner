@@ -2,8 +2,8 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   @moduledoc """
   Components from the TransitOps application design system that pages migrated
   to it share: the in-place outcome message, the form error summary, the
-  choice cards used for options that carry consequences, and the first-use
-  panel.
+  choice cards used for options that carry consequences, the first-use
+  panel, and the back link a child page carries above its heading.
 
   They read the design-system tokens declared in `assets/css/app.css`
   (`text-strong`, `bg-soft`, `border-control`, `rounded-control`, and so on) and
@@ -23,6 +23,41 @@ defmodule GtfsPlannerWeb.PlannerComponents do
     "warning" => {"bg-warning-bg text-warning-fg", nil, "hero-exclamation-triangle", "alert"},
     "error" => {"bg-error-bg text-error-fg", nil, "hero-exclamation-triangle", "alert"}
   }
+
+  @doc """
+  The way back from a child page to the page that lists it, above the heading.
+
+  A child page names its parent in the link ("Settings", "Organizations") instead
+  of carrying the parent's tab bar, because the parent's list is already the
+  navigation between siblings. The chevron and 44px target follow the design
+  system's entity header. Focus draws its own outline, so the link needs no page
+  scope.
+
+  ## Examples
+
+      <.back_link id="back-to-settings" navigate={~p"/gtfs/\#{@version.id}/settings"}>
+        Settings
+      </.back_link>
+  """
+  attr :id, :string, required: true
+  attr :navigate, :string, required: true
+  slot :inner_block, required: true
+
+  def back_link(assigns) do
+    ~H"""
+    <.link
+      id={@id}
+      navigate={@navigate}
+      class={[
+        "-ml-2 inline-flex min-h-11 items-center gap-1 rounded-control px-2 text-sm font-[650] text-muted no-underline",
+        "hover:bg-canvas hover:text-strong",
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+      ]}
+    >
+      <.icon name="hero-chevron-left" class="size-4" /> {render_slot(@inner_block)}
+    </.link>
+    """
+  end
 
   @doc """
   Reports an outcome in place, next to the thing that changed.

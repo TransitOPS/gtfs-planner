@@ -36,7 +36,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
     only: [assign_invite_form: 2, invitation_detail: 1, normalize_invite_params: 1]
 
   import GtfsPlannerWeb.PlannerComponents,
-    only: [choice_cards: 1, first_use: 1, form_error_summary: 1, message: 1]
+    only: [back_link: 1, choice_cards: 1, first_use: 1, form_error_summary: 1, message: 1]
 
   on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
   on_mount {GtfsPlannerWeb.EnsureRole, :require_system_administrator}
@@ -908,13 +908,9 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
 
   defp organization_detail(assigns) do
     ~H"""
-    <.link
-      id="back-to-organizations"
-      navigate={~p"/admin/organizations"}
-      class="-ml-2 inline-flex min-h-11 items-center gap-1 rounded-control px-2 text-sm font-[650] text-muted no-underline hover:bg-canvas hover:text-strong"
-    >
-      <.icon name="hero-chevron-left" class="size-4" /> Organizations
-    </.link>
+    <.back_link id="back-to-organizations" navigate={~p"/admin/organizations"}>
+      Organizations
+    </.back_link>
 
     <.header>
       {@organization.name}
