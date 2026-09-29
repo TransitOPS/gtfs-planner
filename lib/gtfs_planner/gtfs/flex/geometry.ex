@@ -25,11 +25,18 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   the routes serving them), `overlaps/4` measures its intersection with other
   active area services, and `compare/2` reports the change against a saved area.
 
+  `route_buffer/4` derives a route-distance area from the version's current
+  shapes (AC-11) and `detour_zones/3` derives the detour zones of a detour
+  service's stretch (AC-21), one per unordered stop pair, from the route's
+  active patterns. Both are recomputed from the version on every call and both
+  finish through the same R8 validity and emptiness checks as stored geometry.
+
   `put_geom/2` and `get_geojson/1` are the storage pair. Both run on the
   caller's connection, so a context can write geometry inside its own
   transaction.
   """
 
+  alias GtfsPlanner.Gtfs.FlexService
   alias GtfsPlanner.Repo
 
   @max_vertices 5_000
@@ -158,6 +165,281 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   # measured km².
   @area_sql """
   SELECT ST_Area(ST_GeomFromGeoJSON($1)::geography) / 1e6
+  """
+
+  # Route-distance derivation (R8, AC-11) for `route_buffer/4`. $1 organization,
+  # $2 version, $3 requested route IDs, $4 distance in metres. A shape is the
+  # points of one `shape_id` in `shape_pt_sequence` order, and only the shapes of
+  # trips on the requested routes count. `ST_Buffer(geography, m)` keeps the
+  # buffer metric and is available in PostGIS 3.5. A shape with fewer than two
+  # points cannot make a line, and no shape at all leaves the union NULL.
+  @route_buffer_cte """
+  WITH
+  requested AS (
+    SELECT DISTINCT unnest($3::text[]) AS route_id
+  ),
+  known AS (
+    SELECT r.route_id
+    FROM routes r
+    WHERE r.organization_id = $1
+      AND r.gtfs_version_id = $2
+      AND r.route_id IN (SELECT route_id FROM requested)
+  ),
+  shape_ids AS (
+    SELECT DISTINCT t.shape_id
+    FROM trips t
+    WHERE t.organization_id = $1
+      AND t.gtfs_version_id = $2
+      AND t.route_id IN (SELECT route_id FROM requested)
+      AND t.shape_id IS NOT NULL
+  ),
+  shape_lines AS (
+    SELECT ST_MakeLine(
+             ST_SetSRID(ST_MakePoint(s.shape_pt_lon::float8, s.shape_pt_lat::float8), 4326)
+             ORDER BY s.shape_pt_sequence
+           ) AS line
+    FROM shapes s
+    WHERE s.organization_id = $1
+      AND s.gtfs_version_id = $2
+      AND s.shape_id IN (SELECT shape_id FROM shape_ids)
+    GROUP BY s.shape_id
+    HAVING count(*) >= 2
+  ),
+  unioned AS (
+    SELECT ST_Union(ST_Buffer(line::geography, $4)::geometry) AS geom
+    FROM shape_lines
+  )
+  """
+
+  # The route-distance checks. `coalesce(..., true)` makes an empty union and a
+  # union of NULLs (a nil distance) the same `:empty` answer. Validity is read in
+  # its own statement: ST_ReducePrecision raises on an invalid shape instead of
+  # returning it, so it must never see one.
+  @route_buffer_check_sql """
+  #{@route_buffer_cte}
+  SELECT
+    (SELECT coalesce(array_agg(route_id ORDER BY route_id), '{}')
+     FROM requested
+     WHERE route_id NOT IN (SELECT route_id FROM known)),
+    coalesce(ST_IsEmpty(unioned.geom), true),
+    detail.valid,
+    detail.reason,
+    ST_X(detail.location),
+    ST_Y(detail.location)
+  FROM unioned
+  LEFT JOIN LATERAL ST_IsValidDetail(unioned.geom) detail ON true
+  """
+
+  @route_buffer_geojson_sql """
+  #{@route_buffer_cte}
+  SELECT ST_AsGeoJSON(
+           ST_Multi(ST_ForcePolygonCCW(ST_ReducePrecision(unioned.geom, 0.000001)))
+         )
+  FROM unioned
+  """
+
+  # Detour-zone derivation (R13, AC-21) for `detour_zones/3`. $1 organization,
+  # $2 version, $3 route ID, $4 first stop ID, $5 last stop ID, $6 distance in
+  # metres, $7 `'route'` or `'stops'`.
+  #
+  # `bounds` locates the named stops on each active pattern of the route. The
+  # stretch runs between their first occurrences in whichever order the pattern
+  # visits them; a pattern that visits only one of them (a short turn) runs from
+  # that stop to the pattern's end, or from the pattern's start to it. A pattern
+  # with neither stop contributes nothing.
+  #
+  # `walk` resolves each stretch stop's fraction along the shape in position
+  # order: `shape_dist_traveled / total` when the pattern stop and the shape both
+  # carry distances, otherwise located after the previous stop's fraction, so a
+  # stop the shape visits twice cuts the second visit rather than the first. A
+  # pattern without a usable shape walks with NULL fractions and falls back to a
+  # straight line between the two stop points.
+  #
+  # `pairs` cuts one segment per consecutive pair, `segments` buffers it, and
+  # `zones` unions every pattern's and direction's segments by the unordered pair
+  # with the lesser stop ID first, so two patterns, both directions and a short
+  # turn sharing a pair produce one zone.
+  @detour_zones_cte """
+  WITH RECURSIVE
+  patterns AS (
+    SELECT p.id AS pattern_id, p.shape_id
+    FROM route_patterns p
+    WHERE p.organization_id = $1
+      AND p.gtfs_version_id = $2
+      AND p.route_id = $3
+      AND p.active
+  ),
+  visits AS (
+    SELECT ps.route_pattern_id, ps.stop_id, ps.position, ps.shape_dist_traveled
+    FROM route_pattern_stops ps
+    WHERE ps.organization_id = $1
+      AND ps.gtfs_version_id = $2
+      AND ps.route_pattern_id IN (SELECT pattern_id FROM patterns)
+  ),
+  bounds AS (
+    SELECT route_pattern_id,
+           min(position) FILTER (WHERE stop_id = $4) AS first_pos,
+           min(position) FILTER (WHERE stop_id = $5) AS last_pos,
+           max(position) AS max_pos
+    FROM visits
+    GROUP BY route_pattern_id
+  ),
+  stretch AS (
+    SELECT v.route_pattern_id, v.stop_id, v.position, v.shape_dist_traveled
+    FROM visits v
+    JOIN bounds b ON b.route_pattern_id = v.route_pattern_id
+    WHERE $4 IS NOT NULL
+      AND $5 IS NOT NULL
+      AND (b.first_pos IS NOT NULL OR b.last_pos IS NOT NULL)
+      AND v.position BETWEEN
+            least(coalesce(b.first_pos, b.last_pos), coalesce(b.last_pos, b.first_pos))
+            AND greatest(coalesce(b.last_pos, b.max_pos), coalesce(b.first_pos, 1))
+  ),
+  stop_points AS (
+    SELECT s.stop_id,
+           ST_SetSRID(ST_MakePoint(s.stop_lon::float8, s.stop_lat::float8), 4326) AS pt
+    FROM stops s
+    WHERE s.organization_id = $1
+      AND s.gtfs_version_id = $2
+      AND s.stop_lat IS NOT NULL
+      AND s.stop_lon IS NOT NULL
+  ),
+  shape_lines AS (
+    SELECT sh.shape_id,
+           ST_MakeLine(
+             ST_SetSRID(ST_MakePoint(sh.shape_pt_lon::float8, sh.shape_pt_lat::float8), 4326)
+             ORDER BY sh.shape_pt_sequence
+           ) AS line,
+           max(sh.shape_dist_traveled)::float8 AS total
+    FROM shapes sh
+    WHERE sh.organization_id = $1
+      AND sh.gtfs_version_id = $2
+    GROUP BY sh.shape_id
+    HAVING count(*) >= 2
+  ),
+  prepared AS (
+    SELECT st.route_pattern_id, st.stop_id, st.position, st.shape_dist_traveled,
+           ln.line, ln.total, pt.pt,
+           row_number() OVER (PARTITION BY st.route_pattern_id ORDER BY st.position) AS step
+    FROM stretch st
+    LEFT JOIN patterns p ON p.pattern_id = st.route_pattern_id
+    LEFT JOIN shape_lines ln ON ln.shape_id = p.shape_id
+    LEFT JOIN stop_points pt ON pt.stop_id = st.stop_id
+  ),
+  walk AS (
+    SELECT p.route_pattern_id, p.step, p.stop_id, p.pt, p.line, p.total,
+           CASE
+             WHEN p.line IS NULL OR p.pt IS NULL THEN NULL
+             WHEN p.shape_dist_traveled IS NOT NULL AND p.total > 0 THEN
+               least(greatest(p.shape_dist_traveled::float8 / p.total, 0::float8), 1::float8)
+             ELSE least(greatest(ST_LineLocatePoint(p.line, p.pt), 0::float8), 1::float8)
+           END AS fraction
+    FROM prepared p
+    WHERE p.step = 1
+    UNION ALL
+    SELECT n.route_pattern_id, n.step, n.stop_id, n.pt, n.line, n.total,
+           CASE
+             WHEN n.line IS NULL OR n.pt IS NULL THEN w.fraction
+             WHEN n.shape_dist_traveled IS NOT NULL AND n.total > 0 THEN
+               least(greatest(n.shape_dist_traveled::float8 / n.total, 0::float8), 1::float8)
+             WHEN w.fraction IS NULL THEN
+               least(greatest(ST_LineLocatePoint(n.line, n.pt), 0::float8), 1::float8)
+             ELSE least(
+                    greatest(
+                      w.fraction + ST_LineLocatePoint(
+                                     ST_LineSubstring(w.line, least(w.fraction, 0.999999::float8), 1::float8),
+                                     n.pt
+                                   ) * (1 - least(w.fraction, 0.999999::float8)),
+                      0::float8
+                    ),
+                    1::float8
+                  )
+           END AS fraction
+    FROM walk w
+    JOIN prepared n ON n.route_pattern_id = w.route_pattern_id AND n.step = w.step + 1
+  ),
+  pairs AS (
+    SELECT w.route_pattern_id, w.stop_id AS stop_a, w.pt AS pt_a, w.line,
+           w.fraction AS f_a,
+           lead(w.stop_id) OVER (PARTITION BY w.route_pattern_id ORDER BY w.step) AS stop_b,
+           lead(w.pt) OVER (PARTITION BY w.route_pattern_id ORDER BY w.step) AS pt_b,
+           lead(w.fraction) OVER (PARTITION BY w.route_pattern_id ORDER BY w.step) AS f_b
+    FROM walk w
+  ),
+  segments AS (
+    SELECT stop_a, stop_b,
+           CASE
+             WHEN $7 = 'stops' THEN
+               ST_Union(
+                 ST_Buffer(pt_a::geography, $6)::geometry,
+                 ST_Buffer(pt_b::geography, $6)::geometry
+               )
+             WHEN line IS NOT NULL AND f_a IS NOT NULL AND f_b IS NOT NULL AND f_a <> f_b THEN
+               ST_Buffer(
+                 ST_LineSubstring(line, least(f_a, f_b), greatest(f_a, f_b))::geography,
+                 $6
+               )::geometry
+             ELSE
+               ST_Buffer(ST_MakeLine(pt_a, pt_b)::geography, $6)::geometry
+           END AS geom
+    FROM pairs
+    WHERE stop_b IS NOT NULL
+      AND pt_a IS NOT NULL
+      AND pt_b IS NOT NULL
+  ),
+  zones AS (
+    SELECT least(stop_a, stop_b) AS stop_a,
+           greatest(stop_a, stop_b) AS stop_b,
+           ST_Union(geom) AS geom
+    FROM segments
+    GROUP BY least(stop_a, stop_b), greatest(stop_a, stop_b)
+  ),
+  checks AS (
+    SELECT
+      EXISTS (
+        SELECT 1
+        FROM routes r
+        WHERE r.organization_id = $1
+          AND r.gtfs_version_id = $2
+          AND r.route_id = $3
+      ) AS route_exists,
+      $4 IS NOT NULL
+        AND $5 IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM bounds b
+          WHERE b.first_pos IS NOT NULL OR b.last_pos IS NOT NULL
+        ) AS stretch_on_route
+  )
+  """
+
+  @detour_zones_check_sql """
+  #{@detour_zones_cte}
+  SELECT checks.route_exists,
+         checks.stretch_on_route,
+         zones.stop_a,
+         zones.stop_b,
+         coalesce(ST_IsEmpty(zones.geom), true),
+         detail.valid,
+         detail.reason,
+         ST_X(detail.location),
+         ST_Y(detail.location)
+  FROM checks
+  LEFT JOIN zones ON true
+  LEFT JOIN LATERAL ST_IsValidDetail(zones.geom) detail ON true
+  ORDER BY zones.stop_a, zones.stop_b
+  """
+
+  @detour_zones_geojson_sql """
+  #{@detour_zones_cte}
+  SELECT zones.stop_a,
+         zones.stop_b,
+         ST_AsGeoJSON(
+           ST_Multi(ST_ForcePolygonCCW(ST_ReducePrecision(zones.geom, 0.000001)))
+         )
+  FROM zones
+  WHERE NOT coalesce(ST_IsEmpty(zones.geom), true)
+  ORDER BY zones.stop_a, zones.stop_b
   """
 
   @put_geom_sql """
@@ -307,6 +589,151 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
       stops_joined: after_stats.stop_ids -- before.stop_ids,
       stops_left: before.stop_ids -- after_stats.stop_ids
     }
+  end
+
+  @doc """
+  Derives the buffered area around the given routes' current shapes (AC-11).
+
+  Every shape referenced by a trip on those routes is built from its `shapes`
+  rows in `shape_pt_sequence` order, buffered on geography by `distance_m`
+  metres and unioned. The result is that union through the R8 output transform,
+  so it is one valid `MultiPolygon` in SRID 4326: export recomputes it from the
+  version rather than trusting a stored draft.
+
+  Answers `{:error, {:missing_routes, ids}}` when a requested route is not in
+  the version, before deriving anything, `{:error, :empty}` when the union is
+  empty (no route has a shape of at least two points, including a nil
+  `distance_m`), and `{:error, {:invalid, reason, [lon, lat]}}` with PostGIS's
+  first problem when the union is invalid.
+  """
+  @spec route_buffer(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()], pos_integer()) ::
+          {:ok, map()}
+          | {:error, :empty | {:missing_routes, [String.t()]} | {:invalid, String.t(), [float()]}}
+  def route_buffer(organization_id, version_id, route_ids, distance_m) do
+    params = [
+      Ecto.UUID.dump!(organization_id),
+      Ecto.UUID.dump!(version_id),
+      Enum.uniq(route_ids),
+      distance_m
+    ]
+
+    %Postgrex.Result{rows: [[missing, empty, valid, reason, lon, lat]]} =
+      Repo.query!(@route_buffer_check_sql, params)
+
+    cond do
+      missing != [] ->
+        {:error, {:missing_routes, missing}}
+
+      empty ->
+        {:error, :empty}
+
+      not valid ->
+        {:error, {:invalid, reason, [lon, lat]}}
+
+      true ->
+        %Postgrex.Result{rows: [[geojson]]} = Repo.query!(@route_buffer_geojson_sql, params)
+        {:ok, Jason.decode!(geojson)}
+    end
+  end
+
+  @doc """
+  Derives one detour zone per unordered stop pair of a detour service (R13).
+
+  For every active pattern of the service's route, the stretch between
+  `first_stop_id` and `last_stop_id` is taken in whichever order the pattern
+  visits them; a pattern that visits only one of them contributes the part it
+  covers, so a short turn sharing a pair adds geometry without adding a zone.
+  Each consecutive pair of stops contributes its cut shape segment, or a
+  straight line between the two stops when the pattern has no shape, buffered by
+  `distance_m` metres on geography. `measure: :stops` buffers the two stop
+  points instead. Segments are unioned by the unordered pair, so two patterns,
+  both directions and a short turn that share a pair produce one zone.
+
+  Returns the zones ordered by stop pair as `%{zone_id: "flex-<key>-<a>-<b>",
+  stop_a: —, stop_b: —, geojson: —}` with the lesser stop ID first. A zone
+  without geometry is dropped, so `{:error, :empty}` answers a service that has
+  no derivable geometry at all, including a nil `distance_m`. Answers
+  `{:error, {:missing_routes, [route_id]}}` when the service's route is not in
+  the version, `:stretch_not_on_route` when no active pattern visits the named
+  stops, and `{:error, {:invalid, reason, [lon, lat]}}` when PostGIS rejects a
+  zone.
+  """
+  @spec detour_zones(Ecto.UUID.t(), Ecto.UUID.t(), FlexService.t()) ::
+          {:ok, [%{zone_id: String.t(), stop_a: String.t(), stop_b: String.t(), geojson: map()}]}
+          | {:error,
+             :empty
+             | :stretch_not_on_route
+             | {:missing_routes, [String.t()]}
+             | {:invalid, String.t(), [float()]}}
+  def detour_zones(organization_id, version_id, %FlexService{} = service) do
+    params = [
+      Ecto.UUID.dump!(organization_id),
+      Ecto.UUID.dump!(version_id),
+      service.route_id,
+      service.first_stop_id,
+      service.last_stop_id,
+      service.distance_m,
+      Atom.to_string(service.measure)
+    ]
+
+    %Postgrex.Result{rows: rows} = Repo.query!(@detour_zones_check_sql, params)
+
+    case rows do
+      [[false, _stretch_on_route | _rest] | _rows] ->
+        {:error, {:missing_routes, [service.route_id]}}
+
+      [[true, false | _rest] | _rows] ->
+        {:error, :stretch_not_on_route}
+
+      [[true, true | _rest] | _rows] ->
+        detour_zone_list(params, rows, service)
+    end
+  end
+
+  # Empty zones carry no geography and contribute no location, so they are
+  # dropped; a zone that survives the emptiness check but is invalid is the
+  # whole derivation's failure, because a caller cannot write it. The GeoJSON
+  # output is a second statement so that ST_ReducePrecision never sees geometry
+  # PostGIS rejected.
+  defp detour_zone_list(params, rows, service) do
+    zones =
+      for [_route, _stretch, stop_a, stop_b, empty, valid, reason, lon, lat] <- rows,
+          stop_a != nil,
+          not empty do
+        %{stop_a: stop_a, stop_b: stop_b, valid: valid, reason: reason, location: [lon, lat]}
+      end
+
+    invalid = Enum.find(zones, &(not &1.valid))
+
+    cond do
+      invalid != nil ->
+        {:error, {:invalid, invalid.reason, invalid.location}}
+
+      zones == [] ->
+        {:error, :empty}
+
+      true ->
+        zone_geojson(params, service)
+    end
+  end
+
+  defp zone_geojson(params, service) do
+    %Postgrex.Result{rows: rows} = Repo.query!(@detour_zones_geojson_sql, params)
+
+    zones =
+      Enum.map(rows, fn [stop_a, stop_b, geojson] ->
+        %{
+          zone_id: "flex-#{service.key}-#{stop_a}-#{stop_b}",
+          stop_a: stop_a,
+          stop_b: stop_b,
+          geojson: Jason.decode!(geojson)
+        }
+      end)
+
+    case zones do
+      [] -> {:error, :empty}
+      zones -> {:ok, zones}
+    end
   end
 
   defp side_stats(nil), do: %{km2: 0.0, stop_ids: []}
