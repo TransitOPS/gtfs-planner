@@ -39,9 +39,24 @@ async function getGtfsVersionId(page) {
   return match[1];
 }
 
-async function navigateToGtfsPage(page, versionId, subpath = "routes") {
+// Feed-import journeys create newer versions, so the header's default version is
+// not always the seeded one that carries the long-name routes.
+async function getSeededVersionId(page) {
+  const option = page
+    .locator("#gtfs-version-panel [data-version-option]")
+    .filter({ hasText: "Browser E2E Version" });
+  await expect(option).toHaveCount(1);
+  return option.getAttribute("data-version-id");
+}
+
+async function navigateToGtfsPage(
+  page,
+  versionId,
+  subpath = "routes",
+  ready = "table",
+) {
   await page.goto(`/gtfs/${versionId}/${subpath}`);
-  await page.waitForSelector("table");
+  await page.waitForSelector(ready);
 }
 
 // ── Shell and navigation at different viewports ──
@@ -212,44 +227,28 @@ test.describe("Organizations trial responsive behavior", () => {
   });
 });
 
-// ── Routes trial (stacked table) ──
-test.describe("Routes trial responsive behavior", () => {
-  test("stacked table at 320px: labeled rows, no body clipping", async ({
+// ── Routes list responsive behavior ──
+test.describe("Routes list responsive behavior", () => {
+  test("phone list at 320px: one link per route, table hidden, no body clipping", async ({
     page,
   }) => {
+    await page.setViewportSize({ width: 320, height: 568 });
     await loginAsEditor(page);
     const versionId = await getGtfsVersionId(page);
-    await navigateToGtfsPage(page, versionId);
-    await page.setViewportSize({ width: 320, height: 568 });
+    await navigateToGtfsPage(page, versionId, "routes", "#routes-list li");
 
-    const table = page.locator("table").first();
-    await expect(table).toBeVisible();
+    // Below the tablet breakpoint the semantic table gives way to a list whose
+    // items are the links into route detail.
+    await expect(page.locator("#routes-container")).toBeHidden();
+    const firstItem = page.locator("#routes-list li").first();
+    await expect(firstItem).toBeVisible();
 
-    const tbodyCount = await page.locator("tbody#routes").count();
-    expect(tbodyCount).toBe(1);
-
-    await expect(table).toHaveClass(/ds-stack-table/);
-
-    const responsiveLayout = await page
-      .locator("tbody#routes tr")
-      .first()
-      .evaluate((row) => {
-        const firstCell = row.querySelector("td[data-label]");
-
-        return {
-          rowDisplay: window.getComputedStyle(row).display,
-          cellDisplay: firstCell
-            ? window.getComputedStyle(firstCell).display
-            : null,
-          label: firstCell?.getAttribute("data-label"),
-        };
-      });
-
-    expect(responsiveLayout).toEqual({
-      rowDisplay: "block",
-      cellDisplay: "flex",
-      label: "Route ID",
-    });
+    const link = firstItem.locator("a[href*='/routes/']");
+    await expect(link).toHaveCount(1);
+    const box = await link.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.width).toBeLessThanOrEqual(320);
 
     const bodyOverflow = await page.evaluate(() => {
       return document.body.scrollWidth <= window.innerWidth;
@@ -280,19 +279,34 @@ test.describe("Routes trial responsive behavior", () => {
     }
   });
 
-  test("long route names wrap correctly", async ({ page }) => {
+  test("long route names stay inside the phone list at 320px", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 320, height: 568 });
     await loginAsEditor(page);
-    const versionId = await getGtfsVersionId(page);
-    await navigateToGtfsPage(page, versionId);
+    const versionId = await getSeededVersionId(page);
+    await navigateToGtfsPage(page, versionId, "routes", "#routes-list li");
 
+    // The seeded route's short name is a sentence. The badge wraps inside a
+    // capped width, so the route name keeps room and the chevron stays on screen.
     const longRoute = page
-      .locator("td[data-label='Short Name']")
+      .locator("#routes-list li")
       .filter({ hasText: "Express Route 1" });
     await expect(longRoute).toBeVisible();
-    const box = await longRoute.boundingBox();
-    expect(box).not.toBeNull();
-    expect(box.width).toBeLessThanOrEqual(320);
+    const row = await longRoute.boundingBox();
+    expect(row).not.toBeNull();
+    expect(row.width).toBeLessThanOrEqual(320);
+
+    const name = await longRoute.locator("span.truncate").first().boundingBox();
+    expect(name).not.toBeNull();
+    expect(name.width).toBeGreaterThan(40);
+    expect(name.x + name.width).toBeLessThanOrEqual(320);
+
+    const chevron = await longRoute
+      .locator("span.hero-chevron-right")
+      .boundingBox();
+    expect(chevron).not.toBeNull();
+    expect(chevron.x + chevron.width).toBeLessThanOrEqual(320);
   });
 });
 
