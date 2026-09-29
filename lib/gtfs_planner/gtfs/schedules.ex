@@ -382,6 +382,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
          trip.pattern_derivation_state != "linked"
        )}
     end)
+  end
 
   @doc """
   Locks every trip of one locked route `FOR UPDATE` in stable UUID order.

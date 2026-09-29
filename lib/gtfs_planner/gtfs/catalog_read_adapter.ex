@@ -48,7 +48,6 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   }
 
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
->>>>>>> 635dc67b (feat(gtfs): load the scoped route editor workspace (spec 16, step 5))
 
   @type unavailable :: {:error, :unavailable}
   @type route_page :: %{
@@ -74,7 +73,6 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
         }
   @type calendar_screen :: Calendars.screen()
   @type route_editor :: Routes.editor_workspace()
->>>>>>> 635dc67b (feat(gtfs): load the scoped route editor workspace (spec 16, step 5))
 
   @callback load_route_catalog(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
               {:ok, route_page()} | unavailable()
