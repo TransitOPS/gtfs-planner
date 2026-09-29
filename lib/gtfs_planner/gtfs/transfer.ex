@@ -90,6 +90,30 @@ defmodule GtfsPlanner.Gtfs.Transfer do
   end
 
   @doc """
+  Creates a changeset for an in-seat transfer record authored on a block connection.
+
+  Types 4 and 5 only, with both trips and both handoff stops required, because
+  OpenTripPlanner's `TransferMapper` dereferences the stops. The route pair and the
+  minimum time are forced to nil, and the organization, version and any existing id
+  come from the struct. `changeset/2` stays the permissive import path.
+  """
+  @spec in_seat_changeset(t() | Ecto.Changeset.t(), map() | keyword()) :: Ecto.Changeset.t()
+  def in_seat_changeset(transfer, attrs) do
+    transfer
+    |> cast(attrs, @editor_fields)
+    |> trim_string_fields()
+    |> validate_required([:transfer_type, :organization_id, :gtfs_version_id])
+    |> validate_inclusion(:transfer_type, 4..5,
+      message: "Choose riders stay on board or must re-board"
+    )
+    |> validate_required([:from_trip_id, :to_trip_id, :from_stop_id, :to_stop_id])
+    |> put_change(:from_route_id, nil)
+    |> put_change(:to_route_id, nil)
+    |> put_change(:min_transfer_time, nil)
+    |> put_key_constraints()
+  end
+
+  @doc """
   Returns the eight GTFS columns of a transfer as its audit snapshot.
 
   String keys carry every column, including the nil ones, so a deleted row can be

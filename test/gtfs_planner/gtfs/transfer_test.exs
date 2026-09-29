@@ -297,6 +297,142 @@ defmodule GtfsPlanner.Gtfs.TransferTest do
     end
   end
 
+  describe "in_seat_changeset/2" do
+    test "accepts types 4 and 5 with both trips and both stops", %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    } do
+      for transfer_type <- [4, 5] do
+        changeset =
+          in_seat_draft(organization_id, gtfs_version_id, %{
+            "transfer_type" => to_string(transfer_type),
+            "from_trip_id" => "T1",
+            "to_trip_id" => "T2",
+            "from_stop_id" => "S1",
+            "to_stop_id" => "S2"
+          })
+
+        assert changeset.valid?
+        assert errors_on(changeset) == %{}
+        assert get_field(changeset, :transfer_type) == transfer_type
+        assert get_field(changeset, :from_trip_id) == "T1"
+        assert get_field(changeset, :to_trip_id) == "T2"
+        assert get_field(changeset, :from_stop_id) == "S1"
+        assert get_field(changeset, :to_stop_id) == "S2"
+      end
+    end
+
+    test "refuses a transfer type outside 4 and 5", %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    } do
+      for transfer_type <- [0, 3] do
+        changeset =
+          in_seat_draft(organization_id, gtfs_version_id, %{
+            "transfer_type" => to_string(transfer_type),
+            "from_trip_id" => "T1",
+            "to_trip_id" => "T2",
+            "from_stop_id" => "S1",
+            "to_stop_id" => "S2"
+          })
+
+        refute changeset.valid?
+
+        assert errors_on(changeset).transfer_type == [
+                 "Choose riders stay on board or must re-board"
+               ]
+      end
+    end
+
+    test "requires both trips and both stops", %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    } do
+      attrs = %{
+        "transfer_type" => "4",
+        "from_trip_id" => "T1",
+        "to_trip_id" => "T2",
+        "from_stop_id" => "S1",
+        "to_stop_id" => "S2"
+      }
+
+      for field <- ["from_trip_id", "to_trip_id", "from_stop_id", "to_stop_id"] do
+        changeset =
+          in_seat_draft(organization_id, gtfs_version_id, Map.delete(attrs, field))
+
+        refute changeset.valid?
+        assert errors_on(changeset) == %{String.to_existing_atom(field) => ["can't be blank"]}
+      end
+    end
+
+    test "forces the route pair and the minimum time to nil", %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    } do
+      changeset =
+        in_seat_draft(organization_id, gtfs_version_id, %{
+          "transfer_type" => "4",
+          "from_trip_id" => "T1",
+          "to_trip_id" => "T2",
+          "from_stop_id" => "S1",
+          "to_stop_id" => "S2",
+          "from_route_id" => "R1",
+          "to_route_id" => "R2",
+          "min_transfer_time" => "120"
+        })
+
+      assert changeset.valid?
+      assert get_field(changeset, :from_route_id) == nil
+      assert get_field(changeset, :to_route_id) == nil
+      assert get_field(changeset, :min_transfer_time) == nil
+
+      stored = %Transfer{
+        organization_id: organization_id,
+        gtfs_version_id: gtfs_version_id,
+        transfer_type: 5,
+        from_trip_id: "T1",
+        to_trip_id: "T2",
+        from_stop_id: "DUP_OLD",
+        to_stop_id: "DUP_OLD",
+        from_route_id: "R1",
+        to_route_id: "R2",
+        min_transfer_time: 300
+      }
+
+      changeset = Transfer.in_seat_changeset(stored, %{"transfer_type" => "5"})
+
+      assert changeset.valid?
+      assert get_field(changeset, :from_route_id) == nil
+      assert get_field(changeset, :to_route_id) == nil
+      assert get_field(changeset, :min_transfer_time) == nil
+    end
+
+    test "casts only the eight GTFS fields, keeping the tenant columns and id from the struct", %{
+      organization_id: organization_id,
+      gtfs_version_id: gtfs_version_id
+    } do
+      other_organization = organization_fixture()
+      other_version = gtfs_version_fixture(organization_id)
+
+      changeset =
+        in_seat_draft(organization_id, gtfs_version_id, %{
+          "id" => Ecto.UUID.generate(),
+          "organization_id" => other_organization.id,
+          "gtfs_version_id" => other_version.id,
+          "transfer_type" => "4",
+          "from_trip_id" => "T1",
+          "to_trip_id" => "T2",
+          "from_stop_id" => "S1",
+          "to_stop_id" => "S2"
+        })
+
+      assert changeset.valid?
+      assert get_field(changeset, :organization_id) == organization_id
+      assert get_field(changeset, :gtfs_version_id) == gtfs_version_id
+      assert get_field(changeset, :id) == nil
+    end
+  end
+
   describe "insert/1" do
     test "stores NULL stops for a type 4 transfer between two trips", %{
       organization_id: organization_id,
@@ -417,6 +553,11 @@ defmodule GtfsPlanner.Gtfs.TransferTest do
   defp editor_draft(organization_id, gtfs_version_id, attrs) do
     %Transfer{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
     |> Transfer.editor_changeset(attrs)
+  end
+
+  defp in_seat_draft(organization_id, gtfs_version_id, attrs) do
+    %Transfer{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
+    |> Transfer.in_seat_changeset(attrs)
   end
 
   defp insert_transfer(attrs) do
