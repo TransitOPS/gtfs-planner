@@ -603,28 +603,46 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
   # so the featured item shows its text without a button (AC-16).
   defp featured_path(version_id, item), do: ChangeLinks.path(version_id, item)
 
-  defp featured_label(%{kind: :schedules}), do: "Open schedules"
-  defp featured_label(%{kind: :calendar}), do: "Open calendar"
-  defp featured_label(%{kind: :route_pattern}), do: "Open pattern"
-  defp featured_label(%{kind: :route_patterns}), do: "Open patterns"
-  defp featured_label(%{kind: :station}), do: "Open floorplan"
-  defp featured_label(%{kind: :stop}), do: "Open stop"
-  defp featured_label(%{kind: :transfers}), do: "Open transfers"
-  defp featured_label(_item), do: "Open"
+  @doc """
+  The label of a resume item's editor link.
 
-  defp day_count(1), do: "1 change that day"
-  defp day_count(count), do: "#{count} changes that day"
+  Shared by the planner page's featured item and the Pathways rail, where a
+  station reads "Open floorplan" (AC-16, AC-27).
+  """
+  def featured_label(%{kind: :schedules}), do: "Open schedules"
+  def featured_label(%{kind: :calendar}), do: "Open calendar"
+  def featured_label(%{kind: :route_pattern}), do: "Open pattern"
+  def featured_label(%{kind: :route_patterns}), do: "Open patterns"
+  def featured_label(%{kind: :station}), do: "Open floorplan"
+  def featured_label(%{kind: :stop}), do: "Open stop"
+  def featured_label(%{kind: :transfers}), do: "Open transfers"
+  def featured_label(_item), do: "Open"
 
-  # Check facts (AC-18): the tone is the newest run's worst outcome.
-  defp check_tone(%{errors: errors}) when errors > 0, do: :error
-  defp check_tone(%{warnings: warnings}) when warnings > 0, do: :warning
-  defp check_tone(_check), do: :success
+  @doc """
+  One item's change count for its local day, as the resume block writes it.
+  """
+  def day_count(1), do: "1 change that day"
+  def day_count(count), do: "#{count} changes that day"
+
+  @doc """
+  The check's tone: the newest run's worst outcome (AC-18).
+
+  Shared by the planner page's Check and share card and the Pathways rail.
+  """
+  def check_tone(%{errors: errors}) when errors > 0, do: :error
+  def check_tone(%{warnings: warnings}) when warnings > 0, do: :warning
+  def check_tone(_check), do: :success
 
   defp check_icon(check) do
     if check_tone(check) == :success, do: "hero-check-circle", else: "hero-exclamation-triangle"
   end
 
-  defp check_summary(check) do
+  @doc """
+  The check's summary line: "No errors · 12 warnings" / "2 errors · 4 warnings".
+
+  Shared by the planner page's Check and share card and the Pathways rail.
+  """
+  def check_summary(check) do
     "#{count_text(check.errors, "error", "No errors")} · " <>
       count_text(check.warnings, "warning", "no warnings")
   end
@@ -728,10 +746,14 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
     end
   end
 
-  # The domain hands resume items an agency-local `NaiveDateTime`; the check and
-  # export facts carry the run instants as stored. Both are formatted here the
-  # way the export screen formats its run timestamps, so a view never converts a
-  # zone itself.
-  defp format_time(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%b %-d, %-I:%M %p")
-  defp format_time(%DateTime{} = instant), do: Calendar.strftime(instant, "%b %-d, %-I:%M %p")
+  @doc """
+  A run instant as its display time.
+
+  The domain hands resume items an agency-local `NaiveDateTime`; the check and
+  export facts carry the run instants as stored. Both are formatted here the way
+  the export screen formats its run timestamps, so a view never converts a zone
+  itself.
+  """
+  def format_time(%NaiveDateTime{} = local), do: Calendar.strftime(local, "%b %-d, %-I:%M %p")
+  def format_time(%DateTime{} = instant), do: Calendar.strftime(instant, "%b %-d, %-I:%M %p")
 end
