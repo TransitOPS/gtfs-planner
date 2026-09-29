@@ -153,11 +153,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
 
       assert_patch(view, gap_url(base, a.id, b.id))
 
-      assert has_element?(view, "#gap-drawer", "Time between trips")
-      assert has_element?(view, "#gap-drawer", "Block 101 · a → b")
-      assert has_element?(view, "#gap-drawer", "Arrival")
+      assert has_element?(view, "#gap-drawer", "Between trips a and b")
+      assert has_element?(view, "#gap-drawer", "Block 101 · Weekday")
+      assert has_element?(view, "#gap-drawer", "Arrives")
       assert has_element?(view, "#gap-drawer", "07:00")
-      assert has_element?(view, "#gap-drawer", "Departure")
+      assert has_element?(view, "#gap-drawer", "Next trip leaves")
       assert has_element?(view, "#gap-drawer", "07:12")
       assert has_element?(view, "#gap-drawer", "Main St")
       assert has_element?(view, "#gap-text", "12 min layover at Main St")
@@ -287,7 +287,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       # short layover and the callout stays an info one.
       {:ok, view, _html} = live(conn, gap_url(base, a.id, b.id))
 
-      assert has_element?(view, "#gap-drawer", "Time between trips")
+      assert has_element?(view, "#gap-drawer", "Between trips a and b")
       assert has_element?(view, "#gap-text", "Nearby stop · 120 m · 6 min available")
       assert has_element?(view, "#gap-text[data-short='false']")
       assert has_element?(view, "#gap-rider-note", @rider_note)
@@ -340,11 +340,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       |> element("[data-role='blocks-gap'][data-from='#{a.id}'][data-to='#{b.id}']")
       |> render_click()
 
-      assert has_element?(
-               view,
-               "#gap-text",
-               "Moves empty: Riverside → North End. Driving time is unknown."
-             )
+      # The measured move's own minutes, so the callout no longer claims a driving
+      # time the day load can compute (step 39). The row below carries the same
+      # number with its source; the estimate itself is the domain's, not the test's.
+      assert has_element?(view, "#gap-text", "Moves empty: Riverside → North End.")
+      refute has_element?(view, "#gap-text", "Driving time is unknown")
+      assert has_element?(view, "#gap-drive")
 
       assert has_element?(view, "#gap-text[data-short='false']")
       refute has_element?(view, "#gap-rider-note")
@@ -462,8 +463,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       assert_patch(view, gap_url(base, a.id, b.id, [{"block", "101"}]))
 
       assert has_element?(view, "#gap-drawer", "10 min overlap")
-      assert has_element?(view, "#gap-drawer", "Block 101 · a → b")
-      assert has_element?(view, "#gap-back-to-block", "Back to block 101")
+      assert has_element?(view, "#gap-drawer", "Block 101 · Weekday")
+      assert has_element?(view, "#gap-back-to-block", "Open block 101")
     end
 
     test "a record for the pair appears with its state text", %{version: version} = context do
@@ -632,7 +633,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       assert_patch(view, gap_url(base, a.id, b.id, [{"block", "101"}]))
 
       assert has_element?(view, "#gap-drawer", "12 min layover at Main St")
-      assert has_element?(view, "#gap-back-to-block", "Back to block 101")
+      assert has_element?(view, "#gap-back-to-block", "Open block 101")
       refute has_element?(view, "#block-drawer")
 
       view |> element("#gap-back-to-block") |> render_click()
