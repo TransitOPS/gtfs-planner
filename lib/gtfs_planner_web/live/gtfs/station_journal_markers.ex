@@ -5,6 +5,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
   from journal entry payloads.
   """
 
+  alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.JournalEntry
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.Stop
@@ -310,8 +311,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
       end
 
     with false <- is_nil(stop_level_id),
-         {:ok, x} <- validate_coordinate(dx),
-         {:ok, y} <- validate_coordinate(dy) do
+         {:ok, x} <- validate_coordinate(dx, :x),
+         {:ok, y} <- validate_coordinate(dy, :y) do
       {:ok, "journal-marker-pin-#{entry.id}",
        %{
          kind: :pin,
@@ -482,8 +483,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
   end
 
   defp parse_xy(x, y) do
-    with {:ok, fx} <- validate_coordinate(x),
-         {:ok, fy} <- validate_coordinate(y) do
+    with {:ok, fx} <- validate_coordinate(x, :x),
+         {:ok, fy} <- validate_coordinate(y, :y) do
       {:ok, {fx, fy}}
     else
       _ -> :error
@@ -530,10 +531,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkers do
     end
   end
 
-  defp validate_coordinate(val) do
+  defp validate_coordinate(val, axis) do
     case to_float(val) do
       {:ok, f} ->
-        if not infinite?(f) and f >= 0.0 and f <= 100.0 do
+        if not infinite?(f) and f >= 0.0 and f <= Coordinates.max_diagram_coordinate(axis) do
           {:ok, f}
         else
           :error

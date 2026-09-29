@@ -102,6 +102,61 @@ defmodule GtfsPlanner.Gtfs.Calendars.CoverageTest do
       assert valid.status.active_today?
       refute valid.status.no_service?
     end
+
+    test "opens through get_calendar with its stored row and no derived dates", context do
+      route =
+        route_fixture(context.organization.id, context.version.id, %{route_id: "r_reversed"})
+
+      trip_fixture(context.organization.id, context.version.id, route.route_id, %{
+        service_id: "REVERSED_WEEKLY"
+      })
+
+      calendar_csv = """
+      service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date
+      REVERSED_WEEKLY,1,1,1,1,1,0,0,20261231,20260101
+      VALID_WEEKLY,1,0,0,0,0,0,0,20260615,20260615
+      """
+
+      dates_csv = """
+      service_id,date,exception_type
+      REVERSED_WEEKLY,20260704,1
+      """
+
+      attributes_csv = """
+      service_id,service_description
+      REVERSED_WEEKLY,Reversed Weekday
+      VALID_WEEKLY,Regular Weekday
+      """
+
+      assert {:ok, _result} = import_calendars(context, calendar_csv, dates_csv, attributes_csv)
+
+      assert {:ok, reversed} =
+               Gtfs.get_calendar(context.organization.id, context.version.id, "REVERSED_WEEKLY")
+
+      assert reversed.coverage_error == %{service_id: "REVERSED_WEEKLY", reason: :reversed_range}
+      assert reversed.calendar.start_date == ~D[2026-12-31]
+      assert reversed.calendar.end_date == ~D[2026-01-01]
+      assert reversed.attributes.service_description == "Reversed Weekday"
+      assert Enum.map(reversed.exceptions, & &1.date) == [~D[2026-07-04]]
+      assert reversed.kind == :weekly
+      assert reversed.usage.trip_count == 1
+      assert reversed.active_dates == []
+      assert reversed.warnings == []
+
+      assert reversed.periods == %{
+               periods: [],
+               breaks: [],
+               holidays: [],
+               extra_days: [],
+               removed_days: []
+             }
+
+      assert {:ok, valid} =
+               Gtfs.get_calendar(context.organization.id, context.version.id, "VALID_WEEKLY")
+
+      assert valid.coverage_error == nil
+      assert valid.active_dates == [~D[2026-06-15]]
+    end
   end
 
   describe "an all-zero weekly row and a metadata-only identity" do

@@ -147,6 +147,40 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
     end
   end
 
+  describe "StopsLive stop links" do
+    setup :shared_setup
+
+    test "links a stop whose ID has reserved URL characters by its encoded path and opens its detail page",
+         %{conn: conn, user: user, organization: organization, gtfs_version: version} do
+      # This case reads through the production adapter; the setup's on_exit
+      # restores the mock override.
+      Application.delete_env(:gtfs_planner, @adapter_key)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "QA/STN 1",
+        stop_name: "Slash Station",
+        location_type: 1
+      })
+
+      {:ok, list_view, _html} = live(conn, "/gtfs/#{version.id}/stops")
+
+      [href] =
+        list_view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("tbody#stops a")
+        |> LazyHTML.attribute("href")
+
+      assert href == "/gtfs/#{version.id}/stops/QA%2FSTN%201"
+
+      {:ok, detail_view, _html} = live(conn, href)
+
+      assert has_element?(detail_view, "#station-sub-nav h1", "Slash Station")
+    end
+  end
+
   describe "StopsLive page header and type labels" do
     setup :shared_setup
 
@@ -949,6 +983,148 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLiveTest do
       assert html =~ "Station 1"
       refute html =~ "Station 2"
       assert_patched(view, "/gtfs/#{version.id}/stops?route_id=R1")
+    end
+  end
+
+  describe "StopsLive malformed URL parameters" do
+    setup :shared_setup
+
+    setup %{conn: conn, user: user, organization: organization, gtfs_version: version} do
+      stop =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "MALFORMED1",
+          stop_name: "Malformed Stop",
+          parent_station: nil
+        })
+
+      test_pid = self()
+
+      stub_catalog(fn opts ->
+        send(test_pid, {:catalog_opts, opts})
+        {:ok, stop_page([stop], 1, 1, [], %{})}
+      end)
+
+      %{conn: log_in_user(conn, user, organization: organization)}
+    end
+
+    test "ignores a non-numeric wheelchair_boarding filter", %{conn: conn, gtfs_version: version} do
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?wheelchair_boarding=abc")
+
+      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert_received {:catalog_opts, opts}
+      assert opts[:wheelchair_boarding] == nil
+    end
+
+    test "ignores an out-of-range wheelchair_boarding filter", %{
+      conn: conn,
+      gtfs_version: version
+    } do
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?wheelchair_boarding=7")
+
+      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert_received {:catalog_opts, opts}
+      assert opts[:wheelchair_boarding] == nil
+    end
+
+    test "ignores a non-numeric direction_id filter", %{conn: conn, gtfs_version: version} do
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?route_id=R1&direction_id=x")
+
+      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert_received {:catalog_opts, opts}
+      assert opts[:direction_id] == nil
+    end
+
+    test "ignores an out-of-range direction_id filter", %{conn: conn, gtfs_version: version} do
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?route_id=R1&direction_id=2")
+
+      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert_received {:catalog_opts, opts}
+      assert opts[:direction_id] == nil
+    end
+
+    test "keeps ascending order when sort_dir is the atom nil", %{
+      conn: conn,
+      gtfs_version: version
+    } do
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?sort_dir=nil")
+
+      assert has_element?(view, "th[aria-sort='ascending']")
+      assert_received {:catalog_opts, opts}
+      assert opts[:sort_dir] == :asc
+    end
+
+    test "keeps ascending order when sort_dir is another existing atom", %{
+      conn: conn,
+      gtfs_version: version
+    } do
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?sort_dir=stop_name")
+
+      assert has_element?(view, "th[aria-sort='ascending']")
+      assert_received {:catalog_opts, opts}
+      assert opts[:sort_dir] == :asc
+    end
+
+    test "sorts by stop name when sort_by is a column stops cannot sort by", %{
+      conn: conn,
+      gtfs_version: version
+    } do
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?sort_by=inserted_at")
+
+      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert_received {:catalog_opts, opts}
+      assert opts[:sort_by] == :stop_name
+    end
+
+    test "sorts by stop name when sort_by is route_id", %{conn: conn, gtfs_version: version} do
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?sort_by=route_id")
+
+      assert has_element?(view, "th[aria-sort='ascending']")
+      assert_received {:catalog_opts, opts}
+      assert opts[:sort_by] == :stop_name
+    end
+
+    test "uses the default sort when sort_by and sort_dir are both unknown", %{
+      conn: conn,
+      gtfs_version: version
+    } do
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?sort_by=nope&sort_dir=nope")
+
+      assert has_element?(view, "th[aria-sort='ascending']")
+      assert_received {:catalog_opts, opts}
+      assert opts[:sort_by] == :stop_name
+      assert opts[:sort_dir] == :asc
+    end
+
+    test "uses the default page when page is nested", %{conn: conn, gtfs_version: version} do
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?page[a]=b")
+
+      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert_received {:catalog_opts, opts}
+      assert opts[:page] == 1
+    end
+
+    test "ignores a nested search value", %{conn: conn, gtfs_version: version} do
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?search[a]=b")
+
+      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert_received {:catalog_opts, opts}
+      assert opts[:search] == ""
+    end
+
+    test "ignores a search value containing a NUL byte", %{conn: conn, gtfs_version: version} do
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?search=%00")
+
+      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert_received {:catalog_opts, opts}
+      assert opts[:search] == ""
+    end
+
+    test "ignores a nested route_id value", %{conn: conn, gtfs_version: version} do
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/stops?route_id[a]=b")
+
+      assert has_element?(view, "tbody#stops a", "MALFORMED1")
+      assert_received {:catalog_opts, opts}
+      assert opts[:route_id] == ""
     end
   end
 end

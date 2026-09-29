@@ -510,6 +510,182 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
 
       assert input_value(html, "calendar-service-id") == "summer_school_2026"
     end
+
+    test "keeps following the name while each keystroke resubmits the suggested service ID", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, new_path(version))
+
+      for name <- ["D", "DOCQA", "DOCQA Weekday"] do
+        service_id = input_value(render(view), "calendar-service-id")
+
+        view
+        |> form("#calendar-form", %{calendar: %{name: name, service_id: service_id}})
+        |> render_change()
+      end
+
+      assert input_value(render(view), "calendar-service-id") == "docqa_weekday"
+    end
+
+    test "follows the name again after it is cleared and retyped", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, new_path(version))
+
+      for name <- ["Weekday", "", "Saturday"] do
+        service_id = input_value(render(view), "calendar-service-id")
+
+        view
+        |> form("#calendar-form", %{calendar: %{name: name, service_id: service_id}})
+        |> render_change()
+      end
+
+      assert input_value(render(view), "calendar-service-id") == "saturday"
+    end
+
+    test "keeps a service ID the user typed when the name changes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, new_path(version))
+
+      view
+      |> form("#calendar-form", %{calendar: %{name: "Weekday"}})
+      |> render_change()
+
+      view
+      |> form("#calendar-form", %{calendar: %{service_id: "WKDY"}})
+      |> render_change()
+
+      for name <- ["Weekday s", "Weekday sch"] do
+        service_id = input_value(render(view), "calendar-service-id")
+
+        view
+        |> form("#calendar-form", %{calendar: %{name: name, service_id: service_id}})
+        |> render_change()
+      end
+
+      assert input_value(render(view), "calendar-service-id") == "WKDY"
+    end
+
+    test "never re-derives the service ID of an existing calendar when it is renamed", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      context = %{organization: organization, version: version}
+      seeded_weekly(context, "summer", "Summer")
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, detail_path(version, "summer"))
+
+      refute has_element?(view, "#calendar-service-id")
+
+      view
+      |> form("#calendar-form", %{calendar: %{name: "Winter"}})
+      |> render_change()
+
+      view
+      |> form("#calendar-form")
+      |> render_submit()
+
+      assert stored(context, "summer").attributes.service_description == "Winter"
+      assert {:error, :not_found} = Gtfs.fetch_calendar(organization.id, version.id, "winter")
+    end
+  end
+
+  defp submit_reversed_rating(view) do
+    view
+    |> form("#calendar-form", %{
+      calendar: %{
+        name: "Rated",
+        service_id: "RATED",
+        kind: "weekly",
+        weekdays: ["monday"],
+        start_date: "2026-03-02",
+        end_date: "2026-03-31",
+        rating_start_date: "2026-06-30",
+        rating_end_date: "2026-06-01"
+      }
+    })
+    |> render_submit()
+  end
+
+  describe "the More details disclosure on the create form" do
+    setup %{conn: conn, user: user, organization: organization, version: version} do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, new_path(version))
+
+      %{view: view}
+    end
+
+    test "starts closed", %{view: view} do
+      assert has_element?(view, "#calendar-more-details")
+      refute has_element?(view, "#calendar-more-details[open]")
+    end
+
+    test "stays open while a field inside it changes", %{view: view} do
+      view |> element("#calendar-more-details-summary") |> render_click()
+      assert has_element?(view, "#calendar-more-details[open]")
+
+      view
+      |> form("#calendar-form", %{calendar: %{service_schedule_name: "W"}})
+      |> render_change()
+
+      assert has_element?(view, "#calendar-more-details[open]")
+    end
+
+    test "returns to closed when the summary is toggled twice", %{view: view} do
+      view |> element("#calendar-more-details-summary") |> render_click()
+      view |> element("#calendar-more-details-summary") |> render_click()
+
+      refute has_element?(view, "#calendar-more-details[open]")
+    end
+
+    test "opens to show an error on a field inside it after a save", %{view: view} do
+      submit_reversed_rating(view)
+
+      assert has_element?(view, "#calendar-more-details[open]")
+
+      assert has_element?(
+               view,
+               "#calendar-more-details #calendar-rating-end-error",
+               "must be on or after the rating start date"
+             )
+
+      assert has_element?(view, "#calendar-rating-end[aria-invalid='true']")
+    end
+
+    test "stays open once an error opened it and the next change validates", %{view: view} do
+      submit_reversed_rating(view)
+
+      view
+      |> form("#calendar-form", %{calendar: %{rating_end_date: "2026-07-31"}})
+      |> render_change()
+
+      assert has_element?(view, "#calendar-more-details[open]")
+      refute has_element?(view, "#calendar-rating-end-error")
+    end
+
+    test "stays closed when only a field outside it fails", %{view: view} do
+      view
+      |> form("#calendar-form", %{calendar: %{name: "", service_id: "NONAME"}})
+      |> render_submit()
+
+      assert has_element?(view, "#calendar-name-error")
+      refute has_element?(view, "#calendar-more-details[open]")
+    end
   end
 
   describe "service ID routing at the real router" do
@@ -739,6 +915,194 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
       payload = stored(context, "IMPORTED_UNNAMED")
       assert payload.attributes.service_description == nil
       assert Enum.map(exception_rows(context, "IMPORTED_UNNAMED"), & &1.date) == [~D[2026-05-01]]
+    end
+  end
+
+  describe "a calendar whose end date is before its start date" do
+    setup context do
+      seeded_weekly(context, "REVERSED", "Reversed range", %{
+        start_date: ~D[2026-03-31],
+        end_date: ~D[2026-03-02]
+      })
+
+      %{conn: log_in_user(context.conn, context.user, organization: context.organization)}
+    end
+
+    test "opens with the error callout and the stored dates in the form", context do
+      {:ok, view, html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      assert has_element?(view, "#calendar-range-error")
+      assert input_value(html, "calendar-start-date") == "2026-03-31"
+      assert input_value(html, "calendar-end-date") == "2026-03-02"
+      assert input_value(html, "calendar-name") == "Reversed range"
+    end
+
+    test "keeps rendering while the form still holds a reversed range", context do
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      # One date at a time: the range stays reversed after each edit.
+      start_moved =
+        view
+        |> form("#calendar-form", %{calendar: %{start_date: "2026-04-30"}})
+        |> render_change()
+
+      assert input_value(start_moved, "calendar-start-date") == "2026-04-30"
+      assert input_value(start_moved, "calendar-end-date") == "2026-03-02"
+      assert has_element?(view, "#calendar-range-error")
+
+      end_moved =
+        view
+        |> form("#calendar-form", %{calendar: %{end_date: "2026-04-01"}})
+        |> render_change()
+
+      assert input_value(end_moved, "calendar-end-date") == "2026-04-01"
+      assert has_element?(view, "#calendar-range-error")
+    end
+
+    test "saves a corrected range and drops the error callout", context do
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      view
+      |> form("#calendar-form", %{calendar: %{end_date: "2026-04-30"}})
+      |> render_change()
+
+      view
+      |> form("#calendar-form", %{calendar: %{end_date: "2026-04-30"}})
+      |> render_submit()
+
+      row = weekly_row(context, "REVERSED")
+      assert {row.start_date, row.end_date} == {~D[2026-03-31], ~D[2026-04-30]}
+      refute has_element?(view, "#calendar-range-error")
+      assert stored(context, "REVERSED").coverage_error == nil
+      assert stored(context, "REVERSED").active_dates != []
+    end
+
+    test "refuses a save that leaves the range reversed and writes nothing", context do
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      html =
+        view
+        |> form("#calendar-form", %{calendar: %{name: "Renamed range"}})
+        |> render_submit()
+
+      assert html =~ "calendar-end-date-error"
+      assert html =~ "must be on or after the start date"
+      assert has_element?(view, "#calendar-range-error")
+
+      row = weekly_row(context, "REVERSED")
+      assert {row.start_date, row.end_date} == {~D[2026-03-31], ~D[2026-03-02]}
+      assert stored(context, "REVERSED").attributes.service_description == "Reversed range"
+    end
+
+    test "does not offer a break, single-date changes or conversion to specific dates",
+         context do
+      calendar_date_fixture(context.organization.id, context.version.id, %{
+        service_id: "REVERSED",
+        date: ~D[2026-07-04],
+        exception_type: 1
+      })
+
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      refute has_element?(view, "#calendar-break-form")
+      refute has_element?(view, "#calendar-exception-form")
+      refute has_element?(view, "#calendar-exception-chips button")
+      assert has_element?(view, "#calendar-kind-dates-only[disabled]")
+      refute has_element?(view, "#calendar-kind-weekly[disabled]")
+    end
+
+    test "offers them again once a corrected range is saved", context do
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      view
+      |> form("#calendar-form", %{calendar: %{end_date: "2026-04-30"}})
+      |> render_submit()
+
+      assert has_element?(view, "#calendar-break-form")
+      assert has_element?(view, "#calendar-exception-form")
+      refute has_element?(view, "#calendar-kind-dates-only[disabled]")
+    end
+
+    test "refuses a forged break and keeps the view open", context do
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      render_submit(view, "add_break", %{
+        "break" => %{"first_date" => "2026-03-09", "last_date" => "2026-03-13"}
+      })
+
+      assert has_element?(view, "#calendar-error", "Correct this calendar’s dates first.")
+      refute has_element?(view, "#calendar-review-dialog[data-open=true]")
+      assert has_element?(view, "#calendar-range-error")
+      assert exception_rows(context, "REVERSED") == []
+    end
+
+    test "refuses a forged conversion to specific dates and keeps the view open", context do
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      render_click(view, "set_kind", %{"kind" => "dates_only"})
+
+      render_submit(view, "submit_form", %{
+        "calendar" => %{"kind" => "dates_only", "name" => "Reversed range"}
+      })
+
+      assert has_element?(view, "#calendar-error", "Correct this calendar’s dates first.")
+      refute has_element?(view, "#calendar-review-dialog[data-open=true]")
+      row = weekly_row(context, "REVERSED")
+      assert {row.start_date, row.end_date} == {~D[2026-03-31], ~D[2026-03-02]}
+      assert exception_rows(context, "REVERSED") == []
+    end
+
+    test "refuses forged single-date changes and keeps the view open", context do
+      calendar_date_fixture(context.organization.id, context.version.id, %{
+        service_id: "REVERSED",
+        date: ~D[2026-07-04],
+        exception_type: 1
+      })
+
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      render_submit(view, "add_dates", %{"exception" => %{"date" => "2026-08-01"}})
+      assert has_element?(view, "#calendar-error", "Correct this calendar’s dates first.")
+
+      render_click(view, "remove_date", %{"date" => "2026-07-04"})
+      assert has_element?(view, "#calendar-error", "Correct this calendar’s dates first.")
+
+      render_click(view, "remove_break", %{"dates" => "2026-07-04"})
+      assert has_element?(view, "#calendar-error", "Correct this calendar’s dates first.")
+
+      assert Enum.map(exception_rows(context, "REVERSED"), & &1.date) == [~D[2026-07-04]]
+    end
+
+    test "deletes after review when no trip uses it", context do
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      view |> element("#calendar-delete") |> render_click()
+      assert has_element?(view, "#calendar-review-dialog[data-open=true]", "Delete REVERSED?")
+
+      assert {:error, {:live_redirect, %{to: to}}} = render_click(view, "apply_review")
+      assert to == list_path(context.version)
+
+      assert weekly_row(context, "REVERSED") == nil
+
+      assert {:error, :not_found} =
+               Gtfs.fetch_calendar(context.organization.id, context.version.id, "REVERSED")
+    end
+
+    test "reports the trips that block its deletion", context do
+      route =
+        route_fixture(context.organization.id, context.version.id, %{route_id: "R_REVERSED"})
+
+      trip_fixture(context.organization.id, context.version.id, route.route_id, %{
+        service_id: "REVERSED"
+      })
+
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      view |> element("#calendar-delete") |> render_click()
+
+      assert has_element?(view, "#calendar-delete-blocked", "1 trips use this calendar")
+      refute has_element?(view, "#calendar-review-dialog[data-open=true]")
+      assert weekly_row(context, "REVERSED") != nil
     end
   end
 

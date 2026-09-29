@@ -1313,7 +1313,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                 build_state={@build_state}
                 build_error={@build_error}
                 stale?={@stale?}
-                new_path={"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/new"}
+                new_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/new"}
                 editable?={@patterns_editable}
                 selected={@bulk_selected}
                 bulk_dialog={@bulk_dialog}
@@ -2193,7 +2193,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
         socket = socket |> assign(:error_message, nil) |> put_stop_review(review)
 
-        if impact.trips_affected == 0 and stop_review_ready?(socket.assigns.review, socket) do
+        if impact.trips_affected == 0 and not resequences_times?(socket.assigns.review) and
+             stop_review_ready?(socket.assigns.review, socket) do
           apply_stop_operation(socket, socket.assigns.review)
         else
           {:noreply, socket}
@@ -2220,7 +2221,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   defp put_stop_review(socket, review) do
-    assign(socket, :review, Map.put(review, :blocks, stop_review_blocks(socket, review)))
+    review =
+      Map.merge(review, %{
+        blocks: stop_review_blocks(socket, review),
+        resequenced?: resequences_times?(review)
+      })
+
+    assign(socket, :review, review)
   end
 
   defp stop_review_blocks(socket, review) do
@@ -2251,6 +2258,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         trip_count_label: trip_count_text(trip_count),
         shift: shift_label(Map.get(proposed, :start_shifts, []), timing.id),
         acknowledged: MapSet.member?(review.acks, timing.id),
+        resequenced: resequenced_rows(socket, estimates, timing.id, rows, shift),
         added:
           Enum.map(added, fn {occurrence, index} ->
             row = Enum.at(rows, index) || %{}
@@ -2275,6 +2283,27 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end)
   end
 
+  # The retained stops whose time changed because the stop order changed, in
+  # staged order, with the proposed time each one now carries in this timing.
+  defp resequenced_rows(socket, estimates, timing_id, rows, shift) do
+    resequenced_ids =
+      for %{resequenced: true, timing_id: ^timing_id, id: id} <- estimates,
+          into: MapSet.new(),
+          do: id
+
+    for {occurrence, index} <- Enum.with_index(socket.assigns.staged_occurrences),
+        MapSet.member?(resequenced_ids, occurrence.id) do
+      row = Enum.at(rows, index) || %{}
+
+      %{
+        id: occurrence.id,
+        name: stop_name(socket.assigns.stops, occurrence.stop_id),
+        arrival: raw_review_offset(row[:arrival_offset], shift),
+        departure: raw_review_offset(row[:departure_offset], shift)
+      }
+    end
+  end
+
   defp invalid_review_values?(values) when map_size(values) == 0, do: false
 
   defp invalid_review_values?(values),
@@ -2295,16 +2324,24 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp stop_review_ready?(review, socket), do: stop_review_ready_assigns?(socket.assigns, review)
 
   # A removal-only edit adds no stop values, so it needs no acknowledgement; an
-  # added stop on a used pattern does, because applying it changes trips.
+  # added stop on a used pattern does, because applying it changes trips. A
+  # reorder that changes times needs one on any pattern, because the times move
+  # to the timing rows even when no trip uses the pattern.
   defp stop_review_ready_assigns?(assigns, review \\ nil) do
     review = review || assigns.review
 
     case review do
       %{kind: :stops, error: nil} ->
         cond do
-          Map.get(review.impact || %{}, :trips_affected, 0) == 0 -> true
-          not stop_review_requires_ack?(assigns, review) -> true
-          true -> Enum.all?(Map.get(review, :blocks, []), & &1.acknowledged)
+          Map.get(review.impact || %{}, :trips_affected, 0) == 0 and
+              not resequences_times?(review) ->
+            true
+
+          not stop_review_requires_ack?(assigns, review) ->
+            true
+
+          true ->
+            Enum.all?(Map.get(review, :blocks, []), & &1.acknowledged)
         end
 
       _ ->
@@ -2313,8 +2350,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   defp stop_review_requires_ack?(assigns, review \\ nil) do
-    proposes_added_stop?(review || assigns.review) and assigns.detail_trip_count > 0
+    review = review || assigns.review
+
+    resequences_times?(review) or
+      (proposes_added_stop?(review) and assigns.detail_trip_count > 0)
   end
+
+  defp resequences_times?(%{proposed: proposed}) when is_map(proposed) do
+    proposed |> Map.get(:estimates) |> Kernel.||([]) |> Enum.any?(& &1[:resequenced])
+  end
+
+  defp resequences_times?(_review), do: false
 
   defp proposes_added_stop?(%{proposed: proposed}) do
     proposed
@@ -2681,9 +2727,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
             stop_headsign: touched_value(row, :headsign, stored_row)
           }
         end)
+        |> fill_unset_timepoints()
     }
 
     changed_headsign(socket, attrs)
+  end
+
+  # GTFS reads an empty timepoint as exact, but the editor shows an unset row as
+  # unchecked. Once any row holds an explicit value, the rest are written as 0 so
+  # the export matches the checkboxes; a timing that never set one stays all nil.
+  defp fill_unset_timepoints(rows) do
+    if Enum.all?(rows, &is_nil(&1.timepoint)),
+      do: rows,
+      else: Enum.map(rows, &%{&1 | timepoint: &1.timepoint || 0})
   end
 
   # An edited field takes its staged value; an untouched field keeps the stored
@@ -3258,7 +3314,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     do: "This stop is already next to that position."
 
   defp reasons_message(:timing_acknowledgement_required),
-    do: "Acknowledge the added stop values for every timing before saving."
+    do: "Acknowledge the proposed stop values for every timing before saving."
 
   defp reasons_message(:explicit_terminal_values_required),
     do: "Enter arrival and departure for the added end stop in every timing."
@@ -3297,22 +3353,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp blank_to_nil(_value), do: nil
 
   defp patterns_path(socket) do
-    "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns"
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns"
   end
 
   defp version_patterns_path(socket, version_id) do
-    "/gtfs/#{version_id}/routes/#{socket.assigns.route_id}/patterns"
+    ~p"/gtfs/#{version_id}/routes/#{socket.assigns.route_id}/patterns"
   end
 
   defp pattern_path(socket, pattern_id, query) do
-    "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns/#{pattern_id}#{query}"
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns/#{pattern_id}" <>
+      query
   end
 
   defp task_path(socket, task) do
     base =
       case socket.assigns.live_action do
         :new -> "#{patterns_path(socket)}/new"
-        _ -> "#{patterns_path(socket)}/#{socket.assigns.pattern_id}"
+        _ -> pattern_path(socket, socket.assigns.pattern_id, "")
       end
 
     "#{base}?#{task_query(socket, task)}"

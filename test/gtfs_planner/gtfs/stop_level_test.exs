@@ -3,6 +3,50 @@ defmodule GtfsPlanner.Gtfs.StopLevelTest do
 
   alias GtfsPlanner.Gtfs.StopLevel
 
+  defp scale_attrs(point_a, point_b) do
+    %{
+      scale_point_a: point_a,
+      scale_point_b: point_b,
+      scale_distance_meters: Decimal.new("20"),
+      scale_meters_per_unit: Decimal.new("2")
+    }
+  end
+
+  describe "scale_changeset/2" do
+    test "accepts a scale point past y = 100 on a portrait floorplan" do
+      attrs = scale_attrs(%{"x" => 10.0, "y" => 103.0}, %{"x" => 20.0, "y" => 12.0})
+
+      changeset = StopLevel.scale_changeset(%StopLevel{}, attrs)
+
+      assert changeset.valid?
+    end
+
+    test "rejects a scale point above the diagram y ceiling" do
+      attrs = scale_attrs(%{"x" => 10.0, "y" => 401.0}, %{"x" => 20.0, "y" => 12.0})
+
+      changeset = StopLevel.scale_changeset(%StopLevel{}, attrs)
+
+      assert {"must include numeric x between 0 and 100 and y between 0 and 400", _} =
+               changeset.errors[:scale_point_a]
+    end
+
+    test "rejects a scale point with a negative y" do
+      attrs = scale_attrs(%{"x" => 10.0, "y" => 12.0}, %{"x" => 20.0, "y" => -0.5})
+
+      changeset = StopLevel.scale_changeset(%StopLevel{}, attrs)
+
+      assert Keyword.has_key?(changeset.errors, :scale_point_b)
+    end
+
+    test "rejects a scale point with x above 100" do
+      attrs = scale_attrs(%{"x" => 101.0, "y" => 12.0}, %{"x" => 20.0, "y" => 12.0})
+
+      changeset = StopLevel.scale_changeset(%StopLevel{}, attrs)
+
+      assert Keyword.has_key?(changeset.errors, :scale_point_a)
+    end
+  end
+
   describe "alignment_changeset/2" do
     test "is valid when all four fields are set with valid values" do
       attrs = %{

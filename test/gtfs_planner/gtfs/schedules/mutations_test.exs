@@ -295,6 +295,160 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
     end
   end
 
+  describe "blank headsign on edit" do
+    test "a blank headsign stores the trip's timing headsign and audits the stored value",
+         context do
+      scope =
+        schedule_scope!(context, "12h1", %{
+          pattern_headsign: "Pattern sign",
+          timing_headsign: "Timing sign"
+        })
+
+      trip = headsign_trip!(context, "12h1", scope, "Old sign")
+
+      assert {:ok, edited} =
+               Gtfs.update_trip(
+                 "12h1",
+                 trip.id,
+                 %{trip_headsign: ""},
+                 trip.updated_at,
+                 context.audit
+               )
+
+      assert edited.trip_headsign == "Timing sign"
+      assert Repo.get!(Trip, trip.id).trip_headsign == "Timing sign"
+
+      assert [log] = trip_logs(context)
+      assert log.changed_fields["before"]["trip_headsign"] == "Old sign"
+      assert log.changed_fields["after"]["trip_headsign"] == "Timing sign"
+    end
+
+    test "a whitespace-only headsign stores the pattern headsign when the timing has none",
+         context do
+      scope = schedule_scope!(context, "12h2", %{pattern_headsign: "Pattern sign"})
+      trip = headsign_trip!(context, "12h2", scope, "Old sign")
+
+      assert {:ok, edited} =
+               Gtfs.update_trip(
+                 "12h2",
+                 trip.id,
+                 %{trip_headsign: "   "},
+                 trip.updated_at,
+                 context.audit
+               )
+
+      assert edited.trip_headsign == "Pattern sign"
+      assert Repo.get!(Trip, trip.id).trip_headsign == "Pattern sign"
+    end
+
+    test "a blank headsign stores nil when neither the timing nor the pattern has one",
+         context do
+      scope = schedule_scope!(context, "12h3", %{})
+      trip = headsign_trip!(context, "12h3", scope, "Old sign")
+
+      assert {:ok, edited} =
+               Gtfs.update_trip(
+                 "12h3",
+                 trip.id,
+                 %{trip_headsign: ""},
+                 trip.updated_at,
+                 context.audit
+               )
+
+      assert edited.trip_headsign == nil
+      assert Repo.get!(Trip, trip.id).trip_headsign == nil
+
+      assert [log] = trip_logs(context)
+      assert log.changed_fields["after"]["trip_headsign"] == nil
+    end
+
+    test "a blank headsign on a custom trip with no pattern stores nil", context do
+      scope = schedule_scope!(context, "12h4", %{pattern_headsign: "Pattern sign"})
+
+      trip =
+        custom_trip!(
+          context,
+          "12h4",
+          scope,
+          [{"A", "06:00:00", "06:00:00"}, {"Z", "06:09:00", "06:09:00"}],
+          %{route_pattern_id: nil, trip_headsign: "Old sign"}
+        )
+
+      assert {:ok, edited} =
+               Gtfs.update_trip(
+                 "12h4",
+                 trip.id,
+                 %{trip_headsign: ""},
+                 trip.updated_at,
+                 context.audit
+               )
+
+      assert edited.trip_headsign == nil
+    end
+
+    test "a non-blank headsign is stored as submitted, trimmed", context do
+      scope =
+        schedule_scope!(context, "12h5", %{
+          pattern_headsign: "Pattern sign",
+          timing_headsign: "Timing sign"
+        })
+
+      trip = headsign_trip!(context, "12h5", scope, nil)
+
+      assert {:ok, edited} =
+               Gtfs.update_trip(
+                 "12h5",
+                 trip.id,
+                 %{trip_headsign: " Express "},
+                 trip.updated_at,
+                 context.audit
+               )
+
+      assert edited.trip_headsign == "Express"
+    end
+
+    test "a blank headsign stores the headsign of the timing the trip moves to", context do
+      scope = schedule_scope!(context, "12h6", %{timing_headsign: "Standard sign"})
+
+      express =
+        timing_fixture(scope.bundle, [{0, 0, 1}, {120, 150, 1}, {420, 420, 1}], %{
+          name: "Express",
+          headsign: "Express sign"
+        })
+
+      trip = headsign_trip!(context, "12h6", scope, "Old sign")
+
+      assert {:ok, edited} =
+               Gtfs.update_trip(
+                 "12h6",
+                 trip.id,
+                 %{trip_headsign: "", start_time: "06:00:00", timed_pattern_id: express.id},
+                 trip.updated_at,
+                 context.audit
+               )
+
+      assert edited.timed_pattern_id == express.id
+      assert edited.trip_headsign == "Express sign"
+    end
+
+    test "a request without a headsign leaves the stored headsign alone", context do
+      scope = schedule_scope!(context, "12h7", %{timing_headsign: "Timing sign"})
+      trip = headsign_trip!(context, "12h7", scope, nil)
+
+      assert {:ok, edited} =
+               Gtfs.update_trip(
+                 "12h7",
+                 trip.id,
+                 %{trip_short_name: "12H"},
+                 trip.updated_at,
+                 context.audit
+               )
+
+      assert edited.trip_short_name == "12H"
+      assert edited.trip_headsign == nil
+    end
+  end
+
   describe "custom trips" do
     test "a custom trip keeps byte-identical stop times and adopts only a compatible timing",
          context do
@@ -643,9 +797,14 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
       assert copy.pattern_derivation_reason == nil
       assert copy.trip_headsign == "Downtown"
 
-      assert {copy.service_id, copy.trip_short_name, copy.wheelchair_accessible,
-              copy.bikes_allowed, copy.shape_id} ==
-               {scope.service, "12D", 1, 2, "SHAPE-12"}
+      assert {copy.service_id, copy.wheelchair_accessible, copy.bikes_allowed, copy.shape_id} ==
+               {scope.service, 1, 2, "SHAPE-12"}
+
+      # The trip number identifies a trip within its service day, so the copy,
+      # which runs on the same service, starts without one and the source keeps its own.
+      assert copy.trip_short_name == nil
+      assert Repo.get!(Trip, copy.id).trip_short_name == nil
+      assert Repo.get!(Trip, source.id).trip_short_name == "12D"
 
       # A duplicate never joins a block; the source keeps its own.
       assert copy.block_id == nil
@@ -664,6 +823,12 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
       assert Repo.get!(Trip, source.id) == source
       assert Repo.get!(Trip, source.id).block_id == "B7"
       assert length(trip_logs(context)) == 2
+
+      # The audit snapshot records the stored values, including the missing trip number.
+      copy_log = Enum.find(trip_logs(context), &(&1.entity_external_id == copy.trip_id))
+      assert copy_log.action == "created"
+      assert copy_log.changed_fields["after"]["trip_short_name"] == nil
+      assert copy_log.changed_fields["after"]["trip_headsign"] == "Downtown"
 
       # A custom source needs a timing, and the duplicate is created linked on the
       # pattern that timing belongs to.
@@ -1395,6 +1560,15 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
         Map.new(attrs)
       )
     ).trip
+  end
+
+  defp headsign_trip!(context, route_id, scope, trip_headsign) do
+    schedule_trip_fixture(context.organization.id, context.version.id, route_id, scope.bundle, %{
+      trip_id: "#{route_id}-0-#{scope.service}-0600",
+      service_id: scope.service,
+      start_time: "06:00:00",
+      trip_headsign: trip_headsign
+    }).trip
   end
 
   defp raw_stop_times(trip_id) do

@@ -2,6 +2,12 @@
  * DiagramCanvas Hook
  * Provides pan and zoom functionality for the station diagram SVG canvas.
  */
+// Overlay elements that open the pathway editor; a click on one while setting
+// scale places a ruler point instead.
+const MEASURE_CLICK_THROUGH = '[data-editable="pathway"], [data-cross-level-pathway-badge]';
+// Points that take a click from the saved ruler painted above them.
+const RULER_YIELDS_TO = "[data-stop-hit-target], [data-journal-marker]";
+
 const OVERLAY_BASE = {
   circleR: 0.6,
   hitTargetSize: 3.5,
@@ -189,8 +195,8 @@ const DiagramCanvasHook = {
     return pt.matrixTransform(ctm.inverse());
   },
 
-  clampSvg(value) {
-    return Math.max(0, Math.min(100, value));
+  clampSvg(value, max) {
+    return Math.max(0, Math.min(max, value));
   },
 
   debugDrag(message, extra = {}) {
@@ -281,7 +287,7 @@ const DiagramCanvasHook = {
       return;
     }
 
-    const hitTarget = e.target.closest("[data-stop-hit-target]");
+    const hitTarget = this.pointUnderRuler(e, "[data-stop-hit-target]");
     if (!hitTarget || !this.overlay.contains(hitTarget)) {
       this.debugDrag("pointer down ignored: not on stop hit target", { type: e.type });
       return;
@@ -469,11 +475,56 @@ const DiagramCanvasHook = {
     }
   },
 
-  handleOverlayClick(e) {
-    const savedRulerGroup = e.target.closest('[data-ruler-type="saved"]');
-    if (savedRulerGroup) {
-      this.pushEvent("scale_line_click", {});
+  // The saved ruler is painted above the points, so a press or click on a point
+  // beneath it lands on the ruler. Returns the point under the pointer instead.
+  // Without elementsFromPoint the ruler keeps the event.
+  pointUnderRuler(e, selector) {
+    const direct = e.target.closest(selector);
+
+    if (direct || !e.target.closest('[data-ruler-type="saved"]')) {
+      return direct;
     }
+
+    const stack = document.elementsFromPoint?.(e.clientX, e.clientY) ?? [];
+    return (
+      stack
+        .map((el) => el.closest(selector))
+        .find((point) => point && this.overlay.contains(point)) ?? null
+    );
+  },
+
+  handleOverlayClick(e) {
+    // While setting scale, a pathway or cross-level badge places a ruler point
+    // like the bare floorplan does; stopping the click keeps LiveView from
+    // opening the pathway editor. Keyboard activation dispatches a click with
+    // detail 0 and no pointer position, so it is left to the server guard.
+    if (e.detail > 0 && this.isMeasurementEnabled() && e.target.closest(MEASURE_CLICK_THROUGH)) {
+      e.stopPropagation();
+      this.handleCanvasClick(e);
+      return;
+    }
+
+    if (!e.target.closest('[data-ruler-type="saved"]')) {
+      return;
+    }
+
+    // A point under the ruler wins: hand it the click, which LiveView routes
+    // through the point's own phx-click.
+    const point = this.pointUnderRuler(e, RULER_YIELDS_TO);
+
+    if (point) {
+      point.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          clientX: e.clientX,
+          clientY: e.clientY
+        })
+      );
+      return;
+    }
+
+    this.pushEvent("scale_line_click", {});
   },
 
   handleMouseMove(e) {
@@ -506,8 +557,12 @@ const DiagramCanvasHook = {
 
       const dx = point.x - this.dragging.startSvgX;
       const dy = point.y - this.dragging.startSvgY;
-      const offsetX = this.clampSvg(this.dragging.centerX + dx) - this.dragging.centerX;
-      const offsetY = this.clampSvg(this.dragging.centerY + dy) - this.dragging.centerY;
+      // Diagram space is width-normalized: x spans 0..baseW (100) and y spans
+      // 0..baseH (100 * h / w), which exceeds 100 for a portrait image. A
+      // landscape image keeps the 0..100 limit on y.
+      const maxY = Math.max(this.baseH, 100);
+      const offsetX = this.clampSvg(this.dragging.centerX + dx, this.baseW) - this.dragging.centerX;
+      const offsetY = this.clampSvg(this.dragging.centerY + dy, maxY) - this.dragging.centerY;
 
       this.dragging.currentX = this.dragging.centerX + offsetX;
       this.dragging.currentY = this.dragging.centerY + offsetY;

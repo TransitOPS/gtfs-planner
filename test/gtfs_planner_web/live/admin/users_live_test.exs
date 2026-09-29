@@ -13,6 +13,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Accounts.UserToken
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.AdminReadAdapterMock
   alias GtfsPlanner.Repo
@@ -382,6 +383,60 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
                "newmember@example.com"
     end
 
+    test "an account that already has a password is added without an invitation", %{
+      conn: conn,
+      organization: organization
+    } do
+      existing = user_fixture(%{email: "existing@example.com"})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users/invite")
+
+      view
+      |> form("#invite-form",
+        invite: %{email: "existing@example.com", roles: ["pathways_studio_editor"]}
+      )
+      |> render_submit()
+
+      assert_patch(view, ~p"/admin/users")
+
+      assert membership(existing.id, organization.id).roles == ["pathways_studio_editor"]
+      refute Repo.get_by(UserToken, user_id: existing.id, context: "invite")
+
+      assert_email_sent(subject: "You've been added to #{organization.name}")
+      assert_no_email_sent()
+
+      assert has_element?(view, "#member-#{existing.id}")
+
+      feedback = view |> element("#member-action-feedback") |> render()
+      assert feedback =~ "existing@example.com now has access to #{organization.name}."
+      refute feedback =~ "Invitation sent"
+    end
+
+    test "a failed notice to an account with a password keeps the membership without offering Resend invite",
+         %{conn: conn, organization: organization} do
+      use_failing_mailer()
+      existing = user_fixture(%{email: "existing@example.com"})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users/invite")
+
+      view
+      |> form("#invite-form",
+        invite: %{email: "existing@example.com", roles: ["pathways_studio_editor"]}
+      )
+      |> render_submit()
+
+      assert_patch(view, ~p"/admin/users")
+
+      assert membership(existing.id, organization.id)
+
+      feedback = view |> element("#member-action-feedback") |> render()
+      assert feedback =~ "existing@example.com was added to #{organization.name}"
+      assert feedback =~ "notification email could not be sent"
+      refute feedback =~ "Resend invite"
+
+      refute has_element?(view, "#resend-invite-#{existing.id}")
+    end
+
     test "a post-commit delivery failure keeps the membership and offers Resend invite", %{
       conn: conn,
       organization: organization
@@ -630,6 +685,67 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
 
       assert Organizations.user_deactivated_in_organization?(target.id, organization.id)
       refute Organizations.user_deactivated_in_organization?(bystander.id, organization.id)
+    end
+
+    test "a member holding administrator has no Deactivate button", %{
+      conn: conn,
+      organization: organization
+    } do
+      system_administrator =
+        member_fixture(organization, %{roles: ["administrator", "pathways_studio_editor"]})
+
+      editor = member_fixture(organization, %{})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      assert has_element?(view, "#member-#{system_administrator.id}")
+      refute has_element?(view, "#deactivate-user-#{system_administrator.id}")
+      assert has_element?(view, "#deactivate-user-#{editor.id}")
+    end
+
+    test "a system administrator cannot be deactivated and the reason is shown", %{
+      conn: conn,
+      organization: organization
+    } do
+      system_administrator =
+        member_fixture(organization, %{email: "sysadmin@example.com", roles: ["administrator"]})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      render_click(view, "request_deactivation", %{"user-id" => system_administrator.id})
+      view |> element("#deactivate-user-dialog-confirm") |> render_click()
+
+      refute has_element?(view, "dialog#deactivate-user-dialog[data-open=true]")
+
+      assert has_element?(
+               view,
+               "#member-action-feedback",
+               "sysadmin@example.com is a system administrator and can't be deactivated here."
+             )
+
+      refute Organizations.user_deactivated_in_organization?(
+               system_administrator.id,
+               organization.id
+             )
+    end
+
+    test "the only organization administrator cannot deactivate themselves and the reason is shown",
+         %{conn: conn, admin_user: admin_user, organization: organization} do
+      {:ok, view, _html} = live(conn, ~p"/admin/users")
+
+      view |> element("#deactivate-user-#{admin_user.id}") |> render_click()
+      view |> element("#deactivate-user-dialog-confirm") |> render_click()
+
+      refute has_element?(view, "dialog#deactivate-user-dialog[data-open=true]")
+
+      assert has_element?(
+               view,
+               "#member-action-feedback",
+               "#{admin_user.email} is the only administrator of this organization. " <>
+                 "Add another administrator before deactivating them."
+             )
+
+      refute Organizations.user_deactivated_in_organization?(admin_user.id, organization.id)
     end
   end
 

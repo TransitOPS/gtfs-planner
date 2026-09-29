@@ -2,6 +2,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
   use GtfsPlanner.DataCase, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias GtfsPlanner.Gtfs.Import.ChangeArtifactStorage
   alias GtfsPlanner.Gtfs.Import.ChangeDecision
   alias GtfsPlanner.Gtfs.Import.ChangeRun
   alias GtfsPlanner.Gtfs.Import.ChangeRuns
@@ -42,6 +43,21 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
     |> Repo.update_all(set: [lease_expires_at: ~U[2000-01-01 00:00:00.000000Z]])
 
     Repo.get!(ChangeRun, run.id)
+  end
+
+  defp insert_terminal_run!(organization, version, state) do
+    now = DateTime.utc_now()
+
+    %ChangeRun{}
+    |> ChangeRun.system_changeset(%{
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      state: state,
+      phase: :cleanup,
+      started_at: now,
+      finished_at: now
+    })
+    |> Repo.insert!()
   end
 
   describe "durable compute and review transitions" do
@@ -184,6 +200,141 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRunsTest do
       assert {:error, :missing_or_corrupt_artifact} = ChangeRuns.retry(organization.id, run.id)
       assert Repo.get!(ChangeRun, run.id).state == :cancelled
       assert {:error, :not_found} = ChangeRuns.request_cancel(other_organization.id, run.id)
+    end
+  end
+
+  describe "starting over from a run that did not complete" do
+    for state <- [:partial, :failed, :interrupted, :cancelled, :expired] do
+      test "retires a run that ended #{state} so it is no longer the latest review" do
+        organization = organization_fixture()
+        version = gtfs_version_fixture(organization.id)
+        run = insert_terminal_run!(organization, version, unquote(state))
+
+        assert {:ok, %ChangeRun{state: :cancelled, failure_code: "started_over"}} =
+                 ChangeRuns.start_over(organization.id, run.id)
+
+        assert ChangeRuns.latest_for_version(organization.id, version.id) == nil
+      end
+    end
+
+    test "keeps the decisions the run already applied" do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+      run = insert_terminal_run!(organization, version, :partial)
+
+      Repo.insert!(
+        ChangeDecision.system_changeset(%ChangeDecision{}, %{
+          change_run_id: run.id,
+          decision_id: "level:L1",
+          entity_type: :level,
+          action: :add,
+          status: :applied,
+          natural_key: "L1"
+        })
+      )
+
+      assert {:ok, _run} = ChangeRuns.start_over(organization.id, run.id)
+
+      assert [%{decision_id: "level:L1", status: :applied}] =
+               ChangeRuns.list_decisions(organization.id, run.id)
+    end
+
+    test "lets the version start a new review that becomes the latest" do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+      run = insert_terminal_run!(organization, version, :partial)
+      {:ok, _run} = ChangeRuns.start_over(organization.id, run.id)
+
+      assert {:ok, new_run} =
+               ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [])
+
+      assert new_run.id != run.id
+      assert ChangeRuns.latest_for_version(organization.id, version.id).id == new_run.id
+    end
+
+    test "does not fall back to an older completed run" do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+      insert_terminal_run!(organization, version, :completed)
+      partial = insert_terminal_run!(organization, version, :partial)
+
+      {:ok, _run} = ChangeRuns.start_over(organization.id, partial.id)
+
+      assert ChangeRuns.latest_for_version(organization.id, version.id) == nil
+    end
+
+    test "is idempotent for a run that was already started over" do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+      run = insert_terminal_run!(organization, version, :failed)
+      {:ok, _run} = ChangeRuns.start_over(organization.id, run.id)
+
+      assert {:ok, %ChangeRun{state: :cancelled, failure_code: "started_over"}} =
+               ChangeRuns.start_over(organization.id, run.id)
+    end
+
+    test "refuses a completed run" do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+      run = insert_terminal_run!(organization, version, :completed)
+
+      assert {:error, :invalid_transition} = ChangeRuns.start_over(organization.id, run.id)
+      assert %{state: :completed} = ChangeRuns.latest_for_version(organization.id, version.id)
+    end
+
+    test "refuses a run that is still active" do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+      {:ok, run} = ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [])
+
+      assert {:error, :invalid_transition} = ChangeRuns.start_over(organization.id, run.id)
+      assert %{state: :pending_compute} = Repo.get!(ChangeRun, run.id)
+    end
+
+    test "refuses a run owned by another organization" do
+      organization = organization_fixture()
+      other_organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+      run = insert_terminal_run!(organization, version, :failed)
+
+      assert {:error, :not_found} = ChangeRuns.start_over(other_organization.id, run.id)
+      assert %{state: :failed} = Repo.get!(ChangeRun, run.id)
+    end
+
+    test "broadcasts the change to subscribers of the run" do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+      run = insert_terminal_run!(organization, version, :failed)
+      run_id = run.id
+      Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ChangeRuns.topic(run_id))
+
+      assert {:ok, _run} = ChangeRuns.start_over(organization.id, run_id)
+      assert_receive {:change_run_changed, ^run_id}
+    end
+
+    test "removes the run's staged source files" do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+      run_id = Ecto.UUID.generate()
+
+      {:ok, [file]} =
+        ChangeArtifactStorage.stage(organization.id, version.id, run_id, [
+          %{filename: "levels.txt", content: "level_id,level_index\nL1,1.0\n"}
+        ])
+
+      {:ok, run} =
+        ChangeRuns.create_pending_compute(organization.id, version.id, @actor, [file], run_id)
+
+      {:ok, _run, generation, token} = ChangeRuns.claim(organization.id, run.id, :compute)
+
+      {:ok, _run} =
+        ChangeRuns.fail_compute(organization.id, run.id, generation, token, "compute_failed")
+
+      assert {:ok, [_file]} = ChangeArtifactStorage.read(Repo.get!(ChangeRun, run.id))
+
+      assert {:ok, started_over} = ChangeRuns.start_over(organization.id, run.id)
+
+      assert {:error, :missing_or_corrupt_artifact} = ChangeArtifactStorage.read(started_over)
     end
   end
 end

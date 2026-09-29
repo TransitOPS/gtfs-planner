@@ -2,11 +2,14 @@ defmodule GtfsPlanner.AccountsTest do
   use GtfsPlanner.DataCase
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.{FirstAdminForm, User, UserOrgMembership, UserToken}
+  alias GtfsPlanner.Accounts.{FirstAdminForm, User, UserNotifier, UserOrgMembership, UserToken}
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Versions.GtfsVersion
   import GtfsPlanner.OrganizationsFixtures
+  import ExUnit.CaptureLog
   import Swoosh.TestAssertions
+
+  require Logger
 
   describe "get_user!/1" do
     test "raises if id does not exist" do
@@ -413,6 +416,30 @@ defmodule GtfsPlanner.AccountsTest do
     end
   end
 
+  describe "delete_user_sessions/1" do
+    test "deletes the user's session and api_session tokens and returns them" do
+      user = user_fixture()
+      web_token = Accounts.generate_user_session_token(user)
+      api_token = Accounts.generate_api_session_token(user)
+      _reset_token = Accounts.deliver_user_reset_password_instructions(user, &"/reset/#{&1}")
+
+      deleted = Accounts.delete_user_sessions(user.id)
+
+      assert [%UserToken{context: "api_session"}, %UserToken{context: "session"}] =
+               Enum.sort_by(deleted, & &1.context)
+
+      refute Accounts.get_user_by_session_token(web_token)
+      refute Accounts.get_user_by_api_session_token(api_token)
+      assert Repo.get_by(UserToken, user_id: user.id, context: "reset_password")
+    end
+
+    test "returns an empty list when the user has no session tokens" do
+      user = user_fixture()
+
+      assert Accounts.delete_user_sessions(user.id) == []
+    end
+  end
+
   describe "generate_api_session_token/1" do
     setup do
       %{user: user_fixture()}
@@ -559,6 +586,46 @@ defmodule GtfsPlanner.AccountsTest do
 
       assert user.email == Accounts.get_user_by_reset_password_token(token).email
     end
+
+    test "issues a new token and invalidates the earlier one after the request window", %{
+      user: user
+    } do
+      first_token = deliver_reset_token(user)
+      backdate_reset_tokens(user, 120)
+
+      second_token = deliver_reset_token(user)
+
+      refute Accounts.get_user_by_reset_password_token(first_token)
+      assert Accounts.get_user_by_reset_password_token(second_token).id == user.id
+      assert reset_token_count(user) == 1
+    end
+
+    test "sends no email and issues no token inside the request window", %{user: user} do
+      first_token = deliver_reset_token(user)
+
+      assert {:error, :throttled} =
+               Accounts.deliver_user_reset_password_instructions(user, &"/reset/#{&1}")
+
+      assert_no_email_sent()
+      assert reset_token_count(user) == 1
+      assert Accounts.get_user_by_reset_password_token(first_token).id == user.id
+    end
+
+    test "leaves other contexts and other users' reset tokens untouched", %{user: user} do
+      other_user = user_fixture()
+      other_token = deliver_reset_token(other_user)
+      session_token = Accounts.generate_user_session_token(user)
+      {_encoded_invite, invite_token} = UserToken.build_email_token(user, "invite")
+      Repo.insert!(invite_token)
+      _earlier_token = deliver_reset_token(user)
+      backdate_reset_tokens(user, 120)
+
+      _new_token = deliver_reset_token(user)
+
+      assert Accounts.get_user_by_reset_password_token(other_token).id == other_user.id
+      assert Accounts.get_user_by_session_token(session_token).id == user.id
+      assert Repo.get_by(UserToken, user_id: user.id, context: "invite")
+    end
   end
 
   describe "get_user_by_reset_password_token/1" do
@@ -698,6 +765,8 @@ defmodule GtfsPlanner.AccountsTest do
   end
 
   describe "invite_member/4" do
+    @login_url "http://localhost:4000/users/log_in"
+
     setup do
       previous_mailer = Application.get_env(:gtfs_planner, GtfsPlanner.Mailer)
 
@@ -763,16 +832,99 @@ defmodule GtfsPlanner.AccountsTest do
     } do
       existing = user_fixture()
 
-      assert {:ok, %User{id: id}} =
+      assert {:ok, :added, %User{id: id}} =
                Accounts.invite_member(
                  existing.email,
                  organization.id,
                  ["pathways_studio_editor"],
-                 &invite_url/1
+                 &invite_url/1,
+                 login_url: @login_url
                )
 
       assert id == existing.id
       assert Repo.aggregate(from(u in User, where: u.email == ^existing.email), :count) == 1
+    end
+
+    test "adds an account that has a password without an invite token and sends only a notice",
+         %{organization: organization} do
+      existing = user_fixture()
+
+      assert {:ok, :added, %User{id: id}} =
+               Accounts.invite_member(
+                 existing.email,
+                 organization.id,
+                 ["pathways_studio_admin"],
+                 &invite_url/1,
+                 login_url: @login_url
+               )
+
+      assert id == existing.id
+
+      assert membership =
+               Repo.get_by(UserOrgMembership, user_id: id, organization_id: organization.id)
+
+      assert membership.roles == ["pathways_studio_admin"]
+      assert invite_tokens(existing) == []
+      assert Repo.all(from t in UserToken, where: t.user_id == ^id) == []
+
+      assert_received {:email, email}
+      assert email.to == [{"", existing.email}]
+      assert email.subject == "You've been added to #{organization.name}"
+      assert email.html_body =~ organization.name
+      assert email.html_body =~ @login_url
+      refute email.html_body =~ "accept_invite"
+
+      assert_no_email_sent()
+      assert Accounts.get_user_by_email_and_password(existing.email, valid_user_password())
+    end
+
+    test "issues an invite token and the invite email to an account that has no password yet", %{
+      organization: organization
+    } do
+      {:ok, pending} = Accounts.invite_user(unique_user_email(), nil)
+
+      assert {:ok, %User{id: id}} =
+               Accounts.invite_member(
+                 pending.email,
+                 organization.id,
+                 ["pathways_studio_editor"],
+                 &invite_url/1,
+                 login_url: @login_url
+               )
+
+      assert id == pending.id
+      assert [_invite_token] = invite_tokens(pending)
+
+      assert_received {:email, email}
+      assert email.subject == "You're invited to join Pathways Studio"
+      assert email.html_body =~ "/users/accept_invite/"
+
+      assert_no_email_sent()
+    end
+
+    test "keeps the membership when the notice to an account with a password cannot be sent", %{
+      organization: organization
+    } do
+      Application.put_env(:gtfs_planner, GtfsPlanner.Mailer,
+        adapter: GtfsPlanner.MailerFailureAdapter
+      )
+
+      existing = user_fixture()
+
+      assert {:partial, :notification_failed, %User{id: id}, reason} =
+               Accounts.invite_member(
+                 existing.email,
+                 organization.id,
+                 ["pathways_studio_editor"],
+                 &invite_url/1,
+                 login_url: @login_url
+               )
+
+      assert reason == :simulated_delivery_failure
+      assert id == existing.id
+      assert Repo.get_by(UserOrgMembership, user_id: id, organization_id: organization.id)
+      assert invite_tokens(existing) == []
+      assert_no_email_sent()
     end
 
     test "returns an insert-action changeset and commits nothing for invalid input", %{
@@ -943,6 +1095,22 @@ defmodule GtfsPlanner.AccountsTest do
 
       assert user.email == Accounts.get_user_by_invite_token(token).email
     end
+
+    test "logs the user id without the invitation URL, token, or email", %{user: user} do
+      log =
+        capture_info_log(fn ->
+          Accounts.deliver_user_invite(user, fn token ->
+            send(self(), {:invite_token, token})
+            invite_url(token)
+          end)
+        end)
+
+      assert_received {:invite_token, token}
+      assert log =~ "User invite sent to user #{user.id}"
+      refute log =~ token
+      refute log =~ "accept_invite"
+      refute log =~ user.email
+    end
   end
 
   describe "get_user_by_invite_token/1" do
@@ -969,7 +1137,7 @@ defmodule GtfsPlanner.AccountsTest do
 
   describe "accept_invite_set_password/2" do
     setup do
-      user = user_fixture()
+      {:ok, user} = Accounts.invite_user(unique_user_email(), nil)
       org = organization_fixture()
       org_id = org.id
 
@@ -1024,6 +1192,37 @@ defmodule GtfsPlanner.AccountsTest do
       })
 
       refute Accounts.get_user_by_invite_token(token)
+    end
+
+    test "deletes the user's session tokens", %{user: user, org_id: org_id} do
+      session_token = Accounts.generate_user_session_token(user)
+
+      {:ok, _updated_user} =
+        Accounts.accept_invite_set_password(user, %{
+          password: "new valid password",
+          password_confirmation: "new valid password",
+          organization_id: org_id
+        })
+
+      refute Accounts.get_user_by_session_token(session_token)
+      assert Repo.all(from t in UserToken, where: t.user_id == ^user.id) == []
+    end
+
+    test "refuses a user who already has a password and changes nothing", %{org_id: org_id} do
+      existing = user_fixture()
+      session_token = Accounts.generate_user_session_token(existing)
+
+      assert {:error, :already_has_password} =
+               Accounts.accept_invite_set_password(existing, %{
+                 password: "new valid password",
+                 password_confirmation: "new valid password",
+                 organization_id: org_id
+               })
+
+      assert Accounts.get_user_by_email_and_password(existing.email, valid_user_password())
+      refute Accounts.get_user_by_email_and_password(existing.email, "new valid password")
+      assert Accounts.get_user_by_session_token(session_token)
+      refute Repo.get_by(UserOrgMembership, user_id: existing.id, organization_id: org_id)
     end
   end
 
@@ -1497,9 +1696,38 @@ defmodule GtfsPlanner.AccountsTest do
     end
   end
 
+  # The test env logs at :warning, which drops the notifier's info messages before
+  # capture_log sees them. Lower the level for that module only, then remove the override.
+  defp capture_info_log(fun) do
+    Logger.put_module_level(UserNotifier, :info)
+    capture_log([level: :info], fun)
+  after
+    Logger.delete_module_level(UserNotifier)
+  end
+
   defp invite_url(token), do: "http://localhost:4000/users/accept_invite/#{token}"
 
   defp invite_tokens(%User{} = user) do
     Repo.all(from t in UserToken, where: t.user_id == ^user.id and t.context == "invite")
+  end
+
+  defp deliver_reset_token(user) do
+    extract_user_token(fn url ->
+      Accounts.deliver_user_reset_password_instructions(user, fn token ->
+        "#{url}/users/reset_password/#{token}"
+      end)
+    end)
+  end
+
+  defp backdate_reset_tokens(user, seconds_ago) do
+    inserted_at = DateTime.add(DateTime.utc_now(), -seconds_ago, :second)
+
+    Repo.update_all(UserToken.user_and_contexts_query(user, ["reset_password"]),
+      set: [inserted_at: inserted_at]
+    )
+  end
+
+  defp reset_token_count(user) do
+    Repo.aggregate(UserToken.user_and_contexts_query(user, ["reset_password"]), :count, :id)
   end
 end

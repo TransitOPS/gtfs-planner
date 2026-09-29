@@ -106,7 +106,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLive do
     if version_id && version_id != current_version_id &&
          Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       stop_id = socket.assigns.stop_id
-      {:noreply, push_navigate(socket, to: "/gtfs/#{version_id}/stops/#{stop_id}/reachability")}
+      {:noreply, push_navigate(socket, to: ~p"/gtfs/#{version_id}/stops/#{stop_id}/reachability")}
     else
       {:noreply, socket}
     end

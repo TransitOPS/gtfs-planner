@@ -60,6 +60,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
@@ -2401,39 +2402,96 @@ defmodule GtfsPlanner.Gtfs do
   defp decimal_to_float(_), do: nil
 
   @doc """
-  Recalculates pathway lengths for same-level pathways on a station level.
+  Recalculates same-level pathway lengths from the diagram after a scale change.
 
-  Returns `{:ok, count}` where count is the number of pathways whose lengths were updated.
+  A length is overwritten only when it is empty or equals what `previous_stop_level`
+  (the scale in force before this change) would have produced for the pathway's
+  stops. Any other length was entered or imported, so it is kept. Each overwrite
+  records an "updated" pathway change log; run this inside the caller's transaction
+  so a failed log or update rolls back the earlier writes.
+
+  Returns `{:ok, %{recalculated_count: n, kept_count: k}}`, where `k` counts pathways
+  with a computable length that was left alone because it was not derived from the plan.
   """
   def recalculate_pathway_lengths_for_level(
+        %StopLevel{} = previous_stop_level,
         %StopLevel{} = stop_level,
         organization_id,
         gtfs_version_id,
         level_id,
-        parent_station_id
+        parent_station_id,
+        %AuditContext{} = audit_ctx
       ) do
+    initial_counts = %{recalculated_count: 0, kept_count: 0}
+
     organization_id
     |> list_pathways_for_level(gtfs_version_id, level_id, parent_station_id)
     |> Enum.reject(& &1.is_cross_level)
     |> Enum.sort_by(& &1.pathway_id, :asc)
-    |> Enum.reduce_while({:ok, 0}, fn pathway, {:ok, count} ->
-      case calculate_pathway_length(stop_level, pathway.from_stop, pathway.to_stop) do
-        %Decimal{} = length ->
-          case pathway
-               |> Pathway.changeset(%{length: length})
-               |> Repo.update() do
-            {:ok, _updated_pathway} -> {:cont, {:ok, count + 1}}
-            {:error, changeset} -> {:halt, {:error, changeset}}
-          end
+    |> Enum.reduce_while({:ok, initial_counts}, fn pathway, {:ok, counts} ->
+      case recalculate_pathway_length(pathway, previous_stop_level, stop_level, audit_ctx) do
+        {:ok, :recalculated} ->
+          {:cont, {:ok, Map.update!(counts, :recalculated_count, &(&1 + 1))}}
 
-        _ ->
-          {:cont, {:ok, count}}
+        {:ok, :kept} ->
+          {:cont, {:ok, Map.update!(counts, :kept_count, &(&1 + 1))}}
+
+        {:ok, :unchanged} ->
+          {:cont, {:ok, counts}}
+
+        {:error, changeset} ->
+          {:halt, {:error, changeset}}
       end
     end)
   end
 
+  defp recalculate_pathway_length(pathway, previous_stop_level, stop_level, audit_ctx) do
+    new_length = calculate_pathway_length(stop_level, pathway.from_stop, pathway.to_stop)
+
+    cond do
+      is_nil(new_length) ->
+        {:ok, :unchanged}
+
+      not is_nil(pathway.length) and Decimal.equal?(pathway.length, new_length) ->
+        {:ok, :unchanged}
+
+      not derived_pathway_length?(pathway, previous_stop_level) ->
+        {:ok, :kept}
+
+      true ->
+        with {:ok, _pathway} <-
+               pathway
+               |> Pathway.changeset(%{length: new_length})
+               |> Repo.update(),
+             {:ok, _log} <-
+               record_change_in_transaction(audit_ctx, :pathway, pathway, "updated", %{
+                 length: new_length
+               }) do
+          {:ok, :recalculated}
+        end
+    end
+  end
+
+  # Length has no stored provenance, so a length counts as derived from the plan
+  # only when the previous scale would have produced exactly this value (both are
+  # rounded to 2 places by `calculate_pathway_length/3`). Ceiling: a derived length
+  # whose endpoints moved after it was computed no longer matches and is treated as
+  # entered. Upgrade path: store length provenance on the pathway.
+  defp derived_pathway_length?(%Pathway{length: nil}, _previous_stop_level), do: true
+
+  defp derived_pathway_length?(%Pathway{} = pathway, previous_stop_level) do
+    case calculate_pathway_length(previous_stop_level, pathway.from_stop, pathway.to_stop) do
+      %Decimal{} = previous_length -> Decimal.equal?(pathway.length, previous_length)
+      nil -> false
+    end
+  end
+
   @doc """
-  Saves stop-level calibration and recalculates same-level pathway lengths atomically.
+  Saves stop-level calibration and recalculates the pathway lengths derived from the
+  previous scale atomically, recording a change log for each recalculated pathway.
+
+  Returns `{:ok, %{stop_level:, recalculated_count:, kept_count:}}`; see
+  `recalculate_pathway_lengths_for_level/7` for which lengths are kept.
   """
   def save_scale_and_recalculate(
         %StopLevel{} = stop_level,
@@ -2441,7 +2499,8 @@ defmodule GtfsPlanner.Gtfs do
         organization_id,
         gtfs_version_id,
         level_id,
-        parent_station_id
+        parent_station_id,
+        %AuditContext{} = audit_ctx
       ) do
     transaction_result =
       Repo.transaction(fn ->
@@ -2449,15 +2508,17 @@ defmodule GtfsPlanner.Gtfs do
                stop_level
                |> StopLevel.scale_changeset(scale_attrs)
                |> Repo.update(),
-             {:ok, recalculated_count} <-
+             {:ok, counts} <-
                recalculate_pathway_lengths_for_level(
+                 stop_level,
                  updated_stop_level,
                  organization_id,
                  gtfs_version_id,
                  level_id,
-                 parent_station_id
+                 parent_station_id,
+                 audit_ctx
                ) do
-          %{stop_level: updated_stop_level, recalculated_count: recalculated_count}
+          Map.put(counts, :stop_level, updated_stop_level)
         else
           {:error, reason} ->
             Repo.rollback(reason)
@@ -3257,12 +3318,26 @@ defmodule GtfsPlanner.Gtfs do
   `diagram_coordinate` and `level_id`, and deletes connected pathways
   so no dangling references remain.
 
+  Records an "updated" change log for the stop and a "deleted" one for each
+  deleted pathway in the same transaction, so a failed log rolls the removal back.
+
   Scopes the update to the given organization, version, and parent station
   to prevent cross-tenant mutations.
   """
-  @spec remove_child_stop_from_diagram(integer(), integer(), String.t(), integer()) ::
-          {:ok, Stop.t()} | {:error, :not_found | term()}
-  def remove_child_stop_from_diagram(organization_id, gtfs_version_id, station_stop_id, stop_id) do
+  @spec remove_child_stop_from_diagram(
+          integer(),
+          integer(),
+          String.t(),
+          integer(),
+          AuditContext.t()
+        ) :: {:ok, Stop.t()} | {:error, :not_found | term()}
+  def remove_child_stop_from_diagram(
+        organization_id,
+        gtfs_version_id,
+        station_stop_id,
+        stop_id,
+        %AuditContext{} = audit_ctx
+      ) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     descendants = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
 
@@ -3288,6 +3363,9 @@ defmodule GtfsPlanner.Gtfs do
         |> Ecto.Multi.update_all(:stop, update_query,
           set: [diagram_coordinate: nil, level_id: nil, updated_at: now]
         )
+        |> Ecto.Multi.run(:audit, fn _repo, %{pathways: {_count, deleted_pathways}} ->
+          record_diagram_removal(audit_ctx, stop, deleted_pathways)
+        end)
         |> Repo.transaction()
         |> case do
           {:ok, _} ->
@@ -3299,6 +3377,33 @@ defmodule GtfsPlanner.Gtfs do
             {:error, reason}
         end
     end
+  end
+
+  defp record_diagram_removal(audit_ctx, %Stop{} = stop, deleted_pathways) do
+    with {:ok, _} <- record_diagram_clear(audit_ctx, stop) do
+      record_pathway_deletions(audit_ctx, deleted_pathways)
+    end
+  end
+
+  # Skipped when the stop had neither a level nor a coordinate to clear, so History
+  # never shows an update with no changed fields.
+  defp record_diagram_clear(_audit_ctx, %Stop{level_id: nil, diagram_coordinate: nil}),
+    do: {:ok, :unchanged}
+
+  defp record_diagram_clear(audit_ctx, %Stop{} = stop) do
+    record_change_in_transaction(audit_ctx, :stop, stop, "updated", %{
+      diagram_coordinate: nil,
+      level_id: nil
+    })
+  end
+
+  defp record_pathway_deletions(audit_ctx, pathways) do
+    Enum.reduce_while(pathways, {:ok, :recorded}, fn pathway, acc ->
+      case record_change_in_transaction(audit_ctx, :pathway, pathway, "deleted") do
+        {:ok, _log} -> {:cont, acc}
+        {:error, _changeset} = error -> {:halt, error}
+      end
+    end)
   end
 
   @doc """
@@ -3533,6 +3638,11 @@ defmodule GtfsPlanner.Gtfs do
 
   @doc """
   Removes a level association from a station while preserving the shared level record.
+
+  Stops of the station on that level lose their level and diagram coordinate, within the given
+  organization and version only. That covers direct children and the boarding areas under its
+  platforms, so no stop keeps a level the station no longer has. Returns `{:error, :not_found}`
+  when `level_id` is not a level of that organization and version.
   """
   def remove_level_from_station(
         organization_id,
@@ -3542,10 +3652,19 @@ defmodule GtfsPlanner.Gtfs do
         level_id
       ) do
     Repo.transaction(fn ->
-      level = get_level!(level_id)
+      level =
+        Repo.get_by(Level,
+          id: level_id,
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        ) || Repo.rollback(:not_found)
+
+      descendants = descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id)
 
       from(s in Stop,
-        where: s.parent_station == ^station_stop_id and s.level_id == ^level.level_id
+        where:
+          s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+            s.stop_id in subquery(descendants) and s.level_id == ^level.level_id
       )
       |> Repo.update_all(set: [level_id: nil, diagram_coordinate: nil])
 
@@ -4784,8 +4903,36 @@ defmodule GtfsPlanner.Gtfs do
         {"levels.txt", count_levels(organization_id, gtfs_version_id)},
         {"feed_info.txt", count_feed_info(organization_id, gtfs_version_id)},
         {"attributions.txt", count_attributions(organization_id, gtfs_version_id)}
-      ]
+      ] ++
+        Enum.map(
+          [
+            {"fare_products.txt", FareProduct},
+            {"fare_media.txt", FareMedia},
+            {"fare_leg_rules.txt", FareLegRule},
+            {"fare_leg_join_rules.txt", FareLegJoinRule},
+            {"fare_transfer_rules.txt", FareTransferRule},
+            {"rider_categories.txt", RiderCategory},
+            {"timeframes.txt", Timeframe},
+            {"areas.txt", Area},
+            {"stop_areas.txt", StopArea},
+            {"networks.txt", Network},
+            {"route_networks.txt", RouteNetwork},
+            {"locations.txt", Location},
+            {"booking_rules.txt", BookingRule},
+            {"translations.txt", Translation}
+          ],
+          fn {filename, schema} ->
+            {filename, count_version_rows(schema, organization_id, gtfs_version_id)}
+          end
+        )
     end
+  end
+
+  defp count_version_rows(schema, organization_id, gtfs_version_id) do
+    from(r in schema,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
   end
 
   # Private helper functions
@@ -4818,6 +4965,11 @@ defmodule GtfsPlanner.Gtfs do
 
   defp maybe_filter_wheelchair(query, nil), do: query
   defp maybe_filter_wheelchair(query, ""), do: query
+
+  # GTFS treats an empty wheelchair_boarding the same as 0 (no information).
+  defp maybe_filter_wheelchair(query, value) when value in [0, "0"] do
+    where(query, [s], s.wheelchair_boarding == 0 or is_nil(s.wheelchair_boarding))
+  end
 
   defp maybe_filter_wheelchair(query, wheelchair_boarding) do
     where(query, [s], s.wheelchair_boarding == ^wheelchair_boarding)
@@ -4977,7 +5129,8 @@ defmodule GtfsPlanner.Gtfs do
         where:
           p.organization_id == ^organization_id and
             p.gtfs_version_id == ^gtfs_version_id and
-            (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id)
+            (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id),
+        select: p
       )
 
     Ecto.Multi.delete_all(multi, :pathways, pathway_query)
@@ -5838,6 +5991,71 @@ defmodule GtfsPlanner.Gtfs do
     do: Repo.delete(current)
 
   def apply_import_entity(_, _, _, _), do: {:error, :invalid_decision}
+
+  # Tables that hold a stop's or level's GTFS ID as a plain string, as
+  # {kind, schema, column, column already counted}. There are no foreign keys, so a
+  # removal leaves these rows pointing at a missing record. A row naming one stop in
+  # both columns is counted once, by the first column.
+  @stop_references [
+    {:stop_times, StopTime, :stop_id, nil},
+    {:transfers, Transfer, :from_stop_id, nil},
+    {:transfers, Transfer, :to_stop_id, :from_stop_id},
+    {:pathways, Pathway, :from_stop_id, nil},
+    {:pathways, Pathway, :to_stop_id, :from_stop_id},
+    {:child_stops, Stop, :parent_station, nil},
+    {:stop_areas, StopArea, :stop_id, nil},
+    {:route_pattern_stops, RoutePatternStop, :stop_id, nil},
+    {:fare_leg_join_rules, FareLegJoinRule, :from_stop_id, nil},
+    {:fare_leg_join_rules, FareLegJoinRule, :to_stop_id, :from_stop_id}
+  ]
+  @level_references [{:stops, Stop, :level_id, nil}]
+
+  # Counts the records of one organization and version that still use each of the given
+  # stops or levels, as `%{natural_key => %{kind => count}}`. Keys nothing uses are absent.
+  @doc false
+  @spec import_dependent_counts(atom(), Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) ::
+          %{String.t() => %{atom() => pos_integer()}}
+  def import_dependent_counts(_entity_type, _organization_id, _gtfs_version_id, []), do: %{}
+
+  def import_dependent_counts(:stop, organization_id, gtfs_version_id, natural_keys),
+    do: dependent_counts(@stop_references, organization_id, gtfs_version_id, natural_keys)
+
+  def import_dependent_counts(:level, organization_id, gtfs_version_id, natural_keys),
+    do: dependent_counts(@level_references, organization_id, gtfs_version_id, natural_keys)
+
+  def import_dependent_counts(_entity_type, _organization_id, _gtfs_version_id, _natural_keys),
+    do: %{}
+
+  defp dependent_counts(references, organization_id, gtfs_version_id, natural_keys) do
+    Enum.reduce(references, %{}, fn {kind, schema, column, counted_in}, counts ->
+      from(row in schema,
+        where:
+          row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id and
+            field(row, ^column) in ^natural_keys,
+        group_by: field(row, ^column),
+        select: {field(row, ^column), count(row.id)}
+      )
+      |> skip_counted_column(counted_in, column)
+      |> Repo.all()
+      |> Enum.reduce(counts, &add_dependent_count(&2, kind, &1))
+    end)
+  end
+
+  defp add_dependent_count(counts, kind, {key, count}) do
+    Map.update(counts, key, %{kind => count}, fn kinds ->
+      Map.update(kinds, kind, count, &(&1 + count))
+    end)
+  end
+
+  defp skip_counted_column(query, nil, _column), do: query
+
+  defp skip_counted_column(query, counted_in, column) do
+    where(
+      query,
+      [row],
+      is_nil(field(row, ^counted_in)) or field(row, ^counted_in) != field(row, ^column)
+    )
+  end
 
   defp import_entity_schema(:level), do: {Level, :level_id}
   defp import_entity_schema(:stop), do: {Stop, :stop_id}

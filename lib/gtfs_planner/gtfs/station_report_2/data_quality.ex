@@ -177,31 +177,52 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQuality do
          directed,
          stop_index
        ) do
-    checked =
-      Enum.map(entrances, fn entrance ->
-        reachable = Graph.reachable?(entrance.stop_id, all_platform_targets, directed)
-        %{stop_id: entrance.stop_id, reachable: reachable}
+    # An exit-only entrance (riders can only leave through it) is intended
+    # data, so it warns instead of failing.
+    by_outcome =
+      Enum.group_by(entrances, fn entrance ->
+        cond do
+          Graph.reachable?(entrance.stop_id, all_platform_targets, directed) -> :reachable
+          Graph.exit_only?(entrance.stop_id, directed) -> :exit_only
+          true -> :unreachable
+        end
       end)
 
-    unreachable =
-      checked
-      |> Enum.reject(& &1.reachable)
-      |> Enum.map(&stop_id_entry(&1.stop_id, stop_index))
+    unreachable = Map.get(by_outcome, :unreachable, [])
+    exit_only = Map.get(by_outcome, :exit_only, [])
 
-    reachable_count = length(checked) - length(unreachable)
-    unreachable_count = length(unreachable)
+    details =
+      Enum.map(unreachable, &connectivity_entry(&1, stop_index, "no pathway to any platform")) ++
+        Enum.map(
+          exit_only,
+          &connectivity_entry(&1, stop_index, "exit-only: riders can leave but cannot enter")
+        )
 
     %{
       id: "entrance_to_platform_connectivity",
       label: "Entrance-to-platform reachability",
-      description: "Entrances with no pathway to any platform",
-      status: if(unreachable_count == 0, do: :pass, else: :fail),
-      value: %{unreachable: unreachable_count, reachable: reachable_count},
+      description:
+        "Entrances with no pathway to any platform; exit-only entrances warn instead of failing",
+      status:
+        cond do
+          unreachable != [] -> :fail
+          exit_only != [] -> :warn
+          true -> :pass
+        end,
+      value: %{
+        unreachable: length(unreachable),
+        exit_only: length(exit_only),
+        reachable: length(Map.get(by_outcome, :reachable, []))
+      },
       value_format: :compound,
-      detail_label: "Show unreachable entrances",
-      detail_layout: if(unreachable_count > 0, do: :stop_ids_with_dots),
-      details: unreachable
+      detail_label: "Show affected entrances",
+      detail_layout: if(details != [], do: :stop_ids_with_reasons),
+      details: details
     }
+  end
+
+  defp connectivity_entry(entrance, stop_index, reason) do
+    Map.put(stop_id_entry(entrance.stop_id, stop_index), :reason, reason)
   end
 
   defp platform_interconnection_item(platforms, platform_target_index, directed, stop_index) do

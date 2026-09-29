@@ -82,7 +82,12 @@ defmodule GtfsPlanner.Gtfs.AlignmentSegmentTest do
       assert %{points: [_ | _]} = errors_on(failed)
     end
 
-    assert Repo.aggregate(AlignmentSegment, :count) == 0
+    assert Repo.aggregate(
+             from(s in AlignmentSegment,
+               where: s.organization_id == ^organization.id and s.gtfs_version_id == ^version.id
+             ),
+             :count
+           ) == 0
   end
 
   test "duplicate shared rows return a changeset error naming the shared index", %{

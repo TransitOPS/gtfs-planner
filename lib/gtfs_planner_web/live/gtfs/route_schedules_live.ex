@@ -1482,7 +1482,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp schedule_path_for(version_id, route_id, query) do
-    path = "/gtfs/#{version_id}/routes/#{route_id}/schedules"
+    path = ~p"/gtfs/#{version_id}/routes/#{route_id}/schedules"
 
     case URI.encode_query(query) do
       "" -> path
@@ -1614,7 +1614,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
               <ScheduleComponents.unlinked_trips
                 :if={@payload.unlinked_trip_count > 0}
                 count={@payload.unlinked_trip_count}
-                patterns_path={"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"}
+                patterns_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"}
               />
 
               <ScheduleComponents.sections_meta
@@ -1631,7 +1631,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                 <% @payload.calendars == [] -> %>
                   <ScheduleComponents.no_calendars calendars_path={"/gtfs/#{@current_gtfs_version.id}/calendars"} />
                 <% @payload.patterns == [] -> %>
-                  <ScheduleComponents.no_patterns patterns_path={"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"} />
+                  <ScheduleComponents.no_patterns patterns_path={
+                    ~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"
+                  } />
                 <% @sections_empty? -> %>
                   <ScheduleComponents.no_trips
                     calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
@@ -1664,7 +1666,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                 patterns={@payload.patterns}
                 calendars={@payload.calendars}
                 blocks_path={"/gtfs/#{@current_gtfs_version.id}/blocks"}
-                patterns_path={"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"}
+                patterns_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"}
               />
 
               <ScheduleComponents.delete_dialog dialog={@delete_dialog} />

@@ -516,6 +516,140 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#child-stop-form input[name='stop_lon'][step='any']")
     end
 
+    test "new child stop type select does not offer Station", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "12", "y" => "24"})
+
+      assert has_element?(view, "select#location_type option[value='0']")
+      refute has_element?(view, "select#location_type option[value='1']")
+      refute has_element?(view, "select#location_type[required]")
+    end
+
+    test "rejects a crafted child stop submit with location type Station", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "40"})
+
+      render_submit(view, "save_child_stop", %{
+        "stop_id" => "inner_station",
+        "stop_name" => "Inner Station",
+        "location_type" => "1",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "x" => "30",
+        "y" => "40"
+      })
+
+      assert Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "inner_station") == nil
+      assert has_element?(view, "#child-stop-form")
+
+      assert has_element?(
+               view,
+               "#child-stop-form",
+               "A station can't be inside another station. Choose another type."
+             )
+    end
+
+    test "editing a stored station that has a parent asks for a location type", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      {:ok, legacy} =
+        Gtfs.import_create_stop(%{
+          stop_id: "LEGACY_INNER_STATION",
+          stop_name: "Legacy Inner Station",
+          location_type: 1,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 75.0},
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{legacy.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      assert has_element?(view, "select#location_type[required]")
+      assert has_element?(view, "select#location_type option[value='']", "— Choose a type")
+      refute has_element?(view, "select#location_type option[value='1']")
+      assert has_element?(view, "#location_type-help")
+    end
+
+    test "a stored station that has a parent can be saved after choosing another type", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      {:ok, legacy} =
+        Gtfs.import_create_stop(%{
+          stop_id: "LEGACY_INNER_STATION",
+          stop_name: "Legacy Inner Station",
+          location_type: 1,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 75.0},
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{legacy.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_name" => "Legacy Inner Station",
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => ""
+      })
+      |> render_submit()
+
+      updated = Gtfs.get_stop!(legacy.id)
+      assert updated.location_type == 3
+      assert updated.parent_station == station.stop_id
+    end
+
     test "creating a child stop persists latitude and longitude", %{
       conn: conn,
       user: user,
@@ -3122,6 +3256,98 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       # The pathway should be deleted (no dangling pathways)
       refute Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id)
     end
+
+    test "removing a stop records its cleared level and coordinate and each deleted pathway to the actor",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           level: level
+         } do
+      removed =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "CHILD_RM_AUDIT",
+          stop_name: "Removed Stop",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 10.0}
+        })
+
+      other_a =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OTHER_RM_AUDIT_A",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 50.0}
+        })
+
+      other_b =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "OTHER_RM_AUDIT_B",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 70.0, "y" => 70.0}
+        })
+
+      pathway_a =
+        pathway_fixture(organization.id, gtfs_version.id, removed.stop_id, other_a.stop_id)
+
+      pathway_b =
+        pathway_fixture(organization.id, gtfs_version.id, other_b.stop_id, removed.stop_id)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{removed.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view |> element("#remove-from-diagram-button") |> render_click()
+      view |> element("#station-diagram-confirmation-confirm") |> render_click()
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where:
+              cl.organization_id == ^organization.id and cl.gtfs_version_id == ^gtfs_version.id
+          )
+        )
+
+      assert [stop_log] = Enum.filter(logs, &(&1.entity_type == "stop"))
+      assert stop_log.action == "updated"
+      assert stop_log.entity_id == removed.id
+      assert stop_log.actor_id == user.id
+      assert stop_log.actor_email == user.email
+
+      assert stop_log.changed_fields == %{
+               "level_id" => %{"from" => level.level_id, "to" => nil},
+               "diagram_coordinate" => %{"from" => %{"x" => 10.0, "y" => 10.0}, "to" => nil}
+             }
+
+      pathway_logs = Enum.filter(logs, &(&1.entity_type == "pathway"))
+      assert Enum.all?(pathway_logs, &(&1.action == "deleted" and &1.actor_id == user.id))
+
+      assert Map.new(pathway_logs, &{&1.entity_external_id, &1.snapshot["from_stop_id"]}) == %{
+               pathway_a.pathway_id => removed.stop_id,
+               pathway_b.pathway_id => other_b.stop_id
+             }
+
+      audit_ctx = %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+
+      assert {:ok, restored} = Gtfs.rollback_entity(stop_log, audit_ctx)
+      assert restored.level_id == level.level_id
+      assert restored.diagram_coordinate == %{"x" => 10.0, "y" => 10.0}
+    end
   end
 
   describe "StationDiagramLive - cross-level pathway creation" do
@@ -4953,6 +5179,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
           is_bidirectional: true
         })
 
+      # The changeset stores exit gates one-way, but feed import inserts rows
+      # without it, so an imported two-way exit gate still has to render.
+      {1, _} =
+        Repo.update_all(from(p in Gtfs.Pathway, where: p.id == ^two_way_exit_gate.id),
+          set: [is_bidirectional: true]
+        )
+
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} =
@@ -6588,6 +6821,67 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
              )
     end
 
+    test "selecting Exit gate disables the both-directions control and hides reverse signage",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: gtfs_version,
+           station: station,
+           nested_pathway: nested_pathway
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{nested_pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      assert has_element?(view, "#is_bidirectional[checked]")
+      refute has_element?(view, "#is_bidirectional[disabled]")
+      assert has_element?(view, "#pathway-form input[name='reversed_signposted_as']")
+      assert has_element?(view, "svg[data-pathway-preview] [marker-start='url(#preview-arrow)']")
+
+      view
+      |> form("#pathway-form", %{"pathway_mode" => "7"})
+      |> render_change()
+
+      assert has_element?(view, "#is_bidirectional[disabled]")
+      refute has_element?(view, "#is_bidirectional[checked]")
+      assert has_element?(view, "#is_bidirectional-help", "Exit gates are one-way.")
+      refute has_element?(view, "#pathway-form input[name='reversed_signposted_as']")
+      refute has_element?(view, "svg[data-pathway-preview] [marker-start='url(#preview-arrow)']")
+    end
+
+    test "saving a two-way pathway switched to Exit gate stores it as one-way", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      nested_pathway: nested_pathway
+    } do
+      assert nested_pathway.is_bidirectional
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("#pathway-row-#{nested_pathway.id} button[phx-click='edit_pathway']")
+      |> render_click()
+
+      view
+      |> form("#pathway-form", %{"pathway_mode" => "7"})
+      |> render_change()
+
+      view
+      |> form("#pathway-form")
+      |> render_submit()
+
+      saved = Gtfs.get_pathway!(nested_pathway.id)
+      assert saved.pathway_mode == 7
+      assert saved.is_bidirectional == false
+    end
+
     test "pathway mode options render in deterministic numeric order", %{
       conn: conn,
       user: user,
@@ -7451,6 +7745,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#ruler-form")
     end
 
+    test "pathway click while establishing scale does not open the pathway editor", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view |> element("button[phx-click='toggle_measurement']") |> render_click()
+      view |> element("#pathways-#{pathway.id}") |> render_click()
+
+      refute has_element?(view, "#pathway-form")
+      assert has_element?(view, "#diagram-overlay[data-measurement-enabled='true']")
+    end
+
+    test "pathway click outside establishing scale opens the pathway editor", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view |> element("#pathways-#{pathway.id}") |> render_click()
+
+      assert has_element?(view, "#pathway-form")
+    end
+
     test "saving ruler persists calibration and shows edit and clear scale controls", %{
       conn: conn,
       user: user,
@@ -7558,22 +7894,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         })
 
       existing_1 =
-        pathway_fixture(
-          organization.id,
-          gtfs_version.id,
-          stop_a.stop_id,
-          stop_b.stop_id,
-          %{length: Decimal.new("999.00")}
-        )
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id)
 
       existing_2 =
-        pathway_fixture(
-          organization.id,
-          gtfs_version.id,
-          stop_a.stop_id,
-          stop_c.stop_id,
-          %{length: Decimal.new("123.45")}
-        )
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_c.stop_id)
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
@@ -7604,8 +7928,66 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(
                view,
                "#scale-status",
-               "Scale updated - 2 pathway length(s) recalculated"
+               "Scale updated - 2 pathway lengths recalculated"
              )
+
+      refute has_element?(view, "#scale-status", "kept")
+    end
+
+    test "editing scale keeps an entered pathway length and says so", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level,
+      stop_a: stop_a,
+      stop_b: stop_b
+    } do
+      stop_c =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "MEASURE_STOP_C_ENTERED",
+          stop_name: "Measure Stop C Entered",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      empty_pathway =
+        pathway_fixture(organization.id, gtfs_version.id, stop_a.stop_id, stop_b.stop_id)
+
+      entered_pathway =
+        pathway_fixture(
+          organization.id,
+          gtfs_version.id,
+          stop_a.stop_id,
+          stop_c.stop_id,
+          %{length: Decimal.new("12.50")}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
+
+      view
+      |> element("button[phx-click='toggle_measurement']", "No scale")
+      |> render_click()
+
+      render_hook(view, "canvas_click", %{"x" => "10", "y" => "10"})
+      render_hook(view, "canvas_click", %{"x" => "20", "y" => "10"})
+
+      view
+      |> form("#ruler-form", %{"ruler" => %{"distance_meters" => "10"}})
+      |> render_submit()
+
+      assert has_element?(
+               view,
+               "#scale-status",
+               "Scale updated - 1 pathway length recalculated, 1 entered length kept"
+             )
+
+      assert Decimal.equal?(Gtfs.get_pathway!(entered_pathway.id).length, Decimal.new("12.50"))
+      refute is_nil(Gtfs.get_pathway!(empty_pathway.id).length)
     end
 
     test "editing scale does not recalculate cross-level pathway lengths", %{
@@ -9015,6 +9397,137 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       unchanged = Gtfs.get_stop!(child_stop.id)
       assert unchanged.diagram_coordinate == %{"x" => 40.0, "y" => 40.0}
+      assert has_element?(view, "#flash-error", "Invalid drag position")
+    end
+
+    test "drag_end persists a y above 100 on a portrait floorplan", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DRAG_CHILD_PORTRAIT",
+          stop_name: "Drag Child Portrait",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 25.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => to_string(child_stop.id)})
+
+      render_hook(view, "drag_end", %{
+        "id" => to_string(child_stop.id),
+        "x" => "44.2",
+        "y" => "103"
+      })
+
+      assert Gtfs.get_stop!(child_stop.id).diagram_coordinate == %{"x" => 44.2, "y" => 103.0}
+    end
+
+    test "drag_end rejects a y above the diagram ceiling", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DRAG_CHILD_TALL",
+          stop_name: "Drag Child Tall",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 40.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => to_string(child_stop.id)})
+
+      render_hook(view, "drag_end", %{"id" => to_string(child_stop.id), "x" => "55", "y" => "401"})
+
+      assert Gtfs.get_stop!(child_stop.id).diagram_coordinate == %{"x" => 40.0, "y" => 40.0}
+      assert has_element?(view, "#flash-error", "Invalid drag position")
+    end
+
+    test "drag_end rejects a negative y", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DRAG_CHILD_NEG",
+          stop_name: "Drag Child Negative",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 40.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => to_string(child_stop.id)})
+
+      render_hook(view, "drag_end", %{"id" => to_string(child_stop.id), "x" => "55", "y" => "-1"})
+
+      assert Gtfs.get_stop!(child_stop.id).diagram_coordinate == %{"x" => 40.0, "y" => 40.0}
+      assert has_element?(view, "#flash-error", "Invalid drag position")
+    end
+
+    test "drag_end rejects an x above 100 even when y is within the portrait range", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DRAG_CHILD_WIDE",
+          stop_name: "Drag Child Wide",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 40.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => to_string(child_stop.id)})
+
+      render_hook(view, "drag_end", %{
+        "id" => to_string(child_stop.id),
+        "x" => "101",
+        "y" => "103"
+      })
+
+      assert Gtfs.get_stop!(child_stop.id).diagram_coordinate == %{"x" => 40.0, "y" => 40.0}
       assert has_element?(view, "#flash-error", "Invalid drag position")
     end
 

@@ -7,6 +7,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   import Ecto.Query, only: [from: 2]
 
+  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Gtfs.Import
 
@@ -39,6 +40,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     "remove" => :remove,
     "conflict" => :conflict
   }
+
+  @max_failed_decisions 50
 
   @diff_actions %{
     "add" => :add,
@@ -115,6 +118,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:diff_preview_count, 0)
      |> assign(:apply_results, [])
      |> assign(:decisions_by_id, %{})
+     |> assign(:decision_dependents, %{})
      |> stream(:diff_decisions, [])
      |> stream(:diff_preview_decisions, [])
      |> stream(:import_recovery_runs, recoverable_runs,
@@ -422,6 +426,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   def handle_event("retry-diff-run", _params, socket), do: {:noreply, retry_change_run(socket)}
 
   @impl true
+  def handle_event("start-over-diff", _params, socket) do
+    with %ChangeRun{} = run <- socket.assigns[:change_run],
+         {:ok, _started_over} <-
+           ChangeRuns.start_over(socket.assigns.current_organization.id, run.id) do
+      handle_event("reset-diff", %{}, socket)
+    else
+      _ -> {:noreply, refresh_change_review(socket)}
+    end
+  end
+
+  @impl true
   def handle_event("reset-diff", _params, socket) do
     socket =
       Enum.reduce(socket.assigns.uploads.diff_files.entries, socket, fn entry, acc ->
@@ -452,8 +467,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     {:noreply, socket}
   end
 
+  # A page that reset or started over no longer shows the run, so its later changes
+  # must not bring the run back.
   @impl true
-  def handle_info({:change_run_changed, run_id}, socket) do
+  def handle_info(
+        {:change_run_changed, run_id},
+        %{assigns: %{change_run: %ChangeRun{id: run_id}}} = socket
+      ) do
     organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
 
@@ -469,6 +489,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
     {:noreply, socket}
   end
+
+  def handle_info({:change_run_changed, _run_id}, socket), do: {:noreply, socket}
 
   @impl true
   def handle_info({:import_run_changed, run_id}, socket) do
@@ -660,6 +682,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     |> assign(:recovery_count, count)
     |> assign(:recovery_empty, empty?)
     |> assign(:recovery_announce, recovery_announce_text(run))
+    |> fail_started_import(run)
   end
 
   defp reconcile_recovery_run(socket, organization_id, run_id, nil, count, empty?) do
@@ -672,8 +695,39 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     socket = maybe_delete_recovery_run(socket, gone_run)
     socket = assign_recovery_count(socket, count, empty?)
 
-    if gone_run, do: success_for_published_target(socket, run_id), else: socket
+    if started_import_run?(socket, gone_run),
+      do: success_for_published_target(socket, run_id),
+      else: socket
   end
+
+  # The run this page started is the one whose version is bound as `:import_target`.
+  # Broadcasts about any other run in the organization never settle this page's import.
+  defp started_import_run?(socket, %Run{gtfs_version_id: version_id}) do
+    match?(%GtfsVersion{id: ^version_id}, socket.assigns[:import_target])
+  end
+
+  defp started_import_run?(_socket, nil), do: false
+
+  # The import this page started ended in a recoverable state without publishing.
+  # Free the form and show the failure beside it: the recovery card that offers the
+  # next step is further down the page. In-progress runs keep the "Importing…" state.
+  defp fail_started_import(%{assigns: %{importing: true}} = socket, %Run{} = run) do
+    if started_import_run?(socket, run) and discardable?(run) do
+      socket
+      |> assign(:importing, false)
+      |> assign(:import_progress, nil)
+      |> assign(:import_result, {:error, socket.assigns.import_target, failure_reason(run)})
+    else
+      socket
+    end
+  end
+
+  defp fail_started_import(socket, _run), do: socket
+
+  defp failure_reason(%Run{state: "publication_failed", reason_code: reason_code}),
+    do: {:publication_failed, reason_code}
+
+  defp failure_reason(%Run{}), do: :import_not_finished
 
   defp maybe_delete_recovery_run(socket, %Run{} = run) do
     stream_delete(socket, :import_recovery_runs, run)
@@ -738,6 +792,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         |> assign(:diff_parse_failures, run_diagnostics(run))
         |> assign(:diff_preview_count, length(previews))
         |> assign(:decisions_by_id, Map.new(applicable, &{&1.decision_id, &1}))
+        |> assign(:decision_dependents, decision_dependents(run, filtered))
         |> stream(:diff_decisions, filtered, reset: true)
         |> stream(:diff_preview_decisions, previews, reset: true)
 
@@ -745,6 +800,28 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         socket
     end
   end
+
+  # Counts what still uses each stop or level a review removes. Apply refuses a removal
+  # while anything uses it, so the row warns before the user approves. The rows only render
+  # in the review step. One grouped query per referencing table covers every removal.
+  defp decision_dependents(%ChangeRun{state: :review} = run, decisions) do
+    decisions
+    |> Enum.filter(&(&1.action == :remove and &1.status != :applied))
+    |> Enum.group_by(& &1.entity_type, & &1.natural_key)
+    |> Enum.reduce(%{}, fn {entity_type, natural_keys}, dependents ->
+      counts =
+        Gtfs.import_dependent_counts(
+          entity_type,
+          run.organization_id,
+          run.gtfs_version_id,
+          natural_keys
+        )
+
+      Map.merge(dependents, Map.new(counts, fn {key, kinds} -> {{entity_type, key}, kinds} end))
+    end)
+  end
+
+  defp decision_dependents(_run, _decisions), do: %{}
 
   defp update_change_decision(socket, decision_id, status) do
     with %ChangeRun{} = run <- socket.assigns[:change_run],
@@ -960,7 +1037,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   />
                 <% {:error, target, {:publication_failed, _reason}} -> %>
                   <.callout kind="error" title="Publication failed">
-                    Version “{target_name(target)}” finished importing but could not be published. It remains unavailable for reconciliation.
+                    Version “{target_name(target)}” finished importing but could not be published. Use Import recovery below to publish it again or discard it.
                   </.callout>
                 <% {:error, nil, :no_files_selected} -> %>
                   <.callout kind="error" title="Import failed">
@@ -1170,6 +1247,14 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   dependency_keys={decision.dependency_keys}
                   edited?={decision.user_edited}
                 >
+                  <:note :if={dependents_note(@decision_dependents, decision)}>
+                    <p
+                      id={"diff-decision-dependents-#{decision.id}"}
+                      class="mt-1 text-xs font-medium text-warning"
+                    >
+                      {dependents_note(@decision_dependents, decision)}
+                    </p>
+                  </:note>
                   <:actions :if={decision.status in [:pending, :approved, :rejected]}>
                     <button
                       type="button"
@@ -1232,6 +1317,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   0
                 )} · Unapplied {Map.get(@change_run.summary, "unapplied", 0)}
               </p>
+              <p
+                :if={@change_run.state == :partial}
+                id="diff-partial-note"
+                class="mt-1 text-sm text-base-content/70"
+              >
+                Applied changes stay in this version. Start over to review the remaining differences against the current data.
+              </p>
+              <.failed_decisions_list
+                :if={@change_run.state in [:partial, :failed, :interrupted]}
+                decisions={failed_decisions(@decisions_by_id)}
+              />
               <p class="mt-1 text-sm text-base-content/70">
                 This review is durable. You can safely reconnect while it runs.
               </p>
@@ -1244,15 +1340,27 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               >
                 Cancel review
               </button>
-              <button
+              <div
                 :if={@change_run.state in [:partial, :failed, :interrupted, :cancelled, :expired]}
-                id="diff-retry-btn"
-                type="button"
-                class="btn btn-primary btn-sm mt-3 min-h-11"
-                phx-click="retry-diff-run"
+                class="mt-3 flex flex-wrap gap-2"
               >
-                Retry
-              </button>
+                <button
+                  id="diff-retry-btn"
+                  type="button"
+                  class="btn btn-primary btn-sm min-h-11"
+                  phx-click="retry-diff-run"
+                >
+                  Retry
+                </button>
+                <button
+                  id="diff-start-over-btn"
+                  type="button"
+                  class="btn btn-outline btn-sm min-h-11"
+                  phx-click="start-over-diff"
+                >
+                  Start over
+                </button>
+              </div>
             </div>
           <% end %>
 
@@ -1425,6 +1533,33 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       </div>
       <div class="p-6">{render_slot(@inner_block)}</div>
     </section>
+    """
+  end
+
+  # Names the decisions a partial run could not apply. The list is capped so a
+  # feed-wide failure stays readable.
+  attr :decisions, :list, required: true
+
+  defp failed_decisions_list(assigns) do
+    assigns =
+      assigns
+      |> assign(:shown, Enum.take(assigns.decisions, @max_failed_decisions))
+      |> assign(:hidden_count, max(length(assigns.decisions) - @max_failed_decisions, 0))
+
+    ~H"""
+    <ul
+      :if={@decisions != []}
+      id="diff-failed-decisions"
+      class="mt-2 space-y-1 text-sm text-base-content/80"
+    >
+      <li :for={decision <- @shown} data-decision-id={decision.decision_id}>
+        <span class="font-medium">
+          <span class="capitalize">{decision.entity_type}</span> {decision.natural_key}
+        </span>
+        · {decision.action} · {decision_failure_reason(decision)}
+      </li>
+      <li :if={@hidden_count > 0} id="diff-failed-decisions-more">and {@hidden_count} more</li>
+    </ul>
     """
   end
 
@@ -1780,6 +1915,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp format_import_error({:import_not_publishable, _result}),
     do: "The import completed with errors and was not published."
 
+  defp format_import_error(:import_not_finished),
+    do: "The import did not finish. Use Import recovery below to discard it and try again."
+
   defp format_import_error(:invalid_status_transition),
     do: "The version could not be claimed for import."
 
@@ -1828,6 +1966,64 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     [:add, :modify, :conflict, :remove]
     |> Enum.map(fn action -> {action, Map.get(summary, action, 0)} end)
     |> Enum.reject(fn {_action, count} -> count == 0 end)
+  end
+
+  defp failed_decisions(decisions_by_id) do
+    decisions_by_id
+    |> Map.values()
+    |> Enum.filter(&(&1.status in [:failed, :stale]))
+    |> Enum.sort_by(& &1.decision_id)
+  end
+
+  defp decision_failure_reason(%{apply_failure_code: "drifted"}),
+    do: "Changed since the review was computed"
+
+  defp decision_failure_reason(%{apply_failure_code: "dependencies_unmet"}),
+    do: "Depends on a change that was not applied"
+
+  defp decision_failure_reason(%{apply_failure_code: "has_dependents", entity_type: :level}),
+    do: "Still used by stops in this version"
+
+  defp decision_failure_reason(%{apply_failure_code: "has_dependents"}),
+    do: "Still used by trips, transfers, pathways or other records in this version"
+
+  defp decision_failure_reason(_decision), do: "Could not be applied"
+
+  defp dependents_note(dependents, decision) do
+    case Map.fetch(dependents, {decision.entity_type, decision.natural_key}) do
+      {:ok, kinds} -> dependents_sentence(kinds)
+      :error -> nil
+    end
+  end
+
+  defp dependents_sentence(kinds) do
+    phrases =
+      kinds
+      |> Enum.sort()
+      |> Enum.map(fn {kind, count} -> "#{count} #{dependent_noun(kind, count)}" end)
+
+    "Used by #{to_sentence(phrases)}. Removal will be refused while they exist."
+  end
+
+  defp dependent_noun(:stop_times, count), do: ngettext("stop time", "stop times", count)
+  defp dependent_noun(:transfers, count), do: ngettext("transfer", "transfers", count)
+  defp dependent_noun(:pathways, count), do: ngettext("pathway", "pathways", count)
+  defp dependent_noun(:child_stops, count), do: ngettext("child stop", "child stops", count)
+  defp dependent_noun(:stop_areas, count), do: ngettext("stop area", "stop areas", count)
+
+  defp dependent_noun(:route_pattern_stops, count),
+    do: ngettext("route pattern stop", "route pattern stops", count)
+
+  defp dependent_noun(:fare_leg_join_rules, count),
+    do: ngettext("fare leg join rule", "fare leg join rules", count)
+
+  defp dependent_noun(:stops, count), do: ngettext("stop", "stops", count)
+
+  defp to_sentence([phrase]), do: phrase
+
+  defp to_sentence(phrases) do
+    {leading, [last]} = Enum.split(phrases, -1)
+    Enum.join(leading, ", ") <> " and " <> last
   end
 
   defp approved_decision_count(decisions_by_id) do

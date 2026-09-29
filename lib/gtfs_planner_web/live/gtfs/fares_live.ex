@@ -120,9 +120,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   The Checks tab renders `FareZones.checks/2` as the setup's issue rows: one
   "Needs repair" row per zone fare rules use that has no boardable stops, one
-  "Review" row while boardable stops have no zone, one "Note" row per empty
-  declared zone, and the "Source check" row only while fare rules reference zones
-  at all. With no needs-repair and no review row, the tab states that both hold.
+  "Review" row while boardable stops have no zone, one "Review" row per fare whose
+  rules trip planners combine, one "Note" row per empty declared zone, and the
+  "Source check" row only while fare rules reference zones at all. With no
+  needs-repair and no review row, the tab states that both hold.
   Every row that needs an action links into the Zones tab - the stopless zone's
   own filter, and `?filter=unassigned` for the unassigned stops - and each of
   those URLs is built by `URI.encode_query/1`, so a zone ID keeps its exact bytes
@@ -779,6 +780,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
         fares={@fares}
         routes={@rule_routes}
         zones={inventory_zones(assigns)}
+        combined_fare={combined_fare(assigns)}
         error={@rule_error}
         stale={@rule_stale}
         return_focus_id={@rule_return_focus_id}
@@ -1797,6 +1799,25 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     "#{stops_count(length(applied))} unassigned."
   end
 
+  # The fare the drawer's rule would belong to after a save, when trip planners
+  # would read its rules differently than each rule reads alone: the reviewed rule
+  # is replaced by the form's own values and the fare's other groups stay as the
+  # page read them. Nil while the drawer is closed, the form names no fare or the
+  # fare's rules agree.
+  defp combined_fare(%{rule_drawer_open: false}), do: nil
+
+  defp combined_fare(%{rule_form: form, reviewed_rule: reviewed, rule_groups: groups}) do
+    candidate =
+      form.source |> Ecto.Changeset.apply_changes() |> Map.take([:fare_id, :route_id, :contains])
+
+    others =
+      Enum.filter(groups, fn group ->
+        group.fare_id == candidate.fare_id and (is_nil(reviewed) or group.key != reviewed.key)
+      end)
+
+    [candidate | others] |> FareZones.find_combined_fares() |> List.first()
+  end
+
   # The inventory's zones, from the LiveView's assigns (the render reads them too,
   # so this takes the assigns map rather than the socket).
   defp inventory_zones(%{inventory: nil}), do: []
@@ -1967,11 +1988,16 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp stops_count(1), do: "1 stop"
   defp stops_count(count), do: "#{count} stops"
 
-  # One issue per stopless referenced zone, plus one for unassigned stops. The
-  # caller passes nil while the workspace load has not resolved, so the badge
-  # never claims a clean version on data nobody has read yet.
-  defp checks_count(%{stopless_referenced: stopless, unassigned_count: unassigned}) do
-    length(stopless) + if unassigned > 0, do: 1, else: 0
+  # One issue per stopless referenced zone and per fare whose rules trip planners
+  # combine, plus one for unassigned stops. The caller passes nil while the
+  # workspace load has not resolved, so the badge never claims a clean version on
+  # data nobody has read yet.
+  defp checks_count(%{
+         stopless_referenced: stopless,
+         unassigned_count: unassigned,
+         combined_fares: combined
+       }) do
+    length(stopless) + length(combined) + if unassigned > 0, do: 1, else: 0
   end
 
   defp zones_path(version_id), do: "/gtfs/#{version_id}/settings/fares"

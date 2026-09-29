@@ -490,6 +490,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     <.compound_value
       bad_count={@item.value.unreachable}
       bad_label="unreachable"
+      warn_count={@item.value.exit_only}
+      warn_label="exit-only"
       good_count={@item.value.reachable}
       good_label="reachable"
     />
@@ -517,6 +519,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   attr :bad_count, :integer, required: true
   attr :bad_label, :string, required: true
+  attr :warn_count, :integer, default: 0
+  attr :warn_label, :string, default: nil
   attr :good_count, :integer, required: true
   attr :good_label, :string, required: true
 
@@ -525,6 +529,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
     <span class="flex flex-wrap items-baseline gap-x-2 text-xs">
       <span :if={@bad_count > 0} class="font-medium text-error tabular-nums">
         {@bad_count} {@bad_label}
+      </span>
+      <span :if={@warn_count > 0} class="font-medium text-warning tabular-nums">
+        {@warn_count} {@warn_label}
       </span>
       <span class="text-base-content/70 tabular-nums">{@good_count} {@good_label}</span>
     </span>
@@ -968,8 +975,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
       </div>
 
       <div :if={@summary.alerts != []} class="space-y-2 px-4 pb-4">
-        <div :for={msg <- @summary.alerts}>
-          <.callout kind="error" title={msg} role="alert" />
+        <div :for={{alert, index} <- Enum.with_index(@summary.alerts)}>
+          <.callout
+            id={"connectivity-#{@dimension}-alert-#{index}"}
+            kind={to_string(alert.level)}
+            title={alert.text}
+            role={if alert.level == :error, do: "alert", else: "status"}
+          />
         </div>
       </div>
     </div>
@@ -1070,10 +1082,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2Components do
 
   defp reachability_badge_status(:full), do: :pass
   defp reachability_badge_status(:partial), do: :warning
+  defp reachability_badge_status(:exit_only), do: :warning
   defp reachability_badge_status(_none), do: :failed
 
   defp reachability_label(:full), do: "Fully reachable"
   defp reachability_label(:partial), do: "Partially reachable"
+  defp reachability_label(:exit_only), do: "Exit only"
   defp reachability_label(_none), do: "Not reachable"
 
   defp dimension_badge_status(:passed), do: :pass

@@ -52,6 +52,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
   attr :drawer_entity_id, :string, default: nil
   attr :drawer_form, :any, default: nil
   attr :drawer_error, :string, default: nil
+  attr :drawer_levels, :list, default: [], doc: "every level of the report's GTFS version"
 
   attr :drawer_return_focus_id, :string,
     default: nil,
@@ -74,6 +75,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
           :if={@drawer_entity && @drawer_form}
           entity={@drawer_entity}
           form={@drawer_form}
+          levels={@drawer_levels}
         />
       </div>
     </.drawer>
@@ -119,12 +121,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
 
   attr :entity, :map, required: true
   attr :form, :any, required: true
+  attr :levels, :list, required: true
 
   defp stop_drawer_form(assigns) do
+    level_required? = level_required?(assigns.entity)
+
     assigns =
       assigns
       |> assign(:save_failed?, save_failed?(assigns.form))
-      |> assign(:level_required?, level_required?(assigns.entity))
+      |> assign(:level_required?, level_required?)
+      |> assign(
+        :level_options,
+        level_options(assigns.levels, assigns.form[:level_id].value || "", level_required?)
+      )
+      |> assign(:level_help, level_help(level_required?, stale_level_id(assigns)))
       |> assign(:wheelchair_options, @wheelchair_options)
       |> assign(:form_id, @form_id)
       |> assign(:error_summary_id, @error_summary_id)
@@ -222,9 +232,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
         <div class="sm:max-w-[20rem]">
           <.input
             field={@form[:level_id]}
-            type="text"
+            type="select"
             label={if @level_required?, do: "Level", else: "Level (optional)"}
-            help={level_help(@level_required?)}
+            options={@level_options}
+            help={@level_help}
           />
         </div>
 
@@ -279,11 +290,47 @@ defmodule GtfsPlannerWeb.Gtfs.StationReportDrawerComponents do
     """
   end
 
-  defp level_help(true),
-    do: "level_id — required for a stop inside a station. Must match a level in this version."
+  # Every level of the version, plus a blank choice when the stop may have no
+  # level. A current value that matches none of them (a stored level the version
+  # lacks, or a required level still unset) gets a first "Choose a level" option
+  # carrying that value, so the select shows the problem instead of quietly
+  # showing another level.
+  defp level_options(levels, current, required?) do
+    options =
+      levels
+      |> Enum.sort_by(&{presence(&1.level_name) || &1.level_id, &1.level_id})
+      |> Enum.map(&{level_label(&1), &1.level_id})
 
-  defp level_help(false),
-    do: "level_id — must match a level in this version. Leave blank if the stop has no level."
+    options = if required?, do: options, else: [{"No level", ""} | options]
+
+    if Enum.any?(options, fn {_label, value} -> value == current end),
+      do: options,
+      else: [{"Choose a level", current} | options]
+  end
+
+  defp level_label(%{level_name: level_name, level_id: level_id}) do
+    case presence(level_name) do
+      nil -> level_id
+      name -> "#{name} (#{level_id})"
+    end
+  end
+
+  # The level stored on the stop when the version has no such level.
+  defp stale_level_id(%{entity: %{level_id: level_id}, levels: levels}) do
+    if presence(level_id) && not Enum.any?(levels, &(&1.level_id == level_id)),
+      do: level_id
+  end
+
+  defp level_help(required?, stale_level_id) do
+    base =
+      if required?,
+        do: "level_id — the level this stop is on. Required for a stop inside a station.",
+        else: "level_id — the level this stop is on. Choose No level if it has none."
+
+    if stale_level_id,
+      do: "#{base} Stored level #{stale_level_id} does not exist in this version.",
+      else: base
+  end
 
   defp level_required?(%{parent_station: parent_station}),
     do: not is_nil(presence(parent_station))

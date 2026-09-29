@@ -81,7 +81,7 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
 
   """
   def deliver_user_invite(user, url) when is_binary(url) do
-    Logger.info("User invite for #{user.email}: #{url}")
+    Logger.info("User invite sent to user #{user.id}")
 
     email_body = user_invite_html(user, url)
     mail_domain = Application.get_env(:gtfs_planner, :mail_domain)
@@ -90,6 +90,29 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
     |> to(user.email)
     |> from({"Pathways Studio", "no-reply@#{mail_domain}"})
     |> subject("You're invited to join Pathways Studio")
+    |> html_body(email_body)
+    |> Mailer.deliver()
+  end
+
+  @doc """
+  Delivers a notice that the user was added to an organization and can sign in
+  with their existing password. Carries no token.
+
+  ## Examples
+
+      iex> deliver_added_to_organization(user, "Acme Transit", "https://example.com/users/log_in")
+      {:ok, %{to: ..., body: ...}}
+
+  """
+  def deliver_added_to_organization(user, organization_name, login_url)
+      when is_binary(organization_name) and is_binary(login_url) do
+    email_body = added_to_organization_html(user, organization_name, login_url)
+    mail_domain = Application.get_env(:gtfs_planner, :mail_domain)
+
+    new()
+    |> to(user.email)
+    |> from({"Pathways Studio", "no-reply@#{mail_domain}"})
+    |> subject("You've been added to #{organization_name}")
     |> html_body(email_body)
     |> Mailer.deliver()
   end
@@ -159,6 +182,20 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
     </p>
     <p>
       If you didn't request this invite, please ignore this.
+    </p>
+    """
+  end
+
+  defp added_to_organization_html(user, organization_name, login_url) do
+    """
+    <p>
+      Hi #{user.email},
+    </p>
+    <p>
+      You now have access to #{Plug.HTML.html_escape(organization_name)} in Pathways Studio. Sign in with your existing password:
+    </p>
+    <p>
+      <a href="#{login_url}">Sign in</a>
     </p>
     """
   end

@@ -407,7 +407,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
         <li :for={route <- @usage.routes} class="text-base-content/70">
           <.link
             id={"#{@id}-route-#{route.route_id}"}
-            navigate={"/gtfs/#{@version_id}/routes/#{route.route_id}"}
+            navigate={~p"/gtfs/#{@version_id}/routes/#{route.route_id}"}
             class="link link-primary"
           >
             {route.route_id}
@@ -657,8 +657,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
   The row keeps its identity, name and usage, and states the reason and the repair
   action instead of drawing a bar: an unreadable range must never read as "no
-  service". The invalid clause of the domain read never evaluates the dates, so this
-  branch also never routes the identity into the detail read.
+  service". The invalid clause of the domain read never evaluates the dates, and the
+  detail page opens such an identity with its stored dates so an editor can correct
+  them, so the row links there.
   """
   attr :row, :map, required: true
   attr :version_id, :any, required: true
@@ -671,6 +672,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
         <code class="font-mono">{@row.service_id}</code>
         {reason_text(@row.coverage_error.reason)}
       </p>
+      <.link
+        id={"calendar-coverage-fix-#{URI.encode_www_form(@row.service_id)}"}
+        navigate={"/gtfs/#{@version_id}/calendars/show?service_id=#{URI.encode_www_form(@row.service_id)}"}
+        class="link link-primary mt-0.5 mr-3 inline-block"
+      >
+        Fix dates
+      </.link>
       <.link
         id={"calendar-coverage-repair-#{URI.encode_www_form(@row.service_id)}"}
         navigate={"/gtfs/#{@version_id}/import"}
@@ -697,8 +705,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
     <div :if={@invalid != []} id={@id} class="mt-4">
       <.callout kind="warning" title={invalid_title(length(@invalid))}>
         These rows stay listed with their names and trip usage. Their dates were never
-        evaluated, so this version asserts no complete set of service gaps until the feed
-        is imported again.
+        evaluated, so this version asserts no complete set of service gaps until their
+        ranges are corrected.
         <ul class="mt-2 space-y-1">
           <li :for={error <- @invalid}>
             <code class="font-mono">{error.service_id}</code> — {reason_text(error.reason)}

@@ -528,6 +528,69 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       assert render(view) =~ "Frequency service can&#39;t be duplicated"
       assert has_element?(view, "#trip-EDT_T0600-duplicate")
     end
+
+    test "the headsign hint names the timing's headsign, not the trip's own", context do
+      scope = editing_scope(context)
+      trip = own_headsign_trip(scope)
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      render_click(view, "open_edit_drawer", %{"trip" => trip.id})
+
+      assert has_element?(view, "#trip-headsign[value='Own sign']")
+      assert has_element?(view, "#trip-headsign-help", "Leave blank to use Editing outbound.")
+      refute has_element?(view, "#trip-headsign-help", "Own sign")
+    end
+
+    test "the headsign hint follows the timing chosen in the drawer", context do
+      scope = editing_scope(context)
+      trip = own_headsign_trip(scope)
+      late = late_timing(scope)
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      render_click(view, "open_edit_drawer", %{"trip" => trip.id})
+
+      render_change(view, "drawer_change", %{
+        "drawer" => edit_params(scope, %{"timed_pattern_id" => late.id})
+      })
+
+      assert has_element?(view, "#trip-headsign-help", "Leave blank to use Late sign.")
+    end
+
+    test "a blank headsign saves the headsign the hint names", context do
+      scope = editing_scope(context)
+      trip = own_headsign_trip(scope)
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      render_click(view, "open_edit_drawer", %{"trip" => trip.id})
+
+      render_submit(view, "drawer_submit", %{
+        "drawer" => edit_params(scope, %{"start_time" => "19:00", "trip_headsign" => ""})
+      })
+
+      assert Repo.get!(Trip, trip.id).trip_headsign == "Editing outbound"
+    end
+
+    test "a custom trip's headsign hint names the pattern's headsign", context do
+      scope = editing_scope(context)
+      Repo.update!(Ecto.Changeset.change(scope.long.pattern, headsign: "Pattern sign"))
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      custom = trip_row(scope, "EDT_CUSTOM_DIFF")
+      render_click(view, "open_edit_drawer", %{"trip" => custom.id})
+
+      assert has_element?(view, "#trip-headsign-help", "Leave blank to use Pattern sign.")
+    end
+
+    test "the headsign field shows no hint when the trip has no fallback headsign", context do
+      scope = editing_scope(context)
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      custom = trip_row(scope, "EDT_CUSTOM_DIFF")
+      render_click(view, "open_edit_drawer", %{"trip" => custom.id})
+
+      assert has_element?(view, "#trip-headsign")
+      refute has_element?(view, "#trip-headsign-help")
+    end
   end
 
   describe "read-only blocks in the drawer" do
@@ -1366,6 +1429,32 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       short: short,
       back: back
     }
+  end
+
+  # A linked trip whose own headsign differs from its timing's, so the drawer
+  # hint can only name the timing's headsign by reading the timing.
+  defp own_headsign_trip(scope) do
+    schedule_trip_fixture(scope.organization_id, scope.version.id, "EDT1", scope.long, %{
+      service_id: @weekday,
+      trip_id: "EDT_OWN_SIGN",
+      start_time: "19:00:00",
+      trip_headsign: "Own sign"
+    }).trip
+  end
+
+  defp late_timing(scope) do
+    late = timed_pattern_fixture(scope.long.pattern, %{name: "Late time", headsign: "Late sign"})
+
+    scope.long.occurrences
+    |> Enum.zip([0, 21_600])
+    |> Enum.each(fn {occurrence, offset} ->
+      timed_pattern_stop_fixture(late, occurrence, %{
+        arrival_offset: offset,
+        departure_offset: offset
+      })
+    end)
+
+    late
   end
 
   defp weekly_calendar(context, service_id, name, attrs \\ %{}) do

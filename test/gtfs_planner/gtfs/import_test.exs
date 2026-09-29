@@ -112,6 +112,42 @@ defmodule GtfsPlanner.Gtfs.ImportTest do
       assert zone_by_stop_id["S2"] == nil
     end
 
+    test "stores each stops.txt stop_code, tts_stop_name, stop_url and stop_timezone", %{
+      organization: organization,
+      gtfs_version: gtfs_version
+    } do
+      stops_content = """
+      stop_id,stop_code,stop_name,tts_stop_name,stop_lat,stop_lon,stop_url,stop_timezone
+      S1,4021,Stop 1,Stop One,40.7,-74.0,https://example.test/stops/S1,America/New_York
+      S2,,Stop 2,,40.7,-74.1,,
+      """
+
+      files = [%{filename: "stops.txt", content: stops_content}]
+
+      assert {:ok, _result} = Import.import_files(organization.id, gtfs_version.id, files)
+
+      stored_by_stop_id =
+        organization.id
+        |> Gtfs.list_stops(gtfs_version.id)
+        |> Map.new(
+          &{&1.stop_id, Map.take(&1, [:stop_code, :tts_stop_name, :stop_url, :stop_timezone])}
+        )
+
+      assert stored_by_stop_id["S1"] == %{
+               stop_code: "4021",
+               tts_stop_name: "Stop One",
+               stop_url: "https://example.test/stops/S1",
+               stop_timezone: "America/New_York"
+             }
+
+      assert stored_by_stop_id["S2"] == %{
+               stop_code: nil,
+               tts_stop_name: nil,
+               stop_url: nil,
+               stop_timezone: nil
+             }
+    end
+
     test "imports levels, stops, and pathways successfully", %{
       organization: organization,
       gtfs_version: gtfs_version

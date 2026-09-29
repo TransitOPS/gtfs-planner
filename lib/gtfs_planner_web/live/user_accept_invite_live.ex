@@ -6,6 +6,7 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLive do
 
   @secret_keys ["password", "password_confirmation", :password, :password_confirmation]
   @secret_changes [:password, :password_confirmation]
+  @has_password_message "You already have a password. Sign in to continue."
 
   def render(assigns) do
     ~H"""
@@ -74,6 +75,11 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLive do
 
   def mount(%{"token" => token}, _session, socket) do
     case Accounts.get_user_by_invite_token(token) do
+      # An invite never replaces an existing password (tokens issued before that
+      # rule may still exist).
+      %User{hashed_password: hashed_password} when not is_nil(hashed_password) ->
+        {:ok, redirect_to_login_with_password_notice(socket)}
+
       %User{} = user ->
         {:ok,
          socket
@@ -110,6 +116,9 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLive do
          |> put_flash(:info, "Invitation accepted. Log in to continue.")
          |> redirect(to: ~p"/users/log_in")}
 
+      {:error, :already_has_password} ->
+        {:noreply, redirect_to_login_with_password_notice(socket)}
+
       {:error, changeset} ->
         changeset = sanitize_secrets(changeset)
 
@@ -123,6 +132,12 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLive do
          )
          |> push_event("focus_form_error", %{form_id: "accept_invite_form", fallback_id: nil})}
     end
+  end
+
+  defp redirect_to_login_with_password_notice(socket) do
+    socket
+    |> put_flash(:info, @has_password_message)
+    |> redirect(to: ~p"/users/log_in")
   end
 
   defp assign_form(socket, changeset) do

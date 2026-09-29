@@ -197,6 +197,26 @@ defmodule GtfsPlanner.Home.CheckAndShareTest do
     assert export.local_finished_at == ~N[2026-09-20 08:00:00.000000]
   end
 
+  test "the check and export local dates follow the agency's day, not the UTC day", context do
+    agency_fixture(context.organization.id, context.version.id, %{
+      agency_timezone: "America/New_York"
+    })
+
+    insert_check(context.organization, context.version, %{
+      started_at: ~U[2026-03-10 02:30:00.000000Z]
+    })
+
+    insert_export(context.organization, context.version, %{
+      finished_at: ~U[2026-03-10 02:30:00.000000Z]
+    })
+
+    assert %{check: check, export: export} =
+             Home.check_and_share(context.organization.id, context.version.id, :planner)
+
+    assert check.local_at == ~N[2026-03-09 22:30:00.000000]
+    assert export.local_finished_at == ~N[2026-03-09 22:30:00.000000]
+  end
+
   defp insert_export(organization, version, attrs) do
     defaults = %{
       id: Ecto.UUID.generate(),

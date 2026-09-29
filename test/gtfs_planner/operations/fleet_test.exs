@@ -519,7 +519,11 @@ defmodule GtfsPlanner.Operations.FleetTest do
 
       # The savepoint around the attempted delete left the connection usable, so
       # a following count still succeeds.
-      assert Repo.aggregate(Vehicle, :count, :id) == 1
+      assert Repo.aggregate(
+               from(v in Vehicle, where: v.organization_id == ^organization.id),
+               :count,
+               :id
+             ) == 1
     end
 
     test "an unused garage deletes" do
@@ -590,7 +594,12 @@ defmodule GtfsPlanner.Operations.FleetTest do
 
       assert Repo.get(VehicleType, vehicle_type.id)
       assert Repo.get(Vehicle, vehicle.id).vehicle_type_id == vehicle_type.id
-      assert Repo.aggregate(Vehicle, :count, :id) == 1
+
+      assert Repo.aggregate(
+               from(v in Vehicle, where: v.organization_id == ^organization.id),
+               :count,
+               :id
+             ) == 1
     end
 
     test "an unused type deletes" do

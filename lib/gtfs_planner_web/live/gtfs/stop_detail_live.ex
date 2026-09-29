@@ -261,7 +261,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
     if version_id && version_id != current_version_id &&
          Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
       path =
-        if stop_id, do: "/gtfs/#{version_id}/stops/#{stop_id}", else: "/gtfs/#{version_id}/stops"
+        if stop_id,
+          do: ~p"/gtfs/#{version_id}/stops/#{stop_id}",
+          else: "/gtfs/#{version_id}/stops"
 
       {:noreply, push_navigate(socket, to: path)}
     else
@@ -278,7 +280,9 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
       socket = push_event(socket, "gtfs_version_selected", %{version_id: version_id})
 
       path =
-        if stop_id, do: "/gtfs/#{version_id}/stops/#{stop_id}", else: "/gtfs/#{version_id}/stops"
+        if stop_id,
+          do: ~p"/gtfs/#{version_id}/stops/#{stop_id}",
+          else: "/gtfs/#{version_id}/stops"
 
       {:noreply, push_navigate(socket, to: path)}
     else
@@ -990,7 +994,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
                           <%= if is_nil(level_name) do %>
                             <.link
                               navigate={
-                                "/gtfs/#{@current_gtfs_version.id}/stops/#{@stop.stop_id}/diagram?edit_child_stop_id=#{stop.id}"
+                                ~p"/gtfs/#{@current_gtfs_version.id}/stops/#{@stop.stop_id}/diagram?edit_child_stop_id=#{stop.id}"
                               }
                               class="link link-primary text-sm"
                             >
@@ -1278,7 +1282,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
           id={dom_id}
           data-role="journal-summary-entry"
           navigate={
-            "/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/diagram?journal=open&entry_id=#{entry.id}"
+            ~p"/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/diagram?journal=open&entry_id=#{entry.id}"
           }
           class="flex min-h-11 items-center gap-3 px-4 py-3 text-base-content transition-colors hover:bg-base-200/50 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary"
         >
@@ -1310,7 +1314,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLive do
       <div class="border-t border-base-200 px-4 py-2.5">
         <.link
           id="journal-footer-link"
-          navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/diagram?journal=open"}
+          navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@stop_id}/diagram?journal=open"}
           class="inline-flex min-h-11 items-center text-sm text-primary hover:underline"
         >
           Open journal in Floorplans →

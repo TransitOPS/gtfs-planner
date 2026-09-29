@@ -62,6 +62,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
     %{conn: conn, user: user, organization: organization, version: version}
   end
 
+  # The test database can hold rows this case did not create, so pattern reads
+  # cover only this case's organization and version.
+  defp own_patterns(organization, version) do
+    from(p in RoutePattern,
+      where: p.organization_id == ^organization.id and p.gtfs_version_id == ^version.id
+    )
+  end
+
   defp route(organization, version, route_id) do
     route_fixture(organization.id, version.id, %{
       route_id: route_id,
@@ -303,7 +311,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       assert has_element?(view, "#patterns-list-container")
       assert has_element?(view, "#patterns-count", "1 patterns")
       assert has_element?(view, "#status", "Patterns built from existing trips")
-      assert Repo.aggregate(RoutePattern, :count) == 1
+      assert Repo.aggregate(own_patterns(organization, version), :count) == 1
     end
 
     test "a custom-only route shows the honest blocked build state, not an error",
@@ -502,7 +510,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       render_click(element(view, "#pattern-create"))
 
-      created = Repo.one!(from(p in RoutePattern, where: p.route_pattern_name == "Crosstown"))
+      created =
+        Repo.one!(
+          from(p in own_patterns(organization, version),
+            where: p.route_pattern_name == "Crosstown"
+          )
+        )
+
       assert created.route_id == route.route_id
       assert created.direction_id == 1
       assert created.headsign == "Harbor"
@@ -551,7 +565,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       assert has_element?(view, "#error", "at least two stops")
       assert has_element?(view, "#pattern-task-stops[aria-current='page']")
-      assert Repo.aggregate(RoutePattern, :count) == 0
+      assert Repo.aggregate(own_patterns(organization, version), :count) == 0
 
       # Staged details survive the failed submission and the task switch.
       render_click(element(view, "#pattern-task-details"))
@@ -574,7 +588,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       render_change(view, "choose_stop", %{"stop_id" => second.stop_id})
 
       assert has_element?(view, "#error", "already next to that position")
-      assert Repo.aggregate(RoutePattern, :count) == 0
+      assert Repo.aggregate(own_patterns(organization, version), :count) == 0
     end
   end
 
@@ -697,7 +711,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       audit =
         Repo.one(
           from(c in ChangeLog,
-            where: c.entity_type == "route_pattern" and c.action == "updated",
+            where:
+              c.organization_id == ^organization.id and c.gtfs_version_id == ^version.id and
+                c.entity_type == "route_pattern" and c.action == "updated",
             order_by: [desc: c.inserted_at],
             limit: 1
           )
@@ -847,6 +863,60 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       assert {:error, {:live_redirect, %{to: to}}} = live(conn, missing_path)
       assert to == patterns_path(version, route)
+    end
+  end
+
+  describe "pattern ID with reserved URL characters" do
+    setup :editor_scope
+
+    setup %{organization: organization, version: version} do
+      route = route(organization, version, "SLASH1")
+      stops = Enum.map(1..2, &stop(organization, version, "SLASH1", &1))
+      pattern = pattern(organization, version, route, "QA/PAT 1")
+      timing = timing(pattern, occurrences(pattern, stops), %{name: "Weekday"})
+
+      %{
+        timing: timing,
+        encoded_path: "/gtfs/#{version.id}/routes/SLASH1/patterns/QA%2FPAT%201",
+        patterns_path: "/gtfs/#{version.id}/routes/SLASH1/patterns"
+      }
+    end
+
+    test "opens the pattern from the list by its encoded path", %{
+      conn: conn,
+      patterns_path: patterns_path,
+      encoded_path: encoded_path
+    } do
+      {:ok, view, _html} = live(conn, patterns_path)
+
+      render_click(element(view, "button[phx-click='open_pattern']"))
+
+      assert_redirect(view, "#{encoded_path}?task=stops")
+    end
+
+    test "opens the Alignment task from the list by its encoded path", %{
+      conn: conn,
+      patterns_path: patterns_path,
+      encoded_path: encoded_path
+    } do
+      {:ok, view, _html} = live(conn, patterns_path)
+
+      render_click(element(view, "button[phx-click='open_pattern_alignment']"))
+
+      assert_patched(view, "#{encoded_path}?task=alignment")
+    end
+
+    test "keeps the encoded path when switching tasks", %{
+      conn: conn,
+      timing: timing,
+      encoded_path: encoded_path
+    } do
+      {:ok, view, _html} = live(conn, encoded_path)
+
+      render_click(element(view, "#pattern-task-alignment"))
+
+      assert_patched(view, "#{encoded_path}?task=alignment&timing=#{timing.id}")
+      assert has_element?(view, "#pattern-task-alignment[aria-current='page']")
     end
   end
 

@@ -143,6 +143,86 @@ defmodule GtfsPlanner.Gtfs.StopTest do
     end
   end
 
+  describe "stop_code, tts_stop_name, stop_url and stop_timezone" do
+    setup do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+      stop = stop_fixture(organization.id, version.id, %{stop_id: "CODED", stop_name: "Coded"})
+
+      {1, _} =
+        Repo.update_all(from(s in Stop, where: s.id == ^stop.id),
+          set: [
+            stop_code: "4021",
+            tts_stop_name: "Coded Stop",
+            stop_url: "https://example.test/stops/coded",
+            stop_timezone: "America/New_York"
+          ]
+        )
+
+      %{organization: organization, version: version, stop: Repo.get!(Stop, stop.id)}
+    end
+
+    test "a stop form save cannot change them", %{stop: stop} do
+      assert {:ok, saved} =
+               Gtfs.update_stop(stop, %{
+                 stop_name: "Renamed",
+                 stop_code: nil,
+                 tts_stop_name: "Other",
+                 stop_url: nil,
+                 stop_timezone: "Europe/Paris"
+               })
+
+      assert %{
+               stop_name: "Renamed",
+               stop_code: "4021",
+               tts_stop_name: "Coded Stop",
+               stop_url: "https://example.test/stops/coded",
+               stop_timezone: "America/New_York"
+             } = Repo.get!(Stop, saved.id)
+    end
+
+    test "the import changeset cannot change them either", %{stop: stop} do
+      changeset =
+        Stop.import_changeset(stop, %{
+          stop_code: "9",
+          tts_stop_name: "Other",
+          stop_url: "https://example.test/other",
+          stop_timezone: "Europe/Paris"
+        })
+
+      assert changeset.changes == %{}
+    end
+
+    test "a rollback restores the reversible fields and leaves them untouched", %{
+      organization: org,
+      version: version,
+      stop: stop
+    } do
+      actor = user_fixture()
+
+      audit = %AuditContext{
+        organization_id: org.id,
+        gtfs_version_id: version.id,
+        actor_id: actor.id,
+        actor_email: actor.email
+      }
+
+      assert {:ok, renamed} = Gtfs.update_stop(stop, %{stop_name: "Renamed"})
+      assert :ok = Gtfs.record_change(audit, :stop, stop, "updated", %{stop_name: "Renamed"})
+
+      assert [log] = Gtfs.list_change_logs_for_entity(org.id, version.id, "stop", renamed.id)
+      assert {:ok, _restored} = Gtfs.rollback_entity(log, audit)
+
+      assert %{
+               stop_name: "Coded",
+               stop_code: "4021",
+               tts_stop_name: "Coded Stop",
+               stop_url: "https://example.test/stops/coded",
+               stop_timezone: "America/New_York"
+             } = Repo.get!(Stop, stop.id)
+    end
+  end
+
   describe "slugify/1" do
     test "slugifies a normal name" do
       assert Stop.slugify("Platform A") == "platform_a"
@@ -253,6 +333,75 @@ defmodule GtfsPlanner.Gtfs.StopTest do
         base_stop_attrs()
         |> Map.put(:parent_station, "PARENT_STATION")
         |> Map.put(:level_id, nil)
+
+      changeset = Stop.import_changeset(%Stop{}, attrs)
+
+      assert changeset.valid?
+    end
+  end
+
+  describe "changeset/2 and import_changeset/2 station parent rule" do
+    @station_in_station_error "A station can't be inside another station. Choose another type."
+
+    test "changeset/2 rejects a station with a parent station" do
+      attrs =
+        base_stop_attrs()
+        |> Map.merge(%{location_type: 1, parent_station: "PARENT_STATION", level_id: "L1"})
+
+      changeset = Stop.changeset(%Stop{}, attrs)
+
+      refute changeset.valid?
+      assert {@station_in_station_error, _} = changeset.errors[:location_type]
+    end
+
+    test "changeset/2 rejects changing a child stop to a station" do
+      child = %Stop{location_type: 0, parent_station: "PARENT_STATION", level_id: "L1"}
+
+      changeset = Stop.changeset(child, %{location_type: 1})
+
+      refute changeset.valid?
+      assert {@station_in_station_error, _} = changeset.errors[:location_type]
+    end
+
+    test "changeset/2 rejects any edit of a stored station that has a parent station" do
+      legacy = %Stop{location_type: 1, parent_station: "PARENT_STATION", level_id: "L1"}
+
+      changeset = Stop.changeset(legacy, %{stop_name: "Renamed"})
+
+      refute changeset.valid?
+      assert {@station_in_station_error, _} = changeset.errors[:location_type]
+    end
+
+    test "changeset/2 accepts a station without a parent station" do
+      attrs = Map.merge(base_stop_attrs(), %{location_type: 1, parent_station: nil})
+
+      assert Stop.changeset(%Stop{}, attrs).valid?
+    end
+
+    test "changeset/2 accepts a station whose parent station is an empty string" do
+      attrs = Map.merge(base_stop_attrs(), %{location_type: 1, parent_station: ""})
+
+      assert Stop.changeset(%Stop{}, attrs).valid?
+    end
+
+    for location_type <- [0, 2, 3, 4] do
+      test "changeset/2 accepts location type #{location_type} with a parent station and level" do
+        attrs =
+          base_stop_attrs()
+          |> Map.merge(%{
+            location_type: unquote(location_type),
+            parent_station: "PARENT_STATION",
+            level_id: "L1"
+          })
+
+        assert Stop.changeset(%Stop{}, attrs).valid?
+      end
+    end
+
+    test "import_changeset/2 accepts a station with a parent station" do
+      attrs =
+        base_stop_attrs()
+        |> Map.merge(%{location_type: 1, parent_station: "PARENT_STATION", level_id: nil})
 
       changeset = Stop.import_changeset(%Stop{}, attrs)
 

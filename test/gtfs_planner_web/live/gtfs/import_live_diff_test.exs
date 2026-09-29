@@ -9,7 +9,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Import.ChangeDecision
+  alias GtfsPlanner.Gtfs.Import.ChangeRun
   alias GtfsPlanner.Gtfs.Import.ChangeRuns
+  alias GtfsPlanner.Repo
 
   setup %{conn: conn} do
     organization = organization_fixture()
@@ -279,16 +282,342 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
     assert has_element?(view, "#diff-retry-btn")
   end
 
-  defp submit_diff(view, filename, content) do
+  test "a partial run offers Start over, which returns to upload and survives a reload", %{
+    conn: conn,
+    organization: organization,
+    version: version
+  } do
+    insert_run!(organization, version, :partial)
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    assert has_element?(view, "#diff-run-state[data-state='partial']")
+    assert has_element?(view, "#diff-retry-btn")
+    assert has_element?(view, "#diff-partial-note", "Applied changes stay in this version.")
+
+    select_diff_file(view, "levels.txt", "level_id,level_index,level_name\nL1,1.0,One")
+    assert has_element?(view, "#diff-compute-btn[disabled]")
+
+    view |> element("#diff-start-over-btn") |> render_click()
+
+    refute has_element?(view, "#diff-run-state")
+    select_diff_file(view, "levels.txt", "level_id,level_index,level_name\nL1,1.0,One")
+    assert has_element?(view, "#diff-compute-btn:not([disabled])")
+
+    {:ok, reloaded, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    refute has_element?(reloaded, "#diff-run-state")
+    select_diff_file(reloaded, "levels.txt", "level_id,level_index,level_name\nL1,1.0,One")
+    assert has_element?(reloaded, "#diff-compute-btn:not([disabled])")
+  end
+
+  test "a failed run offers Start over, which returns to upload and survives a reload", %{
+    conn: conn,
+    organization: organization,
+    version: version
+  } do
+    insert_run!(organization, version, :failed, %{failure_code: "parse_failed"})
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    assert has_element?(view, "#diff-run-state[data-state='failed']")
+    refute has_element?(view, "#diff-partial-note")
+
+    view |> element("#diff-start-over-btn") |> render_click()
+
+    refute has_element?(view, "#diff-run-state")
+
+    {:ok, reloaded, _html} = live(conn, "/gtfs/#{version.id}/import")
+    refute has_element?(reloaded, "#diff-run-state")
+  end
+
+  test "a new diff computes after starting over from a partial run", %{
+    conn: conn,
+    organization: organization,
+    version: version
+  } do
+    partial = insert_run!(organization, version, :partial)
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    view |> element("#diff-start-over-btn") |> render_click()
+    submit_diff(view, "levels.txt", "level_id,level_index,level_name\nRESTART,1.0,Restart")
+    await_change_task(view)
+
+    assert has_element?(view, "#diff-decisions [data-version-diff-row]")
+
+    assert %{state: :review, id: new_id} =
+             ChangeRuns.latest_for_version(organization.id, version.id)
+
+    refute new_id == partial.id
+
+    assert %{state: :cancelled} =
+             ChangeRuns.get_for_version(organization.id, version.id, partial.id)
+
+    {:ok, reloaded, _html} = live(conn, "/gtfs/#{version.id}/import")
+    assert has_element?(reloaded, "#diff-decisions [data-version-diff-row]")
+  end
+
+  test "a partial run lists each failed decision with a plain reason", %{
+    conn: conn,
+    organization: organization,
+    version: version
+  } do
+    run = insert_run!(organization, version, :partial)
+    insert_decision!(run, "DRIFT", %{status: :stale, apply_failure_code: "drifted"})
+
+    insert_decision!(run, "DEPENDENT", %{
+      status: :failed,
+      apply_failure_code: "dependencies_unmet",
+      action: :add
+    })
+
+    insert_decision!(run, "ODD", %{status: :failed, apply_failure_code: "apply_failed"})
+    insert_decision!(run, "DONE", %{status: :applied, apply_failure_code: nil})
+
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    assert has_element?(
+             view,
+             "#diff-failed-decisions li[data-decision-id='stop:DRIFT']",
+             "Changed since the review was computed"
+           )
+
+    assert has_element?(
+             view,
+             "#diff-failed-decisions li[data-decision-id='stop:DRIFT']",
+             "modify"
+           )
+
+    assert has_element?(view, "#diff-failed-decisions li[data-decision-id='stop:DRIFT']", "DRIFT")
+
+    assert has_element?(
+             view,
+             "#diff-failed-decisions li[data-decision-id='stop:DEPENDENT']",
+             "Depends on a change that was not applied"
+           )
+
+    assert has_element?(
+             view,
+             "#diff-failed-decisions li[data-decision-id='stop:ODD']",
+             "Could not be applied"
+           )
+
+    refute has_element?(view, "#diff-failed-decisions li[data-decision-id='stop:DONE']")
+  end
+
+  test "a removal row states what still uses the stop and omits the line when nothing does", %{
+    conn: conn,
+    organization: organization,
+    version: version
+  } do
+    stop_fixture(organization.id, version.id, %{stop_id: "central"})
+    stop_fixture(organization.id, version.id, %{stop_id: "lonely"})
+    stop_time_fixture(organization.id, version.id, "T1", "central")
+    stop_time_fixture(organization.id, version.id, "T2", "central")
+
+    transfer_fixture(organization.id, version.id, %{
+      from_stop_id: "central",
+      to_stop_id: "central"
+    })
+
+    run = insert_run!(organization, version, :review, %{finished_at: nil})
+    central = insert_removal!(run, :stop, "central")
+    lonely = insert_removal!(run, :stop, "lonely")
+
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    assert has_element?(
+             view,
+             "#diff-decision-dependents-#{central.id}",
+             "Used by 2 stop times and 1 transfer. Removal will be refused while they exist."
+           )
+
+    refute has_element?(view, "#diff-decision-dependents-#{lonely.id}")
+    assert has_element?(view, "button[phx-click='approve-decision'][phx-value-id='stop:central']")
+  end
+
+  test "a level removal row states how many stops use the level", %{
+    conn: conn,
+    organization: organization,
+    version: version
+  } do
+    level_fixture(organization.id, version.id, %{level_id: "L1"})
+    stop_fixture(organization.id, version.id, %{stop_id: "platform-a", level_id: "L1"})
+    stop_fixture(organization.id, version.id, %{stop_id: "platform-b", level_id: "L1"})
+
+    run = insert_run!(organization, version, :review, %{finished_at: nil})
+    level = insert_removal!(run, :level, "L1")
+
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    assert has_element?(
+             view,
+             "#diff-decision-dependents-#{level.id}",
+             "Used by 2 stops. Removal will be refused while they exist."
+           )
+  end
+
+  test "an approved removal of a stop that trips use is listed as failed with its reason", %{
+    conn: conn,
+    organization: organization,
+    version: version
+  } do
+    stop_fixture(organization.id, version.id, %{stop_id: "central"})
+    stop_time_fixture(organization.id, version.id, "T1", "central")
+
+    run = insert_run!(organization, version, :review, %{finished_at: nil})
+    insert_removal!(run, :stop, "central")
+
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    view
+    |> element("button[phx-click='approve-decision'][phx-value-id='stop:central']")
+    |> render_click()
+
+    view |> element("#diff-apply-btn") |> render_click()
+    await_change_task(view)
+
+    assert Gtfs.get_stop_by_stop_id(organization.id, version.id, "central")
+
+    assert has_element?(
+             view,
+             "#diff-failed-decisions li[data-decision-id='stop:central']",
+             "Still used by trips, transfers, pathways or other records in this version"
+           )
+  end
+
+  test "the failed decision list stops at 50 and counts the rest", %{
+    conn: conn,
+    organization: organization,
+    version: version
+  } do
+    run = insert_run!(organization, version, :partial)
+    insert_failed_decisions!(run, 52)
+
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    assert has_element?(view, "#diff-failed-decisions li[data-decision-id='stop:S049']")
+    refute has_element?(view, "#diff-failed-decisions li[data-decision-id='stop:S050']")
+    assert has_element?(view, "#diff-failed-decisions-more", "and 2 more")
+  end
+
+  test "Start over is not offered while a run is computing", %{
+    conn: conn,
+    organization: organization,
+    version: version
+  } do
+    insert_run!(organization, version, :computing)
+
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    assert has_element?(view, "#diff-run-state[data-state='computing']")
+    refute has_element?(view, "#diff-start-over-btn")
+  end
+
+  test "Start over is not offered while a run is applying", %{
+    conn: conn,
+    organization: organization,
+    version: version
+  } do
+    insert_run!(organization, version, :applying)
+
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    assert has_element?(view, "#diff-run-state[data-state='applying']")
+    refute has_element?(view, "#diff-start-over-btn")
+  end
+
+  test "a crafted Start over event leaves a running review in place", %{
+    conn: conn,
+    organization: organization,
+    version: version
+  } do
+    run = insert_run!(organization, version, :computing)
+    {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+
+    render_click(view, "start-over-diff")
+
+    assert has_element?(view, "#diff-run-state[data-state='computing']")
+    assert %{state: :computing} = ChangeRuns.get_for_version(organization.id, version.id, run.id)
+  end
+
+  defp select_diff_file(view, filename, content) do
     type = if Path.extname(filename) == ".zip", do: "application/zip", else: "text/plain"
 
-    upload =
-      file_input(view, "#diff-upload-form", :diff_files, [
-        %{name: filename, content: content, type: type}
-      ])
+    view
+    |> file_input("#diff-upload-form", :diff_files, [
+      %{name: filename, content: content, type: type}
+    ])
+    |> render_upload(filename)
+  end
 
-    render_upload(upload, filename)
+  defp submit_diff(view, filename, content) do
+    select_diff_file(view, filename, content)
     view |> form("#diff-upload-form") |> render_submit()
+  end
+
+  defp insert_run!(organization, version, state, attrs \\ %{}) do
+    now = DateTime.utc_now()
+
+    %ChangeRun{}
+    |> ChangeRun.system_changeset(
+      %{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        actor_id: Ecto.UUID.generate(),
+        actor_email: "reviewer@example.com",
+        state: state,
+        phase: :cleanup,
+        summary: %{"applied" => 1, "failed" => 1, "unapplied" => 0}
+      }
+      |> Map.merge(run_timing(state, now))
+      |> Map.merge(attrs)
+    )
+    |> Repo.insert!()
+  end
+
+  defp run_timing(state, now) when state in [:computing, :applying] do
+    %{
+      started_at: now,
+      lease_token: Ecto.UUID.generate(),
+      lease_expires_at: DateTime.add(now, 300, :second)
+    }
+  end
+
+  defp run_timing(_terminal_state, now), do: %{started_at: now, finished_at: now}
+
+  defp insert_decision!(run, key, attrs) do
+    %ChangeDecision{}
+    |> ChangeDecision.system_changeset(
+      Map.merge(
+        %{
+          change_run_id: run.id,
+          decision_id: "stop:#{key}",
+          entity_type: :stop,
+          action: :modify,
+          status: :stale,
+          natural_key: key,
+          apply_failure_code: "drifted"
+        },
+        attrs
+      )
+    )
+    |> Repo.insert!()
+  end
+
+  defp insert_removal!(run, entity_type, key) do
+    insert_decision!(run, key, %{
+      decision_id: "#{entity_type}:#{key}",
+      entity_type: entity_type,
+      action: :remove,
+      status: :pending,
+      apply_failure_code: nil
+    })
+  end
+
+  defp insert_failed_decisions!(run, count) do
+    Enum.each(0..(count - 1), fn index ->
+      key = "S" <> String.pad_leading(Integer.to_string(index), 3, "0")
+      insert_decision!(run, key, %{})
+    end)
   end
 
   defp zip!(entries) do

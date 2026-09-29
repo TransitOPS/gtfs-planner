@@ -1052,7 +1052,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
          :ok <-
            require_timing_acknowledgements(
              new_occurrences,
-             old_occurrences,
+             reviewed.estimates,
              reviewed_values,
              trips,
              timings,
@@ -1188,12 +1188,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   # An unseen added-stop value can never be silently acknowledged: when an
   # addition affects trips, every timing in the edit must carry an explicit
-  # acknowledgement, not only the timings a caller happened to supply.
-  defp require_timing_acknowledgements(new, _old, values, trips, timings, opts) do
+  # acknowledgement, not only the timings a caller happened to supply. Times
+  # re-sequenced by a reorder are estimates as well and are written to the
+  # timing rows whether or not any trip uses the pattern.
+  defp require_timing_acknowledgements(new, estimates, values, trips, timings, opts) do
     added? = Enum.any?(new, &(not Map.has_key?(&1, :id)))
     affected? = trips != []
+    resequenced? = Enum.any?(estimates, & &1[:resequenced])
 
-    if added? and affected? and Keyword.get(opts, :require_acknowledgements, true) do
+    if ((added? and affected?) or resequenced?) and
+         Keyword.get(opts, :require_acknowledgements, true) do
       acknowledged =
         for {timing_id, entry} <- values,
             map_value(entry, :acknowledged) == true,

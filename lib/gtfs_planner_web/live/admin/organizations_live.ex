@@ -321,7 +321,8 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         Map.get(params, "email", ""),
         organization.id,
         Map.get(params, "roles", []),
-        &url(~p"/users/accept_invite/#{&1}")
+        &url(~p"/users/accept_invite/#{&1}"),
+        login_url: url(~p"/users/log_in")
       )
 
     case result do
@@ -330,6 +331,28 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
          socket
          |> assign_invite_form(InviteForm.changeset(%{}))
          |> put_feedback("success", "Invitation sent to #{user.email}.", user.id)
+         |> push_patch(to: ~p"/admin/organizations/#{organization.id}")}
+
+      {:ok, :added, user} ->
+        {:noreply,
+         socket
+         |> assign_invite_form(InviteForm.changeset(%{}))
+         |> put_feedback(
+           "success",
+           "#{user.email} now has access to #{organization.name}.",
+           user.id
+         )
+         |> push_patch(to: ~p"/admin/organizations/#{organization.id}")}
+
+      {:partial, :notification_failed, user, _reason} ->
+        {:noreply,
+         socket
+         |> assign_invite_form(InviteForm.changeset(%{}))
+         |> put_feedback(
+           "warning",
+           "#{user.email} was added to #{organization.name}, but the notification email could not be sent.",
+           user.id
+         )
          |> push_patch(to: ~p"/admin/organizations/#{organization.id}")}
 
       {:partial, :delivery_failed, user, _reason} ->
@@ -466,10 +489,14 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         |> put_feedback("success", "#{member.user.email} deactivated.", member.user.id)
         |> load_members()
 
-      {:error, _reason} ->
+      {:error, reason} ->
         socket
         |> assign(:pending_deactivation, nil)
-        |> put_feedback("error", "#{member.user.email} could not be deactivated.", member.user.id)
+        |> put_feedback(
+          "error",
+          Components.deactivation_error(reason, member.user.email),
+          member.user.id
+        )
         |> load_members()
     end
   end

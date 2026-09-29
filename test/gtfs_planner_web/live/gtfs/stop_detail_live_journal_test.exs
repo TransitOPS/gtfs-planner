@@ -569,6 +569,66 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveJournalTest do
     end
   end
 
+  describe "journal summary links for a stop ID with reserved URL characters" do
+    test "encode the stop ID, keep the query parameters, and open the journal entry", context do
+      station =
+        stop_fixture(context.organization.id, context.gtfs_version.id, %{
+          stop_id: "QA/STN 1",
+          stop_name: "Slash Station",
+          location_type: 1
+        })
+
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          organization_id: context.organization.id,
+          gtfs_version_id: context.gtfs_version.id,
+          stop_id: station.id,
+          level_id: context.level.id
+        })
+
+      {:ok, scope} =
+        Gtfs.resolve_station_journal_scope(
+          context.organization.id,
+          context.gtfs_version.id,
+          station.id,
+          context.user.id
+        )
+
+      entry_id = Ecto.UUID.generate()
+
+      %{synced_count: 1, errors: []} =
+        Gtfs.sync_journal_entries(scope, [
+          %{
+            id: entry_id,
+            target_type: "station",
+            body: "Slash station entry",
+            captured_at: ~U[2026-07-21 14:00:00Z]
+          }
+        ])
+
+      base = "/gtfs/#{context.gtfs_version.id}/stops/QA%2FSTN%201"
+      conn = log_in_user(context.conn, context.user, organization: context.organization)
+
+      {:ok, view, _html} = live(conn, base, on_error: :warn)
+      render_async(view, 5_000)
+
+      entry_href = "#{base}/diagram?journal=open&entry_id=#{entry_id}"
+
+      assert has_element?(view, ~s(a#station-journal-summary-#{entry_id}[href="#{entry_href}"]))
+
+      assert has_element?(
+               view,
+               ~s(a#journal-footer-link[href="#{base}/diagram?journal=open"])
+             )
+
+      {:ok, diagram_view, _html} = live(conn, entry_href, on_error: :warn)
+      render_async(diagram_view, 5_000)
+
+      assert has_element?(diagram_view, "#journal-entries-#{entry_id}")
+      assert_patch(diagram_view, "#{base}/diagram")
+    end
+  end
+
   defp seed_journal_entries(context) do
     entries = [
       %{

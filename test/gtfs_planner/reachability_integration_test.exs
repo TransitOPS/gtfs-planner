@@ -266,21 +266,28 @@ defmodule GtfsPlanner.ReachabilityIntegrationTest do
     end
   end
 
+  # The run's task can exit at any point before this helper looks for it, so
+  # both "no new task" and "task already dead when monitored" (`:noproc`) mean
+  # it finished. Either way the persisted row decides: a task that died
+  # without writing a terminal status must fail here, not return a running row.
   defp wait_for_completion(run_id, task_pids_before) do
-    case Repo.get!(ValidationRun, run_id).status do
-      status when status in ["completed", "failed"] ->
-        Repo.get!(ValidationRun, run_id)
+    task_pid =
+      GtfsPlanner.TaskSupervisor
+      |> Task.Supervisor.children()
+      |> Enum.find(&(&1 not in task_pids_before))
 
-      _status ->
-        task_pid =
-          GtfsPlanner.TaskSupervisor
-          |> Task.Supervisor.children()
-          |> Enum.find(&(&1 not in task_pids_before))
-
-        ref = Process.monitor(task_pid)
-        assert_receive {:DOWN, ^ref, :process, ^task_pid, :normal}, 5_000
-        Repo.get!(ValidationRun, run_id)
+    if task_pid do
+      ref = Process.monitor(task_pid)
+      assert_receive {:DOWN, ^ref, :process, ^task_pid, reason}, 5_000
+      assert reason in [:normal, :noproc]
     end
+
+    run = Repo.get!(ValidationRun, run_id)
+
+    assert run.status in ["completed", "failed"],
+           "run #{run_id} is #{run.status} after its task exited"
+
+    run
   end
 
   # The runner seam in `Reachability.start_run/4` is used with the real runner

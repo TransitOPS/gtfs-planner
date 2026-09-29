@@ -18,7 +18,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   States stay distinct: an unreadable scope renders not-found, a lost connection
   renders the retry callout with an explanation, and a failed or stale save keeps
   the draft. A calendar whose imported metadata has no name shows its service ID
-  as the fallback label and never invents a stored name.
+  as the fallback label and never invents a stored name. A calendar whose stored end
+  date is before its start date opens with an error callout and its stored dates, and
+  only a corrected range can be saved; conversion, breaks and single-date changes wait
+  until it is.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -64,6 +67,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     {"Every day", @weekday_fields}
   ]
   @params_as :calendar
+  # The fields inside the "More details" disclosure. An error on one of them
+  # opens the disclosure so it is not hidden inside a collapsed section.
+  @details_fields ~w(service_schedule_name service_schedule_type service_schedule_typicality
+    rating_start_date rating_end_date rating_description)a
 
   @impl true
   def mount(_params, _session, socket) do
@@ -85,6 +92,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
      |> assign(:params, %{})
      |> assign(:baseline, nil)
      |> assign(:field_errors, %{})
+     |> assign(:details_open?, false)
      |> assign(:form, to_form(%{}, as: @params_as))
      |> assign(:break_params, %{"first_date" => "", "last_date" => ""})
      |> assign(:break_form, to_form(%{"first_date" => "", "last_date" => ""}, as: :break))
@@ -146,7 +154,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   @impl true
   def handle_event("validate", %{"calendar" => submitted}, socket) do
     params = merge_params(socket, submitted)
-    params = suggest_service_id(params)
+    params = suggest_service_id(socket, params)
 
     # A date entered in the specific-dates picker becomes a draft chip as soon as
     # the picker reports a complete date, so the drafted dates are part of the
@@ -158,6 +166,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   def handle_event("validate", _params, socket), do: {:noreply, socket}
+
+  # The disclosure is a native `<details>`, so the browser owns the toggle and the
+  # summary click only keeps the server's `open` attribute in step. Without this
+  # every re-render strips the attribute and closes the section mid-edit.
+  @impl true
+  def handle_event("toggle_details", _params, socket) do
+    {:noreply, assign(socket, :details_open?, not socket.assigns.details_open?)}
+  end
 
   @impl true
   def handle_event("set_kind", %{"kind" => kind}, socket) when kind in ["weekly", "dates_only"] do
@@ -503,9 +519,15 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     case {socket.assigns.params["kind"], weekly_attrs(socket.assigns.params)} do
       {"dates_only", _} -> nil
       {"weekly", {:ok, attrs}} -> struct(GtfsPlanner.Gtfs.Calendar, attrs)
-      _ -> source && source.calendar
+      _ -> stored_calendar(source)
     end
   end
+
+  # The form only falls back to the stored row while its own range is unusable. A
+  # stored reversed range has no dates to draw, so the preview stays empty until
+  # the form holds a valid range.
+  defp stored_calendar(%{coverage_error: nil, calendar: calendar}), do: calendar
+  defp stored_calendar(_source), do: nil
 
   defp move_preview(socket, month) do
     assign_preview(socket, month)
@@ -651,13 +673,20 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     }
   end
 
-  # The suggested service ID is visible and editable until the user types their own;
-  # it is never derived for an existing calendar, whose service ID cannot change.
-  defp suggest_service_id(%{"service_id" => ""} = params) do
-    Map.put(params, "service_id", service_id_from_name(params["name"]))
+  # The suggested service ID is visible and editable until the user types their own:
+  # it follows the name while it is empty or still the suggestion for the previous
+  # name. It is never derived for an existing calendar, whose service ID cannot change.
+  defp suggest_service_id(%{assigns: %{live_action: :new}} = socket, params) do
+    previous_suggestion = service_id_from_name(socket.assigns.params["name"] || "")
+
+    if params["service_id"] in ["", previous_suggestion] do
+      Map.put(params, "service_id", service_id_from_name(params["name"]))
+    else
+      params
+    end
   end
 
-  defp suggest_service_id(params), do: params
+  defp suggest_service_id(_socket, params), do: params
 
   defp service_id_from_name(name) do
     name
@@ -679,6 +708,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       Map.new(errors, fn {field, messages} -> {field, List.wrap(messages)} end)
     )
     |> assign(:form, to_form(params, as: @params_as, errors: errors))
+    |> assign(
+      :details_open?,
+      socket.assigns.details_open? or
+        Enum.any?(errors, fn {field, _} -> field in @details_fields end)
+    )
     |> assign(:dirty?, baseline != nil and params != baseline)
     |> maybe_clear_messages(opts)
     |> assign_preview(socket.assigns.preview_month || socket.assigns.today || Date.utc_today())
@@ -875,7 +909,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp save_weekly(socket, kind, params) do
     keys = ["kind", "weekdays", "start_date", "end_date"]
 
-    if socket.assigns.live_action == :show and
+    # A stored reversed range is never "unchanged": the save has to carry a valid
+    # range, because planning a save that keeps it would evaluate its dates.
+    if socket.assigns.live_action == :show and socket.assigns.source.coverage_error == nil and
          Map.take(params, keys) == Map.take(socket.assigns.baseline, keys),
        do: {:ok, %{}},
        else: weekly_attrs_for(kind, params)
@@ -1101,6 +1137,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     "That change is not valid for this calendar."
   end
 
+  defp write_error_message(:reversed_range) do
+    "Correct this calendar’s dates first."
+  end
+
   defp write_error_message({:in_use, trip_count, _routes}) do
     "#{trip_count} trips use this calendar, so it cannot be deleted."
   end
@@ -1312,6 +1352,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
           </div>
 
           <div
+            :if={@live_action == :show and @source.coverage_error}
+            id="calendar-range-error"
+            class="mt-4"
+          >
+            <.callout kind="error" title="This calendar’s end date is before its start date.">
+              Correct the dates and save. Until then, no service dates can be worked out for it.
+            </.callout>
+          </div>
+
+          <div
             :if={(@load_state == :ready and @zone) && @zone.fallback?}
             id="calendar-timezone-fallback"
             class="mt-4"
@@ -1342,7 +1392,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 }>
                   <span :if={index > 0}>, </span>
                   <.link
-                  navigate={"/gtfs/#{@current_gtfs_version.id}/routes/#{route_id}"}
+                  navigate={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{route_id}"}
                   class="link"
                 >
                     {route_id}
@@ -1408,6 +1458,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                       name={@form[:kind].name}
                       value="dates_only"
                       checked={@params["kind"] == "dates_only"}
+                      disabled={reversed_range?(assigns)}
+                      aria-describedby={reversed_range?(assigns) && "calendar-range-error"}
                       class="radio radio-sm"
                     />
                     <span class="text-sm font-medium">Only on specific dates</span>
@@ -1512,8 +1564,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 />
               </div>
 
-              <details class="mt-4">
-                <summary class="cursor-pointer text-sm font-medium">
+              <details id="calendar-more-details" open={@details_open?} class="mt-4">
+                <summary
+                  id="calendar-more-details-summary"
+                  phx-click="toggle_details"
+                  class="cursor-pointer text-sm font-medium"
+                >
                   More details <span class="text-base-content/70">· optional</span>
                 </summary>
                 <div class="mt-4 space-y-4">
@@ -1621,7 +1677,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
             <CalendarComponents.warning_list id="periods-warnings" warnings={@warnings} />
 
-            <div :if={@kind == :weekly} class="mt-4 border border-base-300 bg-base-100 p-4">
+            <div
+              :if={@kind == :weekly and not reversed_range?(assigns)}
+              class="mt-4 border border-base-300 bg-base-100 p-4"
+            >
               <.form
                 for={@break_form}
                 id="calendar-break-form"
@@ -1725,7 +1784,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
               <CalendarComponents.date_chips
                 id="calendar-exception-chips"
                 entries={@source.exceptions}
-                editable={true}
+                editable={not reversed_range?(assigns)}
               />
 
               <p :if={@source.exceptions == []} class="mt-2 text-sm text-base-content/70">
@@ -1734,6 +1793,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
             </div>
 
             <.form
+              :if={not reversed_range?(assigns)}
               for={@exception_form}
               id="calendar-exception-form"
               phx-submit="add_dates"
@@ -1830,6 +1890,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     do: String.trim(name) == ""
 
   defp blank_name?(_source), do: true
+
+  # A stored range that ends before it starts has no service dates, so the commands
+  # that read them (conversion, breaks, single-date changes) are not offered until it
+  # is corrected.
+  defp reversed_range?(%{live_action: :show, source: %{coverage_error: error}}),
+    do: error != nil
+
+  defp reversed_range?(_assigns), do: false
 
   defp kind_label(:weekly), do: "Weekly schedule"
   defp kind_label(_kind), do: "Specific dates"

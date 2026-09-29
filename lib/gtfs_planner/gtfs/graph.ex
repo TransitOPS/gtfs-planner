@@ -133,6 +133,18 @@ defmodule GtfsPlanner.Gtfs.Graph do
   end
 
   @doc """
+  Returns `true` if riders can arrive at `stop_id` but nothing leads away
+  from it: no outgoing edge and at least one incoming edge in the directed
+  adjacency.
+  """
+  def exit_only?(stop_id, directed_adjacency) do
+    MapSet.size(Map.get(directed_adjacency, stop_id, MapSet.new())) == 0 and
+      Enum.any?(directed_adjacency, fn {_from_stop_id, neighbors} ->
+        MapSet.member?(neighbors, stop_id)
+      end)
+  end
+
+  @doc """
   Finds the shortest directed path from `start_stop_id` to any member
   of `target_ids` using BFS on the path-traversal adjacency.
 

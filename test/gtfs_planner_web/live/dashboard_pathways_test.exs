@@ -334,6 +334,49 @@ defmodule GtfsPlannerWeb.DashboardPathwaysTest do
     end
   end
 
+  describe "Station board times" do
+    test "the board and the rail show one change at the same agency-local time", ctx do
+      agency_fixture(ctx.organization.id, ctx.version.id, %{agency_timezone: "America/New_York"})
+      level = level_fixture(ctx.organization.id, ctx.version.id, %{level_id: "L1"})
+      mapped_station(ctx, level, "UNS", "Union Station")
+
+      change_log(ctx, %{
+        entity_type: "stop",
+        entity_external_id: "UNS",
+        station_stop_id: "UNS",
+        actor_id: ctx.user.id,
+        actor_email: ctx.user.email,
+        snapshot: %{"level_id" => "L1"},
+        changed_fields: %{"stop_name" => %{"from" => "Old name", "to" => "Union Station"}},
+        inserted_at: ~U[2026-03-10 10:28:00.000000Z]
+      })
+
+      viewer = member(ctx.organization, "team.viewer@example.test")
+      conn = log_in_user(ctx.conn, viewer, organization: ctx.organization)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+      render_board(view)
+
+      assert has_element?(view, "#board-row-UNS", "Mar 10, 6:28 AM")
+      assert has_element?(view, "#resume-row-1", "Mar 10, 6:28 AM")
+    end
+
+    test "the rail's export day is the agency's calendar day", ctx do
+      agency_fixture(ctx.organization.id, ctx.version.id, %{agency_timezone: "America/New_York"})
+      station_row(ctx, "UNS", "Union Station")
+
+      insert_export(ctx, %{
+        finished_at: ~U[2026-03-10 02:30:00.000000Z],
+        artifact_expires_at: ~U[2099-01-01 00:00:00.000000Z]
+      })
+
+      {:ok, view, _html} = live(log_in(ctx), ~p"/")
+      render_board(view)
+
+      assert has_element?(view, "#export-line", "Mar 9")
+    end
+  end
+
   describe "Station board attention" do
     test "the strip lists the check's errors and a stopped import only", ctx do
       conn = log_in(ctx)

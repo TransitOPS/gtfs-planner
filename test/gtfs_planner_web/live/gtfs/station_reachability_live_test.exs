@@ -75,6 +75,53 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityLiveTest do
     refute has_element?(view, "#last-reachability-run")
   end
 
+  test "enables the run button when the only active run is past the timeout", %{
+    conn: conn,
+    user: user,
+    organization: organization,
+    gtfs_version: version,
+    station: station
+  } do
+    level_fixture(organization.id, version.id, %{level_id: "L1", level_index: 0.0})
+
+    entrance =
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "TAB_ENTRANCE",
+        location_type: 2,
+        parent_station: station.stop_id,
+        level_id: "L1"
+      })
+
+    platform =
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "TAB_PLATFORM",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: "L1"
+      })
+
+    pathway_fixture(organization.id, version.id, entrance.stop_id, platform.stop_id)
+
+    {:ok, run} =
+      Validations.create_validation_run(organization.id, version.id, "station_reachability")
+
+    run
+    |> ValidationRun.changeset(%{
+      status: "running",
+      started_at: DateTime.add(DateTime.utc_now(), -16 * 60, :second),
+      result_json: %{"metadata" => %{"station_stop_id" => station.stop_id}}
+    })
+    |> Repo.update!()
+
+    conn = log_in_user(conn, user, organization: organization)
+
+    {:ok, view, _html} =
+      live(conn, "/gtfs/#{version.id}/stops/#{station.stop_id}/reachability")
+
+    assert has_element?(view, "#run-reachability-btn")
+    refute has_element?(view, "#run-reachability-btn[disabled]")
+  end
+
   defp backdate!(run, seconds) do
     inserted_at = DateTime.add(DateTime.utc_now(), seconds, :second)
 

@@ -839,4 +839,67 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
       refute html =~ "Route catalog unavailable"
     end
   end
+
+  describe "RoutesLive route links" do
+    setup :shared_setup
+
+    test "links a route whose ID has reserved URL characters by its encoded path", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      # These cases read through the production adapter; the setup's on_exit
+      # restores the mock override.
+      Application.delete_env(:gtfs_planner, @adapter_key)
+
+      conn = log_in_user(conn, user, organization: organization)
+      route = route_fixture(organization.id, version.id, %{route_id: "QA/SLASH 1"})
+      encoded_path = "/gtfs/#{version.id}/routes/QA%2FSLASH%201"
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+      doc = LazyHTML.from_fragment(render(view))
+
+      assert doc |> LazyHTML.query("tr#routes-#{route.id} a") |> LazyHTML.attribute("href") ==
+               [encoded_path]
+
+      assert doc
+             |> LazyHTML.query("li#routes_mobile-#{route.id} a")
+             |> LazyHTML.attribute("href") == [encoded_path]
+    end
+
+    test "opens the route detail page from the encoded link", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      Application.delete_env(:gtfs_planner, @adapter_key)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      route_fixture(organization.id, version.id, %{
+        route_id: "QA/SLASH 1",
+        route_short_name: "QA1",
+        route_long_name: "Slash Route"
+      })
+
+      {:ok, list_view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+
+      [href] =
+        list_view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#routes a")
+        |> LazyHTML.attribute("href")
+
+      {:ok, detail_view, _html} = live(conn, href)
+
+      assert has_element?(
+               detail_view,
+               "nav[aria-label='Route navigation'] h1",
+               "QA1 - Slash Route"
+             )
+    end
+  end
 end

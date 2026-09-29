@@ -308,7 +308,11 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
       if valid_scale_point?(value) do
         []
       else
-        [{field, "must include numeric x and y coordinates between 0 and 100"}]
+        [
+          {field,
+           "must include numeric x between 0 and #{Coordinates.max_diagram_coordinate(:x)} " <>
+             "and y between 0 and #{Coordinates.max_diagram_coordinate(:y)}"}
+        ]
       end
     end)
   end
@@ -317,7 +321,8 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
     x = Coordinates.point_value(point, :x)
     y = Coordinates.point_value(point, :y)
 
-    is_number(x) and is_number(y) and x >= 0 and x <= 100 and y >= 0 and y <= 100
+    is_number(x) and is_number(y) and x >= 0 and x <= Coordinates.max_diagram_coordinate(:x) and
+      y >= 0 and y <= Coordinates.max_diagram_coordinate(:y)
   end
 
   defp valid_scale_point?(_), do: false

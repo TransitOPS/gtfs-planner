@@ -103,6 +103,32 @@ defmodule GtfsPlanner.Gtfs.GraphTest do
     end
   end
 
+  describe "exit_only?/2" do
+    test "is true for a stop with only incoming edges" do
+      adj = Graph.build_directed_adjacency([pathway("A", "B", is_bidirectional: false)])
+
+      assert Graph.exit_only?("B", adj)
+    end
+
+    test "is false for a stop with an outgoing edge" do
+      adj = Graph.build_directed_adjacency([pathway("A", "B", is_bidirectional: false)])
+
+      refute Graph.exit_only?("A", adj)
+    end
+
+    test "is false for a stop reached through a bidirectional pathway" do
+      adj = Graph.build_directed_adjacency([pathway("A", "B", is_bidirectional: true)])
+
+      refute Graph.exit_only?("B", adj)
+    end
+
+    test "is false for a stop with no pathways" do
+      adj = Graph.build_directed_adjacency([pathway("A", "B", is_bidirectional: false)])
+
+      refute Graph.exit_only?("C", adj)
+    end
+  end
+
   describe "shortest_directed_path_to_any/3" do
     test "returns correct hop sequence for a 3-node chain" do
       adj =

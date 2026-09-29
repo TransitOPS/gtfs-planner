@@ -20,6 +20,14 @@ defmodule GtfsPlanner.Gtfs.Stop do
     # GtfsPlanner.Gtfs.FareZones. It is never cast, so a partial station-data file,
     # a stop form or a rollback cannot clear an assigned fare zone.
     field :zone_id, :string
+
+    # stop_code, tts_stop_name, stop_url and stop_timezone follow the same rule:
+    # the full importer is their only writer and none is ever cast, so a stop
+    # form, a partial station-data file or a rollback cannot clear them.
+    field :stop_code, :string
+    field :tts_stop_name, :string
+    field :stop_url, :string
+    field :stop_timezone, :string
     field :diagram_coordinate, :map
 
     belongs_to :organization, GtfsPlanner.Organizations.Organization,
@@ -53,6 +61,10 @@ defmodule GtfsPlanner.Gtfs.Stop do
           wheelchair_boarding: integer() | nil,
           platform_code: String.t() | nil,
           zone_id: String.t() | nil,
+          stop_code: String.t() | nil,
+          tts_stop_name: String.t() | nil,
+          stop_url: String.t() | nil,
+          stop_timezone: String.t() | nil,
           diagram_coordinate: map() | nil,
           parent_station: String.t() | nil,
           level_id: String.t() | nil,
@@ -69,7 +81,9 @@ defmodule GtfsPlanner.Gtfs.Stop do
     |> base_changeset(attrs)
     |> then(fn changeset ->
       if get_field(changeset, :parent_station) not in [nil, ""] do
-        validate_required(changeset, [:level_id])
+        changeset
+        |> validate_required([:level_id])
+        |> validate_station_has_no_parent()
       else
         changeset
       end
@@ -79,6 +93,19 @@ defmodule GtfsPlanner.Gtfs.Stop do
   @doc "Creates an import changeset for a stop with permissive parent/level validation."
   def import_changeset(stop, attrs) do
     base_changeset(stop, attrs)
+  end
+
+  # GTFS: a station (location_type=1) must not have a parent_station.
+  defp validate_station_has_no_parent(changeset) do
+    if get_field(changeset, :location_type) == 1 do
+      add_error(
+        changeset,
+        :location_type,
+        "A station can't be inside another station. Choose another type."
+      )
+    else
+      changeset
+    end
   end
 
   defp base_changeset(stop, attrs) do

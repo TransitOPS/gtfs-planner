@@ -339,6 +339,18 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  defp remove_audit_ctx(organization, gtfs_version, station) do
+    user = GtfsPlanner.AccountsFixtures.user_fixture()
+
+    %GtfsPlanner.Gtfs.AuditContext{
+      organization_id: organization.id,
+      gtfs_version_id: gtfs_version.id,
+      station_stop_id: station.stop_id,
+      actor_id: user.id,
+      actor_email: user.email
+    }
+  end
+
   describe "stops" do
     setup do
       organization = organization_fixture()
@@ -632,7 +644,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert fetched_stop.platform_code == "Platform C"
     end
 
-    test "remove_child_stop_from_diagram/4 clears fields and deletes connected pathways", %{
+    test "remove_child_stop_from_diagram/5 clears fields and deletes connected pathways", %{
       organization: org,
       gtfs_version: version
     } do
@@ -672,7 +684,8 @@ defmodule GtfsPlanner.GtfsTest do
                  org.id,
                  version.id,
                  station.stop_id,
-                 child_a.id
+                 child_a.id,
+                 remove_audit_ctx(org, version, station)
                )
 
       assert is_nil(updated.diagram_coordinate)
@@ -680,7 +693,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert is_nil(Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id))
     end
 
-    test "remove_child_stop_from_diagram/4 clears nested boarding area and deletes connected pathways",
+    test "remove_child_stop_from_diagram/5 clears nested boarding area and deletes connected pathways",
          %{
            organization: org,
            gtfs_version: version
@@ -733,7 +746,8 @@ defmodule GtfsPlanner.GtfsTest do
                  org.id,
                  version.id,
                  station.stop_id,
-                 boarding_area.id
+                 boarding_area.id,
+                 remove_audit_ctx(org, version, station)
                )
 
       assert is_nil(updated.diagram_coordinate)
@@ -741,7 +755,7 @@ defmodule GtfsPlanner.GtfsTest do
       assert is_nil(Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id))
     end
 
-    test "remove_child_stop_from_diagram/4 returns :not_found for wrong station scope", %{
+    test "remove_child_stop_from_diagram/5 returns :not_found for wrong station scope", %{
       organization: org,
       gtfs_version: version
     } do
@@ -768,13 +782,187 @@ defmodule GtfsPlanner.GtfsTest do
                  org.id,
                  version.id,
                  other_station.stop_id,
-                 child.id
+                 child.id,
+                 remove_audit_ctx(org, version, other_station)
                )
 
       # Verify the stop is unchanged
       unchanged = Gtfs.get_stop!(child.id)
       assert unchanged.diagram_coordinate == %{"x" => 5.0, "y" => 5.0}
       assert unchanged.level_id == level.level_id
+    end
+
+    test "remove_child_stop_from_diagram/5 records the stop update and each deleted pathway", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station = stop_fixture(org.id, version.id, %{stop_id: "STATION_RM_LOG", location_type: 1})
+
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_RM_LOG",
+          level_name: "Platform",
+          level_index: 0.0
+        })
+
+      removed =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD_RM_LOG",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      other_a =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "OTHER_RM_LOG_A",
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      other_b =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "OTHER_RM_LOG_B",
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      pathway_a = pathway_fixture(org.id, version.id, removed.stop_id, other_a.stop_id)
+      pathway_b = pathway_fixture(org.id, version.id, other_b.stop_id, removed.stop_id)
+      audit_ctx = remove_audit_ctx(org, version, station)
+
+      assert {:ok, _stop} =
+               Gtfs.remove_child_stop_from_diagram(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 removed.id,
+                 audit_ctx
+               )
+
+      logs =
+        Repo.all(
+          from(cl in GtfsPlanner.Gtfs.ChangeLog,
+            where: cl.organization_id == ^org.id and cl.gtfs_version_id == ^version.id
+          )
+        )
+
+      assert [stop_log] = Enum.filter(logs, &(&1.entity_type == "stop"))
+      assert stop_log.action == "updated"
+      assert stop_log.entity_id == removed.id
+      assert stop_log.station_stop_id == station.stop_id
+      assert stop_log.actor_id == audit_ctx.actor_id
+      assert stop_log.snapshot["level_id"] == "L_RM_LOG"
+
+      assert stop_log.changed_fields == %{
+               "level_id" => %{"from" => "L_RM_LOG", "to" => nil},
+               "diagram_coordinate" => %{"from" => %{"x" => 10.0, "y" => 20.0}, "to" => nil}
+             }
+
+      pathway_logs = Enum.filter(logs, &(&1.entity_type == "pathway"))
+      assert length(pathway_logs) == 2
+      assert Enum.all?(pathway_logs, &(&1.action == "deleted"))
+      assert Enum.all?(pathway_logs, &(&1.actor_id == audit_ctx.actor_id))
+
+      assert pathway_logs |> Enum.map(& &1.entity_id) |> Enum.sort() ==
+               Enum.sort([pathway_a.id, pathway_b.id])
+
+      assert Enum.all?(pathway_logs, &is_map(&1.snapshot))
+    end
+
+    test "remove_child_stop_from_diagram/5 records no second stop entry when the stop is already off the diagram",
+         %{organization: org, gtfs_version: version} do
+      station = stop_fixture(org.id, version.id, %{stop_id: "STATION_RM_TWICE", location_type: 1})
+
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_RM_TWICE",
+          level_name: "Platform",
+          level_index: 0.0
+        })
+
+      removed =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD_RM_TWICE",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      audit_ctx = remove_audit_ctx(org, version, station)
+
+      for _attempt <- 1..2 do
+        assert {:ok, _stop} =
+                 Gtfs.remove_child_stop_from_diagram(
+                   org.id,
+                   version.id,
+                   station.stop_id,
+                   removed.id,
+                   audit_ctx
+                 )
+      end
+
+      assert [%{entity_type: "stop", action: "updated", entity_id: entity_id}] =
+               Repo.all(
+                 from(cl in GtfsPlanner.Gtfs.ChangeLog,
+                   where: cl.organization_id == ^org.id and cl.gtfs_version_id == ^version.id
+                 )
+               )
+
+      assert entity_id == removed.id
+    end
+
+    test "remove_child_stop_from_diagram/5 removes nothing when a change log cannot be written",
+         %{
+           organization: org,
+           gtfs_version: version
+         } do
+      station = stop_fixture(org.id, version.id, %{stop_id: "STATION_RM_FAIL", location_type: 1})
+
+      level =
+        level_fixture(org.id, version.id, %{
+          level_id: "L_RM_FAIL",
+          level_name: "Platform",
+          level_index: 0.0
+        })
+
+      removed =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "CHILD_RM_FAIL",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      other =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "OTHER_RM_FAIL",
+          parent_station: station.stop_id,
+          level_id: level.level_id
+        })
+
+      pathway = pathway_fixture(org.id, version.id, removed.stop_id, other.stop_id)
+      unloggable_ctx = %{remove_audit_ctx(org, version, station) | actor_email: nil}
+
+      assert {:error, %Ecto.Changeset{}} =
+               Gtfs.remove_child_stop_from_diagram(
+                 org.id,
+                 version.id,
+                 station.stop_id,
+                 removed.id,
+                 unloggable_ctx
+               )
+
+      unchanged = Gtfs.get_stop!(removed.id)
+      assert unchanged.level_id == "L_RM_FAIL"
+      assert unchanged.diagram_coordinate == %{"x" => 10.0, "y" => 20.0}
+      assert Repo.get(GtfsPlanner.Gtfs.Pathway, pathway.id)
+
+      assert Repo.all(
+               from(cl in GtfsPlanner.Gtfs.ChangeLog,
+                 where: cl.organization_id == ^org.id and cl.gtfs_version_id == ^version.id
+               )
+             ) == []
     end
 
     test "delete_child_stop/4 deletes the child stop and connected pathways", %{
@@ -2145,6 +2333,208 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  describe "remove_level_from_station/5" do
+    setup do
+      organization = organization_fixture()
+      version_1 = gtfs_version_fixture(organization.id)
+      version_2 = gtfs_version_fixture(organization.id)
+      other_organization = organization_fixture()
+      other_org_version = gtfs_version_fixture(other_organization.id)
+
+      %{
+        organization: organization,
+        version_1: version_1,
+        version_2: version_2,
+        other_organization: other_organization,
+        other_org_version: other_org_version
+      }
+    end
+
+    test "clears only the child stops in the given version when other versions share the GTFS ids",
+         %{organization: org, version_1: version_1, version_2: version_2} do
+      target = seed_station_level_and_child(org.id, version_1.id)
+      sibling = seed_station_level_and_child(org.id, version_2.id)
+
+      assert {:ok, :removed} =
+               Gtfs.remove_level_from_station(
+                 org.id,
+                 version_1.id,
+                 target.station.id,
+                 target.station.stop_id,
+                 target.level.id
+               )
+
+      removed_child = Repo.get!(Stop, target.child.id)
+      assert removed_child.level_id == nil
+      assert removed_child.diagram_coordinate == nil
+      assert Gtfs.get_stop_level(org.id, version_1.id, target.station.id, target.level.id) == nil
+
+      untouched_child = Repo.get!(Stop, sibling.child.id)
+      assert untouched_child.level_id == sibling.level.level_id
+      assert untouched_child.diagram_coordinate == %{"x" => 10.0, "y" => 20.0}
+
+      assert %StopLevel{} =
+               Gtfs.get_stop_level(org.id, version_2.id, sibling.station.id, sibling.level.id)
+    end
+
+    test "clears only the child stops in the given organization when another organization shares the GTFS ids",
+         %{
+           organization: org,
+           version_1: version_1,
+           other_organization: other_org,
+           other_org_version: other_org_version
+         } do
+      target = seed_station_level_and_child(org.id, version_1.id)
+      foreign = seed_station_level_and_child(other_org.id, other_org_version.id)
+
+      assert {:ok, :removed} =
+               Gtfs.remove_level_from_station(
+                 org.id,
+                 version_1.id,
+                 target.station.id,
+                 target.station.stop_id,
+                 target.level.id
+               )
+
+      assert Repo.get!(Stop, target.child.id).level_id == nil
+
+      untouched_child = Repo.get!(Stop, foreign.child.id)
+      assert untouched_child.level_id == foreign.level.level_id
+      assert untouched_child.diagram_coordinate == %{"x" => 10.0, "y" => 20.0}
+    end
+
+    test "rejects a level from another version and leaves its child stops unchanged", %{
+      organization: org,
+      version_1: version_1,
+      version_2: version_2
+    } do
+      target = seed_station_level_and_child(org.id, version_1.id)
+      sibling = seed_station_level_and_child(org.id, version_2.id)
+
+      assert {:error, :not_found} =
+               Gtfs.remove_level_from_station(
+                 org.id,
+                 version_1.id,
+                 target.station.id,
+                 target.station.stop_id,
+                 sibling.level.id
+               )
+
+      assert Repo.get!(Stop, target.child.id).level_id == target.level.level_id
+      assert Repo.get!(Stop, sibling.child.id).level_id == sibling.level.level_id
+
+      assert %StopLevel{} =
+               Gtfs.get_stop_level(org.id, version_1.id, target.station.id, target.level.id)
+    end
+
+    test "rejects a level from another organization and leaves its child stops unchanged", %{
+      organization: org,
+      version_1: version_1,
+      other_organization: other_org,
+      other_org_version: other_org_version
+    } do
+      target = seed_station_level_and_child(org.id, version_1.id)
+      foreign = seed_station_level_and_child(other_org.id, other_org_version.id)
+
+      assert {:error, :not_found} =
+               Gtfs.remove_level_from_station(
+                 org.id,
+                 version_1.id,
+                 target.station.id,
+                 target.station.stop_id,
+                 foreign.level.id
+               )
+
+      assert Repo.get!(Stop, target.child.id).level_id == target.level.level_id
+      assert Repo.get!(Stop, foreign.child.id).level_id == foreign.level.level_id
+    end
+
+    test "clears boarding areas under the station's platforms on the removed level only", %{
+      organization: org,
+      version_1: version
+    } do
+      seed = seed_station_with_boarding_areas(org.id, version.id, "RB")
+
+      assert {:ok, :removed} =
+               Gtfs.remove_level_from_station(
+                 org.id,
+                 version.id,
+                 seed.station.id,
+                 seed.station.stop_id,
+                 seed.level.id
+               )
+
+      removed_boarding = Repo.get!(Stop, seed.boarding_on_level.id)
+      assert removed_boarding.level_id == nil
+      assert removed_boarding.diagram_coordinate == nil
+
+      kept_boarding = Repo.get!(Stop, seed.boarding_on_other_level.id)
+      assert kept_boarding.level_id == seed.other_level.level_id
+      assert kept_boarding.diagram_coordinate == %{"x" => 30.0, "y" => 40.0}
+    end
+
+    test "stops listing the removed level for the station once its boarding areas are cleared",
+         %{organization: org, version_1: version} do
+      seed = seed_station_with_boarding_areas(org.id, version.id, "RL")
+
+      assert {:ok, :removed} =
+               Gtfs.remove_level_from_station(
+                 org.id,
+                 version.id,
+                 seed.station.id,
+                 seed.station.stop_id,
+                 seed.level.id
+               )
+
+      remaining_level_ids =
+        org.id
+        |> Gtfs.list_levels_for_station(version.id, seed.station.id)
+        |> Enum.map(& &1.level.level_id)
+
+      assert remaining_level_ids == [seed.other_level.level_id]
+    end
+
+    test "leaves boarding areas of another station on the same level untouched", %{
+      organization: org,
+      version_1: version
+    } do
+      target = seed_station_with_boarding_areas(org.id, version.id, "RT")
+
+      other_station =
+        stop_fixture(org.id, version.id, %{stop_id: "RO_STATION", location_type: 1})
+
+      other_platform =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "RO_PLATFORM",
+          location_type: 0,
+          parent_station: other_station.stop_id,
+          level_id: target.level.level_id
+        })
+
+      other_boarding =
+        stop_fixture(org.id, version.id, %{
+          stop_id: "RO_BOARDING",
+          location_type: 4,
+          parent_station: other_platform.stop_id,
+          level_id: target.level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 60.0}
+        })
+
+      assert {:ok, :removed} =
+               Gtfs.remove_level_from_station(
+                 org.id,
+                 version.id,
+                 target.station.id,
+                 target.station.stop_id,
+                 target.level.id
+               )
+
+      untouched = Repo.get!(Stop, other_boarding.id)
+      assert untouched.level_id == target.level.level_id
+      assert untouched.diagram_coordinate == %{"x" => 50.0, "y" => 60.0}
+    end
+  end
+
   describe "list_child_stops_for_level/2" do
     setup do
       organization = organization_fixture()
@@ -2446,6 +2836,43 @@ defmodule GtfsPlanner.GtfsTest do
       stop_fixture(org.id, version.id, %{stop_id: "S2", parent_station: nil, location_type: 0})
 
       assert Gtfs.count_stations(org.id, version.id, location_type: nil) == 2
+    end
+  end
+
+  describe "stations wheelchair_boarding filtering" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      for {stop_id, wheelchair_boarding} <- [{"BLANK", nil}, {"ZERO", 0}, {"ACCESSIBLE", 1}] do
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: stop_id,
+          parent_station: nil,
+          wheelchair_boarding: wheelchair_boarding
+        })
+      end
+
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "filtering by 0 lists and counts stops with a blank or 0 value", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      stops = Gtfs.list_stations(org.id, version.id, wheelchair_boarding: 0)
+
+      assert stops |> Enum.map(& &1.stop_id) |> Enum.sort() == ["BLANK", "ZERO"]
+      assert Gtfs.count_stations(org.id, version.id, wheelchair_boarding: 0) == 2
+    end
+
+    test "filtering by 1 lists and counts only stops with that exact value", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      stops = Gtfs.list_stations(org.id, version.id, wheelchair_boarding: 1)
+
+      assert Enum.map(stops, & &1.stop_id) == ["ACCESSIBLE"]
+      assert Gtfs.count_stations(org.id, version.id, wheelchair_boarding: 1) == 1
     end
   end
 
@@ -3107,7 +3534,32 @@ defmodule GtfsPlanner.GtfsTest do
           diagram_coordinate: %{x: 13.0, y: 14.0}
         })
 
-      %{stop_level: stop_level, from_stop: from_stop, to_stop: to_stop}
+      far_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "SCALE_FAR",
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+        })
+
+      user = GtfsPlanner.AccountsFixtures.user_fixture()
+
+      audit_ctx = %GtfsPlanner.Gtfs.AuditContext{
+        organization_id: organization.id,
+        gtfs_version_id: gtfs_version.id,
+        station_stop_id: station.stop_id,
+        actor_id: user.id,
+        actor_email: user.email
+      }
+
+      %{
+        stop_level: stop_level,
+        from_stop: from_stop,
+        to_stop: to_stop,
+        far_stop: far_stop,
+        user: user,
+        audit_ctx: audit_ctx
+      }
     end
 
     test "update_stop_level_scale/2 saves valid calibration", %{stop_level: stop_level} do
@@ -3123,6 +3575,37 @@ defmodule GtfsPlanner.GtfsTest do
       assert updated.scale_point_b == attrs.scale_point_b
       assert Decimal.equal?(updated.scale_distance_meters, Decimal.new("25.0"))
       assert Decimal.equal?(updated.scale_meters_per_unit, Decimal.new("2.5"))
+    end
+
+    test "update_stop_level_scale/2 saves a scale point past y = 100 on a portrait floorplan", %{
+      stop_level: stop_level
+    } do
+      attrs = %{
+        scale_point_a: %{"x" => 10.0, "y" => 103.0},
+        scale_point_b: %{"x" => 20.0, "y" => 103.0},
+        scale_distance_meters: Decimal.new("25.0"),
+        scale_meters_per_unit: Decimal.new("2.5")
+      }
+
+      assert {:ok, updated} = Gtfs.update_stop_level_scale(stop_level, attrs)
+      assert updated.scale_point_a == attrs.scale_point_a
+      assert updated.scale_point_b == attrs.scale_point_b
+    end
+
+    test "update_stop_level_scale/2 rejects a scale point above the y ceiling with a changeset error",
+         %{stop_level: stop_level} do
+      attrs = %{
+        scale_point_a: %{"x" => 10.0, "y" => 401.0},
+        scale_point_b: %{"x" => 20.0, "y" => 12.0},
+        scale_distance_meters: Decimal.new("25.0"),
+        scale_meters_per_unit: Decimal.new("2.5")
+      }
+
+      assert {:error, changeset} = Gtfs.update_stop_level_scale(stop_level, attrs)
+
+      assert "must include numeric x between 0 and 100 and y between 0 and 400" in errors_on(
+               changeset
+             ).scale_point_a
     end
 
     test "all-or-none validation fails partial payloads", %{stop_level: stop_level} do
@@ -3196,10 +3679,11 @@ defmodule GtfsPlanner.GtfsTest do
       assert Gtfs.calculate_pathway_length(calibrated, from_stop, to_stop) == Decimal.new("10.00")
     end
 
-    test "recalculate_pathway_lengths_for_level/5 updates only same-level pathways", %{
+    test "recalculate_pathway_lengths_for_level/7 updates only same-level pathways", %{
       stop_level: stop_level,
       from_stop: from_stop,
-      to_stop: to_stop
+      to_stop: to_stop,
+      audit_ctx: audit_ctx
     } do
       {:ok, calibrated} =
         Gtfs.update_stop_level_scale(stop_level, %{
@@ -3235,8 +3719,7 @@ defmodule GtfsPlanner.GtfsTest do
           calibrated.organization_id,
           calibrated.gtfs_version_id,
           from_stop.stop_id,
-          to_stop.stop_id,
-          %{length: Decimal.new("99.00")}
+          to_stop.stop_id
         )
 
       cross_level_pathway =
@@ -3244,31 +3727,29 @@ defmodule GtfsPlanner.GtfsTest do
           calibrated.organization_id,
           calibrated.gtfs_version_id,
           from_stop.stop_id,
-          cross_stop.stop_id,
-          %{length: Decimal.new("88.00")}
+          cross_stop.stop_id
         )
 
-      assert {:ok, 1} =
+      assert {:ok, %{recalculated_count: 1, kept_count: 0}} =
                Gtfs.recalculate_pathway_lengths_for_level(
+                 stop_level,
                  calibrated,
                  calibrated.organization_id,
                  calibrated.gtfs_version_id,
                  calibrated.level_id,
-                 parent_station.id
+                 parent_station.id,
+                 audit_ctx
                )
 
       assert Decimal.equal?(Gtfs.get_pathway!(same_level_pathway.id).length, Decimal.new("10.00"))
-
-      assert Decimal.equal?(
-               Gtfs.get_pathway!(cross_level_pathway.id).length,
-               Decimal.new("88.00")
-             )
+      assert is_nil(Gtfs.get_pathway!(cross_level_pathway.id).length)
     end
 
-    test "save_scale_and_recalculate/6 persists calibration and recalculated lengths", %{
+    test "save_scale_and_recalculate/7 persists calibration and computes an empty length", %{
       stop_level: stop_level,
       from_stop: from_stop,
-      to_stop: to_stop
+      to_stop: to_stop,
+      audit_ctx: audit_ctx
     } do
       parent_station =
         Gtfs.get_stop_by_stop_id(
@@ -3282,8 +3763,7 @@ defmodule GtfsPlanner.GtfsTest do
           stop_level.organization_id,
           stop_level.gtfs_version_id,
           from_stop.stop_id,
-          to_stop.stop_id,
-          %{length: Decimal.new("55.00")}
+          to_stop.stop_id
         )
 
       attrs = %{
@@ -3293,18 +3773,238 @@ defmodule GtfsPlanner.GtfsTest do
         scale_meters_per_unit: Decimal.new("2")
       }
 
-      assert {:ok, %{stop_level: updated_stop_level, recalculated_count: 1}} =
+      assert {:ok, %{stop_level: updated_stop_level, recalculated_count: 1, kept_count: 0}} =
                Gtfs.save_scale_and_recalculate(
                  stop_level,
                  attrs,
                  stop_level.organization_id,
                  stop_level.gtfs_version_id,
                  stop_level.level_id,
-                 parent_station.id
+                 parent_station.id,
+                 audit_ctx
                )
 
       assert updated_stop_level.scale_point_a == attrs.scale_point_a
       assert Decimal.equal?(Gtfs.get_pathway!(pathway.id).length, Decimal.new("10.00"))
+    end
+
+    test "first scale save computes empty lengths and keeps an entered length", %{
+      stop_level: stop_level,
+      from_stop: from_stop,
+      to_stop: to_stop,
+      far_stop: far_stop,
+      audit_ctx: audit_ctx
+    } do
+      parent_station =
+        Gtfs.get_stop_by_stop_id(
+          stop_level.organization_id,
+          stop_level.gtfs_version_id,
+          "STATION_SCALE"
+        )
+
+      empty_pathway =
+        pathway_fixture(
+          stop_level.organization_id,
+          stop_level.gtfs_version_id,
+          from_stop.stop_id,
+          to_stop.stop_id
+        )
+
+      entered_pathway =
+        pathway_fixture(
+          stop_level.organization_id,
+          stop_level.gtfs_version_id,
+          from_stop.stop_id,
+          far_stop.stop_id,
+          %{length: Decimal.new("12.50")}
+        )
+
+      assert {:ok, %{recalculated_count: 1, kept_count: 1}} =
+               Gtfs.save_scale_and_recalculate(
+                 stop_level,
+                 scale_attrs("2"),
+                 stop_level.organization_id,
+                 stop_level.gtfs_version_id,
+                 stop_level.level_id,
+                 parent_station.id,
+                 audit_ctx
+               )
+
+      assert Decimal.equal?(Gtfs.get_pathway!(empty_pathway.id).length, Decimal.new("10.00"))
+      assert Decimal.equal?(Gtfs.get_pathway!(entered_pathway.id).length, Decimal.new("12.50"))
+    end
+
+    test "second scale save recomputes lengths from the first save and keeps an entered length",
+         %{
+           stop_level: stop_level,
+           from_stop: from_stop,
+           to_stop: to_stop,
+           far_stop: far_stop,
+           audit_ctx: audit_ctx
+         } do
+      parent_station =
+        Gtfs.get_stop_by_stop_id(
+          stop_level.organization_id,
+          stop_level.gtfs_version_id,
+          "STATION_SCALE"
+        )
+
+      derived_pathway =
+        pathway_fixture(
+          stop_level.organization_id,
+          stop_level.gtfs_version_id,
+          from_stop.stop_id,
+          to_stop.stop_id
+        )
+
+      entered_pathway =
+        pathway_fixture(
+          stop_level.organization_id,
+          stop_level.gtfs_version_id,
+          from_stop.stop_id,
+          far_stop.stop_id,
+          %{length: Decimal.new("12.50")}
+        )
+
+      assert {:ok, %{stop_level: first_scale}} =
+               Gtfs.save_scale_and_recalculate(
+                 stop_level,
+                 scale_attrs("2"),
+                 stop_level.organization_id,
+                 stop_level.gtfs_version_id,
+                 stop_level.level_id,
+                 parent_station.id,
+                 audit_ctx
+               )
+
+      assert Decimal.equal?(Gtfs.get_pathway!(derived_pathway.id).length, Decimal.new("10.00"))
+
+      assert {:ok, %{recalculated_count: 1, kept_count: 1}} =
+               Gtfs.save_scale_and_recalculate(
+                 first_scale,
+                 scale_attrs("3"),
+                 stop_level.organization_id,
+                 stop_level.gtfs_version_id,
+                 stop_level.level_id,
+                 parent_station.id,
+                 audit_ctx
+               )
+
+      assert Decimal.equal?(Gtfs.get_pathway!(derived_pathway.id).length, Decimal.new("15.00"))
+      assert Decimal.equal?(Gtfs.get_pathway!(entered_pathway.id).length, Decimal.new("12.50"))
+    end
+
+    test "scale save logs each recalculated pathway to the actor and none of the kept ones", %{
+      stop_level: stop_level,
+      from_stop: from_stop,
+      to_stop: to_stop,
+      far_stop: far_stop,
+      user: user,
+      audit_ctx: audit_ctx
+    } do
+      parent_station =
+        Gtfs.get_stop_by_stop_id(
+          stop_level.organization_id,
+          stop_level.gtfs_version_id,
+          "STATION_SCALE"
+        )
+
+      {:ok, previous_scale} = Gtfs.update_stop_level_scale(stop_level, scale_attrs("2"))
+
+      derived_pathway =
+        pathway_fixture(
+          stop_level.organization_id,
+          stop_level.gtfs_version_id,
+          from_stop.stop_id,
+          to_stop.stop_id,
+          %{length: Decimal.new("10.00")}
+        )
+
+      entered_pathway =
+        pathway_fixture(
+          stop_level.organization_id,
+          stop_level.gtfs_version_id,
+          from_stop.stop_id,
+          far_stop.stop_id,
+          %{length: Decimal.new("12.50")}
+        )
+
+      assert {:ok, %{recalculated_count: 1, kept_count: 1}} =
+               Gtfs.save_scale_and_recalculate(
+                 previous_scale,
+                 scale_attrs("3"),
+                 stop_level.organization_id,
+                 stop_level.gtfs_version_id,
+                 stop_level.level_id,
+                 parent_station.id,
+                 audit_ctx
+               )
+
+      assert [log] =
+               Gtfs.list_change_logs_for_entity(
+                 stop_level.organization_id,
+                 stop_level.gtfs_version_id,
+                 "pathway",
+                 derived_pathway.id
+               )
+
+      assert log.action == "updated"
+      assert log.entity_external_id == derived_pathway.pathway_id
+      assert log.actor_id == user.id
+      assert log.actor_email == user.email
+      assert log.station_stop_id == audit_ctx.station_stop_id
+      assert log.changed_fields == %{"length" => %{"from" => "10.00", "to" => "15.00"}}
+
+      assert Gtfs.list_change_logs_for_entity(
+               stop_level.organization_id,
+               stop_level.gtfs_version_id,
+               "pathway",
+               entered_pathway.id
+             ) == []
+    end
+
+    test "scale save neither rewrites nor logs a derived length the new scale leaves unchanged",
+         %{
+           stop_level: stop_level,
+           from_stop: from_stop,
+           to_stop: to_stop,
+           audit_ctx: audit_ctx
+         } do
+      parent_station =
+        Gtfs.get_stop_by_stop_id(
+          stop_level.organization_id,
+          stop_level.gtfs_version_id,
+          "STATION_SCALE"
+        )
+
+      {:ok, previous_scale} = Gtfs.update_stop_level_scale(stop_level, scale_attrs("2"))
+
+      pathway =
+        pathway_fixture(
+          stop_level.organization_id,
+          stop_level.gtfs_version_id,
+          from_stop.stop_id,
+          to_stop.stop_id,
+          %{length: Decimal.new("10.00")}
+        )
+
+      assert {:ok, %{recalculated_count: 0, kept_count: 0}} =
+               Gtfs.save_scale_and_recalculate(
+                 previous_scale,
+                 scale_attrs("2"),
+                 stop_level.organization_id,
+                 stop_level.gtfs_version_id,
+                 stop_level.level_id,
+                 parent_station.id,
+                 audit_ctx
+               )
+
+      assert Gtfs.list_change_logs_for_entity(
+               stop_level.organization_id,
+               stop_level.gtfs_version_id,
+               "pathway",
+               pathway.id
+             ) == []
     end
   end
 
@@ -4707,12 +5407,117 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  # Every scope gets the same GTFS ids, as when a version is copied from another feed.
+  defp seed_station_level_and_child(organization_id, gtfs_version_id) do
+    station =
+      stop_fixture(organization_id, gtfs_version_id, %{stop_id: "RM_STATION", location_type: 1})
+
+    level =
+      level_fixture(organization_id, gtfs_version_id, %{level_id: "RM_LEVEL", level_index: 0.0})
+
+    child =
+      stop_fixture(organization_id, gtfs_version_id, %{
+        stop_id: "RM_PLATFORM",
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+      })
+
+    {:ok, _stop_level} =
+      Gtfs.create_stop_level(%{
+        stop_id: station.id,
+        level_id: level.id,
+        organization_id: organization_id,
+        gtfs_version_id: gtfs_version_id
+      })
+
+    %{station: station, level: level, child: child}
+  end
+
+  # A station with two levels and one platform on the first, whose boarding areas sit on
+  # each level. `prefix` keeps GTFS ids unique when a test seeds more than one station.
+  defp seed_station_with_boarding_areas(organization_id, gtfs_version_id, prefix) do
+    station =
+      stop_fixture(organization_id, gtfs_version_id, %{
+        stop_id: "#{prefix}_STATION",
+        location_type: 1
+      })
+
+    level =
+      level_fixture(organization_id, gtfs_version_id, %{
+        level_id: "#{prefix}_LEVEL",
+        level_index: 0.0
+      })
+
+    other_level =
+      level_fixture(organization_id, gtfs_version_id, %{
+        level_id: "#{prefix}_OTHER_LEVEL",
+        level_index: 1.0
+      })
+
+    for attached <- [level, other_level] do
+      {:ok, _stop_level} =
+        Gtfs.create_stop_level(%{
+          stop_id: station.id,
+          level_id: attached.id,
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id
+        })
+    end
+
+    platform =
+      stop_fixture(organization_id, gtfs_version_id, %{
+        stop_id: "#{prefix}_PLATFORM",
+        location_type: 0,
+        parent_station: station.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 10.0, "y" => 20.0}
+      })
+
+    boarding_on_level =
+      stop_fixture(organization_id, gtfs_version_id, %{
+        stop_id: "#{prefix}_BOARDING",
+        location_type: 4,
+        parent_station: platform.stop_id,
+        level_id: level.level_id,
+        diagram_coordinate: %{"x" => 15.0, "y" => 25.0}
+      })
+
+    boarding_on_other_level =
+      stop_fixture(organization_id, gtfs_version_id, %{
+        stop_id: "#{prefix}_BOARDING_OTHER",
+        location_type: 4,
+        parent_station: platform.stop_id,
+        level_id: other_level.level_id,
+        diagram_coordinate: %{"x" => 30.0, "y" => 40.0}
+      })
+
+    %{
+      station: station,
+      level: level,
+      other_level: other_level,
+      platform: platform,
+      boarding_on_level: boarding_on_level,
+      boarding_on_other_level: boarding_on_other_level
+    }
+  end
+
   defp preview_alignment_attrs do
     %{
       floorplan_center_lat: 40.7128,
       floorplan_center_lon: -74.006,
       floorplan_scale_mpp: 0.25,
       floorplan_rotation_deg: 0.0
+    }
+  end
+
+  # Two points 10 units apart, so `meters_per_unit` is the only value that varies.
+  defp scale_attrs(meters_per_unit) do
+    %{
+      scale_point_a: %{"x" => 0.0, "y" => 0.0},
+      scale_point_b: %{"x" => 10.0, "y" => 0.0},
+      scale_distance_meters: Decimal.mult(Decimal.new(meters_per_unit), Decimal.new("10")),
+      scale_meters_per_unit: Decimal.new(meters_per_unit)
     }
   end
 

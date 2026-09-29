@@ -154,6 +154,85 @@ defmodule GtfsPlanner.ReachabilityTest do
     complete_runner(runner_pid)
   end
 
+  test "fails a run left active past the timeout and starts a new one", %{
+    org: org,
+    version: version,
+    station: station
+  } do
+    stale = insert_active_run(org.id, version.id, station.stop_id, minutes_ago: 16)
+
+    assert {:ok, run} = start_controlled_run(org, version, station)
+    complete_runner(await_runner())
+
+    assert run.id != stale.id
+
+    assert %ValidationRun{
+             status: "failed",
+             error_details: "The run was interrupted before it finished.",
+             completed_at: %DateTime{}
+           } = Repo.get!(ValidationRun, stale.id)
+  end
+
+  test "does not report a run left active past the timeout as active", %{
+    org: org,
+    version: version,
+    station: station
+  } do
+    insert_active_run(org.id, version.id, station.stop_id, minutes_ago: 16)
+
+    assert Reachability.get_active_run(org.id, version.id, station.stop_id) == nil
+  end
+
+  test "keeps blocking a start while an active run is younger than the timeout", %{
+    org: org,
+    version: version,
+    station: station
+  } do
+    recent = insert_active_run(org.id, version.id, station.stop_id, minutes_ago: 1)
+
+    assert {:error, :run_in_progress} = start_controlled_run(org, version, station)
+
+    assert Repo.get!(ValidationRun, recent.id) == recent
+  end
+
+  test "leaves stale active runs of another station, version, or organization untouched", %{
+    org: org,
+    version: version,
+    station: station
+  } do
+    other_version = gtfs_version_fixture(org.id)
+    other_org = organization_fixture()
+    other_org_version = gtfs_version_fixture(other_org.id)
+
+    other_runs = [
+      insert_active_run(org.id, version.id, "OTHER_STATION", minutes_ago: 16),
+      insert_active_run(org.id, other_version.id, station.stop_id, minutes_ago: 16),
+      insert_active_run(other_org.id, other_org_version.id, station.stop_id, minutes_ago: 16)
+    ]
+
+    assert {:ok, _run} = start_controlled_run(org, version, station)
+    complete_runner(await_runner())
+
+    for other_run <- other_runs do
+      assert Repo.get!(ValidationRun, other_run.id) == other_run
+    end
+  end
+
+  defp insert_active_run(organization_id, gtfs_version_id, station_stop_id, minutes_ago: minutes) do
+    %ValidationRun{}
+    |> ValidationRun.changeset(%{
+      run_type: "station_reachability",
+      status: "running",
+      engine: "pathways_router",
+      result_schema_version: 1,
+      started_at: DateTime.add(DateTime.utc_now(), -minutes * 60, :second),
+      result_json: %{"metadata" => %{"station_stop_id" => station_stop_id}}
+    })
+    |> Ecto.Changeset.put_change(:organization_id, organization_id)
+    |> Ecto.Changeset.put_change(:gtfs_version_id, gtfs_version_id)
+    |> Repo.insert!()
+  end
+
   defp start_controlled_run(org, version, station) do
     Reachability.start_run(org.id, version.id, station.stop_id,
       runner: ControlledReachabilityRunner

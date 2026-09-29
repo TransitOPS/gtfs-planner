@@ -1171,10 +1171,10 @@ test("rule drawer", async ({ page }, testInfo) => {
   await expect(page.locator("#fare-rule-destination")).toHaveValue("B");
   await expect(page.locator("#fare-rule-route")).toHaveValue("");
   await expect(page.locator("#fare-rule-contains legend")).toContainText(
-    "Must visit these zones",
+    "Zones the journey touches",
   );
   await expect(page.locator("#fare-rule-contains-help")).toHaveText(
-    "The journey must visit every checked zone. Leave all unchecked for no through-zone requirement.",
+    "Tick every zone the journey touches, including where it starts and ends. Trip planners match only journeys that touch exactly these zones. Leave all unchecked for no zone requirement.",
   );
   await expect(page.locator("#fare-rule-summary")).toHaveText(
     "Use CROSS · $3.75 for journeys from Central to Eastbank on all routes.",
@@ -1274,8 +1274,9 @@ test("rule drawer", async ({ page }, testInfo) => {
 // The Checks tab's issue rows and its all-clear line. The seeded "Browser Fare
 // Zones Version" reports one needs-repair row (a fare rule uses C, which has no
 // stops and no record), four of its 27 boardable stops without a zone, the
-// declared-but-empty D Airport, and the conditional source check, so the tab
-// badge reads 2. The scale version has five zones full of stops, nothing
+// declared-but-empty D Airport, the conditional source check, and one review row
+// for CROSS, whose A to B rule and through-zone rule trip planners read as one
+// rule set, so the tab badge reads 3. The scale version has five zones full of stops, nothing
 // unassigned and no rule referencing a zone, which is the all-clear state.
 test("checks", async ({ page }, testInfo) => {
   await page.setViewportSize(DESKTOP);
@@ -1312,6 +1313,15 @@ test("checks", async ({ page }, testInfo) => {
     `/gtfs/${versionId}/settings/fares?filter=unassigned`,
   );
 
+  await expect(page.locator("#fare-check-combine-0")).toContainText("Review");
+  await expect(page.locator("#fare-check-combine-0")).toContainText(
+    "Rules for fare CROSS combine in trip planners",
+  );
+  await expect(page.locator("#fare-check-combine-0")).toContainText(
+    "This fare lists pass-through zones A, B across its rules",
+  );
+  await expect(page.locator("#fare-check-combine-1")).toHaveCount(0);
+
   await expect(page.locator("#fare-check-empty")).toContainText("Note");
   // Earlier cases in this file create an empty zone of their own, so the note's
   // exact count depends on the run; the note and its body are what the tab owes.
@@ -1326,8 +1336,9 @@ test("checks", async ({ page }, testInfo) => {
     "What must be checked?",
   );
 
-  // Two kinds count: the stopless referenced zone and the unassigned-stops row.
-  await expect(page.locator("#fares-checks-count")).toHaveText("2");
+  // Three rows count: the stopless referenced zone, the unassigned-stops row and
+  // the fare whose rules trip planners combine.
+  await expect(page.locator("#fares-checks-count")).toHaveText("3");
 
   await capture(page, testInfo, "checks-1440", { fullPage: false });
 

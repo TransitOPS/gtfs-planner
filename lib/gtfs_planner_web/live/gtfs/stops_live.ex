@@ -44,12 +44,14 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
 
+    params = valid_params(params)
+
     wheelchair_boarding = parse_wheelchair(params["wheelchair_boarding"])
     route_id = params["route_id"] || ""
     direction_id = parse_direction(params["direction_id"])
     search = params["search"] || ""
     sort_by = parse_column_atom(params["sort_by"]) || :stop_name
-    sort_dir = parse_atom(params["sort_dir"], :asc)
+    sort_dir = parse_sort_dir(params["sort_dir"])
     page = parse_integer(params["page"], 1)
     per_page = socket.assigns.per_page
 
@@ -471,7 +473,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
               sort={column_sort_state(@sort_by, @sort_dir, :stop_id)}
             >
               <.link
-                navigate={"/gtfs/#{@current_gtfs_version.id}/stops/#{stop.stop_id}"}
+                navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/#{stop.stop_id}"}
                 class="link link-primary font-semibold font-mono tabular-nums"
               >
                 {stop.stop_id}
@@ -667,26 +669,34 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   defp accessibility_source(%{wheelchair_boarding: wb}) when wb in [1, 2], do: :direct
   defp accessibility_source(_), do: :missing
 
-  defp parse_wheelchair(nil), do: nil
-  defp parse_wheelchair(""), do: nil
-  defp parse_wheelchair(val) when is_binary(val), do: String.to_integer(val)
-  defp parse_wheelchair(val) when is_integer(val), do: val
+  # Drops nested values (`?page[a]=b`) and NUL bytes, which Postgres rejects, so
+  # every remaining parameter is a plain string the parsers below can handle.
+  defp valid_params(params) do
+    Map.filter(params, fn {_key, value} ->
+      is_binary(value) and not String.contains?(value, <<0>>)
+    end)
+  end
 
-  defp parse_direction(nil), do: nil
-  defp parse_direction(""), do: nil
-  defp parse_direction(val) when is_binary(val), do: String.to_integer(val)
-  defp parse_direction(val) when is_integer(val), do: val
-
-  defp parse_atom(nil, default), do: default
-  defp parse_atom("", default), do: default
-
-  defp parse_atom(val, default) when is_binary(val) do
-    try do
-      String.to_existing_atom(val)
-    rescue
-      ArgumentError -> default
+  defp parse_wheelchair(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} when int in 0..2 -> int
+      _ -> nil
     end
   end
+
+  defp parse_wheelchair(_), do: nil
+
+  defp parse_direction(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} when int in 0..1 -> int
+      _ -> nil
+    end
+  end
+
+  defp parse_direction(_), do: nil
+
+  defp parse_sort_dir("desc"), do: :desc
+  defp parse_sort_dir(_), do: :asc
 
   defp parse_integer(nil, default), do: default
   defp parse_integer("", default), do: default
@@ -711,7 +721,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopsLive do
   end
 
   defp parse_column_atom(column)
-       when column in ["stop_id", "stop_name", "location_type", "route_id"] do
+       when column in ["stop_id", "stop_name", "location_type"] do
     String.to_existing_atom(column)
   end
 

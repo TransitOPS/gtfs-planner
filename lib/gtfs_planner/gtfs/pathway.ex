@@ -111,7 +111,19 @@ defmodule GtfsPlanner.Gtfs.Pathway do
       :to_stop_id
     ])
     |> validate_inclusion(:pathway_mode, 1..7)
+    |> force_exit_gate_one_way()
     |> unique_constraint([:organization_id, :gtfs_version_id, :pathway_id])
     |> foreign_key_constraint(:organization_id)
+  end
+
+  # GTFS requires exit gates (pathway_mode 7) to be one-way. Forcing the value
+  # instead of adding an error keeps the editor form, which disables the
+  # control for exit gates, from getting stuck on an error the user cannot fix.
+  defp force_exit_gate_one_way(changeset) do
+    if get_field(changeset, :pathway_mode) == @pathway_modes.exit_gate do
+      put_change(changeset, :is_bidirectional, false)
+    else
+      changeset
+    end
   end
 end

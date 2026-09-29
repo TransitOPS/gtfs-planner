@@ -157,7 +157,7 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
           []
 
         module ->
-          case module.run(run.organization_id, run.gtfs_version_id) do
+          case module.run(run.organization_id, run.gtfs_version_id, run.export_type) do
             :ok -> []
             {:error, issues} when is_list(issues) -> Enum.map(issues, &warning_from_issue/1)
             _ -> []

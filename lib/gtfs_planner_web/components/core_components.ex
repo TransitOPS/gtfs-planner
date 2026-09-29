@@ -28,6 +28,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   """
   use Phoenix.Component
   use Gettext, backend: GtfsPlannerWeb.Gettext
+  use GtfsPlannerWeb, :verified_routes
 
   alias Phoenix.LiveView.JS
 
@@ -1015,28 +1016,28 @@ defmodule GtfsPlannerWeb.CoreComponents do
       >
         <div class="flex min-w-max items-end gap-1 sm:min-w-0">
           <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}"}
             class={sub_nav_link_class(@active_tab == :details)}
             aria-current={@active_tab == :details && "page"}
           >
             Details
           </.link>
           <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/diagram"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/diagram"}
             class={sub_nav_link_class(@active_tab == :diagram)}
             aria-current={@active_tab == :diagram && "page"}
           >
             Floorplans
           </.link>
           <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/report"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/report"}
             class={sub_nav_link_class(@active_tab == :report)}
             aria-current={@active_tab == :report && "page"}
           >
             Reports
           </.link>
           <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/reachability"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/reachability"}
             class={sub_nav_link_class(@active_tab == :reachability)}
             aria-current={@active_tab == :reachability && "page"}
           >
@@ -1044,7 +1045,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           </.link>
           <.link
             id="station-tab-evolutions"
-            navigate={"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/evolutions"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/stops/#{@station.stop_id}/evolutions"}
             class={sub_nav_link_class(@active_tab == :evolutions)}
             aria-current={@active_tab == :evolutions && "page"}
           >
@@ -1125,21 +1126,21 @@ defmodule GtfsPlannerWeb.CoreComponents do
       <div class="flex flex-wrap items-end justify-between gap-4 border-b border-base-300">
         <div class="flex flex-wrap items-end gap-1">
           <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}"}
             class={sub_nav_link_class(@active_tab == :details)}
             aria-current={@active_tab == :details && "page"}
           >
             Details
           </.link>
           <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/patterns"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/patterns"}
             class={sub_nav_link_class(@active_tab == :patterns)}
             aria-current={@active_tab == :patterns && "page"}
           >
             Patterns
           </.link>
           <.link
-            navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/schedules"}
+            navigate={~p"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/schedules"}
             class={sub_nav_link_class(@active_tab == :schedules)}
             aria-current={@active_tab == :schedules && "page"}
           >

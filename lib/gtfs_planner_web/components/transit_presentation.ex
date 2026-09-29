@@ -105,6 +105,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
   attr :edited?, :boolean, default: false
   attr :expanded?, :boolean, default: false
   attr :class, :any, default: nil
+  slot :note, doc: "Display-ready lines shown under the record key."
   slot :actions
 
   def version_diff_row(assigns) do
@@ -170,6 +171,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
           >
             Depends on: {Enum.join(@dependency_keys, ", ")}
           </p>
+          {render_slot(@note)}
           <p
             :if={@edited?}
             data-role="version-diff-edited"

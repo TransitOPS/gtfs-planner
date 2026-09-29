@@ -16,7 +16,7 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
   # Stands in for the configured OTP preflight module so a full warning buffer
   # can be observed without an OTP graph.
   defmodule HundredWarningPreflight do
-    def run(_organization_id, _gtfs_version_id) do
+    def run(_organization_id, _gtfs_version_id, _export_type) do
       {:error,
        Enum.map(0..99, fn index ->
          %{code: "preflight_#{index}", message: "Preflight issue #{index}"}
@@ -25,7 +25,7 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
   end
 
   defmodule TwoWarningPreflight do
-    def run(_organization_id, _gtfs_version_id) do
+    def run(_organization_id, _gtfs_version_id, _export_type) do
       {:error,
        [
          %{code: "preflight_0", message: "Preflight issue 0"},
@@ -149,6 +149,38 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
     assert Map.has_key?(entries, "stops.txt")
     assert entries["stops_supplement.txt"] =~ "garage_main,Main garage"
     refute Map.has_key?(entries, "vehicles.txt")
+  end
+
+  test "persists a warning for a stored GTFS violation and still builds the export" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop_fixture(organization.id, version.id, stop_id: "NO_COORDS", stop_lat: nil, stop_lon: nil)
+    {run, claimed, generation, token} = claim_run(organization, version, :full)
+
+    assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))
+
+    ready = Repo.get!(Run, run.id)
+
+    assert ready.state == :ready
+    assert [%{"code" => "stops_missing_coordinates", "detail" => detail}] = ready.warnings
+    assert detail =~ "1 stop, station or entrance has no latitude/longitude"
+    assert detail =~ "NO_COORDS"
+  end
+
+  test "a pathways run does not warn about trips that its files do not contain" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop_fixture(organization.id, version.id, stop_id: "STOP1")
+    route = route_fixture(organization.id, version.id)
+    trip_fixture(organization.id, version.id, route.route_id, service_id: "NO_CALENDAR")
+    {run, claimed, generation, token} = claim_run(organization, version, :pathways)
+
+    assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))
+
+    ready = Repo.get!(Run, run.id)
+
+    assert ready.state == :ready
+    assert ready.warnings == []
   end
 
   test "keeps the operations omission ahead of 100 preflight warnings" do

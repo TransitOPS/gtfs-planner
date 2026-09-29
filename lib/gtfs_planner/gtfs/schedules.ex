@@ -88,6 +88,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           id: Ecto.UUID.t(),
           route_pattern_id: String.t(),
           name: String.t(),
+          headsign: String.t() | nil,
           direction_id: 0 | 1,
           typicality: integer(),
           timings: [map()]
@@ -237,6 +238,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   `direction_id` and `route_pattern_id` are never editable, and `trip_id` never
   changes.
 
+  A submitted `:trip_headsign` that is blank stores the trip's headsign fallback,
+  `timing.headsign || pattern.headsign` (see `fallback_headsign/2`), the same value
+  a new trip on that timing gets. The timing is the one the trip has after this
+  edit. Without a non-blank fallback the headsign is stored as nil.
+
   `expected_updated_at` (a `DateTime` or an ISO 8601 string) must equal the
   locked trip's `updated_at`, otherwise nothing is written and `:stale` is
   returned. A start or timing change on a frequency trip is `:frequency_trip`; on
@@ -266,17 +272,28 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     do: {:error, :invalid_input}
 
   @doc """
+  The headsign a blank trip headsign takes: the timing's, else the pattern's.
+
+  Returns nil when neither is present, so a trip is never given a blank headsign.
+  """
+  @spec fallback_headsign(String.t() | nil, String.t() | nil) :: String.t() | nil
+  def fallback_headsign(timing_headsign, pattern_headsign) do
+    Enum.find([timing_headsign, pattern_headsign], &(is_binary(&1) and String.trim(&1) != ""))
+  end
+
+  @doc """
   Creates one new trip on the source trip's pattern at the submitted start and timing.
 
   `attrs` carries `:start_time` and `:timed_pattern_id` (a timing of the source
   trip's pattern; required, because a custom source has no timing of its own).
-  The new trip copies `service_id`, `trip_headsign`, `trip_short_name`,
-  `wheelchair_accessible`, `bikes_allowed` and `shape_id`, gets no block, takes
-  the pattern's direction, and gets a freshly allocated trip ID. New stop times
-  take the pattern's per-visit distances when the source already references the
-  pattern's shape; otherwise their distances are nil (R15). The duplicate is
-  audited as created. A frequency source is refused with `:frequency_trip` and
-  the source trip itself is never written.
+  The new trip copies `service_id`, `trip_headsign`, `wheelchair_accessible`,
+  `bikes_allowed` and `shape_id`, gets no block, takes the pattern's direction,
+  and gets a freshly allocated trip ID. It gets no `trip_short_name`: the public
+  trip number identifies a trip within its service day, and the copy runs on the
+  source's service. New stop times take the pattern's per-visit distances when
+  the source already references the pattern's shape; otherwise their distances
+  are nil (R15). The duplicate is audited as created. A frequency source is
+  refused with `:frequency_trip` and the source trip itself is never written.
   """
   @spec duplicate_trip(String.t(), Ecto.UUID.t(), duplicate_attrs(), AuditContext.t()) ::
           {:ok, Trip.t()} | {:error, Ecto.Changeset.t() | update_error()}
@@ -775,6 +792,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         id: pattern.id,
         route_pattern_id: pattern.route_pattern_id,
         name: pattern.route_pattern_name || pattern.route_pattern_id,
+        headsign: pattern.headsign,
         direction_id: pattern.direction_id,
         typicality: pattern.route_pattern_typicality,
         timings: Map.get(timings_by_pattern, pattern.id, [])
@@ -1307,6 +1325,10 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       changeset
       |> put_service_change(request, trip)
       |> Ecto.Changeset.change(linkage)
+      |> put_headsign_fallback(
+        pattern,
+        Map.get(linkage, :timed_pattern_id, trip.timed_pattern_id)
+      )
 
     if rewritten? or changeset.changes != %{} do
       persist_trip_edit!(changeset, trip, request, frequencies, audit_context)
@@ -1314,6 +1336,34 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       # A request that changes nothing writes no trip row and no audit log.
       trip
     end
+  end
+
+  # A request that submits a blank headsign gets the fallback of the timing the
+  # trip ends up on, so the stored value is the one the drawer hint names. A
+  # request without a headsign leaves the stored one alone.
+  defp put_headsign_fallback(changeset, pattern, timing_id) do
+    if Map.has_key?(changeset.params, "trip_headsign") and
+         is_nil(Ecto.Changeset.get_field(changeset, :trip_headsign)) do
+      Ecto.Changeset.put_change(changeset, :trip_headsign, headsign_fallback(pattern, timing_id))
+    else
+      changeset
+    end
+  end
+
+  defp headsign_fallback(nil, _timing_id), do: nil
+
+  defp headsign_fallback(pattern, timing_id) do
+    timing_headsign =
+      if is_binary(timing_id) do
+        Repo.one(
+          from(t in TimedPattern,
+            where: t.route_pattern_id == ^pattern.id and t.id == ^timing_id,
+            select: t.headsign
+          )
+        )
+      end
+
+    fallback_headsign(timing_headsign, pattern.headsign)
   end
 
   # A submitted value is a change only when it differs from the locked row, so a
@@ -1568,7 +1618,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   # The copy takes the pattern's direction and natural ID and the source trip's
   # service and rider-facing metadata, including its shape, but never its block:
-  # a duplicate is unblocked until it is assigned on the Blocks page (D1).
+  # a duplicate is unblocked until it is assigned on the Blocks page (D1). It
+  # also gets no trip number, which would repeat the source's on one service day.
   defp duplicate_trip_attrs(trip, route, pattern, timing, trip_id) do
     %{
       trip_id: trip_id,
@@ -1576,7 +1627,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       service_id: trip.service_id,
       direction_id: pattern.direction_id,
       trip_headsign: trip.trip_headsign,
-      trip_short_name: trip.trip_short_name,
       block_id: nil,
       wheelchair_accessible: trip.wheelchair_accessible,
       bikes_allowed: trip.bikes_allowed,

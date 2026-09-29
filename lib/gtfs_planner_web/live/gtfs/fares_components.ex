@@ -82,6 +82,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   # count of the rest.
   @review_row_limit 100
 
+  # Trip planners build one rule set per fare, so a route or through-zone
+  # condition on one rule reaches all of the fare's rules.
+  @shared_fare_note "Rules that share a fare are read together by trip planners: a route or pass-through condition on one rule applies to all of that fare's rules."
+
   use GtfsPlannerWeb, :html
 
   alias GtfsPlanner.Gtfs.FareZone
@@ -910,7 +914,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
     doc: "the inventory's zones, for the names and stop counts the cards read"
 
   def rules_tab(assigns) do
-    assigns = assign(assigns, :zone_lookup, Map.new(assigns.zones, &{&1.zone_id, &1}))
+    assigns =
+      assigns
+      |> assign(:zone_lookup, Map.new(assigns.zones, &{&1.zone_id, &1}))
+      |> assign(:shared_fare_note, @shared_fare_note)
 
     ~H"""
     <div id="fare-rules-tab">
@@ -937,7 +944,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
       </div>
 
       <p id="fare-rules-note" class="mt-4 text-sm text-base-content/70">
-        “Any origin” and “Any destination” leave that end of the journey unrestricted. A reverse journey needs its own rule.
+        “Any origin” and “Any destination” leave that end of the journey unrestricted. A reverse journey needs its own rule. {@shared_fare_note}
       </p>
     </div>
     """
@@ -1018,8 +1025,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   Every row is derived from `FareZones.checks/2`, so the tab reports what the
   version's own data says rather than its own reading: one "Needs repair" row per
   zone fare rules use that has no boardable stops, one "Review" row while
-  boardable stops have no zone, one "Note" row per declared zone with nothing in
-  it, and the "Source check" row only while fare rules reference zones at all.
+  boardable stops have no zone, one "Review" row per fare whose rules trip
+  planners combine, one "Note" row per declared zone with nothing in it, and the
+  "Source check" row only while fare rules reference zones at all.
   The reference's "fare rules checked" row is deliberately not reproduced: under
   the derived inventory it can never report a failure. With no needs-repair and no
   review row, the all-clear line states what the version is clean of.
@@ -1042,9 +1050,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
       |> assign(:stopless, assigns.checks.stopless_referenced)
       |> assign(:unassigned, assigns.checks.unassigned_count)
       |> assign(:empty_declared, assigns.checks.empty_declared)
+      |> assign(:combined_fares, assigns.checks.combined_fares)
       |> assign(
         :clean?,
-        assigns.checks.stopless_referenced == [] and assigns.checks.unassigned_count == 0
+        assigns.checks.stopless_referenced == [] and assigns.checks.unassigned_count == 0 and
+          assigns.checks.combined_fares == []
       )
 
     ~H"""
@@ -1083,6 +1093,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
           body="Unassigned stops can be intentional, but zone-based fares may not apply to journeys using them."
           link={zones_patch(@patch_base, filter: "unassigned")}
           link_label="Review unassigned stops"
+        />
+
+        <.check_row
+          :for={{fare, index} <- Enum.with_index(@combined_fares)}
+          id={"fare-check-combine-#{index}"}
+          status={:warning}
+          label="Review"
+          title={combined_fare_title(fare)}
+          body={combined_fare_detail(fare)}
         />
 
         <.check_row
@@ -1178,6 +1197,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   beside the fields they belong to, and neither a stale rule nor a failed save
   closes the drawer.
 
+  Trip planners combine every rule of one fare, so `combined_fare` carries a
+  warning callout when the fare's rules, with this rule as the form has it, do not
+  share one route or one through-zone set. The callout explains and never blocks
+  the save.
+
   ## Examples
 
       <.rule_drawer
@@ -1195,6 +1219,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   attr :fares, :list, required: true, doc: "`FareZones.list_fares/2`"
   attr :routes, :list, required: true, doc: "`FareZones.list_rule_routes/2`"
   attr :zones, :list, required: true, doc: "the inventory's zones"
+
+  attr :combined_fare, :map,
+    default: nil,
+    doc: "the rule's fare when trip planners would combine its rules differently, or nil"
+
   attr :error, :string, default: nil, doc: "a drawer-level reason the save did not happen"
 
   attr :stale, :boolean,
@@ -1214,6 +1243,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
         if(assigns.reviewed, do: "Edit fare rule", else: "Add a fare rule")
       )
       |> assign(:zone_lookup, zone_lookup)
+      |> assign(:shared_fare_note, @shared_fare_note)
       |> assign(:fare_options, fare_options(assigns.fares, assigns.reviewed))
       |> assign(:zone_options, zone_options(assigns.zones))
       |> assign(:contains_options, contains_options(assigns.zones))
@@ -1327,10 +1357,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
           change the form can see. --%>
           <fieldset id="fare-rule-contains" class="fieldset mb-2 min-w-0">
             <legend class="label text-base mb-1">
-              Must visit these zones <span class="font-normal text-base-content/70">(optional)</span>
+              Zones the journey touches
+              <span class="font-normal text-base-content/70">(optional)</span>
             </legend>
             <p id="fare-rule-contains-help" class="mb-2 text-sm text-base-content/70">
-              The journey must visit every checked zone. Leave all unchecked for no through-zone requirement.
+              Tick every zone the journey touches, including where it starts and ends. Trip planners match only journeys that touch exactly these zones. Leave all unchecked for no zone requirement.
             </p>
             <input type="hidden" name={@contains_name} value="" />
             <div class="flex flex-wrap gap-x-4">
@@ -1358,6 +1389,16 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
             </p>
           </fieldset>
 
+          <.callout
+            :if={@combined_fare}
+            id="fare-rule-combine-warning"
+            kind="warning"
+            title={combined_fare_title(@combined_fare)}
+            role="status"
+          >
+            <p>{combined_fare_detail(@combined_fare)}</p>
+          </.callout>
+
           <div class="my-4 rounded-box bg-base-200 p-4">
             <p class="font-semibold">In plain language</p>
             <p id="fare-rule-summary" class="mt-1 text-sm text-base-content/70" aria-live="polite">
@@ -1367,6 +1408,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
           <p class="text-sm text-base-content/70">
             Start and end zones are directional. To charge the same fare in reverse, add a second rule with those zones swapped.
+          </p>
+
+          <p id="fare-rule-shared-fare-note" class="text-sm text-base-content/70">
+            {@shared_fare_note}
           </p>
 
           <div :if={@editing?} class="pt-2">
@@ -2332,6 +2377,50 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
   defp empty_zones_copy(1), do: "1 empty zone"
   defp empty_zones_copy(count), do: "#{count} empty zones"
+
+  defp combined_fare_title(%{fare_id: fare_id}) do
+    "Rules for fare #{fare_id} combine in trip planners"
+  end
+
+  # Only the conditions the fare's rules actually disagree on are named, so the
+  # detail says what the trip planner will apply to every rule of the fare.
+  defp combined_fare_detail(fare) do
+    Enum.join(
+      ["Trip planners read all rules of one fare together."] ++
+        combined_routes_sentence(fare) ++ combined_zones_sentence(fare),
+      " "
+    )
+  end
+
+  defp combined_routes_sentence(%{routes_differ?: false}), do: []
+
+  defp combined_routes_sentence(%{route_ids: route_ids}) do
+    case Enum.reject(route_ids, &is_nil/1) do
+      [route_id] ->
+        [
+          "This fare names route #{route_id} on some rules, so every rule of the fare applies only on that route."
+        ]
+
+      route_ids ->
+        [
+          "This fare names routes #{Enum.join(route_ids, ", ")} on some rules, so every rule of the fare applies only on those routes."
+        ]
+    end
+  end
+
+  defp combined_zones_sentence(%{contains_differ?: false}), do: []
+
+  defp combined_zones_sentence(%{contains: [zone_id]}) do
+    [
+      "This fare lists pass-through zone #{zone_id} across its rules, so every rule of the fare requires a journey that touches exactly that zone."
+    ]
+  end
+
+  defp combined_zones_sentence(%{contains: zone_ids}) do
+    [
+      "This fare lists pass-through zones #{Enum.join(zone_ids, ", ")} across its rules, so every rule of the fare requires a journey that touches exactly those zones."
+    ]
+  end
 
   defp rule_summary_visits([], _zone_lookup), do: ""
 

@@ -41,7 +41,17 @@ test.describe("Reachability result routes", () => {
 
     await expect(page.locator("#station-reachability-results")).toBeVisible();
     await expect(page.getByText("Reachability results", { exact: true })).toBeVisible();
-    await expect(page.locator("#pair-matrix")).toBeVisible();
+
+    // The seeded station has one entrance and two platforms; an elevator joins
+    // the entrance to the first platform, so exactly one entry pair is reachable.
+    await expect(page.locator("#reachability-section-entry")).toBeVisible();
+    await expect(page.locator("#pair-BROWSER_STOP_C-BROWSER_STOP_A")).toBeVisible();
+    await expect(page.locator("#reachability-section-entry-stats")).toHaveText(
+      "1/2 on foot · 1/2 step-free",
+    );
+    await expect(page.locator("#station-reachability-results")).toContainText(
+      /4 reachable \/ 12 pairs/,
+    );
   });
 
   test("renders legacy station results through the read-only boundary", async ({ page }) => {

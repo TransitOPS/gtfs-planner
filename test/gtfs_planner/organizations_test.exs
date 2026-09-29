@@ -1,6 +1,9 @@
 defmodule GtfsPlanner.OrganizationsTest do
   use GtfsPlanner.DataCase
 
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.User
+  alias GtfsPlanner.Accounts.UserToken
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.AdminReadAdapterMock
   alias GtfsPlanner.Organizations.Organization
@@ -356,6 +359,173 @@ defmodule GtfsPlanner.OrganizationsTest do
     end
   end
 
+  describe "deactivate_user_in_organization/2" do
+    setup do
+      user = user_fixture()
+      organization = organization_fixture()
+      {:ok, _membership} = Organizations.add_user_to_organization(user.id, organization.id)
+
+      %{user: user, organization: organization}
+    end
+
+    test "disconnects each open web session and deletes the user's session tokens", %{
+      user: user,
+      organization: organization
+    } do
+      web_token_one = Accounts.generate_user_session_token(user)
+      web_token_two = Accounts.generate_user_session_token(user)
+      api_token = Accounts.generate_api_session_token(user)
+      topic_one = live_socket_topic(web_token_one)
+      topic_two = live_socket_topic(web_token_two)
+      api_topic = live_socket_topic(api_token)
+
+      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic_one)
+      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic_two)
+      :ok = GtfsPlannerWeb.Endpoint.subscribe(api_topic)
+
+      assert {:ok, %{deactivated_at: %DateTime{}}} =
+               Organizations.deactivate_user_in_organization(user.id, organization.id)
+
+      assert_receive %Phoenix.Socket.Broadcast{event: "disconnect", topic: ^topic_one}
+      assert_receive %Phoenix.Socket.Broadcast{event: "disconnect", topic: ^topic_two}
+      refute_receive %Phoenix.Socket.Broadcast{topic: ^api_topic}
+      refute Accounts.get_user_by_session_token(web_token_one)
+      refute Accounts.get_user_by_session_token(web_token_two)
+      refute Accounts.get_user_by_api_session_token(api_token)
+    end
+
+    test "sends no disconnect when the membership does not exist", %{user: user} do
+      other_organization = organization_fixture()
+      web_token = Accounts.generate_user_session_token(user)
+      topic = live_socket_topic(web_token)
+      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic)
+
+      assert {:error, :not_found} =
+               Organizations.deactivate_user_in_organization(user.id, other_organization.id)
+
+      refute_receive %Phoenix.Socket.Broadcast{topic: ^topic}
+      assert Accounts.get_user_by_session_token(web_token)
+    end
+
+    test "still deactivates an editor", %{organization: organization} do
+      editor = editor_fixture(organization)
+
+      assert {:ok, %{deactivated_at: %DateTime{}}} =
+               Organizations.deactivate_user_in_organization(editor.id, organization.id)
+
+      assert Organizations.user_deactivated_in_organization?(editor.id, organization.id)
+    end
+
+    test "refuses a membership holding administrator and changes nothing", %{
+      organization: organization
+    } do
+      system_administrator = user_fixture()
+
+      membership =
+        organization_membership_fixture(system_administrator, organization, [
+          "administrator",
+          "pathways_studio_editor"
+        ])
+
+      token = Accounts.generate_user_session_token(system_administrator)
+      topic = live_socket_topic(token)
+      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic)
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "organizations")
+
+      assert {:error, :system_administrator} =
+               Organizations.deactivate_user_in_organization(
+                 system_administrator.id,
+                 organization.id
+               )
+
+      membership_id = membership.id
+      refute_receive %Phoenix.Socket.Broadcast{topic: ^topic}
+      refute_receive {[:memberships, :deactivated], %{id: ^membership_id}}
+      assert Accounts.get_user_by_session_token(token)
+      assert Repo.reload!(membership).deactivated_at == nil
+    end
+
+    test "refuses the only active organization admin and changes nothing", %{
+      organization: organization
+    } do
+      admin = user_fixture()
+      membership = organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+      token = Accounts.generate_user_session_token(admin)
+      topic = live_socket_topic(token)
+      :ok = GtfsPlannerWeb.Endpoint.subscribe(topic)
+      :ok = Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "organizations")
+
+      assert {:error, :last_organization_admin} =
+               Organizations.deactivate_user_in_organization(admin.id, organization.id)
+
+      membership_id = membership.id
+      refute_receive %Phoenix.Socket.Broadcast{topic: ^topic}
+      refute_receive {[:memberships, :deactivated], %{id: ^membership_id}}
+      assert Accounts.get_user_by_session_token(token)
+      assert Repo.reload!(membership).deactivated_at == nil
+    end
+
+    test "deactivates an organization admin when another active admin has a password", %{
+      organization: organization
+    } do
+      admin = user_fixture()
+      other_admin = user_fixture()
+      organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+      organization_membership_fixture(other_admin, organization, ["pathways_studio_admin"])
+
+      assert {:ok, %{deactivated_at: %DateTime{}}} =
+               Organizations.deactivate_user_in_organization(admin.id, organization.id)
+
+      refute Organizations.user_deactivated_in_organization?(other_admin.id, organization.id)
+    end
+
+    test "refuses the last admin when the only other admin is a pending invitee", %{
+      organization: organization
+    } do
+      admin = user_fixture()
+      {:ok, invitee} = Repo.insert(User.invite_changeset(%User{}, %{email: unique_user_email()}))
+      organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+      organization_membership_fixture(invitee, organization, ["pathways_studio_admin"])
+
+      assert {:error, :last_organization_admin} =
+               Organizations.deactivate_user_in_organization(admin.id, organization.id)
+
+      refute Organizations.user_deactivated_in_organization?(admin.id, organization.id)
+    end
+
+    test "refuses the last admin when the only other admin is deactivated", %{
+      organization: organization
+    } do
+      admin = user_fixture()
+      former_admin = user_fixture()
+      organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+
+      former_admin
+      |> organization_membership_fixture(organization, ["pathways_studio_admin"])
+      |> deactivate_membership_fixture()
+
+      assert {:error, :last_organization_admin} =
+               Organizations.deactivate_user_in_organization(admin.id, organization.id)
+
+      refute Organizations.user_deactivated_in_organization?(admin.id, organization.id)
+    end
+
+    test "does not count an admin of another organization as another admin", %{
+      organization: organization
+    } do
+      admin = user_fixture()
+      foreign_admin = user_fixture()
+      organization_membership_fixture(admin, organization, ["pathways_studio_admin"])
+
+      organization_membership_fixture(foreign_admin, organization_fixture(), [
+        "pathways_studio_admin"
+      ])
+
+      assert {:error, :last_organization_admin} =
+               Organizations.deactivate_user_in_organization(admin.id, organization.id)
+    end
+  end
+
   describe "update_user_roles/3" do
     setup do
       user = user_fixture()
@@ -690,6 +860,12 @@ defmodule GtfsPlanner.OrganizationsTest do
         AdminReadAdapter.Repo.list_users("not-a-uuid")
       end
     end
+  end
+
+  # The PubSub topic a LiveView socket for this session token listens on.
+  defp live_socket_topic(token) do
+    {:ok, digest} = UserToken.session_token_digest(token)
+    "users_sessions:" <> Base.url_encode64(digest, padding: false)
   end
 
   # Points the calling process at a real but unreachable Postgres pool so that

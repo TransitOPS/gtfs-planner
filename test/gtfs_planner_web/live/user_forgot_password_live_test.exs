@@ -281,6 +281,26 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLiveTest do
       assert flash_text(existing_html) == flash_text(absent_html)
       refute absent_html =~ "flash-error"
     end
+
+    test "a repeated request for an existing account shows the same login flash and delivers once" do
+      user = user_fixture()
+
+      first_html = submit_and_follow(build_conn(), user.email)
+      repeated_html = submit_and_follow(build_conn(), user.email)
+
+      assert flash_text(first_html) =~ @common_message
+      assert flash_text(repeated_html) == flash_text(first_html)
+      refute repeated_html =~ "flash-error"
+
+      assert_email_sent(to: [{"", user.email}], subject: "Reset your Pathways Studio password")
+      assert_no_email_sent()
+
+      assert Repo.aggregate(
+               UserToken.user_and_contexts_query(user, ["reset_password"]),
+               :count,
+               :id
+             ) == 1
+    end
   end
 
   defp submit_and_follow(conn, email) do

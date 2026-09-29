@@ -136,6 +136,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           calendar: Calendar.t() | nil,
           attributes: CalendarAttribute.t() | nil,
           exceptions: [CalendarDate.t()],
+          coverage_error: coverage_error() | nil,
           fingerprint: String.t()
         }
   @type write_result :: %{
@@ -153,6 +154,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
           | :invalid_input
           | :busy
           | :native_service_required
+          | :reversed_range
           | {:in_use, non_neg_integer(), [String.t()]}
   @type write_error :: Ecto.Changeset.t() | error()
   @type feed_gap :: %{first_date: Date.t(), last_date: Date.t()}
@@ -284,6 +286,11 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   together with the resolved agency `:zone` (including its UTC fallback reason)
   and the grouped `:usage`. Deriving them here keeps the editor from re-implementing
   `ServiceDates` or resolving a second, disagreeing clock.
+
+  A weekly row whose range ends before it starts is classified as in
+  `list_calendars/3`: `:coverage_error` names it and the derived `:active_dates`,
+  `:periods` and `:warnings` are empty instead of raising, so the editor can open the
+  calendar and correct its dates. `:coverage_error` is `nil` for a readable calendar.
   """
   @spec get_calendar(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
           {:ok, payload()} | {:error, :not_found}
@@ -294,15 +301,19 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       clock = DisplayClock.today(organization_id, version_id)
       exceptions = source.exceptions
       calendar = source.calendar
+      usage = one_usage(organization_id, version_id, service_id)
+      input_errors = retained_input_errors(calendar, exceptions)
+      derived = derived_dates(input_errors, calendar, exceptions, usage, clock.date)
 
       source
       |> Map.put(:kind, kind_for(calendar))
-      |> Map.put(:active_dates, ServiceDates.active_dates(calendar, exceptions))
-      |> Map.put(:periods, ServiceDates.periods(calendar, exceptions))
-      |> Map.put(:warnings, ServiceDates.warnings(calendar, exceptions, clock.date))
+      |> Map.put(:coverage_error, List.first(input_errors))
+      |> Map.put(:active_dates, derived.active_dates)
+      |> Map.put(:periods, derived.periods)
+      |> Map.put(:warnings, derived.warnings)
       |> Map.put(:today, clock.date)
       |> Map.put(:zone, clock)
-      |> Map.put(:usage, one_usage(organization_id, version_id, service_id))
+      |> Map.put(:usage, usage)
     end)
   end
 
@@ -436,7 +447,9 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   nil entries are refused before a review token exists. The retained sources are
   compared with the current rows, then the command is planned: validation errors
   return the owning changeset, an in-use conversion or delete returns
-  `{:in_use, trip_count, route_ids}`, and otherwise the result carries the reviewed
+  `{:in_use, trip_count, route_ids}`, a single-calendar command on a calendar whose range
+  ends before it starts returns `:reversed_range` unless it is a delete or a save that
+  supplies a new range, and otherwise the result carries the reviewed
   `changes`, projected `warnings`, the `affected_service_ids` that would change, the
   projected `active_date_count` and a command-bound `fingerprint` that
   `apply_calendar_change/3` requires. The shared version lock is released before the
@@ -2359,14 +2372,32 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     [service_id] = command_targets(command)
     source = Map.fetch!(sources, service_id)
 
-    case plan_command(command, source, audit_context) do
-      {:ok, plan} -> {:ok, %{service_id => plan}}
-      {:error, reason} -> {:error, reason}
+    with :ok <- readable_range(command, source),
+         {:ok, plan} <- plan_command(command, source, audit_context) do
+      {:ok, %{service_id => plan}}
     end
   end
 
+  # A retained reversed range has no service dates to derive, so a command that would
+  # evaluate them is refused until a save supplies a corrected range. Delete is planned
+  # apart and never evaluates the range.
+  defp readable_range(command, source) do
+    if range_save?(command) or retained_input_errors(source.calendar, source.exceptions) == [],
+      do: :ok,
+      else: {:error, :reversed_range}
+  end
+
+  # The `Calendar` changeset validates the order of a range a save supplies.
+  defp range_save?({:save, _service_id, attrs}), do: weekly_fields_present?(attrs)
+  defp range_save?(_command), do: false
+
+  # A reversed row reports no active dates, as `get_calendar/3` does, so deleting it
+  # never evaluates the range.
   defp delete_plan(service_id, source) do
-    active_date_count = length(ServiceDates.active_dates(source.calendar, source.exceptions))
+    active_date_count =
+      if retained_input_errors(source.calendar, source.exceptions) == [],
+        do: length(ServiceDates.active_dates(source.calendar, source.exceptions)),
+        else: 0
 
     %{
       action: :delete,

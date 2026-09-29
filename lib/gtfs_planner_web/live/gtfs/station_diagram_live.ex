@@ -296,7 +296,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
         socket = load_station_stop_levels_cache(socket)
 
-        socket = assign(socket, :audit_ctx, build_audit_ctx(socket))
+        socket = assign(socket, :audit_ctx, AuditContext.from_assigns(socket.assigns))
 
         socket =
           if connected?(socket) do
@@ -383,23 +383,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> load_station_stop_levels_cache()
   end
 
-  defp build_audit_ctx(socket) do
-    %{
-      current_organization: %{id: organization_id},
-      current_gtfs_version: %{id: gtfs_version_id},
-      current_user: %{id: actor_id, email: actor_email},
-      station: %{stop_id: station_stop_id}
-    } = socket.assigns
-
-    %AuditContext{
-      organization_id: organization_id,
-      gtfs_version_id: gtfs_version_id,
-      station_stop_id: station_stop_id,
-      actor_id: actor_id,
-      actor_email: actor_email
-    }
-  end
-
   defp pending_diagram_upload_value(nil, _key), do: nil
   defp pending_diagram_upload_value(pending, key), do: Map.get(pending, key)
 
@@ -409,7 +392,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     station_stop_id = socket.assigns.station.stop_id
 
     {:noreply,
-     push_patch(socket, to: "/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
+     push_patch(socket, to: ~p"/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
   end
 
   @impl true
@@ -418,7 +401,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     station_stop_id = socket.assigns.station.stop_id
 
     {:noreply,
-     push_patch(socket, to: "/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
+     push_patch(socket, to: ~p"/gtfs/#{gtfs_version_id}/stops/#{station_stop_id}/diagram")}
   end
 
   @impl true
@@ -1624,7 +1607,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     if version_id && stop_id && version_id != current_version_id &&
          Versions.published_gtfs_version_for_org?(current_organization.id, version_id) do
-      path = "/gtfs/#{version_id}/stops/#{stop_id}/diagram"
+      path = ~p"/gtfs/#{version_id}/stops/#{stop_id}/diagram"
       {:noreply, push_navigate(socket, to: path)}
     else
       {:noreply, socket}
@@ -1991,8 +1974,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     with dragging_stop_id when not is_nil(dragging_stop_id) <- socket.assigns.dragging_stop_id,
          true <- to_string(dragging_stop_id) == to_string(id),
-         {:ok, parsed_x} <- parse_svg_coordinate(x),
-         {:ok, parsed_y} <- parse_svg_coordinate(y),
+         {:ok, parsed_x} <- parse_svg_coordinate(x, :x),
+         {:ok, parsed_y} <- parse_svg_coordinate(y, :y),
          %Stop{} = stop <- Gtfs.get_stop(id),
          true <- stop.organization_id == socket.assigns.current_organization.id,
          true <- stop.gtfs_version_id == socket.assigns.current_gtfs_version.id,
@@ -2443,7 +2426,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   @impl true
   def handle_event("edit_pathway", %{"id" => id} = params, socket) do
-    if socket.assigns.mode == :add do
+    # Setting scale owns the diagram clicks; the hook turns a pathway click into a ruler point.
+    if socket.assigns.mode == :add or socket.assigns.measurement_enabled do
       {:noreply, socket}
     else
       pathway = Gtfs.get_pathway_with_stops!(id)
@@ -2630,7 +2614,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     {:noreply,
      socket
-     |> assign(:pathway_form, to_form(form_params))
+     |> assign(:pathway_form, to_form(one_way_when_exit_gate(form_params)))
      |> assign(:pathway_error, nil)
      |> assign(:pathway_form_dirty, true)}
   end
@@ -2664,9 +2648,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              socket.assigns.current_organization.id,
              socket.assigns.current_gtfs_version.id,
              socket.assigns.active_level.id,
-             socket.assigns.station.id
+             socket.assigns.station.id,
+             socket.assigns.audit_ctx
            ) do
-        {:ok, %{stop_level: updated_stop_level, recalculated_count: recalculated_count}} ->
+        {:ok,
+         %{
+           stop_level: updated_stop_level,
+           recalculated_count: recalculated_count,
+           kept_count: kept_count
+         }} ->
+          kept_status =
+            if kept_count > 0,
+              do: ", #{kept_count} entered #{pluralize(kept_count, "length")} kept",
+              else: ""
+
           {:noreply,
            socket
            |> assign(:active_stop_level, updated_stop_level)
@@ -2674,7 +2669,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            |> reset_ruler_state()
            |> assign(
              :scale_status,
-             "Scale updated - #{recalculated_count} pathway length(s) recalculated"
+             "Scale updated - #{recalculated_count} pathway #{pluralize(recalculated_count, "length")} recalculated" <>
+               kept_status
            )}
 
         {:error, _reason} ->
@@ -6381,9 +6377,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
-  defp parse_svg_coordinate(value) do
+  defp parse_svg_coordinate(value, axis) do
     with {:ok, parsed} <- parse_float(value),
-         true <- parsed >= 0.0 and parsed <= 100.0 do
+         true <- parsed >= 0.0 and parsed <= Coordinates.max_diagram_coordinate(axis) do
       {:ok, Float.round(parsed, 2)}
     else
       _ -> :error
@@ -6542,7 +6538,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       "signposted_as" => pathway.signposted_as,
       "reversed_signposted_as" => pathway.reversed_signposted_as
     }
+    |> one_way_when_exit_gate()
   end
+
+  # Exit gates are always one-way (see `Pathway.changeset/2`). Keeping the form
+  # value false also keeps the preview and the reverse-signage field in step.
+  defp one_way_when_exit_gate(%{"pathway_mode" => "7"} = params),
+    do: Map.put(params, "is_bidirectional", false)
+
+  defp one_way_when_exit_gate(params), do: params
 
   defp handle_diagram_upload_progress(:diagram, entry, socket) do
     socket =
@@ -7295,8 +7299,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     version_id = socket.assigns.current_gtfs_version.id
     station_stop_id = socket.assigns.station.stop_id
 
-    case Gtfs.remove_child_stop_from_diagram(org_id, version_id, station_stop_id, stop_id) do
-      {:ok, _stop} ->
+    case Gtfs.remove_child_stop_from_diagram(
+           org_id,
+           version_id,
+           station_stop_id,
+           stop_id,
+           socket.assigns.audit_ctx
+         ) do
+      {:ok, updated_stop} ->
         {:noreply,
          socket
          |> refresh_lists()
@@ -7304,7 +7314,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:pending_xy, nil)
          |> assign(:selected_stop_id, nil)
          |> assign(:active_point_id, nil)
-         |> assign(:child_stop_form, to_form(%{}))}
+         |> assign(:child_stop_form, to_form(%{}))
+         |> maybe_refresh_history_entries("stop", updated_stop.id)}
 
       {:error, :not_found} ->
         {:noreply,
@@ -7313,6 +7324,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
          |> assign(:pending_xy, nil)
          |> assign(:selected_stop_id, nil)
          |> assign(:child_stop_form, to_form(%{}))}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "Failed to remove stop from diagram")}
     end
   end
 

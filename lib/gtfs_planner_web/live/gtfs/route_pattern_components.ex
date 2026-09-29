@@ -1114,6 +1114,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           </button>
         </div>
 
+        <p :if={@review.resequenced?} id="stop-review-reorder-note" class="mt-2">
+          The stop order changed, so each timing keeps its times by position: the first stop keeps the first time, the second stop the second, and so on. Check the times below and adjust them on the Timings tab after saving.
+        </p>
+
         <div
           :for={block <- @review.blocks}
           id={"stop-review-timing-#{block.timing_id}"}
@@ -1127,9 +1131,27 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             </span>
           </p>
 
-          <p :if={block.added == []} class="mt-1 text-sm text-base-content/70">
+          <p
+            :if={block.added == [] and block.resequenced == []}
+            class="mt-1 text-sm text-base-content/70"
+          >
             No added stops in this timing. Its retained times stay as they are.
           </p>
+
+          <ul
+            :if={block.resequenced != []}
+            id={"stop-review-resequenced-#{block.timing_id}"}
+            class="mt-2 divide-y divide-base-300 text-sm"
+          >
+            <li
+              :for={row <- block.resequenced}
+              id={"stop-review-resequenced-#{block.timing_id}-#{row.id}"}
+              class="flex flex-wrap justify-between gap-x-4 py-1"
+            >
+              <span class="font-medium">{row.name}</span>
+              <span class="tabular-nums">Arrive {row.arrival} · Depart {row.departure}</span>
+            </li>
+          </ul>
 
           <div :for={added <- block.added} class="mt-2 grid gap-2 sm:grid-cols-3">
             <p class="text-sm">
@@ -1193,8 +1215,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           </label>
         </div>
 
-        <p class="mt-3 text-sm text-base-content/70">
+        <p :if={not @review.resequenced?} class="mt-3 text-sm text-base-content/70">
           Retained stop times keep their absolute clocks; added stop times are what this review
+          applies. Geometry is not recalculated.
+        </p>
+        <p :if={@review.resequenced?} class="mt-3 text-sm text-base-content/70">
+          The listed times replace the stored times; added stop times are what this review
           applies. Geometry is not recalculated.
         </p>
       </form>

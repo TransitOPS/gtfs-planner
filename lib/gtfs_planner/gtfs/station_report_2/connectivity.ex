@@ -108,7 +108,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
           cond do
             unreachable_names == [] and reachable_names != [] -> :full
             reachable_names != [] and unreachable_names != [] -> :partial
-            true -> :none
+            true -> unreached_status(source, directed, dimension)
           end
 
         %{
@@ -144,14 +144,6 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
         true -> :warning
       end
 
-    # Alerts for zero-reachability entities
-    alerts =
-      summary_rows
-      |> Enum.filter(&(&1.status == :none))
-      |> Enum.map(fn row ->
-        alert_text(row.source_name, dimension)
-      end)
-
     %{
       title: title,
       description: description,
@@ -165,9 +157,19 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
         target_count: target_count
       },
       summary_rows: summary_rows,
-      alerts: alerts
+      alerts: Enum.flat_map(summary_rows, &row_alerts(&1, dimension))
     }
   end
+
+  # Zero-reachability rows demand a fix; an exit-only entrance is intended
+  # data, so it only warns.
+  defp row_alerts(%{status: :none} = row, dimension),
+    do: [%{level: :error, text: alert_text(row.source_name, dimension)}]
+
+  defp row_alerts(%{status: :exit_only} = row, _dimension),
+    do: [%{level: :warning, text: exit_only_alert_text(row.source_name)}]
+
+  defp row_alerts(_row, _dimension), do: []
 
   # ── Step 4: build_route_detail/2 ──────────────────────────────────────────
 
@@ -761,6 +763,20 @@ defmodule GtfsPlanner.Gtfs.StationReport2.Connectivity do
   defp alert_text(name, :platform_to_platform) do
     "Needs immediate attention: #{name} cannot reach any other platform in this station."
   end
+
+  defp exit_only_alert_text(name) do
+    "#{name} is exit-only: riders can leave through it but cannot enter. " <>
+      "Platforms are not reachable from it. Check that this is intended."
+  end
+
+  # A source that reaches nothing is `:none`, except an exit-only entrance.
+  # Only entrance-to-platform can have one: in platform-to-exit an entrance is
+  # a target, never a source, so it cannot produce a row.
+  defp unreached_status(source, directed, :entrance_to_platform) do
+    if Graph.exit_only?(source.stop_id, directed), do: :exit_only, else: :none
+  end
+
+  defp unreached_status(_source, _directed, _dimension), do: :none
 
   defp entrances_and_platforms(child_stops) do
     entrances =

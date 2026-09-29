@@ -293,6 +293,49 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
       assert count_hrefs(single_doc) == [["/gtfs/#{single_version.id}/routes"]]
     end
 
+    test "encodes an agency ID with reserved URL characters and filters the routes by it", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      create_agency(
+        organization,
+        version,
+        agency_attributes("A&B 1", "Ampersand Transit", "ampersand.example")
+      )
+
+      create_agency(
+        organization,
+        version,
+        agency_attributes("HBR", "Harbor Shuttle", "harbor.example")
+      )
+
+      [ampersand_route] = routes(organization, version, "A&B 1", 1)
+      [harbor_route] = routes(organization, version, "HBR", 1)
+
+      {:ok, view, _html} = live(conn, agencies_path(version.id))
+      doc = LazyHTML.from_fragment(render(view))
+
+      assert Enum.zip(names(doc), count_hrefs(doc)) == [
+               {"Ampersand Transit", ["/gtfs/#{version.id}/routes?agency_id=A%26B+1"]},
+               {"Harbor Shuttle", ["/gtfs/#{version.id}/routes?agency_id=HBR"]}
+             ]
+
+      [href] =
+        doc
+        |> LazyHTML.query("#agencies a[aria-label*='Ampersand']")
+        |> LazyHTML.attribute("href")
+
+      {:ok, routes_view, _html} = live(conn, href)
+
+      assert has_element?(routes_view, "tr#routes-#{ampersand_route.id}")
+      refute has_element?(routes_view, "tr#routes-#{harbor_route.id}")
+      assert has_element?(routes_view, "select[name='agency_id'] option[selected]", "A&B 1")
+    end
+
     test "sorts by name, timezone and route count from the headers", %{
       conn: conn,
       user: user,

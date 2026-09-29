@@ -173,7 +173,63 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQualityTest do
       assert check.status == :fail
       assert check.value.unreachable == 1
       assert check.value.reachable == 0
-      assert %{id: "ENT_1", name: "Stop"} in check.details
+
+      assert %{id: "ENT_1", name: "Stop", reason: "no pathway to any platform"} in check.details
+    end
+
+    test "entrance reached only through a one-way pathway toward it warns as exit-only" do
+      entrance = make_stop(%{stop_id: "ENT_1", location_type: 2, parent_station: "STATION_1"})
+      exit_door = make_stop(%{stop_id: "ENT_2", location_type: 2, parent_station: "STATION_1"})
+      platform = make_stop(%{stop_id: "PLAT_1", location_type: 0, parent_station: "STATION_1"})
+
+      snapshot = %{
+        station: make_station(),
+        child_stops: [entrance, exit_door, platform],
+        pathways: [
+          make_pathway(%{pathway_id: "PW_1", from_stop_id: "ENT_1", to_stop_id: "PLAT_1"}),
+          make_pathway(%{
+            pathway_id: "PW_2",
+            from_stop_id: "PLAT_1",
+            to_stop_id: "ENT_2",
+            pathway_mode: 7,
+            is_bidirectional: false
+          })
+        ]
+      }
+
+      items = DataQuality.build(snapshot)
+      check = Enum.find(items, &(&1.id == "entrance_to_platform_connectivity"))
+
+      assert check.status == :warn
+      assert check.value == %{unreachable: 0, exit_only: 1, reachable: 1}
+
+      assert [%{id: "ENT_2", reason: "exit-only: riders can leave but cannot enter"}] =
+               check.details
+    end
+
+    test "disconnected entrance still fails when another entrance is exit-only" do
+      exit_door = make_stop(%{stop_id: "ENT_1", location_type: 2, parent_station: "STATION_1"})
+      orphan = make_stop(%{stop_id: "ENT_2", location_type: 2, parent_station: "STATION_1"})
+      platform = make_stop(%{stop_id: "PLAT_1", location_type: 0, parent_station: "STATION_1"})
+
+      snapshot = %{
+        station: make_station(),
+        child_stops: [exit_door, orphan, platform],
+        pathways: [
+          make_pathway(%{
+            pathway_id: "PW_1",
+            from_stop_id: "PLAT_1",
+            to_stop_id: "ENT_1",
+            is_bidirectional: false
+          })
+        ]
+      }
+
+      items = DataQuality.build(snapshot)
+      check = Enum.find(items, &(&1.id == "entrance_to_platform_connectivity"))
+
+      assert check.status == :fail
+      assert check.value == %{unreachable: 1, exit_only: 1, reachable: 0}
     end
 
     test "entrance connected to platform passes connectivity check" do
@@ -197,8 +253,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.DataQualityTest do
       check = Enum.find(items, &(&1.id == "entrance_to_platform_connectivity"))
 
       assert check.status == :pass
-      assert check.value.unreachable == 0
-      assert check.value.reachable == 1
+      assert check.value == %{unreachable: 0, exit_only: 0, reachable: 1}
+      assert check.details == []
     end
 
     test "duplicate stop_id fails duplicate check" do

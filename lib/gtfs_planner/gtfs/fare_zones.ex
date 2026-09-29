@@ -18,9 +18,10 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   is exactly the set of `fare_rules` rows sharing `(fare_id, route_id, origin_id,
   destination_id, contains_id IS NOT NULL)`: a `contains_id` of NULL forms the
   rule for the journey itself, and rows with a `contains_id` form one rule whose
-  `contains` values are the zones the journey must all visit. Every row of the
-  version belongs to exactly one group, duplicate rows included, so the
-  projection is lossless.
+  `contains` values are the through zones. Every row of the version belongs to
+  exactly one group, duplicate rows included, so the projection is lossless.
+  Trip planners do not read the groups apart: they combine every group of one
+  fare, so `list_combined_fares/2` reports the fares whose groups disagree.
 
   `inventory/2` is the union of the version's `fare_zones` records, its distinct
   `stops.zone_id` values of every location type and the zone IDs its fare rules
@@ -109,8 +110,8 @@ defmodule GtfsPlanner.Gtfs.FareZones do
   @unknown_route_message "This route is not in this version. Choose another."
   @unknown_zone_message "This zone is not in this version. Choose another."
 
-  # The drawer's form fields. `contains` is a list of zones the journey must
-  # visit; the four scalars are strings, where an empty string means "any".
+  # The drawer's form fields. `contains` is a list of through zones; the four
+  # scalars are strings, where an empty string means "any".
   @rule_group_fields %{
     fare_id: :string,
     route_id: :string,
@@ -211,11 +212,20 @@ defmodule GtfsPlanner.Gtfs.FareZones do
           current: String.t() | nil
         }
 
+  @type combined_fare :: %{
+          fare_id: String.t(),
+          route_ids: [String.t() | nil],
+          contains: [String.t()],
+          routes_differ?: boolean(),
+          contains_differ?: boolean()
+        }
+
   @type checks :: %{
           stopless_referenced: [zone()],
           unassigned_count: non_neg_integer(),
           empty_declared: [zone()],
-          rules_reference_zones?: boolean()
+          rules_reference_zones?: boolean(),
+          combined_fares: [combined_fare()]
         }
 
   @doc """
@@ -239,10 +249,72 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     fares = fare_index(organization_id, gtfs_version_id, Enum.map(rules, & &1.fare_id))
     routes = route_index(organization_id, gtfs_version_id, Enum.map(rules, & &1.route_id))
 
-    rules
-    |> Enum.group_by(&group_key/1)
-    |> Enum.map(fn {key, rows} -> build_group(key, rows, fares, routes) end)
-    |> Enum.sort_by(&sort_key/1)
+    project_rule_groups(rules, fares, routes)
+  end
+
+  @doc """
+  Lists the version's fares whose rule groups disagree on route or through zones.
+
+  Trip planners do not read a fare's rules one by one. OpenTripPlanner builds one
+  rule set per `fare_id`: the origin and destination pairs are alternatives, but
+  the routes named on any row apply to every pair, and the `contains_id` zones of
+  all rows are one set that a journey's zones must equal. So a fare whose groups
+  do not all share one `route_id` (nil is the value "all routes") or one
+  `contains` set applies differently than each rule alone reads.
+
+  Each entry is `find_combined_fares/1` over this version's groups, ordered by
+  `fare_id`. It reads the `fare_rules` rows once and projects them with the same
+  grouping as `list_rule_groups/2`. A pair that is not a version of the
+  organization returns an empty list.
+  """
+  @spec list_combined_fares(Ecto.UUID.t(), Ecto.UUID.t()) :: [combined_fare()]
+  def list_combined_fares(organization_id, gtfs_version_id) do
+    organization_id
+    |> list_rows(gtfs_version_id)
+    |> project_rule_groups(%{}, %{})
+    |> find_combined_fares()
+  end
+
+  @doc """
+  The fares among `groups` whose rules disagree on route or through zones.
+
+  `groups` need only carry `fare_id`, `route_id` and `contains`, so the rule
+  drawer can add the rule it is editing to the page's own groups. A fare is
+  reported when its groups do not all share the same `route_id` (`routes_differ?`)
+  or the same sorted `contains` set (`contains_differ?`). `route_ids` lists the
+  distinct route IDs with nil, "all routes", first, and `contains` the union of
+  the fare's through zones.
+  """
+  @spec find_combined_fares([map()]) :: [combined_fare()]
+  def find_combined_fares(groups) do
+    groups
+    |> Enum.group_by(& &1.fare_id)
+    |> Enum.flat_map(fn {fare_id, fare_groups} -> combined_fare(fare_id, fare_groups) end)
+    |> Enum.sort_by(& &1.fare_id)
+  end
+
+  defp combined_fare(fare_id, groups) do
+    route_ids = groups |> Enum.map(& &1.route_id) |> Enum.uniq() |> Enum.sort()
+
+    contains_sets =
+      groups |> Enum.map(&(&1.contains |> Enum.uniq() |> Enum.sort())) |> Enum.uniq()
+
+    routes_differ? = length(route_ids) > 1
+    contains_differ? = length(contains_sets) > 1
+
+    if routes_differ? or contains_differ? do
+      [
+        %{
+          fare_id: fare_id,
+          route_ids: route_ids,
+          contains: contains_sets |> Enum.concat() |> Enum.uniq() |> Enum.sort(),
+          routes_differ?: routes_differ?,
+          contains_differ?: contains_differ?
+        }
+      ]
+    else
+      []
+    end
   end
 
   @doc """
@@ -284,8 +356,9 @@ defmodule GtfsPlanner.Gtfs.FareZones do
 
   `stopless_referenced` lists the zones fare rules use that have no boardable
   stops, `unassigned_count` the version's boardable stops without a zone,
-  `empty_declared` the declared zones that have no stops and no rules, and
-  `rules_reference_zones?` whether any fare rule references a zone at all.
+  `empty_declared` the declared zones that have no stops and no rules,
+  `rules_reference_zones?` whether any fare rule references a zone at all and
+  `combined_fares` the fares from `list_combined_fares/2`.
   """
   @spec checks(Ecto.UUID.t(), Ecto.UUID.t()) :: checks()
   def checks(organization_id, gtfs_version_id) do
@@ -297,7 +370,8 @@ defmodule GtfsPlanner.Gtfs.FareZones do
       unassigned_count: unassigned_count,
       empty_declared:
         Enum.filter(zones, &(&1.declared? and &1.stop_count == 0 and &1.rule_count == 0)),
-      rules_reference_zones?: Enum.any?(zones, &(&1.rule_count > 0))
+      rules_reference_zones?: Enum.any?(zones, &(&1.rule_count > 0)),
+      combined_fares: list_combined_fares(organization_id, gtfs_version_id)
     }
   end
 
@@ -1586,6 +1660,13 @@ defmodule GtfsPlanner.Gtfs.FareZones do
 
   defp group_key(row) do
     {row.fare_id, row.route_id, row.origin_id, row.destination_id, not is_nil(row.contains_id)}
+  end
+
+  defp project_rule_groups(rows, fares, routes) do
+    rows
+    |> Enum.group_by(&group_key/1)
+    |> Enum.map(fn {key, rows} -> build_group(key, rows, fares, routes) end)
+    |> Enum.sort_by(&sort_key/1)
   end
 
   defp build_group(

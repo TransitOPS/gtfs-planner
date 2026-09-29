@@ -10,6 +10,9 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
 
   alias GtfsPlanner.Gtfs
 
+  # Stop columns the pathways profile leaves out of stops.txt.
+  @pathways_dropped_stop_columns ~w(zone_id stop_code tts_stop_name stop_url stop_timezone)
+
   @doc """
   Returns the file specification for the given file type.
 
@@ -43,13 +46,17 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
       schema: Gtfs.Stop,
       fields: [
         {"stop_id", :stop_id},
+        {"stop_code", :stop_code},
         {"stop_name", :stop_name},
+        {"tts_stop_name", :tts_stop_name},
         {"stop_desc", :stop_desc},
         {"stop_lat", :stop_lat},
         {"stop_lon", :stop_lon},
         {"zone_id", :zone_id},
+        {"stop_url", :stop_url},
         {"location_type", :location_type},
         {"parent_station", :parent_station},
+        {"stop_timezone", :stop_timezone},
         {"wheelchair_boarding", :wheelchair_boarding},
         {"platform_code", :platform_code},
         {"level_id", :level_id}
@@ -341,6 +348,219 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
     }
   end
 
+  # Fares v2, Flex, network and translation files. Each field list is exactly the
+  # columns the matching `RowParser` function stores, in GTFS reference order. Every
+  # cross-reference is a GTFS string ID stored as-is, so plain field mapping applies.
+
+  def fare_products_spec do
+    %{
+      filename: "fare_products.txt",
+      schema: Gtfs.FareProduct,
+      fields: [
+        {"fare_product_id", :fare_product_id},
+        {"fare_product_name", :fare_product_name},
+        {"rider_category_id", :rider_category_id},
+        {"fare_media_id", :fare_media_id},
+        {"amount", :amount},
+        {"currency", :currency},
+        {"bundle_amount", :bundle_amount},
+        {"duration_start", :duration_start},
+        {"duration_amount", :duration_amount},
+        {"duration_unit", :duration_unit}
+      ]
+    }
+  end
+
+  def fare_media_spec do
+    %{
+      filename: "fare_media.txt",
+      schema: Gtfs.FareMedia,
+      fields: [
+        {"fare_media_id", :fare_media_id},
+        {"fare_media_name", :fare_media_name},
+        {"fare_media_type", :fare_media_type}
+      ]
+    }
+  end
+
+  def fare_leg_rules_spec do
+    %{
+      filename: "fare_leg_rules.txt",
+      schema: Gtfs.FareLegRule,
+      fields: [
+        {"leg_group_id", :leg_group_id},
+        {"network_id", :network_id},
+        {"from_area_id", :from_area_id},
+        {"to_area_id", :to_area_id},
+        {"from_timeframe_group_id", :from_timeframe_group_id},
+        {"to_timeframe_group_id", :to_timeframe_group_id},
+        {"fare_product_id", :fare_product_id},
+        {"rule_priority", :rule_priority}
+      ]
+    }
+  end
+
+  def fare_leg_join_rules_spec do
+    %{
+      filename: "fare_leg_join_rules.txt",
+      schema: Gtfs.FareLegJoinRule,
+      fields: [
+        {"from_network_id", :from_network_id},
+        {"to_network_id", :to_network_id},
+        {"from_stop_id", :from_stop_id},
+        {"to_stop_id", :to_stop_id}
+      ]
+    }
+  end
+
+  def fare_transfer_rules_spec do
+    %{
+      filename: "fare_transfer_rules.txt",
+      schema: Gtfs.FareTransferRule,
+      fields: [
+        {"from_leg_group_id", :from_leg_group_id},
+        {"to_leg_group_id", :to_leg_group_id},
+        {"transfer_count", :transfer_count},
+        {"duration_limit", :duration_limit},
+        {"duration_limit_type", :duration_limit_type},
+        {"fare_transfer_type", :fare_transfer_type},
+        {"fare_product_id", :fare_product_id}
+      ]
+    }
+  end
+
+  # `is_default_fare_category` is absent: import does not store it.
+  def rider_categories_spec do
+    %{
+      filename: "rider_categories.txt",
+      schema: Gtfs.RiderCategory,
+      fields: [
+        {"rider_category_id", :rider_category_id},
+        {"rider_category_name", :rider_category_name},
+        {"min_age", :min_age},
+        {"max_age", :max_age},
+        {"eligibility_url", :eligibility_url}
+      ]
+    }
+  end
+
+  # Start and end times are stored as the imported `HH:MM:SS` text.
+  def timeframes_spec do
+    %{
+      filename: "timeframes.txt",
+      schema: Gtfs.Timeframe,
+      fields: [
+        {"timeframe_group_id", :timeframe_group_id},
+        {"start_time", :start_time},
+        {"end_time", :end_time},
+        {"service_id", :service_id}
+      ]
+    }
+  end
+
+  def areas_spec do
+    %{
+      filename: "areas.txt",
+      schema: Gtfs.Area,
+      fields: [
+        {"area_id", :area_id},
+        {"area_name", :area_name}
+      ]
+    }
+  end
+
+  def stop_areas_spec do
+    %{
+      filename: "stop_areas.txt",
+      schema: Gtfs.StopArea,
+      fields: [
+        {"area_id", :area_id},
+        {"stop_id", :stop_id}
+      ]
+    }
+  end
+
+  def networks_spec do
+    %{
+      filename: "networks.txt",
+      schema: Gtfs.Network,
+      fields: [
+        {"network_id", :network_id},
+        {"network_name", :network_name}
+      ]
+    }
+  end
+
+  def route_networks_spec do
+    %{
+      filename: "route_networks.txt",
+      schema: Gtfs.RouteNetwork,
+      fields: [
+        {"network_id", :network_id},
+        {"route_id", :route_id}
+      ]
+    }
+  end
+
+  @doc """
+  Flex locations as the four-column `locations.txt` this app imports.
+
+  GTFS Flex defines `locations.geojson`; this CSV of point locations is not the
+  standard Flex file. It is written so an export re-imports here without loss.
+  """
+  def locations_spec do
+    %{
+      filename: "locations.txt",
+      schema: Gtfs.Location,
+      fields: [
+        {"location_id", :location_id},
+        {"location_name", :location_name},
+        {"location_lat", :location_lat},
+        {"location_lon", :location_lon}
+      ]
+    }
+  end
+
+  def booking_rules_spec do
+    %{
+      filename: "booking_rules.txt",
+      schema: Gtfs.BookingRule,
+      fields: [
+        {"booking_rule_id", :booking_rule_id},
+        {"booking_type", :booking_type},
+        {"prior_notice_duration_min", :prior_notice_duration_min},
+        {"prior_notice_duration_max", :prior_notice_duration_max},
+        {"prior_notice_last_day", :prior_notice_last_day},
+        {"prior_notice_last_time", :prior_notice_last_time},
+        {"prior_notice_start_day", :prior_notice_start_day},
+        {"prior_notice_start_time", :prior_notice_start_time},
+        {"prior_notice_service_id", :prior_notice_service_id},
+        {"message", :message},
+        {"pickup_message", :pickup_message},
+        {"drop_off_message", :drop_off_message},
+        {"phone_number", :phone_number},
+        {"info_url", :info_url},
+        {"booking_url", :booking_url}
+      ]
+    }
+  end
+
+  def translations_spec do
+    %{
+      filename: "translations.txt",
+      schema: Gtfs.Translation,
+      fields: [
+        {"table_name", :table_name},
+        {"field_name", :field_name},
+        {"language", :language},
+        {"translation", :translation},
+        {"record_id", :record_id},
+        {"record_sub_id", :record_sub_id},
+        {"field_value", :field_value}
+      ]
+    }
+  end
+
   @doc """
   Returns list of file specs for the given export type.
 
@@ -348,8 +568,9 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
   - `:full` - All GTFS files
   - `:pathways` - Only stops, levels, and pathways
 
-  Only the full export carries `stops.zone_id`: the pathways profile drops the
-  column from its `stops.txt` so that export keeps exactly its existing columns.
+  Only the full export carries `stops.zone_id`, `stop_code`, `tts_stop_name`,
+  `stop_url` and `stop_timezone`: the pathways profile drops those columns from its
+  `stops.txt` so that export keeps exactly its existing columns.
   """
   def get_specs(:full) do
     [
@@ -370,13 +591,29 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
       levels_spec(),
       feed_info_spec(),
       attributions_spec(),
-      route_patterns_spec()
+      route_patterns_spec(),
+      fare_products_spec(),
+      fare_media_spec(),
+      fare_leg_rules_spec(),
+      fare_leg_join_rules_spec(),
+      fare_transfer_rules_spec(),
+      rider_categories_spec(),
+      timeframes_spec(),
+      areas_spec(),
+      stop_areas_spec(),
+      networks_spec(),
+      route_networks_spec(),
+      locations_spec(),
+      booking_rules_spec(),
+      translations_spec()
     ]
   end
 
   def get_specs(:pathways) do
     [
-      Map.update!(stops_spec(), :fields, &List.keydelete(&1, "zone_id", 0)),
+      Map.update!(stops_spec(), :fields, fn fields ->
+        Enum.reject(fields, fn {name, _source} -> name in @pathways_dropped_stop_columns end)
+      end),
       levels_spec(),
       pathways_spec()
     ]

@@ -5,9 +5,9 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLive do
 
   alias GtfsPlanner.Accounts
 
-  # Absent account, successful delivery, and delivery failure all produce this
-  # identical login outcome so the response never discloses whether the address
-  # belongs to an account.
+  # Absent account, successful delivery, a throttled repeat request, and delivery
+  # failure all produce this identical login outcome so the response never
+  # discloses whether the address belongs to an account.
   @reset_request_message "If an account can receive password resets, instructions are on the way. Check your inbox and spam folder, or try again."
 
   def render(assigns) do
@@ -107,10 +107,10 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLive do
   end
 
   # Delivers reset instructions only when the address belongs to an account.
-  # An absent account and a delivery failure are both silent to the caller so
-  # the browser outcome stays identical (anti-enumeration); a delivery failure
-  # logs a safe outcome class only — never the address, token, mail content, or
-  # the inspected adapter reason.
+  # An absent account, a throttled repeat request, and a delivery failure are all
+  # silent to the caller so the browser outcome stays identical
+  # (anti-enumeration); a delivery failure logs a safe outcome class only — never
+  # the address, token, mail content, or the inspected adapter reason.
   defp maybe_deliver_reset_instructions(email) do
     with %GtfsPlanner.Accounts.User{} = user <- Accounts.get_user_by_email(email),
          {:ok, _delivered} <-
@@ -121,6 +121,7 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLive do
       :ok
     else
       nil -> :ok
+      {:error, :throttled} -> :ok
       {:error, _reason} -> Logger.warning("Password reset instructions could not be delivered")
     end
   end

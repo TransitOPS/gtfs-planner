@@ -110,7 +110,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
              stopless_referenced: [],
              unassigned_count: 0,
              empty_declared: [],
-             rules_reference_zones?: false
+             rules_reference_zones?: false,
+             combined_fares: []
            },
            stops: %{
              entries: [],

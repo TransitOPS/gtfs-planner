@@ -32,9 +32,6 @@ defmodule GtfsPlanner.HomeTest do
       ])
 
     {:ok, _} =
-      Organizations.deactivate_user_in_organization(deactivated_admin.id, organization.id)
-
-    {:ok, _} =
       Organizations.add_user_to_organization(zulu_admin.id, organization.id, [
         "pathways_studio_admin"
       ])
@@ -43,6 +40,10 @@ defmodule GtfsPlanner.HomeTest do
       Organizations.add_user_to_organization(alpha_admin.id, organization.id, [
         "pathways_studio_admin"
       ])
+
+    # Deactivated last, so the organization always keeps another active admin.
+    {:ok, _} =
+      Organizations.deactivate_user_in_organization(deactivated_admin.id, organization.id)
 
     other_organization = organization_fixture()
     foreign_admin = user_fixture()

@@ -2301,7 +2301,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
             id="calendar-combine-unavailable"
             class="text-sm text-base-content/70"
           >
-            Combining is unavailable until the unreadable calendar range is repaired.
+            Combining is unavailable until the calendar with an end date before its start date is fixed. Use Fix dates on that calendar.
           </p>
           <p
             :if={@combine_error}
@@ -2383,9 +2383,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                     {summary.name || "Untitled calendar"}
                   </.link>
                   <%!-- An identity whose retained range cannot be read has no date set to
-                  inspect or edit, and the detail read evaluates the dates, so its name is
-                  plain text here; the repair action is the import link in the Service dates
-                  cell. --%>
+                  inspect, so its name is plain text here; the "Fix dates" link in the
+                  Service dates cell opens the detail page to correct the range. --%>
                   <span :if={summary.coverage_error} class="font-semibold">
                     {summary.name || "Untitled calendar"}
                   </span>

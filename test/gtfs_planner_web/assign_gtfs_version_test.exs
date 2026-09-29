@@ -94,4 +94,27 @@ defmodule GtfsPlannerWeb.AssignGtfsVersionTest do
     assert {:error, {:redirect, %{to: "/", flash: %{"error" => "GTFS version not found"}}}} =
              live(conn, "/gtfs/not-a-uuid/stops")
   end
+
+  test "redirects a system administrator to dashboard because GTFS pages need an organization", %{
+    organization: organization,
+    published: published
+  } do
+    system_administrator = user_fixture()
+
+    {:ok, _membership} =
+      Accounts.create_user_org_membership(%{
+        user_id: system_administrator.id,
+        organization_id: organization.id,
+        roles: ["administrator"]
+      })
+
+    # A system administrator signs in without an organization in the session.
+    admin_conn = log_in_user(build_conn(), system_administrator)
+
+    assert {:error, {:redirect, %{to: "/", flash: %{"error" => flash}}}} =
+             live(admin_conn, "/gtfs/#{published.id}/routes")
+
+    assert flash ==
+             "GTFS pages belong to an organization. Sign in as a member of the organization to open them."
+  end
 end

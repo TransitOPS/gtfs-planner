@@ -725,3 +725,267 @@ describe("DiagramCanvasHook — Escape/cancel keyboard placement", () => {
     });
   });
 });
+
+describe("DiagramCanvasHook — dragging a stop stays within the floorplan coordinate range", () => {
+  let hook;
+  let overlay;
+
+  function dragTo(x, y) {
+    const { group } = makeStopGroup(overlay);
+    hook.dragging = {
+      stopId: "STOP_1",
+      groupEl: group,
+      centerX: 50,
+      centerY: 50,
+      startSvgX: 50,
+      startSvgY: 50,
+      currentX: 50,
+      currentY: 50,
+      pathwayElements: []
+    };
+    hook.clientPointToSvg = () => ({ x, y });
+    hook.handleMouseMove({ clientX: 0, clientY: 0 });
+    return { x: hook.dragging.currentX, y: hook.dragging.currentY };
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    const canvas = makeCanvas();
+    overlay = canvas.overlay;
+    hook = makeHook(canvas.svg);
+    hook.mounted();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("allows y above 100 on a portrait floorplan", () => {
+    hook.baseH = 104.2;
+
+    expect(dragTo(50, 103)).toEqual({ x: 50, y: 103 });
+  });
+
+  it("clamps y to the bottom of a portrait floorplan", () => {
+    hook.baseH = 104.2;
+
+    expect(dragTo(50, 110)).toEqual({ x: 50, y: 104.2 });
+  });
+
+  it("clamps x to 100 on a portrait floorplan", () => {
+    hook.baseH = 104.2;
+
+    expect(dragTo(120, 50)).toEqual({ x: 100, y: 50 });
+  });
+
+  it("clamps negative x and y to 0", () => {
+    hook.baseH = 104.2;
+
+    expect(dragTo(-5, -5)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("keeps the 0..100 limit on y for a landscape floorplan", () => {
+    hook.baseH = 60;
+
+    expect(dragTo(50, 80)).toEqual({ x: 50, y: 80 });
+    expect(dragTo(50, 120)).toEqual({ x: 50, y: 100 });
+  });
+});
+
+function makeSavedRuler(overlay) {
+  const group = elSVG("g", { "data-ruler-type": "saved" });
+  const hitArea = elSVG("line", { "data-ruler-hit-area": "true" });
+  group.appendChild(hitArea);
+  overlay.appendChild(group);
+  return { group, hitArea };
+}
+
+// Stands in for LiveView's window click binding: records the event name and id
+// of the nearest phx-click element for every click that reaches the container.
+function recordPhxClicks(container) {
+  const routed = [];
+  container.addEventListener("click", (e) => {
+    const bound = e.target.closest("[phx-click]");
+    if (bound) {
+      routed.push([bound.getAttribute("phx-click"), bound.getAttribute("phx-value-id")]);
+    }
+  });
+  return routed;
+}
+
+function pointerClick(target, init = {}) {
+  target.dispatchEvent(
+    new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1, ...init })
+  );
+}
+
+describe("DiagramCanvasHook — saved ruler click priority", () => {
+  const originalElementsFromPoint = document.elementsFromPoint;
+  let container;
+  let overlay;
+  let hook;
+
+  function stubStackAtPointer(elements) {
+    document.elementsFromPoint = vi.fn(() => elements);
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    const canvas = makeCanvas();
+    container = canvas.container;
+    overlay = canvas.overlay;
+    hook = makeHook(canvas.svg);
+    hook.mounted();
+  });
+
+  afterEach(() => {
+    hook.cancelDragHold();
+
+    if (originalElementsFromPoint === undefined) {
+      delete document.elementsFromPoint;
+    } else {
+      document.elementsFromPoint = originalElementsFromPoint;
+    }
+
+    vi.restoreAllMocks();
+  });
+
+  it("routes a click on a stop under the saved ruler to the stop and not to the scale editor", () => {
+    const { hitTarget } = makeStopGroup(overlay);
+    const { hitArea } = makeSavedRuler(overlay);
+    stubStackAtPointer([hitArea, hitTarget]);
+    const routed = recordPhxClicks(container);
+
+    pointerClick(hitArea, { clientX: 50, clientY: 50 });
+
+    expect(routed).toEqual([["stop_clicked", "STOP_1"]]);
+    expect(hook.pushEvent).not.toHaveBeenCalledWith("scale_line_click", {});
+  });
+
+  it("routes a click on a journal marker under the saved ruler to the marker and not to the scale editor", () => {
+    const marker = makeJournalGroup(overlay);
+    const { hitArea } = makeSavedRuler(overlay);
+    stubStackAtPointer([hitArea, marker]);
+    const routed = recordPhxClicks(container);
+
+    pointerClick(hitArea, { clientX: 50, clientY: 50 });
+
+    expect(routed).toEqual([["journal_marker_clicked", "journal-marker-pin-1"]]);
+    expect(hook.pushEvent).not.toHaveBeenCalledWith("scale_line_click", {});
+  });
+
+  it("opens the scale editor for a click on the saved ruler with no point beneath it", () => {
+    makeStopGroup(overlay);
+    const { hitArea } = makeSavedRuler(overlay);
+    stubStackAtPointer([hitArea]);
+    const routed = recordPhxClicks(container);
+
+    pointerClick(hitArea, { clientX: 10, clientY: 10 });
+
+    expect(hook.pushEvent).toHaveBeenCalledExactlyOnceWith("scale_line_click", {});
+    expect(routed).toEqual([]);
+  });
+
+  it("opens the scale editor when the browser cannot list the elements under the pointer", () => {
+    const { hitTarget } = makeStopGroup(overlay);
+    const { hitArea } = makeSavedRuler(overlay);
+    delete document.elementsFromPoint;
+    const clickOnStop = vi.fn();
+    hitTarget.addEventListener("click", clickOnStop);
+
+    pointerClick(hitArea, { clientX: 50, clientY: 50 });
+
+    expect(hook.pushEvent).toHaveBeenCalledExactlyOnceWith("scale_line_click", {});
+    expect(clickOnStop).not.toHaveBeenCalled();
+  });
+
+  it("starts dragging a stop that sits under the saved ruler", () => {
+    makeStopGroup(overlay);
+    const { hitArea } = makeSavedRuler(overlay);
+    stubStackAtPointer([hitArea, overlay.querySelector("[data-stop-hit-target]")]);
+    hook.clientPointToSvg = () => ({ x: 50, y: 50 });
+
+    hitArea.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 50, clientY: 50 })
+    );
+
+    expect(hook.dragCandidate.stopId).toBe("STOP_1");
+  });
+
+  it("does not start a drag from a press on the saved ruler with no stop beneath it", () => {
+    makeStopGroup(overlay);
+    const { hitArea } = makeSavedRuler(overlay);
+    stubStackAtPointer([hitArea]);
+    hook.clientPointToSvg = () => ({ x: 10, y: 10 });
+
+    hitArea.dispatchEvent(
+      new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 10, clientY: 10 })
+    );
+
+    expect(hook.dragCandidate).toBeNull();
+  });
+});
+
+describe("DiagramCanvasHook — clicking a pathway while setting scale", () => {
+  let container;
+  let overlay;
+  let hook;
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    const canvas = makeCanvas();
+    container = canvas.container;
+    overlay = canvas.overlay;
+    overlay.setAttribute("data-measurement-enabled", "true");
+    hook = makeHook(canvas.svg);
+    hook.mounted();
+    hook.clientPointToSvg = () => ({ x: 20.5, y: 30.25 });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("places a ruler point at the click and does not open the pathway editor", () => {
+    const pathway = makePathwayGroup(overlay);
+    const hitLine = elSVG("line", { "data-pathway-hit": "true" });
+    pathway.appendChild(hitLine);
+    const routed = recordPhxClicks(container);
+
+    pointerClick(hitLine, { clientX: 200, clientY: 300 });
+
+    expect(hook.pushEvent).toHaveBeenCalledExactlyOnceWith("canvas_click", { x: 20.5, y: 30.25 });
+    expect(routed).toEqual([]);
+  });
+
+  it("places a ruler point for a click on a cross-level badge", () => {
+    const badge = makeBadgeGroup(overlay);
+    const routed = recordPhxClicks(container);
+
+    pointerClick(badge, { clientX: 200, clientY: 300 });
+
+    expect(hook.pushEvent).toHaveBeenCalledExactlyOnceWith("canvas_click", { x: 20.5, y: 30.25 });
+    expect(routed).toEqual([]);
+  });
+
+  it("leaves keyboard activation of a pathway to the server", () => {
+    const pathway = makePathwayGroup(overlay);
+    const routed = recordPhxClicks(container);
+
+    pointerClick(pathway, { detail: 0 });
+
+    expect(hook.pushEvent).not.toHaveBeenCalled();
+    expect(routed).toEqual([["edit_pathway", "1"]]);
+  });
+
+  it("leaves a pathway click to the pathway editor outside setting scale", () => {
+    overlay.setAttribute("data-measurement-enabled", "false");
+    const pathway = makePathwayGroup(overlay);
+    const routed = recordPhxClicks(container);
+
+    pointerClick(pathway, { clientX: 200, clientY: 300 });
+
+    expect(hook.pushEvent).not.toHaveBeenCalled();
+    expect(routed).toEqual([["edit_pathway", "1"]]);
+  });
+});

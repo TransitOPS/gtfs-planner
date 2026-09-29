@@ -81,6 +81,44 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
     :id
   ]
 
+  # Natural key columns (the table's unique index) of the Fares v2, Flex, network
+  # and translation tables, none of which has a field in `@ordering_fields`.
+  # Several key columns are nullable, so rows that tie on the key fall back to
+  # `id`, which keeps every export of the same data in the same order.
+  @natural_keys %{
+    GtfsPlanner.Gtfs.FareProduct => [:fare_product_id, :fare_media_id],
+    GtfsPlanner.Gtfs.FareMedia => [:fare_media_id],
+    GtfsPlanner.Gtfs.FareLegRule => [:network_id, :from_area_id, :to_area_id, :fare_product_id],
+    GtfsPlanner.Gtfs.FareLegJoinRule => [
+      :from_network_id,
+      :to_network_id,
+      :from_stop_id,
+      :to_stop_id
+    ],
+    GtfsPlanner.Gtfs.FareTransferRule => [
+      :from_leg_group_id,
+      :to_leg_group_id,
+      :fare_product_id,
+      :transfer_count
+    ],
+    GtfsPlanner.Gtfs.RiderCategory => [:rider_category_id],
+    GtfsPlanner.Gtfs.Timeframe => [:timeframe_group_id, :start_time, :end_time, :service_id],
+    GtfsPlanner.Gtfs.Area => [:area_id],
+    GtfsPlanner.Gtfs.StopArea => [:area_id, :stop_id],
+    GtfsPlanner.Gtfs.Network => [:network_id],
+    GtfsPlanner.Gtfs.RouteNetwork => [:network_id, :route_id],
+    GtfsPlanner.Gtfs.Location => [:location_id],
+    GtfsPlanner.Gtfs.BookingRule => [:booking_rule_id],
+    GtfsPlanner.Gtfs.Translation => [
+      :table_name,
+      :field_name,
+      :language,
+      :record_id,
+      :record_sub_id,
+      :field_value
+    ]
+  }
+
   # Determines appropriate ordering for GTFS output based on schema
   defp order_by_for_schema(query, GtfsPlanner.Gtfs.StopTime) do
     order_by(query, [s], asc: s.trip_id, asc: s.stop_sequence)
@@ -93,6 +131,10 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
 
   defp order_by_for_schema(query, GtfsPlanner.Gtfs.Shape) do
     order_by(query, [s], asc: s.shape_id, asc: s.shape_pt_sequence)
+  end
+
+  defp order_by_for_schema(query, schema) when is_map_key(@natural_keys, schema) do
+    order_by(query, ^(Map.fetch!(@natural_keys, schema) ++ [:id]))
   end
 
   defp order_by_for_schema(query, schema) do
