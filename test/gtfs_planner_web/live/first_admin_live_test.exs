@@ -16,15 +16,19 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
 
   @base_message "Setup could not be completed. Please try again."
   @summary_selector "#first-admin-error-summary"
-  @summary_title "There is a problem with this form"
+  @summary_title "Some details need fixing"
 
   @field_control_ids [
+    "first-admin-organization-name",
+    "first-admin-organization-alias",
     "first-admin-email",
     "first-admin-password",
-    "first-admin-password-confirmation",
-    "first-admin-organization-name",
-    "first-admin-organization-alias"
+    "first-admin-password-confirmation"
   ]
+
+  # The short name falls back to the organization name, so a blank short name
+  # never shows an error of its own.
+  @invalid_control_ids @field_control_ids -- ["first-admin-organization-alias"]
 
   @all_invalid_params %{
     "email" => "not-an-email",
@@ -52,7 +56,12 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
 
       refute has_element?(view, "#first-admin-page[phx-update]")
 
-      assert has_element?(view, ~s(#first_admin_form[phx-change="validate"][phx-submit="setup"]))
+      assert has_element?(
+               view,
+               ~s(#first_admin_form[phx-change="validate"][phx-submit="setup"][novalidate])
+             )
+
+      assert has_element?(view, "#first-admin-organization-name[autofocus]")
       assert has_element?(view, ~s(#first-admin-email[name="admin[email]"]))
       assert has_element?(view, ~s(#first-admin-password[name="admin[password]"]))
 
@@ -107,8 +116,8 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
     test "renders the exact title, H1, help copy, and pending contract", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/first")
 
-      assert page_title(view) == "Create administrator account · GTFS Planner · Pathways Studio"
-      assert has_element?(view, "h1", "Create administrator account")
+      assert page_title(view) == "Set up your organization · GTFS Planner · Pathways Studio"
+      assert has_element?(view, "h1#first-admin-title", "Set up your organization")
 
       h1s =
         view
@@ -119,29 +128,23 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
 
       assert length(h1s) == 1
 
-      assert has_element?(view, "#first-admin-password-help", "Use 12–72 characters.")
+      assert has_element?(
+               view,
+               "#first-admin-password-help",
+               "At least 12 characters. A short phrase of a few words works well."
+             )
 
       assert has_element?(
                view,
                ~s(#first-admin-password[aria-describedby="first-admin-password-help"])
              )
 
-      assert has_element?(
-               view,
-               "#first-admin-password-confirmation-help",
-               "Must match the password above."
-             )
-
-      refute has_element?(
-               view,
-               "#first-admin-password-confirmation-help",
-               "Use 12–72 characters."
-             )
+      refute has_element?(view, "#first-admin-password-confirmation-help")
 
       assert has_element?(
                view,
                "#first-admin-organization-alias-help",
-               "Leave blank to generate it from the organization name."
+               "Leave blank to make it from the organization name."
              )
 
       alias_help_html = view |> element("#first-admin-organization-alias-help") |> render()
@@ -159,7 +162,75 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
     end
   end
 
+  describe "short name disclosure" do
+    test "is collapsed and says it is set automatically while blank", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/first")
+
+      assert has_element?(view, "#first-admin-alias-details")
+      refute has_element?(view, "#first-admin-alias-details[open]")
+      assert has_element?(view, "#first-admin-alias-value", "set automatically")
+      assert has_element?(view, "#first-admin-organization-alias")
+    end
+
+    test "shows the typed short name in its summary and stays open", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/first")
+
+      view
+      |> element("#first_admin_form")
+      |> render_change(%{"admin" => %{"organization_alias" => "north-coast"}})
+
+      assert has_element?(view, "#first-admin-alias-details[open]")
+      assert has_element?(view, "#first-admin-alias-value", "north-coast")
+    end
+
+    test "opens on an error inside it", %{conn: conn} do
+      organization_fixture(%{name: "Existing Org", alias: "north-coast"})
+      {:ok, view, _html} = live(conn, ~p"/first")
+
+      view
+      |> element("#first_admin_form")
+      |> render_submit(%{
+        "admin" => %{valid_admin_params() | "organization_alias" => "north-coast"}
+      })
+
+      assert has_element?(view, "#first-admin-alias-details[open]")
+
+      assert has_element?(
+               view,
+               "#first-admin-organization-alias-error",
+               "Another organization already uses north-coast. Enter a different short name."
+             )
+    end
+  end
+
   describe "blur validation" do
+    test "an empty required field waits for submit instead of showing an error", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/first")
+
+      view
+      |> element("#first-admin-organization-name")
+      |> render_blur(%{
+        "admin" => %{"organization_name" => "", "_unused_email" => ""}
+      })
+
+      assert has_element?(view, ~s(#first-admin-organization-name[aria-invalid="false"]))
+      refute has_element?(view, "#first-admin-organization-name-error")
+    end
+
+    test "an invalid email says what to fix", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/first")
+
+      view
+      |> element("#first-admin-email")
+      |> render_blur(%{"admin" => %{"email" => "not-an-email"}})
+
+      assert has_element?(
+               view,
+               "#first-admin-email-error",
+               "Enter an email address with an @ and no spaces."
+             )
+    end
+
     test "untouched controls stay clean while the blurred control validates", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/first")
 
@@ -261,35 +332,22 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
       refute_push_event(view, "focus_first_admin_error", %{})
     end
 
-    test "clears the failed-submit summary and stale secret errors on the next change", %{
-      conn: conn
-    } do
+    test "keeps the failed-submit summary until the next submit and clears stale secret errors",
+         %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/first")
 
       view |> element("#first_admin_form") |> render_submit(%{"admin" => @all_invalid_params})
 
       assert has_element?(view, @summary_selector)
-
-      assert has_element?(
-               view,
-               "#first-admin-password-error",
-               "should be at least 12 character(s)"
-             )
-
+      assert has_element?(view, "#first-admin-password-error", "Use at least 12 characters.")
       assert_push_event(view, "focus_first_admin_error", %{})
 
       view
       |> element("#first_admin_form")
       |> render_change(%{"admin" => %{"email" => "admin@example.com"}})
 
-      refute has_element?(view, @summary_selector)
-
-      refute has_element?(
-               view,
-               "#first-admin-password-error",
-               "should be at least 12 character(s)"
-             )
-
+      assert has_element?(view, @summary_selector)
+      refute has_element?(view, "#first-admin-password-error")
       refute_push_event(view, "focus_first_admin_error", %{})
     end
   end
@@ -317,11 +375,13 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
         |> LazyHTML.query("a")
         |> LazyHTML.attribute("href")
 
-      assert hrefs == Enum.map(@field_control_ids, &("#" <> &1))
+      assert hrefs == Enum.map(@invalid_control_ids, &("#" <> &1))
 
-      for control_id <- @field_control_ids do
+      for control_id <- @invalid_control_ids do
         assert has_element?(view, ~s(##{control_id}[aria-invalid="true"]))
       end
+
+      refute has_element?(view, "#first-admin-organization-alias-error")
     end
 
     test "associates non-live inline errors with their controls", %{conn: conn} do
@@ -336,16 +396,17 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
 
       assert has_element?(
                view,
-               ~s(#first-admin-organization-alias[aria-describedby="first-admin-organization-alias-help first-admin-organization-alias-error"])
+               "#first-admin-password-confirmation-error",
+               "Passwords don't match. Type the same password in both fields."
              )
 
       assert has_element?(
                view,
-               "#first-admin-password-confirmation-error",
-               "does not match password"
+               "#first-admin-organization-name-error",
+               "Enter your organization's name."
              )
 
-      for control_id <- @field_control_ids do
+      for control_id <- @invalid_control_ids do
         error_html = view |> element("##{control_id}-error") |> render()
         refute error_html =~ "role="
         refute error_html =~ "aria-live"
@@ -415,8 +476,13 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
         flash: %{},
         form: Phoenix.Component.to_form(changeset, as: :admin),
         summary_entries: [%{target: nil, message: @base_message}],
-        password_errors: [],
-        password_confirmation_errors: []
+        field_errors: %{
+          organization_name: [],
+          organization_alias: [],
+          email: [],
+          password: [],
+          password_confirmation: []
+        }
       }
 
       html = rendered_to_string(FirstAdminLive.render(assigns))
@@ -445,8 +511,9 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
         |> LazyHTML.text()
         |> String.replace(~r/\s+/, " ")
 
-      assert summary_text =~ @summary_title
-      assert summary_text =~ @base_message
+      assert summary_text =~ "Setup didn't finish"
+      assert summary_text =~ "Nothing was saved."
+      refute summary_text =~ @base_message
     end
   end
 
@@ -509,7 +576,13 @@ defmodule GtfsPlannerWeb.FirstAdminLiveTest do
                ~s(#first-admin-organization-alias[aria-invalid="true"])
              )
 
-      assert has_element?(view, "#first-admin-organization-alias-error")
+      assert has_element?(
+               view,
+               "#first-admin-organization-alias-error",
+               "Another organization already uses my-transit-agency. Enter a different short name."
+             )
+
+      assert has_element?(view, "#first-admin-alias-details[open]")
 
       alias_values =
         view

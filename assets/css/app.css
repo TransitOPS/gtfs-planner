@@ -1159,6 +1159,7 @@ body {
 }
 
 .auth-form .fieldset > p[id$="-error"] [class*="hero-"] {
+  flex-shrink: 0;
   width: 16px;
   height: 16px;
   margin-top: 2px;
