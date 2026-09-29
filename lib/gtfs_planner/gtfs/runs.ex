@@ -22,6 +22,8 @@ defmodule GtfsPlanner.Gtfs.Runs do
 
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.BlockingSetting
+  alias GtfsPlanner.Gtfs.Runs.{Day, Plan}
+  alias GtfsPlanner.Gtfs.TripRun
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
@@ -47,6 +49,181 @@ defmodule GtfsPlanner.Gtfs.Runs do
           paid_break_max_minutes: 0..90,
           max_spread_minutes: 240..1080
         }
+
+  @type runs_day :: %{
+          day: Blocking.day(),
+          crew: crew(),
+          assignments: %{Ecto.UUID.t() => String.t()},
+          derived: Day.derived(),
+          orphans: %{count: non_neg_integer()},
+          relief_ready?: boolean(),
+          fingerprint: String.t()
+        }
+
+  @doc """
+  Loads one day type's runs: its assignments, its composed runs and figures, its
+  crew rules, the fingerprint a later apply re-checks, and how many assignments
+  belong to no live trip.
+
+  The whole read is one transaction. `Blocking.load_day/3` opens its own, which
+  inside this one becomes a savepoint — fine, and worth saying because it looks
+  like a nesting mistake and is not.
+
+  Two kinds of assignment are **orphaned**, and both are counted rather than
+  silently dropped:
+
+    * a row for a trip that is not a sequence trip of a block in this day type —
+      the trip was moved to another service, or unblocked, since the row was
+      written;
+    * a row of this version under a day type key that no longer exists, which
+      belongs to no current day type and so is counted on **every** day type's
+      page. It would otherwise be invisible forever: no page reads its key, and
+      the only way to find it is the count this returns.
+
+  A run is only ever built from live rows, so an orphan cannot reach
+  `derived.runs`, `derived.stats` or the figures. It raises one
+  `:orphan_assignments` notice, and — because `Runs.Day.derive/4` counted its
+  problems before this module saw them — the day's notice count is recounted
+  rather than left one short.
+  """
+  @spec load_runs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
+          {:ok, runs_day()}
+          | {:error, :not_found | {:unknown_day_type, [Blocking.DayTypes.day_type()]}}
+  def load_runs(organization_id, gtfs_version_id, day_type_key) do
+    Repo.transaction(fn ->
+      case Blocking.load_day(organization_id, gtfs_version_id, day_type_key) do
+        {:ok, day} -> build_runs_day(organization_id, gtfs_version_id, day)
+        # Rolled back rather than returned: a transaction function that returns
+        # an `{:error, _}` tuple is itself a rollback, and the caller would see
+        # `{:error, :rollback}` instead of the reason.
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp build_runs_day(organization_id, gtfs_version_id, day) do
+    key = day.day_type.key
+    blocks = block_inputs(day)
+    rows = trip_run_rows(organization_id, gtfs_version_id, key)
+    sequence_ids = MapSet.new(Enum.flat_map(blocks, &Enum.map(&1.trips, fn trip -> trip.id end)))
+    live = restrict(Map.new(rows, &{&1.trip_id, &1.run_id}), sequence_ids)
+    crew = get_crew_settings(organization_id, gtfs_version_id)
+    derived = Day.derive(blocks, live, day.context, crew)
+    orphans = orphan_count(organization_id, gtfs_version_id, rows, sequence_ids, day.day_types)
+
+    %{
+      day: day,
+      crew: crew,
+      assignments: live,
+      derived: report_orphans(derived, orphans),
+      orphans: %{count: orphans},
+      relief_ready?: relief_ready?(day.context),
+      fingerprint:
+        Plan.fingerprint(%{
+          context: day.context,
+          trips: Enum.flat_map(blocks, & &1.trips),
+          assignments: live,
+          crew: crew
+        })
+    }
+  end
+
+  # The day's own inputs, in the shape `Runs.Day.derive/4` and `Runs.Cutter` take.
+  # `summary.block_id` is the block's own identifier: the trips carry a block
+  # they were built with, and this is the one the day resolved them into.
+  defp block_inputs(day) do
+    Enum.map(day.blocks, fn block ->
+      %{
+        block_id: block.summary.block_id,
+        trips: block.trips,
+        movements: block.movements,
+        windows: block.windows
+      }
+    end)
+  end
+
+  defp trip_run_rows(organization_id, gtfs_version_id, key) do
+    from(row in TripRun,
+      where:
+        row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id and
+          row.day_type_key == ^key
+    )
+    |> Repo.all()
+  end
+
+  # A row whose trip is not a sequence trip of this day is an orphan, not an
+  # assignment. Restricting here, once, means every later step — the runs, the
+  # figures, the fingerprint — reads an already-clean map.
+  defp restrict(assignments, sequence_ids) do
+    for {trip_id, run_id} <- assignments,
+        MapSet.member?(sequence_ids, trip_id),
+        into: %{},
+        do: {trip_id, run_id}
+  end
+
+  # This day type's own orphans, plus every row of the version under a key that is
+  # no longer a day type. The two are disjoint — a stale-key row is not under this
+  # key — so no row is counted twice.
+  defp orphan_count(organization_id, gtfs_version_id, rows, sequence_ids, day_types) do
+    keys = MapSet.new(Enum.map(day_types, & &1.key))
+
+    mine = Enum.count(rows, &(not MapSet.member?(sequence_ids, &1.trip_id)))
+
+    theirs =
+      organization_id
+      |> stale_keys(gtfs_version_id)
+      |> Enum.count(&(not MapSet.member?(keys, &1)))
+
+    mine + theirs
+  end
+
+  defp stale_keys(organization_id, gtfs_version_id) do
+    Repo.all(
+      from(row in TripRun,
+        where:
+          row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id,
+        select: row.day_type_key
+      )
+    )
+  end
+
+  # The day's problems were counted inside `Runs.Day.derive/4`, before this
+  # module knew about the orphans, so appending a notice here would leave
+  # `stats.problems.notices` one short of `derived.findings`. The count is
+  # corrected here rather than by teaching `Day` about orphans, which it has no
+  # way to see.
+  defp report_orphans(derived, 0), do: derived
+
+  defp report_orphans(derived, orphans) do
+    findings =
+      derived.findings ++
+        [
+          %{
+            code: :orphan_assignments,
+            severity: :notice,
+            run_ids: [],
+            block_id: nil,
+            trip_ids: [],
+            detail: %{count: orphans}
+          }
+        ]
+
+    %{
+      derived
+      | findings: findings,
+        stats: %{
+          derived.stats
+          | problems: %{derived.stats.problems | notices: derived.stats.problems.notices + 1}
+        }
+    }
+  end
+
+  # A cut can only be planned into a relief window, and a window needs both a
+  # marked point and a piece limit to cut at. Neither alone is enough, so a page
+  # that offers "suggest" on one of them would offer something the cut cannot do.
+  defp relief_ready?(context) do
+    MapSet.size(context.relief_stop_ids) > 0 and context.max_piece_minutes != nil
+  end
 
   @doc """
   Returns the crew rules for an organization's GTFS version.

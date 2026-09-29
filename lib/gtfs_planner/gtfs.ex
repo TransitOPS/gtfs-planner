@@ -5849,6 +5849,27 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Loads one day type's runs: its assignments, its composed runs and figures, its
+  crew rules, the fingerprint a later apply re-checks, and the number of
+  assignments that belong to no live trip.
+
+  This is the read every Runs page step starts from, and it is read-only: no
+  `trip_runs` row and no crew column is written by it. A foreign or unpublished
+  version is `{:error, :not_found}` and a key no day type has is
+  `{:error, {:unknown_day_type, day_types}}`, the same answers the blocking day
+  read gives.
+  """
+  @spec load_runs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
+          {:ok, GtfsPlanner.Gtfs.Runs.runs_day()}
+          | {:error,
+             :not_found
+             | {:unknown_day_type, [GtfsPlanner.Gtfs.Blocking.DayTypes.day_type()]}
+             | :unavailable}
+  def load_runs(organization_id, gtfs_version_id, day_type_key) do
+    catalog_read_adapter().load_runs(organization_id, gtfs_version_id, day_type_key)
+  end
+
+  @doc """
   Returns the current block errors and warnings involving the given trips.
 
   Natural trip IDs name the trips; for each one that runs in a block, every day

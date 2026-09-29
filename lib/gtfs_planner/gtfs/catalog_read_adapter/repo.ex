@@ -48,6 +48,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
     Route,
     RoutePatterns,
     Routes,
+    Runs,
     Schedules,
     Stop,
     Transfers
@@ -193,6 +194,15 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   def load_blocking_day(organization_id, gtfs_version_id, day_type_key) do
     case run(fn -> Blocking.load_day(organization_id, gtfs_version_id, day_type_key) end) do
       {:ok, {:ok, day}} -> {:ok, day}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def load_runs(organization_id, gtfs_version_id, day_type_key) do
+    case run(fn -> Runs.load_runs(organization_id, gtfs_version_id, day_type_key) end) do
+      {:ok, {:ok, runs_day}} -> {:ok, runs_day}
       {:ok, {:error, reason}} -> {:error, reason}
       {:error, :unavailable} = error -> error
     end
