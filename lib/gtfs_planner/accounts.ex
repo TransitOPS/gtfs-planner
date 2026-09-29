@@ -512,8 +512,10 @@ defmodule GtfsPlanner.Accounts do
 
   @type invite_member_result ::
           {:ok, User.t()}
+          | {:ok, :added, User.t()}
           | {:error, Ecto.Changeset.t()}
           | {:partial, :delivery_failed, User.t(), term()}
+          | {:partial, :notification_failed, User.t(), term()}
 
   @doc ~S"""
   Invites a member to an organization as one atomic database command.
@@ -526,13 +528,24 @@ defmodule GtfsPlanner.Accounts do
 
   The invitation email is delivered only after the transaction commits. A
   delivery failure leaves the committed user, membership, and usable invite
-  token in place and returns the sole partial result; the safe recovery is
-  `resend_user_invite/2`.
+  token in place and returns `{:partial, :delivery_failed, user, reason}`; the
+  safe recovery is `resend_user_invite/2`.
+
+  An address that already belongs to an account with a password gets the
+  membership only: no invite token is issued, because a set-password link would
+  replace that password. After the commit it is sent a notice with the
+  organization name and `:login_url`, and the result is `{:ok, :added, user}`.
+  A notice delivery failure leaves the membership in place and returns
+  `{:partial, :notification_failed, user, reason}`. `:login_url` is required
+  for that case.
 
   ## Examples
 
-      iex> invite_member("member@example.com", org_id, ["pathways_studio_editor"], &url(~p"/users/accept_invite/#{&1}"))
+      iex> invite_member("member@example.com", org_id, ["pathways_studio_editor"], &url(~p"/users/accept_invite/#{&1}"), login_url: url(~p"/users/log_in"))
       {:ok, %User{}}
+
+      iex> invite_member("existing@example.com", org_id, ["pathways_studio_editor"], &url(~p"/users/accept_invite/#{&1}"), login_url: url(~p"/users/log_in"))
+      {:ok, :added, %User{}}
 
       iex> invite_member("nope", org_id, [], &url(~p"/users/accept_invite/#{&1}"))
       {:error, %Ecto.Changeset{}}
@@ -542,9 +555,10 @@ defmodule GtfsPlanner.Accounts do
           String.t(),
           Ecto.UUID.t(),
           [String.t()],
-          (String.t() -> String.t())
+          (String.t() -> String.t()),
+          login_url: String.t()
         ) :: invite_member_result()
-  def invite_member(email, organization_id, roles, invite_url_fun)
+  def invite_member(email, organization_id, roles, invite_url_fun, opts \\ [])
       when is_function(invite_url_fun, 1) do
     changeset = InviteForm.changeset(%{"email" => email, "roles" => roles})
 
@@ -552,7 +566,7 @@ defmodule GtfsPlanner.Accounts do
       changeset
       |> invite_member_multi(organization_id)
       |> Repo.transaction()
-      |> resolve_invite_member(changeset, invite_url_fun)
+      |> resolve_invite_member(changeset, invite_url_fun, organization_id, opts)
     else
       {:error, %{changeset | action: :insert}}
     end
@@ -581,17 +595,45 @@ defmodule GtfsPlanner.Accounts do
     end
   end
 
+  # A set-password link would replace an existing password, so accounts that
+  # already have one get no token.
+  defp insert_invite_token(_repo, %User{hashed_password: hashed_password})
+       when not is_nil(hashed_password),
+       do: {:ok, nil}
+
   defp insert_invite_token(repo, user) do
     {encoded_token, user_token} = UserToken.build_email_token(user, "invite")
 
     with {:ok, _persisted} <- repo.insert(user_token), do: {:ok, encoded_token}
   end
 
-  defp resolve_invite_member({:ok, %{user: user, token: token}}, _changeset, invite_url_fun) do
+  defp resolve_invite_member(
+         {:ok, %{user: user, token: nil}},
+         _changeset,
+         _invite_url_fun,
+         organization_id,
+         opts
+       ) do
+    deliver_committed_added_notice(user, organization_id, Keyword.fetch!(opts, :login_url))
+  end
+
+  defp resolve_invite_member(
+         {:ok, %{user: user, token: token}},
+         _changeset,
+         invite_url_fun,
+         _organization_id,
+         _opts
+       ) do
     deliver_committed_invite(user, token, invite_url_fun)
   end
 
-  defp resolve_invite_member({:error, operation, reason, _changes}, changeset, _invite_url_fun) do
+  defp resolve_invite_member(
+         {:error, operation, reason, _changes},
+         changeset,
+         _invite_url_fun,
+         _organization_id,
+         _opts
+       ) do
     {:error,
      changeset
      |> InviteForm.from_transaction_error(operation, reason)
@@ -602,6 +644,15 @@ defmodule GtfsPlanner.Accounts do
     case UserNotifier.deliver_user_invite(user, invite_url_fun.(encoded_token)) do
       {:ok, _delivery} -> {:ok, user}
       {:error, reason} -> {:partial, :delivery_failed, user, reason}
+    end
+  end
+
+  defp deliver_committed_added_notice(user, organization_id, login_url) do
+    organization = Repo.get!(Organization, organization_id)
+
+    case UserNotifier.deliver_added_to_organization(user, organization.name, login_url) do
+      {:ok, _delivery} -> {:ok, :added, user}
+      {:error, reason} -> {:partial, :notification_failed, user, reason}
     end
   end
 
@@ -695,6 +746,11 @@ defmodule GtfsPlanner.Accounts do
   Accepts an invitation by setting the user's password.
 
   If an organization_id is provided, creates a membership with default viewer role.
+  Deletes all of the user's tokens, so no earlier session or token outlives the
+  password it was issued under.
+
+  Returns `{:error, :already_has_password}` without changing anything when the
+  user already has a password; an invitation must never replace one.
 
   ## Examples
 
@@ -704,7 +760,14 @@ defmodule GtfsPlanner.Accounts do
       iex> accept_invite_set_password(user, %{password: "invalid", password_confirmation: "doesn't match"})
       {:error, %Ecto.Changeset{}}
 
+      iex> accept_invite_set_password(user_with_password, %{password: "new valid password", password_confirmation: "new valid password"})
+      {:error, :already_has_password}
+
   """
+  def accept_invite_set_password(%User{hashed_password: hashed_password}, _attrs)
+      when not is_nil(hashed_password),
+      do: {:error, :already_has_password}
+
   def accept_invite_set_password(user, attrs) do
     multi =
       Ecto.Multi.new()
@@ -712,7 +775,7 @@ defmodule GtfsPlanner.Accounts do
         :user,
         user |> User.password_changeset(attrs) |> User.confirm_changeset()
       )
-      |> Ecto.Multi.delete_all(:tokens, UserToken.user_and_contexts_query(user, ["invite"]))
+      |> Ecto.Multi.delete_all(:tokens, UserToken.user_and_contexts_query(user, :all))
 
     # Add membership creation if organization_id is provided
     multi =

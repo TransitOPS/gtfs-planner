@@ -13,6 +13,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.User
   alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Accounts.UserToken
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.AdminReadAdapterMock
   alias GtfsPlanner.Repo
@@ -380,6 +381,60 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
 
       assert view |> element("#member-action-feedback") |> render() =~
                "newmember@example.com"
+    end
+
+    test "an account that already has a password is added without an invitation", %{
+      conn: conn,
+      organization: organization
+    } do
+      existing = user_fixture(%{email: "existing@example.com"})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users/invite")
+
+      view
+      |> form("#invite-form",
+        invite: %{email: "existing@example.com", roles: ["pathways_studio_editor"]}
+      )
+      |> render_submit()
+
+      assert_patch(view, ~p"/admin/users")
+
+      assert membership(existing.id, organization.id).roles == ["pathways_studio_editor"]
+      refute Repo.get_by(UserToken, user_id: existing.id, context: "invite")
+
+      assert_email_sent(subject: "You've been added to #{organization.name}")
+      assert_no_email_sent()
+
+      assert has_element?(view, "#member-#{existing.id}")
+
+      feedback = view |> element("#member-action-feedback") |> render()
+      assert feedback =~ "existing@example.com now has access to #{organization.name}."
+      refute feedback =~ "Invitation sent"
+    end
+
+    test "a failed notice to an account with a password keeps the membership without offering Resend invite",
+         %{conn: conn, organization: organization} do
+      use_failing_mailer()
+      existing = user_fixture(%{email: "existing@example.com"})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/users/invite")
+
+      view
+      |> form("#invite-form",
+        invite: %{email: "existing@example.com", roles: ["pathways_studio_editor"]}
+      )
+      |> render_submit()
+
+      assert_patch(view, ~p"/admin/users")
+
+      assert membership(existing.id, organization.id)
+
+      feedback = view |> element("#member-action-feedback") |> render()
+      assert feedback =~ "existing@example.com was added to #{organization.name}"
+      assert feedback =~ "notification email could not be sent"
+      refute feedback =~ "Resend invite"
+
+      refute has_element?(view, "#resend-invite-#{existing.id}")
     end
 
     test "a post-commit delivery failure keeps the membership and offers Resend invite", %{

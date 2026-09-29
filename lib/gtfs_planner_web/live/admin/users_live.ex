@@ -170,7 +170,8 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
         Map.get(params, "email", ""),
         organization.id,
         Map.get(params, "roles", []),
-        &url(~p"/users/accept_invite/#{&1}")
+        &url(~p"/users/accept_invite/#{&1}"),
+        login_url: url(~p"/users/log_in")
       )
 
     case result do
@@ -179,6 +180,30 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
          socket
          |> assign_invite_form(InviteForm.changeset(%{}))
          |> put_feedback("success", "Invitation sent to #{user.email}.", user.id)
+         |> load_members()
+         |> push_patch(to: ~p"/admin/users")}
+
+      {:ok, :added, user} ->
+        {:noreply,
+         socket
+         |> assign_invite_form(InviteForm.changeset(%{}))
+         |> put_feedback(
+           "success",
+           "#{user.email} now has access to #{organization.name}.",
+           user.id
+         )
+         |> load_members()
+         |> push_patch(to: ~p"/admin/users")}
+
+      {:partial, :notification_failed, user, _reason} ->
+        {:noreply,
+         socket
+         |> assign_invite_form(InviteForm.changeset(%{}))
+         |> put_feedback(
+           "warning",
+           "#{user.email} was added to #{organization.name}, but the notification email could not be sent.",
+           user.id
+         )
          |> load_members()
          |> push_patch(to: ~p"/admin/users")}
 

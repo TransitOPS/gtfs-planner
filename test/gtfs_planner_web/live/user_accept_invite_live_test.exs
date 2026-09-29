@@ -1,12 +1,14 @@
 defmodule GtfsPlannerWeb.UserAcceptInviteLiveTest do
   use GtfsPlannerWeb.ConnCase
   import Phoenix.LiveViewTest
+  import GtfsPlanner.AccountsFixtures
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserToken
   alias GtfsPlanner.Repo
 
   @invalid_token_message "Invite link is invalid or it has expired."
   @success_message "Invitation accepted. Log in to continue."
+  @has_password_message "You already have a password. Sign in to continue."
   @focus_payload %{form_id: "accept_invite_form", fallback_id: nil}
 
   setup do
@@ -244,6 +246,19 @@ defmodule GtfsPlannerWeb.UserAcceptInviteLiveTest do
       assert {:error,
               {:redirect, %{to: "/users/log_in", flash: %{"error" => @invalid_token_message}}}} =
                live(conn, ~p"/users/accept_invite/invalid-token")
+    end
+
+    test "an account that already has a password is sent to log in without a set-password form",
+         %{conn: conn} do
+      existing = user_fixture()
+      {encoded_token, user_token} = UserToken.build_email_token(existing, "invite")
+      Repo.insert!(user_token)
+
+      assert {:error,
+              {:redirect, %{to: "/users/log_in", flash: %{"info" => @has_password_message}}}} =
+               live(conn, ~p"/users/accept_invite/#{encoded_token}")
+
+      assert Accounts.get_user_by_email_and_password(existing.email, valid_user_password())
     end
 
     test "replayed token after success redirects to login", %{conn: conn, token: token} do

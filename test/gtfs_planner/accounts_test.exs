@@ -725,6 +725,8 @@ defmodule GtfsPlanner.AccountsTest do
   end
 
   describe "invite_member/4" do
+    @login_url "http://localhost:4000/users/log_in"
+
     setup do
       previous_mailer = Application.get_env(:gtfs_planner, GtfsPlanner.Mailer)
 
@@ -790,16 +792,99 @@ defmodule GtfsPlanner.AccountsTest do
     } do
       existing = user_fixture()
 
-      assert {:ok, %User{id: id}} =
+      assert {:ok, :added, %User{id: id}} =
                Accounts.invite_member(
                  existing.email,
                  organization.id,
                  ["pathways_studio_editor"],
-                 &invite_url/1
+                 &invite_url/1,
+                 login_url: @login_url
                )
 
       assert id == existing.id
       assert Repo.aggregate(from(u in User, where: u.email == ^existing.email), :count) == 1
+    end
+
+    test "adds an account that has a password without an invite token and sends only a notice",
+         %{organization: organization} do
+      existing = user_fixture()
+
+      assert {:ok, :added, %User{id: id}} =
+               Accounts.invite_member(
+                 existing.email,
+                 organization.id,
+                 ["pathways_studio_admin"],
+                 &invite_url/1,
+                 login_url: @login_url
+               )
+
+      assert id == existing.id
+
+      assert membership =
+               Repo.get_by(UserOrgMembership, user_id: id, organization_id: organization.id)
+
+      assert membership.roles == ["pathways_studio_admin"]
+      assert invite_tokens(existing) == []
+      assert Repo.all(from t in UserToken, where: t.user_id == ^id) == []
+
+      assert_received {:email, email}
+      assert email.to == [{"", existing.email}]
+      assert email.subject == "You've been added to #{organization.name}"
+      assert email.html_body =~ organization.name
+      assert email.html_body =~ @login_url
+      refute email.html_body =~ "accept_invite"
+
+      assert_no_email_sent()
+      assert Accounts.get_user_by_email_and_password(existing.email, valid_user_password())
+    end
+
+    test "issues an invite token and the invite email to an account that has no password yet", %{
+      organization: organization
+    } do
+      {:ok, pending} = Accounts.invite_user(unique_user_email(), nil)
+
+      assert {:ok, %User{id: id}} =
+               Accounts.invite_member(
+                 pending.email,
+                 organization.id,
+                 ["pathways_studio_editor"],
+                 &invite_url/1,
+                 login_url: @login_url
+               )
+
+      assert id == pending.id
+      assert [_invite_token] = invite_tokens(pending)
+
+      assert_received {:email, email}
+      assert email.subject == "You're invited to join Pathways Studio"
+      assert email.html_body =~ "/users/accept_invite/"
+
+      assert_no_email_sent()
+    end
+
+    test "keeps the membership when the notice to an account with a password cannot be sent", %{
+      organization: organization
+    } do
+      Application.put_env(:gtfs_planner, GtfsPlanner.Mailer,
+        adapter: GtfsPlanner.MailerFailureAdapter
+      )
+
+      existing = user_fixture()
+
+      assert {:partial, :notification_failed, %User{id: id}, reason} =
+               Accounts.invite_member(
+                 existing.email,
+                 organization.id,
+                 ["pathways_studio_editor"],
+                 &invite_url/1,
+                 login_url: @login_url
+               )
+
+      assert reason == :simulated_delivery_failure
+      assert id == existing.id
+      assert Repo.get_by(UserOrgMembership, user_id: id, organization_id: organization.id)
+      assert invite_tokens(existing) == []
+      assert_no_email_sent()
     end
 
     test "returns an insert-action changeset and commits nothing for invalid input", %{
@@ -1012,7 +1097,7 @@ defmodule GtfsPlanner.AccountsTest do
 
   describe "accept_invite_set_password/2" do
     setup do
-      user = user_fixture()
+      {:ok, user} = Accounts.invite_user(unique_user_email(), nil)
       org = organization_fixture()
       org_id = org.id
 
@@ -1067,6 +1152,37 @@ defmodule GtfsPlanner.AccountsTest do
       })
 
       refute Accounts.get_user_by_invite_token(token)
+    end
+
+    test "deletes the user's session tokens", %{user: user, org_id: org_id} do
+      session_token = Accounts.generate_user_session_token(user)
+
+      {:ok, _updated_user} =
+        Accounts.accept_invite_set_password(user, %{
+          password: "new valid password",
+          password_confirmation: "new valid password",
+          organization_id: org_id
+        })
+
+      refute Accounts.get_user_by_session_token(session_token)
+      assert Repo.all(from t in UserToken, where: t.user_id == ^user.id) == []
+    end
+
+    test "refuses a user who already has a password and changes nothing", %{org_id: org_id} do
+      existing = user_fixture()
+      session_token = Accounts.generate_user_session_token(existing)
+
+      assert {:error, :already_has_password} =
+               Accounts.accept_invite_set_password(existing, %{
+                 password: "new valid password",
+                 password_confirmation: "new valid password",
+                 organization_id: org_id
+               })
+
+      assert Accounts.get_user_by_email_and_password(existing.email, valid_user_password())
+      refute Accounts.get_user_by_email_and_password(existing.email, "new valid password")
+      assert Accounts.get_user_by_session_token(session_token)
+      refute Repo.get_by(UserOrgMembership, user_id: existing.id, organization_id: org_id)
     end
   end
 
