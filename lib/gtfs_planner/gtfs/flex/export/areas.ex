@@ -302,7 +302,16 @@ defmodule GtfsPlanner.Gtfs.Flex.Export.Areas do
 
   # --- booking rules ----------------------------------------------------------
 
-  defp booking_rule_rows(service, calendars) do
+  @doc """
+  The service's booking rules as the GTFS `booking_rules.txt` columns.
+
+  `rows/4` appends these after its trips; the export also uses them for a
+  detour service, whose own module writes no booking-rule row but whose zone
+  rows reference the service's one rule (R7, AC-19). `calendars` is the map
+  `GtfsPlanner.Gtfs.Flex.RiderText` reads for the message.
+  """
+  @spec booking_rule_rows(FlexService.t(), map()) :: [map()]
+  def booking_rule_rows(service, calendars) do
     Enum.map(service.booking_rules, &booking_rule_row(service, &1, calendars))
   end
 

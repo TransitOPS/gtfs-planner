@@ -12,6 +12,10 @@ defmodule GtfsPlanner.Gtfs.Export do
   - Resolves UUID foreign keys to GTFS string identifiers
   - Creates ZIP archives using Erlang's `:zip` module
   - Reads every GTFS file from one repeatable-read database snapshot
+  - Doubles the `stop_sequence` of trips on an active detour service's route in
+    every `stop_times.txt` it writes (R3, through `Flex.Export.sequence_mapper/2`)
+  - Builds the flex zip (fixed routes plus flex rows) beside the main zip from
+    the same snapshot when `include_flex` is set
 
   ## Export Types
 
@@ -20,11 +24,15 @@ defmodule GtfsPlanner.Gtfs.Export do
   - `:operations` - The full GTFS files plus the TODS `stops_supplement.txt` and
     `vehicles.txt` files, with omission warnings and a garage/stop ID collision
     check
+  - `:flex` - The flex zip alone, as `Validator` validates it (step 18)
   """
 
   alias GtfsPlanner.Gtfs.Export.{CsvWriter, FileSpec, Snapshot, StreamBuilder}
   alias GtfsPlanner.Gtfs.Extensions
+  alias GtfsPlanner.Gtfs.Flex.Export, as: FlexExport
+  alias GtfsPlanner.Gtfs.Flex.Export.FileSpecs, as: FlexFileSpecs
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Repo
@@ -45,7 +53,7 @@ defmodule GtfsPlanner.Gtfs.Export do
 
   - `organization_id` - UUID of the organization
   - `gtfs_version_id` - UUID of the GTFS version to export
-  - `export_type` - `:full`, `:pathways` or `:operations`
+  - `export_type` - `:full`, `:pathways`, `:operations` or `:flex`
   - `opts` - Optional keyword list (reserved for future use)
 
   ## Returns
@@ -60,8 +68,21 @@ defmodule GtfsPlanner.Gtfs.Export do
 
       Export.export_to_zip(org_id, version_id, :full)
       # => {:ok, <<binary zip data>>}
+
+      Export.export_to_zip(org_id, version_id, :flex)
+      # => {:ok, <<binary flex zip data>>}
   """
-  def export_to_zip(organization_id, gtfs_version_id, export_type, _opts \\ []) do
+  def export_to_zip(organization_id, gtfs_version_id, export_type, opts \\ [])
+
+  def export_to_zip(organization_id, gtfs_version_id, :flex, _opts) do
+    case build_zips(organization_id, gtfs_version_id, :full, include_flex: true) do
+      {:ok, %{flex: flex}, _warnings} when is_binary(flex) -> {:ok, flex}
+      {:ok, %{flex: nil}, _warnings} -> {:error, :no_data}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def export_to_zip(organization_id, gtfs_version_id, export_type, _opts) do
     case build_zip(organization_id, gtfs_version_id, export_type) do
       {:ok, zip_binary, _warnings} -> {:ok, zip_binary}
       {:error, reason} -> {:error, reason}
@@ -85,6 +106,10 @@ defmodule GtfsPlanner.Gtfs.Export do
   5. each TODS file whose table is empty is omitted with a `tods_file_omitted`
      warning.
 
+  Every profile's `stop_times.txt` runs the R3 sequence mapper, so a trip on an
+  active detour service's route keeps its doubled `stop_sequence` whether or
+  not flex is included.
+
   ## Returns
 
   - `{:ok, zip_binary, warnings}` on success
@@ -96,21 +121,73 @@ defmodule GtfsPlanner.Gtfs.Export do
           {:ok, binary(), [warning()]}
           | {:error, :no_data | {:garage_stop_id_conflict, [Operations.conflict()]} | term()}
   def build_zip(organization_id, gtfs_version_id, export_type) do
-    # Generate unique temp directory
+    case build_zips(organization_id, gtfs_version_id, export_type, include_flex: false) do
+      {:ok, %{main: main}, warnings} when is_binary(main) -> {:ok, main, warnings}
+      {:ok, %{main: nil, flex: flex}, warnings} when is_binary(flex) -> {:ok, flex, warnings}
+      {:ok, _zips, _warnings} -> {:error, :no_data}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Builds the main zip and, when `include_flex` is set, the flex zip from one
+  repeatable-read snapshot.
+
+  The flex zip is the full file set written again with the R3 mapper, the flex
+  rows appended to `routes.txt`, `trips.txt` and `stop_times.txt`, and the
+  extra files `Flex.Export.build_entries/2` returns (`locations.geojson`,
+  `booking_rules.txt`, `location_groups.txt`, `location_group_stops.txt`). A
+  service with a readiness error or failed derived geometry is left out with a
+  warning and never changes the main zip (R4); a version with no fixed routes
+  and at least one exportable flex service answers `%{main: nil, flex: zip}`
+  with a `main_feed_not_produced` warning (R15). Include `include_flex: false`
+  for a main zip only.
+
+  `:operations` keeps its TODS files in the main zip only: the flex zip carries
+  the main feed's files plus the flex files.
+
+  ## Returns
+
+  - `{:ok, %{main: zip | nil, flex: zip | nil}, warnings}` on success
+  - `{:error, reason}` for a version with nothing to export or a build failure
+  """
+  @spec build_zips(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations, keyword()) ::
+          {:ok, %{main: binary() | nil, flex: binary() | nil}, [warning()]} | {:error, term()}
+  def build_zips(organization_id, gtfs_version_id, export_type, opts \\ []) do
+    include_flex = Keyword.get(opts, :include_flex, false) and export_type != :pathways
+
     temp_dir = generate_temp_dir()
+    flex_dir = generate_temp_dir()
 
     try do
-      # Create temp directory
       File.mkdir_p!(temp_dir)
+      File.mkdir_p!(flex_dir)
 
-      # Export every file from one read snapshot
       result =
         with_read_snapshot(fn ->
-          build_export(temp_dir, organization_id, gtfs_version_id, export_type)
+          # R3's one mapper is bound to this snapshot before any stop_times
+          # writer runs, so the main and flex files share one answer.
+          mapper = FlexExport.sequence_mapper(organization_id, gtfs_version_id)
+
+          {flex_zip, flex_entries, flex_warnings} =
+            build_flex_result(
+              include_flex,
+              flex_dir,
+              organization_id,
+              gtfs_version_id,
+              mapper
+            )
+
+          main_result =
+            build_main(temp_dir, organization_id, gtfs_version_id, export_type, mapper)
+
+          main_zip = main_zip(main_result, flex_entries)
+
+          {%{main: main_zip, flex: flex_zip}, main_warnings(main_result) ++ flex_warnings}
         end)
 
       case result do
-        {:ok, {zip_binary, warnings}} -> {:ok, zip_binary, warnings}
+        {:ok, {zips, warnings}} -> {:ok, zips, warnings}
         {:error, reason} -> {:error, reason}
       end
     rescue
@@ -118,8 +195,35 @@ defmodule GtfsPlanner.Gtfs.Export do
         Logger.error("GTFS export failed: #{inspect(e)}")
         {:error, "Export failed: #{Exception.message(e)}"}
     after
-      # Always clean up temp directory
+      # Always clean up both temp directories
       File.rm_rf(temp_dir)
+      File.rm_rf(flex_dir)
+    end
+  end
+
+  # R15: a version without routes answers a flex zip and no main zip once at
+  # least one service is exported; otherwise a main that could not be built is
+  # the whole export's error.
+  defp main_zip({:ok, _zip, _warnings}, %{main_feed_not_produced: true}), do: nil
+  defp main_zip({:ok, zip, _warnings}, _flex_entries), do: zip
+  defp main_zip({:error, :no_data}, %{main_feed_not_produced: true}), do: nil
+  defp main_zip({:error, reason}, _flex_entries), do: Repo.rollback(reason)
+
+  defp main_warnings({:ok, _zip, warnings}), do: warnings
+  defp main_warnings({:error, _reason}), do: []
+
+  # Builds the flex zip and its warnings when flex is included, and the empty
+  # answer otherwise. A flex zip with no content at all is nil.
+  defp build_flex_result(false, _flex_dir, _organization_id, _gtfs_version_id, _mapper) do
+    {nil, nil, []}
+  end
+
+  defp build_flex_result(true, flex_dir, organization_id, gtfs_version_id, mapper) do
+    {:ok, entries, warnings} = FlexExport.build_entries(organization_id, gtfs_version_id)
+
+    case write_flex_zip(flex_dir, organization_id, gtfs_version_id, mapper, entries) do
+      {:ok, zip} -> {zip, entries, warnings}
+      {:error, :no_data} -> {nil, entries, warnings}
     end
   end
 
@@ -127,6 +231,7 @@ defmodule GtfsPlanner.Gtfs.Export do
   Exports selected GTFS file specs to an existing output directory.
 
   This is a disk-targeted export path used by OTP materialization workflows.
+  It writes the specs it is given and applies no flex sequence mapping.
 
   ## Parameters
 
@@ -150,10 +255,10 @@ defmodule GtfsPlanner.Gtfs.Export do
       with_read_snapshot(fn ->
         lookup_maps = build_lookup_maps(organization_id, gtfs_version_id)
 
-        {file_paths, _conflicts} =
-          export_files(output_dir, file_specs, organization_id, gtfs_version_id, lookup_maps)
-
-        file_paths
+        case export_files(output_dir, file_specs, organization_id, gtfs_version_id, lookup_maps) do
+          {:ok, {file_paths, _conflicts}} -> file_paths
+          {:error, reason} -> Repo.rollback(reason)
+        end
       end)
     rescue
       e ->
@@ -162,9 +267,9 @@ defmodule GtfsPlanner.Gtfs.Export do
     end
   end
 
-  # Builds the export inside its read snapshot. The operations path keeps the
+  # Builds the main zip inside its read snapshot. The operations path keeps the
   # public files untouched and adds the TODS files beside them.
-  defp build_export(temp_dir, organization_id, gtfs_version_id, :operations) do
+  defp build_main(temp_dir, organization_id, gtfs_version_id, :operations, mapper) do
     %{garages: garages, vehicles: vehicles} = Operations.tods_export_rows(organization_id)
 
     conflict_rollback(
@@ -173,37 +278,93 @@ defmodule GtfsPlanner.Gtfs.Export do
 
     garage_map = Map.new(garages, &{&1.garage_id, &1.name})
 
-    {file_paths, emitted_conflicts} =
-      export_files(
-        temp_dir,
-        FileSpec.get_specs(:full),
-        organization_id,
-        gtfs_version_id,
-        %{},
-        garage_map
-      )
+    with {:ok, {file_paths, emitted_conflicts}} <-
+           export_files(
+             temp_dir,
+             FileSpec.get_specs(:full),
+             organization_id,
+             gtfs_version_id,
+             %{},
+             garage_map,
+             mapper
+           ) do
+      conflict_rollback(emitted_conflicts)
 
-    conflict_rollback(emitted_conflicts)
+      file_paths = file_paths ++ export_tods_files(temp_dir, garages, vehicles)
 
-    file_paths = file_paths ++ export_tods_files(temp_dir, garages, vehicles)
-
-    zip_binary = create_zip_archive(file_paths, organization_id, gtfs_version_id)
-
-    {zip_binary, tods_omission_warnings(garages, vehicles)}
+      {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id),
+       tods_omission_warnings(garages, vehicles)}
+    end
   end
 
-  defp build_export(temp_dir, organization_id, gtfs_version_id, export_type) do
-    {file_paths, _conflicts} =
-      export_files(
-        temp_dir,
-        FileSpec.get_specs(export_type),
-        organization_id,
-        gtfs_version_id,
-        %{}
-      )
-
-    {create_zip_archive(file_paths, organization_id, gtfs_version_id), []}
+  defp build_main(temp_dir, organization_id, gtfs_version_id, export_type, mapper) do
+    with {:ok, {file_paths, _conflicts}} <-
+           export_files(
+             temp_dir,
+             FileSpec.get_specs(export_type),
+             organization_id,
+             gtfs_version_id,
+             %{},
+             %{},
+             mapper
+           ) do
+      {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id), []}
+    end
   end
+
+  # The flex zip: the full specs written from the same snapshot with the R3
+  # mapper, the flex rows appended, then the extra flex files. A spec is
+  # written when the version has records for it or the flex row list is not
+  # empty, so an area service's generated route reaches a version without
+  # fixed routes (R15).
+  defp write_flex_zip(temp_dir, organization_id, gtfs_version_id, mapper, entries) do
+    appended_rows = %{
+      "routes.txt" => entries.rows.routes,
+      "trips.txt" => entries.rows.trips,
+      "stop_times.txt" => entries.rows.stop_times
+    }
+
+    file_paths =
+      FileSpec.get_specs(:full)
+      |> Enum.filter(fn spec ->
+        has_records?(spec.schema, organization_id, gtfs_version_id) or
+          Map.get(appended_rows, spec.filename, []) != []
+      end)
+      |> Enum.map(fn spec ->
+        spec = flex_spec(spec)
+        rows = Map.get(appended_rows, spec.filename, [])
+
+        {file_path, _conflicts} =
+          export_file(
+            temp_dir,
+            spec,
+            organization_id,
+            gtfs_version_id,
+            %{},
+            %{},
+            mapper,
+            rows
+          )
+
+        file_path
+      end)
+
+    entry_paths =
+      Enum.map(entries.entries, fn {filename, content} ->
+        path = Path.join(temp_dir, to_string(filename))
+        File.write!(path, content)
+        path
+      end)
+
+    if file_paths == [] and entry_paths == [] do
+      {:error, :no_data}
+    else
+      {:ok, create_zip_archive(file_paths ++ entry_paths, organization_id, gtfs_version_id)}
+    end
+  end
+
+  defp flex_spec(%{filename: "stop_times.txt"}), do: FlexFileSpecs.stop_times_spec()
+  defp flex_spec(spec), do: spec
 
   defp conflict_rollback([]), do: :ok
   defp conflict_rollback(conflicts), do: Repo.rollback({:garage_stop_id_conflict, conflicts})
@@ -240,32 +401,47 @@ defmodule GtfsPlanner.Gtfs.Export do
   # Exports all files for the given specs. Returns the written file paths and the
   # garage/stop collisions seen in the records actually written, ordered by
   # garage ID. `garage_map` holds the organization's garage IDs and names; it is
-  # empty for exports that check no collisions.
+  # empty for exports that check no collisions. `appended_rows` adds flex rows
+  # after the streamed records, keyed by filename. A version with no records for
+  # any spec and no appended rows answers `{:error, :no_data}` without rolling
+  # the snapshot back, so a caller that still has flex files can keep building.
   defp export_files(
          temp_dir,
          file_specs,
          organization_id,
          gtfs_version_id,
          lookup_maps,
-         garage_map \\ %{}
+         garage_map \\ %{},
+         mapper \\ & &1,
+         appended_rows \\ %{}
        ) do
     specs =
       Enum.filter(file_specs, fn spec ->
-        has_records?(spec.schema, organization_id, gtfs_version_id)
+        has_records?(spec.schema, organization_id, gtfs_version_id) or
+          Map.get(appended_rows, spec.filename, []) != []
       end)
 
     if Enum.empty?(specs) do
-      Repo.rollback(:no_data)
+      {:error, :no_data}
     else
       results =
         Enum.map(specs, fn spec ->
-          export_file(temp_dir, spec, organization_id, gtfs_version_id, lookup_maps, garage_map)
+          export_file(
+            temp_dir,
+            spec,
+            organization_id,
+            gtfs_version_id,
+            lookup_maps,
+            garage_map,
+            mapper,
+            Map.get(appended_rows, spec.filename, [])
+          )
         end)
 
       file_paths = Enum.map(results, &elem(&1, 0))
       conflicts = results |> Enum.flat_map(&elem(&1, 1)) |> Enum.sort_by(& &1.garage_id)
 
-      {file_paths, conflicts}
+      {:ok, {file_paths, conflicts}}
     end
   end
 
@@ -282,8 +458,19 @@ defmodule GtfsPlanner.Gtfs.Export do
   # Exports a single GTFS file and returns its path with the garage/stop
   # collisions among the records it wrote. The garage map is checked against the
   # exact streamed stop records, so a stop ID that changed after the preliminary
-  # conflict query is still caught before any ZIP can be returned.
-  defp export_file(temp_dir, spec, organization_id, gtfs_version_id, lookup_maps, garage_map) do
+  # conflict query is still caught before any ZIP can be returned. The R3 mapper
+  # is applied to stop time records only; `appended_rows` follow the streamed
+  # records through the file's own spec.
+  defp export_file(
+         temp_dir,
+         spec,
+         organization_id,
+         gtfs_version_id,
+         lookup_maps,
+         garage_map,
+         mapper,
+         appended_rows
+       ) do
     file_path = Path.join(temp_dir, spec.filename)
     file = File.open!(file_path, [:write, :utf8])
 
@@ -295,15 +482,22 @@ defmodule GtfsPlanner.Gtfs.Export do
       conflicts =
         StreamBuilder.stream_records(Repo, spec.schema, organization_id, gtfs_version_id)
         |> Enum.reduce([], fn record, acc ->
-          CsvWriter.write_row(file, record, spec, lookup_maps)
+          CsvWriter.write_row(file, apply_mapper(spec, mapper, record), spec, lookup_maps)
           collect_garage_conflict(acc, record, garage_map)
         end)
+
+      Enum.each(appended_rows, &CsvWriter.write_row(file, &1, spec, %{}))
 
       {file_path, conflicts}
     after
       File.close(file)
     end
   end
+
+  # INV-3: only a stop time record carries a sequence the mapper may double; a
+  # trip's equal `trip_id` field must not be passed to it.
+  defp apply_mapper(%{schema: StopTime}, mapper, record), do: mapper.(record)
+  defp apply_mapper(_spec, _mapper, record), do: record
 
   # Keeps only the garages whose ID is written as a stop ID, using that stop's
   # name. Other records never match the garage IDs.
