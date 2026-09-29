@@ -1580,7 +1580,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   @count_strip_tones [:neutral, :info, :success, :warning, :error]
   @count_strip_required_fields [:key, :label, :count, :tone]
-  @count_strip_allowed_fields [:key, :label, :count, :tone, :disabled_reason]
+  @count_strip_allowed_fields [:key, :label, :count, :tone, :disabled_reason, :value, :detail]
   @count_strip_key_format ~r/\A[A-Za-z0-9_-]+\z/
 
   @count_strip_tone_classes %{
@@ -1615,7 +1615,17 @@ defmodule GtfsPlannerWeb.CoreComponents do
   native button per item carrying `aria-pressed`, `phx-click`, `phx-value-key`,
   and the optional `phx-target`. `selected_key` decides which button is pressed;
   every button always states `aria-pressed` so the state never appears or
-  disappears between renders.
+  disappears between renders. `event_value` replaces the value every item sends
+  on that click, for a strip of figures that all open the same target: each item
+  keeps its own key, and therefore its own stable DOM id, while the handler reads
+  one value.
+
+  A figure that is not a plain integer carries it in `:value` — a share of time
+  prints as `"57%"` — while `:count` keeps the number the caller counted, so a
+  test can still read the count itself. `:detail` is the quiet trailing text of
+  the item, the “· minimum 4” beside a vehicle count or the “at 06:08” beside a
+  peak, and `:disabled_reason` stays the sentence that explains an unavailable
+  item rather than a second detail.
 
   A zero-count filter item stays present and keyboard-focusable and is marked
   `aria-disabled="true"` with a dashed border; its count and any
@@ -1635,7 +1645,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
               required(:label) => String.t(),
               required(:count) => non_neg_integer(),
               required(:tone) => :neutral | :info | :success | :warning | :error,
-              optional(:disabled_reason) => String.t()
+              optional(:disabled_reason) => String.t(),
+              optional(:value) => String.t(),
+              optional(:detail) => String.t()
             }
 
   ## Examples
@@ -1659,6 +1671,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :items, :list, required: true
   attr :selected_key, :string, default: nil
   attr :event, :string, default: nil
+  attr :event_value, :string, default: nil
   attr :target, :any, default: nil
   attr :class, :any, default: nil
 
@@ -1696,7 +1709,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
           aria-pressed={to_string(entry.key == @selected_key)}
           aria-disabled={entry.unavailable? && "true"}
           phx-click={@event}
-          phx-value-key={entry.key}
+          phx-value-key={@event_value || entry.key}
           phx-target={@target}
           class={[
             "rounded-field inline-flex min-h-11 min-w-11 max-w-full items-center gap-2 border px-3 py-1.5",
@@ -1737,7 +1750,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
         "font-semibold tabular-nums",
         @colorize && @entry.count > 0 && @entry.count_class
       ]}
-    >{@entry.count}</span>
+    >{@entry.value}</span>
+    <span
+      :if={@entry.detail}
+      data-role="count-strip-detail"
+      class="min-w-0 break-words font-normal text-base-content/70"
+    >
+      {@entry.detail}
+    </span>
     <span
       :if={@entry.disabled_reason}
       data-role="count-strip-reason"
@@ -1781,6 +1801,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
       key: key,
       label: validate_count_strip_label!(item.label, id),
       count: count,
+      value: Map.get(item, :value) || count,
+      detail: validate_count_strip_detail!(Map.get(item, :detail), id),
       disabled_reason: validate_count_strip_reason!(Map.get(item, :disabled_reason), id),
       dom_id: "#{id}-item-#{key}",
       tone_class: count_strip_tone_class!(item.tone, id),
@@ -1844,6 +1866,19 @@ defmodule GtfsPlannerWeb.CoreComponents do
       count_strip_error(
         id,
         ":disabled_reason must be a non-empty string when given, got: #{inspect(reason)}"
+      )
+    end
+  end
+
+  defp validate_count_strip_detail!(nil, _id), do: nil
+
+  defp validate_count_strip_detail!(detail, id) do
+    if is_binary(detail) and String.trim(detail) != "" do
+      detail
+    else
+      count_strip_error(
+        id,
+        ":detail must be a non-empty string when given, got: #{inspect(detail)}"
       )
     end
   end

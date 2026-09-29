@@ -125,11 +125,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
     :ok
   end
 
-  defp strip_value(view, key) do
+  defp strip_value(view, key), do: strip_value(view, "blocks-summary-counts", key)
+
+  # The three plan figures sit in their own strip after the divider, each with
+  # its own key (step 35).
+  defp figure_value(view, key), do: strip_value(view, "blocks-summary-figures", key)
+
+  defp strip_value(view, strip, key) do
     view
     |> render()
     |> LazyHTML.from_fragment()
-    |> LazyHTML.query("#blocks-summary-counts-item-#{key}")
+    |> LazyHTML.query("##{strip}-item-#{key}")
     |> LazyHTML.query("[data-role='count-strip-value']")
     |> LazyHTML.text()
     |> String.trim()
@@ -182,7 +188,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       assert strip_value(view, "unassigned") == "2"
       assert strip_value(view, "problems") == "0"
       assert strip_value(view, "notices") == "0"
-      assert strip_value(view, "peak") == "2"
+      assert figure_value(view, "peak") == "2"
 
       assert has_element?(
                view,
@@ -203,7 +209,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
 
       assert strip_value(view, "blocks") == "2"
       assert strip_value(view, "unassigned") == "2"
-      assert strip_value(view, "peak") == "2"
+      assert figure_value(view, "peak") == "2"
 
       {:ok, paged, _html} = live(conn, blocks_path(version.id) <> "?page=3&pool_page=2")
 
@@ -215,7 +221,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
         live(conn, blocks_path(version.id) <> "?route=#{context.route.route_id}")
 
       assert strip_value(filtered, "blocks") == "2"
-      assert strip_value(filtered, "peak") == "2"
+      assert figure_value(filtered, "peak") == "2"
     end
 
     test "the day select prints each day type's date count and groups one-date types",
@@ -527,7 +533,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
 
       {:ok, view, _html} = live(conn, blocks_path(version.id))
 
-      view |> element("#blocks-summary-counts-item-peak") |> render_click()
+      view |> element("#blocks-summary-figures-item-peak") |> render_click()
 
       assert has_element?(view, "#peak-drawer-overlay[data-open='true']")
 
