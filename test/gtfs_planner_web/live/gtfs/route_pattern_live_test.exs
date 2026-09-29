@@ -181,7 +181,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
   describe "patterns list" do
     setup :editor_scope
 
-    test "renders name, service description, neutral direction, typicality and counts in order",
+    test "groups patterns under neutral direction headings with typicality and counts in order",
          %{conn: conn, organization: organization, version: version} do
       route = route(organization, version, "LIST1")
       stops = Enum.map(1..4, &stop(organization, version, "LIST1", &1))
@@ -229,20 +229,25 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       assert has_element?(view, "#patterns-list-container")
       assert has_element?(view, "#patterns-count", "3 patterns")
-      assert has_element?(view, "#pattern-trip-count", "3 trips in this version")
+      assert has_element?(view, "#pattern-trip-count", "3 trips across all service days")
 
       html = render(view)
+      assert index(html, "patterns-direction-0") < index(html, "patterns-P-ALLDAY")
       assert index(html, "patterns-P-ALLDAY") < index(html, "patterns-P-EVENING")
-      assert index(html, "patterns-P-EVENING") < index(html, "patterns-P-RETURN")
+      assert index(html, "patterns-P-EVENING") < index(html, "patterns-direction-1")
+      assert index(html, "patterns-direction-1") < index(html, "patterns-P-RETURN")
+
+      assert has_element?(view, "#patterns-direction-0", "Direction 0")
+      assert has_element?(view, "#patterns-direction-0", "2 patterns")
+      assert has_element?(view, "#patterns-direction-1", "Direction 1")
+      assert has_element?(view, "#patterns-direction-1", "1 pattern")
 
       assert has_element?(view, "#patterns-P-ALLDAY", "Weekday service")
       assert has_element?(view, "#patterns-P-ALLDAY", "2 timings")
-      assert has_element?(view, "#patterns-P-ALLDAY", "Direction 0")
-      assert has_element?(view, "#patterns-P-EVENING", "Direction 0")
-      assert has_element?(view, "#patterns-P-RETURN", "Direction 1")
       assert has_element?(view, "#patterns-P-ALLDAY", "Typical")
-      assert has_element?(view, "#patterns-P-EVENING", "Diversion")
+      assert has_element?(view, "#patterns-P-EVENING", "Detour")
       assert has_element?(view, "#patterns-P-RETURN", "Atypical")
+      assert has_element?(view, "#patterns-P-RETURN", "No service description")
       assert has_element?(view, "#patterns-P-ALLDAY td[data-label='Stops']", "4")
       assert has_element?(view, "#patterns-P-EVENING td[data-label='Stops']", "2")
       assert has_element?(view, "#patterns-P-ALLDAY td[data-label='Trips']", "2")
@@ -302,15 +307,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       {:ok, view, _html} = live(conn, patterns_path(version, route))
 
-      assert has_element?(view, "#patterns-unlinked", "Group existing trips into patterns")
+      assert has_element?(view, "#patterns-unlinked", "Group your trips into patterns")
+      assert has_element?(view, "#patterns-unlinked", "2 trips")
       assert has_element?(view, "#patterns-build", "Build patterns from trips")
 
       render_click(element(view, "#patterns-build"))
 
       refute has_element?(view, "#patterns-unlinked")
       assert has_element?(view, "#patterns-list-container")
-      assert has_element?(view, "#patterns-count", "1 patterns")
-      assert has_element?(view, "#status", "Patterns built from existing trips")
+      assert has_element?(view, "#patterns-count", "1 pattern")
+      assert has_element?(view, "#patterns-build-summary", "Built 1 pattern from your trips")
+      assert has_element?(view, "#patterns-build-summary", "2 trips are now in a pattern")
       assert Repo.aggregate(own_patterns(organization, version), :count) == 1
     end
 
@@ -418,8 +425,33 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       render_click(element(view, "#patterns-reload"))
 
       assert has_element?(view, "#patterns-P-STALE")
-      assert has_element?(view, "#patterns-stale", "out of date")
+      assert has_element?(view, "#patterns-stale", "may be out of date")
       refute has_element?(view, "#patterns-unavailable")
+    end
+
+    test "losing the editor role keeps the rows under a warning and takes away every change",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      route = route(organization, version, "REVOKE1")
+      stops = Enum.map(1..2, &stop(organization, version, "REVOKE1", &1))
+
+      built = pattern(organization, version, route, "P-REVOKE", route_pattern_name: "Kept")
+      built_occurrences = occurrences(built, stops)
+      built_timing = timing(built, built_occurrences, %{name: "Weekday"})
+      linked_trip(organization, version, route, built, built_timing, "V1")
+
+      {:ok, view, _html} = live(conn, patterns_path(version, route))
+      assert has_element?(view, "#patterns-create")
+
+      Accounts.get_user_org_membership(user.id, organization.id)
+      |> Ecto.Changeset.change(roles: [])
+      |> Repo.update!()
+
+      render_click(element(view, "#patterns-reload"))
+
+      assert has_element?(view, "#pattern-editor-revoked", "Your editing access was removed")
+      assert has_element?(view, "#patterns-P-REVOKE")
+      refute has_element?(view, "#patterns-create")
+      refute has_element?(view, "#patterns-bulk-generate")
     end
 
     test "a derivation error renders a bounded error with retry on a nonempty list",
@@ -461,8 +493,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       {:ok, view, _html} = live(conn, patterns_path(version, route))
 
-      assert has_element?(view, "#patterns-unavailable", "Patterns unavailable")
-      assert has_element?(view, "#patterns-retry")
+      assert has_element?(view, "#patterns-unavailable", "patterns didn’t load")
+      assert has_element?(view, "#patterns-retry", "Reload patterns")
 
       :atomics.put(recover, 1, 1)
       render_click(element(view, "#patterns-retry"))

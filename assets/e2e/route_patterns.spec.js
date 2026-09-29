@@ -222,12 +222,14 @@ for (const viewport of VIEWPORTS) {
     await page.waitForSelector("#patterns-list-container", { timeout: 10000 });
 
     await expect(page.locator("#patterns-count")).toContainText("2 patterns");
-    await expect(page.locator("#pattern-trip-count")).toContainText("2 trips in this version");
+    await expect(page.locator("#pattern-trip-count")).toContainText(
+      "2 trips across all service days",
+    );
     await expect(page.locator("#patterns-BROWSER-P1")).toContainText("Central – Valley Hospital");
     await expect(page.locator("#patterns-BROWSER-P1")).toContainText("All day");
-    await expect(page.locator("#patterns-BROWSER-P1")).toContainText("Direction 0");
     await expect(page.locator("#patterns-BROWSER-P1")).toContainText("Typical");
-    await expect(page.locator("#patterns-BROWSER-P2")).toContainText("Direction 1");
+    await expect(page.locator("#patterns-direction-0")).toContainText("Direction 0");
+    await expect(page.locator("#patterns-direction-1")).toContainText("Direction 1");
     await expect(page.locator("#patterns-BROWSER-P2")).toContainText("Not used yet");
     await expect(page.getByText("Outbound", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Inbound", { exact: true })).toHaveCount(0);
@@ -266,7 +268,7 @@ for (const viewport of VIEWPORTS) {
     await page.goto(`/gtfs/${versionId}/routes/BROWSER_PATTERNS_UNLINKED/patterns`);
     await page.waitForSelector("#patterns-unlinked", { timeout: 10000 });
     await expect(page.locator("#patterns-unlinked")).toContainText(
-      "Group existing trips into patterns",
+      "Group your trips into patterns",
     );
     await expect(page.locator("#patterns-build")).toBeVisible();
     expect(await bodyFitsViewport(page), "unlinked state overflows").toBe(true);

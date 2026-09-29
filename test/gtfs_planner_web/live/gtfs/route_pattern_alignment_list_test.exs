@@ -208,10 +208,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentListTest do
     route
   end
 
-  describe "patterns alignment column" do
+  describe "patterns map line column" do
     setup :editor_scope
 
-    test "each pattern shows its six-state alignment status", %{
+    test "each pattern shows its six-state map line status", %{
       conn: conn,
       organization: organization,
       version: version
@@ -220,11 +220,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentListTest do
 
       {:ok, view, _html} = live(conn, patterns_path(version, route))
 
-      assert has_element?(view, "#patterns-list-container", "Alignment")
-      assert has_element?(view, "#pattern-alignment-P-LST-MISS", "! 2 missing")
-      assert has_element?(view, "#pattern-alignment-P-LST-EXP", "✓ Exported")
-      assert has_element?(view, "#pattern-alignment-P-LST-STALE", "◷ Out of date")
-      assert has_element?(view, "#pattern-alignment-P-LST-IMP", "Imported shape")
+      assert has_element?(view, "#patterns-list-container", "Map line")
+      assert has_element?(view, "#pattern-alignment-P-LST-MISS", "2 sections missing")
+      assert has_element?(view, "#pattern-alignment-P-LST-EXP", "Ready")
+      assert has_element?(view, "#pattern-alignment-P-LST-STALE", "Out of date")
+      assert has_element?(view, "#pattern-alignment-P-LST-IMP", "Imported line")
     end
 
     test "a clean cell click patches to the Alignment task without remounting", %{
@@ -267,7 +267,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentListTest do
       render_click(element(view, "#discard-changes-dialog-cancel"))
 
       assert has_element?(view, "#patterns-list-container")
-      assert has_element?(view, "#pattern-alignment-P-LST-EXP", "✓ Exported")
+      assert has_element?(view, "#pattern-alignment-P-LST-EXP", "Ready")
     end
   end
 end

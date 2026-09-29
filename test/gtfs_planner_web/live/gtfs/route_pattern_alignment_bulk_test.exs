@@ -282,11 +282,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentBulkTest do
   describe "bulk selection" do
     setup :editor_scope
 
-    test "patterns with missing sections start checked, complete ones disabled", %{
-      conn: conn,
-      organization: organization,
-      version: version
-    } do
+    test "the dialog lists patterns with missing sections, checked, and leaves out complete ones",
+         %{
+           conn: conn,
+           organization: organization,
+           version: version
+         } do
       {route, _a, _b} = three_missing_route(organization, version)
 
       # FULL draws on its own stop pair so no scope choice is involved.
@@ -300,10 +301,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentBulkTest do
       {:ok, view, _html} = live(conn, patterns_path(version, route))
 
       assert has_element?(view, "#patterns-bulk-generate", "Generate missing paths")
+
+      assert has_element?(
+               view,
+               "#patterns-attention",
+               "2 patterns have 3 sections without a path."
+             )
+
+      open_bulk_dialog(view)
+
       assert has_element?(view, "#pattern-bulk-select-P-BLK-A[checked]")
       assert has_element?(view, "#pattern-bulk-select-P-BLK-B[checked]")
-      assert has_element?(view, "#pattern-bulk-select-P-BLK-FULL[disabled]")
-      assert has_element?(view, "#pattern-bulk-select-P-BLK-FULL[title=\"No missing sections\"]")
+      refute has_element?(view, "#pattern-bulk-select-P-BLK-FULL")
     end
 
     test "toggling a checkbox changes the dialog count", %{
@@ -315,16 +324,33 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentBulkTest do
 
       {:ok, view, _html} = live(conn, patterns_path(version, route))
 
+      open_bulk_dialog(view)
+
       view |> element("#pattern-bulk-select-P-BLK-B") |> render_click()
       refute has_element?(view, "#pattern-bulk-select-P-BLK-B[checked]")
 
-      open_bulk_dialog(view)
-
       assert has_element?(
                view,
-               "#alignment-bulk-dialog",
-               "Create suggestions for 2 sections in 1 pattern."
+               "#alignment-bulk-summary",
+               "2 sections in 1 pattern will get a suggested path."
              )
+    end
+
+    test "unchecking every pattern leaves nothing to generate", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      {route, _a, _b} = three_missing_route(organization, version)
+
+      {:ok, view, _html} = live(conn, patterns_path(version, route))
+      open_bulk_dialog(view)
+
+      view |> element("#pattern-bulk-select-P-BLK-A") |> render_click()
+      view |> element("#pattern-bulk-select-P-BLK-B") |> render_click()
+
+      assert has_element?(view, "#alignment-bulk-summary", "Choose at least one pattern.")
+      assert has_element?(view, "#alignment-bulk-dialog-confirm[disabled]")
     end
 
     test "the dialog states the section count and the saved-paths promise", %{
@@ -341,11 +367,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentBulkTest do
       assert has_element?(
                view,
                "#alignment-bulk-dialog",
-               "Create suggestions for 3 sections in 2 patterns. Saved paths and custom paths stay unchanged. Review the results before saving."
+               "Saved and custom paths stay unchanged, and nothing is saved until you review each suggestion."
              )
+
+      assert has_element?(
+               view,
+               "#alignment-bulk-summary",
+               "3 sections in 2 patterns will get a suggested path."
+             )
+
+      refute has_element?(view, "#alignment-bulk-dialog-confirm[disabled]")
     end
 
-    test "a selection over 200 sections shows the cap with no confirm", %{
+    test "a selection over 200 sections turns confirm off until patterns are unchecked", %{
       conn: conn,
       organization: organization,
       version: version
@@ -354,6 +388,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentBulkTest do
 
       coord_stop(organization, version, "BKL1", "Bulk L1", "40.712800", "-74.006000")
       coord_stop(organization, version, "BKL2", "Bulk L2", "40.713800", "-74.005000")
+      coord_stop(organization, version, "BKS1", "Bulk S1", "40.722800", "-73.997000")
+      coord_stop(organization, version, "BKS2", "Bulk S2", "40.723800", "-73.996000")
 
       long = pattern(organization, version, route, "P-BLK-LONG")
 
@@ -363,20 +399,32 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentBulkTest do
         |> Enum.take(202)
 
       occurrences(long, long_visits)
+      occurrences(pattern(organization, version, route, "P-BLK-SHORT"), ["BKS1", "BKS2"])
 
       {:ok, view, _html} = live(conn, patterns_path(version, route))
 
-      assert has_element?(view, "#pattern-bulk-select-P-BLK-LONG[checked]")
-
       open_bulk_dialog(view)
+
+      assert has_element?(view, "#pattern-bulk-select-P-BLK-LONG[checked]")
+      assert has_element?(view, "#alignment-bulk-summary", "Choose fewer patterns.")
 
       assert has_element?(
                view,
-               "#alignment-bulk-dialog",
-               "Select fewer patterns (201 sections; limit 200)"
+               "#alignment-bulk-summary",
+               "These cover 202 sections, and one run covers at most 200."
              )
 
-      refute has_element?(view, "#alignment-bulk-dialog-confirm")
+      assert has_element?(view, "#alignment-bulk-dialog-confirm[disabled]")
+
+      view |> element("#pattern-bulk-select-P-BLK-LONG") |> render_click()
+
+      assert has_element?(
+               view,
+               "#alignment-bulk-summary",
+               "1 section in 1 pattern will get a suggested path."
+             )
+
+      refute has_element?(view, "#alignment-bulk-dialog-confirm[disabled]")
     end
   end
 
@@ -410,10 +458,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentBulkTest do
       open_bulk_dialog(view)
       confirm_bulk_dialog(view)
 
-      assert_bulk_notice(view, "2 of 3 sections generated")
-      assert has_element?(view, "#pattern-bulk-success-P-BLK-A", "◷ Review suggestion")
-      assert has_element?(view, "#pattern-bulk-failed-P-BLK-B", "! Draw 1 section")
+      assert_bulk_notice(view, "Suggested paths for 2 of 3 sections")
+      assert has_element?(view, "#pattern-bulk-success-P-BLK-A", "Review suggestion")
+      assert has_element?(view, "#pattern-bulk-failed-P-BLK-B", "Draw 1 section")
       assert has_element?(view, "#pattern-bulk-review-P-BLK-A", "Review")
+      refute has_element?(view, "#patterns-attention")
 
       assert segments_count(organization, version) == 0
       refute render(view) =~ @test_key
@@ -431,7 +480,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentBulkTest do
 
       open_bulk_dialog(view)
       confirm_bulk_dialog(view)
-      assert_bulk_notice(view, "2 of 3 sections generated")
+      assert_bulk_notice(view, "Suggested paths for 2 of 3 sections")
 
       view |> element("#pattern-bulk-review-P-BLK-A") |> render_click()
 
@@ -477,7 +526,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentBulkTest do
 
       open_bulk_dialog(view)
       confirm_bulk_dialog(view)
-      assert_bulk_notice(view, "2 of 3 sections generated")
+      assert_bulk_notice(view, "Suggested paths for 2 of 3 sections")
 
       render_click(view, "open_pattern", %{"pattern-id" => "P-BLK-B"})
 

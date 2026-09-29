@@ -29,6 +29,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
   alias GtfsPlannerWeb.Gtfs.RoutePatternComponents
+  alias GtfsPlannerWeb.Gtfs.RoutePatternListComponents
   alias LiveSelect.Component, as: LiveSelectComponent
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -80,6 +81,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:derivation_error, nil)
      |> assign(:build_state, :idle)
      |> assign(:build_error, nil)
+     |> assign(:build_summary, nil)
      |> assign(:task, :stops)
      |> assign(:pattern, nil)
      |> assign(:occurrences, [])
@@ -148,8 +150,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:alignment_generate_dialog, nil)
      |> assign(:alignment_generate_notice, nil)
      |> assign(:bulk_selected, nil)
+     |> assign(:bulk_candidates, [])
      |> assign(:bulk_dialog, nil)
      |> assign(:bulk_result, nil)
+     |> assign(:bulk_error, nil)
      |> assign(:alignment_bulk, nil)
      |> assign(:alignment_suggestions, %{})
      |> assign(:details_params, @creation_defaults)
@@ -263,11 +267,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         {:noreply,
          socket
          |> assign(:build_state, :idle)
+         |> assign(:build_error, nil)
          |> put_build_summary(summary)
          |> load_screen()}
 
       {:error, :nothing_pending} ->
-        {:noreply, socket |> assign(:build_state, :blocked) |> load_screen()}
+        {:noreply,
+         socket
+         |> assign(:build_state, :blocked)
+         |> assign(:build_error, nil)
+         |> assign(:build_summary, nil)
+         |> load_screen()}
 
       {:error, :not_found} ->
         {:noreply, not_found(socket)}
@@ -277,6 +287,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          socket
          |> assign(:build_state, :failed)
          |> assign(:build_error, build_error_message(reason))
+         |> assign(:build_summary, nil)
          |> load_screen()}
     end
   end
@@ -746,16 +757,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   @impl true
   def handle_event("toggle_bulk_select", params, socket) do
-    before = socket.assigns[:bulk_selected]
-
-    socket = RoutePatternAlignmentEvents.toggle_bulk_select(socket, params)
-
-    socket =
-      if socket.assigns[:bulk_selected] != before,
-        do: load_screen(socket),
-        else: socket
-
-    {:noreply, socket}
+    {:noreply, RoutePatternAlignmentEvents.toggle_bulk_select(socket, params)}
   end
 
   @impl true
@@ -1247,7 +1249,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <:sub_header :if={@route}>
+      <:sub_header :if={@route && @live_action != :index}>
         <.route_sub_nav
           route={@route}
           gtfs_version_id={@current_gtfs_version.id}
@@ -1260,7 +1262,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         phx-hook="RoutePatternEditor"
         data-dirty={to_string(@dirty?)}
         data-offline={to_string(@offline?)}
-        class="mt-8"
+        class={@live_action != :index && "mt-8"}
       >
         <div id="pattern-editor-content" phx-hook="FormErrorFocus">
           <RoutePatternComponents.status_regions
@@ -1269,6 +1271,32 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
           />
 
           <%= cond do %>
+            <% @live_action == :index -> %>
+              <RoutePatternListComponents.page
+                load_state={@load_state}
+                route={@route}
+                version={@current_gtfs_version}
+                patterns={@streams.patterns}
+                patterns_empty?={@patterns_empty?}
+                pattern_count={@pattern_count}
+                route_trip_count={@route_trip_count}
+                pending_trip_count={@pending_trip_count}
+                custom_trip_count={@custom_trip_count}
+                derivation_error={@derivation_error}
+                build_state={@build_state}
+                build_error={@build_error}
+                build_summary={@build_summary}
+                stale?={@stale?}
+                editable?={@patterns_editable}
+                editor_revoked?={@editor_revoked?}
+                new_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/new"}
+                bulk_candidates={@bulk_candidates}
+                bulk_selected={@bulk_selected}
+                bulk_dialog={@bulk_dialog}
+                bulk_result={@bulk_result}
+                bulk_error={@bulk_error}
+                bulk_pending={@alignment_bulk != nil}
+              />
             <% @load_state == :loading -> %>
               <.skeleton id="patterns-loading" label="Loading patterns" rows={3} aria-busy="true" />
             <% @load_state == :unavailable -> %>
@@ -1301,25 +1329,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                   </button>
                 </.callout>
               </div>
-            <% @load_state == :ready and @live_action == :index -> %>
-              <RoutePatternComponents.pattern_list_states
-                patterns={@streams.patterns}
-                patterns_empty?={@patterns_empty?}
-                pattern_count={@pattern_count}
-                route_trip_count={@route_trip_count}
-                pending_trip_count={@pending_trip_count}
-                custom_trip_count={@custom_trip_count}
-                derivation_error={@derivation_error}
-                build_state={@build_state}
-                build_error={@build_error}
-                stale?={@stale?}
-                new_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/new"}
-                editable?={@patterns_editable}
-                selected={@bulk_selected}
-                bulk_dialog={@bulk_dialog}
-                bulk_result={@bulk_result}
-                bulk_pending={@alignment_bulk != nil}
-              />
             <% @load_state == :ready -> %>
               <%= if @pattern || @live_action == :new do %>
                 <RoutePatternComponents.pattern_detail_header
@@ -1575,7 +1584,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         {rows, preselected} = with_alignment(socket, screen.patterns)
 
         socket
-        |> stream(:patterns, rows, reset: true)
+        |> stream(:patterns, RoutePatternListComponents.stream_items(rows), reset: true)
+        |> assign(:bulk_candidates, bulk_candidates(rows))
         |> assign(:patterns_editable, editor_access?(socket))
         |> preselect_bulk(preselected)
       end)
@@ -1625,6 +1635,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   defp bulk_missing?(%{missing: missing}) when missing > 0, do: true
   defp bulk_missing?(_status), do: false
+
+  # The patterns "Generate missing paths" can offer: each with how many sections
+  # still lack a path, named the way the list names them.
+  defp bulk_candidates(rows) do
+    for row <- rows, bulk_missing?(row.alignment) do
+      %{
+        id: row.pattern.route_pattern_id,
+        name: RoutePatternListComponents.pattern_name(row.pattern),
+        missing: row.alignment.missing
+      }
+    end
+  end
 
   defp apply_detail(socket, nil, _previous_pattern_id) do
     socket
@@ -3260,15 +3282,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp annotate(socket, message), do: assign(socket, :status_message, message)
 
   defp put_build_summary(socket, summary) do
-    created = Map.get(summary, :patterns_created, 0)
-    linked = Map.get(summary, :trips_linked, 0)
-    custom = Map.get(summary, :trips_custom, 0)
-
-    annotate(
-      socket,
-      "Patterns built from existing trips: #{created} patterns created, " <>
-        "#{linked} trips linked, #{custom} kept as custom."
-    )
+    assign(socket, :build_summary, %{
+      created: Map.get(summary, :patterns_created, 0),
+      linked: Map.get(summary, :trips_linked, 0),
+      custom: Map.get(summary, :trips_custom, 0)
+    })
   end
 
   defp affected_message(0), do: "Changes saved in this version."
