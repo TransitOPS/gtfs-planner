@@ -109,21 +109,26 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
     |> Enum.map(&LazyHTML.attribute(&1, "aria-sort"))
   end
 
+  # The Routes link of a table row, or of the one agency's summary.
+  @route_links "#agencies a[aria-label], #agency-summary a[aria-label]"
+
   defp count_labels(doc) do
     doc
-    |> LazyHTML.query("#agencies a[aria-label]")
+    |> LazyHTML.query(@route_links)
     |> Enum.map(&LazyHTML.attribute(&1, "aria-label"))
   end
 
   defp count_hrefs(doc) do
     doc
-    |> LazyHTML.query("#agencies a[aria-label]")
+    |> LazyHTML.query(@route_links)
     |> Enum.map(&LazyHTML.attribute(&1, "href"))
   end
 
   defp text_of(doc, selector) do
-    doc |> LazyHTML.query(selector) |> LazyHTML.text() |> String.trim()
+    doc |> LazyHTML.query(selector) |> LazyHTML.text() |> squish()
   end
+
+  defp squish(text), do: text |> String.replace(~r/\s+/, " ") |> String.trim()
 
   describe "the list" do
     setup :editor_setup
@@ -164,12 +169,11 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
       # the section route used to render.
       assert text_of(doc, "h1") == "Agencies"
 
-      assert LazyHTML.attribute(
-               LazyHTML.query(doc, "#settings-nav a[aria-current='page']"),
-               "href"
-             ) ==
-               [agencies_path(version.id)]
+      # The way back to the Settings overview replaces the section tab bar.
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-back"), "href") ==
+               ["/gtfs/#{version.id}/settings"]
 
+      refute has_element?(view, "#settings-nav")
       refute has_element?(view, "#coming-soon-status")
       refute has_element?(view, "#agencies-empty")
 
@@ -181,12 +185,6 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
 
       assert hosts(doc) == ["harbor.example", "northcoast.example", "riverside.example"]
 
-      assert Enum.map(rows(doc), &cell_text(&1, "Timezone")) == [
-               "America/New_York",
-               "America/New_York",
-               "America/New_York"
-             ]
-
       assert count_labels(doc) == [
                ["View 2 routes for Harbor Shuttle"],
                ["View 5 routes for North Coast Transit"],
@@ -195,17 +193,73 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
 
       assert cell_text(Enum.at(rows(doc), 1), "Routes") |> String.starts_with?("5")
 
-      # One timezone, so the band names it and no row needs review.
-      band = text_of(doc, "#agencies-timezone-band")
+      # One timezone is a fact about the version, so the panel names it and the
+      # table carries no Timezone column and no row needs review.
+      assert has_element?(view, "#agencies-timezone-band", "Schedule timezone")
+      assert text_of(doc, "#agencies-timezone-value") == "America/New_York"
 
-      assert band =~ "One timezone for this version"
-      assert band =~ "America/New_York · Used by all agencies and their schedules."
+      assert text_of(doc, "#agencies-timezone-band") =~
+               "Every agency in this version shares it."
 
+      refute has_element?(view, "#agencies td[data-label='Timezone']")
       refute has_element?(view, "#agencies-timezone-callout")
-      refute has_element?(view, "#agencies tr td div", "Needs review")
+      refute has_element?(view, "#agencies", "Needs review")
     end
 
-    test "one agency still renders the one-row list", %{
+    test "one agency reads as a summary of what riders see, not as a one-row list", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      agency =
+        create_agency(
+          organization,
+          version,
+          Map.merge(agency_attributes("NCT", "North Coast Transit", "northcoast.example"), %{
+            agency_phone: "(541) 555-0140",
+            agency_email: "riders@northcoast.example",
+            agency_lang: "en"
+          })
+        )
+
+      routes(organization, version, "NCT", 2)
+
+      {:ok, view, _html} = live(conn, agencies_path(version.id))
+      doc = LazyHTML.from_fragment(render(view))
+
+      assert has_element?(view, "#agency-summary")
+      refute has_element?(view, "#agencies")
+      refute has_element?(view, "#agencies-empty")
+      assert text_of(doc, "h1") == "Agencies"
+
+      assert text_of(doc, "#agency-summary-name") == "North Coast Transit"
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#agency-summary-website"), "href") ==
+               ["https://northcoast.example"]
+
+      assert text_of(doc, "#agency-summary-phone") == "(541) 555-0140"
+      assert text_of(doc, "#agency-summary-email") == "riders@northcoast.example"
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#agency-summary-email a"), "href") ==
+               ["mailto:riders@northcoast.example"]
+
+      assert text_of(doc, "#agency-summary-fare") == "Not set"
+      assert text_of(doc, "#agency-summary-language") == "English (en)"
+      assert text_of(doc, "#agency-summary-route-count") == "2"
+
+      # The GTFS terms sit behind a disclosure, and the timezone in its panel.
+      assert text_of(doc, "#agency-summary-technical") =~ "NCT"
+      assert text_of(doc, "#agency-summary-technical") =~ "America/New_York"
+      assert has_element?(view, "#agencies-timezone-band")
+
+      # Edit details is the one row-level action, and it opens the agency.
+      assert has_element?(view, "#agency-open-#{agency.id}", "Edit details")
+    end
+
+    test "creating a second agency turns the summary into a table of both", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -219,19 +273,57 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
         agency_attributes("NCT", "North Coast Transit", "northcoast.example")
       )
 
-      routes(organization, version, "NCT", 2)
+      {:ok, view, _html} = live(conn, agencies_path(version.id))
+
+      assert has_element?(view, "#agency-summary")
+      refute has_element?(view, "#agencies")
+
+      view |> element("#agencies-create") |> render_click()
+
+      # The version already holds a zone, so the drawer takes it instead of asking.
+      refute has_element?(view, "#agency-form_agency_timezone")
+
+      view
+      |> form("#agency-form", %{
+        "agency" => %{"agency_name" => "Harbor Shuttle", "agency_url" => "https://harbor.example"}
+      })
+      |> render_submit()
+
+      doc = LazyHTML.from_fragment(render(view))
+
+      refute has_element?(view, "#agency-summary")
+      assert names(doc) == ["Harbor Shuttle", "North Coast Transit"]
+      assert hosts(doc) == ["harbor.example", "northcoast.example"]
+      assert has_element?(view, "#agencies-create.btn-primary")
+    end
+
+    test "an imported address that is not a plain web address or email stays text", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      create_agency(
+        organization,
+        version,
+        Map.merge(agency_attributes("ODD", "Odd Transit", "odd.example"), %{
+          agency_url: "javascript:alert(1)",
+          agency_email: "call the office",
+          agency_fare_url: "fares soon"
+        })
+      )
 
       {:ok, view, _html} = live(conn, agencies_path(version.id))
       doc = LazyHTML.from_fragment(render(view))
 
-      assert has_element?(view, "#agencies")
-      assert Enum.count(rows(doc)) == 1
-      assert names(doc) == ["North Coast Transit"]
-      assert text_of(doc, "h1") == "Agencies"
-
-      # The list, not a single-agency detail view: the band and the table stay.
-      assert has_element?(view, "#agencies-timezone-band")
-      refute has_element?(view, "#agencies-empty")
+      refute has_element?(view, "#agency-summary-website")
+      refute has_element?(view, "#agency-summary a[href^='javascript:']")
+      refute has_element?(view, "#agency-summary-email a")
+      refute has_element?(view, "#agency-summary-fare a")
+      assert text_of(doc, "#agency-summary-email") == "call the office"
+      assert text_of(doc, "#agency-summary-fare") == "fares soon"
     end
 
     test "count links carry the agency filter, or none when the version has one agency", %{
@@ -336,7 +428,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
       assert has_element?(routes_view, "select[name='agency_id'] option[selected]", "A&B 1")
     end
 
-    test "sorts by name, timezone and route count from the headers", %{
+    test "sorts by name and route count from the headers", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -367,7 +459,8 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
 
       {:ok, view, _html} = live(conn, agencies_path(version.id))
 
-      # Name ascending is the initial order.
+      # Name ascending is the initial order. The Rider contact column does not
+      # sort, and the Timezone column is absent while the agencies agree.
       doc = LazyHTML.from_fragment(render(view))
 
       assert names(doc) == [
@@ -376,7 +469,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
                "Riverside Community Transport"
              ]
 
-      assert header_sorts(doc) == [["ascending"], ["none"], ["none"]]
+      assert header_sorts(doc) == [["ascending"], [], ["none"]]
 
       render_click(view, "sort", %{"key" => "routes"})
 
@@ -388,7 +481,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
                "North Coast Transit"
              ]
 
-      assert header_sorts(doc) == [["none"], ["none"], ["ascending"]]
+      assert header_sorts(doc) == [["none"], [], ["ascending"]]
 
       # The second click on the same header reverses the order.
       render_click(view, "sort", %{"key" => "routes"})
@@ -401,14 +494,136 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
                "Riverside Community Transport"
              ]
 
-      assert header_sorts(doc) == [["none"], ["none"], ["descending"]]
+      assert header_sorts(doc) == [["none"], [], ["descending"]]
+    end
 
-      # A different header starts that column ascending again.
+    test "sorts by timezone from the Timezone column that a timezone problem adds", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      create_agency(
+        organization,
+        version,
+        agency_attributes("NCT", "North Coast Transit", "northcoast.example", "America/New_York")
+      )
+
+      create_agency(
+        organization,
+        version,
+        agency_attributes("LFT", "Lakefront Transit", "lakefront.example", "America/Chicago")
+      )
+
+      create_agency(
+        organization,
+        version,
+        agency_attributes("DEN", "Front Range Transit", "frontrange.example", "America/Denver")
+      )
+
+      {:ok, view, _html} = live(conn, agencies_path(version.id))
+
+      doc = LazyHTML.from_fragment(render(view))
+
+      assert names(doc) == ["Front Range Transit", "Lakefront Transit", "North Coast Transit"]
+      assert header_sorts(doc) == [["ascending"], [], ["none"], ["none"]]
+
+      # A different header starts that column ascending, and America/Chicago
+      # sorts before America/Denver and America/New_York.
       render_click(view, "sort", %{"key" => "timezone"})
 
       doc = LazyHTML.from_fragment(render(view))
 
-      assert header_sorts(doc) == [["none"], ["ascending"], ["none"]]
+      assert names(doc) == ["Lakefront Transit", "Front Range Transit", "North Coast Transit"]
+      assert header_sorts(doc) == [["none"], [], ["ascending"], ["none"]]
+    end
+
+    test "shows the phone first and the email under it, and says when neither is set", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      create_agency(
+        organization,
+        version,
+        Map.merge(agency_attributes("BOTH", "Both Transit", "both.example"), %{
+          agency_phone: "(541) 555-0140",
+          agency_email: "both@example.com"
+        })
+      )
+
+      create_agency(
+        organization,
+        version,
+        Map.merge(agency_attributes("MAIL", "Mail Transit", "mail.example"), %{
+          agency_email: "mail@example.com"
+        })
+      )
+
+      create_agency(
+        organization,
+        version,
+        agency_attributes("NONE", "None Transit", "none.example")
+      )
+
+      {:ok, view, _html} = live(conn, agencies_path(version.id))
+      doc = LazyHTML.from_fragment(render(view))
+
+      # Rows are in name order: Both, Mail, None.
+      assert Enum.map(rows(doc), &(&1 |> cell("Rider contact") |> LazyHTML.text() |> squish())) ==
+               ["(541) 555-0140 both@example.com", "mail@example.com", "No contact details"]
+    end
+
+    test "the primary action follows the state of the page", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      only =
+        create_agency(
+          organization,
+          version,
+          agency_attributes("NCT", "North Coast Transit", "northcoast.example")
+        )
+
+      # One agency: editing it is the common task, so Create agency steps back.
+      {:ok, view, _html} = live(conn, agencies_path(version.id))
+
+      assert has_element?(view, "#agency-open-#{only.id}.btn-primary")
+      assert has_element?(view, "#agencies-create.btn-outline")
+      refute has_element?(view, "#agencies-create.btn-primary")
+
+      create_agency(
+        organization,
+        version,
+        agency_attributes("HBR", "Harbor Shuttle", "harbor.example")
+      )
+
+      # Two agreeing agencies: adding another is the primary.
+      {:ok, view, _html} = live(conn, agencies_path(version.id))
+
+      assert has_element?(view, "#agencies-create.btn-primary")
+
+      create_agency(
+        organization,
+        version,
+        agency_attributes("LFT", "Lakefront Transit", "lakefront.example", "America/Chicago")
+      )
+
+      # A timezone problem outranks both, so resolving it is the only primary.
+      {:ok, view, _html} = live(conn, agencies_path(version.id))
+
+      assert has_element?(view, "#agencies-resolve-timezones.btn-primary")
+      assert has_element?(view, "#agencies-create.btn-outline")
+      refute has_element?(view, "#agencies-create.btn-primary")
     end
   end
 

@@ -92,6 +92,108 @@ defmodule GtfsPlannerWeb.Components.PlannerComponentsTest do
 
       assert doc(html) |> LazyHTML.query("#outcome p + div") |> Enum.empty?()
     end
+
+    test "puts the action beside the text, in the message that names the problem" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.message id="outcome" kind="warning" title="Agencies use different timezones">
+          Choose one timezone.
+          <:action><button id="resolve" type="button">Resolve timezones</button></:action>
+        </.message>
+        """)
+
+      message = doc(html) |> LazyHTML.query("#outcome")
+
+      assert Enum.count(LazyHTML.query(message, "#resolve")) == 1
+      assert LazyHTML.text(message) =~ "Agencies use different timezones"
+      assert LazyHTML.text(message) =~ "Choose one timezone."
+    end
+
+    test "renders no action wrapper when none is given" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.message id="outcome" kind="info" title="Saved.">Save again.</.message>
+        """)
+
+      assert doc(html) |> LazyHTML.query("#outcome button") |> Enum.empty?()
+    end
+  end
+
+  describe "form_section/1" do
+    test "names its fields with a legend and divides every section after the first" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <div id="sections">
+          <.form_section title="Publisher" first?><input id="one" /></.form_section>
+          <.form_section title="Data contact"><input id="two" /></.form_section>
+        </div>
+        """)
+
+      sections = doc(html) |> LazyHTML.query("#sections > div")
+      legends = doc(html) |> LazyHTML.query("legend") |> Enum.map(&String.trim(LazyHTML.text(&1)))
+
+      assert legends == ["Publisher", "Data contact"]
+
+      assert LazyHTML.attribute(sections, "class") |> Enum.map(&(&1 =~ "border-t")) == [
+               false,
+               true
+             ]
+    end
+  end
+
+  describe "unsaved_badge/1" do
+    test "says in words that the draft differs from what is saved" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.unsaved_badge id="draft-mark" />
+        """)
+
+      assert doc(html) |> LazyHTML.query("#draft-mark") |> LazyHTML.text() |> String.trim() ==
+               "Unsaved changes"
+    end
+  end
+
+  describe "aside_link/1" do
+    test "links on from the aside with its label and an arrow" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.aside_link id="go-on" navigate="/next">Go on</.aside_link>
+        """)
+
+      link = doc(html) |> LazyHTML.query("#go-on")
+
+      assert LazyHTML.attribute(link, "href") == ["/next"]
+      assert LazyHTML.text(link) |> String.trim() == "Go on"
+      assert Enum.count(LazyHTML.query(link, ".hero-arrow-right")) == 1
+    end
+  end
+
+  describe "safe_href/2" do
+    test "opens a plain web address or email and nothing else" do
+      assert safe_href(:web, "https://agency.example/fares") == "https://agency.example/fares"
+      assert safe_href(:web, "HTTP://agency.example") == "HTTP://agency.example"
+      assert safe_href(:email, "riders@agency.example") == "mailto:riders@agency.example"
+    end
+
+    test "refuses imported text a browser could act on unexpectedly" do
+      assert safe_href(:web, "javascript:alert(1)") == nil
+      assert safe_href(:web, "https://agency.example is our site") == nil
+      assert safe_href(:web, "agency.example") == nil
+      assert safe_href(:email, "call the office") == nil
+      assert safe_href(:email, "riders@") == nil
+      assert safe_href(:text, "https://agency.example") == nil
+      assert safe_href(:web, nil) == nil
+    end
   end
 
   describe "drawer_footer/1" do

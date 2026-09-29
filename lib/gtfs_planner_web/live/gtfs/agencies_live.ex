@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   @moduledoc """
-  Lists one version's agencies with their route counts and its timezone state.
+  Shows one version's agencies with their route counts and its timezone state.
 
   Agencies are the transit providers riders see in journey planners, so the page
   answers three questions at once: who operates this version, which routes each
@@ -9,20 +9,24 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   agency, or to the unfiltered list when the version has one agency, because a
   single-agency list filtered to it says the same thing.
 
-  The list is a streamed `table` whose headers sort by name, timezone or route
-  count, keeping the sort in assigns and resetting the stream. A version with no
-  agency shows the first-use empty state instead: it names the routes that still
-  need an agency so the editor knows what creating the first one will assign
-  (AC-11). A version whose agencies disagree on a timezone keeps the list — the
-  single-agency decision this package recorded — and flags the disagreement
-  through the band, the warning callout that names the reason, and a "Needs
-  review" note on every row whose zone differs from the version zone.
+  One agency reads as a summary of what riders see (name, website, rider contact,
+  route count) with its GTFS terms behind a disclosure, and Edit details is the
+  page's primary. Two or more read as a streamed table whose headers sort by name
+  or route count, keeping the sort in assigns and resetting the stream; Create
+  agency is the primary. The schedule timezone is a fact about the version, so it
+  sits in a panel beside the agencies; the table gains a Timezone column, sortable
+  and marked "Needs review" on every row whose zone differs from the version
+  zone, only while the agencies disagree. That problem also raises a warning
+  message that names the reason and carries Resolve timezones, which takes the
+  primary. A version with no agency shows the first-use empty state instead: it
+  names the routes that still need an agency so the editor knows what creating
+  the first one will assign (AC-11).
 
   Reads go through `GtfsPlanner.Gtfs.FeedSettings`, scoped to the organization
   and version, and the timezone verdict is `DisplayClock`'s own: this LiveView
   holds no timezone rule of its own (INV-4) and makes no `Repo` call (CR-1).
 
-  The band's Change timezone action and the callout's Resolve timezones action
+  The panel's Change timezone action and the warning's Resolve timezones action
   open one drawer that follows the prototype's choose → review → apply route: the
   editor names a zone from `DisplayClock.zone_names/0`, sees every agency with the
   zone it holds now and the routes it operates, and acknowledges that the change
@@ -34,28 +38,28 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
 
   Creation is the same drawer pattern in its simplest form: the header's Create
   agency action and the empty state's Create first agency action open
-  `#agency-drawer`, whose form holds the prototype's two sections. Only the
-  version's first agency carries a schedule timezone field, because the first
-  agency decides the version's zone and every later one takes it (R2, AC-12);
-  validating and saving go through `FeedSettings.change_agency/2` and
-  `create_agency/2` (CR-1). A version that already has agencies but no single
-  valid zone cannot take another one: both actions open the timezone flow
-  instead, and the server refuses the same case with `:timezone_unresolved`
-  (AC-13). An unsaved form is protected like the Feed details drawer — the
-  discard question on every close route and the shared `unsaved_guard/1` hook on
-  reload (AC-6).
+  `#agency-drawer`, whose form holds the prototype's two sections, Name and
+  website and Rider contact. Only the version's first agency carries a schedule
+  timezone field, because the first agency decides the version's zone and every
+  later one takes it (R2, AC-12); validating and saving go through
+  `FeedSettings.change_agency/2` and `create_agency/2` (CR-1). A version that
+  already has agencies but no single valid zone cannot take another one: both
+  actions open the timezone flow instead, and the server refuses the same case
+  with `:timezone_unresolved` (AC-13). An unsaved form is protected like the Feed
+  details drawer — the discard question on every close route and the shared
+  `unsaved_guard/1` hook on reload (AC-6).
 
-  Editing is that drawer over one stored row. Each name in the list is a button
-  that loads its row with the scoped `FeedSettings.get_agency/3` and keeps the
-  `updated_at` it loaded in the socket, never in a hidden field (CR-1, CR-9);
-  the drawer shows the prototype's read-only identity box where the ID would be
-  edited, the version zone as a note instead of a second zone field, and saves
-  through `FeedSettings.update_agency/4`. A save another editor beat is a
-  conflict rather than a silent overwrite: the draft stays on screen with "Load
-  latest", and once the latest row and its token are loaded the next save
-  replaces their values (AC-15, AC-16). A row that is gone — deleted, foreign or
-  from another version — flashes "This agency no longer exists." and opens
-  nothing (AC-28).
+  Editing is that drawer over one stored row. Each name in the table, and Edit
+  details on the summary, is a button that loads its row with the scoped
+  `FeedSettings.get_agency/3` and keeps the `updated_at` it loaded in the socket,
+  never in a hidden field (CR-1, CR-9); the drawer shows the agency ID as a
+  read-only note where it would be edited, the version zone as a note instead of
+  a second zone field, and saves through `FeedSettings.update_agency/4`. A save
+  another editor beat is a conflict rather than a silent overwrite: the draft
+  stays on screen with "Load latest", and once the latest row and its token are
+  loaded the next save replaces their values (AC-15, AC-16). A row that is gone —
+  deleted, foreign or from another version — flashes "This agency no longer
+  exists." and opens nothing (AC-28).
 
   Deleting an agency is the same drawer's third route. The edit footer's Delete
   agency action switches it to the prototype's choose → review → apply steps: the
@@ -79,10 +83,23 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   import GtfsPlannerWeb.Gtfs.FeedSettingsComponents,
     only: [agency_form_fields: 1, timezone_input: 1, unsaved_guard: 1]
 
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [
+      aside_link: 1,
+      back_link: 1,
+      drawer_footer: 1,
+      first_use: 1,
+      form_section: 1,
+      message: 1,
+      safe_href: 2,
+      unsaved_badge: 1
+    ]
+
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.FeedSettings
+  alias GtfsPlanner.Gtfs.LanguageCodes
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Layouts
 
@@ -115,6 +132,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
      socket
      |> assign(:page_title, "Agencies")
      |> assign(:health, %{agency_count: 0, unassigned_routes: 0, zone: {:unresolved, :missing}})
+     |> assign(:sole_agency, nil)
      |> assign(:sort_by, :name)
      |> assign(:sort_dir, :asc)
      |> assign(:timezone_drawer, nil)
@@ -510,237 +528,625 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <:sub_header>
-        <.settings_nav
-          gtfs_version_id={@current_gtfs_version.id}
-          active_tab={:agencies}
-          organization={@current_organization}
-        />
-      </:sub_header>
+      <div id="agencies-page" class="ds-page">
+        <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+          Settings
+        </.back_link>
 
-      <%= if @health.agency_count == 0 do %>
         <.header>
           Agencies
-          <:subtitle>{first_use_subtitle()}</:subtitle>
-        </.header>
-
-        <.empty_state id="agencies-empty" title="Give your service a name" class="mt-6">
-          {empty_body(@health.unassigned_routes)}
-          <:action>
-            <.button
-              id="agencies-create-first"
-              class="min-h-11"
-              phx-click="open_create"
-              phx-value-opener_id="agencies-create-first"
-            >
-              Create first agency
-            </.button>
-          </:action>
-        </.empty_state>
-
-        <.support_note id="agencies-support-note">
-          Already have a GTFS feed?
-          <.link
-            navigate={~p"/gtfs/#{@current_gtfs_version.id}/import"}
-            class="link link-primary"
-          >
-            Review an import
-          </.link>
-          to bring its agencies with it.
-        </.support_note>
-      <% else %>
-        <.header>
-          Agencies
-          <:subtitle>{subtitle()}</:subtitle>
-          <:actions>
+          <:subtitle>
+            {subtitle(@health.agency_count)}
+            <span id="agencies-scope" class="mt-2 flex items-start gap-1.5">
+              <.icon name="hero-calendar" class="mt-0.5 size-4 shrink-0" />
+              <span>{version_scope(@current_gtfs_version)}</span>
+            </span>
+          </:subtitle>
+          <:actions :if={@health.agency_count > 0}>
             <.button
               id="agencies-create"
+              variant={create_variant(@health)}
               class="min-h-11"
               phx-click="open_create"
               phx-value-opener_id="agencies-create"
             >
-              Create agency
+              <.icon name="hero-plus" class="size-4" /> Create agency
             </.button>
           </:actions>
         </.header>
 
-        <%!-- `callout/1` spreads global attributes onto its own class, so the margin
-        lives on a wrapper rather than being passed to the component. --%>
-        <div :if={unresolved_zone?(@health.zone)} class="mt-4">
-          <.callout
+        <%!-- The message's margin lives on a wrapper because the component spreads
+        global attributes onto its own class list. --%>
+        <div :if={zone_problem?(@health)} class="mb-6">
+          <.message
             id="agencies-timezone-callout"
             kind="warning"
             title={callout_title(@health.zone)}
           >
             Choose one timezone for this version. Calendars use UTC until then.
-            <div class="mt-3">
+            <:action>
               <.button
                 id="agencies-resolve-timezones"
                 type="button"
-                variant="secondary"
                 class="min-h-11"
                 phx-click="open_timezone"
                 phx-value-opener_id="agencies-resolve-timezones"
               >
                 Resolve timezones
               </.button>
-            </div>
-          </.callout>
+            </:action>
+          </.message>
         </div>
 
-        <div class="mt-6">
-          <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
-            <.table id="agencies" rows={@streams.agencies} responsive="stack">
-              <:col
-                :let={{_id, row}}
-                label="Agency"
-                sort_key="name"
-                sort_event="sort"
-                sort={column_sort_state(@sort_by, @sort_dir, :name)}
-              >
-                <button
-                  id={"agency-open-#{row.agency.id}"}
-                  type="button"
-                  phx-click="open_edit"
-                  phx-value-id={row.agency.id}
-                  phx-value-opener_id={"agency-open-#{row.agency.id}"}
-                  class="inline-block min-h-11 text-left font-semibold break-words text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+        <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start">
+          <div class="min-w-0">
+            <.first_use
+              :if={@health.agency_count == 0}
+              id="agencies-empty"
+              title="Give your service a name"
+              icon="hero-building-office"
+            >
+              {empty_body(@health.unassigned_routes)}
+              <:action>
+                <.button
+                  id="agencies-create-first"
+                  class="min-h-11"
+                  phx-click="open_create"
+                  phx-value-opener_id="agencies-create-first"
                 >
-                  {row.agency.agency_name}
-                </button>
-                <div class="mt-1 text-xs break-words text-base-content/70">
-                  {website_host(row.agency.agency_url)}
-                </div>
-              </:col>
-              <:col
-                :let={{_id, row}}
-                label="Timezone"
-                sort_key="timezone"
-                sort_event="sort"
-                sort={column_sort_state(@sort_by, @sort_dir, :timezone)}
-              >
-                <div>{row.agency.agency_timezone || "Not set"}</div>
-                <div
-                  :if={row_needs_review?(row.agency.agency_timezone, @health.zone)}
-                  class="mt-1 text-xs text-base-content/70"
-                >
-                  {needs_review()}
-                </div>
-              </:col>
-              <:col
-                :let={{_id, row}}
-                label="Routes"
-                align="right"
-                sort_key="routes"
-                sort_event="sort"
-                sort={column_sort_state(@sort_by, @sort_dir, :routes)}
-              >
-                <.link
-                  navigate={routes_path(@current_gtfs_version.id, @health.agency_count, row)}
-                  class="inline-flex min-h-11 items-center gap-2 whitespace-nowrap font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-                  aria-label={"View #{row.route_count} routes for #{row.agency.agency_name}"}
-                >
-                  {row.route_count} <span aria-hidden="true">→</span>
-                </.link>
-              </:col>
-            </.table>
+                  <.icon name="hero-plus" class="size-4" /> Create first agency
+                </.button>
+              </:action>
+            </.first_use>
+
+            <.agency_summary
+              :if={@sole_agency}
+              row={@sole_agency}
+              variant={edit_variant(@health)}
+              version_id={@current_gtfs_version.id}
+              agency_count={@health.agency_count}
+            />
+
+            <.agencies_table
+              :if={@health.agency_count > 0 and is_nil(@sole_agency)}
+              rows={@streams.agencies}
+              health={@health}
+              sort_by={@sort_by}
+              sort_dir={@sort_dir}
+              version={@current_gtfs_version}
+            />
           </div>
-          <p class="mt-2 text-sm text-base-content/70">
-            Agency names open their details. Route counts show the routes they operate.
-          </p>
+
+          <.related_information
+            health={@health}
+            version_id={@current_gtfs_version.id}
+          />
         </div>
 
-        <section
-          id="agencies-timezone-band"
-          class="mt-6 flex flex-wrap items-center justify-between gap-4 border-b border-base-300 pb-4"
+        <.timezone_drawer
+          mode={@timezone_drawer}
+          form={@timezone_form}
+          zones={@zone_names}
+          agencies={@timezone_agencies}
+          review={@timezone_review}
+          ack_error={@timezone_ack_error}
+          notice={@timezone_notice}
+          resolved?={resolved_zone?(@health.zone)}
+          return_focus_id={@return_focus_id}
+          version={@current_gtfs_version}
+          organization={@current_organization}
+        />
+
+        <.agency_drawer
+          mode={@agency_drawer}
+          form={@agency_form}
+          agency={@agency_baseline}
+          first_agency?={@health.agency_count == 0}
+          last_agency?={@health.agency_count == 1}
+          delete_mode={@agency_delete}
+          delete_form={@agency_delete_form}
+          delete_review={@agency_delete_review}
+          delete_route_count={@delete_route_count}
+          delete_target_options={@delete_target_options}
+          zone={zone_name(@health.zone)}
+          zone_names={@zone_names}
+          conflict?={@agency_conflict?}
+          conflict_reloaded?={@agency_conflict_reloaded?}
+          dirty?={@agency_dirty?}
+          return_focus_id={@return_focus_id}
+          version={@current_gtfs_version}
+          organization={@current_organization}
+        />
+
+        <%!--
+          The discard question is the only exit from a changed draft, so the create
+          drawer stays open and visible behind it. Escape belongs to the dialog while
+          it is up: the `OverlayDialog` hook turns it into a click on "Keep editing".
+          `described_by` names `.confirm_dialog`'s own `#agency-discard-body` wrapper,
+          so the paragraph inside it carries no id of its own.
+        --%>
+        <.confirm_dialog
+          :if={@agency_confirm_discard?}
+          id="agency-discard"
+          chrome="planner"
+          open={true}
+          title="Discard unsaved changes?"
+          confirm_label="Discard changes"
+          pending_label="Discarding…"
+          cancel_label="Keep editing"
+          on_confirm="confirm_discard_agency"
+          on_cancel="cancel_discard_agency"
+          described_by="agency-discard-body"
         >
-          <div>
-            <h2 class="text-sm font-semibold text-base-content">One timezone for this version</h2>
-            <p class="mt-1 text-sm text-base-content/70">{band_state(@health.zone)}</p>
-          </div>
+          <p>{agency_discard_body(@agency_drawer)}</p>
+        </.confirm_dialog>
+      </div>
+    </Layouts.app>
+    """
+  end
 
-          <.button
-            id="agencies-change-timezone"
-            type="button"
-            variant="secondary"
-            class="min-h-11"
-            phx-click="open_timezone"
-            phx-value-opener_id="agencies-change-timezone"
-          >
-            Change timezone
-          </.button>
+  # One agency reads as a summary of everything riders can see, not as a
+  # one-row list: editing it is far more common than adding another, so Edit
+  # details is the page's primary (`edit_variant/1`). The row is the same
+  # `FeedSettings.list_agencies/2` read the table uses.
+  attr :row, :map, required: true
+  attr :variant, :string, required: true
+  attr :version_id, :any, required: true
+  attr :agency_count, :integer, required: true
+
+  defp agency_summary(assigns) do
+    agency = assigns.row.agency
+
+    assigns =
+      assigns
+      |> assign(:agency, agency)
+      |> assign(:opener_id, "agency-open-#{agency.id}")
+      |> assign(:website_href, safe_href(:web, agency.agency_url))
+
+    ~H"""
+    <article
+      id="agency-summary"
+      aria-labelledby="agency-summary-name"
+      class="overflow-hidden rounded-card border border-subtle bg-white"
+    >
+      <div class="flex flex-wrap items-start justify-between gap-4 p-5 sm:p-6">
+        <div class="flex min-w-0 items-start gap-4">
+          <span class="grid size-12 shrink-0 place-items-center rounded-control bg-canvas text-strong">
+            <.icon name="hero-building-office" class="size-6" />
+          </span>
+          <div class="min-w-0">
+            <h2
+              id="agency-summary-name"
+              class="break-words font-display text-[24px] font-semibold leading-tight tracking-[-0.025em] text-strong"
+            >
+              {@agency.agency_name}
+            </h2>
+            <a
+              :if={@website_href}
+              id="agency-summary-website"
+              href={@website_href}
+              target="_blank"
+              rel="noopener noreferrer"
+              class={[link_class(), "mt-1 inline-flex min-h-11 items-center gap-1.5 text-sm"]}
+            >
+              {website_host(@agency.agency_url)}
+              <.icon name="hero-arrow-top-right-on-square" class="size-3.5 shrink-0" />
+            </a>
+            <p :if={is_nil(@website_href)} class="mt-1 break-all text-sm text-muted">
+              {website_host(@agency.agency_url)}
+            </p>
+          </div>
+        </div>
+
+        <.button
+          id={@opener_id}
+          variant={@variant}
+          class="min-h-11"
+          phx-click="open_edit"
+          phx-value-id={@agency.id}
+          phx-value-opener_id={@opener_id}
+        >
+          <.icon name="hero-pencil-square" class="size-4" /> Edit details
+        </.button>
+      </div>
+
+      <div class="grid border-t border-subtle md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+        <section class="p-5 sm:p-6" aria-labelledby="agency-summary-contact">
+          <h3 id="agency-summary-contact" class="text-base font-bold text-strong">Rider contact</h3>
+          <dl class="mt-2 divide-y divide-subtle">
+            <.contact_row
+              id="agency-summary-phone"
+              icon="hero-phone"
+              label="Phone"
+              value={present(@agency.agency_phone)}
+            />
+            <.contact_row
+              id="agency-summary-email"
+              icon="hero-envelope"
+              label="Email"
+              value={present(@agency.agency_email)}
+              kind={:email}
+            />
+            <.contact_row
+              id="agency-summary-fare"
+              icon="hero-ticket"
+              label="Fare website"
+              value={present(@agency.agency_fare_url)}
+              kind={:web}
+            />
+            <.contact_row
+              id="agency-summary-language"
+              icon="hero-language"
+              label="Language"
+              value={LanguageCodes.label(@agency.agency_lang)}
+            />
+          </dl>
         </section>
 
-        <.support_note id="agencies-support-note">
-          An agency identifies the service riders use. The organization publishing your dataset can
-          be different.
-          <.link
-            navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings/feed-details"}
-            class="link link-primary"
+        <section
+          class="border-t border-subtle p-5 sm:p-6 md:border-l md:border-t-0"
+          aria-labelledby="agency-summary-routes"
+        >
+          <h3 id="agency-summary-routes" class="text-base font-bold text-strong">Routes</h3>
+          <p
+            id="agency-summary-route-count"
+            class="mt-3 font-display text-[40px] font-semibold leading-none tracking-tight tabular-nums text-strong"
           >
-            View feed details
+            {@row.route_count}
+          </p>
+          <p class="mt-1 text-sm text-default">
+            {if @row.route_count == 0,
+              do: "No routes use this agency yet.",
+              else: "Routes riders see under this agency."}
+          </p>
+          <.link
+            id="agency-summary-routes-link"
+            navigate={routes_path(@version_id, @agency_count, @row)}
+            class="mt-2 inline-flex min-h-11 items-center gap-1.5 text-sm font-[650] text-action no-underline hover:text-action-hover hover:underline"
+            aria-label={"View #{@row.route_count} routes for #{@agency.agency_name}"}
+          >
+            View routes <.icon name="hero-arrow-right" class="size-4" />
           </.link>
-        </.support_note>
-      <% end %>
+        </section>
+      </div>
 
-      <.timezone_drawer
-        mode={@timezone_drawer}
-        form={@timezone_form}
-        zones={@zone_names}
-        agencies={@timezone_agencies}
-        review={@timezone_review}
-        ack_error={@timezone_ack_error}
-        notice={@timezone_notice}
-        resolved?={resolved_zone?(@health.zone)}
-        return_focus_id={@return_focus_id}
-        version={@current_gtfs_version}
-        organization={@current_organization}
-      />
+      <%!-- The GTFS terms are for someone matching this agency to a file, so they
+      sit behind a disclosure instead of beside what riders see. --%>
+      <details id="agency-summary-technical" class="group border-t border-subtle">
+        <summary class="flex min-h-11 cursor-pointer list-none items-center gap-2 px-5 text-sm font-[650] text-strong hover:bg-canvas sm:px-6 [&::-webkit-details-marker]:hidden">
+          <.icon
+            name="hero-chevron-right"
+            class="size-4 transition-transform group-open:rotate-90"
+          /> Technical details
+        </summary>
+        <dl class="grid gap-x-6 gap-y-3 px-5 pb-5 pt-2 text-sm sm:grid-cols-[8.5rem_minmax(0,1fr)] sm:px-6">
+          <dt class="text-[13px] text-muted">Agency ID</dt>
+          <dd class="min-w-0 break-all">
+            <code class="rounded-badge bg-canvas px-1.5 py-0.5 font-mono text-[13px] text-strong">
+              {@agency.agency_id}
+            </code>
+            <span class="mt-1 block text-[13px] text-muted">
+              Set when the agency was created. Imports and exports keep it.
+            </span>
+          </dd>
+          <dt class="text-[13px] text-muted">Stored timezone</dt>
+          <dd class="min-w-0 break-all">
+            <code
+              :if={present(@agency.agency_timezone)}
+              class="rounded-badge bg-canvas px-1.5 py-0.5 font-mono text-[13px] text-strong"
+            >
+              {@agency.agency_timezone}
+            </code>
+            <span :if={is_nil(present(@agency.agency_timezone))} class="text-muted">Not set</span>
+          </dd>
+          <dt class="text-[13px] text-muted">GTFS file</dt>
+          <dd class="text-[13px] text-muted">
+            These details are exported as <code class="font-mono">agency.txt</code>.
+          </dd>
+        </dl>
+      </details>
+    </article>
+    """
+  end
 
-      <.agency_drawer
-        mode={@agency_drawer}
-        form={@agency_form}
-        agency={@agency_baseline}
-        first_agency?={@health.agency_count == 0}
-        last_agency?={@health.agency_count == 1}
-        delete_mode={@agency_delete}
-        delete_form={@agency_delete_form}
-        delete_review={@agency_delete_review}
-        delete_route_count={@delete_route_count}
-        delete_target_options={@delete_target_options}
-        zone={zone_name(@health.zone)}
-        zone_names={@zone_names}
-        conflict?={@agency_conflict?}
-        conflict_reloaded?={@agency_conflict_reloaded?}
-        dirty?={@agency_dirty?}
-        return_focus_id={@return_focus_id}
-        version={@current_gtfs_version}
-        organization={@current_organization}
-      />
+  # One row of a summary: the field's icon and name over its value, "Not set"
+  # when the agency does not carry it. A web address or email is a link only when
+  # `safe_href/2` says the browser can follow it.
+  attr :id, :string, required: true
+  attr :icon, :string, required: true
+  attr :label, :string, required: true
+  attr :value, :string, default: nil
+  attr :kind, :atom, values: [:text, :web, :email], default: :text
 
-      <%!--
-        The discard question is the only exit from a changed draft, so the create
-        drawer stays open and visible behind it. Escape belongs to the dialog while
-        it is up: the `OverlayDialog` hook turns it into a click on "Keep editing".
-        `described_by` names `.confirm_dialog`'s own `#agency-discard-body` wrapper,
-        so the paragraph inside it carries no id of its own.
-      --%>
-      <.confirm_dialog
-        :if={@agency_confirm_discard?}
-        id="agency-discard"
-        open={true}
-        title="Discard unsaved changes?"
-        confirm_label="Discard changes"
-        pending_label="Discarding…"
-        cancel_label="Keep editing"
-        on_confirm="confirm_discard_agency"
-        on_cancel="cancel_discard_agency"
-        confirm_variant="danger"
-        described_by="agency-discard-body"
+  defp contact_row(assigns) do
+    assigns = assign(assigns, :href, safe_href(assigns.kind, assigns.value))
+
+    ~H"""
+    <div class="grid grid-cols-[7.5rem_minmax(0,1fr)] items-center gap-3 sm:grid-cols-[8.5rem_minmax(0,1fr)]">
+      <dt class="flex items-center gap-2 text-[13px] text-muted">
+        <.icon name={@icon} class="size-4 shrink-0" /> {@label}
+      </dt>
+      <dd
+        id={@id}
+        class="flex min-h-11 min-w-0 flex-wrap items-center py-1 text-sm text-strong [overflow-wrap:anywhere]"
       >
-        <p>{agency_discard_body(@agency_drawer)}</p>
-      </.confirm_dialog>
-    </Layouts.app>
+        <span :if={is_nil(@value)} class="text-muted">Not set</span>
+        <a
+          :if={@href}
+          href={@href}
+          target={@kind == :web && "_blank"}
+          rel={@kind == :web && "noopener noreferrer"}
+          class={link_class()}
+        >
+          {@value}
+        </a>
+        <span :if={@value && is_nil(@href)}>{@value}</span>
+      </dd>
+    </div>
+    """
+  end
+
+  # Two or more agencies are a collection, so they read as a table. Each name
+  # opens its row; Routes links to the Routes list filtered to that agency. The
+  # Timezone column shows only while the version has a timezone problem: when
+  # every agency agrees the zone is a fact about the version, not a column, and
+  # it sits in the Schedule timezone panel.
+  attr :rows, :any, required: true, doc: "the `:agencies` stream"
+  attr :health, :map, required: true
+  attr :sort_by, :atom, required: true
+  attr :sort_dir, :atom, required: true
+  attr :version, :any, required: true
+
+  defp agencies_table(assigns) do
+    assigns = assign(assigns, :show_zone?, unresolved_zone?(assigns.health.zone))
+
+    ~H"""
+    <section id="agencies-list" aria-labelledby="agencies-list-title">
+      <div class="overflow-hidden rounded-card border border-subtle bg-white">
+        <div class="px-5 py-4">
+          <h2 id="agencies-list-title" class="text-base font-bold text-strong">
+            {agency_count_label(@health.agency_count)}
+          </h2>
+        </div>
+
+        <div id="agencies-container">
+          <table class="w-full border-collapse text-sm">
+            <caption class="sr-only">
+              Agencies in {@version.name}
+            </caption>
+            <thead class="max-md:hidden">
+              <tr class="border-t border-subtle bg-canvas">
+                <.sort_head
+                  label="Agency"
+                  key="name"
+                  sort={column_sort_state(@sort_by, @sort_dir, :name)}
+                />
+                <th scope="col" class={head_class()}>Rider contact</th>
+                <.sort_head
+                  :if={@show_zone?}
+                  label="Timezone"
+                  key="timezone"
+                  sort={column_sort_state(@sort_by, @sort_dir, :timezone)}
+                />
+                <.sort_head
+                  label="Routes"
+                  key="routes"
+                  align="right"
+                  sort={column_sort_state(@sort_by, @sort_dir, :routes)}
+                />
+              </tr>
+            </thead>
+            <tbody id="agencies" phx-update="stream">
+              <tr
+                :for={{id, row} <- @rows}
+                id={id}
+                class="border-t border-subtle align-top hover:bg-canvas max-md:block max-md:px-4 max-md:py-4"
+              >
+                <td data-label="Agency" class="px-5 py-1.5 max-md:block max-md:p-0">
+                  <div>
+                    <button
+                      id={"agency-open-#{row.agency.id}"}
+                      type="button"
+                      phx-click="open_edit"
+                      phx-value-id={row.agency.id}
+                      phx-value-opener_id={"agency-open-#{row.agency.id}"}
+                      class={[
+                        "inline-flex min-h-11 items-center break-words text-left font-[650] text-action underline-offset-4 hover:text-action-hover hover:underline",
+                        focus_class()
+                      ]}
+                    >
+                      {row.agency.agency_name}
+                    </button>
+                  </div>
+                  <div class="mb-1.5 break-all text-[13px] text-muted">
+                    {website_host(row.agency.agency_url)}
+                  </div>
+                </td>
+                <td data-label="Rider contact" class="px-5 py-1.5 max-md:mt-1 max-md:block max-md:p-0">
+                  <.contact_lines
+                    phone={present(row.agency.agency_phone)}
+                    email={present(row.agency.agency_email)}
+                  />
+                </td>
+                <td
+                  :if={@show_zone?}
+                  data-label="Timezone"
+                  class="px-5 py-1.5 max-md:mt-1 max-md:block max-md:p-0"
+                >
+                  <div class={[
+                    "flex min-h-11 items-center break-all",
+                    !row.agency.agency_timezone && "text-muted"
+                  ]}>
+                    {row.agency.agency_timezone || "Not set"}
+                  </div>
+                  <span
+                    :if={row_needs_review?(row.agency.agency_timezone, @health.zone)}
+                    class="mb-1.5 inline-flex items-center gap-1.5 rounded-badge bg-warning-bg px-2 py-0.5 text-[13px] font-semibold text-warning-fg"
+                  >
+                    <.icon name="hero-exclamation-triangle" class="size-3.5" /> {needs_review()}
+                  </span>
+                </td>
+                <td
+                  data-label="Routes"
+                  class="px-5 py-1.5 text-right max-md:mt-1 max-md:block max-md:p-0 max-md:text-left"
+                >
+                  <.link
+                    navigate={routes_path(@version.id, @health.agency_count, row)}
+                    class="inline-flex min-h-11 items-center gap-2 whitespace-nowrap text-sm font-[650] tabular-nums text-action no-underline hover:text-action-hover hover:underline"
+                    aria-label={"View #{row.route_count} routes for #{row.agency.agency_name}"}
+                  >
+                    {routes_label(row.route_count)} <.icon name="hero-arrow-right" class="size-4" />
+                  </.link>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p class="mt-3 text-[13px] text-muted">Select an agency name to edit its details.</p>
+    </section>
+    """
+  end
+
+  defp head_class, do: "px-5 py-1.5 text-left text-[13px] font-semibold text-strong"
+
+  attr :label, :string, required: true
+  attr :key, :string, required: true
+  attr :sort, :string, required: true
+  attr :align, :string, default: "left"
+
+  defp sort_head(assigns) do
+    ~H"""
+    <th
+      scope="col"
+      aria-sort={sort_aria(@sort)}
+      class={[head_class(), @align == "right" && "text-right"]}
+    >
+      <button
+        type="button"
+        phx-click="sort"
+        phx-value-key={@key}
+        class={[
+          "-mx-2 inline-flex min-h-11 items-center gap-1.5 rounded-control px-2 font-semibold hover:bg-white",
+          focus_class(),
+          @align == "right" && "flex-row-reverse"
+        ]}
+      >
+        {@label}
+        <span
+          aria-hidden="true"
+          class={[@sort == "none" && "text-muted", @sort != "none" && "text-action"]}
+        >
+          {sort_arrow(@sort)}
+        </span>
+      </button>
+    </th>
+    """
+  end
+
+  defp sort_aria("asc"), do: "ascending"
+  defp sort_aria("desc"), do: "descending"
+  defp sort_aria(_none), do: "none"
+
+  defp sort_arrow("asc"), do: "↑"
+  defp sort_arrow("desc"), do: "↓"
+  defp sort_arrow(_none), do: "↕"
+
+  # Phone first and email under it, so the row shows what riders would call
+  # before what they would write.
+  attr :phone, :string, default: nil
+  attr :email, :string, default: nil
+
+  defp contact_lines(assigns) do
+    assigns = assign(assigns, :lines, Enum.reject([assigns.phone, assigns.email], &is_nil/1))
+
+    ~H"""
+    <div :if={@lines == []} class="flex min-h-11 items-center text-muted">No contact details</div>
+    <div :if={@lines != []} class="flex min-h-11 items-center break-all text-strong">
+      {hd(@lines)}
+    </div>
+    <div :if={length(@lines) > 1} class="mb-1.5 break-all text-[13px] text-muted">
+      {Enum.at(@lines, 1)}
+    </div>
+    """
+  end
+
+  # The aside answers the two questions the list cannot: which timezone the
+  # version runs on, and whether the publisher is set here. Both hold whether or
+  # not an agency exists yet, except the timezone, which needs one to describe.
+  attr :health, :map, required: true
+  attr :version_id, :any, required: true
+
+  defp related_information(assigns) do
+    ~H"""
+    <aside
+      id="agencies-aside"
+      class="grid gap-4 lg:sticky lg:top-6"
+      aria-label="Related information"
+    >
+      <section
+        :if={@health.agency_count > 0}
+        id="agencies-timezone-band"
+        aria-labelledby="agencies-timezone-title"
+        class="rounded-card border border-subtle bg-white p-5"
+      >
+        <h2 id="agencies-timezone-title" class="text-base font-bold text-strong">
+          Schedule timezone
+        </h2>
+
+        <%= case @health.zone do %>
+          <% {:ok, zone} -> %>
+            <p
+              id="agencies-timezone-value"
+              class="mt-3 break-words font-display text-[22px] font-semibold leading-tight tracking-[-0.02em] text-strong"
+            >
+              {zone}
+            </p>
+            <p class="mt-2 text-sm text-default">
+              Timetable times are read in this timezone. Every agency in this version shares it.
+            </p>
+            <.button
+              id="agencies-change-timezone"
+              type="button"
+              variant="secondary"
+              class="mt-4 min-h-11"
+              phx-click="open_timezone"
+              phx-value-opener_id="agencies-change-timezone"
+            >
+              <.icon name="hero-clock" class="size-4" /> Change timezone
+            </.button>
+          <% {:unresolved, reason} -> %>
+            <p class="mt-3 inline-flex items-center gap-2 rounded-badge bg-warning-bg px-2.5 py-1 text-sm font-semibold text-warning-fg">
+              <.icon name="hero-exclamation-triangle" class="size-4" /> {needs_review()}
+            </p>
+            <p class="mt-3 text-sm text-default">{unresolved_detail(reason)}</p>
+            <p class="mt-2 text-sm text-muted">
+              Use Resolve timezones to choose one for every agency.
+            </p>
+        <% end %>
+      </section>
+
+      <section id="agencies-support-note" class="rounded-card bg-canvas p-5">
+        <%= if @health.agency_count == 0 do %>
+          <h2 class="text-base font-bold leading-snug text-strong">Already have a GTFS feed?</h2>
+          <p class="mt-2 text-sm text-default">Importing a feed brings its agencies with it.</p>
+          <.aside_link id="agencies-review-import" navigate={import_path(@version_id)}>
+            Review an import
+          </.aside_link>
+        <% else %>
+          <h2 class="text-base font-bold leading-snug text-strong">
+            The publisher can be different
+          </h2>
+          <p class="mt-2 text-sm text-default">
+            An agency identifies the service riders use. The organization publishing your dataset
+            can be different.
+          </p>
+          <.aside_link id="agencies-view-feed-details" navigate={feed_details_path(@version_id)}>
+            View feed details
+          </.aside_link>
+        <% end %>
+      </section>
+    </aside>
     """
   end
 
@@ -764,222 +1170,228 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     ~H"""
     <.drawer
       id="agency-timezone-drawer"
+      chrome="planner"
       open={@mode != nil}
       on_close="close_timezone"
       title={timezone_drawer_title(@mode, @resolved?)}
       return_focus_id={@return_focus_id}
+      initial_focus={:first_field}
+      class="max-w-[560px]"
     >
-      <div :if={@mode} id="agency-timezone-form-panel" phx-hook="FormErrorFocus">
-        <p id="agency-timezone-drawer-scope" class="text-xs text-base-content/70">
-          {scope_line(@version, @organization)}
-        </p>
+      <:lede>
+        <span id="agency-timezone-drawer-scope">{scope_line(@version, @organization)}</span>
+      </:lede>
 
-        <%= if @mode == :choose do %>
-          <%!-- A create action that could not open its own form leaves the reason
-          here, so the editor reads why the timezone flow opened instead (AC-13). --%>
-          <.callout
-            :if={@notice}
-            id="agency-timezone-notice"
-            kind="info"
-            title={@notice}
-            class="mt-4"
-          />
+      <div
+        :if={@mode}
+        id="agency-timezone-form-panel"
+        phx-hook="FormErrorFocus"
+        class="flex min-h-0 flex-1 flex-col"
+      >
+        <%= cond do %>
+          <% @mode == :choose -> %>
+            <.form
+              for={@form}
+              id="agency-timezone-form"
+              novalidate
+              phx-submit="review_timezone"
+              class="flex min-h-0 flex-1 flex-col"
+            >
+              <.drawer_scroll>
+                <%!-- A create action that could not open its own form leaves the reason
+                here, so the editor reads why the timezone flow opened instead (AC-13). --%>
+                <.message :if={@notice} id="agency-timezone-notice" kind="info" title={@notice} />
 
-          <p class="mt-2 text-sm text-base-content/70">
-            Every agency in this version must use one schedule timezone. Review the affected agencies
-            before applying a change.
-          </p>
+                <p class="text-sm text-muted">
+                  Every agency in this version must use one schedule timezone. Review the affected
+                  agencies before applying a change.
+                </p>
 
-          <.form
-            for={@form}
-            id="agency-timezone-form"
-            novalidate
-            phx-submit="review_timezone"
-            class="mt-4"
-          >
-            <fieldset class="mt-5 border-t border-base-300 pt-5">
-              <legend class="pr-4 text-base font-semibold text-base-content">
-                Schedule timezone
-              </legend>
-              <div class="mt-4">
                 <.timezone_input field={@form[:zone]} zones={@zones} id="agency-timezone-zone" />
-              </div>
-            </fieldset>
 
-            <div class="mt-5">
-              <.callout
-                id="agency-timezone-impact"
-                kind="warning"
-                title={"This affects every agency in #{@version.name}"}
-              >
-                Clock times will stay the same. Their timezone interpretation will change. Review
-                affected schedules before exporting.
-              </.callout>
-            </div>
+                <.message
+                  id="agency-timezone-impact"
+                  kind="warning"
+                  title={"This affects every agency in #{@version.name}"}
+                >
+                  Clock times will stay the same. Their timezone interpretation will change. Review
+                  affected schedules before exporting.
+                </.message>
 
-            <ul
-              id="agency-timezone-current"
-              class="mt-5 divide-y divide-base-200 border-y border-base-300"
-            >
-              <li
-                :for={row <- @agencies}
-                class="flex items-start justify-between gap-4 py-3"
-              >
-                <span class="font-semibold">{row.agency.agency_name}</span>
-                <span class="text-sm text-base-content/70">
-                  {row.agency.agency_timezone || "Not set"}
-                </span>
-              </li>
-            </ul>
+                <ul
+                  id="agency-timezone-current"
+                  class="divide-y divide-subtle border-y border-subtle"
+                >
+                  <li :for={row <- @agencies} class="flex items-start justify-between gap-4 py-3">
+                    <span class="font-semibold text-strong">{row.agency.agency_name}</span>
+                    <span class="break-all text-right text-sm text-muted">
+                      {row.agency.agency_timezone || "Not set"}
+                    </span>
+                  </li>
+                </ul>
+              </.drawer_scroll>
 
-            <div class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-5">
-              <.button
-                id="agency-timezone-cancel"
-                type="button"
-                variant="secondary"
-                class="min-h-11"
-                phx-click="close_timezone"
-              >
-                Cancel
-              </.button>
-
-              <.button id="agency-timezone-review" type="submit" class="min-h-11">
-                Review change
-              </.button>
-            </div>
-          </.form>
-        <% else %>
-          <div class="mt-5">
-            <.callout
-              :if={@mode == :stale}
-              id="agency-timezone-stale"
-              kind="warning"
-              title="The agencies changed during your review"
-            >
-              Nothing was changed.
-              <div class="mt-3">
+              <.drawer_footer>
                 <.button
-                  id="agency-timezone-review-again"
+                  id="agency-timezone-cancel"
                   type="button"
                   variant="secondary"
                   class="min-h-11"
-                  phx-click="review_timezone"
-                  phx-value-zone={@review.zone}
+                  phx-click="close_timezone"
                 >
-                  Review again
+                  Cancel
                 </.button>
-              </div>
-            </.callout>
 
-            <.callout
-              :if={@mode == :review}
-              id="agency-timezone-review-summary"
-              kind="warning"
-              title={"#{agencies_label(@review.agencies)} will use #{@review.zone}"}
+                <.button id="agency-timezone-review" type="submit" class="min-h-11">
+                  Review change
+                </.button>
+              </.drawer_footer>
+            </.form>
+          <% @mode == :review -> %>
+            <.form
+              for={@form}
+              id="agency-timezone-review-form"
+              novalidate
+              phx-submit="apply_timezone"
+              class="flex min-h-0 flex-1 flex-col"
             >
-              Only {@version.name} changes. Other versions keep their current timezone.
-            </.callout>
-          </div>
+              <.drawer_scroll>
+                <.timezone_review_body mode={@mode} review={@review} version={@version} />
 
-          <ul
-            id="agency-timezone-review-list"
-            class="mt-5 divide-y divide-base-200 border-y border-base-300"
-          >
-            <li :for={agency <- @review.agencies} class="flex items-start justify-between gap-4 py-3">
-              <div>
-                <div class="font-semibold">{agency.agency_name}</div>
-                <div class="mt-1 text-sm text-base-content/70">
-                  {agency.from} → {@review.zone}
-                </div>
-              </div>
-              <div class="whitespace-nowrap text-sm text-base-content/70">
-                {routes_label(agency.route_count)}
-              </div>
-            </li>
-          </ul>
+                <%!-- The acknowledgement is apply's own precondition. --%>
+                <.input
+                  id="agency-timezone-ack"
+                  name="timezone[acknowledged]"
+                  type="checkbox"
+                  checked={false}
+                  label="I have checked that this is the timezone used by these schedules."
+                  errors={ack_errors(@ack_error)}
+                />
+              </.drawer_scroll>
 
-          <p
-            id="agency-timezone-not-converted"
-            class="mt-5 rounded-box bg-base-200 p-4 text-sm text-base-content/70"
-          >
-            Route and trip clock times are not converted. Check calendars, schedules, and overnight
-            service after this change.
-          </p>
+              <.drawer_footer>
+                <.button
+                  id="agency-timezone-back"
+                  type="button"
+                  variant="secondary"
+                  class="min-h-11"
+                  phx-click="back_timezone"
+                >
+                  Back
+                </.button>
 
-          <.form
-            :if={@mode == :review}
-            for={@form}
-            id="agency-timezone-review-form"
-            novalidate
-            phx-submit="apply_timezone"
-            class="mt-5"
-          >
-            <%!--
-              The acknowledgement is the prototype's check line. The wrapper only
-              relaxes `.input`'s label: its label is a no-wrap flex line, which
-              clipped this 66-character sentence inside the phone drawer.
-            --%>
-            <div class="[&_.label]:whitespace-normal">
-              <.input
-                id="agency-timezone-ack"
-                name="timezone[acknowledged]"
-                type="checkbox"
-                checked={false}
-                label="I have checked that this is the timezone used by these schedules."
-                errors={ack_errors(@ack_error)}
-              />
+                <.button
+                  id="agency-timezone-apply"
+                  type="submit"
+                  class="min-h-11"
+                  phx-disable-with="Applying…"
+                >
+                  Apply timezone
+                </.button>
+              </.drawer_footer>
+            </.form>
+          <% true -> %>
+            <div class="flex min-h-0 flex-1 flex-col">
+              <.drawer_scroll>
+                <.message
+                  id="agency-timezone-stale"
+                  kind="warning"
+                  title="The agencies changed during your review"
+                >
+                  Nothing was changed.
+                  <div class="mt-3">
+                    <.button
+                      id="agency-timezone-review-again"
+                      type="button"
+                      variant="secondary"
+                      class="min-h-11"
+                      phx-click="review_timezone"
+                      phx-value-zone={@review.zone}
+                    >
+                      Review again
+                    </.button>
+                  </div>
+                </.message>
+
+                <.timezone_review_body mode={@mode} review={@review} version={@version} />
+              </.drawer_scroll>
+
+              <.drawer_footer>
+                <.button
+                  id="agency-timezone-back"
+                  type="button"
+                  variant="secondary"
+                  class="min-h-11"
+                  phx-click="back_timezone"
+                >
+                  Back
+                </.button>
+              </.drawer_footer>
             </div>
-
-            <div class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-5">
-              <.button
-                id="agency-timezone-back"
-                type="button"
-                variant="secondary"
-                class="min-h-11"
-                phx-click="back_timezone"
-              >
-                Back
-              </.button>
-
-              <.button
-                id="agency-timezone-apply"
-                type="submit"
-                class="min-h-11"
-                phx-disable-with="Applying…"
-              >
-                Apply timezone
-              </.button>
-            </div>
-          </.form>
-
-          <div
-            :if={@mode == :stale}
-            class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-5"
-          >
-            <.button
-              id="agency-timezone-back"
-              type="button"
-              variant="secondary"
-              class="min-h-11"
-              phx-click="back_timezone"
-            >
-              Back
-            </.button>
-          </div>
         <% end %>
       </div>
     </.drawer>
     """
   end
 
-  # The create and edit drawers are the prototype's agency form: Agency
-  # identity, then Rider contact, in one surface whose fields step 18's edit mode
-  # reuses unchanged. Only the create form of a version's first agency carries
-  # the schedule timezone field — a later agency shows the zone the version
-  # already holds and takes it on save, and the edit form shows that zone as a
-  # note because a second zone is what the timezone flow exists to prevent
-  # (R2, AC-12, AC-15). The edit mode adds the prototype's identity box above the
-  # fields and names the stored row in the title.
+  # What the review lists, shared by the review step and the stale step that
+  # keeps it on screen: the summary (review only), one row per agency with the
+  # zone it holds now, and the reminder that clock times are not converted.
+  attr :mode, :atom, required: true
+  attr :review, :map, required: true
+  attr :version, :any, required: true
+
+  defp timezone_review_body(assigns) do
+    ~H"""
+    <.message
+      :if={@mode == :review}
+      id="agency-timezone-review-summary"
+      kind="warning"
+      title={"#{agencies_label(@review.agencies)} will use #{@review.zone}"}
+    >
+      Only {@version.name} changes. Other versions keep their current timezone.
+    </.message>
+
+    <ul id="agency-timezone-review-list" class="divide-y divide-subtle border-y border-subtle">
+      <li :for={agency <- @review.agencies} class="flex items-start justify-between gap-4 py-3">
+        <div class="min-w-0">
+          <div class="font-semibold text-strong">{agency.agency_name}</div>
+          <div class="mt-1 break-all text-sm text-muted">
+            {agency.from} → {@review.zone}
+          </div>
+        </div>
+        <div class="whitespace-nowrap text-sm text-muted">
+          {routes_label(agency.route_count)}
+        </div>
+      </li>
+    </ul>
+
+    <p id="agency-timezone-not-converted" class="rounded-control bg-canvas p-4 text-sm text-muted">
+      Route and trip clock times are not converted. Check calendars, schedules, and overnight
+      service after this change.
+    </p>
+    """
+  end
+
+  # The scrolling part of a drawer step, above its persistent footer.
+  slot :inner_block, required: true
+
+  defp drawer_scroll(assigns) do
+    ~H"""
+    <div class="grid flex-1 content-start gap-5 overflow-y-auto px-5 py-5 sm:px-6">
+      {render_slot(@inner_block)}
+    </div>
+    """
+  end
+
+  # The create and edit drawers are the prototype's agency form: Name and website,
+  # then Rider contact, in one surface whose fields the edit mode reuses
+  # unchanged. Only the create form of a version's first agency carries the
+  # schedule timezone field — a later agency shows the zone the version already
+  # holds and takes it on save, and the edit form shows that zone as a note
+  # because a second zone is what the timezone flow exists to prevent
+  # (R2, AC-12, AC-15). The edit mode adds the identity note above the fields and
+  # names the stored row in the title.
   #
   # The edit footer also carries the deletion's first action, and the same drawer
   # then shows one of the deletion's steps in place of the form: choosing the
@@ -1008,33 +1420,30 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
     ~H"""
     <.drawer
       id="agency-drawer"
+      chrome="planner"
       open={@mode != nil}
       on_close="close_agency_drawer"
       title={agency_drawer_title(@mode, @agency, @delete_mode)}
       return_focus_id={@return_focus_id}
+      initial_focus={:first_field}
+      class="max-w-[560px]"
     >
       <:header_actions>
-        <span
-          :if={@dirty?}
-          id="agency-unsaved"
-          class="badge badge-warning badge-sm whitespace-nowrap"
-        >
-          Unsaved changes
-        </span>
+        <.unsaved_badge :if={@dirty?} id="agency-unsaved" />
       </:header_actions>
+      <:lede>
+        <span id="agency-drawer-scope">{scope_line(@version, @organization)}</span>
+      </:lede>
 
-      <div :if={@mode} id="agency-form-panel" phx-hook="FormErrorFocus">
+      <div
+        :if={@mode}
+        id="agency-form-panel"
+        phx-hook="FormErrorFocus"
+        class="flex min-h-0 flex-1 flex-col"
+      >
         <.unsaved_guard id="agency-unsaved-guard" dirty={@dirty?} />
 
-        <p id="agency-drawer-scope" class="text-xs text-base-content/70">
-          {scope_line(@version, @organization)}
-        </p>
-
         <%= if @delete_mode do %>
-          <p :if={@delete_mode == :delete_choose} class="mt-2 text-sm text-base-content/70">
-            {delete_choose_intro(@delete_route_count)}
-          </p>
-
           <.agency_delete_panel
             delete={@delete_mode}
             form={@delete_form}
@@ -1044,94 +1453,91 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
             target_options={@delete_target_options}
           />
         <% else %>
-          <p class="mt-2 text-sm text-base-content/70">
-            {agency_drawer_intro(@mode)}
-          </p>
-
-          <%!--
-            The prototype's identity box. The GTFS agency ID is derived from the
-            name and preserved across imports and exports, so the edit form shows
-            it as a fact and submits no field for it (R1).
-          --%>
-          <p
-            :if={@agency}
-            id="agency-identity"
-            class="mt-4 rounded-box bg-base-200 px-4 py-3 text-xs text-base-content/70"
-          >
-            Agency ID <strong class="text-base-content">{@agency.agency_id}</strong>
-            · Preserved in imports and exports
-          </p>
-
           <.form
             for={@form}
             id="agency-form"
             novalidate
             phx-change="validate_agency"
             phx-submit="save_agency"
-            class="mt-4"
+            class="flex min-h-0 flex-1 flex-col"
           >
-            <.callout
-              :if={save_failed?(@form)}
-              id="agency-form-error"
-              kind="error"
-              title={save_failed_title(@mode)}
-              tabindex="-1"
-              class="mb-4"
-            />
+            <.drawer_scroll>
+              <.message
+                :if={save_failed?(@form)}
+                id="agency-form-error"
+                kind="error"
+                title={save_failed_title(@mode)}
+                tabindex="-1"
+              />
 
-            <.conflict_callout :if={@conflict?} reloaded?={@conflict_reloaded?} />
+              <.conflict_message :if={@conflict?} reloaded?={@conflict_reloaded?} />
 
-            <.agency_form_fields
-              form={@form}
-              first_agency?={@first_agency?}
-              zone={@zone}
-              zone_names={@zone_names}
-            />
+              <p class="text-sm text-muted">{agency_drawer_intro(@mode)}</p>
 
-            <div class="mt-8 border-t border-base-300 pt-5">
+              <%!--
+                The GTFS agency ID is derived from the name and preserved across
+                imports and exports, so the edit form shows it as a fact and
+                submits no field for it (R1).
+              --%>
+              <p
+                :if={@mode == :edit and @agency}
+                id="agency-identity"
+                class="rounded-control bg-canvas px-4 py-3 text-[13px] text-muted"
+              >
+                Agency ID <strong class="text-strong">{@agency.agency_id}</strong>
+                · Preserved in imports and exports
+              </p>
+
+              <.agency_form_fields
+                form={@form}
+                first_agency?={@first_agency?}
+                zone={@zone}
+                zone_names={@zone_names}
+              />
+            </.drawer_scroll>
+
+            <.drawer_footer>
               <%!-- A disabled action still names why it is unavailable, and the
               reason sits with the control that cannot be used (AC-19). --%>
               <p
-                :if={@last_agency?}
+                :if={@last_agency? and @mode == :edit}
                 id="agency-delete-reason"
-                class="mb-3 text-xs text-base-content/70"
+                class="basis-full text-[13px] text-muted"
               >
                 This is the last agency in the version and can't be deleted.
               </p>
 
-              <div class="flex flex-wrap items-center justify-end gap-3">
-                <.button
-                  :if={@mode == :edit}
-                  id="agency-delete"
-                  type="button"
-                  variant="quiet"
-                  class="mr-auto min-h-11 text-error disabled:pointer-events-none disabled:opacity-60"
-                  disabled={@last_agency?}
-                  phx-click="start_delete"
-                >
-                  Delete agency
-                </.button>
+              <.button
+                :if={@mode == :edit}
+                id="agency-delete"
+                type="button"
+                variant="quiet"
+                class="mr-auto min-h-11 text-error-fg hover:bg-error-bg disabled:pointer-events-none disabled:text-muted disabled:opacity-60"
+                disabled={@last_agency?}
+                phx-click="start_delete"
+              >
+                Delete agency
+              </.button>
 
-                <.button
-                  id="agency-cancel"
-                  type="button"
-                  variant="secondary"
-                  class="min-h-11"
-                  phx-click="close_agency_drawer"
-                >
-                  Cancel
-                </.button>
+              <.button
+                id="agency-cancel"
+                type="button"
+                variant="secondary"
+                class="min-h-11"
+                phx-click="close_agency_drawer"
+              >
+                Cancel
+              </.button>
 
-                <.button
-                  id="agency-save"
-                  type="submit"
-                  class="min-h-11"
-                  phx-disable-with={agency_pending_label(@mode)}
-                >
-                  {agency_submit_label(@mode)}
-                </.button>
-              </div>
-            </div>
+              <.button
+                id="agency-save"
+                type="submit"
+                class="min-h-11"
+                phx-disable-with={agency_pending_label(@mode)}
+              >
+                {agency_submit_label(@mode)}
+              </.button>
+            </.drawer_footer>
           </.form>
         <% end %>
       </div>
@@ -1154,82 +1560,83 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
 
   defp agency_delete_panel(assigns) do
     ~H"""
-    <%= if @delete == :delete_blocked do %>
-      <div id="agency-delete-blocked">
-        <.callout
-          id="agency-delete-blocked-callout"
-          kind="warning"
-          title={"#{@agency.agency_name} cannot be deleted yet"}
-          class="mt-4"
-        >
-          <p>{blocked_body(@review.blockers)}</p>
-        </.callout>
+    <%= cond do %>
+      <% @delete == :delete_blocked -> %>
+        <div id="agency-delete-blocked" class="flex min-h-0 flex-1 flex-col">
+          <.drawer_scroll>
+            <.message
+              id="agency-delete-blocked-callout"
+              kind="warning"
+              title={"#{@agency.agency_name} cannot be deleted yet"}
+            >
+              <p>{blocked_body(@review.blockers)}</p>
+            </.message>
 
-        <ul id="agency-delete-blockers" class="mt-5 divide-y divide-base-200 border-y border-base-300">
-          <li
-            :for={fare_id <- @review.blockers.fare_ids}
-            class="flex items-start justify-between gap-4 py-3"
-          >
-            <span class="text-base-content/70">Fare attribute</span>
-            <span class="font-semibold">{fare_id}</span>
-          </li>
-          <li
-            :for={attribution_id <- @review.blockers.attribution_ids}
-            class="flex items-start justify-between gap-4 py-3"
-          >
-            <span class="text-base-content/70">Attribution</span>
-            <span class="font-semibold">{attribution_id}</span>
-          </li>
-        </ul>
+            <ul id="agency-delete-blockers" class="divide-y divide-subtle border-y border-subtle">
+              <li
+                :for={fare_id <- @review.blockers.fare_ids}
+                class="flex items-start justify-between gap-4 py-3"
+              >
+                <span class="text-muted">Fare attribute</span>
+                <span class="break-all font-semibold text-strong">{fare_id}</span>
+              </li>
+              <li
+                :for={attribution_id <- @review.blockers.attribution_ids}
+                class="flex items-start justify-between gap-4 py-3"
+              >
+                <span class="text-muted">Attribution</span>
+                <span class="break-all font-semibold text-strong">{attribution_id}</span>
+              </li>
+            </ul>
 
-        <p class="mt-5 text-sm text-base-content/70">
-          Route ownership will stay unchanged until every dependency can be moved safely.
-        </p>
+            <p class="text-sm text-muted">
+              Route ownership will stay unchanged until every dependency can be moved safely.
+            </p>
+          </.drawer_scroll>
 
-        <div class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-5">
-          <.button
-            id="agency-delete-back-to-agency"
-            type="button"
-            variant="secondary"
-            class="min-h-11"
-            phx-click="back_to_agency"
-          >
-            Back to agency
-          </.button>
+          <.drawer_footer>
+            <.button
+              id="agency-delete-back-to-agency"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="back_to_agency"
+            >
+              Back to agency
+            </.button>
 
-          <.button
-            id="agency-delete-close"
-            type="button"
-            variant="secondary"
-            class="min-h-11"
-            phx-click="close_agency_drawer"
-          >
-            Close
-          </.button>
+            <.button
+              id="agency-delete-close"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="close_agency_drawer"
+            >
+              Close
+            </.button>
+          </.drawer_footer>
         </div>
-      </div>
-    <% else %>
-      <%= if @delete == :delete_choose do %>
-        <div id="agency-delete-choose">
-          <p
-            id="agency-delete-identity"
-            class="mt-4 rounded-box bg-base-200 px-4 py-3 text-xs text-base-content/70"
-          >
-            Agency ID <strong class="text-base-content">{@agency.agency_id}</strong>
-            · {routes_label(@route_count)}
-          </p>
-
+      <% @delete == :delete_choose -> %>
+        <div id="agency-delete-choose" class="flex min-h-0 flex-1 flex-col">
           <.form
             for={@form}
             id="agency-delete-form"
             novalidate
             phx-submit="review_delete"
-            class="mt-4"
+            class="flex min-h-0 flex-1 flex-col"
           >
-            <fieldset :if={@route_count > 0} class="mt-5 border-t border-base-300 pt-5">
-              <legend class="pr-4 text-base font-semibold text-base-content">Move routes to</legend>
+            <.drawer_scroll>
+              <p class="text-sm text-muted">{delete_choose_intro(@route_count)}</p>
 
-              <div class="mt-4">
+              <p
+                id="agency-delete-identity"
+                class="rounded-control bg-canvas px-4 py-3 text-[13px] text-muted"
+              >
+                Agency ID <strong class="text-strong">{@agency.agency_id}</strong>
+                · {routes_label(@route_count)}
+              </p>
+
+              <.form_section :if={@route_count > 0} title="Move routes to" first?>
                 <.input
                   field={@form[:target_id]}
                   type="select"
@@ -1238,14 +1645,14 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
                   options={@target_options}
                   help="Route IDs and schedules will stay unchanged."
                 />
-              </div>
-            </fieldset>
+              </.form_section>
 
-            <p class="mt-5 text-sm text-base-content/70">
-              Review the exact changes before anything is deleted.
-            </p>
+              <p class="text-sm text-muted">
+                Review the exact changes before anything is deleted.
+              </p>
+            </.drawer_scroll>
 
-            <div class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-5">
+            <.drawer_footer>
               <.button
                 id="agency-delete-cancel"
                 type="button"
@@ -1259,64 +1666,66 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
               <.button id="agency-delete-review-submit" type="submit" class="min-h-11">
                 Review deletion
               </.button>
-            </div>
+            </.drawer_footer>
           </.form>
         </div>
-      <% else %>
-        <div id={if @delete == :delete_stale, do: "agency-delete-stale", else: "agency-delete-review"}>
-          <.callout
-            :if={@delete == :delete_stale}
-            id="agency-delete-stale-notice"
-            kind="error"
-            title="The agencies or routes changed during your review"
-            class="mt-4"
-          >
-            <p>Nothing was moved or deleted.</p>
-            <div class="mt-3">
-              <.button
-                id="agency-delete-refresh"
-                type="button"
-                variant="secondary"
-                class="min-h-11"
-                phx-click="refresh_delete_review"
-              >
-                Refresh review
-              </.button>
-            </div>
-          </.callout>
+      <% true -> %>
+        <div
+          id={if @delete == :delete_stale, do: "agency-delete-stale", else: "agency-delete-review"}
+          class="flex min-h-0 flex-1 flex-col"
+        >
+          <.drawer_scroll>
+            <.message
+              :if={@delete == :delete_stale}
+              id="agency-delete-stale-notice"
+              kind="error"
+              title="The agencies or routes changed during your review"
+            >
+              <p>Nothing was moved or deleted.</p>
+              <div class="mt-3">
+                <.button
+                  id="agency-delete-refresh"
+                  type="button"
+                  variant="secondary"
+                  class="min-h-11"
+                  phx-click="refresh_delete_review"
+                >
+                  Refresh review
+                </.button>
+              </div>
+            </.message>
 
-          <.callout
-            id="agency-delete-summary"
-            kind="warning"
-            title={"#{@agency.agency_name} will be deleted"}
-            class="mt-4"
-          >
-            <p>{delete_review_summary(@review)}</p>
-            <p :if={@review.translation_count > 0} id="agency-delete-translations">
-              {translations_label(@review.translation_count)}
+            <.message
+              id="agency-delete-summary"
+              kind="warning"
+              title={"#{@agency.agency_name} will be deleted"}
+            >
+              <p>{delete_review_summary(@review)}</p>
+              <p :if={@review.translation_count > 0} id="agency-delete-translations">
+                {translations_label(@review.translation_count)}
+              </p>
+            </.message>
+
+            <ul
+              :if={@review.routes != []}
+              id="agency-delete-routes"
+              class="divide-y divide-subtle border-y border-subtle"
+            >
+              <li :for={route <- @review.routes} class="flex items-start justify-between gap-4 py-3">
+                <span class="min-w-0 text-strong">
+                  <strong>{route.route_id}</strong> {route_name(route)}
+                </span>
+                <span class="whitespace-nowrap text-sm text-muted">Keep route ID</span>
+              </li>
+            </ul>
+
+            <p id="agency-delete-total" class="rounded-control bg-canvas p-4 text-sm text-muted">
+              The move and deletion must succeed together. If this review becomes out of date,
+              nothing is changed.
             </p>
-          </.callout>
+          </.drawer_scroll>
 
-          <ul
-            :if={@review.routes != []}
-            id="agency-delete-routes"
-            class="mt-5 divide-y divide-base-200 border-y border-base-300"
-          >
-            <li :for={route <- @review.routes} class="flex items-start justify-between gap-4 py-3">
-              <span><strong>{route.route_id}</strong> {route_name(route)}</span>
-              <span class="whitespace-nowrap text-sm text-base-content/70">Keep route ID</span>
-            </li>
-          </ul>
-
-          <p
-            id="agency-delete-total"
-            class="mt-5 rounded-box bg-base-200 p-4 text-sm text-base-content/70"
-          >
-            The move and deletion must succeed together. If this review becomes out of date,
-            nothing is changed.
-          </p>
-
-          <div class="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-base-300 pt-5">
+          <.drawer_footer>
             <.button
               id="agency-delete-back"
               type="button"
@@ -1341,9 +1750,8 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
             >
               {delete_apply_label(@review)}
             </.button>
-          </div>
+          </.drawer_footer>
         </div>
-      <% end %>
     <% end %>
     """
   end
@@ -1354,13 +1762,12 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   # agency row (AC-16).
   attr :reloaded?, :boolean, required: true
 
-  defp conflict_callout(assigns) do
+  defp conflict_message(assigns) do
     ~H"""
-    <.callout
+    <.message
       id="agency-conflict"
       kind={if @reloaded?, do: "info", else: "error"}
       title={conflict_title(@reloaded?)}
-      class="mb-4"
     >
       <p>{conflict_body(@reloaded?)}</p>
 
@@ -1374,19 +1781,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       >
         Load latest
       </.button>
-    </.callout>
-    """
-  end
-
-  attr :rest, :global
-  slot :inner_block, required: true
-
-  defp support_note(assigns) do
-    ~H"""
-    <p class="mt-6 flex max-w-3xl items-start gap-2 text-sm text-base-content/70" {@rest}>
-      <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0" />
-      <span>{render_slot(@inner_block)}</span>
-    </p>
+    </.message>
     """
   end
 
@@ -1403,6 +1798,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
 
     socket
     |> assign(:health, health)
+    |> assign(:sole_agency, sole_agency(rows))
     |> stream(
       :agencies,
       sort_rows(rows, socket.assigns.sort_by, socket.assigns.sort_dir)
@@ -1439,10 +1835,50 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
 
   defp column_sort_state(_sort_by, _sort_dir, _column), do: "none"
 
-  defp subtitle, do: "Manage the public identity and contact details of your transit providers."
+  defp subtitle(0),
+    do: "Name the organization that runs your service. Trip planners show it next to every route."
 
-  defp first_use_subtitle,
-    do: "The transit providers riders will see in journey planners."
+  defp subtitle(_count),
+    do: "The organizations that run your routes, as riders see them in trip planners."
+
+  defp version_scope(version) do
+    "Applies to #{present(version.name) || "this version"} only. Each version keeps its own agencies."
+  end
+
+  # One agency is a summary rather than a list; the row is the same one the table
+  # would stream.
+  defp sole_agency([row]), do: row
+  defp sole_agency(_rows), do: nil
+
+  # The one primary follows what the editor most likely does next. With one agency
+  # that is editing it, with several it is adding another, and a timezone problem
+  # outranks both because nothing else on the page is right until it is resolved.
+  defp create_variant(health) do
+    if health.agency_count > 1 and resolved_zone?(health.zone), do: "primary", else: "secondary"
+  end
+
+  defp edit_variant(health), do: if(resolved_zone?(health.zone), do: "primary", else: "secondary")
+
+  defp zone_problem?(health), do: health.agency_count > 0 and unresolved_zone?(health.zone)
+
+  defp present(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp present(_value), do: nil
+
+  # Links and fields take the design system's focus outline from the page scope;
+  # a bare button does not, so the buttons this page draws itself carry it.
+  defp focus_class do
+    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+  end
+
+  defp link_class do
+    "break-all font-medium text-action underline decoration-1 underline-offset-4 hover:text-action-hover"
+  end
 
   defp needs_review, do: "Needs review"
 
@@ -1454,15 +1890,19 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       else: ~p"/gtfs/#{version_id}/routes?#{[agency_id: row.agency.agency_id]}"
   end
 
-  defp band_state({:ok, zone}), do: "#{zone} · Used by all agencies and their schedules."
-  defp band_state({:unresolved, _reason}), do: needs_review()
-
   defp unresolved_zone?({:unresolved, _reason}), do: true
   defp unresolved_zone?({:ok, _zone}), do: false
 
   defp callout_title({:unresolved, :conflicting}), do: "Agencies use different timezones"
   defp callout_title({:unresolved, :invalid}), do: "The agency timezone isn’t recognized"
   defp callout_title({:unresolved, :missing}), do: "The agency timezone is missing"
+
+  # What the Schedule timezone panel says beside "Needs review". The zone itself
+  # is not part of the verdict, so the sentence names the problem, and the rows
+  # in the table carry each agency's own zone.
+  defp unresolved_detail(:conflicting), do: "Agencies use different timezones."
+  defp unresolved_detail(:invalid), do: "The saved timezone isn’t one trip planners recognize."
+  defp unresolved_detail(:missing), do: "No timezone is saved for this version."
 
   # A row is flagged when its own zone is not the one the version resolved: with an
   # unresolved version zone any stored zone differs, exactly as the prototype's
@@ -2089,6 +2529,9 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   defp agencies_label([_agency]), do: "1 agency"
   defp agencies_label(agencies), do: "#{length(agencies)} agencies"
 
+  defp agency_count_label(1), do: "1 agency"
+  defp agency_count_label(count), do: "#{count} agencies"
+
   defp routes_label(1), do: "1 route"
   defp routes_label(count), do: "#{count} routes"
 
@@ -2102,6 +2545,8 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
   end
 
   defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
+  defp feed_details_path(version_id), do: "/gtfs/#{version_id}/settings/feed-details"
+  defp import_path(version_id), do: "/gtfs/#{version_id}/import"
 
   defp agencies_path(version_id), do: "/gtfs/#{version_id}/settings/agencies"
 end

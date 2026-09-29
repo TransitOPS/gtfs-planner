@@ -628,12 +628,20 @@ test.describe("@agencies-list", () => {
 
         // The literal route wins over the section route, so this is the list page.
         await expect(page.locator("h1")).toHaveText("Agencies");
-        await expect(page.locator("h1 + p")).toHaveText(
-          "Manage the public identity and contact details of your transit providers.",
+        await expect(page.locator("h1 + p")).toContainText(
+          "The organizations that run your routes, as riders see them in trip planners.",
         );
-        await expect(
-          page.locator("#settings-nav a[aria-current='page']"),
-        ).toHaveText("Agencies");
+        await expect(page.locator("#agencies-scope")).toContainText(
+          `Applies to ${AGENCIES_VERSION} only. Each version keeps its own agencies.`,
+        );
+
+        // The way back to the Settings overview replaces the section tab bar.
+        await expect(page.locator("#settings-back")).toHaveText("Settings");
+        await expect(page.locator("#settings-back")).toHaveAttribute(
+          "href",
+          `/gtfs/${agenciesId}/settings`,
+        );
+        await expect(page.locator("#settings-nav")).toHaveCount(0);
         await expect(page.locator("#coming-soon-status")).toHaveCount(0);
         await expect(page.locator("#agencies-empty")).toHaveCount(0);
 
@@ -654,19 +662,28 @@ test.describe("@agencies-list", () => {
           "Riverside Community Transport riverside.example",
         ]);
         expect(cells.map((row) => row[1])).toEqual([
-          "America/New_York",
-          "America/New_York",
-          "America/New_York",
+          "No contact details",
+          "No contact details",
+          "No contact details",
         ]);
-        expect(cells.map((row) => row[2])).toEqual(["2 →", "5 →", "0 →"]);
+        expect(cells.map((row) => row[2])).toEqual([
+          "2 routes",
+          "5 routes",
+          "0 routes",
+        ]);
 
-        // One timezone for the version, so no callout and no row needs review.
+        // One timezone is a fact about the version: the panel names it, the table
+        // has no Timezone column, no callout appears and no row needs review.
         await expect(page.locator("#agencies-timezone-band")).toContainText(
-          "One timezone for this version",
+          "Schedule timezone",
+        );
+        await expect(page.locator("#agencies-timezone-value")).toHaveText(
+          "America/New_York",
         );
         await expect(page.locator("#agencies-timezone-band")).toContainText(
-          "America/New_York · Used by all agencies and their schedules.",
+          "Every agency in this version shares it.",
         );
+        await expect(page.locator("#agencies td[data-label='Timezone']")).toHaveCount(0);
         await expect(page.locator("#agencies-timezone-callout")).toHaveCount(0);
 
         await expect(
@@ -933,18 +950,14 @@ test.describe("@agencies-timezone", () => {
       "Timezone updated for 2 agencies. Review affected schedules before exporting.",
     );
     await expect(page.locator("#agencies-timezone-callout")).toHaveCount(0);
+    await expect(page.locator("#agencies-timezone-value")).toHaveText("America/Chicago");
     await expect(page.locator("#agencies-timezone-band")).toContainText(
-      "America/Chicago · Used by all agencies and their schedules.",
+      "Every agency in this version shares it.",
     );
 
-    const zones = await page
-      .locator("#agencies tr td[data-label='Timezone']")
-      .allInnerTexts();
-
-    expect(zones.map((cell) => cell.trim())).toEqual([
-      "America/Chicago",
-      "America/Chicago",
-    ]);
+    // The zones agree, so the Timezone column and its row flags are gone.
+    await expect(page.locator("#agencies td[data-label='Timezone']")).toHaveCount(0);
+    await expect(page.locator("#agencies")).not.toContainText("Needs review");
 
     expect(await bodyFitsViewport(page)).toBe(true);
     await captureIn(page, testInfo, TIMEZONE_CAPTURE_DIR, "timezone-applied-1280");
@@ -1061,14 +1074,13 @@ test.describe("@agencies-create", () => {
     await expect(page.locator("#flash-info")).toContainText("North Coast Transit created.");
     await expect(page.locator("#agencies-empty")).toHaveCount(0);
 
-    const rows = page.locator("#agencies tr");
-
-    await expect(rows).toHaveCount(1);
-    await expect(rows.nth(0)).toContainText("North Coast Transit");
-    await expect(rows.nth(0)).toContainText("northcoast.example");
-    await expect(rows.nth(0).locator("td[data-label='Timezone']")).toContainText(
-      "America/Chicago",
+    // One agency reads as a summary, with its timezone in the panel beside it.
+    await expect(page.locator("#agencies")).toHaveCount(0);
+    await expect(page.locator("#agency-summary-name")).toHaveText("North Coast Transit");
+    await expect(page.locator("#agency-summary-website")).toContainText(
+      "northcoast.example",
     );
+    await expect(page.locator("#agencies-timezone-value")).toHaveText("America/Chicago");
     await expect(page.locator("#agencies-create")).toBeVisible();
 
     expect(await bodyFitsViewport(page)).toBe(true);
@@ -1139,16 +1151,9 @@ test.describe("@agencies-create", () => {
     await expect(rows.nth(0)).toContainText("Browser Coastal Ferry");
     await expect(rows.nth(0)).toContainText("coastal.example");
 
-    const zones = await page
-      .locator("#agencies tr td[data-label='Timezone']")
-      .allInnerTexts();
-
-    expect(zones.map((cell) => cell.trim())).toEqual([
-      "America/New_York",
-      "America/New_York",
-      "America/New_York",
-      "America/New_York",
-    ]);
+    // Every agency shares the version zone, so the table has no Timezone column.
+    await expect(page.locator("#agencies td[data-label='Timezone']")).toHaveCount(0);
+    await expect(page.locator("#agencies-timezone-value")).toHaveText("America/New_York");
 
     expect(await bodyFitsViewport(page)).toBe(true);
     await captureIn(page, testInfo, CREATE_CAPTURE_DIR, "create-later-saved-1280");
@@ -1357,11 +1362,10 @@ test.describe("@agencies-delete", () => {
     // use it, and says why (AC-19).
     const soloVersion = await versionId(page, SINGLE_AGENCY_VERSION);
     await page.goto(`/gtfs/${soloVersion}/settings/agencies`);
-    await page.waitForSelector("#agencies");
+    await page.waitForSelector("#agency-summary");
     await waitForLiveView(page);
 
-    const solo = page.locator("#agencies tr").first();
-    await solo.locator("button[id^='agency-open-']").click();
+    await page.locator("#agency-summary button[id^='agency-open-']").click();
     await expect(overlay).toHaveAttribute("data-open", "true");
     await expect(page.locator("#agency-delete")).toBeDisabled();
     await expect(page.locator("#agency-delete-reason")).toHaveText(

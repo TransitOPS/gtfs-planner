@@ -152,9 +152,10 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyEditLiveTest do
 
       {:ok, view, _html} = live(conn, agencies_path(version.id))
 
-      # The list row's name is the button that opens the row, and the button is
-      # named for the row it opens rather than for its position.
-      assert has_element?(view, "#agency-open-#{agency.id}", "Harbor Shuttle")
+      # The summary's Edit details is the button that opens the row, and the
+      # button is named for the row it opens rather than for its position.
+      assert has_element?(view, "#agency-open-#{agency.id}", "Edit details")
+      assert has_element?(view, "#agency-summary-name", "Harbor Shuttle")
       refute has_element?(view, @open_drawer)
       refute has_element?(view, "#agency-form")
 
@@ -234,9 +235,10 @@ defmodule GtfsPlannerWeb.Gtfs.AgencyEditLiveTest do
       assert stored.agency_url == "https://harbor.example"
       assert stored.agency_timezone == "America/New_York"
 
-      # The list behind the drawer shows the same row, and reopening reads the
-      # saved value back.
-      assert has_element?(view, "#agencies tr", "Harbor Shuttle")
+      # The summary behind the drawer shows the same row with the saved phone,
+      # and reopening reads the saved value back.
+      assert has_element?(view, "#agency-summary-name", "Harbor Shuttle")
+      assert has_element?(view, "#agency-summary-phone", "(212) 555-RIDE")
 
       open_edit(view, stored)
 

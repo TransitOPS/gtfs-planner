@@ -23,8 +23,8 @@ defmodule GtfsPlannerWeb.Gtfs.FeedSettingsComponents do
   names PostgreSQL accepts, so the version timezone is chosen from one list in
   both the timezone drawer and the first-agency drawer.
 
-  `agency_form_fields/1` renders the agency drawer's two sections — Agency
-  identity and Rider contact — in the prototype's field order. It owns no
+  `agency_form_fields/1` renders the agency drawer's two sections — Name and
+  website, then Rider contact — in the prototype's field order. It owns no
   events and no state, so the create drawer, the edit drawer and the onboarding
   drawer describe one agency the same way; only the version's first agency
   carries a timezone field, because every later agency takes the zone the
@@ -32,6 +32,8 @@ defmodule GtfsPlannerWeb.Gtfs.FeedSettingsComponents do
   """
 
   use GtfsPlannerWeb, :html
+
+  import GtfsPlannerWeb.PlannerComponents, only: [form_section: 1, message: 1]
 
   alias GtfsPlanner.Gtfs.LanguageCodes
 
@@ -137,11 +139,11 @@ defmodule GtfsPlannerWeb.Gtfs.FeedSettingsComponents do
   end
 
   @doc """
-  Renders the agency identity and rider contact fields for `form`.
+  Renders the agency name-and-website and rider contact fields for `form`.
 
   `first_agency?: true` shows the schedule timezone field, because the first
   agency decides the version's zone; every other agency shows `zone` in an info
-  callout instead, so a create cannot submit a second zone (R2, AC-12).
+  message instead, so a create cannot submit a second zone (R2, AC-12).
   `zone_names` is `DisplayClock.zone_names/0`. The optional fields carry their
   "(optional)" marker in the visible label, and the form's own id prefixes the
   generated field ids.
@@ -153,50 +155,66 @@ defmodule GtfsPlannerWeb.Gtfs.FeedSettingsComponents do
 
   def agency_form_fields(assigns) do
     ~H"""
-    <fieldset class="mt-6 border-t border-base-300 pt-5 first:mt-0 first:border-t-0 first:pt-0">
-      <legend class="pr-4 text-base font-semibold text-base-content">Agency identity</legend>
+    <.form_section title="Name and website" first?>
+      <.input
+        field={@form[:agency_name]}
+        type="text"
+        label="Agency name"
+        help="The name riders see on vehicles and signs."
+      />
+      <.input
+        field={@form[:agency_url]}
+        type="url"
+        label="Website"
+        help="Your public website, starting with https://"
+      />
 
-      <div class="mt-4">
-        <.input field={@form[:agency_name]} type="text" label="Agency name" />
-        <.input field={@form[:agency_url]} type="url" label="Website" />
+      <.timezone_input
+        :if={@first_agency?}
+        field={@form[:agency_timezone]}
+        zones={@zone_names}
+        id={@form[:agency_timezone].id}
+      />
 
-        <.timezone_input
-          :if={@first_agency?}
-          field={@form[:agency_timezone]}
-          zones={@zone_names}
-          id={@form[:agency_timezone].id}
-        />
+      <.message
+        :if={!@first_agency?}
+        id="agency-zone-callout"
+        kind="info"
+        title={@zone || "No single timezone yet"}
+      >
+        Schedule timezone for this version. To update every agency together, use
+        Change timezone on the agency list.
+      </.message>
+    </.form_section>
 
-        <div :if={!@first_agency?} class="mb-2">
-          <.callout
-            id="agency-zone-callout"
-            kind="info"
-            title={@zone}
-          >
-            Schedule timezone for this version. To update every agency together, use
-            Change timezone on the agency list.
-          </.callout>
-        </div>
-      </div>
-    </fieldset>
+    <.form_section title="Rider contact">
+      <.language_select
+        field={@form[:agency_lang]}
+        label="Language"
+        optional
+        help="The main language riders read."
+      />
 
-    <fieldset class="mt-6 border-t border-base-300 pt-5">
-      <legend class="pr-4 text-base font-semibold text-base-content">Rider contact</legend>
+      <.input
+        field={@form[:agency_phone]}
+        type="tel"
+        label="Phone (optional)"
+        help="Keep the local formatting riders recognize."
+      />
 
-      <div class="mt-4">
-        <.language_select field={@form[:agency_lang]} label="Language" optional />
-
-        <.input
-          field={@form[:agency_phone]}
-          type="tel"
-          label="Phone (optional)"
-          help="Keep the local formatting riders recognize."
-        />
-
-        <.input field={@form[:agency_email]} type="email" label="Email (optional)" />
-        <.input field={@form[:agency_fare_url]} type="url" label="Fare website (optional)" />
-      </div>
-    </fieldset>
+      <.input
+        field={@form[:agency_email]}
+        type="email"
+        label="Email (optional)"
+        help="An address someone checks for rider questions."
+      />
+      <.input
+        field={@form[:agency_fare_url]}
+        type="url"
+        label="Fare website (optional)"
+        help="Where riders can buy tickets or read about fares."
+      />
+    </.form_section>
     """
   end
 

@@ -3,8 +3,10 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   Components from the TransitOps application design system that pages migrated
   to it share: the in-place outcome message, the form error summary, the
   choice cards used for options that carry consequences, the first-use
-  panel, the back link a child page carries above its heading, and the
-  footer that keeps a drawer form's actions in view.
+  panel, the back link a child page carries above its heading, the
+  footer that keeps a drawer form's actions in view, a drawer's titled form
+  section and unsaved-changes badge, the link an aside leads on with, and the
+  check that keeps an imported address from becoming a link.
 
   They read the design-system tokens declared in `assets/css/app.css`
   (`text-strong`, `bg-soft`, `border-control`, `rounded-control`, and so on) and
@@ -62,6 +64,35 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   end
 
   @doc """
+  A link in a page's aside that leads on from what the aside says: an action
+  colour, an arrow and a 44px target.
+
+  ## Examples
+
+      <.aside_link id="go-to-export" navigate={~p"/gtfs/\#{@version.id}/export"}>
+        Go to export
+      </.aside_link>
+  """
+  attr :id, :string, required: true
+  attr :navigate, :string, required: true
+  slot :inner_block, required: true
+
+  def aside_link(assigns) do
+    ~H"""
+    <.link
+      id={@id}
+      navigate={@navigate}
+      class={[
+        "mt-2 inline-flex min-h-11 items-center gap-1.5 text-sm font-[650] text-action no-underline",
+        "hover:text-action-hover hover:underline"
+      ]}
+    >
+      {render_slot(@inner_block)} <.icon name="hero-arrow-right" class="size-4" />
+    </.link>
+    """
+  end
+
+  @doc """
   Reports an outcome in place, next to the thing that changed.
 
   The title says what happened, in one sentence. The body, when given, says what
@@ -71,6 +102,10 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   Warnings and errors are announced (`role="alert"`), success and info are a
   polite status.
 
+  The `:action` slot holds the one control that resolves the message. It sits at
+  the right of the text from the `sm` breakpoint up and under it below that, so
+  the fix is beside the problem it names.
+
   ## Examples
 
       <.message kind="success" title="Invitation sent to sam@agency.org.">
@@ -78,11 +113,17 @@ defmodule GtfsPlannerWeb.PlannerComponents do
       </.message>
 
       <.message id="save-error" kind="error" title="Nothing was saved." />
+
+      <.message kind="warning" title="Agencies use different timezones">
+        Choose one timezone for this version.
+        <:action><.button phx-click="resolve">Resolve timezones</.button></:action>
+      </.message>
   """
   attr :kind, :string, required: true, values: ~w(info success warning error)
   attr :title, :string, required: true
   attr :rest, :global
   slot :inner_block
+  slot :action
 
   def message(assigns) do
     {tone, icon_tone, icon_name, role} = Map.fetch!(@message_tones, assigns.kind)
@@ -97,9 +138,15 @@ defmodule GtfsPlannerWeb.PlannerComponents do
     ~H"""
     <div role={@role} class={["flex items-start gap-3 rounded-control px-4 py-3", @tone]} {@rest}>
       <.icon name={@icon_name} class={["mt-0.5 size-5 shrink-0", @icon_tone]} />
-      <div class="min-w-0">
-        <p class="text-sm font-bold">{@title}</p>
-        <div :if={@inner_block != []} class="mt-0.5 text-sm">{render_slot(@inner_block)}</div>
+      <div class={[
+        "min-w-0",
+        @action != [] && "flex-1 sm:flex sm:items-center sm:justify-between sm:gap-6"
+      ]}>
+        <div class="min-w-0">
+          <p class="text-sm font-bold">{@title}</p>
+          <div :if={@inner_block != []} class="mt-0.5 text-sm">{render_slot(@inner_block)}</div>
+        </div>
+        <div :if={@action != []} class="mt-3 shrink-0 sm:mt-0">{render_slot(@action)}</div>
       </div>
     </div>
     """
@@ -267,15 +314,72 @@ defmodule GtfsPlannerWeb.PlannerComponents do
 
   @doc """
   A drawer form's actions, kept in view under the scrolling fields: Cancel, then
-  the one primary at the right.
+  the one primary at the right. A control that must sit at the left edge, such as
+  Delete, takes `mr-auto`; a note that explains an unavailable action takes
+  `basis-full` to sit on the row above the buttons.
   """
   slot :inner_block, required: true
 
   def drawer_footer(assigns) do
     ~H"""
-    <footer class="flex items-center justify-end gap-3 border-t border-subtle bg-white px-5 py-4 sm:px-6">
+    <footer class="flex flex-wrap items-center justify-end gap-3 border-t border-subtle bg-white px-5 py-4 sm:px-6">
       {render_slot(@inner_block)}
     </footer>
     """
   end
+
+  @doc """
+  One titled section of a drawer form: a legend over its fields, divided from the
+  section above by a hairline. The divider lives on a wrapper because a fieldset
+  border would run through the legend.
+  """
+  attr :title, :string, required: true
+  attr :first?, :boolean, default: false, doc: "the first section has no divider above it"
+  slot :inner_block, required: true
+
+  def form_section(assigns) do
+    ~H"""
+    <div class={["min-w-0", !@first? && "border-t border-subtle pt-6"]}>
+      <fieldset class="min-w-0">
+        <legend class="mb-4 text-base font-bold text-strong">{@title}</legend>
+        <div class="grid gap-5">{render_slot(@inner_block)}</div>
+      </fieldset>
+    </div>
+    """
+  end
+
+  @doc """
+  The drawer header's mark for a draft that differs from what is saved. It names
+  the state in words, so the warning is readable without its colour.
+  """
+  attr :id, :string, required: true
+
+  def unsaved_badge(assigns) do
+    ~H"""
+    <span
+      id={@id}
+      class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-badge bg-warning-bg px-2 py-1 text-[13px] font-[650] leading-none text-warning-fg"
+    >
+      <.icon name="hero-exclamation-triangle" class="size-4" /> Unsaved changes
+    </span>
+    """
+  end
+
+  @doc """
+  The address a stored web or email value may open, or `nil`.
+
+  A stored value is arbitrary text when it came from an import, so a page links
+  it only when the browser can follow it safely: `:web` needs a plain http(s)
+  URL and `:email` a plain address; anything else stays text and never becomes an
+  `href`.
+  """
+  def safe_href(:web, value) when is_binary(value) do
+    if String.match?(value, ~r{\Ahttps?://\S+\z}i), do: value
+  end
+
+  def safe_href(:email, value) when is_binary(value) do
+    if String.match?(value, ~r/\A[^\s@]+@[^\s@]+\z/), do: "mailto:" <> value
+  end
+
+  def safe_href(_kind, _value), do: nil
 end
