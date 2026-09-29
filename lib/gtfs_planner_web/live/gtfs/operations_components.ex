@@ -49,6 +49,57 @@ defmodule GtfsPlannerWeb.Gtfs.OperationsComponents do
   end
 
   @doc """
+  Names what still references a garage or vehicle type, in one sentence.
+
+  Both settings pages refuse a delete the same way, so both read the same
+  sentence from here: the entity's name, its non-zero reference counts joined
+  as “3 vehicles, 12 blocks and 2 routes”, and the instruction to change those
+  first. A count of zero is omitted, so an unreferenced kind is not named.
+  `counts` is the map `Operations.garage_in_use_counts/2` or
+  `Operations.vehicle_type_in_use_counts/2` returned.
+
+  ## Examples
+
+      iex> in_use_message("Main", %{vehicles: 0, blocks: 12, routes: 2})
+      "Main is used by 12 blocks and 2 routes. Change those first."
+
+      iex> in_use_message("Main", %{vehicles: 3, blocks: 12, routes: 2})
+      "Main is used by 3 vehicles, 12 blocks and 2 routes. Change those first."
+
+      iex> in_use_message("Main", %{vehicles: 0, blocks: 0, routes: 0})
+      "Main is in use. Change the references first."
+  """
+  @spec in_use_message(String.t(), GtfsPlanner.Operations.in_use_counts()) :: String.t()
+  def in_use_message(name, counts) do
+    case in_use_parts(counts) do
+      [] -> "#{name} is in use. Change the references first."
+      parts -> "#{name} is used by #{join_parts(parts)}. Change those first."
+    end
+  end
+
+  defp in_use_parts(counts) do
+    [
+      {counts.vehicles, "vehicle"},
+      {counts.blocks, "block"},
+      {counts.routes, "route"}
+    ]
+    |> Enum.reject(fn {count, _label} -> count == 0 end)
+    |> Enum.map(fn
+      {1, label} -> "1 #{label}"
+      {count, label} -> "#{count} #{label}s"
+    end)
+  end
+
+  # Two parts read “12 blocks and 2 routes”; three read “3 vehicles, 12 blocks
+  # and 2 routes”.
+  defp join_parts([part]), do: part
+  defp join_parts([first, second]), do: "#{first} and #{second}"
+
+  defp join_parts([first, second | rest]) do
+    "#{first}, #{join_parts([second | rest])}"
+  end
+
+  @doc """
   Renders the TODS import drawer both Blocks pages share.
 
   The page owns the upload, the parse and the apply; this component owns the

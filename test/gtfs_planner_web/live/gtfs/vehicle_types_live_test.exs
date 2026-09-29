@@ -3,6 +3,7 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.AdvancedBlockingFixtures
   import GtfsPlanner.OperationsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -283,7 +284,7 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
       open_edit(view, in_use)
       view |> element("#delete-vehicle-type") |> render_click()
 
-      assert has_element?(view, "#vehicle-type-in-use-dialog", "1 vehicles use Cutaway")
+      assert has_element?(view, "#vehicle-type-in-use-dialog", "Cutaway is used by 1 vehicle")
       refute has_element?(view, "#vehicle-type-delete-confirm")
       assert Enum.count(Operations.list_vehicle_types(organization.id)) == 2
 
@@ -316,6 +317,44 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
       # The assigned type and its vehicle are untouched.
       assert has_element?(view, "tr#vehicle_types-#{in_use.id}")
       assert has_element?(view, "tr#vehicles-#{vehicle.id}", "Cutaway")
+    end
+
+    test "a type a block and a route require is refused and the page names both", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      in_use = vehicle_type_fixture(organization.id, %{"name" => "Cutaway"})
+      vehicle_type_fixture(organization.id, %{"name" => "Spare"})
+
+      block_attribute_fixture(organization.id, version.id, %{
+        service_id: "weekday",
+        block_id: "7",
+        vehicle_type_id: in_use.id
+      })
+
+      route_operating_setting_fixture(organization.id, version.id, %{
+        route_id: "10",
+        required_vehicle_type_id: in_use.id
+      })
+
+      {:ok, view, _html} = live(conn, fleet_url(version))
+
+      open_edit(view, in_use)
+      view |> element("#delete-vehicle-type") |> render_click()
+
+      assert has_element?(
+               view,
+               "#vehicle-type-in-use-dialog",
+               "Cutaway is used by 1 block and 1 route. Change those first."
+             )
+
+      refute has_element?(view, "#vehicle-type-delete-confirm")
+
+      assert Operations.vehicle_type_in_use_counts(organization.id, in_use.id) ==
+               %{vehicles: 0, blocks: 1, routes: 1}
     end
   end
 

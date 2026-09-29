@@ -24,8 +24,11 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   A collapsed `#vehicle-types` disclosure holds the types table and its add/edit
   drawer. A type is organization-wide and ignores versions like a vehicle; its
   optional limit is edited as hours and stored as minutes by
-  `Operations.VehicleType`, and in-use deletion is refused by the database
-  constraint the delete translates to a message.
+  `Operations.VehicleType`, and deletion is refused while any vehicle, block
+  attribute or route operating setting requires the type: the page reads
+  `Operations.vehicle_type_in_use_counts/2` before opening the confirmation and
+  `Operations.delete_vehicle_type/2` still attempts the write, naming the same
+  counts when a reference appears in between.
 
   `#vehicle-drawer` edits one vehicle and creates a numbered group. Adding uses
   a One vehicle / Numbered group mode switch; the numbered-group `#range-preview`
@@ -57,7 +60,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.OperationsComponents,
-    only: [scope_note: 1, tods_import_drawer: 1, tods_review_current?: 2]
+    only: [in_use_message: 2, scope_note: 1, tods_import_drawer: 1, tods_review_current?: 2]
 
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Tods
@@ -326,11 +329,18 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       nil ->
         {:noreply, socket}
 
-      %VehicleType{vehicle_count: count} = vehicle_type when count > 0 ->
-        {:noreply, assign(socket, :type_in_use, vehicle_type)}
-
       vehicle_type ->
-        {:noreply, assign(socket, :type_delete_target, vehicle_type)}
+        counts =
+          Operations.vehicle_type_in_use_counts(
+            socket.assigns.current_organization.id,
+            vehicle_type.id
+          )
+
+        if Operations.in_use?(counts) do
+          {:noreply, assign(socket, :type_in_use, %{vehicle_type: vehicle_type, counts: counts})}
+        else
+          {:noreply, assign(socket, :type_delete_target, vehicle_type)}
+        end
     end
   end
 
@@ -1099,7 +1109,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
         return_focus_id="delete-vehicle-type"
       >
         <p>
-          {@type_in_use.vehicle_count} vehicles use {@type_in_use.name}. Set a different type for those vehicles before deleting it.
+          {in_use_message(@type_in_use.vehicle_type.name, @type_in_use.counts)}
         </p>
       </.confirm_dialog>
     </Layouts.app>
@@ -1131,9 +1141,11 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
          |> load_fleet()
          |> assign(:type_notice, "#{deleted.name} deleted.")}
 
-      {:error, {:in_use, vehicles: _count}} ->
+      {:error, {:in_use, counts}} ->
         {:noreply,
-         socket |> assign(:type_delete_target, nil) |> assign(:type_in_use, vehicle_type)}
+         socket
+         |> assign(:type_delete_target, nil)
+         |> assign(:type_in_use, %{vehicle_type: vehicle_type, counts: counts})}
 
       {:error, :not_found} ->
         {:noreply, socket |> assign(:type_delete_target, nil) |> load_fleet()}

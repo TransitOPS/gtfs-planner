@@ -7,12 +7,23 @@ defmodule GtfsPlanner.Operations do
   versions remain navigation context. `organization_id`, the assignment
   references and `updated_by_id` are set programmatically and are never accepted
   from user params. Garage and vehicle-type deletion fails closed while any
-  vehicle references the parent; deleting the organization still cascades.
+  vehicle, block attribute or route operating setting references the parent;
+  deleting the organization still cascades.
+
+  A garage also owns its entered driving times: `delete_garage/2` deletes the
+  `deadhead_times` rows whose reference is `"garage:<uuid>"` in the same
+  transaction as the guarded delete, and restores them when the delete is
+  refused. Garage references are the garage UUID, never the correctable
+  `garage_id` (CR-7).
   """
 
   import Ecto.Query, warn: false
   import Ecto.Changeset, only: [put_change: 3]
 
+  alias GtfsPlanner.Gtfs.BlockAttribute
+  alias GtfsPlanner.Gtfs.Blocking.DeadheadTimes
+  alias GtfsPlanner.Gtfs.DeadheadTime
+  alias GtfsPlanner.Gtfs.RouteOperatingSetting
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Operations.Garage
   alias GtfsPlanner.Operations.Tods
@@ -23,6 +34,33 @@ defmodule GtfsPlanner.Operations do
   @type actor :: %{required(:id) => Ecto.UUID.t()}
 
   @type assignment :: Ecto.UUID.t() | :none | nil
+
+  @typedoc """
+  What still references a garage or vehicle type, counted per referring kind.
+
+  `blocks` counts distinct `block_attributes` rows by `block_id` and `routes`
+  counts `route_operating_settings` rows, which is one row per route. A
+  settings page names the non-zero parts.
+  """
+  @type in_use_counts :: %{
+          vehicles: non_neg_integer(),
+          blocks: non_neg_integer(),
+          routes: non_neg_integer()
+        }
+
+  # The named foreign keys a garage or vehicle type delete can trip. Every one
+  # is `NO ACTION`, so the attempted delete is what fails closed.
+  @garage_constraints [
+    :vehicles_garage_id_fkey,
+    :block_attributes_garage_id_fkey,
+    :route_operating_settings_garage_id_fkey
+  ]
+
+  @vehicle_type_constraints [
+    :vehicles_vehicle_type_id_fkey,
+    :block_attributes_vehicle_type_id_fkey,
+    :route_operating_settings_required_vehicle_type_id_fkey
+  ]
 
   @type conflict :: %{
           garage_id: String.t(),
@@ -104,25 +142,55 @@ defmodule GtfsPlanner.Operations do
   end
 
   @doc """
-  Deletes a garage belonging to the organization.
+  Deletes a garage belonging to the organization, with its driving times.
 
-  The delete is attempted against the `NO ACTION` foreign key and translated to
-  `{:error, {:in_use, vehicles: n}}` when a vehicle still references it; nothing
-  is deleted. A missing, malformed or foreign id returns `{:error, :not_found}`.
-  Never deletes after a precheck alone.
+  The delete is attempted against the `NO ACTION` foreign keys and translated to
+  `{:error, {:in_use, counts}}` naming the vehicles, blocks and routes that
+  still reference it; nothing is deleted, including the driving times removed
+  just before the attempt. A garage no planning row references is deleted
+  together with the `deadhead_times` rows whose `from_ref` or `to_ref` is
+  `"garage:<uuid>"`; every other driving time is left alone. A missing,
+  malformed or foreign id returns `{:error, :not_found}`. Never deletes after a
+  precheck alone.
   """
   @spec delete_garage(Ecto.UUID.t(), Ecto.UUID.t()) ::
-          {:ok, Garage.t()} | {:error, {:in_use, vehicles: non_neg_integer()} | :not_found}
+          {:ok, Garage.t()} | {:error, {:in_use, in_use_counts()} | :not_found}
   def delete_garage(organization_id, id) do
     case get_garage(organization_id, id) do
       nil ->
         {:error, :not_found}
 
       garage ->
-        delete_with_in_use_guard(garage, :vehicles_garage_id_fkey, fn ->
-          count_vehicles(organization_id, :garage_id, garage.id)
-        end)
+        delete_garage_with_driving_times(organization_id, garage)
     end
+  end
+
+  @doc """
+  Whether any count is non-zero, which is the whole in-use answer.
+
+  A caller that wants to refuse before attempting the delete reads this, and
+  the delete itself still attempts the write, so a precheck never authorizes a
+  delete on its own.
+  """
+  @spec in_use?(in_use_counts()) :: boolean()
+  def in_use?(%{vehicles: vehicles, blocks: blocks, routes: routes}) do
+    vehicles > 0 or blocks > 0 or routes > 0
+  end
+
+  @doc """
+  Counts what still references a garage: its vehicles, the distinct blocks that
+  name it and the routes that operate from it.
+
+  A settings page reads this to name the references in its in-use message, and
+  `delete_garage/2` answers a refused delete with the same counts.
+  """
+  @spec garage_in_use_counts(Ecto.UUID.t(), Ecto.UUID.t()) :: in_use_counts()
+  def garage_in_use_counts(organization_id, garage_id) do
+    %{
+      vehicles: count_vehicles(organization_id, :garage_id, garage_id),
+      blocks: count_referring_blocks(organization_id, :garage_id, garage_id),
+      routes: count_route_settings(organization_id, :garage_id, garage_id)
+    }
   end
 
   @doc """
@@ -272,22 +340,39 @@ defmodule GtfsPlanner.Operations do
   @doc """
   Deletes a vehicle type belonging to the organization.
 
-  The delete is attempted against the `NO ACTION` foreign key and translated to
-  `{:error, {:in_use, vehicles: n}}` when a vehicle still references it; nothing
-  is deleted. A missing, malformed or foreign id returns `{:error, :not_found}`.
+  The delete is attempted against the `NO ACTION` foreign keys and translated to
+  `{:error, {:in_use, counts}}` naming the vehicles, blocks and routes that
+  still reference it; nothing is deleted. A missing, malformed or foreign id
+  returns `{:error, :not_found}`.
   """
   @spec delete_vehicle_type(Ecto.UUID.t(), Ecto.UUID.t()) ::
-          {:ok, VehicleType.t()} | {:error, {:in_use, vehicles: non_neg_integer()} | :not_found}
+          {:ok, VehicleType.t()} | {:error, {:in_use, in_use_counts()} | :not_found}
   def delete_vehicle_type(organization_id, id) do
     case get_vehicle_type(organization_id, id) do
       nil ->
         {:error, :not_found}
 
       vehicle_type ->
-        delete_with_in_use_guard(vehicle_type, :vehicles_vehicle_type_id_fkey, fn ->
-          count_vehicles(organization_id, :vehicle_type_id, vehicle_type.id)
+        delete_with_in_use_guard(vehicle_type, @vehicle_type_constraints, fn ->
+          vehicle_type_in_use_counts(organization_id, vehicle_type.id)
         end)
     end
+  end
+
+  @doc """
+  Counts what still references a vehicle type: its vehicles, the distinct blocks
+  that require it and the routes that require it.
+
+  A settings page reads this to name the references in its in-use message, and
+  `delete_vehicle_type/2` answers a refused delete with the same counts.
+  """
+  @spec vehicle_type_in_use_counts(Ecto.UUID.t(), Ecto.UUID.t()) :: in_use_counts()
+  def vehicle_type_in_use_counts(organization_id, vehicle_type_id) do
+    %{
+      vehicles: count_vehicles(organization_id, :vehicle_type_id, vehicle_type_id),
+      blocks: count_referring_blocks(organization_id, :vehicle_type_id, vehicle_type_id),
+      routes: count_route_settings(organization_id, :required_vehicle_type_id, vehicle_type_id)
+    }
   end
 
   @doc """
@@ -982,15 +1067,69 @@ defmodule GtfsPlanner.Operations do
 
   defp fetch_attr(_attrs, _key), do: :__absent__
 
-  defp delete_with_in_use_guard(parent, constraint_name, count_fun) do
+  # A garage owns its entered driving times, so they are removed in the same
+  # transaction as the guarded delete and restored by the rollback when a
+  # reference refuses it. The reference is the garage UUID (CR-7).
+  defp delete_garage_with_driving_times(organization_id, garage) do
+    counts_fun = fn -> garage_in_use_counts(organization_id, garage.id) end
+
+    Repo.transaction(fn ->
+      delete_garage_driving_times(organization_id, garage.id)
+      garage_delete_outcome(garage, counts_fun)
+    end)
+    |> case do
+      {:ok, result} -> result
+      {:error, {:in_use, counts}} -> {:error, {:in_use, counts}}
+    end
+  end
+
+  # A refusal rolls the whole transaction back, which is what restores the
+  # driving times removed just before the attempt.
+  defp garage_delete_outcome(garage, counts_fun) do
+    case delete_with_in_use_guard(garage, @garage_constraints, counts_fun) do
+      {:ok, deleted} -> {:ok, deleted}
+      {:error, {:in_use, counts}} -> Repo.rollback({:in_use, counts})
+    end
+  end
+
+  defp delete_garage_driving_times(organization_id, garage_id) do
+    ref = DeadheadTimes.encode_ref({:garage, garage_id})
+
+    DeadheadTime
+    |> where([t], t.organization_id == ^organization_id)
+    |> where([t], t.from_ref == ^ref or t.to_ref == ^ref)
+    |> Repo.delete_all()
+  end
+
+  # One `block_attributes` row exists per service and block, so a block that
+  # spans three services is named once.
+  defp count_referring_blocks(organization_id, field, id) do
+    BlockAttribute
+    |> where([a], a.organization_id == ^organization_id and field(a, ^field) == ^id)
+    |> select([a], a.block_id)
+    |> distinct(true)
+    |> Repo.aggregate(:count, :block_id)
+  end
+
+  defp count_route_settings(organization_id, field, id) do
+    RouteOperatingSetting
+    |> where([s], s.organization_id == ^organization_id and field(s, ^field) == ^id)
+    |> Repo.aggregate(:count, :id)
+  end
+
+  # The attempted delete runs in a savepoint so a constraint violation leaves
+  # the connection usable, and every named constraint is translated into the
+  # same `{:in_use, counts}` answer.
+  defp delete_with_in_use_guard(parent, constraint_names, counts_fun) do
     changeset =
-      parent
-      |> Ecto.Changeset.change()
-      |> Ecto.Changeset.foreign_key_constraint(:id, name: constraint_name)
+      constraint_names
+      |> Enum.reduce(Ecto.Changeset.change(parent), fn name, changeset ->
+        Ecto.Changeset.foreign_key_constraint(changeset, :id, name: name)
+      end)
 
     case Repo.transaction(fn -> Repo.delete(changeset, mode: :savepoint) end) do
       {:ok, {:ok, deleted}} -> {:ok, deleted}
-      {:ok, {:error, _changeset}} -> {:error, {:in_use, vehicles: max(count_fun.(), 0)}}
+      {:ok, {:error, _changeset}} -> {:error, {:in_use, counts_fun.()}}
     end
   end
 

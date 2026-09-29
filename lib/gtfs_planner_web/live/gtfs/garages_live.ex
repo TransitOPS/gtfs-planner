@@ -14,6 +14,13 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   pattern. `Garage.changeset/2` owns validation, so a rejected submit returns
   focus to the first invalid field through the scoped `FormErrorFocus` hook.
 
+  A delete is refused while any vehicle, block attribute or route operating
+  setting references the garage: the page reads
+  `Operations.garage_in_use_counts/2` before opening the confirmation and
+  `Operations.delete_garage/2` still attempts the write, naming the same counts
+  when a reference appears in between. A garage nothing references is deleted
+  with its entered driving times, whose refs are the garage UUID.
+
   `garage_id` is a correctable external ID: creation derives it from the name
   until the user edits the ID field (tracked from the form event's `_target`),
   and a saved garage's ID is never regenerated from a name change.
@@ -30,7 +37,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.OperationsComponents,
-    only: [scope_note: 1, tods_import_drawer: 1, tods_review_current?: 2]
+    only: [in_use_message: 2, scope_note: 1, tods_import_drawer: 1, tods_review_current?: 2]
 
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Operations
@@ -286,11 +293,15 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
       nil ->
         {:noreply, socket}
 
-      %Garage{vehicle_count: count} = garage when count > 0 ->
-        {:noreply, assign(socket, :garage_in_use, garage)}
-
       garage ->
-        {:noreply, assign(socket, :garage_delete_target, garage)}
+        counts =
+          Operations.garage_in_use_counts(socket.assigns.current_organization.id, garage.id)
+
+        if Operations.in_use?(counts) do
+          {:noreply, assign(socket, :garage_in_use, %{garage: garage, counts: counts})}
+        else
+          {:noreply, assign(socket, :garage_delete_target, garage)}
+        end
     end
   end
 
@@ -327,11 +338,11 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
          |> refresh_garages()
          |> assign(:garage_notice, "#{deleted.name} deleted.")}
 
-      {:error, {:in_use, vehicles: _count}} ->
+      {:error, {:in_use, counts}} ->
         {:noreply,
          socket
          |> assign(:garage_delete_target, nil)
-         |> assign(:garage_in_use, garage)}
+         |> assign(:garage_in_use, %{garage: garage, counts: counts})}
 
       {:error, :not_found} ->
         {:noreply, socket |> assign(:garage_delete_target, nil) |> refresh_garages()}
@@ -523,7 +534,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
         return_focus_id="garage-delete"
       >
         <p>
-          {@garage_in_use.name} has {@garage_in_use.vehicle_count} vehicles. Set a different garage for those vehicles before deleting it.
+          {in_use_message(@garage_in_use.garage.name, @garage_in_use.counts)}
         </p>
       </.confirm_dialog>
     </Layouts.app>
