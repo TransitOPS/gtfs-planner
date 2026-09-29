@@ -10,8 +10,9 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
   # Literal expectations transcribed from the finalized content table. They are
   # written here rather than read back from the catalog under test. Transfers,
-  # Blocks, Flex, Feed details, Agencies, Export defaults and Fares are absent:
-  # each destination ships as a working page, so it has no catalog entry.
+  # Blocks, Flex, Feed details, Agencies, Export defaults, Fares and Evolutions
+  # are absent: each destination ships as a working page, so it has no catalog
+  # entry.
   @catalog [
     runs: %{
       title: "Runs",
@@ -35,18 +36,6 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
         "Export assignments"
       ]
     },
-    evolutions: %{
-      title: "Evolutions",
-      scope: :version,
-      summary:
-        "Schedule pathway closures, such as elevator maintenance, and check station access while they apply.",
-      section_names: [
-        "Schedule a closure",
-        "Pick pathways on the floorplan",
-        "Check station access",
-        "Include closures in your export"
-      ]
-    },
     feed_url: %{
       title: "Published feed URL",
       scope: :all_versions,
@@ -62,7 +51,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
   describe "feature/1" do
     test "returns the finalized copy for every fixed key" do
-      assert length(@catalog) == 4
+      assert length(@catalog) == 3
 
       Enum.each(@catalog, fn {key, expected} ->
         entry = ComingSoon.feature(key)
@@ -81,11 +70,11 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
       end
     end
 
-    test "raises for a key outside the catalog, including the shipped Transfers key" do
+    test "raises for a key outside the catalog, including the shipped Transfers and Evolutions keys" do
       # `Function.identity/1` passes the value through while keeping it out of the
       # compiler's type checker, which would otherwise warn that the literal
       # cannot match the closed clause set. The call under test is unchanged.
-      for key <- [:transfers, :feed_details, :agencies, :unbuilt] do
+      for key <- [:transfers, :evolutions, :feed_details, :agencies, :unbuilt] do
         assert_raise FunctionClauseError, fn ->
           ComingSoon.feature(Function.identity(key))
         end

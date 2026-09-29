@@ -221,6 +221,14 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsFloorplanTest do
         diagram_filename: "never_stored.png"
       })
 
+    agency_fixture(organization.id, version.id, %{agency_timezone: "America/New_York"})
+
+    calendar_fixture(organization.id, version.id, %{
+      service_id: "CAL_NO_IMAGE",
+      start_date: ~D[2026-01-01],
+      end_date: ~D[2026-12-31]
+    })
+
     child =
       stop_fixture(organization.id, version.id, %{
         stop_id: "FP_NI_CHILD",
@@ -250,12 +258,19 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsFloorplanTest do
           stop_name: "Floorplan No Diagram Station"
       })
 
+    agency_fixture(organization.id, version.id, %{agency_timezone: "America/New_York"})
+
+    calendar_fixture(organization.id, version.id, %{
+      service_id: "CAL_NO_DIAGRAM",
+      start_date: ~D[2026-01-01],
+      end_date: ~D[2026-12-31]
+    })
+
     child =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "FP_ND_CHILD",
         stop_name: "Unphotographed concourse",
-        location_type: 0,
-        parent_station: station.stop_id
+        location_type: 0
       })
 
     pathway_fixture(organization.id, version.id, child.stop_id, station.stop_id, %{

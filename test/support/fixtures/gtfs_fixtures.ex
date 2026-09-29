@@ -72,6 +72,34 @@ defmodule GtfsPlanner.GtfsFixtures do
   end
 
   @doc """
+  Generate a child stop fixture under a parent station.
+
+  A child stop must reference a level (`Stop.changeset/2` requires it), so one
+  is provisioned first unless the caller names an existing `level_id`.
+  """
+  def child_stop_fixture(organization_id, gtfs_version_id, parent_station, attrs \\ %{}) do
+    attrs = Enum.into(attrs, %{})
+
+    attrs =
+      if Map.has_key?(attrs, :level_id) do
+        attrs
+      else
+        level =
+          level_fixture(organization_id, gtfs_version_id, %{
+            level_id: "level_#{System.unique_integer([:positive])}"
+          })
+
+        Map.put(attrs, :level_id, level.level_id)
+      end
+
+    stop_fixture(
+      organization_id,
+      gtfs_version_id,
+      Map.put(attrs, :parent_station, parent_station)
+    )
+  end
+
+  @doc """
   Generate valid pathway attributes for testing.
   """
   def valid_pathway_attrs(attrs \\ %{}) do

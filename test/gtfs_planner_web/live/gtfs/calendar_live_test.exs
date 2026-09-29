@@ -124,16 +124,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
       location_type: 1
     })
 
-    stop_fixture(context.organization.id, context.version.id, %{
+    child_stop_fixture(context.organization.id, context.version.id, station_id, %{
       stop_id: station_id <> "_ENT",
-      location_type: 2,
-      parent_station: station_id
+      location_type: 2
     })
 
-    stop_fixture(context.organization.id, context.version.id, %{
+    child_stop_fixture(context.organization.id, context.version.id, station_id, %{
       stop_id: station_id <> "_PLAT",
-      location_type: 0,
-      parent_station: station_id
+      location_type: 0
     })
 
     pathway_fixture(
@@ -1565,7 +1563,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
 
       assert refused =~ "1 scheduled closure uses this calendar on pathway"
       refute refused =~ "This calendar is used by trips"
-      refute refused =~ "trips use this calendar"
+      refute has_element?(view, "#calendar-delete-blocked", "trips use this calendar")
 
       # The refusal names the exact pathway and links it to the station that owns
       # it, with the natural ID encoded rather than interpolated.
