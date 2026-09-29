@@ -27,6 +27,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   summed date count. It takes no lock, so it can run after a Schedules commit
   without holding the day it just changed.
 
+  `suggest_blocks/4` is the read-only suggestion: one transaction that resolves the
+  day type, scopes its trips by mode, refuses a scope above `@max_plan_trips`, calls
+  `Blocking.Generator.run/4` and hands the result to `Blocking.Plan.build/1`. It
+  writes nothing and takes no blocking lock, so a suggestion is always a proposal
+  the page can render and only `apply_block_plan/3` can write (AC-26).
+
   `project_calendar_combination/2` is the pure batch producer a calendar combination
   review reads: it projects every proposed service-ID move and destination date change at
   once, decides which moved blocks must be cleared from that one projection, and reports
@@ -55,9 +61,11 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     DeadheadTimes,
     Distance,
     Fleet,
+    Generator,
     InSeat,
     LowerBound,
     Movements,
+    Plan,
     Queries,
     Relief,
     Review,
@@ -135,6 +143,13 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # One command changes at most this many trips, the same bound the Schedules
   # series uses; the largest measured block holds 192 trips.
   @max_command_trips 500
+
+  # One suggestion reads at most this many trip rows. It is the measured target
+  # EV-12 checks a generated day type against (AC-28), and it is the largest scope
+  # `Generator.run/4` and `Plan.build/1` are meant to answer in the time the page can
+  # wait for a preview. A scope above it is refused rather than truncated, so a
+  # suggestion is never a partial answer (AC-26).
+  @max_plan_trips 3_000
 
   # The transaction boundary is retried as a whole three times, for a serialization
   # failure or a deadlock, before the command reports `:busy` (AC-14, INV-1).
@@ -1449,6 +1464,56 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   @doc """
+  Suggests blocks for one day type and returns the plan a reviewer reads.
+
+  A read-only transaction: it takes the version row `FOR SHARE` through
+  `Calendars.list_calendars/3`, derives the day types through `DayTypes.derive/1`
+  and resolves the key, so an unknown key answers
+  `{:error, {:unknown_day_type, day_types}}` and nothing falls back to another day
+  type (INV-6). A foreign or unpublished version is `{:error, :not_found}`. No lock
+  is taken and no row is written: this function owns the reads the suggestion is
+  built from, and only `apply_block_plan/3` moves a trip's `block_id`.
+
+  The mode decides what is in scope (R10, AC-26):
+
+    * `:unassigned_only` — the day type's whole trip set. The generator keeps every
+      existing assignment and offers the blocks already on the page as open blocks,
+      so what this mode places is the day type's pool.
+    * `{:selected, ids}` — the trips of those blocks on the day type, which the run
+      rebuilds onto blocks it creates. An empty list, or an ID the day type does not
+      run, is `{:error, :no_selection}`: there is nothing to rebuild, and guessing a
+      block would rebuild one the operator did not ask about.
+    * `:replace_all` — the day type's whole trip set again, but every non-frequency
+      trip in it is rebuilt rather than kept.
+
+  A scope above `@max_plan_trips` rows is `{:error, {:too_large, n}}` before the
+  generator runs, so an oversized day type is refused rather than answered slowly
+  and partially (AC-26). A version that derives no day type at all has nothing in
+  scope to suggest and answers `{:error, :no_selection}`.
+
+  The returned `%Blocking.Plan{}` carries the moves, the new blocks and their
+  attribute rows, the review of what the moves change on every affected day type,
+  the before and after figures, the leftovers and the fingerprint
+  `apply_block_plan/3` matches. Nothing here decides whether the plan may be
+  written; a plan is a proposal until a caller confirms it under the blocking lock.
+  """
+  @spec suggest_blocks(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil, Generator.mode()) ::
+          {:ok, Plan.t()}
+          | {:error,
+             :not_found
+             | {:unknown_day_type, [DayTypes.day_type()]}
+             | :no_selection
+             | {:too_large, pos_integer()}}
+  def suggest_blocks(organization_id, gtfs_version_id, day_type_key, mode) do
+    case Repo.transaction(fn ->
+           read_suggestion(organization_id, gtfs_version_id, day_type_key, mode)
+         end) do
+      {:ok, plan} -> {:ok, plan}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
   Takes the version's blocking advisory lock for the rest of the transaction.
 
   `pg_advisory_xact_lock` on `hashtext('blocking:' <> version_id)` is the single
@@ -1788,6 +1853,137 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   defp problem_trips(organization_id, gtfs_version_id, trip_ids) do
     Queries.trip_rows(organization_id, gtfs_version_id, {:trip_ids, Enum.uniq(trip_ids)})
+  end
+
+  # --- suggestion ------------------------------------------------------------
+
+  # The read behind `suggest_blocks/4`. The order is the card's and the spec's: the
+  # version and its calendars, the day types and the key, the scope and its bound,
+  # and only then the context, the generator and the plan. Everything the bound
+  # refuses is refused before a context is built or a row is walked, so an oversized
+  # day type costs one query and not a generator run (AC-26).
+  defp read_suggestion(organization_id, gtfs_version_id, day_type_key, mode) do
+    calendars = load_calendars!(organization_id, gtfs_version_id)
+    day_types = DayTypes.derive(calendars)
+    day_type = resolve_day_type!(day_types, day_type_key)
+
+    if is_nil(day_type), do: Repo.rollback(:no_selection)
+
+    rows = suggestion_rows(organization_id, gtfs_version_id, day_type, mode)
+    if length(rows) > @max_plan_trips, do: Repo.rollback({:too_large, length(rows)})
+
+    settings = get_settings(organization_id, gtfs_version_id)
+    context = build_context!(organization_id, gtfs_version_id, settings, rows)
+
+    # R11 numbers the blocks a rebuild creates after the highest numeric ID in use on
+    # an affected date. The affected set is read from the scope's own services
+    # rather than from the run's moves, which are not known until the run has
+    # happened: every moved trip runs in a scoped service, so this set is a superset
+    # of the moved trips' day types and can only continue the numbering further
+    # along, never inside an ID that is in use.
+    used_ids =
+      suggest_used_block_ids(organization_id, gtfs_version_id, scope_day_types(day_types, rows))
+
+    result = Generator.run(mode, rows, context, used_ids)
+
+    affected = affected_day_types(day_types, moved_trips(rows, result.assignments))
+    service_dates = DayTypes.service_dates(calendars)
+    plan_rows = plan_rows(organization_id, gtfs_version_id, rows, result.blocks, affected)
+
+    Plan.build(%{
+      mode: mode,
+      selected_key: day_type.key,
+      day_types: day_types,
+      affected: affected,
+      rows: plan_rows,
+      result: result,
+      context: context,
+      in_seat:
+        in_seat_context(organization_id, gtfs_version_id, affected, service_dates, plan_rows),
+      service_dates: service_dates
+    })
+  end
+
+  # The rows one mode reads. The additive and the replace-all modes both read the
+  # day type's whole trip set and let `Generator.run/4` split it, because the run's
+  # own scope is what keeps every existing assignment and holds a frequency trip
+  # back in every mode (AC-22); reading only the pool here would leave the run no
+  # existing block to extend. `{:selected, ids}` reads exactly the selected blocks'
+  # trips on the day type and refuses a selection the day type does not run.
+  defp suggestion_rows(_organization_id, _gtfs_version_id, _day_type, {:selected, []}) do
+    Repo.rollback(:no_selection)
+  end
+
+  defp suggestion_rows(organization_id, gtfs_version_id, day_type, {:selected, ids}) do
+    ids = ids |> Enum.uniq() |> Enum.sort()
+
+    rows =
+      Queries.trip_rows(organization_id, gtfs_version_id, {:blocks, ids, day_type.service_ids})
+
+    if Enum.all?(ids, &held_on_day_type?(rows, &1)) do
+      rows
+    else
+      Repo.rollback(:no_selection)
+    end
+  end
+
+  defp suggestion_rows(organization_id, gtfs_version_id, day_type, mode)
+       when mode in [:unassigned_only, :replace_all] do
+    Queries.trip_rows(organization_id, gtfs_version_id, {:services, day_type.service_ids})
+  end
+
+  # An ID the operator selected is in scope only when the day type actually runs
+  # one of its trips. A block that exists only on another day type is not this
+  # day's suggestion to rebuild, and rebuilding it would move trips the operator
+  # did not see selected.
+  defp held_on_day_type?(rows, block_id),
+    do: Enum.any?(rows, &(&1.block_id == block_id))
+
+  # The day types the scope reaches, and so the services whose block IDs R11
+  # continues after. A scope with no trip reaches no day type.
+  defp scope_day_types(day_types, rows) do
+    rows
+    |> Enum.flat_map(&DayTypes.containing(day_types, &1.service_id))
+    |> Enum.uniq_by(& &1.key)
+  end
+
+  defp suggest_used_block_ids(_organization_id, _gtfs_version_id, []) do
+    []
+  end
+
+  defp suggest_used_block_ids(organization_id, gtfs_version_id, day_types) do
+    service_ids = day_types |> Enum.flat_map(& &1.service_ids) |> Enum.uniq()
+
+    organization_id
+    |> Queries.used_block_ids(gtfs_version_id, service_ids)
+    |> MapSet.to_list()
+  end
+
+  # The trips whose block the run changes. A trip the run held where it was, and a
+  # frequency trip that keeps its assignment in every mode, compare equal here and
+  # are not a move — so neither puts its service in the affected set (AC-22).
+  defp moved_trips(rows, assignments) do
+    Enum.filter(rows, &(Map.get(assignments, &1.id) != &1.block_id))
+  end
+
+  # The rows the plan is read over: the scoped trips and the trips of every block
+  # the run left in place or created, on the affected services. A block the run
+  # rebuilt is complete only when the plan also sees the trips it shares with the
+  # other day types that run it, and an extra row is harmless while a missing one
+  # would read a block as half-empty.
+  defp plan_rows(_organization_id, _gtfs_version_id, rows, _blocks, affected)
+       when affected == [] or rows == [] do
+    rows
+  end
+
+  defp plan_rows(organization_id, gtfs_version_id, rows, blocks, affected) do
+    block_ids = blocks |> Enum.map(& &1.id) |> Enum.uniq()
+    service_ids = affected |> Enum.flat_map(& &1.service_ids) |> Enum.uniq()
+
+    companion_rows =
+      Queries.trip_rows(organization_id, gtfs_version_id, {:blocks, block_ids, service_ids})
+
+    (rows ++ companion_rows) |> Enum.uniq_by(& &1.id) |> Enum.sort_by(& &1.id)
   end
 
   # One `{finding, day_type}` per check result. The pairs are collected and
