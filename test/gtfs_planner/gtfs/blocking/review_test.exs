@@ -26,7 +26,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReviewTest do
   """
   use ExUnit.Case, async: true
 
-  alias GtfsPlanner.Gtfs.Blocking.{DayTypes, Review}
+  alias GtfsPlanner.Gtfs.Blocking.{Context, DayTypes, Review}
 
   @min_layover 5
   @monday ~D[2026-01-05]
@@ -412,7 +412,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReviewTest do
           changes: [],
           in_seat: %{rows: [], context: empty_context()},
           service_dates: %{},
-          min_layover_minutes: @min_layover
+          context: Context.layover_only(@min_layover)
         },
         attrs
       )

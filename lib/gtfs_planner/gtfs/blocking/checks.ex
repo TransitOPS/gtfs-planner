@@ -22,6 +22,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
   network (CR-1).
   """
 
+  alias GtfsPlanner.Gtfs.Blocking.Context
   alias GtfsPlanner.Gtfs.StationReport2.Helpers
 
   @nearby_meters 200.0
@@ -177,13 +178,18 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
   `gap_secs` for a short layover, `gap_secs` and `meters` for an empty move
   (`nil` meters when a stop has no coordinates), and `headway_secs` for a
   frequency-based trip.
+
+  The context is the version's planning inputs. `Context.layover_only/1` carries
+  the stored minimum layover and nothing else, and reproduces spec 05's findings
+  exactly through it (CR-2); a context with planning inputs adds the findings R9
+  describes.
   """
-  @spec block_findings(String.t() | nil, [trip_row()], non_neg_integer()) :: [finding()]
-  def block_findings(block_id, trips, min_layover_minutes) do
+  @spec block_findings(String.t() | nil, [trip_row()], Context.t()) :: [finding()]
+  def block_findings(block_id, trips, %Context{} = context) do
     sequence = sequence(trips)
 
     overlap_findings(block_id, overlap_pairs(sequence)) ++
-      gap_findings(block_id, gaps(sequence), min_layover_minutes) ++
+      gap_findings(block_id, gaps(sequence), context) ++
       notices(block_id, trips)
   end
 
@@ -232,7 +238,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
     end)
   end
 
-  defp gap_findings(block_id, gaps, min_layover_minutes) do
+  defp gap_findings(block_id, gaps, context) do
+    min_layover_minutes = context.min_layover_minutes
+
     gaps
     |> Enum.filter(&(&1.gap_secs >= 0))
     |> Enum.flat_map(fn gap ->
