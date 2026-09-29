@@ -166,7 +166,7 @@ test.describe("Organizations trial responsive behavior", () => {
 
     // Find first organization row
     const firstRow = page.locator("tbody#organizations tr").first();
-    const nameLink = firstRow.locator("a.link-primary").first();
+    const nameLink = firstRow.locator("th a").first();
     await expect(nameLink).toBeVisible();
 
     // Check it has the organization name

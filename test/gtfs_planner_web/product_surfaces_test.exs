@@ -82,4 +82,11 @@ defmodule GtfsPlannerWeb.ProductSurfacesTest do
       assert ProductSurfaces.logo_path(:pathways) == "/images/pathways-studio-logo.svg"
     end
   end
+
+  describe "description/1" do
+    test "only the Pathways Studio description says that surfaces are hidden" do
+      refute ProductSurfaces.description(:planner) =~ "hidden"
+      assert ProductSurfaces.description(:pathways) =~ "hidden"
+    end
+  end
 end

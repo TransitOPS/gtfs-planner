@@ -365,7 +365,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       |> form("#invite-form", invite: %{email: "", roles: []})
       |> render_submit()
 
-      assert_push_event(view, "focus_first_invite_error", %{})
+      assert_push_event(view, "focus_form_error", %{form_id: "invite-form"})
     end
 
     test "does not push the focus event on a successful submit", %{conn: conn} do
@@ -377,7 +377,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       )
       |> render_submit()
 
-      refute_push_event(view, "focus_first_invite_error", %{})
+      refute_push_event(view, "focus_form_error", %{})
     end
 
     test "reports a duplicate membership in flow on the form, not on a field", %{
@@ -398,7 +398,11 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
 
       assert has_element?(view, "#invite-service-error[tabindex='-1']")
       assert html =~ "already a member of this organization"
-      assert_push_event(view, "focus_first_invite_error", %{})
+
+      assert_push_event(view, "focus_form_error", %{
+        form_id: "invite-form",
+        fallback_id: "invite-service-error"
+      })
 
       # The drawer stays open on the invite route so the operator can correct it.
       assert has_element?(view, "dialog#invite-drawer-overlay[data-open=true]")
@@ -973,7 +977,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
         view |> element("#organization-error-summary") |> render() |> LazyHTML.from_fragment()
 
       assert LazyHTML.attribute(LazyHTML.query(summary, "a"), "href") == ["#organization-name"]
-      assert_push_event(view, "focus_first_organization_error", %{})
+      assert_push_event(view, "focus_form_error", %{form_id: "organization-settings-form"})
     end
 
     test "shows no summary while the name is being edited", %{conn: conn} do

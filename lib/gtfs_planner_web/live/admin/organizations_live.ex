@@ -30,13 +30,16 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlannerWeb.Admin.Components
-  alias GtfsPlannerWeb.CoreComponents
+  alias GtfsPlannerWeb.ProductSurfaces
+
+  import GtfsPlannerWeb.Admin.InviteFormState,
+    only: [assign_invite_form: 2, invitation_detail: 1, normalize_invite_params: 1]
+
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [choice_cards: 1, first_use: 1, form_error_summary: 1, message: 1]
 
   on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
   on_mount {GtfsPlannerWeb.EnsureRole, :require_system_administrator}
-
-  @unavailable_action "The member list is unavailable right now, so nothing was changed. Retry and try again."
-  @stale_target "That member is no longer in this organization. The list has been refreshed."
 
   # Routes that need the requested organization record.
   @record_actions [:show, :edit, :invite]
@@ -62,6 +65,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
       |> assign(:organizations_state, :ready)
       |> assign(:members_empty?, false)
       |> assign(:members_state, :ready)
+      |> assign(:member_counts, nil)
       |> assign(:organization_feedback, nil)
       |> assign(:member_feedback, nil)
       |> assign(:pending_deactivation, nil)
@@ -137,7 +141,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
     case socket.assigns.organization_state do
       :ready ->
         socket
-        |> assign(:page_title, "Member invitation")
+        |> assign(:page_title, "Invite member")
         |> assign_invite_form(InviteForm.changeset(%{}))
 
       _unresolved ->
@@ -200,12 +204,14 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         |> stream(:members, members, reset: true)
         |> assign(:members_empty?, members == [])
         |> assign(:members_state, :ready)
+        |> assign(:member_counts, Components.count_members(members))
 
       {:error, :unavailable} ->
         socket
         |> stream(:members, [], reset: true)
         |> assign(:members_empty?, false)
         |> assign(:members_state, :unavailable)
+        |> assign(:member_counts, nil)
     end
   end
 
@@ -231,27 +237,46 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   # Feedback
   # ---------------------------------------------------------------------------
 
-  defp put_feedback(socket, kind, title, user_id) do
-    assign(socket, :member_feedback, %{kind: kind, title: title, user_id: user_id})
+  # Every outcome says what happened (`title`) and what it means next (`detail`).
+  # `user_id` names the row the outcome is about, which the table tints; a stream
+  # row only re-renders when the stream is reset, so the callers reload the list.
+  defp put_feedback(socket, kind, title, detail, user_id) do
+    assign(socket, :member_feedback, %{kind: kind, title: title, detail: detail, user_id: user_id})
+  end
+
+  # Clearing an outcome that named a row also un-tints that row.
+  defp clear_feedback(%{assigns: %{member_feedback: %{user_id: user_id}}} = socket)
+       when not is_nil(user_id) do
+    socket |> assign(:member_feedback, nil) |> load_members()
   end
 
   defp clear_feedback(socket), do: assign(socket, :member_feedback, nil)
 
-  defp put_organization_feedback(socket, kind, title) do
-    assign(socket, :organization_feedback, %{kind: kind, title: title})
+  defp put_organization_feedback(socket, kind, title, detail \\ nil) do
+    assign(socket, :organization_feedback, %{kind: kind, title: title, detail: detail})
   end
 
   defp refuse_stale(socket) do
     socket
     |> assign(:pending_deactivation, nil)
-    |> put_feedback("error", @stale_target, nil)
+    |> put_feedback(
+      "error",
+      "That member is no longer in this organization.",
+      "The list has been refreshed.",
+      nil
+    )
     |> load_members()
   end
 
   defp refuse_unavailable(socket) do
     socket
     |> assign(:pending_deactivation, nil)
-    |> put_feedback("error", @unavailable_action, nil)
+    |> put_feedback(
+      "error",
+      "The member list is unavailable right now.",
+      "Nothing was changed. Try again in a moment.",
+      nil
+    )
   end
 
   # ---------------------------------------------------------------------------
@@ -273,7 +298,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   end
 
   def handle_event("retry_members", _params, socket) do
-    {:noreply, socket |> clear_feedback() |> load_members()}
+    {:noreply, socket |> assign(:member_feedback, nil) |> load_members()}
   end
 
   def handle_event("close_drawer", _params, socket) do
@@ -330,7 +355,12 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         {:noreply,
          socket
          |> assign_invite_form(InviteForm.changeset(%{}))
-         |> put_feedback("success", "Invitation sent to #{user.email}.", user.id)
+         |> put_feedback(
+           "success",
+           "Invitation sent to #{user.email}.",
+           invitation_detail(user),
+           user.id
+         )
          |> push_patch(to: ~p"/admin/organizations/#{organization.id}")}
 
       {:ok, :added, user} ->
@@ -340,6 +370,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
          |> put_feedback(
            "success",
            "#{user.email} now has access to #{organization.name}.",
+           invitation_detail(user),
            user.id
          )
          |> push_patch(to: ~p"/admin/organizations/#{organization.id}")}
@@ -351,6 +382,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
          |> put_feedback(
            "warning",
            "#{user.email} was added to #{organization.name}, but the notification email could not be sent.",
+           "They can already sign in. Let them know they now have access.",
            user.id
          )
          |> push_patch(to: ~p"/admin/organizations/#{organization.id}")}
@@ -361,7 +393,8 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
          |> assign_invite_form(InviteForm.changeset(%{}))
          |> put_feedback(
            "warning",
-           "#{user.email} was added to #{organization.name}, but the invitation email could not be sent. Use Resend invite on their row.",
+           "#{user.email} was added to #{organization.name}, but the invitation email did not send.",
+           "Select Resend invite on their row to try again.",
            user.id
          )
          |> push_patch(to: ~p"/admin/organizations/#{organization.id}")}
@@ -370,7 +403,10 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         {:noreply,
          socket
          |> assign_invite_form(changeset)
-         |> push_event("focus_first_invite_error", %{})}
+         |> push_event("focus_form_error", %{
+           form_id: "invite-form",
+           fallback_id: "invite-service-error"
+         })}
     end
   end
 
@@ -382,29 +418,34 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
     with_resolved_member(socket, user_id, fn socket, member ->
       case Accounts.resend_user_invite(member.user, &url(~p"/users/accept_invite/#{&1}")) do
         {:ok, _delivery} ->
-          put_feedback(
-            socket,
+          socket
+          |> put_feedback(
             "success",
             "Invitation resent to #{member.user.email}.",
+            "The new link works for 7 days.",
             member.user.id
           )
+          |> load_members()
 
         {:error, :already_accepted} ->
           socket
           |> put_feedback(
             "warning",
             "#{member.user.email} has already accepted their invitation.",
+            "The list is refreshed, and they now show as Active.",
             member.user.id
           )
           |> load_members()
 
         {:error, _reason} ->
-          put_feedback(
-            socket,
+          socket
+          |> put_feedback(
             "error",
             "The invitation to #{member.user.email} could not be sent.",
+            "Nothing changed. Try again in a few minutes.",
             member.user.id
           )
+          |> load_members()
       end
     end)
   end
@@ -417,12 +458,22 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
            ) do
         {:ok, _membership} ->
           socket
-          |> put_feedback("success", "#{member.user.email} activated.", member.user.id)
+          |> put_feedback(
+            "success",
+            "#{member.user.email} activated.",
+            "They can sign in to #{socket.assigns.organization.name} again.",
+            member.user.id
+          )
           |> load_members()
 
         {:error, _reason} ->
           socket
-          |> put_feedback("error", "#{member.user.email} could not be activated.", member.user.id)
+          |> put_feedback(
+            "error",
+            "#{member.user.email} could not be activated.",
+            "Their access is unchanged. Try again.",
+            member.user.id
+          )
           |> load_members()
       end
     end)
@@ -486,7 +537,12 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         |> assign(:pending_deactivation, nil)
         # The row now offers activation, so that is where focus belongs.
         |> assign(:deactivation_return_focus_id, "activate-user-#{member.user.id}")
-        |> put_feedback("success", "#{member.user.email} deactivated.", member.user.id)
+        |> put_feedback(
+          "success",
+          "#{member.user.email} deactivated.",
+          "They were signed out of every session and cannot sign in until you activate them again.",
+          member.user.id
+        )
         |> load_members()
 
       {:error, reason} ->
@@ -495,6 +551,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         |> put_feedback(
           "error",
           Components.deactivation_error(reason, member.user.email),
+          "Their access is unchanged.",
           member.user.id
         )
         |> load_members()
@@ -510,11 +567,15 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
       {:ok, organization} ->
         {:noreply,
          socket
-         |> put_organization_feedback("success", "#{organization.name} created.")
+         |> put_organization_feedback(
+           "success",
+           "#{organization.name} created.",
+           "Open it from the list to invite its first administrator, so someone can sign in."
+         )
          |> push_patch(to: ~p"/admin/organizations")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
-        {:noreply, assign_organization_form(socket, Map.put(changeset, :action, :insert))}
+        {:noreply, reject_organization(socket, changeset, :insert)}
     end
   end
 
@@ -528,8 +589,16 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
          |> push_patch(to: ~p"/admin/organizations")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
-        {:noreply, assign_organization_form(socket, Map.put(changeset, :action, :update))}
+        {:noreply, reject_organization(socket, changeset, :update)}
     end
+  end
+
+  # A rejected save lists its problems in a summary and moves focus to the first
+  # invalid field.
+  defp reject_organization(socket, changeset, action) do
+    socket
+    |> assign_organization_form(Map.put(changeset, :action, action))
+    |> push_event("focus_form_error", %{form_id: "org-form"})
   end
 
   defp organization_subject(%{
@@ -553,11 +622,44 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   # ---------------------------------------------------------------------------
 
   defp assign_organization_form(socket, changeset) do
+    form = to_form(changeset)
+    name_errors = organization_errors(form, changeset, :name)
+    alias_errors = organization_errors(form, changeset, :alias)
+
     socket
-    |> assign(:organization_form, to_form(changeset))
-    |> assign(:organization_name_errors, submitted_errors(changeset, :name))
-    |> assign(:organization_alias_errors, submitted_errors(changeset, :alias))
+    |> assign(:organization_form, form)
+    |> assign(:organization_name_errors, name_errors)
+    |> assign(:organization_alias_errors, alias_errors)
+    |> assign(
+      :organization_failures,
+      organization_failures(changeset, name_errors, alias_errors)
+    )
   end
+
+  # On submit the errors are authoritative and always shown. While changing, a
+  # field shows its errors once the person has used it.
+  defp organization_errors(form, %Ecto.Changeset{action: action} = changeset, field) do
+    if action in [:insert, :update] or used_input?(form[field]) do
+      for {^field, error} <- changeset.errors,
+          do: Components.organization_error_message(field, error)
+    else
+      []
+    end
+  end
+
+  # The summary lists a rejected submit, once, with a link to each field. Live
+  # validation is not a rejection and never produces one.
+  defp organization_failures(%Ecto.Changeset{action: action}, name_errors, alias_errors)
+       when action in [:insert, :update] do
+    [
+      {List.first(name_errors), "#organization-name"},
+      {List.first(alias_errors), "#organization-alias"}
+    ]
+    |> Enum.filter(fn {message, _href} -> message end)
+    |> Enum.map(fn {message, href} -> %{href: href, msg: message} end)
+  end
+
+  defp organization_failures(_changeset, _name_errors, _alias_errors), do: []
 
   # The drawer closes by patching back to the index, so the live action that
   # opened it is already gone when the overlay hook restores focus. The trigger
@@ -571,54 +673,13 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   end
 
   defp assign_org_drawer_return_focus(socket, :new) do
-    target = if header_create?(socket.assigns), do: "create-organization-trigger"
+    target =
+      if header_create?(socket.assigns),
+        do: "create-organization-trigger",
+        else: "organizations-empty-create"
+
     assign(socket, :org_drawer_return_focus_id, target)
   end
-
-  # Roles arrive as a list, a map, or not at all when every box is unchecked.
-  defp normalize_invite_params(params) do
-    roles =
-      case Map.get(params, "roles") do
-        nil -> []
-        roles when is_list(roles) -> roles
-        roles when is_map(roles) -> Map.values(roles)
-        role -> [role]
-      end
-
-    Map.put(params, "roles", roles)
-  end
-
-  defp assign_invite_form(socket, changeset) do
-    socket
-    |> assign(:invite_form, to_form(changeset, as: :invite))
-    |> assign(:invite_email_errors, submitted_errors(changeset, :email))
-    |> assign(:invite_roles_error, roles_error(changeset))
-    |> assign(:invite_base_error, List.first(field_errors(changeset, :base)))
-  end
-
-  defp field_errors(changeset, field) do
-    for {^field, error} <- changeset.errors, do: CoreComponents.translate_error(error)
-  end
-
-  # On submit the errors are authoritative and always shown. While changing,
-  # the shared input falls back to the repository's touched-input behaviour.
-  defp submitted_errors(%Ecto.Changeset{action: action} = changeset, field)
-       when action in [:insert, :update],
-       do: field_errors(changeset, field)
-
-  defp submitted_errors(_changeset, _field), do: []
-
-  # A checkbox group has no useful blur, so its error appears on submit and on
-  # any change the operator actually made to the group.
-  defp roles_error(%Ecto.Changeset{action: nil}), do: nil
-
-  defp roles_error(%Ecto.Changeset{action: :validate, params: params} = changeset) do
-    if Map.has_key?(params, "_unused_roles"),
-      do: nil,
-      else: List.first(field_errors(changeset, :roles))
-  end
-
-  defp roles_error(changeset), do: List.first(field_errors(changeset, :roles))
 
   # ---------------------------------------------------------------------------
   # Render helpers
@@ -640,8 +701,26 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   defp record_error_title(:unavailable), do: "Organizations are unavailable right now"
   defp record_error_title(_state), do: "That organization was not found"
 
-  defp deactivation_title(nil), do: "Deactivate user"
-  defp deactivation_title(%{user: user}), do: "Deactivate #{user.email}?"
+  defp org_drawer_title(:edit), do: "Edit organization"
+  defp org_drawer_title(_live_action), do: "New organization"
+
+  defp failures_title(:edit, [_one]), do: "Changes not saved. Fix this field:"
+  defp failures_title(:edit, _failures), do: "Changes not saved. Fix these fields:"
+  defp failures_title(_new, [_one]), do: "Organization not created. Fix this field:"
+  defp failures_title(_new, _failures), do: "Organization not created. Fix these fields:"
+
+  defp product_options do
+    for product <- [:planner, :pathways] do
+      %{
+        value: Atom.to_string(product),
+        label: ProductSurfaces.name(product),
+        description: ProductSurfaces.description(product)
+      }
+    end
+  end
+
+  defp section_title_class,
+    do: "font-display text-[24px] font-semibold tracking-[-0.025em] text-strong"
 
   # ---------------------------------------------------------------------------
   # Forms
@@ -651,102 +730,99 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   attr :live_action, :atom, required: true
   attr :name_errors, :list, required: true
   attr :alias_errors, :list, required: true
+  attr :failures, :list, required: true
 
   defp organization_form(assigns) do
+    assigns = assign(assigns, :product, to_string(assigns.form[:product].value))
+
     ~H"""
-    <.simple_form
+    <.form
       for={@form}
       id="org-form"
+      novalidate
       phx-change="validate_organization"
       phx-submit="save_organization"
+      class="flex min-h-0 flex-1 flex-col"
     >
-      <.input
-        field={@form[:name]}
-        id="organization-name"
-        type="text"
-        label="Name"
-        maxlength="255"
-        errors={@name_errors}
-        required
-      />
-      <.input
-        field={@form[:alias]}
-        id="organization-alias"
-        type="text"
-        label="Alias"
-        maxlength="255"
-        errors={@alias_errors}
-        required
-        help="Lowercase, with spaces replaced by hyphens."
-      />
-      <.input
-        field={@form[:product]}
-        type="select"
-        id="organization-product"
-        label="Product"
-        options={[{"GTFS Planner", "planner"}, {"Pathways Studio", "pathways"}]}
-      />
+      <div class="grid flex-1 content-start gap-5 overflow-y-auto px-5 py-5 sm:px-6">
+        <.form_error_summary
+          id="org-error-summary"
+          title={failures_title(@live_action, @failures)}
+          failures={@failures}
+          class=""
+        />
 
-      <:actions>
-        <div class="flex-1"></div>
-        <.button variant="quiet" class="min-h-11" patch={~p"/admin/organizations"}>Cancel</.button>
-        <.button type="submit" class="min-h-11" phx-disable-with="Saving…">
+        <.input
+          field={@form[:name]}
+          id="organization-name"
+          type="text"
+          label="Name"
+          help="Shown beside the logo in the header for everyone in this organization."
+          maxlength="255"
+          autocomplete="off"
+          errors={@name_errors}
+          required
+        />
+
+        <.input
+          field={@form[:alias]}
+          id="organization-alias"
+          type="text"
+          label="Alias"
+          help="A short name that no other organization uses. Saved in lowercase, with spaces replaced by hyphens."
+          maxlength="255"
+          autocomplete="off"
+          spellcheck="false"
+          errors={@alias_errors}
+          required
+        />
+
+        <.choice_cards
+          id="organization-product"
+          type="radio"
+          name={@form[:product].name}
+          label="Product"
+          help="Sets the logo and which pages members see. Changing it later removes no data."
+          options={product_options()}
+          selected={[@product]}
+        />
+      </div>
+
+      <Components.drawer_footer>
+        <.button variant="secondary" class="min-h-11" patch={~p"/admin/organizations"}>
+          Cancel
+        </.button>
+        <.button type="submit" class="min-h-11 min-w-[168px]" phx-disable-with="Saving…">
           {if @live_action == :new, do: "Create organization", else: "Save changes"}
         </.button>
-      </:actions>
-    </.simple_form>
+      </Components.drawer_footer>
+    </.form>
     """
   end
 
-  attr :form, Phoenix.HTML.Form, required: true
-  attr :email_errors, :list, required: true
-  attr :roles_error, :string, default: nil
-  attr :base_error, :string, default: nil
-  attr :organization, Organization, required: true
+  # A region that could not be read: what failed, that nothing changed, and one
+  # way to try again.
+  attr :title, :string, required: true
+  attr :retry_id, :string, required: true
+  attr :retry_event, :string, required: true
+  slot :inner_block, required: true
 
-  defp invite_form(assigns) do
-    assigns = assign(assigns, :selected_roles, assigns.form[:roles].value || [])
-
+  defp region_unavailable(assigns) do
     ~H"""
-    <p class="mb-6 text-sm text-base-content/70">
-      The invitee gets an email with a link to set a password and join {@organization.name}.
-    </p>
-
-    <.callout :if={@base_error} id="invite-service-error" kind="error" title={@base_error}>
-      Nothing was saved. Correct the details or try again.
-    </.callout>
-
-    <.simple_form for={@form} id="invite-form" phx-change="validate_invite" phx-submit="send_invite">
-      <.input
-        field={@form[:email]}
-        id="invite-email"
-        type="email"
-        label="Email"
-        autocomplete="email"
-        errors={@email_errors}
-        required
-      />
-
-      <.checkbox_group
-        id="invite-roles"
-        name="invite[roles][]"
-        label="Roles"
-        options={InviteForm.available_roles()}
-        selected={@selected_roles}
-        error={@roles_error}
-        required
-      />
-
-      <:actions>
-        <div class="flex-1"></div>
-        <.button variant="quiet" class="min-h-11" patch={~p"/admin/organizations/#{@organization.id}"}>
-          Cancel
+    <div class="grid gap-4 rounded-card border border-subtle bg-white p-5">
+      <.message kind="error" title={@title}>{render_slot(@inner_block)}</.message>
+      <div>
+        <.button
+          id={@retry_id}
+          variant="secondary"
+          class="min-h-11"
+          phx-click={@retry_event}
+          phx-disable-with="Retrying…"
+        >
+          <.icon name="hero-arrow-path" class="size-4" /> Retry loading
         </.button>
-        <.button type="submit" class="min-h-11" phx-disable-with="Sending invite…">
-          Send invite
-        </.button>
-      </:actions>
-    </.simple_form>
+      </div>
+    </div>
     """
   end
 
@@ -763,7 +839,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
       current_path={@current_path}
       user_roles={@user_roles}
     >
-      <div id="admin-organizations-page" phx-hook=".InviteErrorFocus">
+      <div id="admin-organizations-page" phx-hook="FormErrorFocus">
         <%= if unresolved_record?(assigns) do %>
           <.organization_record_state state={@organization_state} />
         <% else %>
@@ -775,31 +851,6 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         <% end %>
       </div>
     </Layouts.app>
-
-    <%!-- Moves focus to the first invalid invitation control after a failed submit,
-         through the repository's colocated-hook pattern. Decision 0.12 excludes
-         live-region announcements, so focus movement is the whole contract. --%>
-    <script :type={Phoenix.LiveView.ColocatedHook} name=".InviteErrorFocus">
-      export default {
-        mounted() {
-          this.handleEvent("focus_first_invite_error", () => {
-            const form = document.getElementById("invite-form");
-            const invalid = form && form.querySelector('[aria-invalid="true"]');
-            if (!invalid) return;
-            // A grouped control (the roles fieldset) carries the invalid state
-            // but is not focusable itself, so descend to its first control.
-            const focusable = invalid.matches("input, select, textarea, button")
-              ? invalid
-              : invalid.querySelector(
-                  "input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])"
-                );
-            // The event can arrive before LiveView finishes patching and
-            // restoring focus, so claim focus on the next frame instead.
-            requestAnimationFrame(() => (focusable || invalid).focus());
-          })
-        }
-      }
-    </script>
     """
   end
 
@@ -819,38 +870,37 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         <:subtitle>This organization could not be opened.</:subtitle>
       </.header>
 
-      <div class="mt-6">
-        <.callout kind="error" title={record_error_title(@state)}>
-          <p :if={@state == :not_found}>
+      <div class="mt-2 max-w-[820px]">
+        <.message kind="error" title={record_error_title(@state)}>
+          <span :if={@state == :not_found}>
             The link may be out of date, or the organization may have been removed. Nothing was
             changed.
-          </p>
-          <p :if={@state == :unavailable}>
+          </span>
+          <span :if={@state == :unavailable}>
             The organization could not be loaded because the database is unreachable. Nothing was
             changed.
-          </p>
-          <div class="mt-3 flex flex-wrap gap-3">
-            <.button
-              :if={@state == :unavailable}
-              id="retry-organization"
-              size="sm"
-              class="min-h-11"
-              phx-click="retry_organization"
-              phx-disable-with="Retrying…"
-            >
-              Retry
-            </.button>
-            <.button
-              id="back-to-organizations"
-              variant={if @state == :unavailable, do: "secondary", else: "primary"}
-              size="sm"
-              class="min-h-11"
-              navigate={~p"/admin/organizations"}
-            >
-              Back to organizations
-            </.button>
-          </div>
-        </.callout>
+          </span>
+        </.message>
+
+        <div class="mt-5 flex flex-wrap gap-3">
+          <.button
+            :if={@state == :unavailable}
+            id="retry-organization"
+            class="min-h-11"
+            phx-click="retry_organization"
+            phx-disable-with="Retrying…"
+          >
+            <.icon name="hero-arrow-path" class="size-4" /> Retry loading
+          </.button>
+          <.button
+            id="back-to-organizations"
+            variant={if @state == :unavailable, do: "secondary", else: "primary"}
+            class="min-h-11"
+            navigate={~p"/admin/organizations"}
+          >
+            Back to organizations
+          </.button>
+        </div>
       </div>
     </div>
     """
@@ -858,122 +908,145 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
 
   defp organization_detail(assigns) do
     ~H"""
+    <.link
+      id="back-to-organizations"
+      navigate={~p"/admin/organizations"}
+      class="-ml-2 inline-flex min-h-11 items-center gap-1 rounded-control px-2 text-sm font-[650] text-muted no-underline hover:bg-canvas hover:text-strong"
+    >
+      <.icon name="hero-chevron-left" class="size-4" /> Organizations
+    </.link>
+
     <.header>
       {@organization.name}
-      <:subtitle>Organization</:subtitle>
+      <:subtitle>Manage who can sign in and what each person can do.</:subtitle>
       <:actions>
-        <.button
-          id="back-to-organizations"
-          variant="secondary"
-          class="min-h-11"
-          navigate={~p"/admin/organizations"}
-        >
-          Back to organizations
-        </.button>
         <.button
           :if={header_invite?(assigns)}
           id="invite-member-trigger"
           class="min-h-11"
           patch={~p"/admin/organizations/#{@organization.id}/invite"}
         >
-          Invite member
+          <.icon name="hero-plus" class="size-4" /> Invite member
         </.button>
       </:actions>
     </.header>
 
-    <div class="mt-6">
-      <.list>
-        <:item title="Alias">{@organization.alias}</:item>
-        <:item title="Product">{GtfsPlannerWeb.ProductSurfaces.name(@organization.product)}</:item>
-        <:item title="Organization ID">
-          <span id="organization-id" class="font-mono text-sm break-all">{@organization.id}</span>
-        </:item>
-      </.list>
+    <div class="mt-6 grid gap-10">
+      <section aria-labelledby="members-title" class="min-w-0">
+        <h2 id="members-title" class={section_title_class()}>Members</h2>
+
+        <div id="member-action-feedback" class="mt-4 empty:mt-0">
+          <.message
+            :if={@member_feedback}
+            kind={@member_feedback.kind}
+            title={@member_feedback.title}
+          >
+            {@member_feedback.detail}
+          </.message>
+        </div>
+
+        <div id="members-state" class="mt-4">
+          <.region_unavailable
+            :if={@members_state == :unavailable}
+            title="Members are unavailable right now"
+            retry_id="retry-members"
+            retry_event="retry_members"
+          >
+            The member list could not load because the database is unreachable. The organization
+            details are still current, and nothing was changed.
+          </.region_unavailable>
+
+          <Components.member_data_view
+            :if={@members_state == :ready}
+            id="members"
+            members={@streams.members}
+            empty?={@members_empty?}
+            counts={@member_counts}
+            marked_id={@member_feedback && @member_feedback.user_id}
+            noun="member"
+            invite_path={~p"/admin/organizations/#{@organization.id}/invite"}
+            empty_title="No members yet"
+            empty_icon="hero-users"
+            empty_description={"Invite an administrator first so #{@organization.name} can manage its own people. Choose Editor as well if they also edit feed data."}
+            invite_label="Invite member"
+            resend_event="resend_invite"
+            activate_event="activate_user"
+            deactivate_event="request_deactivation"
+          />
+        </div>
+      </section>
+
+      <section aria-labelledby="organization-details-title" class="min-w-0">
+        <h2 id="organization-details-title" class={section_title_class()}>
+          Organization details
+        </h2>
+        <div class="mt-4 overflow-clip rounded-card border border-subtle bg-white">
+          <dl class="text-sm">
+            <div class="grid gap-x-6 gap-y-0.5 px-5 py-3 sm:grid-cols-[190px_minmax(0,1fr)]">
+              <dt class="text-muted">Product</dt>
+              <dd class="text-strong">
+                <span class="font-semibold">{ProductSurfaces.name(@organization.product)}</span>
+                <span class="mt-0.5 block max-w-[62ch] text-[13px] leading-snug text-muted">
+                  {ProductSurfaces.description(@organization.product)}
+                </span>
+              </dd>
+            </div>
+            <div class="grid gap-x-6 gap-y-0.5 border-t border-subtle px-5 py-3 sm:grid-cols-[190px_minmax(0,1fr)]">
+              <dt class="text-muted">Alias</dt>
+              <dd class="break-all font-mono text-[13px] text-strong">{@organization.alias}</dd>
+            </div>
+            <div class="grid gap-x-6 gap-y-0.5 border-t border-subtle px-5 py-3 sm:grid-cols-[190px_minmax(0,1fr)]">
+              <dt class="text-muted">Organization ID</dt>
+              <dd class="break-all font-mono text-[13px] text-strong">
+                <span id="organization-id" class="font-mono">{@organization.id}</span>
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </section>
     </div>
-
-    <section class="mt-10">
-      <h2 class="text-base font-semibold">Members</h2>
-
-      <div id="member-action-feedback" class="mt-4 empty:mt-0">
-        <.callout
-          :if={@member_feedback}
-          kind={@member_feedback.kind}
-          title={@member_feedback.title}
-        />
-      </div>
-
-      <div id="members-state" class="mt-4">
-        <.callout
-          :if={@members_state == :unavailable}
-          kind="error"
-          title="Members are unavailable right now"
-        >
-          The member list could not be loaded because the database is unreachable. The organization
-          details above are still current, and nothing was changed.
-          <div class="mt-3">
-            <.button
-              id="retry-members"
-              variant="secondary"
-              size="sm"
-              class="min-h-11"
-              phx-click="retry_members"
-              phx-disable-with="Retrying…"
-            >
-              Retry
-            </.button>
-          </div>
-        </.callout>
-
-        <Components.member_data_view
-          :if={@members_state == :ready}
-          id="members"
-          members={@streams.members}
-          empty?={@members_empty?}
-          invite_path={~p"/admin/organizations/#{@organization.id}/invite"}
-          empty_title="No members yet"
-          empty_description={"Invite someone to give them access to #{@organization.name}."}
-          invite_label="Invite member"
-          resend_event="resend_invite"
-          activate_event="activate_user"
-          deactivate_event="request_deactivation"
-        />
-      </div>
-    </section>
 
     <.drawer
       id="invite-drawer"
+      chrome="planner"
       open={@live_action == :invite}
       on_close="close_drawer"
-      title="Member invitation"
+      title="Invite member"
+      class="max-w-[480px]"
       initial_focus={:first_field}
       initial_focus_id="invite-email"
       return_focus_id={if header_invite?(assigns), do: "invite-member-trigger"}
     >
-      <.invite_form
+      <:lede>
+        They get an email with a link to set a password and join {@organization.name}.
+        The link works for 7 days.
+      </:lede>
+      <Components.invite_form
         :if={@live_action == :invite}
         form={@invite_form}
         email_errors={@invite_email_errors}
         roles_error={@invite_roles_error}
         base_error={@invite_base_error}
-        organization={@organization}
+        failures={@invite_failures}
+        cancel_path={~p"/admin/organizations/#{@organization.id}"}
       />
     </.drawer>
 
     <.confirm_dialog
       id="deactivate-user-dialog"
+      chrome="planner"
       open={@pending_deactivation != nil}
-      title={deactivation_title(@pending_deactivation)}
+      title={Components.deactivation_title(@pending_deactivation)}
       confirm_label="Deactivate user"
       pending_label="Deactivating user…"
+      cancel_label="Keep access"
       on_confirm="confirm_deactivation"
       on_cancel="cancel_deactivation"
       return_focus_id={@deactivation_return_focus_id}
       described_by="deactivate-user-dialog-body"
     >
       <span :if={@pending_deactivation}>
-        {@pending_deactivation.user.email} loses access to {@organization.name} and is signed out
-        of every web and mobile session immediately. The account is kept and can be activated
-        again from this list.
+        {Components.deactivation_body(@pending_deactivation, @organization)}
       </span>
     </.confirm_dialog>
     """
@@ -983,7 +1056,9 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
     ~H"""
     <.header>
       Organizations
-      <:subtitle>Manage organizations and their members.</:subtitle>
+      <:subtitle>
+        Create an organization for each agency you support, then invite its first administrator.
+      </:subtitle>
       <:actions>
         <.button
           :if={header_create?(assigns)}
@@ -991,101 +1066,130 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
           class="min-h-11"
           patch={~p"/admin/organizations/new"}
         >
-          Create organization
+          <.icon name="hero-plus" class="size-4" /> Create organization
         </.button>
       </:actions>
     </.header>
 
     <div id="organization-action-feedback" class="mt-6 empty:mt-0">
-      <.callout
-        :if={@organization_feedback}
-        kind={@organization_feedback.kind}
-        title={@organization_feedback.title}
-      />
+      <%= if @organization_feedback && @organization_feedback.detail do %>
+        <.message kind={@organization_feedback.kind} title={@organization_feedback.title}>
+          {@organization_feedback.detail}
+        </.message>
+      <% end %>
+      <%= if @organization_feedback && !@organization_feedback.detail do %>
+        <.message kind={@organization_feedback.kind} title={@organization_feedback.title} />
+      <% end %>
     </div>
 
     <div id="organizations-state" class="mt-6">
-      <.callout
+      <.region_unavailable
         :if={@organizations_state == :unavailable}
-        kind="error"
         title="Organizations are unavailable right now"
+        retry_id="retry-organizations"
+        retry_event="retry_organizations"
       >
-        The organization list could not be loaded because the database is unreachable. Nothing was
-        changed.
-        <div class="mt-3">
-          <.button
-            id="retry-organizations"
-            variant="secondary"
-            size="sm"
-            class="min-h-11"
-            phx-click="retry_organizations"
-            phx-disable-with="Retrying…"
-          >
-            Retry
-          </.button>
-        </div>
-      </.callout>
+        The list could not load because the database is unreachable. Nothing was changed. Try
+        again in a moment.
+      </.region_unavailable>
 
-      <.empty_state
+      <.first_use
         :if={@organizations_state == :ready and @organizations_empty?}
         id="organizations-empty"
         title="No organizations yet"
+        icon="hero-building-office-2"
       >
-        Create the first organization to give its members access.
+        An organization is a separate workspace with its own feed data and members. Create the
+        first one, then invite its administrator.
         <:action>
-          <.button class="min-h-11" navigate={~p"/admin/organizations/new"}>
-            Create organization
+          <.button
+            id="organizations-empty-create"
+            class="min-h-11"
+            patch={~p"/admin/organizations/new"}
+          >
+            <.icon name="hero-plus" class="size-4" /> Create organization
           </.button>
         </:action>
-      </.empty_state>
+      </.first_use>
 
-      <div
+      <section
         :if={@organizations_state == :ready and not @organizations_empty?}
-        class="rounded-box border border-base-300 bg-base-100 overflow-hidden"
+        aria-label="Organizations"
+        class="overflow-clip rounded-card border border-subtle bg-white"
       >
-        <.table id="organizations" rows={@streams.organizations} responsive="stack">
-          <:col :let={{_id, organization}} label="Name">
-            <.link
-              navigate={~p"/admin/organizations/#{organization.id}"}
-              class="link link-primary font-semibold"
+        <table class="w-full border-collapse text-left text-sm max-md:block">
+          <caption class="sr-only">Organizations</caption>
+          <thead class="max-md:hidden">
+            <tr>
+              <th scope="col" class={[Components.table_head_class(), "pl-5 pr-4"]}>Organization</th>
+              <th scope="col" class={[Components.table_head_class(), "w-[96px] px-4"]}>
+                <span class="sr-only">Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody id="organizations" phx-update="stream" class="max-md:block">
+            <tr
+              :for={{id, organization} <- @streams.organizations}
+              id={id}
+              class="border-b border-subtle last:border-b-0 hover:bg-canvas max-md:relative max-md:block max-md:px-4 max-md:py-2"
             >
-              {organization.name}
-            </.link>
-          </:col>
-          <:col :let={{_id, organization}} label="Alias">
-            <span class="font-mono text-sm">{organization.alias}</span>
-          </:col>
-          <:action :let={{_id, organization}}>
-            <.button
-              id={"edit-organization-#{organization.id}"}
-              variant="quiet"
-              size="sm"
-              class="min-h-11"
-              patch={~p"/admin/organizations/#{organization.id}/edit"}
-              aria-label={"Edit #{organization.name}"}
-            >
-              Edit
-            </.button>
-          </:action>
-        </.table>
-      </div>
+              <th
+                scope="row"
+                data-label="Organization"
+                class="py-1 pl-5 pr-4 text-left align-middle font-normal max-md:block max-md:p-0 max-md:pr-16"
+              >
+                <span class="flex flex-wrap items-baseline gap-x-3">
+                  <.link
+                    navigate={~p"/admin/organizations/#{organization.id}"}
+                    class="inline-flex min-h-11 max-w-full items-center font-semibold text-strong underline decoration-subtle decoration-1 underline-offset-4 [overflow-wrap:anywhere] hover:decoration-strong"
+                  >
+                    {organization.name}
+                  </.link>
+                  <span class="font-mono text-[13px] text-muted [overflow-wrap:anywhere]">
+                    {organization.alias}
+                  </span>
+                </span>
+              </th>
+              <td class="px-4 py-1 text-right align-middle max-md:absolute max-md:right-2 max-md:top-2 max-md:p-0">
+                <.button
+                  id={"edit-organization-#{organization.id}"}
+                  variant="quiet"
+                  class="min-h-11 px-3"
+                  patch={~p"/admin/organizations/#{organization.id}/edit"}
+                  aria-label={"Edit #{organization.name}"}
+                >
+                  Edit
+                </.button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
     </div>
 
     <.drawer
       id="org-drawer"
+      chrome="planner"
       open={@live_action in [:new, :edit]}
       on_close="close_drawer"
-      title="Organization"
+      title={org_drawer_title(@live_action)}
+      class="max-w-[480px]"
       initial_focus={:first_field}
       initial_focus_id="organization-name"
       return_focus_id={@org_drawer_return_focus_id}
     >
+      <:lede :if={@live_action != :edit}>
+        A separate workspace with its own members, product and feed data. It starts with one
+        empty version.
+      </:lede>
+      <:lede :if={@live_action == :edit and @organization}>{@organization.name}</:lede>
       <.organization_form
         :if={@live_action in [:new, :edit]}
         form={@organization_form}
         live_action={@live_action}
         name_errors={@organization_name_errors}
         alias_errors={@organization_alias_errors}
+        failures={@organization_failures}
       />
     </.drawer>
     """

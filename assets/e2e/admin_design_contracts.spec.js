@@ -546,13 +546,21 @@ test.describe("System-admin organization workflows", () => {
 
     const rowsBefore = await page.locator("tbody#organizations tr").count();
 
-    // A blank required field is refused by the shipped constraint before the
-    // command is sent: the drawer stays open and nothing is created.
+    // A blank required field is refused with a summary that links to it: the
+    // drawer stays open, focus lands on the first invalid field, and nothing is
+    // created.
     await page.locator('#org-form button[type="submit"]').click();
     await expect(overlay).toBeVisible();
-    expect(
-      await page.locator("#organization-name").evaluate((el) => el.validity.valueMissing),
-    ).toBe(true);
+    await expect(page.locator("#org-error-summary")).toBeVisible();
+    await expect(page.locator("#org-error-summary a").first()).toHaveAttribute(
+      "href",
+      "#organization-name",
+    );
+    await expect(page.locator("#organization-name")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+    await expect(page.locator("#organization-name")).toBeFocused();
     await expect(page.locator("tbody#organizations tr")).toHaveCount(rowsBefore);
 
     // A server-side conflict attaches to its own control and keeps the values.
@@ -566,6 +574,10 @@ test.describe("System-admin organization workflows", () => {
       "true",
     );
     await expect(page.locator("#organization-alias-error")).toBeVisible();
+    await expect(page.locator("#org-error-summary")).toContainText(
+      "Another organization already uses this alias",
+    );
+    await expect(page.locator("#organization-alias")).toBeFocused();
     await expect(page.locator("#organization-name")).toHaveValue(
       "Duplicate Alias Org",
     );

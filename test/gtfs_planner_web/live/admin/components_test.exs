@@ -442,6 +442,104 @@ defmodule GtfsPlannerWeb.Admin.ComponentsTest do
     end
   end
 
+  describe "member_data_view/1 — naming the member" do
+    test "calls each person a member in the heading, caption and count when asked to" do
+      assigns = %{members: [active_member()], counts: Components.count_members([active_member()])}
+
+      html =
+        rendered_to_string(~H"""
+        <.member_data_view
+          id="members"
+          members={@members}
+          empty?={false}
+          counts={@counts}
+          noun="member"
+          resend_event="resend_invite"
+          activate_event="activate_user"
+          deactivate_event="request_deactivation"
+        />
+        """)
+
+      document = doc(html)
+
+      assert LazyHTML.text(LazyHTML.query(document, "thead th")) =~ "Member"
+      assert LazyHTML.text(LazyHTML.query(document, "caption")) =~ "Members in this organization"
+      assert LazyHTML.text(LazyHTML.query(document, "#members-count")) =~ "1 member"
+    end
+
+    test "draws the empty icon above the empty title when given one" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.member_data_view
+          id="members"
+          members={[]}
+          empty?={true}
+          empty_icon="hero-users"
+          resend_event="resend_invite"
+          activate_event="activate_user"
+          deactivate_event="request_deactivation"
+        />
+        """)
+
+      assert Enum.count(LazyHTML.query(doc(html), "#members-empty .hero-users")) == 1
+    end
+  end
+
+  describe "deactivation dialog copy" do
+    test "names the person and the organization in the title and body" do
+      organization = %{name: "Acme Transit"}
+
+      assert deactivation_title(%{user: active_member().user}) == "Deactivate active@example.com?"
+      assert deactivation_title(nil) == "Deactivate user"
+
+      body = deactivation_body(%{user: active_member().user}, organization)
+      assert body =~ "active@example.com loses access to Acme Transit"
+      assert body =~ "signed out of every web and mobile session"
+    end
+
+    test "does not claim a session to end for someone who has not accepted yet" do
+      body = deactivation_body(%{user: pending_member().user}, %{name: "Acme Transit"})
+
+      assert body =~ "has not accepted their invitation yet"
+      refute body =~ "signed out"
+    end
+  end
+
+  describe "organization_error_message/2" do
+    test "asks for the field that is missing" do
+      required = {"can't be blank", [validation: :required]}
+
+      assert organization_error_message(:name, required) == "Enter an organization name."
+
+      assert organization_error_message(:alias, required) ==
+               "Enter an alias using letters, numbers or hyphens."
+    end
+
+    test "states the length limit for either field" do
+      too_long =
+        {"should be at most %{count} character(s)", [count: 255, validation: :length, kind: :max]}
+
+      assert organization_error_message(:name, too_long) == "Use 255 characters or fewer."
+      assert organization_error_message(:alias, too_long) == "Use 255 characters or fewer."
+    end
+
+    test "says another organization uses the alias when the unique constraint rejects it" do
+      taken =
+        {"has already been taken",
+         [constraint: :unique, constraint_name: "organizations_alias_index"]}
+
+      assert organization_error_message(:alias, taken) ==
+               "Another organization already uses this alias. Choose a different one."
+    end
+
+    test "falls back to the changeset wording for a rule it does not know" do
+      assert organization_error_message(:name, {"is invalid", [validation: :cast]}) ==
+               "is invalid"
+    end
+  end
+
   describe "member_data_view/1 — stateless contract" do
     test "is a function component with no LiveComponent lifecycle or event ownership" do
       exports = Components.__info__(:functions)

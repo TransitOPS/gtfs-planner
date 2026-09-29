@@ -191,6 +191,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
                "Acme Transit"
              )
 
+      assert has_element?(view, "#organization-#{organization.id}", "acme-transit")
       assert has_element?(view, "#edit-organization-#{organization.id}")
       assert has_element?(view, "#create-organization-trigger")
 
@@ -204,13 +205,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/admin/organizations")
 
-      assert has_element?(view, "#organizations-empty")
-
-      assert has_element?(
-               view,
-               "#organizations-empty",
-               "Create the first organization to give its members access."
-             )
+      assert has_element?(view, "#organizations-empty", "No organizations yet")
 
       refute has_element?(view, "tbody#organizations")
 
@@ -218,6 +213,22 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
 
       # The empty state carries the CTA, so the header primary is not duplicated.
       refute has_element?(view, "#create-organization-trigger")
+    end
+
+    test "the create drawer opened from the empty state returns focus to that action", %{
+      conn: conn
+    } do
+      use_read_mock()
+      stub(AdminReadAdapterMock, :list_organizations, fn -> {:ok, []} end)
+
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/new")
+
+      assert has_element?(
+               view,
+               "dialog#org-drawer-overlay[data-return-focus-id='organizations-empty-create']"
+             )
+
+      assert has_element?(view, "#organizations-empty-create")
     end
 
     test "an unavailable organization list renders a view-level retry and recovers", %{
@@ -329,6 +340,23 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       assert has_element?(view, "#invite-member-trigger")
     end
 
+    test "summarises the members by status under the member noun", %{
+      conn: conn,
+      organization: organization
+    } do
+      member_fixture(organization, %{email: "pending@example.com", invited?: true})
+      member_fixture(organization, %{email: "gone@example.com", deactivated?: true})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{organization.id}")
+
+      # The administrator from setup, one pending invitation and one deactivated member.
+      assert has_element?(view, "#members-count", "3 members")
+      assert has_element?(view, "#members-summary", "1 active")
+      assert has_element?(view, "#members-summary", "1 invitation pending")
+      assert has_element?(view, "#members-summary", "1 deactivated")
+      assert has_element?(view, "#members-workbench caption", "Members")
+    end
+
     test "renders the member empty state with one organization-specific invitation action", %{
       conn: conn,
       organization: organization
@@ -423,7 +451,9 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       assert created
       assert has_element?(view, "#organization-#{created.id}")
 
-      assert view |> element("#organization-action-feedback") |> render() =~ "New Test Org"
+      feedback = view |> element("#organization-action-feedback") |> render()
+      assert feedback =~ "New Test Org"
+      assert feedback =~ "invite its first administrator"
     end
 
     test "editing an organization keeps the index behind it and saves changes", %{conn: conn} do
@@ -457,33 +487,86 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/admin/organizations/new")
 
-      html =
-        view
-        |> form("#org-form", organization: %{name: "", alias: ""})
-        |> render_submit()
+      view
+      |> form("#org-form", organization: %{name: "", alias: ""})
+      |> render_submit()
 
-      assert html =~ "can&#39;t be blank"
       assert has_element?(view, "dialog#org-drawer-overlay[data-open=true]")
       assert Repo.aggregate(Organization, :count) == organizations_before
+
+      # Each problem is listed once, linked to its field, and the first invalid
+      # field takes focus.
+      assert has_element?(
+               view,
+               "#org-error-summary a[href='#organization-name']",
+               "Enter an organization name."
+             )
+
+      assert has_element?(
+               view,
+               "#org-error-summary a[href='#organization-alias']",
+               "Enter an alias using letters, numbers or hyphens."
+             )
+
+      assert has_element?(view, "#organization-name[aria-invalid=true]")
+      assert has_element?(view, "#organization-alias[aria-invalid=true]")
+      assert_push_event(view, "focus_form_error", %{form_id: "org-form"})
+    end
+
+    test "an alias another organization already uses is refused with the value kept", %{
+      conn: conn,
+      organization: organization
+    } do
+      organizations_before = Repo.aggregate(Organization, :count)
+
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/new")
+
+      view
+      |> form("#org-form", organization: %{name: "Second Acme", alias: organization.alias})
+      |> render_submit()
+
+      assert Repo.aggregate(Organization, :count) == organizations_before
+
+      assert has_element?(
+               view,
+               "#org-error-summary a[href='#organization-alias']",
+               "Another organization already uses this alias. Choose a different one."
+             )
+
+      assert has_element?(view, "#organization-alias[aria-invalid=true]")
+      assert has_element?(view, "#organization-name[value='Second Acme']")
+      assert has_element?(view, "dialog#org-drawer-overlay[data-open=true]")
+    end
+
+    test "fixing a field while typing removes the summary", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/new")
+
+      view
+      |> form("#org-form", organization: %{name: "", alias: ""})
+      |> render_submit()
+
+      assert has_element?(view, "#org-error-summary")
+
+      view
+      |> form("#org-form", organization: %{name: "Fresh Org", alias: ""})
+      |> render_change()
+
+      refute has_element?(view, "#org-error-summary")
     end
 
     test "creating an organization with Pathways Studio stores the product", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/admin/organizations/new")
 
       assert has_element?(view, "#organization-product")
-      assert has_element?(view, "#organization-product option[value='planner']", "GTFS Planner")
+      assert has_element?(view, "#organization-product", "GTFS Planner")
+      assert has_element?(view, "#organization-product", "Pathways Studio")
 
       assert has_element?(
                view,
-               "#organization-product option[value='pathways']",
-               "Pathways Studio"
+               "#organization-product-planner[type=radio][name='organization[product]'][checked]"
              )
 
-      assert has_element?(
-               view,
-               "#organization-product option[value='planner'][selected]",
-               "GTFS Planner"
-             )
+      refute has_element?(view, "#organization-product-pathways[checked]")
 
       view
       |> form("#org-form",
@@ -499,6 +582,17 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       assert Organizations.get_organization!(created.id).product == :pathways
     end
 
+    test "editing a Pathways Studio organization preselects its product", %{conn: conn} do
+      org =
+        organization_fixture(%{name: "Path Org", alias: "path-org", product: :pathways})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{org.id}/edit")
+
+      assert has_element?(view, "#organization-product-pathways[checked]")
+      refute has_element?(view, "#organization-product-planner[checked]")
+      assert has_element?(view, "#org-drawer", "Edit organization")
+    end
+
     test "editing an organization to Pathways Studio updates the row and detail shows it", %{
       conn: conn
     } do
@@ -506,7 +600,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{org.id}/edit")
 
-      assert has_element?(view, "#organization-product")
+      assert has_element?(view, "#organization-product-planner[checked]")
 
       view
       |> form("#org-form", organization: %{product: "pathways"})
@@ -515,6 +609,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       assert_patch(view, ~p"/admin/organizations")
 
       assert Organizations.get_organization!(org.id).product == :pathways
+      assert view |> element("#organization-action-feedback") |> render() =~ "Original Name"
 
       {:ok, detail_view, _html} = live(conn, ~p"/admin/organizations/#{org.id}")
       html = render(detail_view)
@@ -567,14 +662,16 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
         |> form("#invite-form", invite: %{email: "not-an-email"})
         |> render_submit()
 
-      assert html =~ "must have the @ sign and no spaces"
-      assert html =~ "must select at least one role"
+      assert html =~ "Enter a valid email address"
+      assert html =~ "Choose at least one access level."
 
       assert has_element?(view, "#invite-email[aria-invalid=true]")
       assert has_element?(view, "#invite-roles[aria-invalid=true]")
       assert has_element?(view, "#invite-email[value='not-an-email']")
 
-      assert_push_event(view, "focus_first_invite_error", %{})
+      assert has_element?(view, "#invite-error-summary a[href='#invite-email']")
+
+      assert_push_event(view, "focus_form_error", %{form_id: "invite-form"})
       refute Accounts.get_user_by_email("not-an-email")
     end
 
@@ -593,7 +690,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
           "invite" => %{"email" => "sneaky@example.com", "roles" => ["administrator"]}
         })
 
-      assert html =~ "contains an invalid role"
+      assert html =~ "Choose a valid access level."
       refute Accounts.get_user_by_email("sneaky@example.com")
     end
 
@@ -616,6 +713,11 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       assert has_element?(view, "#invite-service-error")
       assert html =~ "already a member of this organization"
       assert has_element?(view, "dialog#invite-drawer-overlay[data-open=true]")
+
+      assert_push_event(view, "focus_form_error", %{
+        form_id: "invite-form",
+        fallback_id: "invite-service-error"
+      })
 
       assert Repo.aggregate(UserOrgMembership, :count) == memberships_before
       assert membership(existing.id, organization.id).roles == ["pathways_studio_editor"]
@@ -750,6 +852,22 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLiveTest do
       end)
 
       assert view |> element("#member-action-feedback") |> render() =~ "pending@example.com"
+    end
+
+    test "an outcome says what happens next and tints the member it is about", %{
+      conn: conn,
+      organization: organization
+    } do
+      pending = member_fixture(organization, %{email: "pending@example.com", invited?: true})
+      other = member_fixture(organization, %{email: "other@example.com"})
+
+      {:ok, view, _html} = live(conn, ~p"/admin/organizations/#{organization.id}")
+
+      view |> element("#resend-invite-#{pending.id}") |> render_click()
+
+      assert view |> element("#member-action-feedback") |> render() =~ "works for 7 days"
+      assert has_element?(view, "#member-#{pending.id}[data-marked]")
+      refute has_element?(view, "#member-#{other.id}[data-marked]")
     end
   end
 
