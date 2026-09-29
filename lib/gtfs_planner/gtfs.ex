@@ -82,6 +82,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Timeframe
+  alias GtfsPlanner.Gtfs.TimetablePaste
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Transfers
   alias GtfsPlanner.Gtfs.Translation
@@ -582,6 +583,156 @@ defmodule GtfsPlanner.Gtfs do
       filters
     )
   end
+
+  @doc """
+  Prepares a pasted timetable review for one route's Paste page.
+
+  Loads the paste scope with `Schedules.load_paste_scope/5` from `scope_params`
+  (`:service_id`, `:direction_id` and `:pattern_id`, string keys accepted), then
+  reviews `input` with the pure `TimetablePaste.review/2`. An input without paste
+  text resolves the scope only (`review: nil`), so the page can mount its
+  calendar, direction and pattern selectors before anything is pasted. When the
+  review maps a Block column and its rows carry block values, the version's block
+  rows for those blocks on the scope calendar are loaded with
+  `Schedules.load_block_rows/4` and the input is reviewed again carrying them as
+  `input.block_rows` (never fingerprinted), so `:block_overlap` warnings see
+  other routes' trips on the same calendar. A foreign, invalid or unpublished
+  scope is `{:error, :not_found}`; parse and `:no_times` failures pass through
+  unchanged.
+  """
+  @spec prepare_timetable_paste(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), map(), map()) ::
+          {:ok, %{scope: Schedules.paste_scope(), review: TimetablePaste.review() | nil}}
+          | {:error, :not_found | TimetablePaste.parse_error() | :no_times}
+  def prepare_timetable_paste(
+        organization_id,
+        gtfs_version_id,
+        route_id,
+        scope_params,
+        input
+      ) do
+    with {:ok, scope} <-
+           Schedules.load_paste_scope(organization_id, gtfs_version_id, route_id, scope_params),
+         {:ok, review} <- review_paste(scope, input),
+         {:ok, review} <-
+           review_block_rows(
+             review,
+             scope,
+             organization_id,
+             gtfs_version_id,
+             route_id,
+             input
+           ) do
+      {:ok, %{scope: scope, review: review}}
+    end
+  end
+
+  @spec review_paste(map(), map()) :: {:ok, map() | nil} | {:error, term()}
+  defp review_paste(scope, input) do
+    if blank_paste_text?(input) do
+      {:ok, nil}
+    else
+      TimetablePaste.review(scope, input)
+    end
+  end
+
+  # Second review pass carrying the version's block rows (never fingerprinted)
+  # when a Block column resolves and the rows carry block values. Anything else
+  # keeps the first review unchanged.
+  @spec review_block_rows(map() | nil, map(), Ecto.UUID.t(), Ecto.UUID.t(), String.t(), map()) ::
+          {:ok, map() | nil} | {:error, term()}
+  defp review_block_rows(nil, _scope, _organization_id, _gtfs_version_id, _route_id, _input) do
+    {:ok, nil}
+  end
+
+  defp review_block_rows(review, scope, organization_id, gtfs_version_id, route_id, input) do
+    case pasted_block_ids(review) do
+      [] ->
+        {:ok, review}
+
+      block_ids ->
+        block_rows =
+          Schedules.load_block_rows(
+            organization_id,
+            gtfs_version_id,
+            route_id,
+            block_filter(block_ids, scope)
+          )
+
+        TimetablePaste.review(scope, Map.put(input, :block_rows, block_rows))
+    end
+  end
+
+  # A Block column resolves and at least one row carries a block value.
+  @spec pasted_block_ids(map()) :: [String.t()]
+  defp pasted_block_ids(review) when is_map(review) do
+    columns = Map.get(review, :columns, Map.get(review, "columns", []))
+    rows = Map.get(review, :rows, Map.get(review, "rows", []))
+
+    if is_list(columns) and Enum.any?(columns, &block_column?/1) and is_list(rows) do
+      rows |> Enum.map(&row_block_id/1) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+    else
+      []
+    end
+  end
+
+  defp pasted_block_ids(_review), do: []
+
+  @spec block_column?(term()) :: boolean()
+  defp block_column?(column) when is_map(column) do
+    target = Map.get(column, :target, Map.get(column, "target"))
+    target == :block_id or target == "block_id"
+  end
+
+  defp block_column?(_column), do: false
+
+  @spec row_block_id(term()) :: String.t() | nil
+  defp row_block_id(row) when is_map(row) do
+    case Map.get(row, :block_id, Map.get(row, "block_id")) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> nil
+          trimmed -> trimmed
+        end
+
+      _value ->
+        nil
+    end
+  end
+
+  defp row_block_id(_row), do: nil
+
+  # Block rows are scoped to the scope calendar; without one they read
+  # version-wide, exactly like `Schedules.load_block_rows/4` documents.
+  @spec block_filter([String.t()], map()) :: [String.t()] | {[String.t()], String.t()}
+  defp block_filter(block_ids, scope) do
+    case scope_service_id(scope) do
+      service_id when is_binary(service_id) -> {block_ids, service_id}
+      _service_id -> block_ids
+    end
+  end
+
+  @spec scope_service_id(term()) :: String.t() | nil
+  defp scope_service_id(scope) when is_map(scope) do
+    case Map.get(scope, :calendar, Map.get(scope, "calendar")) do
+      calendar when is_map(calendar) ->
+        Map.get(calendar, :service_id, Map.get(calendar, "service_id"))
+
+      _calendar ->
+        nil
+    end
+  end
+
+  defp scope_service_id(_scope), do: nil
+
+  @spec blank_paste_text?(term()) :: boolean()
+  defp blank_paste_text?(input) when is_map(input) do
+    case Map.get(input, :text, Map.get(input, "text")) do
+      text when is_binary(text) -> String.trim(text) == ""
+      _text -> true
+    end
+  end
+
+  defp blank_paste_text?(_input), do: true
 
   @doc """
   Expands a departure series for the Add trips preview through `Schedules`.
