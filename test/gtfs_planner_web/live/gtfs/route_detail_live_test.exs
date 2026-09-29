@@ -1609,6 +1609,266 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
     end
   end
 
+  describe "route status actions" do
+    setup :shared_setup
+
+    test "an eligible route shows the active status row and never an inactive banner; NULL stays eligible",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      explicit =
+        details_route(organization.id, version.id, %{route_id: "STATUS1", active: true})
+
+      imported =
+        details_route(organization.id, version.id, %{route_id: "STATUS2", active: nil})
+
+      for route <- [explicit, imported] do
+        {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+        # Only explicit false is inactive (INV-4): true and NULL are eligible
+        # in the tab banner, the header chip and the status row.
+        refute has_element?(view, "#route-inactive-banner")
+        refute has_element?(view, "#route-inactive-chip")
+        assert has_element?(view, "#route-status-section", "Active: included in exports")
+        assert has_element?(view, "#route-deactivate", "Deactivate route")
+        refute has_element?(view, "#route-reactivate-details")
+      end
+    end
+
+    test "deactivation confirms first, writes explicit false, keeps the workspace editable, and Undo restores",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route = details_route(organization.id, version.id, %{})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view |> element("#route-deactivate") |> render_click()
+
+      assert has_element?(view, "#route-status-confirm[data-open='true']", "Deactivate P1?")
+      assert has_element?(view, "#route-status-confirm-body", "stays in this version")
+
+      assert has_element?(
+               view,
+               "#route-status-confirm-body",
+               "Exports you already ran still include it"
+             )
+
+      assert has_element?(view, "#route-status-keep", "Keep active")
+      assert has_element?(view, "#route-status-confirm-go", "Deactivate route")
+
+      # Keep active writes nothing and closes the review.
+      view |> element("#route-status-keep") |> render_click()
+
+      refute has_element?(view, "#route-status-confirm-title")
+      assert saved_route(route).active == true
+
+      # Confirming deactivates through the step-9 command and reloads the
+      # workspace: explicit false, the banner on the saved row, the form and
+      # its tabs still editable, and a real Undo action (AC-12, INV-4).
+      view |> element("#route-deactivate") |> render_click()
+      view |> element("#route-status-confirm-go") |> render_click()
+
+      assert saved_route(route).active == false
+      assert has_element?(view, "#route-inactive-banner", "Inactive: left out of exports")
+      assert has_element?(view, "#route-details-form")
+      assert has_element?(view, "input#route-details-short[value='P1']")
+
+      assert has_element?(
+               view,
+               "#route-status-outcome",
+               "deactivated. The next export leaves it out."
+             )
+
+      assert has_element?(view, "#route-status-undo", "Undo")
+
+      # Undo is the same command in the safe direction with the reloaded saved
+      # identity: the boolean returns to true and the banner disappears.
+      view |> element("#route-status-undo") |> render_click()
+
+      assert saved_route(route).active == true
+      refute has_element?(view, "#route-inactive-banner")
+
+      assert has_element?(
+               view,
+               "#route-status-outcome",
+               "reactivated. The next export includes it."
+             )
+
+      refute has_element?(view, "#route-status-undo")
+    end
+
+    test "the confirmation copy names what the next export leaves out",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route = details_route(organization.id, version.id, %{})
+
+      trip_fixture(organization.id, version.id, route.route_id, trip_id: "ST_T1")
+      trip_fixture(organization.id, version.id, route.route_id, trip_id: "ST_T2")
+
+      fare_rule_fixture(organization.id, version.id, %{fare_id: "ST_F1", route_id: route.route_id})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view |> element("#route-deactivate") |> render_click()
+
+      assert has_element?(view, "#route-status-confirm-body", "its 0 patterns")
+
+      assert has_element?(
+               view,
+               "#route-status-confirm-body",
+               "the route and its 2 trips with their stop times"
+             )
+
+      assert has_element?(view, "#route-status-confirm-body", "1 fare rule for the route")
+    end
+
+    test "a dirty draft resolves save/discard/keep-editing before the status review opens",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route = details_route(organization.id, version.id, %{})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "Unsaved rename"},
+        text_mode: "automatic"
+      })
+      |> render_change()
+
+      # Deactivate holds behind the leave dialog instead of opening the review
+      # against unreviewed work (R4).
+      view |> element("#route-deactivate") |> render_click()
+
+      assert has_element?(view, "#route-details-leave[data-open='true']", "Leave without saving?")
+      refute has_element?(view, "#route-status-confirm-title")
+
+      # Keep editing resolves nothing: no review, no write.
+      view |> element("#route-details-leave-cancel") |> render_click()
+
+      refute has_element?(view, "#route-status-confirm-title")
+      assert saved_route(route).active == true
+
+      # Discard resolves the draft and then opens the review.
+      view |> element("#route-deactivate") |> render_click()
+      view |> element("#route-details-leave-discard") |> render_click()
+
+      assert has_element?(view, "#route-status-confirm[data-open='true']", "Deactivate P1?")
+      refute has_element?(view, "#route-details-leave[data-open='true']")
+      assert saved_route(route).route_long_name == "Details long name"
+
+      # "Save and continue" commits the draft and only then opens the review.
+      view |> element("#route-status-keep") |> render_click()
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "Saved rename"},
+        text_mode: "automatic"
+      })
+      |> render_change()
+
+      view |> element("#route-deactivate") |> render_click()
+      view |> element("#route-details-leave-save") |> render_click()
+
+      assert has_element?(view, "#route-status-confirm[data-open='true']", "Deactivate P1?")
+      assert saved_route(route).route_long_name == "Saved rename"
+      assert saved_route(route).active == true
+    end
+
+    test "undo is a truthful error after the route is deleted",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route = details_route(organization.id, version.id, %{})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view |> element("#route-deactivate") |> render_click()
+      view |> element("#route-status-confirm-go") |> render_click()
+      assert saved_route(route).active == false
+
+      # The route disappears while it is inactive (fixture cleanup simulates a
+      # reviewed deletion by another surface). Undo must refuse truthfully.
+      Repo.delete!(saved_route(route))
+
+      view |> element("#route-status-undo") |> render_click()
+
+      assert_redirect(view, "/gtfs/#{version.id}/routes")
+    end
+
+    test "undo after editor access loss refuses truthfully and writes nothing",
+         %{conn: conn, organization: organization, gtfs_version: version, user: user} do
+      route = details_route(organization.id, version.id, %{})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view |> element("#route-deactivate") |> render_click()
+      view |> element("#route-status-confirm-go") |> render_click()
+      assert saved_route(route).active == false
+
+      revoke_editor_role(user, organization)
+
+      view |> element("#route-status-undo") |> render_click()
+
+      assert has_element?(view, "#route-status-outcome", "editor access was removed")
+      assert saved_route(route).active == false
+    end
+
+    test "a refused undo after the revision moved reloads the latest saved route",
+         %{conn: conn, organization: organization, gtfs_version: version, user: user} do
+      route = details_route(organization.id, version.id, %{})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view |> element("#route-deactivate") |> render_click()
+      view |> element("#route-status-confirm-go") |> render_click()
+      assert saved_route(route).active == false
+
+      # Another writer moves the stored revision through the real command, so
+      # the Undo source no longer binds the current row.
+      {:ok, _} =
+        Gtfs.update_route(
+          route.route_id,
+          %{"route_desc" => "Rewritten elsewhere"},
+          Gtfs.route_source(saved_route(route)),
+          %{},
+          %AuditContext{
+            organization_id: organization.id,
+            gtfs_version_id: version.id,
+            actor_id: user.id,
+            actor_email: user.email
+          }
+        )
+
+      view |> element("#route-status-undo") |> render_click()
+
+      assert has_element?(view, "#route-status-outcome", "status request was refused")
+      refute has_element?(view, "#route-status-undo")
+      # The reload shows the stored truth: still inactive, so the banner stays.
+      assert saved_route(route).active == false
+      assert has_element?(view, "#route-inactive-banner")
+    end
+  end
+
+  defp fare_rule_fixture(organization_id, gtfs_version_id, attrs) do
+    %GtfsPlanner.Gtfs.FareRule{}
+    |> GtfsPlanner.Gtfs.FareRule.changeset(
+      Map.merge(
+        %{organization_id: organization_id, gtfs_version_id: gtfs_version_id},
+        Map.new(attrs)
+      )
+    )
+    |> Repo.insert!()
+  end
+
+  # A revoked editor keeps read access but loses the write role, exactly the
+  # state the status command's in-transaction reauthorization refuses.
+  defp revoke_editor_role(user, organization) do
+    membership =
+      Repo.get_by!(
+        GtfsPlanner.Accounts.UserOrgMembership,
+        user_id: user.id,
+        organization_id: organization.id
+      )
+
+    membership
+    |> Ecto.Changeset.change(roles: ["pathways_studio_viewer"])
+    |> Repo.update!()
+  end
+
   defp link_href(view, selector) do
     view
     |> element(selector)

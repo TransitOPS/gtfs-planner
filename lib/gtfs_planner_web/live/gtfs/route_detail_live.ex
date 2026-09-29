@@ -23,6 +23,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   names the changed fields in the sticky save bar. Invalid input keeps the saved
   value and its own error line rather than reaching a style attribute.
 
+  Status belongs to the step-9 command (`Gtfs.set_route_active/4`) with the saved
+  identity this workspace loaded: Deactivate confirms first and only then writes
+  boolean false with its audit; Reactivate and Undo act at once because they are
+  the safe direction. A dirty draft resolves save/discard/keep-editing before the
+  status review opens. Only explicit false is inactive: NULL and true show the
+  active state everywhere (INV-4). The saved eligibility re-reads on re-entry and
+  after reconnect without rebasing a draft; older exports are always described as
+  unchanged.
+
   Save goes through the audited update command (`Gtfs.update_route/5`): the
   submission carries the trusted base source the workspace was loaded with, and
   the command decides. A clean save writes the draft minus base and its route
@@ -34,8 +43,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   explicit per-field keep-mine/use-saved choice, and "Discard my changes"
   reloads the latest saved values. A merge submission is bound to the revision
   the comparison was displayed with, so a third writer's save is re-presented
-  as a fresh comparison instead of being overwritten. Lifecycle actions belong
-  to later steps.
+  as a fresh comparison instead of being overwritten.
 
   Dirty navigation is guarded (AC-22): the client hook intercepts tabs, internal
   links, browser back and version selection before they dispatch, and this
@@ -87,7 +95,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # The toast the reference shows when a conflict is discarded or a base-equal
   # draft meets a changed current: the latest saved values are loaded.
   @discard_reload_message "Loaded the latest saved route. Your changes were discarded."
-
   @impl true
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
@@ -112,7 +119,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
      |> assign(:merge, nil)
      |> assign(:save_outcome, nil)
      |> assign(:pending_navigation, nil)
-     |> assign(:details_blocked?, false)}
+     |> assign(:details_blocked?, false)
+     |> assign(:active_state, nil)
+     |> assign(:status_dialog, nil)
+     |> assign(:status_outcome, nil)
+     |> assign(:usage, nil)}
   end
 
   @impl true
@@ -180,27 +191,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # (AC-19/AC-21), and the advisories go back to the loaded workspace's.
   @impl true
   def handle_event("discard_route_details", _params, socket) do
-    if socket.assigns.merge do
-      {:noreply, reload_latest_saved(socket, @discard_reload_message)}
-    else
-      route = socket.assigns.route
-
-      {:noreply,
-       socket
-       |> assign(:route_form, route_form(route))
-       |> assign(:draft_route, route)
-       |> assign(:route_text_mode, nil)
-       |> assign(:changed_fields, [])
-       |> assign(
-         :field_warnings,
-         field_warnings_for_clean_load(
-           route,
-           socket.assigns.agencies,
-           socket.assigns.warning_candidates,
-           socket.assigns.geometry_status
-         )
-       )}
-    end
+    {:noreply, discard_details(socket)}
   end
 
   # The merge panel's own discard: same honest outcome as the save bar's
@@ -209,6 +200,53 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   @impl true
   def handle_event("discard_merge", _params, socket) do
     {:noreply, reload_latest_saved(socket, @discard_reload_message)}
+  end
+
+  # --- route status (R4, step 9 command) -------------------------------------
+
+  # Deactivate opens the status review. A dirty draft resolves first (R4): the
+  # click holds behind the leave dialog's save/discard/keep-editing actions and
+  # the review opens only after the draft is resolved, so a lifecycle decision
+  # is never made against unreviewed work.
+  @impl true
+  def handle_event("open_deactivate_route", _params, socket) do
+    if socket.assigns.route_state == :ready and not socket.assigns.details_blocked? do
+      if details_dirty?(socket) do
+        {:noreply, assign(socket, :pending_navigation, :status_review)}
+      else
+        {:noreply, open_status_review(socket)}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # "Keep active" closes the review with nothing dispatched and nothing written.
+  @impl true
+  def handle_event("cancel_deactivate_route", _params, socket) do
+    {:noreply, assign(socket, :status_dialog, nil)}
+  end
+
+  # The review's confirm: the step-9 command with the workspace's saved source.
+  @impl true
+  def handle_event("confirm_deactivate_route", _params, socket) do
+    if socket.assigns.status_dialog != nil and socket.assigns.route_state == :ready do
+      {:noreply, run_route_status(socket, false)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # Reactivate from the banner, the status row or the Undo action after a
+  # deactivation. The safe direction acts without a confirmation; the command
+  # still reauthorizes and rechecks the saved identity in its own transaction.
+  @impl true
+  def handle_event("reactivate_route", _params, socket) do
+    if socket.assigns.route_state == :ready and not socket.assigns.details_blocked? do
+      {:noreply, run_route_status(socket, true)}
+    else
+      {:noreply, socket}
+    end
   end
 
   # --- dirty navigation ------------------------------------------------------
@@ -242,14 +280,22 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     {:noreply, assign(socket, :pending_navigation, nil)}
   end
 
-  # Discard leaves without saving: the draft dies with this navigation and the
+  # Discard leaves without saving: the draft dies with this resolution and the
   # saved row is never touched. A cross-version destination keeps the switcher's
-  # selected-version state in step, exactly as an unguarded switch would.
+  # selected-version state in step, exactly as an unguarded switch would. When
+  # the held action was opening the status review, the resolved draft is followed
+  # by that review (R4's dirty-details resolution).
   @impl true
   def handle_event("leave_discard", _params, socket) do
     case socket.assigns.pending_navigation do
-      nil -> {:noreply, socket}
-      path -> {:noreply, guarded_navigate(socket, path)}
+      nil ->
+        {:noreply, socket}
+
+      :status_review ->
+        {:noreply, socket |> discard_details() |> clear_pending() |> open_status_review()}
+
+      path ->
+        {:noreply, guarded_navigate(socket, path)}
     end
   end
 
@@ -272,11 +318,40 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # open, so the stored params are the on-screen draft, never a second grammar.
   defp draft_attrs(socket), do: socket.assigns.route_form.source.params
 
+  # The draft resolver behind both discard paths: restore the loaded row and
+  # its advisories, or reload the latest saved values during a merge. Either
+  # way nothing is written (AC-19/AC-21).
+  defp discard_details(socket) do
+    if socket.assigns.merge do
+      reload_latest_saved(socket, @discard_reload_message)
+    else
+      route = socket.assigns.route
+
+      socket
+      |> assign(:route_form, route_form(route))
+      |> assign(:draft_route, route)
+      |> assign(:route_text_mode, nil)
+      |> assign(:changed_fields, [])
+      |> assign(
+        :field_warnings,
+        field_warnings_for_clean_load(
+          route,
+          socket.assigns.agencies,
+          socket.assigns.warning_candidates,
+          socket.assigns.geometry_status
+        )
+      )
+    end
+  end
+
+  defp clear_pending(socket), do: assign(socket, :pending_navigation, nil)
+
   defp recover_route_details(socket) do
     if editor_access?(socket) do
       {:noreply,
        socket
        |> assign(:details_blocked?, false)
+       |> refresh_eligibility()
        |> push_event("route_recovery", %{
          state: "retryable",
          message: "Connection restored. Your changes are preserved — you can save again."
@@ -291,6 +366,26 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
        |> assign(:save_outcome, {:error, message})
        |> push_event("route_recovery", %{state: "blocked", message: message})}
     end
+  end
+
+  # Reconnect revalidates eligibility (AC-23): the saved status re-reads on its
+  # own so the banner and the status row describe what is stored now. The draft
+  # is never rebased — the trusted base source this socket loaded stays the
+  # save's base (step 26). A transient read failure keeps the displayed state;
+  # the next save or status action still reports the stored truth.
+  defp refresh_eligibility(socket) do
+    organization_id = socket.assigns.current_organization.id
+    gtfs_version_id = socket.assigns.current_gtfs_version.id
+
+    case Gtfs.get_route_by_route_id(organization_id, gtfs_version_id, socket.assigns.route_id) do
+      %Route{} = fresh ->
+        assign(socket, :active_state, if(fresh.active == false, do: :inactive, else: :active))
+
+      _missing ->
+        socket
+    end
+  rescue
+    DBConnection.ConnectionError -> socket
   end
 
   # Mount-time access is not enough for a write: the membership may have lost
@@ -418,6 +513,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         |> assign(:route_state, :ready)
         |> assign(:details_blocked?, false)
         |> assign(
+          :active_state,
+          if(workspace.route.active == false, do: :inactive, else: :active)
+        )
+        |> assign(:status_dialog, nil)
+        |> assign(:status_outcome, nil)
+        |> assign(:usage, Map.get(workspace, :usage))
+        |> assign(
           :transfer_count,
           related_transfers(organization_id, gtfs_version_id, workspace.route)
         )
@@ -443,7 +545,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # patterns whose connector sections are known missing. A failed read is
   # `:unavailable` — unknown geometry is never reported as missing (R7).
   defp geometry_status({:ok, route_map}) do
-    %{patterns_missing: Enum.count(route_map.patterns, &pattern_missing_paths?/1)}
+    %{
+      patterns_missing: Enum.count(route_map.patterns, &pattern_missing_paths?/1),
+      patterns: length(route_map.patterns)
+    }
   end
 
   defp geometry_status({:error, _failure}), do: :unavailable
@@ -466,7 +571,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # rejection, conflict, a lost route — keeps the operator here with the draft.
   defp run_details_save(socket, attrs, params) do
     pending = if params["leave_nav"] == "true", do: socket.assigns.pending_navigation, else: nil
-    socket = assign(socket, :pending_navigation, nil)
+    socket = clear_pending(socket)
 
     choices =
       if merge_submission?(params) and socket.assigns.merge != nil,
@@ -482,6 +587,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
          ) do
       {:ok, %{route: _saved}} when is_binary(pending) ->
         {:noreply, guarded_navigate(socket, pending)}
+
+      # The save that unblocked the status review continues into it (R4).
+      {:ok, %{route: saved}} when pending == :status_review ->
+        {:noreply, saved_details(socket, saved) |> open_status_review()}
 
       {:ok, %{route: saved}} ->
         {:noreply, saved_details(socket, saved)}
@@ -627,6 +736,150 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     |> put_flash(:error, message)
     |> push_navigate(to: "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes")
   end
+
+  # --- route status helpers (R4, step 9 command) ------------------------------
+
+  # One status command call, every outcome classified. The saved identity is the
+  # workspace's source: a real change reauthorizes inside the transaction, locks
+  # the scoped version first and writes boolean state with its audit; a request
+  # for already-effective state is a no-op that writes nothing (INV-4). Every
+  # outcome reloads through the ordinary production read, so the banner, the
+  # chip and the status row can never disagree with the stored row (INV-6).
+  defp run_route_status(socket, desired_active) do
+    route = socket.assigns.route
+
+    case Gtfs.set_route_active(
+           route.route_id,
+           desired_active,
+           socket.assigns.source,
+           audit_context(socket)
+         ) do
+      {:ok, %{route: saved}} ->
+        message = route_status_message(saved)
+
+        socket
+        |> load_route_workspace()
+        |> assign(:status_outcome, %{message: message, undo?: saved.active == false})
+        |> focus_status_outcome()
+
+      {:error, :not_found} ->
+        route_gone(
+          socket,
+          "This route is no longer in this version. Open it again from the route list."
+        )
+
+      # The stored revision moved underneath this socket, so the request was
+      # refused and nothing was written. The reload shows the current state and
+      # the Undo offer is dropped — a refused change is never re-applied.
+      {:error, :stale} ->
+        socket
+        |> load_route_workspace()
+        |> assign(
+          :status_outcome,
+          %{
+            message:
+              "The route changed just now, so the status request was refused. The latest saved route is loaded.",
+            undo?: false
+          }
+        )
+        |> focus_status_outcome()
+
+      {:error, :forbidden} ->
+        status_refused(
+          socket,
+          "Your editor access was removed. The route's status is unchanged — ask an admin to restore editor access."
+        )
+
+      {:error, :busy} ->
+        status_refused(
+          socket,
+          "The server is busy right now. The route's status is unchanged — try again."
+        )
+
+      {:error, _other} ->
+        status_refused(
+          socket,
+          "The status could not be changed. The route is unchanged — try again."
+        )
+    end
+  end
+
+  # Older exports are never described as changed: only the next export is
+  # affected (AC-12), and the Undo action stays available right after a
+  # deactivation — a real command call with the reloaded saved identity.
+  defp route_status_message(saved) do
+    if saved.active == false do
+      "Route #{saved.route_id} deactivated. The next export leaves it out."
+    else
+      "Route #{saved.route_id} reactivated. The next export includes it."
+    end
+  end
+
+  defp status_refused(socket, message) do
+    socket
+    |> assign(:status_dialog, nil)
+    |> assign(:status_outcome, %{message: message, undo?: false})
+    |> focus_status_outcome()
+  end
+
+  defp focus_status_outcome(socket) do
+    push_event(socket, "focus_scoped_target", %{id: "route-status-outcome"})
+  end
+
+  # The status review payload: the counts the confirmation's export copy names.
+  # Patterns come from the already-read map projection, transfers from the
+  # page's own count, trips and fare rules from the workspace read (the R6
+  # closure a future export leaves out). A count that was not read keeps its
+  # sentence truthful without a number.
+  defp open_status_review(socket) do
+    route = socket.assigns.route
+    usage = socket.assigns.usage || %{}
+
+    patterns =
+      case socket.assigns.geometry_status do
+        %{patterns: count} when is_integer(count) -> count
+        _other -> nil
+      end
+
+    assign(socket, :status_dialog, %{
+      ref: deactivate_ref(route),
+      name: route_display_name(route),
+      patterns: patterns,
+      trips: Map.get(usage, :trips),
+      transfers: socket.assigns.transfer_count,
+      fare_rules: Map.get(usage, :fare_rules)
+    })
+  end
+
+  defp deactivate_ref(route) do
+    if route.route_short_name in [nil, ""], do: route.route_id, else: route.route_short_name
+  end
+
+  # The confirmation's own copy pieces. A count that was not read keeps its
+  # sentence truthful without a number instead of guessing one.
+  defp patterns_phrase(nil), do: "its patterns"
+  defp patterns_phrase(1), do: "its 1 pattern"
+  defp patterns_phrase(count) when is_integer(count), do: "its #{count} patterns"
+
+  defp trips_item(0), do: "the route itself"
+
+  defp trips_item(1), do: "the route and its 1 trip with its stop times"
+
+  defp trips_item(count) when is_integer(count),
+    do: "the route and its #{count} trips with their stop times"
+
+  defp count_phrase(1, word), do: "1 #{word}"
+  defp count_phrase(count, word) when is_integer(count), do: "#{count} #{word}s"
+
+  defp positive?(count) when is_integer(count) and count > 0, do: true
+  defp positive?(_other), do: false
+
+  defp route_status_help(:inactive),
+    do: "Reactivate to include the route and its trips in the next export."
+
+  defp route_status_help(_active),
+    do:
+      "Deactivate a seasonal or suspended route to leave it out of exports. Its patterns and schedules stay here."
 
   defp save_error_summary(changeset) do
     errors =
@@ -949,6 +1202,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
           route={@route}
           gtfs_version_id={@current_gtfs_version.id}
           active_tab={@active_tab}
+          inactive={@active_state == :inactive}
+          trip_count={@usage && Map.get(@usage, :trips)}
         />
       </:sub_header>
 
@@ -1181,6 +1436,158 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                       </.button>
                     </div>
                   </.form>
+
+                  <%!-- The reference's Status and removal row: saved eligibility
+                         with the deactivate confirmation and Reactivate. The
+                         delete row is the reviewed-deletion step's surface and
+                         stays out until then. --%>
+                  <section
+                    id="route-status-section"
+                    aria-labelledby="route-status-title"
+                    class="mt-10 border-t border-subtle pt-6"
+                  >
+                    <h2
+                      id="route-status-title"
+                      class="text-base font-bold tracking-normal text-strong"
+                    >
+                      Status and removal
+                    </h2>
+                    <%!-- The outcome a status action can have: a deactivation
+                           with its real Undo action, a reactivation, or a
+                           truthful refusal. Focus lands here so the result is
+                           announced (AC-28). --%>
+                    <div
+                      :if={@status_outcome}
+                      id="route-status-outcome"
+                      tabindex="-1"
+                      class="mt-3 grid gap-2 rounded-control border border-success bg-success/10 px-4 py-3 text-sm text-default outline-none"
+                    >
+                      <p role="status">{@status_outcome.message}</p>
+                      <.button
+                        :if={@status_outcome.undo?}
+                        id="route-status-undo"
+                        type="button"
+                        variant="secondary"
+                        class="min-h-11 self-start"
+                        phx-click="reactivate_route"
+                      >
+                        <.icon name="hero-arrow-path" class="ml-1 size-4" />Undo
+                      </.button>
+                    </div>
+                    <div class="mt-3 divide-y divide-subtle rounded-card border border-subtle">
+                      <div class="flex flex-wrap items-center justify-between gap-4 p-4">
+                        <div class="min-w-0 flex-1 basis-[260px]">
+                          <p class="flex items-center gap-2 text-sm font-[650] text-strong">
+                            <%= if @active_state == :inactive do %>
+                              <.icon name="hero-eye-slash" class="size-4 shrink-0" />Inactive: left
+                              out of exports
+                            <% else %>
+                              <span class="size-2.5 shrink-0 rounded-full bg-success"></span>
+                              Active: included in exports
+                            <% end %>
+                          </p>
+                          <p class="mt-1 text-[13px] text-muted">
+                            {route_status_help(@active_state)}
+                          </p>
+                        </div>
+                        <.button
+                          :if={@active_state != :inactive}
+                          id="route-deactivate"
+                          type="button"
+                          variant="secondary"
+                          phx-click="open_deactivate_route"
+                          disabled={@details_blocked?}
+                        >
+                          <.icon name="hero-eye-slash" class="ml-1 size-4" />Deactivate route
+                        </.button>
+                        <.button
+                          :if={@active_state == :inactive}
+                          id="route-reactivate-details"
+                          type="button"
+                          variant="secondary"
+                          phx-click="reactivate_route"
+                          disabled={@details_blocked?}
+                        >
+                          <.icon name="hero-arrow-path" class="ml-1 size-4" />Reactivate route
+                        </.button>
+                      </div>
+                    </div>
+                  </section>
+
+                  <%!-- The deactivate confirmation the review opens: what stays,
+                         what the next export leaves out, and the honest note
+                         that exports already run still include the route. Keep
+                         active is the safe default focus. --%>
+                  <dialog
+                    id="route-status-confirm"
+                    phx-mounted={JS.ignore_attributes("open")}
+                    phx-hook="OverlayDialog"
+                    data-open={to_string(@status_dialog != nil)}
+                    data-close-on-backdrop="false"
+                    data-pending="false"
+                    aria-labelledby="route-status-confirm-title"
+                    aria-describedby="route-status-confirm-body"
+                    role={if @status_dialog, do: "alertdialog", else: nil}
+                    aria-modal={if @status_dialog, do: "true", else: nil}
+                    inert={if @status_dialog, do: nil, else: ""}
+                    aria-hidden={if @status_dialog, do: nil, else: "true"}
+                    class="m-0 border-0 w-full h-full bg-transparent p-0"
+                  >
+                    <div class="w-full h-full flex items-center justify-center p-4">
+                      <div
+                        :if={@status_dialog}
+                        class="w-full max-w-sm border border-base-300 bg-base-100 p-5"
+                      >
+                        <h3 id="route-status-confirm-title" class="font-semibold">
+                          Deactivate {@status_dialog.ref}?
+                        </h3>
+                        <div
+                          id="route-status-confirm-body"
+                          class="mt-1 text-sm text-base-content/70"
+                        >
+                          <p>
+                            {@status_dialog.ref} {@status_dialog.name} stays in this version, and
+                            you can keep editing {patterns_phrase(@status_dialog.patterns)} and
+                            schedules. The next export leaves out:
+                          </p>
+                          <ul class="mt-2 grid list-disc gap-1 pl-5">
+                            <li>{trips_item(@status_dialog.trips)}</li>
+                            <li :if={positive?(@status_dialog.transfers)}>
+                              {count_phrase(@status_dialog.transfers, "transfer")} that name the
+                              route or its trips
+                            </li>
+                            <li :if={positive?(@status_dialog.fare_rules)}>
+                              {count_phrase(@status_dialog.fare_rules, "fare rule")} for the route
+                            </li>
+                          </ul>
+                          <p class="mt-3 text-muted">
+                            Exports you already ran still include it. Reactivate the route at any
+                            time to include it again.
+                          </p>
+                        </div>
+                        <div class="mt-4 flex flex-wrap items-center justify-end gap-2">
+                          <button
+                            id="route-status-keep"
+                            type="button"
+                            data-dialog-dismiss
+                            class="h-[44px] min-w-[44px] border border-control-border px-4 text-sm font-semibold"
+                            phx-click="cancel_deactivate_route"
+                          >
+                            Keep active
+                          </button>
+                          <button
+                            id="route-status-confirm-go"
+                            type="button"
+                            class="h-[44px] min-w-[44px] bg-primary px-4 text-sm font-semibold text-primary-content"
+                            phx-click="confirm_deactivate_route"
+                            phx-disable-with="Deactivating…"
+                          >
+                            Deactivate route
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </dialog>
 
                   <%!-- The leave dialog the client guard opens: tabs, internal
                          links, browser back and version selection hold here

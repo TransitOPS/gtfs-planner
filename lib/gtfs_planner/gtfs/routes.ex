@@ -182,13 +182,16 @@ defmodule GtfsPlanner.Gtfs.Routes do
           actor_email: String.t(),
           saved_at: DateTime.t()
         }
+  @type route_usage :: %{trips: non_neg_integer(), fare_rules: non_neg_integer()}
+
   @type editor_workspace :: %{
           route: Route.t(),
           source: source(),
           agencies: [agency_option()],
           mode_counts: [mode_count()],
           warning_candidates: [warning_candidate()],
-          last_saved: last_save() | nil
+          last_saved: last_save() | nil,
+          usage: route_usage()
         }
 
   @type id_example :: %{route_id: String.t(), route_short_name: String.t() | nil}
@@ -296,11 +299,36 @@ defmodule GtfsPlanner.Gtfs.Routes do
          agencies: agency_options(organization_id, gtfs_version_id),
          mode_counts: mode_counts(organization_id, gtfs_version_id),
          warning_candidates: warning_candidates(organization_id, gtfs_version_id),
-         last_saved: last_saved(route)
+         last_saved: last_saved(route),
+         usage: route_usage(organization_id, gtfs_version_id, route_id)
        }}
     end
   rescue
     DBConnection.ConnectionError -> {:error, :unavailable}
+  end
+
+  # The scoped counts the status surface's export copy names (R4/R6): the trips
+  # and fare rules a future export leaves out with an explicitly inactive route.
+  # Read-side counts over landed rows only; transfer counts stay on the page's
+  # own existing read.
+  defp route_usage(organization_id, gtfs_version_id, route_id) do
+    trips =
+      from(t in Trip,
+        where:
+          t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+            t.route_id == ^route_id
+      )
+      |> Repo.aggregate(:count)
+
+    fare_rules =
+      from(fr in FareRule,
+        where:
+          fr.organization_id == ^organization_id and fr.gtfs_version_id == ^gtfs_version_id and
+            fr.route_id == ^route_id
+      )
+      |> Repo.aggregate(:count)
+
+    %{trips: trips, fare_rules: fare_rules}
   end
 
   @doc """
