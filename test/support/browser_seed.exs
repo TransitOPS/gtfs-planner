@@ -4184,6 +4184,99 @@ case Accounts.register_first_admin(%{
         )
       )
 
+    # ── Calendar helper version (spec 25, steps 10-15) ──
+    #
+    # The Calendar helper journeys need their own version, so the change the
+    # helper prepares never lands on a version another spec asserts on. Its
+    # `published_at` is backdated like the transfers version above, so the
+    # Browser E2E Version keeps the organization's latest-published default
+    # while the version switcher still lists this one.
+    #
+    # The three calendars are the helper's read and prepare material: two
+    # Monday-Friday school calendars the journey stops, and a Sunday calendar
+    # for the substitution case. Dates are relative to this version's
+    # agency-local today (the UTC fallback, because the version has no agency),
+    # so "next Monday" stays a real service date on any run date. Rows are
+    # inserted directly because this fixture supplies scenario data, not an
+    # audited edit.
+    {:ok, helper_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Helper Version"})
+
+    helper_version =
+      Repo.update!(
+        Ecto.Changeset.change(helper_version,
+          published_at: ~U[2020-01-02 00:00:00.000000Z]
+        )
+      )
+
+    helper_today = Gtfs.DisplayClock.today(org.id, helper_version.id).date
+
+    [
+      %{
+        service_id: "SCHOOL_WD",
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 0,
+        sunday: 0
+      },
+      %{
+        service_id: "SCHOOL_EX",
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 0,
+        sunday: 0
+      },
+      %{
+        service_id: "SUNDAY",
+        monday: 0,
+        tuesday: 0,
+        wednesday: 0,
+        thursday: 0,
+        friday: 0,
+        saturday: 0,
+        sunday: 1
+      }
+    ]
+    |> Enum.map(
+      &Map.merge(&1, %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: helper_version.id,
+        start_date: Date.add(helper_today, -30),
+        end_date: Date.add(helper_today, 90),
+        inserted_at: calendar_now,
+        updated_at: calendar_now
+      })
+    )
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.Calendar, &1))
+
+    [
+      {"SCHOOL_WD", "School weekdays"},
+      {"SCHOOL_EX", "School express"},
+      {"SUNDAY", "Sunday service"}
+    ]
+    |> Enum.map(fn {service_id, description} ->
+      %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: helper_version.id,
+        service_id: service_id,
+        service_description: description,
+        service_schedule_typicality: 0,
+        inserted_at: calendar_now,
+        updated_at: calendar_now
+      }
+    end)
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.CalendarAttribute, &1))
+
+    IO.puts("Browser seed: helper version #{helper_version.name} (id=#{helper_version.id})")
+
     # The station BXF_CEN with its two platforms and an entrance, plus the three
     # top-level stops the trips call at. Children go through the import changeset,
     # the permissive path the import workflow uses for the same shape. An entrance

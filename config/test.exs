@@ -82,8 +82,17 @@ config :gtfs_planner, GtfsPlanner.Agents.Model, model: "test/model-a"
 
 config :gtfs_planner, :openrouter_api_key, "test-openrouter-key"
 
-config :gtfs_planner,
-       :agents_req_options, plug: {Req.Test, GtfsPlanner.Agents.Model}, retry_delay: 0
+# The helper's browser journey drives the helper in a real browser, where no
+# Req.Test stub exists, so a deterministic scripted stand-in answers OpenRouter.
+# Ordinary ExUnit runs keep the Req.Test plug.
+agents_req_options =
+  if System.get_env("BROWSER_E2E") == "true" do
+    [plug: GtfsPlanner.Agents.BrowserOpenRouter]
+  else
+    [plug: {Req.Test, GtfsPlanner.Agents.Model}, retry_delay: 0]
+  end
+
+config :gtfs_planner, :agents_req_options, agents_req_options
 
 # In test we don't send emails
 config :gtfs_planner, GtfsPlanner.Mailer, adapter: Swoosh.Adapters.Test
