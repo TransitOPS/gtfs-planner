@@ -216,6 +216,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     if same_station_already_loaded?(socket, stop_id) do
       socket =
         socket
+        |> maybe_switch_level_from_params(params)
         |> maybe_open_child_stop_from_params(params)
         |> maybe_open_journal_from_params(params)
 
@@ -270,7 +271,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           |> Enum.sort_by(&(&1.level_name || &1.level_id), :asc)
 
         active_level =
-          Enum.find(levels, List.first(levels), fn l -> l.level_index == 0.0 end)
+          level_from_params(levels, params) ||
+            Enum.find(levels, List.first(levels), fn l -> l.level_index == 0.0 end)
 
         socket =
           socket
@@ -7039,6 +7041,23 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp maybe_open_journal_from_params(socket, _params), do: socket
+
+  # A `?level=` value names a GTFS `level_id` (unique per organization and
+  # version), never a `levels.id` UUID, so an unknown or foreign value resolves
+  # to nil and the caller keeps its default level without an error flash.
+  defp level_from_params(levels, params) do
+    case params["level"] do
+      level_id when is_binary(level_id) -> Enum.find(levels, &(&1.level_id == level_id))
+      _ -> nil
+    end
+  end
+
+  defp maybe_switch_level_from_params(socket, params) do
+    case level_from_params(socket.assigns.levels, params) do
+      nil -> socket
+      level -> switch_active_level_if_needed(socket, level)
+    end
+  end
 
   defp resolve_child_stop_intent(socket, id) do
     with {:ok, stop} <- fetch_intent_stop(socket, id),
