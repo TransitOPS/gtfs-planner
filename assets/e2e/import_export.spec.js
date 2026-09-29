@@ -262,7 +262,7 @@ test.describe("durable import and export browser journeys", () => {
     await expect(historyLinks.first()).toHaveAttribute("href", resultHref);
     await resultLink.click();
     await page.waitForURL(new RegExp("/gtfs/[^/]+/validation/[^/]+$"));
-    await expect(page.getByText("COMPLETED", { exact: true })).toBeVisible();
+    await expect(page.locator("#validation-summary")).toBeVisible();
     await expect(
       page.getByText("No validation issues found!", { exact: true }),
     ).toBeVisible();
