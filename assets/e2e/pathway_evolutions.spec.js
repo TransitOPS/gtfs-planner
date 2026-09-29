@@ -110,6 +110,21 @@ async function waitForLiveView(page) {
   });
 }
 
+// A server push can be followed by one next-frame focus re-assertion: the
+// list region's scoped focus hook lands on the pushed target after LiveView's
+// own restoration, then asserts it once more on the next animation frame.
+// Waiting for the pushed target and then two frames in the page leaves that
+// settled state, so a deliberate focus move afterwards is never raced.
+async function waitForSettledFocus(page, selector) {
+  await expect(page.locator(selector)).toBeFocused();
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      }),
+  );
+}
+
 // The same race applies to file inputs: LiveView only accepts an upload change
 // event once the input owns its upload ref. Stage through the ref and the
 // rendered entry, retrying the change once, so a dropped event cannot leave the
@@ -4407,19 +4422,29 @@ test.describe("floorplan", () => {
     await expect(page.locator("#closure-pathway")).toHaveValue("BROWSER_EVO_PW_WALK");
 
     // Back to the floorplan with a clean draft closed, so the overlay starts on
-    // the list's own first pathway (the elevator).
+    // the list's own first pathway (the elevator). Closing the editor hands
+    // focus to the idle heading through the list region's scoped focus hook.
     await page.locator("#locator-view-diagram").click();
     await page.locator("#discard-closure").click();
+    await waitForSettledFocus(page, "#closure-idle-title");
 
     const lift = page.locator('#closure-floorplan-svg [data-pathway-id="BROWSER_EVO/PW LIFT 1"]');
     await expect(lift).toHaveAttribute("tabindex", "0");
 
     await lift.focus();
+    await expect(lift).toBeFocused();
     await page.keyboard.press("ArrowRight");
+
+    const stairs = page.locator(
+      '#closure-floorplan-svg [data-pathway-id="BROWSER_EVO_PW_STAIR"]',
+    );
+    await expect(stairs).toHaveAttribute("tabindex", "0");
+    await expect(stairs).toBeFocused();
     await page.keyboard.press("ArrowRight");
 
     const walkway = page.locator('#closure-floorplan-svg [data-pathway-id="BROWSER_EVO_PW_WALK"]');
     await expect(walkway).toHaveAttribute("tabindex", "0");
+    await expect(walkway).toBeFocused();
     await page.keyboard.press("Enter");
 
     // Enter selects exactly the pathway the list selected, and focus stays on
@@ -4427,12 +4452,16 @@ test.describe("floorplan", () => {
     await expect(page.locator("#closure-pathway")).toHaveValue("BROWSER_EVO_PW_WALK");
     await expect(walkway).toBeFocused();
 
-    // Space activates the same control after the draft is closed again.
+    // Space activates the same control after the draft is closed again, once
+    // the close has settled and the floorplan is deliberately focused anew.
     await page.locator("#discard-closure").click();
+    await waitForSettledFocus(page, "#closure-idle-title");
+
     const elevator = page.locator(
       '#closure-floorplan-svg [data-pathway-id="BROWSER_EVO/PW LIFT 1"]',
     );
     await elevator.focus();
+    await expect(elevator).toBeFocused();
     await page.keyboard.press("Space");
     await expect(page.locator("#closure-pathway")).toHaveValue("BROWSER_EVO/PW LIFT 1");
   });
