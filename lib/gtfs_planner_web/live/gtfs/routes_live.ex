@@ -98,6 +98,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
      |> assign(:agency_setup_dirty?, false)
      |> assign(:agency_setup_confirm_discard?, false)
      |> assign(:agency_setup_zone_names, [])
+     |> assign(:focus_create_trigger?, false)
      |> stream(:routes, [])
      |> stream(:routes_mobile, [])}
   end
@@ -135,6 +136,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       "agency_id" => params["agency_id"] || "",
       "active" => active
     }
+
+    # A reviewed deletion lands here with `?deleted=1` (AC-24): the list
+    # returns focus to the page's primary action instead of dropping it.
+    socket = assign(socket, :focus_create_trigger?, params["deleted"] == "1")
 
     socket =
       socket
@@ -562,6 +567,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
             id="new-route-trigger"
             type="button"
             phx-click="open_new_route"
+            phx-mounted={if @focus_create_trigger?, do: JS.focus(), else: nil}
             variant={
               if(first_use_empty?(assigns) or onboarding?(assigns), do: "secondary", else: "primary")
             }

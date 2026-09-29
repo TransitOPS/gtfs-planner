@@ -1039,6 +1039,65 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: route pattern routes (ready with 2 patterns, empty, unlinked trips)")
 
+    # ── Route lifecycle deletion fixtures (spec 16 step 29) ──
+    #
+    # Two isolated routes give the reviewed-deletion journeys their own
+    # records: BROWSER_ROUTE16_DELETE carries two trips with stop times so the
+    # complete review has real counts to disclose, and BROWSER_ROUTE16_EMPTY is
+    # an empty entire plan for the simple confirmation. Deleting them is the
+    # journey's real mutation; reseeding the lane restores them.
+    lifecycle_routes =
+      [
+        {"BROWSER_ROUTE16_DELETE", "D16", "Browser Route16 Delete"},
+        {"BROWSER_ROUTE16_EMPTY", "E16", "Browser Route16 Empty"}
+      ]
+      |> Enum.map(fn {route_id, short_name, long_name} ->
+        {:ok, route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3
+          })
+
+        route
+      end)
+      |> Map.new(&{&1.route_id, &1})
+
+    lifecycle_delete_route = Map.fetch!(lifecycle_routes, "BROWSER_ROUTE16_DELETE")
+
+    Enum.each(["BROWSER_D16A", "BROWSER_D16B"], fn trip_id ->
+      {:ok, trip} =
+        Gtfs.create_trip(%{
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          route_id: lifecycle_delete_route.route_id,
+          trip_id: trip_id,
+          service_id: "BROWSER_D16_SERVICE",
+          trip_headsign: "Valley Hospital",
+          direction_id: 0
+        })
+
+      [first, second] = Enum.take(pattern_stops, 2)
+
+      Enum.each([{first, 1}, {second, 2}], fn {stop, sequence} ->
+        {:ok, _stop_time} =
+          Gtfs.create_stop_time(%{
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id,
+            trip_id: trip.trip_id,
+            stop_id: stop.stop_id,
+            stop_sequence: sequence,
+            arrival_time: "09:0#{sequence}:00",
+            departure_time: "09:0#{sequence}:00"
+          })
+      end)
+    end)
+
+    IO.puts("Browser seed: route lifecycle deletion routes (delete with 2 trips, empty)")
+
     seed_pattern_trip_times = fn trip_id ->
       [
         {"BROWSER_PATTERN_STOP_1", "08:00:00", "08:00:00"},

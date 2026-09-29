@@ -53,6 +53,10 @@ const DETAILS_ROUTE = "BROWSER_PATTERNS_READY";
  *   #<prefix>-contrast-advice / #<prefix>-use-automatic
  */
 
+async function awaitConnected(page) {
+  await page.waitForSelector("[data-phx-main].phx-connected");
+}
+
 async function logIn(page, user = CREATE_USER) {
   await page.goto("/users/log_in");
 
@@ -1186,6 +1190,133 @@ test.describe("Route status actions", () => {
     await expect(page.locator("#route-inactive-banner")).toHaveCount(0);
     await expect(page.locator("#route-details-long")).not.toHaveValue(
       "Renamed before review",
+    );
+  });
+});
+
+/**
+ * Reviewed deletion (spec 16, step 29).
+ *
+ * Route › Details owns the Delete route row and the reviewed-deletion dialog:
+ * the step-11 review names the affected categories with their identities and
+ * the retained resources, the step-12 command applies the cascade through the
+ * Gtfs facade, and a stale apply is explained with the acknowledgement
+ * re-cleared (AC-13/14/24). An empty entire plan gets the simple
+ * confirmation; everything else gets the complete review.
+ */
+test.describe("Reviewed route deletion", () => {
+  test("delete review names the impact, requires the acknowledgement, and returns to the scoped list", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/BROWSER_ROUTE16_DELETE`);
+    await awaitConnected(page);
+
+    // The reviewed impact opens from the Delete route row: affected
+    // categories with identities and the retained resources, never a bare
+    // count-only confirm.
+    await page.locator("#route-delete").click();
+    const review = page.locator("#route-delete-review[data-open='true']");
+    await expect(review).toContainText("Delete D16 Browser Route16 Delete?");
+    await expect(review).toContainText("You can't undo this");
+    await expect(page.locator("#route-delete-impact")).toContainText("Trips");
+    await expect(page.locator("#route-delete-impact")).toContainText(
+      "BROWSER_D16A, BROWSER_D16B",
+    );
+    await expect(page.locator("#route-delete-impact")).toContainText(
+      "Stop times",
+    );
+    await expect(page.locator("#route-delete-retained")).toContainText(
+      "Shared stops retained",
+    );
+    await expect(page.locator("#route-delete-deactivate")).toContainText(
+      "Deactivate instead",
+    );
+
+    // The acknowledgement is required: the unchecked box deletes nothing.
+    await expect(page.locator("#route-delete-ack")).not.toBeChecked();
+    await page.locator("#route-delete-go").click();
+    await expect(page.locator("#route-delete-ack-error")).toBeVisible();
+    await expect(page.locator("#route-delete-review-title")).toBeVisible();
+
+    // Acknowledging and confirming applies the cascade and returns to the
+    // scoped list with the real counts, and focus lands on the list's
+    // primary action.
+    await page.locator("#route-delete-ack").check();
+    await page.locator("#route-delete-go").click();
+
+    await expect(page).toHaveURL(new RegExp(`/routes\\?deleted=1$`));
+    await expect(page.locator("#flash-info")).toContainText(
+      "deleted, with its 2 trips",
+    );
+    await expect(page.locator("#new-route-trigger")).toBeFocused();
+    await expect(
+      page.locator(`a[href='/gtfs/${version}/routes/BROWSER_ROUTE16_DELETE']`),
+    ).toHaveCount(0);
+  });
+
+  test("an empty entire plan deletes through the simple confirmation", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/BROWSER_ROUTE16_EMPTY`);
+    await awaitConnected(page);
+
+    // Nothing beyond the route row itself exists, so the simple confirmation
+    // is allowed and there is no acknowledgement checkbox (R5).
+    await page.locator("#route-delete").click();
+    const simple = page.locator("#route-delete-review[data-open='true']");
+    await expect(simple).toContainText("Delete E16?");
+    await expect(simple).toContainText("has no patterns or trips");
+    await expect(page.locator("#route-delete-form")).toHaveCount(0);
+
+    await page.locator("#route-delete-go").click();
+    await expect(page).toHaveURL(new RegExp(`/routes\\?deleted=1$`));
+    await expect(page.locator("#flash-info")).toContainText(
+      "Route E16 deleted.",
+    );
+    await expect(
+      page.locator(`a[href='/gtfs/${version}/routes/BROWSER_ROUTE16_EMPTY']`),
+    ).toHaveCount(0);
+  });
+
+  test("a dirty draft resolves before the delete review opens", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/BROWSER_ROUTE16_DELETE`);
+    await awaitConnected(page);
+
+    await page.fill("#route-details-long", "Renamed before delete");
+    // The shared name input debounces on blur; leave the field to push the
+    // draft.
+    await page.locator("#route-details-heading").click();
+    await expect(page.locator("#route-details-save-bar")).toBeVisible();
+
+    await page.locator("#route-delete").click();
+
+    // The leave dialog resolves the draft first; the review is not open yet.
+    await expect(
+      page.locator("#route-details-leave[data-open='true']"),
+    ).toContainText("Leave without saving?");
+    await expect(page.locator("#route-delete-review-title")).toHaveCount(0);
+
+    // Discard resolves the draft and opens the review; Keep route then
+    // closes it and the route and its draft resolution are observable.
+    await page.locator("#route-details-leave-discard").click();
+    await expect(
+      page.locator("#route-delete-review[data-open='true']"),
+    ).toBeVisible();
+    await page.locator("#route-delete-keep").click();
+
+    await expect(
+      page.locator("#route-delete-review[data-open='true']"),
+    ).toHaveCount(0);
+    await expect(page.locator("#route-details-long")).not.toHaveValue(
+      "Renamed before delete",
     );
   });
 });
