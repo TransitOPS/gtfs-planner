@@ -185,13 +185,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentShellTest do
       {:ok, view, _html} = live(conn, pattern_path(version, route, pattern, "?task=alignment"))
 
       assert has_element?(view, "#alignment-task")
-      assert has_element?(view, "h3#alignment-title", "Alignment")
+      assert has_element?(view, "h2#alignment-title", "Path between stops")
       assert has_element?(view, "#alignment-status", "! 1 missing")
 
       assert has_element?(view, "#alignment-section-1", "Shell Alpha")
       assert has_element?(view, "#alignment-section-1", "Shell Bravo")
       assert has_element?(view, "#alignment-section-status-1", "✓ Saved")
-      assert has_element?(view, "#alignment-section-1", "Shared · 2 patterns")
+      assert has_element?(view, "#alignment-section-1", "Shared by 2 patterns")
 
       assert has_element?(view, "#alignment-section-status-2", "✓ Saved")
       assert has_element?(view, "#alignment-section-2", "Custom path")
@@ -258,8 +258,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentShellTest do
 
       render_click(element(view, "#alignment-section-4"))
 
-      assert has_element?(view, "#alignment-detail", "SECTION 4 OF 4")
-      assert has_element?(view, "#alignment-detail", "1 / 4")
+      assert has_element?(view, "#alignment-detail[data-position='4']", "1 / 4")
     end
 
     test "selecting a section updates the detail",
@@ -268,17 +267,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentShellTest do
 
       {:ok, view, _html} = live(conn, pattern_path(version, route, pattern, "?task=alignment"))
 
-      assert has_element?(view, "#alignment-detail", "SECTION 1 OF 3")
+      assert has_element?(view, "#alignment-section-1 + #alignment-detail[data-position='1']")
 
       render_click(element(view, "#alignment-section-2"))
 
-      assert has_element?(view, "#alignment-detail", "SECTION 2 OF 3")
-      assert has_element?(view, "#alignment-detail", "Shell Bravo")
-      assert has_element?(view, "#alignment-detail", "Shell Charlie")
+      assert has_element?(view, "#alignment-section-2[aria-pressed='true']")
+      assert has_element?(view, "#alignment-section-2 + #alignment-detail[data-position='2']")
+      assert has_element?(view, "#alignment-section-2", "Shell Bravo")
+      assert has_element?(view, "#alignment-section-2", "Shell Charlie")
 
       # An unknown position leaves the selection unchanged instead of crashing.
       render_click(view, "alignment_select_section", %{"position" => "99"})
-      assert has_element?(view, "#alignment-detail", "SECTION 2 OF 3")
+      assert has_element?(view, "#alignment-detail[data-position='2']")
     end
 
     test "footer states the R9 export status",
@@ -383,9 +383,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentShellTest do
 
       refute has_element?(view, "#coming-soon")
       # CR-10's slice-A restriction is lifted for these controls only:
-      # the selected saved section offers street generation (the replace
-      # dialog asks first), while Save stays the only commit.
-      assert has_element?(view, "#alignment-generate-section", "Generate street path")
+      # the selected saved section offers street generation under its rare
+      # actions (the replace dialog asks first), while Save stays the only commit.
+      assert has_element?(view, "#alignment-generate-section", "Replace with a street path")
       assert has_element?(view, "#alignment-save[disabled]")
     end
 
@@ -407,7 +407,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentShellTest do
                live(member_conn, pattern_path(version, route, pattern, "?task=alignment"))
     end
 
-    test "the read-only branch renders the notice with a disabled save" do
+    test "the read-only branch renders the notice and a Save that cannot run" do
       # The router gate above keeps non-editors off the LiveView, so the
       # viewer rendering is proven at the component boundary with the same
       # assigns the LiveView passes.
@@ -448,8 +448,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentShellTest do
 
       assert html =~ "alignment-notice"
       assert html =~ "You can view this alignment"
-      assert html =~ "alignment-save"
-      assert html =~ "disabled"
+
+      # Save is rendered by the page's save bar from this state.
+      save =
+        RoutePatternAlignmentComponents.save_state(%{
+          alignment: alignment,
+          editable?: false,
+          offline?: false,
+          applying?: false,
+          dirty_positions: [],
+          generating?: false
+        })
+
+      refute save.enabled?
+      assert save.title == "Only editors can save alignment."
     end
   end
 end

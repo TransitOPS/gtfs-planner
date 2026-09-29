@@ -591,7 +591,7 @@ test.describe("generation journeys", () => {
       "◷ Unsaved",
     );
     await expect(page.locator("#alignment-section-status-1")).toHaveClass(
-      /badge-warning/,
+      /bg-warning-bg/,
     );
     await expect(page.locator("#status")).toContainText(
       "Suggested path ready. Review the streets before saving.",

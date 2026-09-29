@@ -434,7 +434,9 @@ for (const { width, height, label } of VIEWPORTS) {
       await page.locator("#pattern-task-alignment").click();
       await expect(page).toHaveURL(/task=alignment/);
       await expect(page.locator("#alignment-task")).toBeVisible();
-      await expect(page.locator("#alignment-title")).toHaveText("Alignment");
+      await expect(page.locator("#alignment-title")).toHaveText(
+        "Path between stops",
+      );
 
       await expect(page.locator("h1")).toHaveCount(1);
       await expect(

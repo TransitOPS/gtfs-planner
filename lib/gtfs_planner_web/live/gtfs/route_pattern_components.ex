@@ -10,124 +10,261 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
   use GtfsPlannerWeb, :html
 
+  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
+  import GtfsPlannerWeb.RouteWorkspace, only: [badge: 1]
+
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlannerWeb.RouteWorkspace
+
+  # ── The editor: header, tabs, tasks and the save bar ──
+  #
+  # Design-system markup for the four tasks. State decisions stay in
+  # `RoutePatternLive`; these components present what they are given.
 
   @doc """
-  Renders the pattern detail header: the way back to the list, the pattern
-  name, its figures, the dirty badge, the published-version notice and the
-  Stops/Timings/Alignment/Details task navigation.
+  Renders the pattern detail header: the location trail, the pattern name and
+  its figures, the saved-state badge, the Pattern actions menu and the task
+  tabs.
+
+  Each tab may carry one chip, given in `tab_chips` by task: `{:count, n}`,
+  `:unsaved`, `:started`, `{:missing, n}` or `:blocked`. The trail's Patterns
+  crumb is a button so leaving with unsaved edits asks first.
   """
   attr :creating, :boolean, required: true
+  attr :route, :map, required: true
+  attr :gtfs_version_id, :any, required: true
   attr :pattern_name, :string, required: true
   attr :direction_id, :integer, required: true
+  attr :toward, :string, default: nil, doc: "where trips head, from the headsign"
   attr :stop_count, :integer, required: true
   attr :trip_count, :integer, required: true
+  attr :timing_count, :integer, default: 0
   attr :task, :atom, required: true
   attr :tasks, :list, required: true
+  attr :tab_chips, :map, default: %{}
   attr :dirty?, :boolean, required: true
-  attr :version_name, :string, required: true
   attr :show_actions, :boolean, default: false
 
   def pattern_detail_header(assigns) do
     ~H"""
-    <div>
-      <button
-        type="button"
-        id="pattern-back"
-        phx-click="back_to_patterns"
-        class="inline-flex min-h-11 items-center gap-1 text-sm text-base-content/70 hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+    <div id="pattern-header">
+      <RouteWorkspace.crumbs
+        id="pattern-crumbs"
+        route={@route}
+        gtfs_version_id={@gtfs_version_id}
+        current={if @creating, do: "New pattern", else: @pattern_name}
       >
-        <span aria-hidden="true">←</span> All patterns
-      </button>
+        <:section>
+          <button
+            type="button"
+            id="pattern-back"
+            phx-click="back_to_patterns"
+            class="inline-flex min-h-11 items-center text-muted hover:text-strong hover:underline"
+          >
+            Patterns
+          </button>
+        </:section>
+      </RouteWorkspace.crumbs>
 
-      <div class="mt-2 flex flex-wrap items-start justify-between gap-3">
-        <h2 class="text-xl font-semibold">
-          {if @creating, do: "Create pattern", else: @pattern_name}
-        </h2>
-        <div :if={@show_actions} class="flex flex-wrap gap-2">
-          <button
-            id="pattern-copy"
-            type="button"
-            phx-click="copy_pattern"
-            class="btn btn-sm btn-outline min-h-11"
+      <div class="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 pb-4">
+        <div class="min-w-0 max-w-[1040px]">
+          <h1 id="pattern-title" class="break-words">
+            {if @creating, do: "Create pattern", else: @pattern_name}
+          </h1>
+          <p class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-muted">
+            <span id="pattern-direction">
+              {RoutePattern.direction_label(@direction_id)}<span :if={@toward}> · toward {@toward}</span>
+            </span>
+            <span aria-hidden="true">·</span>
+            <span id="pattern-stop-count">
+              <strong class="font-[650] tabular-nums text-strong">{@stop_count}</strong>
+              {if @stop_count == 1, do: "stop", else: "stops"}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span :if={@creating} id="pattern-trip-total">No trips yet</span>
+            <span :if={not @creating} id="pattern-trip-total">
+              <strong class="font-[650] tabular-nums text-strong">{@trip_count}</strong>
+              {trip_count_noun(@trip_count)} {trip_verb(@trip_count)} this pattern
+            </span>
+            <span :if={not @creating} aria-hidden="true">·</span>
+            <span :if={not @creating} id="pattern-timing-total">
+              <strong class="font-[650] tabular-nums text-strong">{@timing_count}</strong>
+              {if @timing_count == 1, do: "timing", else: "timings"}
+            </span>
+          </p>
+        </div>
+
+        <div class="flex shrink-0 items-center gap-2">
+          <.badge
+            id="edit-status"
+            tone={status_tone(@dirty?, @creating)}
+            icon={status_icon(@dirty?, @creating)}
           >
-            Copy pattern
-          </button>
-          <button
-            id="pattern-delete"
-            type="button"
-            phx-click="open_delete_pattern"
-            class="btn btn-sm btn-ghost min-h-11 text-error"
-          >
-            Delete pattern
-          </button>
+            {status_label(@dirty?, @creating)}
+          </.badge>
+          <.pattern_actions :if={@show_actions} />
         </div>
       </div>
-
-      <div class="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 border border-base-300 bg-base-100 px-4 py-3 text-sm">
-        <span>{RoutePattern.direction_label(@direction_id)}</span>
-        <span id="pattern-stop-count"><strong class="tabular-nums">{@stop_count}</strong> stops</span>
-        <span id="pattern-trip-total">
-          <strong class="tabular-nums">{@trip_count}</strong> {trip_count_noun(@trip_count)}
-        </span>
-        <span id="edit-status" class={["badge badge-sm", status_class(@dirty?, @creating)]}>
-          {status_label(@dirty?, @creating)}
-        </span>
-      </div>
-
-      <p id="published-version-notice" class="mt-3 text-sm text-base-content/70">
-        This changes {@version_name}, a published version.
-      </p>
 
       <nav
         id="pattern-tabs"
         aria-label="Pattern sections"
-        class="mt-4 flex flex-wrap gap-1 border-b border-base-300"
+        class="-mx-4 overflow-x-auto border-b border-subtle px-4 sm:mx-0 sm:px-0"
       >
-        <button
-          :for={task <- @tasks}
-          type="button"
-          id={"pattern-task-#{task}"}
-          phx-click="switch_task"
-          phx-value-task={task}
-          aria-current={@task == task && "page"}
-          class={task_tab_class(@task == task)}
-        >
-          {task_label(task)}
-        </button>
+        <div class="flex min-w-max gap-1">
+          <button
+            :for={task <- @tasks}
+            type="button"
+            id={"pattern-task-#{task}"}
+            phx-click="switch_task"
+            phx-value-task={task}
+            aria-current={@task == task && "page"}
+            class="-mb-px inline-flex min-h-11 items-center gap-2 whitespace-nowrap border-b-[3px] border-transparent px-3 text-sm font-semibold text-muted hover:text-strong aria-[current=page]:border-action aria-[current=page]:text-action sm:px-4"
+          >
+            {task_label(task)}
+            <.tab_chip chip={Map.get(@tab_chips, task)} />
+          </button>
+        </div>
       </nav>
     </div>
     """
   end
 
+  attr :chip, :any, default: nil
+
+  defp tab_chip(%{chip: nil} = assigns) do
+    ~H"""
+    """
+  end
+
+  defp tab_chip(%{chip: {:count, count}} = assigns) do
+    assigns = assign(assigns, :count, count)
+
+    ~H"""
+    <span class="tabular-nums text-muted">{@count}</span>
+    """
+  end
+
+  defp tab_chip(%{chip: :unsaved} = assigns) do
+    ~H"""
+    <.badge tone="warning" class="px-1.5">Unsaved</.badge>
+    """
+  end
+
+  defp tab_chip(%{chip: :started} = assigns) do
+    ~H"""
+    <.badge tone="neutral" class="px-1.5">Started</.badge>
+    """
+  end
+
+  defp tab_chip(%{chip: :blocked} = assigns) do
+    ~H"""
+    <.badge tone="error" class="px-1.5">Blocked</.badge>
+    """
+  end
+
+  defp tab_chip(%{chip: {:missing, count}} = assigns) do
+    assigns = assign(assigns, :count, count)
+
+    ~H"""
+    <.badge tone="error" class="px-1.5">{@count} missing</.badge>
+    """
+  end
+
+  # Copy and Delete are two rare actions, so they share one menu. The menu is
+  # the account menu's client-side dropdown (`UserMenu`), which the server never
+  # re-renders: `phx-update="ignore"` keeps an open panel open across patches.
+  defp pattern_actions(assigns) do
+    ~H"""
+    <div id="pattern-actions" phx-hook="UserMenu" phx-update="ignore" class="relative">
+      <button
+        type="button"
+        id="pattern-actions-trigger"
+        data-user-menu-trigger
+        aria-haspopup="menu"
+        aria-expanded="false"
+        aria-controls="pattern-actions-panel"
+        class="inline-flex min-h-11 items-center gap-2 rounded-control border border-control bg-white px-3 text-sm font-[650] text-strong hover:bg-canvas"
+      >
+        Pattern actions <.icon name="hero-chevron-down" class="size-4 text-muted" />
+      </button>
+      <div
+        id="pattern-actions-panel"
+        data-user-menu-panel
+        role="menu"
+        aria-label="Pattern actions"
+        hidden
+        class="absolute right-0 top-full z-30 mt-2 w-60 rounded-card border border-subtle bg-white p-2 shadow-float"
+      >
+        <button
+          type="button"
+          id="pattern-copy"
+          role="menuitem"
+          phx-click={close_actions(JS.push("copy_pattern"))}
+          class="flex min-h-11 w-full items-center gap-2 rounded-control px-3 text-left text-sm text-strong hover:bg-canvas focus:bg-canvas"
+        >
+          <.icon name="hero-document-duplicate" class="size-4 text-muted" /> Copy pattern
+        </button>
+        <button
+          type="button"
+          id="pattern-delete"
+          role="menuitem"
+          phx-click={close_actions(JS.push("open_delete_pattern"))}
+          class="flex min-h-11 w-full items-center gap-2 rounded-control px-3 text-left text-sm text-error-fg hover:bg-canvas focus:bg-canvas"
+        >
+          <.icon name="hero-trash" class="size-4" /> Delete pattern
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  # The hook opens and closes the panel through `hidden` and `aria-expanded`;
+  # choosing an item does the same, so the panel is not left open behind a
+  # dialog the choice opens.
+  defp close_actions(js) do
+    js
+    |> JS.set_attribute({"hidden", ""}, to: "#pattern-actions-panel")
+    |> JS.set_attribute({"aria-expanded", "false"}, to: "#pattern-actions-trigger")
+  end
+
   @doc """
   Renders the Details task: name, direction, the future-trip headsign default,
-  the service description, typicality and the Additional details disclosure
-  that keeps the pattern ID and display order out of the primary path.
+  the service description, how the pattern is used on the route, and the
+  Additional details disclosure that keeps the display order and pattern ID out
+  of the primary path.
+
+  The form has no button of its own: the save bar's primary submits it through
+  the `form` attribute.
   """
   attr :form, :any, required: true
   attr :submit_event, :string, required: true
-  attr :submit_label, :string, required: true
   attr :pattern_id, :string, default: nil
   attr :dirty?, :boolean, required: true
 
   def details_task(assigns) do
     ~H"""
-    <div id="pattern-details-task" class="mt-6 max-w-2xl">
-      <h3 class="text-lg font-semibold">Pattern details</h3>
+    <section
+      id="pattern-details-task"
+      aria-labelledby="pattern-details-heading"
+      class="max-w-[720px] rounded-card border border-subtle bg-white p-5"
+    >
+      <h2 id="pattern-details-heading" class="text-base font-bold text-strong">Pattern details</h2>
+      <p class="mt-1 text-[13px] text-muted">How this pattern is named and described in the feed.</p>
 
       <.form
         for={@form}
         id="pattern-details-form"
         phx-change="validate_details"
         phx-submit={@submit_event}
+        class="mt-5 grid gap-5"
       >
         <.input
           field={@form[:name]}
           id="pattern-details-name"
           type="text"
           label="Pattern name"
-          help="Use the endpoints; add a via street or landmark to distinguish a variation."
+          help="Say where trips start and end. Add a via street or landmark if it differs from another pattern."
         />
         <.input
           field={@form[:direction_id]}
@@ -135,68 +272,60 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           type="select"
           label="Direction"
           options={RoutePattern.direction_options()}
-          help="GTFS direction values do not mean inbound or outbound."
+          help="Patterns that run the same way share a direction. GTFS doesn’t say which value means inbound or outbound, so match what this route already uses."
         />
         <.input
           field={@form[:headsign]}
           id="pattern-details-headsign"
           type="text"
-          label="Headsign for new trips"
-          help="A default for future trips. Existing trip destinations stay unchanged."
+          label="Headsign for new trips (optional)"
+          help="The destination shown on the bus for trips you add later. Existing trips keep their own headsigns."
         />
         <.input
           field={@form[:time_desc]}
           id="pattern-details-description"
           type="text"
-          label="When this pattern runs"
-          help="A description for people reading the feed. This does not set service dates."
+          label="When this pattern runs (optional)"
+          help="A note for people reading the feed, such as “Weekday evenings only”. It doesn’t set service days; calendars do that."
         />
         <.input
           field={@form[:typicality]}
           id="pattern-details-typicality"
           type="select"
           label="Use on this route"
-          options={RoutePattern.typicality_options()}
-          help="How this pattern fits the route’s usual service."
+          options={typicality_choices()}
+          help={typicality_help(@form[:typicality].value)}
         />
 
-        <details id="pattern-details-additional" class="mt-4 border border-base-300 bg-base-100 p-4">
-          <summary class="min-h-11 cursor-pointer font-medium">Additional details</summary>
-          <div class="mt-3">
+        <details id="pattern-details-additional" class="group rounded-card border border-subtle">
+          <summary class="flex min-h-11 cursor-pointer list-none items-center gap-2 px-4 text-sm font-[650] text-strong [&::-webkit-details-marker]:hidden">
+            <.icon
+              name="hero-chevron-right"
+              class="size-4 text-muted transition-transform group-open:rotate-90"
+            /> Additional details
+          </summary>
+          <div class="grid gap-4 px-4 pb-4">
             <.input
               field={@form[:sort_order]}
               id="pattern-details-order"
               type="number"
               min="0"
-              label="Display order"
+              label="Display order (optional)"
               help="Lower numbers appear first within each direction."
             />
-            <p class="mt-2 text-sm text-base-content/70">
-              Pattern ID:
-              <code id="pattern-details-id">
+            <p class="text-[13px] text-muted">
+              Pattern ID
+              <code
+                id="pattern-details-id"
+                class="rounded-badge bg-canvas px-1.5 py-0.5 font-mono text-[13px] text-default"
+              >
                 {@pattern_id || "assigned when you create the pattern"}
               </code>
             </p>
           </div>
         </details>
-
-        <div class="mt-4 flex items-center gap-3">
-          <button
-            id="pattern-details-submit"
-            type="submit"
-            data-commit
-            class="btn btn-primary min-h-11"
-          >
-            {@submit_label}
-          </button>
-          <span class="text-sm text-base-content/70">
-            {if @dirty?,
-              do: "You have unsaved changes.",
-              else: "Changes are saved only when you choose Save."}
-          </span>
-        </div>
       </.form>
-    </div>
+    </section>
     """
   end
 
@@ -210,6 +339,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   """
   attr :creating, :boolean, required: true
   attr :stop_rows, :list, required: true
+  attr :ring_color, :string, default: nil, doc: "the route color as normalized hex, or nil"
   attr :custom_trip_count, :integer, required: true
   attr :trip_count, :integer, required: true
   attr :timing_count, :integer, required: true
@@ -226,50 +356,81 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
     assigns = assign(assigns, :blocked?, assigns.custom_trip_count > 0)
 
     ~H"""
-    <div id="pattern-stops-task" class="mt-6">
-      <h3 class="text-lg font-semibold">Stops in order</h3>
-      <p class="mt-1 text-sm text-base-content/70">
-        From the first stop to the last, including stops visited again on a loop.
-      </p>
+    <section
+      id="pattern-stops-task"
+      aria-labelledby="pattern-stops-heading"
+      class="max-w-3xl rounded-card border border-subtle bg-white"
+    >
+      <div class="px-4 pt-4">
+        <div class="flex items-baseline justify-between gap-3">
+          <h2 id="pattern-stops-heading" class="text-base font-bold text-strong">Stops in order</h2>
+          <span id="pattern-stops-total" class="text-[13px] tabular-nums text-muted">
+            {length(@stop_rows)} {if length(@stop_rows) == 1, do: "stop", else: "stops"}
+          </span>
+        </div>
+        <p class="mt-1 text-[13px] text-muted">
+          From the first stop to the last, including stops visited again on a loop.
+        </p>
 
-      <div :if={@blocked?} id="pattern-stops-custom" class="mt-4">
-        <.callout kind="warning" title="These trips have custom times">
-          <strong class="tabular-nums">{@custom_trip_count}</strong>
-          custom {trip_count_noun(@custom_trip_count)} on this pattern: their imported times or stop
-          sequence cannot be represented by a timing. These trips keep their imported stop times.
-          Stops cannot change while they use this pattern. Copy the pattern to work on separate
-          service. Resolving or replacing those trips is outside this release.
-          <div class="mt-3">
-            <button
-              id="pattern-copy-callout"
-              type="button"
-              phx-click="copy_pattern"
-              class="btn btn-sm btn-outline min-h-11"
-            >
-              Copy pattern
-            </button>
-          </div>
-        </.callout>
+        <div :if={@blocked?} id="pattern-stops-custom" class="mt-3">
+          <.message kind="warning" title="These trips have custom times">
+            <strong class="tabular-nums">{@custom_trip_count}</strong>
+            custom-time {trip_count_noun(@custom_trip_count)} {trip_verb(@custom_trip_count)} this pattern. They keep the stop
+            times they were imported with, so the stop list can’t change while they do. Copy the
+            pattern to work on separate service.
+            <:action>
+              <button
+                id="pattern-copy-callout"
+                type="button"
+                phx-click="copy_pattern"
+                class="btn btn-outline min-h-11"
+              >
+                Copy pattern
+              </button>
+            </:action>
+          </.message>
+        </div>
+
+        <p
+          :if={not @blocked? and @trip_count > 0}
+          id="pattern-stops-impact"
+          class="mt-3 text-[13px] text-default"
+        >
+          Adding or removing a stop updates <strong class="tabular-nums">{@trip_count}</strong>
+          {trip_count_noun(@trip_count)} across {@timing_count} {if @timing_count == 1,
+            do: "timing",
+            else: "timings"}. Stops can’t be reordered while trips use this pattern. Copy the
+          pattern to change the order.
+        </p>
+        <button
+          :if={not @blocked? and @trip_count > 0}
+          id="pattern-copy-inline"
+          type="button"
+          phx-click="copy_pattern"
+          class="mt-1 -ml-2 inline-flex min-h-11 items-center gap-1.5 rounded-control px-2 text-[13px] font-[650] text-action hover:bg-selection hover:text-action-hover"
+        >
+          <.icon name="hero-document-duplicate" class="size-4" /> Copy pattern
+        </button>
+
+        <p
+          :if={not @blocked? and @trip_count == 0 and not @creating}
+          class="mt-3 text-[13px] text-muted"
+        >
+          No trips use this pattern yet, so you can change its stop order freely.
+        </p>
       </div>
 
-      <p :if={not @blocked? and @trip_count > 0} id="pattern-stops-impact" class="mt-4 text-sm">
-        Adding or removing stops updates <strong class="tabular-nums">{@trip_count}</strong>
-        {trip_count_noun(@trip_count)} across {@timing_count} timings. Copy the pattern to change the
-        stop order.
-      </p>
-
-      <p
-        :if={not @blocked? and @trip_count == 0 and not @creating}
-        class="mt-4 text-sm text-base-content/70"
+      <div
+        id="pattern-stop-add"
+        class="sticky top-0 z-10 mt-3 border-y border-subtle bg-canvas px-4 py-3"
       >
-        No trips use this pattern yet, so you can change its stop order freely.
-      </p>
-
-      <div class="mt-4 border border-base-300 bg-base-100 p-4">
-        <h4 class="font-medium">Add a stop</h4>
-
+        <label for="stop_search_stop_id_text_input" class={label_class()}>Add a stop</label>
         <.form for={@search_form} id="pattern-stop-search-form" phx-change="choose_stop">
-          <div id="pattern-stop-search-region">
+          <div id="pattern-stop-search-region" class="relative mt-1.5">
+            <.icon
+              name="hero-magnifying-glass"
+              class="pointer-events-none absolute left-3 top-1/2 z-[1] size-5 -translate-y-1/2 text-muted"
+            />
             <.live_component
               module={LiveSelect.Component}
               id="pattern-stop-search"
@@ -279,29 +440,41 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
               update_min_len={1}
               disabled={@blocked? or @busy?}
               placeholder="Stop name or stop ID"
-              dropdown_class="bg-base-100 border border-base-300 shadow-lg mt-1 text-base-content"
-              option_class="px-4 py-2.5 border-b border-base-300 last:border-b-0"
-              active_option_class="bg-primary text-primary-content"
-              available_option_class="hover:bg-base-200 cursor-pointer"
-              text_input_class="input input-bordered w-full min-h-11"
+              dropdown_class="absolute left-0 right-0 top-full z-20 mt-1 max-h-72 overflow-auto rounded-card border border-subtle bg-white p-1 text-strong shadow-float"
+              option_class="rounded-control px-3 py-1.5"
+              active_option_class="bg-selection text-strong"
+              available_option_class="cursor-pointer hover:bg-canvas"
+              text_input_class={field_input_class() <> " pl-10"}
             >
               <:option :let={option}>
                 <span
                   id={"pattern-stop-option-#{option.value}"}
-                  class="flex items-center justify-between gap-3"
+                  class="flex min-h-9 items-center justify-between gap-3 text-sm"
                 >
-                  <span class="font-medium">{option.label}</span>
-                  <span class="text-sm text-base-content/70">{option.value}</span>
+                  <span class="min-w-0 truncate font-semibold text-strong">{option.label}</span>
+                  <span class="shrink-0 text-[13px] tabular-nums text-muted">
+                    Stop {option.value}
+                  </span>
                 </span>
               </:option>
             </.live_component>
           </div>
         </.form>
 
-        <p id="pattern-stop-search-status" role="status" class="mt-2 text-sm text-base-content/70">
+        <p
+          id="pattern-stop-search-status"
+          role="status"
+          class={[
+            "mt-1.5 text-[13px]",
+            if(search_unavailable?(@search_status),
+              do: "font-semibold text-error-fg",
+              else: "text-muted"
+            )
+          ]}
+        >
           {@search_status}
         </p>
-        <p :if={@search_truncated?} id="pattern-stop-search-hint" class="text-sm text-base-content/70">
+        <p :if={@search_truncated?} id="pattern-stop-search-hint" class="text-[13px] text-muted">
           Refine your search to see the remaining matches.
         </p>
 
@@ -310,6 +483,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           for={@insert_form}
           id="pattern-insert-form"
           phx-change="set_insert_after"
+          class="mt-3"
         >
           <.input
             field={@insert_form[:insert_after]}
@@ -322,27 +496,41 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         </.form>
       </div>
 
-      <ol
-        id="pattern-stops"
-        data-dirty={to_string(@dirty?)}
-        class="mt-4 divide-y divide-base-300 border border-base-300 bg-base-100"
-      >
+      <ol id="pattern-stops" data-dirty={to_string(@dirty?)} class="py-2">
         <li
           :for={row <- @stop_rows}
           id={"pattern-stop-#{row.position}"}
           tabindex="-1"
-          class="flex min-h-11 flex-wrap items-center gap-3 px-4 py-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+          class={[
+            "stop-line relative flex min-h-[58px] items-center gap-3 px-4 py-0.5 hover:bg-canvas",
+            "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus",
+            new_row?(row, @creating) && "bg-canvas"
+          ]}
         >
-          <span class="w-6 shrink-0 text-sm tabular-nums text-base-content/70">{row.position}</span>
-          <span class="min-w-0 flex-1">
-            <span class="block font-medium">{row.name}</span>
-            <span class="block text-sm text-base-content/70">
+          <span
+            class={[
+              "relative z-[1] flex size-[30px] shrink-0 items-center justify-center rounded-full bg-white text-[13px] font-bold tabular-nums text-strong",
+              if(new_row?(row, @creating),
+                do: "border-2 border-dashed border-strong",
+                else: "border-2 border-strong"
+              )
+            ]}
+            style={!new_row?(row, @creating) && @ring_color && "border-color: ##{@ring_color}"}
+          >
+            {row.position}
+          </span>
+          <span class="min-w-0 flex-1 py-1">
+            <span class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <span class="text-sm font-semibold text-strong">{row.name}</span>
+              <.badge :if={new_row?(row, @creating)} tone="warning">New · unsaved</.badge>
+            </span>
+            <span class="block text-[13px] text-muted">
               Stop {row.stop_id}
               <span :if={row.position == 1}> · First stop</span>
               <span :if={row.last?}> · Last stop</span>
             </span>
           </span>
-          <span class="flex items-center gap-1">
+          <span class="flex shrink-0 items-center">
             <button
               :if={@reorderable?}
               type="button"
@@ -352,9 +540,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
               phx-value-direction="-1"
               disabled={row.position == 1 or @blocked? or @busy?}
               aria-label={"Move #{row.name} up"}
-              class="btn btn-ghost btn-sm min-h-11 min-w-11"
+              title="Move up"
+              class="btn btn-ghost btn-square min-h-11 min-w-11"
             >
-              <span aria-hidden="true">↑</span>
+              <.icon name="hero-arrow-up" class="size-4" />
             </button>
             <button
               :if={@reorderable?}
@@ -365,9 +554,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
               phx-value-direction="1"
               disabled={row.last? or @blocked? or @busy?}
               aria-label={"Move #{row.name} down"}
-              class="btn btn-ghost btn-sm min-h-11 min-w-11"
+              title="Move down"
+              class="btn btn-ghost btn-square min-h-11 min-w-11"
             >
-              <span aria-hidden="true">↓</span>
+              <.icon name="hero-arrow-down" class="size-4" />
             </button>
             <button
               type="button"
@@ -375,70 +565,108 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
               phx-click="remove_stop"
               phx-value-index={row.position}
               disabled={@blocked? or @busy?}
-              class="btn btn-ghost btn-sm min-h-11"
+              aria-label={"Remove #{row.name}"}
+              title="Remove stop"
+              class="btn btn-ghost btn-square min-h-11 min-w-11"
             >
-              Remove
+              <.icon name="hero-trash" class="size-4" />
             </button>
           </span>
         </li>
       </ol>
 
-      <p
-        :if={@stop_rows == [] and not @creating}
-        id="pattern-stops-empty"
-        class="mt-4 text-sm text-base-content/70"
-      >
-        This pattern has no saved stops. Add at least two stops to build its stop list.
-      </p>
-
-      <p
-        :if={@stop_rows == [] and @creating}
-        id="pattern-stops-empty"
-        class="mt-4 text-sm text-base-content/70"
-      >
-        No stops added yet. Add at least two stops before creating the pattern.
-      </p>
-
-      <div :if={@creating} class="mt-4 flex items-center gap-3">
-        <button
-          id="pattern-create"
-          type="button"
-          data-commit
-          phx-click="create_pattern"
-          class="btn btn-primary min-h-11"
-        >
-          Create pattern
-        </button>
-        <span class="text-sm text-base-content/70">
-          The pattern starts with one timing valued at zero.
-        </span>
+      <div :if={@stop_rows == []} id="pattern-stops-empty" class="px-6 pb-10 pt-6 text-center">
+        <p class="text-sm font-bold text-strong">No stops yet</p>
+        <p class="mx-auto mt-1 max-w-[40ch] text-sm text-muted">
+          {if @creating,
+            do: "No stops added yet. Add at least two stops before creating the pattern.",
+            else: "This pattern has no saved stops. Add at least two stops to build its stop list."}
+        </p>
       </div>
+    </section>
+    """
+  end
 
-      <div :if={not @creating} class="mt-4 flex flex-wrap items-center gap-3">
+  @doc """
+  Renders the page-wide save bar, sticky at the bottom of the editor.
+
+  The primary always names the current task ("Save stops", "Save running
+  times") and the bar always says the save changes a published version. When
+  nothing is unsaved the primary is disabled and the status line says why. A
+  message the last action produced replaces the status line so it stays in view
+  where the person acted.
+
+  `primary` holds the button: `:id`, `:label`, `:click` (an event name or a
+  `JS` command) or `:form` (an id the button submits), `:disabled?` and
+  `:title`. `secondary` optionally holds one quiet button with `:id`, `:label`
+  and `:click`.
+  """
+  attr :primary, :map, required: true
+  attr :secondary, :map, default: nil
+  attr :status, :map, required: true, doc: "%{tone: atom, text: string}"
+  attr :version_name, :string, required: true
+  attr :creating, :boolean, default: false
+
+  def save_bar(assigns) do
+    ~H"""
+    <div id="pattern-save-bar" class="pe-savebar sticky bottom-0 z-20 -mb-8 mt-6">
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
+        <div class="min-w-0 flex-1 max-sm:basis-full sm:basis-[260px]">
+          <p
+            id="pattern-save-status"
+            class={["flex items-start gap-2 text-sm", status_text_class(@status.tone)]}
+          >
+            <.icon
+              :if={status_bar_icon(@status.tone)}
+              name={status_bar_icon(@status.tone)}
+              class="mt-0.5 size-4 shrink-0"
+            />
+            <span class={@status.tone in [:warning, :error, :success] && "font-semibold"}>
+              {@status.text}
+            </span>
+          </p>
+          <p id="published-version-notice" class="mt-0.5 text-[13px] text-muted max-sm:hidden">
+            {if @creating,
+              do: "The new pattern is added to #{@version_name}, a published version.",
+              else: "Changes apply to #{@version_name}, a published version, as soon as you save."}
+          </p>
+        </div>
         <button
-          id="pattern-save-stops"
+          :if={@secondary}
+          id={@secondary.id}
           type="button"
-          data-commit
-          phx-click="save_stops"
-          disabled={@blocked? or @busy?}
-          class="btn btn-primary min-h-11"
+          phx-click={@secondary.click}
+          class="btn btn-outline min-h-11 max-sm:flex-1"
         >
-          Save stops
+          {@secondary.label}
         </button>
-        <span class="text-sm text-base-content/70">
-          {if @dirty?,
-            do: "You have unsaved stop changes.",
-            else: "Stops are saved only when you choose Save stops."}
-        </span>
+        <button
+          id={@primary.id}
+          type={if @primary[:form], do: "submit", else: "button"}
+          form={@primary[:form]}
+          phx-click={@primary[:click]}
+          data-commit={@primary[:commit]}
+          disabled={@primary.disabled?}
+          data-unavailable={@primary.disabled? || nil}
+          title={@primary[:title]}
+          class="btn btn-primary min-h-11 max-sm:flex-1"
+        >
+          {@primary.label}
+        </button>
       </div>
     </div>
     """
   end
 
   @doc """
-  Renders the Timings task: the timing summaries, the elapsed arrival/departure
-  inputs with their clock preview, the per-stop timepoint and boarding/headsign
-  disclosures, and the timing headsign default.
+  Renders the Running times task: the timing summaries, the elapsed arrival and
+  departure inputs with their sample-trip clock times, the per-stop timepoint and
+  boarding disclosures, and the timing headsign default.
+
+  Editing stays on elapsed time from the first departure, which is what the
+  feed stores. A cell the person changed turns amber and an invalid cell takes a
+  2px error border with its message under the row. The save button lives in the
+  page's save bar.
   """
   attr :timings, :any, required: true
   attr :selected_timing, :any, required: true
@@ -447,6 +675,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   attr :timing_options, :list, required: true
   attr :preview_time, :string, required: true
   attr :timing_headsign, :string, required: true
+  attr :timing_error, :string, default: nil
   attr :custom_trip_count, :integer, required: true
   attr :dirty?, :boolean, required: true
   attr :busy?, :boolean, default: false
@@ -456,12 +685,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
       assign(assigns, :trip_count, selected_trip_count(assigns.timings, assigns.selected_timing))
 
     ~H"""
-    <div id="pattern-timings-task" class="mt-6">
-      <div class="flex flex-wrap items-start justify-between gap-3">
+    <section
+      id="pattern-timings-task"
+      aria-labelledby="pattern-timings-heading"
+      class="rounded-card border border-subtle bg-white"
+    >
+      <div class="flex flex-wrap items-start justify-between gap-3 px-4 pb-3 pt-4">
         <div>
-          <h3 class="text-lg font-semibold">Timings</h3>
-          <p class="mt-1 text-sm text-base-content/70">
-            Same stops, different travel times. Each trip uses one timing.
+          <h2 id="pattern-timings-heading" class="text-base font-bold text-strong">Running times</h2>
+          <p class="mt-1 max-w-[72ch] text-[13px] text-muted">
+            A timing is one set of running times for these stops, such as a slower weekend timing.
+            Each trip uses one timing.
           </p>
         </div>
         <button
@@ -470,18 +704,28 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           phx-click="open_timing_dialog"
           phx-value-mode="add"
           disabled={@busy?}
-          class="btn btn-sm btn-outline min-h-11"
+          class={["btn min-h-11", if(@timings == [], do: "btn-primary", else: "btn-outline")]}
         >
-          Add timing
+          <.icon name="hero-plus" class="size-4" /> Add timing
         </button>
       </div>
 
-      <.empty_state :if={@timings == []} id="pattern-timings-empty" title="No timings yet">
-        A pattern starts with one timing valued at zero.
-      </.empty_state>
+      <div
+        :if={@timings == []}
+        id="pattern-timings-empty"
+        class="border-t border-subtle px-5 py-12 text-center"
+      >
+        <p class="text-sm font-bold text-strong">No timings yet</p>
+        <p class="mx-auto mt-1 max-w-[46ch] text-sm text-muted">
+          A pattern starts with one timing valued at zero.
+        </p>
+      </div>
 
-      <div :if={@timings != []} class="mt-4">
-        <.form for={@timing_form} id="timing-form" phx-change="select_timing">
+      <div
+        :if={@timings != []}
+        class="flex flex-wrap items-end gap-x-4 gap-y-2 border-y border-subtle bg-canvas px-4 py-3"
+      >
+        <.form for={@timing_form} id="timing-form" phx-change="select_timing" class="w-full sm:w-80">
           <.input
             id="timing-select"
             name="timing_id"
@@ -492,240 +736,294 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           />
         </.form>
 
-        <div class="mt-2 flex flex-wrap items-center justify-between gap-3">
-          <p id="timing-summary" class="text-sm text-base-content/70">
-            <strong class="tabular-nums">{@trip_count}</strong>
-            {trip_count_noun(@trip_count)} {trip_verb(@trip_count)} this timing.
-            <span :if={@custom_trip_count > 0}>
-              {@custom_trip_count} custom-time {trip_count_noun(@custom_trip_count)} will not change.
-            </span>
-          </p>
-          <span class="flex gap-2">
-            <button
-              id="timing-rename"
-              type="button"
-              phx-click="open_timing_dialog"
-              phx-value-mode="rename"
-              disabled={@busy?}
-              class="btn btn-ghost btn-sm min-h-11"
-            >
-              Rename timing
-            </button>
-            <button
-              id="timing-delete"
-              type="button"
-              phx-click="open_delete_timing"
-              disabled={@busy?}
-              class="btn btn-ghost btn-sm min-h-11 text-error"
-            >
-              Delete timing
-            </button>
+        <p id="timing-summary" class="min-w-[180px] flex-1 pb-3 text-sm text-default">
+          <strong class="tabular-nums">{@trip_count}</strong>
+          {trip_count_noun(@trip_count)} {trip_verb(@trip_count)} this timing.
+          <span :if={@custom_trip_count > 0} class="text-muted">
+            {@custom_trip_count} custom-time {trip_count_noun(@custom_trip_count)} won’t change.
           </span>
-        </div>
+          <span :if={@trip_count == 0} class="text-muted">
+            Nothing uses it yet, so it can be deleted.
+          </span>
+        </p>
+
+        <form id="timing-preview-form" phx-change="preview_timing" class="w-[150px]">
+          <.input
+            id="timing-preview"
+            name="preview_time"
+            value={@preview_time}
+            type="text"
+            label="Sample departure"
+            inputmode="numeric"
+            autocomplete="off"
+            aria-describedby="timing-preview-help"
+          />
+        </form>
+
+        <span class="flex gap-1 pb-2">
+          <button
+            id="timing-rename"
+            type="button"
+            phx-click="open_timing_dialog"
+            phx-value-mode="rename"
+            disabled={@busy?}
+            class="btn btn-outline min-h-11"
+          >
+            Rename timing
+          </button>
+          <button
+            id="timing-delete"
+            type="button"
+            phx-click="open_delete_timing"
+            disabled={@busy?}
+            class="btn btn-outline min-h-11"
+          >
+            Delete timing
+          </button>
+        </span>
+
+        <p id="timing-preview-help" class="basis-full text-[13px] text-muted">
+          Sample trip times are a preview: 24-hour time such as 08:00, or 25:00 for after
+          midnight. Trip start times won’t change.
+        </p>
       </div>
 
-      <div :if={@timing_rows != []} class="mt-4">
-        <.callout kind="info" id="timing-origin" title="Times are measured from the first departure">
-          Enter minutes:seconds, for example 04:30. The first arrival is relative to the first
-          departure, so a negative first arrival keeps a terminal arrival that happens before its
-          departure. Departure can be later than arrival to allow waiting.
-        </.callout>
-
-        <div class="mt-4 max-w-xs">
-          <form id="timing-preview-form" phx-change="preview_timing">
-            <.input
-              id="timing-preview"
-              name="preview_time"
-              value={@preview_time}
-              type="text"
-              label="Preview a departure at"
-              help="24-hour time such as 08:00 or 25:00. Preview only; trip start times won’t change."
-            />
-          </form>
+      <div :if={@timing_rows != []}>
+        <div class="px-4 py-3">
+          <.message
+            kind="info"
+            id="timing-origin"
+            title="Times are measured from the first departure"
+          >
+            Enter minutes:seconds, for example 04:30. The first arrival is relative to the first
+            departure, so a negative first arrival keeps a terminal arrival that happens before its
+            departure. Departure can be later than arrival to allow waiting.
+          </.message>
         </div>
 
-        <form id="timing-edit-form" class="mt-4" phx-change="validate_timing_row">
-          <table class="table pattern-timing-table">
+        <form id="timing-edit-form" phx-change="validate_timing_row">
+          <table id="timing-table" class="pe-times w-full border-collapse text-left">
+            <caption class="sr-only">
+              Running times for {@selected_timing && @selected_timing.name}
+            </caption>
             <thead>
               <tr>
-                <th>Stop</th>
-                <th>Arrive +mm:ss</th>
-                <th>Depart +mm:ss</th>
-                <th>Preview</th>
-                <th>Timepoint</th>
+                <th scope="col" class="pl-4">Stop</th>
+                <th scope="col">
+                  Arrive <span class="block text-xs font-normal text-muted">min:sec from start</span>
+                </th>
+                <th scope="col">
+                  Depart <span class="block text-xs font-normal text-muted">min:sec from start</span>
+                </th>
+                <th scope="col">
+                  Sample trip
+                  <span class="block text-xs font-normal text-muted">arrive → depart</span>
+                </th>
+                <th scope="col">Timepoint</th>
               </tr>
             </thead>
             <tbody id="timing-rows">
-              <tr :for={row <- @timing_rows} id={"timing-row-#{row.position}"}>
-                <td data-label="Stop">
-                  <span class="block font-medium">{row.position}. {row.name}</span>
-                  <span class="block text-sm text-base-content/70">Stop {row.stop_id}</span>
-                </td>
-                <td data-label="Arrive +mm:ss">
-                  <label
-                    class="block text-xs text-base-content/70"
-                    for={"timing-arrival-#{row.position}"}
-                  >
-                    {if row.position == 1,
-                      do: "Arrival relative to first departure",
-                      else: "Arrive +mm:ss"}
-                  </label>
-                  <input
-                    id={"timing-arrival-#{row.position}"}
-                    name={"timing[#{row.position}][arrival]"}
-                    type="text"
-                    inputmode="numeric"
-                    value={row.arrival}
-                    aria-invalid={row.arrival_error && "true"}
-                    aria-describedby={row.arrival_error && "error"}
-                    class={["input input-bordered w-24 min-h-11", row.arrival_error && "border-error"]}
-                  />
-                </td>
-                <td data-label="Depart +mm:ss">
-                  <label
-                    class="block text-xs text-base-content/70"
-                    for={"timing-departure-#{row.position}"}
-                  >
-                    Depart +mm:ss
-                  </label>
-                  <input
-                    id={"timing-departure-#{row.position}"}
-                    name={"timing[#{row.position}][departure]"}
-                    type="text"
-                    inputmode="numeric"
-                    value={row.departure}
-                    aria-invalid={row.departure_error && "true"}
-                    aria-describedby={row.departure_error && "error"}
-                    class={[
-                      "input input-bordered w-24 min-h-11",
-                      row.departure_error && "border-error"
-                    ]}
-                  />
-                </td>
-                <td data-label="Preview">
-                  <span id={"timing-preview-#{row.position}"} class="block tabular-nums">
-                    {row.preview_arrival} / {row.preview_departure}
-                  </span>
-                </td>
-                <td data-label="Timepoint">
-                  <label
-                    class="flex min-h-11 items-center gap-2 text-sm"
-                    for={"timing-timepoint-#{row.position}"}
-                  >
-                    <input
-                      id={"timing-timepoint-#{row.position}"}
-                      name={"timing[#{row.position}][timepoint]"}
-                      type="checkbox"
-                      value="1"
-                      checked={row.timepoint}
-                      class="checkbox"
-                    />
-                    <span class="text-xs text-base-content/70">Timepoint</span>
-                  </label>
-                </td>
-                <td class="timing-boarding-cell" colspan="5">
-                  <details
-                    id={"timing-boarding-#{row.position}"}
-                    class="border border-base-300 bg-base-100 p-3"
-                  >
-                    <summary class="min-h-11 cursor-pointer text-sm font-medium">
-                      Boarding &amp; headsign · {row.name}
-                    </summary>
-                    <div class="mt-3 grid gap-4 sm:grid-cols-2">
-                      <div>
-                        <label class="block text-sm" for={"timing-pickup-#{row.position}"}>
-                          Pickup
-                        </label>
-                        <select
-                          id={"timing-pickup-#{row.position}"}
-                          name={"timing[#{row.position}][pickup]"}
-                          class="select select-bordered min-h-11 w-full"
-                        >
-                          <option
-                            :for={option <- pickup_options()}
-                            value={option.value}
-                            selected={row.pickup == option.value}
-                          >
-                            {option.label}
-                          </option>
-                        </select>
-                      </div>
-                      <div>
-                        <label class="block text-sm" for={"timing-dropoff-#{row.position}"}>
-                          Drop-off
-                        </label>
-                        <select
-                          id={"timing-dropoff-#{row.position}"}
-                          name={"timing[#{row.position}][drop_off]"}
-                          class="select select-bordered min-h-11 w-full"
-                        >
-                          <option
-                            :for={option <- pickup_options()}
-                            value={option.value}
-                            selected={row.drop_off == option.value}
-                          >
-                            {option.label}
-                          </option>
-                        </select>
-                      </div>
-                    </div>
-                    <label class="mt-3 block text-sm" for={"timing-stop-headsign-#{row.position}"}>
-                      Stop headsign (optional)
-                    </label>
-                    <input
-                      id={"timing-stop-headsign-#{row.position}"}
-                      name={"timing[#{row.position}][headsign]"}
-                      type="text"
-                      value={row.stop_headsign}
-                      class="input input-bordered min-h-11 w-full"
-                    />
-                    <p class="mt-1 text-sm text-base-content/70">
-                      Use only if the destination shown to riders changes at this stop.
-                    </p>
-                  </details>
-                </td>
-              </tr>
+              <%= for row <- @timing_rows do %>
+                <.timing_row row={row} timing_error={@timing_error} />
+              <% end %>
             </tbody>
           </table>
 
-          <p class="mt-2 text-sm text-base-content/70">
-            Timepoint marks an exact scheduled time. Unchecked stops use estimated times.
-          </p>
-          <p id="timing-help" class="mt-1 text-sm text-base-content/70">
-            Pickup and drop-off: 0 Regular, 1 Not available, 2 Phone agency, 3 Arrange with driver.
-          </p>
-
-          <div class="mt-4 max-w-md">
-            <.input
-              id="timing-headsign"
-              name="timing_headsign"
-              value={@timing_headsign}
-              type="text"
-              label="Headsign for new trips"
-              help="A default for future trips. Existing trip destinations stay unchanged."
-            />
+          <div class="grid gap-4 border-t border-subtle p-4 md:grid-cols-2">
+            <div class="grid content-start gap-2">
+              <.input
+                id="timing-headsign"
+                name="timing_headsign"
+                value={@timing_headsign}
+                type="text"
+                label="Headsign for new trips (optional)"
+                help="The destination shown on the bus for trips you add later. Existing trips keep their own headsigns."
+              />
+            </div>
+            <div class="text-[13px] text-muted">
+              <p class="font-[650] text-default">About timepoints and boarding</p>
+              <p id="timing-help-timepoint" class="mt-1">
+                A timepoint is a stop with a published time. Buses wait there if they’re early.
+                Unchecked stops show estimated times.
+              </p>
+              <p id="timing-help" class="mt-1">
+                Pickup and drop-off options: Regular, Not available, Phone the agency, or Arrange
+                with the driver.
+              </p>
+            </div>
           </div>
         </form>
-
-        <div class="mt-4 flex flex-wrap items-center gap-3">
-          <button
-            id="timing-save"
-            type="button"
-            data-commit
-            phx-click="save_timing"
-            disabled={@busy?}
-            class="btn btn-primary min-h-11"
-          >
-            Save timing
-          </button>
-          <span class="text-sm text-base-content/70">
-            {if @dirty?,
-              do: "You have unsaved timing changes.",
-              else: "Timing values are saved only when you choose Save timing."}
-          </span>
-        </div>
       </div>
-    </div>
+    </section>
+    """
+  end
+
+  attr :row, :map, required: true
+  attr :timing_error, :string, default: nil
+
+  defp timing_row(assigns) do
+    assigns =
+      assigns
+      |> assign(:arrival_edited?, time_edited?(assigns.row, :arrival))
+      |> assign(:departure_edited?, time_edited?(assigns.row, :departure))
+      |> assign(:chips, board_chips(assigns.row))
+      |> assign(
+        :error?,
+        assigns.row.arrival_error == true or assigns.row.departure_error == true
+      )
+
+    ~H"""
+    <tr id={"timing-row-#{@row.position}"} class="pe-row">
+      <th scope="row" class="pe-cell-stop">
+        <span class="flex items-baseline gap-2">
+          <span class="w-5 shrink-0 text-[13px] tabular-nums text-muted">{@row.position}</span>
+          <span class="min-w-0">
+            <span class="block text-sm font-semibold text-strong">{@row.name}</span>
+            <span class="mt-0.5 flex flex-wrap items-center gap-1 text-[13px] font-normal text-muted">
+              <span>Stop {@row.stop_id}</span>
+              <span
+                :for={chip <- @chips}
+                class="rounded-badge bg-canvas px-1.5 py-0.5 text-xs font-semibold text-muted"
+              >
+                {chip}
+              </span>
+            </span>
+          </span>
+        </span>
+      </th>
+      <td>
+        <label class="pe-cell-label" for={"timing-arrival-#{@row.position}"}>
+          {if @row.position == 1,
+            do: "Arrival relative to first departure",
+            else: "Arrive (min:sec)"}
+          <span class="sr-only">at {@row.name}</span>
+        </label>
+        <input
+          id={"timing-arrival-#{@row.position}"}
+          name={"timing[#{@row.position}][arrival]"}
+          type="text"
+          inputmode="numeric"
+          autocomplete="off"
+          value={@row.arrival}
+          aria-invalid={@row.arrival_error && "true"}
+          aria-describedby={@row.arrival_error && "timing-error-#{@row.position}"}
+          class={time_input_class(@row.arrival_error, @arrival_edited?)}
+        />
+      </td>
+      <td>
+        <label class="pe-cell-label" for={"timing-departure-#{@row.position}"}>
+          Depart (min:sec)<span class="sr-only"> at {@row.name}</span>
+        </label>
+        <input
+          id={"timing-departure-#{@row.position}"}
+          name={"timing[#{@row.position}][departure]"}
+          type="text"
+          inputmode="numeric"
+          autocomplete="off"
+          value={@row.departure}
+          aria-invalid={@row.departure_error && "true"}
+          aria-describedby={@row.departure_error && "timing-error-#{@row.position}"}
+          class={time_input_class(@row.departure_error, @departure_edited?)}
+        />
+      </td>
+      <td class="pe-cell-sample">
+        <span class="pe-cell-label">Sample trip</span>
+        <span
+          id={"timing-preview-#{@row.position}"}
+          class="block text-sm tabular-nums text-strong"
+        >
+          {sample_trip(@row)}
+        </span>
+      </td>
+      <td class="pe-cell-timepoint">
+        <label
+          class="flex min-h-11 cursor-pointer items-center gap-2 text-sm"
+          for={"timing-timepoint-#{@row.position}"}
+        >
+          <input
+            id={"timing-timepoint-#{@row.position}"}
+            name={"timing[#{@row.position}][timepoint]"}
+            type="checkbox"
+            value="1"
+            checked={@row.timepoint}
+            class="checkbox"
+          />
+          <span class="md:sr-only">Timepoint</span>
+          <span class="sr-only">at {@row.name}</span>
+        </label>
+      </td>
+    </tr>
+    <tr :if={@error?} id={"timing-err-#{@row.position}"} class="pe-err-row">
+      <td colspan="5" id={"timing-error-#{@row.position}"}>
+        <.icon name="hero-exclamation-triangle" class="mr-1.5 inline size-4 align-[-3px]" />
+        Stop {@row.position}, {@row.name}: {@timing_error || "Check this time."}
+      </td>
+    </tr>
+    <tr id={"timing-options-#{@row.position}"} class="pe-options-row">
+      <td colspan="5">
+        <details id={"timing-boarding-#{@row.position}"} class="group">
+          <summary class="flex min-h-11 cursor-pointer list-none items-center gap-1.5 text-[13px] font-[650] text-muted hover:text-strong [&::-webkit-details-marker]:hidden">
+            <.icon
+              name="hero-chevron-right"
+              class="size-4 transition-transform group-open:rotate-90"
+            /> Boarding options<span class="sr-only"> for {@row.name}</span>
+          </summary>
+          <div class="grid gap-4 pb-3 pl-5 sm:grid-cols-2">
+            <div class="fieldset">
+              <label>
+                <span class="label">Pickup</span>
+                <select
+                  id={"timing-pickup-#{@row.position}"}
+                  name={"timing[#{@row.position}][pickup]"}
+                  class="w-full select select-lg"
+                >
+                  <option
+                    :for={option <- pickup_options()}
+                    value={option.value}
+                    selected={@row.pickup == option.value}
+                  >
+                    {option.label}
+                  </option>
+                </select>
+              </label>
+              <p>Can riders board here? Phone and driver options are for request stops.</p>
+            </div>
+            <div class="fieldset">
+              <label>
+                <span class="label">Drop-off</span>
+                <select
+                  id={"timing-dropoff-#{@row.position}"}
+                  name={"timing[#{@row.position}][drop_off]"}
+                  class="w-full select select-lg"
+                >
+                  <option
+                    :for={option <- pickup_options()}
+                    value={option.value}
+                    selected={@row.drop_off == option.value}
+                  >
+                    {option.label}
+                  </option>
+                </select>
+              </label>
+              <p>Can riders get off here?</p>
+            </div>
+            <div class="fieldset sm:col-span-2">
+              <label>
+                <span class="label">Stop headsign (optional)</span>
+                <input
+                  id={"timing-stop-headsign-#{@row.position}"}
+                  name={"timing[#{@row.position}][headsign]"}
+                  type="text"
+                  value={@row.stop_headsign}
+                  class="w-full input input-lg"
+                />
+              </label>
+              <p>Use only if the destination shown to riders changes at this stop.</p>
+            </div>
+          </div>
+        </details>
+      </td>
+    </tr>
     """
   end
 
@@ -734,7 +1032,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
   Every timing's proposed added-stop values, estimates and trip count are shown
   before the final action, and each timing must be acknowledged separately so a
-  value the reviewer never saw can never be silently confirmed.
+  value the reviewer never saw can never be silently confirmed. While an
+  acknowledgement is missing, the dialog says why the confirm is unavailable.
   """
   attr :review, :any, required: true
   attr :confirm_label, :string, required: true
@@ -754,7 +1053,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
       on_cancel="cancel_review"
       described_by="stop-review-dialog-body"
       confirm_variant="primary"
-      size="lg"
+      chrome="planner"
+      size="xl"
       confirm_disabled={not @ready?}
       pending={@review != nil and @review.busy}
       return_focus_id="pattern-save-stops"
@@ -762,32 +1062,37 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
       <form :if={@review} id="stop-review-values-form" phx-change="update_review_value">
         <p>
           This updates every timing on this pattern.
-          <strong>This changes {@version_name}, a published version.</strong>
+          <strong class="text-strong">This changes {@version_name}, a published version.</strong>
         </p>
 
-        <p id="stop-review-error" role="alert" class="mt-2 text-sm text-error">
-          {@review.error && @review.error.message}
-        </p>
-
-        <div :if={@review.error && @review.error.action == :refresh} class="mt-2">
-          <button
-            id="stop-review-refresh"
-            type="button"
-            phx-click="refresh_review"
-            class="btn btn-sm btn-outline min-h-11"
-          >
-            Refresh review
-          </button>
-        </div>
-        <div :if={@review.error && @review.error.action == :retry} class="mt-2">
-          <button
-            id="stop-review-retry"
-            type="button"
-            phx-click="retry_review"
-            class="btn btn-sm btn-outline min-h-11"
-          >
-            Try review again
-          </button>
+        <div class={[
+          "mt-3 flex gap-3 rounded-card bg-error-bg px-4 py-3 text-error-fg",
+          is_nil(@review.error) && "hidden"
+        ]}>
+          <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0" />
+          <div>
+            <p id="stop-review-error" role="alert" class="font-bold">
+              {@review.error && @review.error.message}
+            </p>
+            <button
+              :if={@review.error && @review.error.action == :refresh}
+              id="stop-review-refresh"
+              type="button"
+              phx-click="refresh_review"
+              class="btn btn-outline mt-2 min-h-11"
+            >
+              <.icon name="hero-arrow-path" class="size-4" /> Refresh review
+            </button>
+            <button
+              :if={@review.error && @review.error.action == :retry}
+              id="stop-review-retry"
+              type="button"
+              phx-click="retry_review"
+              class="btn btn-outline mt-2 min-h-11"
+            >
+              <.icon name="hero-arrow-path" class="size-4" /> Try review again
+            </button>
+          </div>
         </div>
 
         <p :if={@review.resequenced?} id="stop-review-reorder-note" class="mt-2">
@@ -797,11 +1102,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         <div
           :for={block <- @review.blocks}
           id={"stop-review-timing-#{block.timing_id}"}
-          class="mt-4 border border-base-300 p-3"
+          class="mt-3 rounded-card border border-subtle p-3"
         >
-          <p class="font-medium">
+          <p class="text-sm font-[650] text-strong">
             {block.name}
-            <span class="font-normal text-base-content/70">
+            <span class="font-normal text-muted">
               · {block.trip_count_label}
               <span :if={block.shift}>{" · start shifts by " <> block.shift}</span>
             </span>
@@ -809,7 +1114,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
           <p
             :if={block.added == [] and block.resequenced == []}
-            class="mt-1 text-sm text-base-content/70"
+            class="mt-1 text-[13px] text-muted"
           >
             No added stops in this timing. Its retained times stay as they are.
           </p>
@@ -817,7 +1122,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           <ul
             :if={block.resequenced != []}
             id={"stop-review-resequenced-#{block.timing_id}"}
-            class="mt-2 divide-y divide-base-300 text-sm"
+            class="mt-2 divide-y divide-subtle text-sm"
           >
             <li
               :for={row <- block.resequenced}
@@ -829,53 +1134,66 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             </li>
           </ul>
 
-          <div :for={added <- block.added} class="mt-2 grid gap-2 sm:grid-cols-3">
+          <div
+            :for={added <- block.added}
+            class="mt-2 grid items-end gap-2 sm:grid-cols-[minmax(0,1fr)_112px_112px]"
+          >
             <p class="text-sm">
-              <span class="block font-medium">{added.name}</span>
-              <span :if={added.estimated?} class="text-base-content/70">
+              <span class="block font-semibold text-strong">{added.name}</span>
+              <span :if={added.estimated?} class="text-[13px] text-muted">
                 Estimated between its neighbours
               </span>
             </p>
             <div>
               <label
-                class="block text-xs text-base-content/70"
+                class={label_class()}
                 for={"stop-review-value-#{block.timing_id}-#{added.key}-arrival"}
               >
-                Arrive +mm:ss
+                Arrive
               </label>
               <input
                 id={"stop-review-value-#{block.timing_id}-#{added.key}-arrival"}
                 name={"review[#{block.timing_id}][#{added.key}][arrival]"}
                 type="text"
                 inputmode="numeric"
+                autocomplete="off"
                 value={added.arrival}
                 aria-invalid={added.invalid? && "true"}
                 aria-describedby={added.invalid? && "stop-review-error"}
-                class="input input-bordered w-24 min-h-11"
+                class={[
+                  "mt-1 tabular-nums",
+                  field_input_class(),
+                  added.invalid? && "border-2 border-error-fg"
+                ]}
               />
             </div>
             <div>
               <label
-                class="block text-xs text-base-content/70"
+                class={label_class()}
                 for={"stop-review-value-#{block.timing_id}-#{added.key}-departure"}
               >
-                Depart +mm:ss
+                Depart
               </label>
               <input
                 id={"stop-review-value-#{block.timing_id}-#{added.key}-departure"}
                 name={"review[#{block.timing_id}][#{added.key}][departure]"}
                 type="text"
                 inputmode="numeric"
+                autocomplete="off"
                 value={added.departure}
                 aria-invalid={added.invalid? && "true"}
                 aria-describedby={added.invalid? && "stop-review-error"}
-                class="input input-bordered w-24 min-h-11"
+                class={[
+                  "mt-1 tabular-nums",
+                  field_input_class(),
+                  added.invalid? && "border-2 border-error-fg"
+                ]}
               />
             </div>
           </div>
 
           <label
-            class="mt-3 flex min-h-11 items-center gap-2 text-sm"
+            class="mt-2 flex min-h-11 cursor-pointer items-center gap-2 text-sm"
             for={"stop-review-ack-#{block.timing_id}"}
           >
             <input
@@ -891,11 +1209,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           </label>
         </div>
 
-        <p :if={not @review.resequenced?} class="mt-3 text-sm text-base-content/70">
+        <p :if={not @review.resequenced?} class="mt-3 text-[13px] text-muted">
           Retained stop times keep their absolute clocks; added stop times are what this review
-          applies. Geometry is not recalculated.
+          applies. The path on the map isn’t redrawn, so check Alignment afterward.
         </p>
-        <p :if={@review.resequenced?} class="mt-3 text-sm text-base-content/70">
+        <p
+          :if={@requires_acknowledgement? and not @ready? and is_nil(@review.error)}
+          id="stop-review-why"
+          class="mt-2 text-[13px] font-semibold text-default"
+        >
+          Confirm the values for every timing to continue.
+        </p>
+        <p :if={@review.resequenced?} class="mt-3 text-[13px] text-muted">
           The listed times replace the stored times; added stop times are what this review
           applies. Geometry is not recalculated.
         </p>
@@ -921,6 +1246,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
       on_cancel="cancel_timing_review"
       described_by="timing-review-dialog-body"
       confirm_variant="primary"
+      chrome="planner"
       pending={@review != nil and @review.busy}
       return_focus_id="timing-save"
     >
@@ -928,30 +1254,36 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         <p>
           This saves the selected timing and updates the arrival and departure times of its trips.
           Trip start times stay the same.
-          <strong>This changes {@version_name}, a published version.</strong>
+          <strong class="text-strong">This changes {@version_name}, a published version.</strong>
         </p>
-        <p id="timing-review-error" role="alert" class="mt-2 text-sm text-error">
-          {@review.error && @review.error.message}
-        </p>
-        <div :if={@review.error && @review.error.action == :refresh} class="mt-2">
-          <button
-            id="timing-review-refresh"
-            type="button"
-            phx-click="refresh_timing_review"
-            class="btn btn-sm btn-outline min-h-11"
-          >
-            Refresh review
-          </button>
-        </div>
-        <div :if={@review.error && @review.error.action == :retry} class="mt-2">
-          <button
-            id="timing-review-retry"
-            type="button"
-            phx-click="retry_timing_review"
-            class="btn btn-sm btn-outline min-h-11"
-          >
-            Try saving again
-          </button>
+        <div class={[
+          "mt-3 flex gap-3 rounded-card bg-error-bg px-4 py-3 text-error-fg",
+          is_nil(@review.error) && "hidden"
+        ]}>
+          <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0" />
+          <div>
+            <p id="timing-review-error" role="alert" class="font-bold">
+              {@review.error && @review.error.message}
+            </p>
+            <button
+              :if={@review.error && @review.error.action == :refresh}
+              id="timing-review-refresh"
+              type="button"
+              phx-click="refresh_timing_review"
+              class="btn btn-outline mt-2 min-h-11"
+            >
+              <.icon name="hero-arrow-path" class="size-4" /> Refresh review
+            </button>
+            <button
+              :if={@review.error && @review.error.action == :retry}
+              id="timing-review-retry"
+              type="button"
+              phx-click="retry_timing_review"
+              class="btn btn-outline mt-2 min-h-11"
+            >
+              <.icon name="hero-arrow-path" class="size-4" /> Try saving again
+            </button>
+          </div>
         </div>
       </div>
     </.confirm_dialog>
@@ -973,44 +1305,57 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
       on_cancel="close_timing_dialog"
       described_by="timing-dialog-body"
       confirm_variant="primary"
+      chrome="planner"
     >
-      <form :if={@dialog} id="timing-dialog-form" phx-change="validate_timing_dialog">
-        <label class="block text-sm font-medium" for="timing-name">Timing name</label>
-        <input
-          id="timing-name"
-          name="name"
-          type="text"
-          value={@dialog.name}
-          aria-invalid={@dialog.error && "true"}
-          aria-describedby={@dialog.error && "timing-dialog-error"}
-          class={["input input-bordered min-h-11 w-full", @dialog.error && "border-error"]}
-        />
-        <p class="mt-1 text-sm text-base-content/70">
-          Use a name that helps staff choose the right running times.
-        </p>
-
-        <div :if={@dialog.mode == :add} class="mt-3">
-          <label class="block text-sm font-medium" for="timing-source">Start with</label>
-          <select
-            id="timing-source"
-            name="source_timing_id"
-            class="select select-bordered min-h-11 w-full"
+      <form
+        :if={@dialog}
+        id="timing-dialog-form"
+        phx-change="validate_timing_dialog"
+        class="grid gap-4"
+      >
+        <div class="fieldset">
+          <label>
+            <span class="label">Timing name</span>
+            <input
+              id="timing-name"
+              name="name"
+              type="text"
+              value={@dialog.name}
+              autocomplete="off"
+              aria-invalid={@dialog.error && "true"}
+              aria-describedby={timing_name_described_by(@dialog)}
+              class="w-full input input-lg"
+            />
+          </label>
+          <p id="timing-dialog-help">
+            Use a name that helps staff choose the right running times, such as “Weekday peak”.
+          </p>
+          <p
+            :if={@dialog.error}
+            id="timing-dialog-error"
+            role="alert"
+            class="flex items-start gap-1.5"
           >
-            <option value="">Blank timing (all times zero)</option>
-            <option
-              :for={option <- @dialog.source_options}
-              value={option.value}
-              selected={@dialog.source_timing_id == option.value}
-            >
-              {option.label}
-            </option>
-          </select>
-          <p class="mt-1 text-sm text-base-content/70">No trips are assigned to a new timing.</p>
+            <.icon name="hero-exclamation-circle" />{@dialog.error}
+          </p>
         </div>
 
-        <p id="timing-dialog-error" role="alert" class="mt-2 text-sm text-error">
-          {@dialog.error}
-        </p>
+        <div :if={@dialog.mode == :add} class="fieldset">
+          <label>
+            <span class="label">Start with</span>
+            <select id="timing-source" name="source_timing_id" class="w-full select select-lg">
+              <option value="">Blank timing (all times zero)</option>
+              <option
+                :for={option <- @dialog.source_options}
+                value={option.value}
+                selected={@dialog.source_timing_id == option.value}
+              >
+                {option.label}
+              </option>
+            </select>
+          </label>
+          <p>No trips use a new timing until you assign them.</p>
+        </div>
       </form>
     </.confirm_dialog>
     """
@@ -1027,9 +1372,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
       pending_label="Close"
       title={@dialog && @dialog.title}
       confirm_label={(@dialog && Map.get(@dialog, :action_label)) || "Close"}
+      cancel_label="Close"
       on_confirm="close_blocked_dialog"
       on_cancel="close_blocked_dialog"
       described_by="pattern-blocked-dialog-body"
+      chrome="planner"
+      return_focus_id="pattern-actions-trigger"
       single_action={true}
     >
       <div>
@@ -1047,13 +1395,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
     <.confirm_dialog
       id="timing-delete-dialog"
       open={@dialog != nil}
-      title="Delete timing?"
+      title={if @dialog, do: "Delete #{@dialog.name}?", else: "Delete timing?"}
       pending_label="Deleting…"
       confirm_label="Delete timing"
+      cancel_label="Keep timing"
       on_confirm="confirm_delete_timing"
       on_cancel="close_blocked_dialog"
       described_by="timing-delete-dialog-body"
       confirm_variant="danger"
+      chrome="planner"
+      return_focus_id="timing-delete"
     >
       <div>
         <p>
@@ -1072,13 +1423,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
     <.confirm_dialog
       id="pattern-delete-dialog"
       open={@dialog != nil}
-      title="Delete this pattern?"
+      title={if @dialog, do: "Delete #{@dialog.name}?", else: "Delete this pattern?"}
       pending_label="Deleting…"
       confirm_label="Delete pattern"
+      cancel_label="Keep pattern"
       on_confirm="confirm_delete_pattern"
       on_cancel="close_blocked_dialog"
       described_by="pattern-delete-dialog-body"
       confirm_variant="danger"
+      chrome="planner"
+      return_focus_id="pattern-actions-trigger"
     >
       <div>
         <p>
@@ -1090,19 +1444,25 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
     """
   end
 
-  @doc "Renders the editor's connectivity state while the browser is offline."
+  @doc """
+  Renders the editor's connectivity state while the browser is offline.
+
+  The wrapper is what the editor hook shows and hides on connection changes; the
+  message inside is announced when it appears.
+  """
   attr :offline?, :boolean, required: true
 
   def connectivity_banner(assigns) do
     ~H"""
     <div
       id="pattern-connectivity"
-      class="mt-3 border border-warning bg-warning/10 px-4 py-3 text-sm"
+      class="pt-4"
       hidden={not @offline?}
       aria-hidden={to_string(not @offline?)}
     >
-      <strong>Connection lost.</strong>
-      Your edits are still here. Reconnect before saving; committing stays disabled until then.
+      <.message kind="warning" title="Connection lost">
+        Your edits are still here. Reconnect before saving; saving stays off until then.
+      </.message>
     </div>
     """
   end
@@ -1128,6 +1488,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   defp timing_dialog_confirm_label(%{mode: :rename}), do: "Rename timing"
   defp timing_dialog_confirm_label(_dialog), do: "Add timing"
 
+  defp timing_name_described_by(%{error: nil}), do: "timing-dialog-help"
+  defp timing_name_described_by(_dialog), do: "timing-dialog-help timing-dialog-error"
+
   defp selected_trip_count(_timings, nil), do: 0
 
   defp selected_trip_count(timings, selected) do
@@ -1138,7 +1501,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   end
 
   defp insert_options(stop_rows) do
-    [{"At the end", ""}, {"Before the first stop", "-1"}] ++
+    end_label =
+      case List.last(stop_rows) do
+        nil -> "At the end"
+        last -> "At the end, after #{last.position}. #{last.name}"
+      end
+
+    [{end_label, ""}, {"Before the first stop", "-1"}] ++
       Enum.map(stop_rows, fn row ->
         {"After #{row.position}. #{row.name}", Integer.to_string(row.position)}
       end)
@@ -1146,21 +1515,165 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
   defp pickup_options do
     [
-      %{value: "0", label: "0 Regular"},
-      %{value: "1", label: "1 Not available"},
-      %{value: "2", label: "2 Phone agency"},
-      %{value: "3", label: "3 Arrange with driver"}
+      %{value: "0", label: "Regular"},
+      %{value: "1", label: "Not available"},
+      %{value: "2", label: "Phone the agency"},
+      %{value: "3", label: "Arrange with the driver"}
     ]
   end
 
-  @doc "Renders the page-level error alert and the polite status region."
+  # The words a stop's boarding exceptions show next to its ID, so a row says
+  # what its collapsed options hold.
+  @board_words %{"2" => "phone the agency", "3" => "ask the driver"}
+
+  defp board_chips(row) do
+    [
+      board_chip("Pickup", "No pickup", row.pickup),
+      board_chip("Drop-off", "No drop-off", row.drop_off),
+      headsign_chip(row.stop_headsign)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp board_chip(_label, _none, "0"), do: nil
+  defp board_chip(_label, none, "1"), do: none
+
+  defp board_chip(label, _none, value) do
+    case Map.fetch(@board_words, value) do
+      {:ok, words} -> "#{label}: #{words}"
+      :error -> nil
+    end
+  end
+
+  defp headsign_chip(headsign) when headsign in [nil, ""], do: nil
+  defp headsign_chip(headsign), do: "Headsign: #{headsign}"
+
+  # A cell is edited when it no longer holds the value the timing was loaded
+  # with; a row without a loaded value never reads as edited.
+  defp time_edited?(row, :arrival), do: edited?(row.arrival, Map.get(row, :stored_arrival))
+  defp time_edited?(row, :departure), do: edited?(row.departure, Map.get(row, :stored_departure))
+
+  defp edited?(_value, nil), do: false
+  defp edited?(value, stored), do: value != stored
+
+  defp time_input_class(invalid?, edited?) do
+    [
+      "h-11 w-[104px] rounded-control border px-3 text-sm tabular-nums text-strong",
+      cond do
+        invalid? -> "border-2 border-error-fg bg-white"
+        edited? -> "border-warning-line bg-warning-bg"
+        true -> "border-control bg-white"
+      end
+    ]
+  end
+
+  # The arrival and departure a sample trip would show, once when they match.
+  defp sample_trip(%{preview_arrival: same, preview_departure: same}), do: same
+  defp sample_trip(row), do: "#{row.preview_arrival} → #{row.preview_departure}"
+
+  defp label_class, do: "text-[13px] font-[650] text-default"
+
+  defp field_input_class,
+    do:
+      "h-11 w-full rounded-control border border-control bg-white px-3 text-sm text-strong disabled:border-subtle disabled:bg-canvas disabled:text-muted"
+
+  defp new_row?(row, creating?), do: is_nil(row.id) and not creating?
+
+  # The stop search's own status line carries the outage; matching its words
+  # here keeps the LiveView's copy the single source.
+  defp search_unavailable?(status), do: String.contains?(status, "unavailable")
+
+  # The plain-language names of the six GTFS route-pattern typicality values,
+  # which the stored integers keep.
+  defp typicality_choices do
+    [
+      {"Not set", 0},
+      {"Typical · runs regularly", 1},
+      {"Deviation · a regular variation of the route", 2},
+      {"Atypical · special routing that runs a few times a day", 3},
+      {"Diversion · planned detour, shuttle or snow route", 4},
+      {"Canonical reference · lists every stop, not scheduled", 5}
+    ]
+  end
+
+  defp typicality_help(value) do
+    case to_string(value) do
+      "1" -> "The pattern most trips on this route follow."
+      "2" -> "A regular variation, such as a short turn or an express."
+      "3" -> "Special routing that runs only a handful of times a day."
+      "4" -> "A planned detour, bus shuttle or snow route."
+      "5" -> "Lists every physical stop; not currently scheduled to run."
+      _ -> "How this pattern fits the route’s usual service. Most patterns are typical."
+    end
+  end
+
+  defp status_tone(true, _creating), do: "warning"
+  defp status_tone(false, true), do: "neutral"
+  defp status_tone(false, false), do: "success"
+
+  defp status_icon(true, _creating), do: "hero-clock"
+  defp status_icon(false, true), do: nil
+  defp status_icon(false, false), do: "hero-check-circle"
+
+  defp status_label(true, true), do: "Not created yet"
+  defp status_label(true, false), do: "Unsaved changes"
+  defp status_label(false, true), do: "New pattern"
+  defp status_label(false, false), do: "Saved in this version"
+
+  defp status_text_class(:warning), do: "text-warning-fg"
+  defp status_text_class(:error), do: "text-error-fg"
+  defp status_text_class(:success), do: "text-success-fg"
+  defp status_text_class(:ready), do: "text-success-fg"
+  defp status_text_class(:info), do: "text-default"
+  defp status_text_class(_tone), do: "text-muted"
+
+  defp status_bar_icon(:warning), do: "hero-clock"
+  defp status_bar_icon(:error), do: "hero-exclamation-triangle"
+  defp status_bar_icon(:success), do: "hero-check-circle"
+  defp status_bar_icon(:ready), do: "hero-check-circle"
+  defp status_bar_icon(:info), do: "hero-information-circle"
+  defp status_bar_icon(_tone), do: nil
+
+  defp task_label(:stops), do: "Stops"
+  defp task_label(:timings), do: "Running times"
+  defp task_label(:alignment), do: "Alignment"
+  defp task_label(:details), do: "Details"
+
+  @doc """
+  Renders the page-level error alert and the polite status region.
+
+  The regions stay in the page for assistive technology. A page that shows the
+  same message in its save bar, where it stays in view, hides the region's own
+  copy with `hide_error?` and `hide_status?`.
+  """
   attr :error, :string, default: nil
   attr :status, :string, default: nil
+  attr :hide_error?, :boolean, default: false
+  attr :hide_status?, :boolean, default: false
 
   def status_regions(assigns) do
     ~H"""
-    <div id="error" role="alert" class="text-sm text-error">{@error}</div>
-    <div id="status" role="status" aria-live="polite" class="text-sm text-base-content/70">
+    <div
+      id="error"
+      role="alert"
+      class={[
+        @hide_error? && "sr-only",
+        !@hide_error? && @error &&
+          "mt-4 rounded-control bg-error-bg px-4 py-3 text-sm font-bold text-error-fg"
+      ]}
+    >
+      {@error}
+    </div>
+    <div
+      id="status"
+      role="status"
+      aria-live="polite"
+      class={[
+        @hide_status? && "sr-only",
+        !@hide_status? && @status &&
+          "mt-4 rounded-control bg-soft px-4 py-3 text-sm font-bold text-cyan-800"
+      ]}
+    >
       {@status}
     </div>
     """
@@ -1171,23 +1684,4 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
   defp trip_verb(1), do: "uses"
   defp trip_verb(_count), do: "use"
-
-  defp status_label(true, _creating), do: "Unsaved changes"
-  defp status_label(false, true), do: "New pattern"
-  defp status_label(false, false), do: "Saved in this version"
-
-  defp status_class(true, _creating), do: "badge-warning"
-  defp status_class(false, true), do: "badge-ghost"
-  defp status_class(false, false), do: "badge-success"
-
-  defp task_tab_class(true),
-    do: "min-h-11 border-b-2 border-primary px-3 font-semibold text-primary"
-
-  defp task_tab_class(false),
-    do: "min-h-11 border-b-2 border-transparent px-3 text-base-content/70 hover:text-base-content"
-
-  defp task_label(:stops), do: "Stops"
-  defp task_label(:timings), do: "Timings"
-  defp task_label(:alignment), do: "Alignment"
-  defp task_label(:details), do: "Details"
 end
