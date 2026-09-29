@@ -716,9 +716,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
                 navigate={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{route.route_id}"}
                 class="flex min-h-11 items-center gap-3 px-4 py-3 hover:bg-canvas"
               >
+                <%!-- A short name can be a sentence; the cap wraps it inside the badge so the
+                     route name and chevron stay on the row. --%>
                 <RouteIdentity.route_badge
                   route={route}
-                  class="min-h-[26px] min-w-[30px] text-[13px]"
+                  class="min-h-[26px] min-w-[30px] max-w-28 text-center text-[13px] break-words"
                 />
                 <span class="min-w-0 flex-1">
                   <span class="block truncate text-sm font-[650] text-strong">
