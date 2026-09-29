@@ -421,7 +421,11 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   """
   @spec change_settings(map(), map()) :: Ecto.Changeset.t()
   def change_settings(settings, attrs) do
-    values = settings |> Map.merge(@defaults) |> Map.take(BlockingSetting.settings_fields())
+    # The defaults fill in what the caller did not supply, so the merge runs the
+    # other way round: merging the defaults over the given settings would replace
+    # every value the caller read with a default and the form could never show a
+    # stored value.
+    values = @defaults |> Map.merge(settings) |> Map.take(BlockingSetting.settings_fields())
 
     %BlockingSetting{}
     |> Ecto.Changeset.change(values)
