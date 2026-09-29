@@ -1643,7 +1643,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   defp boarding_href(nil, _version_id, _route_id), do: nil
 
   defp boarding_href(%{patterns_missing: _} = warning, version_id, route_id) do
-    Map.put(warning, :href, "/gtfs/#{version_id}/routes/#{route_id}/patterns")
+    Map.put(warning, :href, ~p"/gtfs/#{version_id}/routes/#{route_id}/patterns")
   end
 
   defp changed_field_labels(fields) do
