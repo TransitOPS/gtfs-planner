@@ -127,17 +127,91 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
 
   The hours line groups by calendar, as the prototype does: two areas that run
   different windows on the same calendar read as one line joined with " and ",
-  so a per-area change is reported without naming the area. The where, riders,
-  detour and export lines the prototype also reports belong to the sections that
-  edit those fields.
+  so a per-area change is reported without naming the area. The where line, the
+  riders choice, the detour wording and the drop-off policy are reported too,
+  because the page's where, riders and detour controls edit those fields.
   """
   @spec changes(FlexService.t(), FlexService.t(), map()) :: [String.t()]
   def changes(%FlexService{} = saved, %FlexService{} = draft, calendars) do
     hours_changes(saved, draft, calendars) ++
       rule_changes(saved, draft, calendars) ++
       contact_changes(saved, draft) ++
-      text_changes(saved, draft, calendars)
+      text_changes(saved, draft, calendars) ++
+      where_changes(saved, draft) ++
+      rider_changes(saved, draft) ++
+      detour_changes(saved, draft)
   end
+
+  @doc """
+  The service's own "where" line: what riders are told about where it runs.
+
+  A detour names its route and published distance (or says the distance is not
+  set yet); an area service names its areas, or says there is no area. The
+  service page's header, the list's row and the rider preview all render this
+  same sentence, so the words staff read match the words the preview writes.
+  """
+  @spec where_line(FlexService.t()) :: String.t()
+  def where_line(%FlexService{kind: :detour} = service) do
+    case service.distance_m do
+      nil ->
+        "Detours from Route #{service.route_id}; distance not set"
+
+      distance ->
+        "Detours up to #{distance_label(distance)} from Route #{service.route_id}#{measure_suffix(service)}"
+    end
+  end
+
+  def where_line(%FlexService{} = service) do
+    case area_names(service) do
+      [] -> "No area yet"
+      names -> "Anywhere in #{Enum.join(names, " or ")}"
+    end
+  end
+
+  defp where_changes(saved, draft) do
+    before = where_line(saved)
+    after_ = where_line(draft)
+
+    if before == after_, do: [], else: ["Where: #{after_}"]
+  end
+
+  # The prototype's riders line, from the two answers that decide who reaches
+  # trip planners: who can ride, and whether a registered-riders service is in
+  # the flex feed.
+  defp rider_changes(saved, draft) do
+    if {saved.riders, saved.include_registered} == {draft.riders, draft.include_registered} do
+      []
+    else
+      [rider_change_line(draft)]
+    end
+  end
+
+  defp rider_change_line(%FlexService{riders: :registered, include_registered: true}),
+    do: "Registered riders only, shown in trip planners"
+
+  defp rider_change_line(%FlexService{riders: :registered}),
+    do: "Registered riders only, left out of trip planners"
+
+  defp rider_change_line(%FlexService{}), do: "Anyone can ride"
+
+  defp detour_changes(saved, draft) do
+    wording =
+      if saved.wording == draft.wording, do: [], else: ["Detour wording changed"]
+
+    dropoffs =
+      if saved.dropoffs == draft.dropoffs do
+        []
+      else
+        ["Drop-offs: #{drop_off_change(draft.dropoffs)}"]
+      end
+
+    wording ++ dropoffs
+  end
+
+  defp drop_off_change(:tell_driver), do: "tell the driver when boarding"
+  defp drop_off_change(:dropoff_only), do: "tell the driver, no pickups away from the route"
+  defp drop_off_change(:book), do: "book ahead"
+  defp drop_off_change(_dropoffs), do: "changed"
 
   @doc """
   The name trip planners show this service under (R5).
@@ -240,6 +314,24 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderText do
       _other -> area_key
     end
   end
+
+  # The names `where_line/1` joins: a service's areas in position order, each
+  # named the way riders read it, skipping one that has no name yet.
+  defp area_names(%FlexService{areas: areas}) do
+    areas
+    |> Enum.map(& &1.name)
+    |> Enum.reject(&(&1 in [nil, ""]))
+  end
+
+  defp measure_suffix(%FlexService{measure: :stops}), do: " stops"
+  defp measure_suffix(%FlexService{}), do: ""
+
+  defp distance_label(200), do: "a few blocks"
+  defp distance_label(400), do: "¼ mile"
+  defp distance_label(800), do: "½ mile"
+  defp distance_label(1200), do: "¾ mile"
+  defp distance_label(1600), do: "1 mile"
+  defp distance_label(distance), do: "#{distance} m"
 
   @doc """
   One hours row as riders read it: "7:00 am–6:00 pm", and

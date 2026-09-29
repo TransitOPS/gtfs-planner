@@ -44,6 +44,8 @@ defmodule GtfsPlanner.Gtfs.Flex do
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexService
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
@@ -307,6 +309,108 @@ defmodule GtfsPlanner.Gtfs.Flex do
       [] -> route_id
       names -> Enum.join(names, " ")
     end
+  end
+
+  @typedoc """
+  One stop the service page offers, as `{name, stop_id}`: the label a select
+  shows and the natural ID a save writes. A stop the feed left unnamed is
+  labelled by its own ID, like the map's stop labels.
+  """
+  @type stop_choice :: {String.t(), String.t()}
+
+  @typedoc """
+  What the service page's where section reads for a detour service: the stops
+  its route visits in pattern order, and how many of the route's trips each
+  calendar runs.
+  """
+  @type route_facts :: %{
+          stops: [stop_choice()],
+          trip_counts: %{String.t() => non_neg_integer()}
+        }
+
+  @doc """
+  The version's stops as the service page's connecting-stop choices, in name
+  order: `[{name, stop_id}]`.
+
+  Every stop of the version is offered, including one without coordinates: a
+  connecting stop is a reference in `location_group_stops.txt`, not a map
+  point. The read is scoped to the organization and version (R10), like the
+  rest of the reads the Flex pages compose.
+  """
+  @spec stop_choices(Ecto.UUID.t(), Ecto.UUID.t()) :: [stop_choice()]
+  def stop_choices(organization_id, version_id) do
+    from(s in Stop,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^version_id,
+      order_by: [asc: s.stop_name, asc: s.stop_id],
+      select: {s.stop_id, s.stop_name}
+    )
+    |> Repo.all()
+    |> Enum.map(fn {stop_id, name} -> {blank_to(name, stop_id), stop_id} end)
+  end
+
+  @doc """
+  The stops a detour service's route visits, in pattern order, and the route's
+  trip count per calendar.
+
+  `stops` is the first pattern's stops by direction, pattern sort order and
+  position, deduplicated in visit order, so the two stretch selects offer the
+  stops the detour derivation (`Flex.Geometry.detour_zones/3`) reads between.
+  A route pattern that names a stop this version does not have still offers
+  that stop, labelled by its ID, because readiness reports it as an error the
+  editor can see.
+
+  `trip_counts` counts the route's trips per `service_id`, which is what the
+  detour calendar checkboxes and the export plan say each calendar covers. A
+  service without a route, or a route with no patterns, answers empty choices.
+
+  The reads are scoped to the organization and version (R10).
+  """
+  @spec route_facts(Ecto.UUID.t(), Ecto.UUID.t(), FlexService.t()) :: route_facts()
+  def route_facts(organization_id, version_id, %FlexService{route_id: route_id})
+      when is_binary(route_id) and route_id != "" do
+    %{
+      stops: route_stop_choices(organization_id, version_id, route_id),
+      trip_counts: route_trip_counts(organization_id, version_id, route_id)
+    }
+  end
+
+  def route_facts(_organization_id, _version_id, %FlexService{}),
+    do: %{stops: [], trip_counts: %{}}
+
+  defp route_stop_choices(organization_id, version_id, route_id) do
+    from(o in RoutePatternStop,
+      join: p in RoutePattern,
+      on: p.id == o.route_pattern_id,
+      left_join: s in Stop,
+      on:
+        s.organization_id == p.organization_id and s.gtfs_version_id == p.gtfs_version_id and
+          s.stop_id == o.stop_id,
+      where:
+        p.organization_id == ^organization_id and p.gtfs_version_id == ^version_id and
+          p.route_id == ^route_id,
+      order_by: [
+        asc: p.direction_id,
+        asc: p.route_pattern_sort_order,
+        asc: p.route_pattern_id,
+        asc: o.position
+      ],
+      select: {o.stop_id, s.stop_name}
+    )
+    |> Repo.all()
+    |> Enum.uniq_by(&elem(&1, 0))
+    |> Enum.map(fn {stop_id, name} -> {blank_to(name, stop_id), stop_id} end)
+  end
+
+  defp route_trip_counts(organization_id, version_id, route_id) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+          t.route_id == ^route_id,
+      group_by: t.service_id,
+      select: {t.service_id, count(t.id)}
+    )
+    |> Repo.all()
+    |> Map.new()
   end
 
   @doc """

@@ -26,6 +26,15 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
   `:area` is this page's second action, and the area editor arrives in step 24;
   here it is a panel that keeps the draft and offers the way back.
+
+  The where, who-can-ride, exports and status sections are this page's second
+  half (AC-7, AC-29): the area summaries and connecting stops, the detour
+  fields and its derived-zone summary, the registered-riders fields with the
+  ADA preset, the export plan with the export-details drawer and the
+  organization's realtime answer, and the deactivate/reactivate/delete actions.
+  The organization's realtime answer is not part of the service draft: choosing
+  it writes `ExportDefaults.update/2` at once, exactly as the Settings page
+  step 26 will, and the service's own fields stay unsaved until Save.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -34,10 +43,13 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.DisplayClock
+  alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.Flex
   alias GtfsPlanner.Gtfs.Flex.Checks
+  alias GtfsPlanner.Gtfs.Flex.Export, as: FlexExport
   alias GtfsPlanner.Gtfs.Flex.Geometry
   alias GtfsPlanner.Gtfs.Flex.RiderText
+  alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexBookingRule
   alias GtfsPlanner.Gtfs.FlexHours
   alias GtfsPlanner.Gtfs.FlexService
@@ -61,11 +73,39 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     :max_days
   ]
 
+  # The control ids the sections render, where they differ from the changeset's
+  # field id: the reference names these controls `f-…`, and the error summary
+  # and the inline errors both have to land on the control that is on screen.
+  @field_control_ids %{
+    distance_m: "f-distance",
+    wording: "f-wording",
+    first_stop_id: "f-first",
+    last_stop_id: "f-last",
+    eligibility: "f-eligibility"
+  }
+
   # The prototype's values for a rule added to one calendar.
   @scoped_rule_default %{when: :earlier_day, days: 2, by: "17:00"}
 
   # The prototype's default phone-line hours.
   @default_phone_hours %{"days" => "Mon–Fri", "from" => "08:00", "to" => "17:00"}
+
+  # AC-29: ADA-only detours replace paratransit, which must reach ¾ mile, so
+  # choosing ADA-only with no distance chosen yet preselects that distance.
+  @ada_distance_m 1_200
+
+  # The prototype's ADA preset: the eligibility sentence and the next-day rule
+  # 49 CFR 37.131(b) describes.
+  @ada_eligibility "Riders with ADA paratransit eligibility. Visitors eligible elsewhere may ride up to 21 days a year"
+  @ada_rule %{
+    when: :earlier_day,
+    days: 1,
+    by: "17:00",
+    business_days: false,
+    max_days: 14,
+    minutes: nil,
+    office_service_id: nil
+  }
 
   @impl true
   def mount(_params, _session, socket) do
@@ -88,6 +128,16 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
      |> assign(:calendars, %{})
      |> assign(:calendar_rows, %{})
      |> assign(:calendar_options, [])
+     |> assign(:stop_choices, [])
+     |> assign(:hub_options, [])
+     |> assign(:hub_pick, nil)
+     |> assign(:route_stop_choices, [])
+     |> assign(:trip_counts, %{})
+     |> assign(:area_summaries, [])
+     |> assign(:plan, nil)
+     |> assign(:export_defaults, nil)
+     |> assign(:export_details_open, false)
+     |> assign(:status_action, nil)
      |> assign(:today, nil)
      |> assign(:area_geojson, %{})
      |> assign(:map, nil)
@@ -271,6 +321,166 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     {:noreply, push_patch(socket, to: service_path(socket))}
   end
 
+  # --- the where section -------------------------------------------------------
+
+  # Both ways into the area editor patch to `:area`, which keeps the draft in
+  # the socket (CR-8): the editor's own work and its Save arrive in step 24.
+  @impl true
+  def handle_event("edit_area", _params, socket) do
+    {:noreply, push_patch(socket, to: service_path(socket) <> "/area")}
+  end
+
+  def handle_event("add_area", _params, socket) do
+    {:noreply, push_patch(socket, to: service_path(socket) <> "/area")}
+  end
+
+  @impl true
+  def handle_event("pick_hub", %{"hub_stop" => stop_id}, socket) when is_binary(stop_id) do
+    {:noreply, assign(socket, :hub_pick, stop_id)}
+  end
+
+  def handle_event("pick_hub", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("add_hub", _params, socket) do
+    stop_id = socket.assigns.hub_pick
+
+    if is_binary(stop_id) and stop_id != "" and stop_id not in socket.assigns.draft.hub_stop_ids do
+      draft = %{
+        socket.assigns.draft
+        | hub_stop_ids: socket.assigns.draft.hub_stop_ids ++ [stop_id]
+      }
+
+      {:noreply, socket |> put_draft_struct(draft) |> assign_hub_choices()}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("remove_hub", %{"stop-id" => stop_id}, socket) do
+    draft = %{
+      socket.assigns.draft
+      | hub_stop_ids: List.delete(socket.assigns.draft.hub_stop_ids, stop_id)
+    }
+
+    {:noreply, socket |> put_draft_struct(draft) |> assign_hub_choices()}
+  end
+
+  def handle_event("remove_hub", _params, socket), do: {:noreply, socket}
+
+  # --- the riders section ------------------------------------------------------
+
+  # The prototype's ADA preset: the eligibility wording and the next-day rule
+  # 49 CFR 37.131(b) describes, applied to the service-wide rule.
+  @impl true
+  def handle_event("ada_preset", _params, socket) do
+    draft = %{socket.assigns.draft | riders: :registered, eligibility: @ada_eligibility}
+
+    {:noreply, put_draft_struct(socket, put_main_rule(draft, @ada_rule))}
+  end
+
+  # --- the exports section -----------------------------------------------------
+
+  # The realtime answer is the organization's, not the service's, so it is
+  # written at once through the same context the Settings page will use and
+  # never dirties this page's draft.
+  @impl true
+  def handle_event("set_realtime", %{"realtime_source" => source}, socket)
+      when is_binary(source) do
+    case ExportDefaults.update(socket.assigns.current_organization.id, %{
+           realtime_source: source
+         }) do
+      {:ok, defaults} ->
+        {:noreply, assign(socket, :export_defaults, defaults)}
+
+      {:error, %Ecto.Changeset{}} ->
+        {:noreply, put_flash(socket, :error, "Couldn’t save your realtime answer. Try again.")}
+    end
+  end
+
+  def handle_event("set_realtime", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("show_export_details", _params, socket) do
+    {:noreply, assign(socket, :export_details_open, true)}
+  end
+
+  @impl true
+  def handle_event("close_export_details", _params, socket) do
+    {:noreply, assign(socket, :export_details_open, false)}
+  end
+
+  # The header menu's way to the status controls: the hook focuses the heading
+  # and the browser scrolls it into view.
+  @impl true
+  def handle_event("goto_status", _params, socket) do
+    {:noreply, push_event(socket, "focus_scoped_target", %{id: "status-title"})}
+  end
+
+  # --- the status section ------------------------------------------------------
+
+  @impl true
+  def handle_event("deactivate", _params, socket) do
+    {:noreply, assign(socket, :status_action, :deactivate)}
+  end
+
+  @impl true
+  def handle_event("delete", _params, socket) do
+    {:noreply, assign(socket, :status_action, :delete)}
+  end
+
+  @impl true
+  def handle_event("cancel_status", _params, socket) do
+    {:noreply, assign(socket, :status_action, nil)}
+  end
+
+  @impl true
+  def handle_event("confirm_deactivate", _params, socket) do
+    case set_active(socket, false) do
+      {:ok, service} ->
+        {:noreply, socket |> assign(:status_action, nil) |> apply_status(service)}
+
+      {:error, message} ->
+        {:noreply, socket |> assign(:status_action, nil) |> save_error(message)}
+    end
+  end
+
+  @impl true
+  def handle_event("reactivate", _params, socket) do
+    case set_active(socket, true) do
+      {:ok, service} -> {:noreply, apply_status(socket, service)}
+      {:error, message} -> {:noreply, save_error(socket, message)}
+    end
+  end
+
+  @impl true
+  def handle_event("confirm_delete", _params, socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    case Flex.delete_service(organization_id, version_id, socket.assigns.service_id) do
+      :ok ->
+        {:noreply,
+         socket
+         |> assign(:status_action, nil)
+         |> put_flash(:info, "Deleted #{socket.assigns.saved.name}.")
+         |> push_navigate(to: version_list_path(version_id))}
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> assign(:status_action, nil)
+         |> save_error("This service was already deleted. Reload the page to see the list.")}
+
+      {:error, :version_unavailable} ->
+        {:noreply,
+         socket
+         |> assign(:status_action, nil)
+         |> save_error("This version can’t be changed right now. Reload the page and try again.")}
+    end
+  end
+
   # --- the map and the version panel -----------------------------------------
 
   @impl true
@@ -434,26 +644,88 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
               phx-submit="save"
               class="grid min-w-0 gap-8"
             >
-              <.when_section
+              <%!-- The reference orders the sections by how often staff change
+              them: a detour's distance and stretch first, an area service's
+              hours first. --%>
+              <%= if @draft.kind == :detour do %>
+                <.where_detour_section
+                  form={@form}
+                  service={@draft}
+                  field_errors={@field_errors}
+                  route_stop_choices={@route_stop_choices}
+                  plan={@plan}
+                  checks={@checks}
+                />
+
+                <.booking_section
+                  form={@form}
+                  service={@draft}
+                  field_errors={@field_errors}
+                  calendars={@calendars}
+                  calendar_options={@calendar_options}
+                  checks={@checks}
+                />
+
+                <.when_section
+                  form={@form}
+                  service={@draft}
+                  field_errors={@field_errors}
+                  calendars={@calendars}
+                  calendar_rows={@calendar_rows}
+                  calendar_options={@calendar_options}
+                  trip_counts={@trip_counts}
+                  version_id={@current_gtfs_version.id}
+                  today={@today}
+                  checks={@checks}
+                />
+              <% else %>
+                <.when_section
+                  form={@form}
+                  service={@draft}
+                  field_errors={@field_errors}
+                  calendars={@calendars}
+                  calendar_rows={@calendar_rows}
+                  calendar_options={@calendar_options}
+                  trip_counts={@trip_counts}
+                  version_id={@current_gtfs_version.id}
+                  today={@today}
+                  checks={@checks}
+                />
+
+                <.booking_section
+                  form={@form}
+                  service={@draft}
+                  field_errors={@field_errors}
+                  calendars={@calendars}
+                  calendar_options={@calendar_options}
+                  checks={@checks}
+                />
+
+                <.where_area_section
+                  service={@draft}
+                  area_summaries={@area_summaries}
+                  stop_choices={@stop_choices}
+                  hub_options={@hub_options}
+                  hub_pick={@hub_pick}
+                  checks={@checks}
+                />
+              <% end %>
+
+              <.riders_section
                 form={@form}
                 service={@draft}
                 field_errors={@field_errors}
-                calendars={@calendars}
-                calendar_rows={@calendar_rows}
-                calendar_options={@calendar_options}
-                version_id={@current_gtfs_version.id}
-                today={@today}
                 checks={@checks}
               />
 
-              <.booking_section
-                form={@form}
+              <.exports_section
                 service={@draft}
-                field_errors={@field_errors}
-                calendars={@calendars}
-                calendar_options={@calendar_options}
-                checks={@checks}
+                plan={@plan}
+                export_defaults={@export_defaults}
+                status={@status}
               />
+
+              <.status_section service={@draft} status_action={@status_action} />
             </.form>
           </div>
 
@@ -491,6 +763,14 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
         saving={@saving}
       />
 
+      <.export_details_drawer
+        :if={@service_state == :ready}
+        open={@export_details_open}
+        service={@draft}
+        plan={@plan}
+        export_defaults={@export_defaults}
+      />
+
       <.discard_dialog :if={@service_state == :ready} open={@pending_discard} />
       <.leave_dialog :if={@service_state == :ready} open={not is_nil(@pending_leave)} />
     </Layouts.app>
@@ -522,6 +802,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     rows = calendar_rows(organization_id, version_id)
     row_map = Map.new(rows, &{&1.service_id, &1})
     draft = normalize_rules(service)
+    area_geojson = area_geojson(service)
+    summaries = area_summaries(organization_id, version_id, service, area_geojson)
+    route_facts = Flex.route_facts(organization_id, version_id, service)
+    stop_choices = Flex.stop_choices(organization_id, version_id)
 
     others =
       organization_id
@@ -545,14 +829,23 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
       :calendar_options,
       FlexComponents.calendar_options(calendars, row_map, service_calendar_ids(service))
     )
+    |> assign(:stop_choices, stop_choices)
+    |> assign(:route_stop_choices, route_facts.stops)
+    |> assign(:trip_counts, route_facts.trip_counts)
+    |> assign(:area_summaries, summaries)
     |> assign(:today, today(organization_id, version_id))
-    |> assign(:area_geojson, area_geojson(service))
+    |> assign(:area_geojson, area_geojson)
     |> assign(:map, Flex.service_map_payload(organization_id, version_id, service))
+    |> assign(:export_defaults, ExportDefaults.get(organization_id))
+    |> assign(:plan, plan(organization_id, version_id, draft, area_geojson, summaries))
+    |> assign(:export_details_open, false)
+    |> assign(:status_action, nil)
     |> assign(:save_errors, [])
     |> assign(:field_errors, %{})
     |> assign(:save_error, nil)
     |> assign(:pending_discard, false)
     |> assign(:pending_leave, nil)
+    |> assign_hub_choices()
     |> assign_checks()
   end
 
@@ -586,6 +879,82 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     service.areas |> Enum.map(& &1.id) |> Geometry.get_geojson()
   end
 
+  # Each area's rider-facing summary: how big it is, and what is inside it. A
+  # stored polygon is measured directly; a `:route_distance` area has no stored
+  # geometry, so the page derives it from the version's current shapes exactly
+  # as the export will (AC-11), and an area whose geometry cannot be derived
+  # yet keeps a nil size rather than a wrong one.
+  defp area_summaries(organization_id, version_id, service, area_geojson) do
+    Enum.map(service.areas, fn area ->
+      case area_geometry(area, area_geojson, organization_id, version_id) do
+        {:ok, geojson} ->
+          stats = Geometry.stats(organization_id, version_id, geojson)
+
+          %{area: area, km2: stats.km2, stop_ids: stats.stop_ids, route_ids: stats.route_ids}
+
+        :error ->
+          %{area: area, km2: nil, stop_ids: [], route_ids: []}
+      end
+    end)
+  end
+
+  defp area_geometry(
+         %FlexArea{source: :route_distance, route_ids: route_ids, distance_m: distance},
+         _area_geojson,
+         organization_id,
+         version_id
+       )
+       when is_list(route_ids) and route_ids != [] and is_integer(distance) do
+    Geometry.route_buffer(organization_id, version_id, route_ids, distance)
+  end
+
+  defp area_geometry(%FlexArea{id: id}, area_geojson, _organization_id, _version_id) do
+    case Map.fetch(area_geojson, id) do
+      {:ok, geojson} -> {:ok, geojson}
+      :error -> :error
+    end
+  end
+
+  # The draft's areas as the export's own builders read them, with the measured
+  # size each summary showed so the plan's location row can state it.
+  defp plan_areas(service, area_geojson, summaries) do
+    km2 = Map.new(summaries, &{&1.area.id, &1.km2})
+
+    Enum.map(service.areas, fn area ->
+      %{area: area, geojson: Map.get(area_geojson, area.id), km2: Map.get(km2, area.id)}
+    end)
+  end
+
+  defp plan(organization_id, version_id, service, area_geojson, summaries) do
+    FlexExport.plan(
+      organization_id,
+      version_id,
+      service,
+      plan_areas(service, area_geojson, summaries)
+    )
+  end
+
+  # The connecting-stop select offers every stop the version has that is not
+  # already a connecting stop, and keeps its choice when the options change.
+  defp assign_hub_choices(socket) do
+    options = hub_options(socket.assigns.stop_choices, socket.assigns.draft.hub_stop_ids)
+
+    pick =
+      case socket.assigns.hub_pick do
+        nil -> options |> List.first() |> then(&(&1 && elem(&1, 1)))
+        current -> if Enum.any?(options, &(elem(&1, 1) == current)), do: current, else: nil
+      end
+
+    socket
+    |> assign(:hub_options, options)
+    |> assign(:hub_pick, pick || options |> List.first() |> then(&(&1 && elem(&1, 1))))
+  end
+
+  defp hub_options(stop_choices, hub_stop_ids) do
+    hubs = MapSet.new(hub_stop_ids)
+    Enum.reject(stop_choices, fn {_name, stop_id} -> MapSet.member?(hubs, stop_id) end)
+  end
+
   defp assign_checks(socket) do
     checks = Checks.run(socket.assigns.draft, socket.assigns.facts, socket.assigns.others)
 
@@ -601,15 +970,18 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # refuses is refused here too; the page shows the answers as typed and only
   # the failed save lists them as errors.
   defp put_draft(socket, params) do
+    previous = socket.assigns.draft
+
     params =
       params
-      |> merge_draft_rows(socket.assigns.draft)
-      |> normalize_params()
+      |> merge_draft_rows(previous)
+      |> normalize_params(previous)
 
     draft =
-      socket.assigns.draft
+      previous
       |> FlexService.changeset(params)
       |> Ecto.Changeset.apply_changes()
+      |> apply_page_rules(previous)
 
     put_draft_struct(socket, draft)
   end
@@ -658,6 +1030,8 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
   defp put_draft_struct(socket, draft) do
     draft = normalize_rules(draft)
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
 
     socket
     |> assign(:draft, draft)
@@ -665,7 +1039,19 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     |> assign(:save_errors, [])
     |> assign(:field_errors, %{})
     |> assign(:save_error, nil)
+    |> assign(
+      :plan,
+      plan(
+        organization_id,
+        version_id,
+        draft,
+        socket.assigns.area_geojson,
+        socket.assigns.area_summaries
+      )
+    )
+    |> assign_hub_choices()
     |> assign(:dirty?, page_attrs(draft) != page_attrs(socket.assigns.saved))
+    |> refresh_map_for(draft, socket.assigns.draft)
     |> assign_checks()
   end
 
@@ -683,6 +1069,118 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
     %{service | booking_rules: [main | scoped]}
   end
+
+  # The service-wide rule with the preset's answers, keeping the rules scoped to
+  # one calendar as they are.
+  defp put_main_rule(%FlexService{booking_rules: []} = service, fields) do
+    %{service | booking_rules: [struct(FlexBookingRule, fields)]}
+  end
+
+  defp put_main_rule(%FlexService{booking_rules: [main | scoped]} = service, fields) do
+    %{service | booking_rules: [struct(main, fields) | scoped]}
+  end
+
+  # The status section's one write. A deactivation keeps the draft: the draft's
+  # own fields are what the editor was working on, and only the row's `active`
+  # flag and lock version move. A clean page reloads, so every derived read is
+  # the stored one again.
+  defp set_active(socket, active) do
+    case Flex.set_active(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           socket.assigns.service_id,
+           active
+         ) do
+      {:ok, service} ->
+        {:ok, service}
+
+      {:error, :not_found} ->
+        {:error, "This service was already deleted. Reload the page to see the list."}
+
+      {:error, :stale} ->
+        {:error,
+         "Someone else saved this service while you were editing. Reload the page and try again."}
+
+      {:error, :version_unavailable} ->
+        {:error, "This version can’t be changed right now. Reload the page and try again."}
+    end
+  end
+
+  defp apply_status(socket, %FlexService{} = stored) do
+    if socket.assigns.dirty? do
+      draft = %{
+        socket.assigns.draft
+        | active: stored.active,
+          lock_version: stored.lock_version,
+          updated_at: stored.updated_at
+      }
+
+      socket
+      |> assign(:saved, stored)
+      |> assign(:draft, draft)
+      |> assign_checks()
+    else
+      load_service(socket)
+    end
+  end
+
+  # The map card draws the service the draft describes. A detour field that
+  # changes the derived zones (`route_id`, the stretch, the distance or the way
+  # it is measured) rebuilds the same scoped payload the load built and sends it
+  # to the hook; nothing else about the page needs a redraw. INV-1 holds: the
+  # zones come from `Flex` and `Flex.Geometry`, never from SQL here.
+  defp refresh_map_for(socket, draft, previous) do
+    if draft.kind == :detour and
+         detour_geometry_key(draft) != detour_geometry_key(previous) do
+      payload =
+        Flex.service_map_payload(
+          socket.assigns.current_organization.id,
+          socket.assigns.current_gtfs_version.id,
+          draft
+        )
+
+      socket |> assign(:map, payload) |> push_event("flex_map:load", payload)
+    else
+      socket
+    end
+  end
+
+  defp detour_geometry_key(service) do
+    {
+      service.route_id,
+      service.first_stop_id,
+      service.last_stop_id,
+      service.distance_m,
+      service.measure
+    }
+  end
+
+  # The where and who-can-ride sections answer each other, the way the
+  # prototype does: choosing ADA-only without a distance preselects the ¾ mile
+  # paratransit minimum (AC-29), and choosing registered riders the first time
+  # leaves the service out of the flex feed until the editor asks for it.
+  defp apply_page_rules(draft, previous) do
+    draft
+    |> preselect_ada_distance(previous)
+    |> reset_include_registered(previous)
+  end
+
+  defp preselect_ada_distance(
+         %FlexService{kind: :detour, ada_only: true, distance_m: nil} = draft,
+         %FlexService{ada_only: false}
+       ),
+       do: %{draft | distance_m: @ada_distance_m}
+
+  defp preselect_ada_distance(draft, _previous), do: draft
+
+  defp reset_include_registered(
+         %FlexService{riders: :registered, include_registered: include} = draft,
+         %FlexService{riders: previous_riders, include_registered: previous_include}
+       )
+       when previous_riders != :registered and include == previous_include,
+       do: %{draft | include_registered: false}
+
+  defp reset_include_registered(draft, _previous), do: draft
 
   # --- saving ------------------------------------------------------------------
 
@@ -800,9 +1298,38 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
       "phone_hours" => service.phone_hours,
       "booking_url" => service.booking_url,
       "info_url" => service.info_url,
-      "note" => service.note
+      "note" => service.note,
+      "riders" => service.riders,
+      "eligibility" => service.eligibility,
+      "include_registered" => service.include_registered
+    }
+    |> Map.merge(kind_attrs(service))
+  end
+
+  # The fields only one kind of service has: an area service's connecting stops,
+  # and a detour service's distance, wording, measure, stretch, drop-off policy
+  # and calendars. A field the page does not render keeps its stored value
+  # because it is not in its kind's attrs at all.
+  defp kind_attrs(%FlexService{kind: :area} = service) do
+    %{"hub_stop_ids" => service.hub_stop_ids}
+  end
+
+  defp kind_attrs(%FlexService{kind: :detour} = service) do
+    %{
+      "distance_m" => service.distance_m,
+      "wording" => service.wording,
+      "measure" => service.measure,
+      "first_stop_id" => service.first_stop_id,
+      "last_stop_id" => service.last_stop_id,
+      "dropoffs" => service.dropoffs,
+      "ada_only" => service.ada_only,
+      "calendar_service_ids" => service.calendar_service_ids,
+      "band_start" => service.band_start,
+      "band_end" => service.band_end
     }
   end
+
+  defp kind_attrs(%FlexService{}), do: %{}
 
   defp placeholder_rule?(%FlexBookingRule{when: nil}), do: true
   defp placeholder_rule?(%FlexBookingRule{}), do: false
@@ -846,11 +1373,15 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # with the same calendar.
   defp save_error_list(changeset, draft) do
     top =
-      Enum.map(changeset.errors, fn {field, {message, _opts}} -> {"service_#{field}", message} end)
+      Enum.map(changeset.errors, fn {field, {message, _opts}} ->
+        {field_control_id(field), message}
+      end)
 
     (top ++ hours_error_items(changeset) ++ rule_error_items(changeset, draft))
     |> Enum.uniq()
   end
+
+  defp field_control_id(field), do: Map.get(@field_control_ids, field, "service_#{field}")
 
   defp hours_error_items(changeset) do
     changeset.changes
@@ -881,13 +1412,35 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # --- the form's answers ------------------------------------------------------
 
   # The answers as the schema reads them. A blank input is a cleared field, and
-  # the two answers the form states outside a field of their own (the phone
-  # line's switch and the fields a booking type does not use) are set here, so
-  # the draft never keeps a value the editor turned off.
-  defp normalize_params(params) do
+  # the answers the form states outside a field of their own (the phone line's
+  # switch, the fields a booking type does not use, the detour band's mode and
+  # the detour calendars) are set here, so the draft never keeps a value the
+  # editor turned off.
+  defp normalize_params(params, %FlexService{} = draft) do
     params
     |> normalize_phone_hours()
     |> normalize_rule_params()
+    |> normalize_detour_params(draft)
+  end
+
+  defp normalize_detour_params(params, %FlexService{kind: :detour}) do
+    params
+    |> Map.put("calendar_service_ids", Map.get(params, "calendar_service_ids") || [])
+    |> normalize_band()
+  end
+
+  defp normalize_detour_params(params, %FlexService{}), do: params
+
+  # AC-29's time of day: the band's own two fields exist only while "Only at
+  # certain times" is answered, and choosing "All day" clears them. A change
+  # payload that never carried the mode (a programmatic caller) keeps the
+  # band's own fields as submitted.
+  defp normalize_band(params) do
+    case Map.get(params, "band_mode") do
+      "band" -> params
+      "all" -> params |> Map.put("band_start", "") |> Map.put("band_end", "")
+      _other -> params
+    end
   end
 
   defp normalize_phone_hours(params) do
