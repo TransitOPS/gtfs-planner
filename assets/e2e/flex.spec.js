@@ -159,3 +159,62 @@ async function captureReference(page, file, state, name) {
 // `playwright test e2e/flex.spec.js` green while the page is still the Coming
 // soon placeholder.
 test.skip("placeholder", async () => {});
+
+// ── export ────────────────────────────────────────────────────────────────
+
+// The Export page carries no flex route, so this case logs in and resolves the
+// seeded version the flex workspace uses, then opens `/gtfs/<version>/export`.
+async function openExport(page) {
+  await logIn(page);
+
+  const versionId = await flexVersionId(page);
+  await page.goto(`/gtfs/${versionId}/export`);
+  await waitForLiveView(page);
+
+  return versionId;
+}
+
+// The page must fit the viewport, so both download links and both validation
+// buttons are visible without a horizontal scrollbar.
+async function expectNoHorizontalPageScroll(page) {
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+
+  expect(overflow).toBeLessThanOrEqual(1);
+}
+
+test("export-flex", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+
+  const versionId = await openExport(page);
+
+  const flexLink = page.locator("#export-flex-download-link");
+
+  // A freshly reset browser database has no export run, so the case starts one
+  // and waits for its published flex artifact; a database that already ran this
+  // case holds a ready pair the page can be captured from directly.
+  if ((await flexLink.count()) === 0) {
+    await page.click("#start-export");
+    await flexLink.waitFor({ state: "visible", timeout: 150_000 });
+  }
+
+  await expect(page.locator("#export-download-link")).toBeVisible();
+  await expect(page.locator("#export-flex-download-link")).toHaveAttribute(
+    "href",
+    new RegExp(`^/gtfs/${versionId}/export-runs/[0-9a-f-]+/download\\?file=flex$`),
+  );
+  await expect(page.locator("#run-validation")).toBeVisible();
+  await expect(page.locator("#validate-flex-button")).toBeVisible();
+
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "export-flex");
+
+  await page.setViewportSize(NARROW);
+  await page.waitForSelector("#export-flex-download-link");
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "export-flex");
+
+  await captureReference(page, "flex-services-prototype.html", "service-export", "export-flex");
+});

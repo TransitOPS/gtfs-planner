@@ -6,6 +6,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   use GtfsPlannerWeb, :live_view
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Export.Runner, as: ExportRunner
+  alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.Validator
   alias GtfsPlanner.Operations
@@ -45,6 +46,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:export_type, :full)
      |> assign(:export_form, export_form(:full))
      |> assign(:operations?, false)
+     |> assign(:include_flex, true)
      |> assign(:file_inventory, [])
      |> assign(:export_run, nil)
      |> assign(:export_notice, nil)
@@ -72,6 +74,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:export_type, export_type)
      |> assign(:export_form, export_form(export_type))
      |> assign(:export_notice, nil)
+     |> assign(:include_flex, ExportDefaults.get(organization_id).include_flex)
      |> refresh_export_run()
      |> refresh_file_inventory()
      |> assign_recent_checks()}
@@ -120,15 +123,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   end
 
   @impl Phoenix.LiveView
-  def handle_event("run_validation", _params, socket) do
-    if socket.assigns.validating do
-      {:noreply, put_flash(socket, :error, "A check is already running.")}
-    else
-      organization_id = socket.assigns.current_organization.id
-      gtfs_version_id = socket.assigns.current_gtfs_version.id
-      run_mobility_data_validation(socket, organization_id, gtfs_version_id)
-    end
-  end
+  def handle_event("run_validation", _params, socket),
+    do: handle_run_validation(socket, "mobility_data")
+
+  @impl Phoenix.LiveView
+  def handle_event("run_flex_validation", _params, socket),
+    do: handle_run_validation(socket, "mobility_data_flex")
 
   @impl Phoenix.LiveView
   def handle_event("reset_validation", _params, socket) do
@@ -357,6 +357,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
               error={@validation_error}
               validation_run_id={@validation_run_id}
               version={@current_gtfs_version}
+              include_flex={@include_flex}
             />
             <.recent_checks :if={@recent_checks != []} checks={@recent_checks} />
           </div>
@@ -373,6 +374,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   # The title a check carries in Recent checks: a plain name for the kind of check.
   defp check_title(%{run_type: "mobility_data"}, _station_names_by_run_id), do: "Feed check"
+
+  defp check_title(%{run_type: "mobility_data_flex"}, _station_names_by_run_id),
+    do: "Flex file"
 
   defp check_title(%{run_type: "pathways_tests"}, _station_names_by_run_id),
     do: "Pathways test"
@@ -499,8 +503,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp payload_value(_payload, _key), do: nil
 
-  defp run_mobility_data_validation(socket, organization_id, gtfs_version_id) do
-    case Validations.create_validation_run(organization_id, gtfs_version_id, "mobility_data") do
+  defp run_mobility_data_validation(socket, organization_id, gtfs_version_id, run_type) do
+    case Validations.create_validation_run(organization_id, gtfs_version_id, run_type) do
       {:ok, run} ->
         if connected?(socket) do
           Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, "validation:#{run.id}")
@@ -524,6 +528,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
       {:error, _changeset} ->
         {:noreply, assign(socket, :validation_error, :not_started)}
+    end
+  end
+
+  defp handle_run_validation(socket, run_type) do
+    if socket.assigns.validating do
+      {:noreply, put_flash(socket, :error, "Validation already in progress")}
+    else
+      organization_id = socket.assigns.current_organization.id
+      gtfs_version_id = socket.assigns.current_gtfs_version.id
+      run_mobility_data_validation(socket, organization_id, gtfs_version_id, run_type)
     end
   end
 

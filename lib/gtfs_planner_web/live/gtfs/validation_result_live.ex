@@ -1182,6 +1182,10 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     "Older results: whether riders could walk from each test address to a stop in #{version.name}."
   end
 
+  defp validation_lede(%{run_type: "mobility_data_flex"}, version) do
+    "What the MobilityData GTFS validator found in the flex file for #{version.name}."
+  end
+
   defp validation_lede(_run, version) do
     "What the MobilityData GTFS validator found in #{version.name}."
   end
