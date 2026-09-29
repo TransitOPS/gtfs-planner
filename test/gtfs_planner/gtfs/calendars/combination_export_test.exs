@@ -3,7 +3,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.CombinationExportTest do
   Merge evidence (EV-2) for the reviewed calendar combination's native export round trip (AC-27):
   the public `Gtfs.review_calendar_change/3` and `Gtfs.apply_calendar_change/3` composition, the
   public `Export.export_to_zip/3` writer and the public `Import.import_files/3` loader, against
-  real scoped rows in the owned `gtfs_planner_test_calendar17` partition.
+  real scoped rows in the owned `gtfs_planner_exunit_calendar17` partition.
 
   These cases prove the result at the emitted-file boundary instead of through self-reimport
   equality alone:

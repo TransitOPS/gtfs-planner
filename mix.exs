@@ -107,7 +107,9 @@ defmodule GtfsPlanner.MixProject do
         "assets.build"
       ],
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
-      "ecto.reset": ["ecto.drop", "ecto.setup"],
+      # An alias that shares a task's name runs the original task at its own entry, so
+      # the guard runs first and the original task follows, with the same arguments.
+      "ecto.drop": [&ensure_disposable_database/1, "ecto.drop"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind gtfs_planner", "esbuild gtfs_planner"],
@@ -124,5 +126,16 @@ defmodule GtfsPlanner.MixProject do
         "test"
       ]
     ]
+  end
+
+  # Loads the config for the current MIX_ENV without starting the Repo, then refuses to
+  # continue unless the Repo points at a disposable test database.
+  defp ensure_disposable_database(_args) do
+    Mix.Task.run("app.config")
+
+    GtfsPlanner.DatabaseGuard.ensure_droppable!(
+      Mix.env(),
+      Application.fetch_env!(:gtfs_planner, GtfsPlanner.Repo)
+    )
   end
 end

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#
+# One-time setup of the Postgres role that ExUnit connects as.
+#
+# Creates the `gtfs_planner_test` role if it is missing and revokes PUBLIC connect
+# on `gtfs_planner_dev`, so a test connection cannot reach the dev database.
+# Run it as a superuser of the local server. It only creates and revokes; it never
+# drops or alters anything, and running it again changes nothing.
+#
+# Usage: [PGUSER=<superuser>] bin/setup-test-db-role
+#
+# PGUSER defaults to the current user. PGHOST, PGPORT and PGPASSWORD work as they
+# do for psql.
+set -euo pipefail
+
+if ! command -v psql >/dev/null; then
+  echo "psql not found. Put PostgreSQL's bin directory on PATH (see docs/db-setup.md)." >&2
+  exit 1
+fi
+
+export PGUSER="${PGUSER:-$(id -un)}"
+
+# `\gexec` runs each row the query returns as a statement, so a statement runs
+# only when its condition holds: no error for an existing role or a missing dev
+# database.
+psql -X -q -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+SELECT 'CREATE ROLE gtfs_planner_test LOGIN CREATEDB PASSWORD ''gtfs_planner_test'''
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'gtfs_planner_test')
+\gexec
+
+SELECT 'REVOKE CONNECT ON DATABASE gtfs_planner_dev FROM PUBLIC'
+WHERE EXISTS (SELECT FROM pg_database WHERE datname = 'gtfs_planner_dev')
+\gexec
+SQL
+
+echo "Role gtfs_planner_test exists; PUBLIC connect is revoked on gtfs_planner_dev if that database exists." >&2

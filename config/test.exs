@@ -2,14 +2,54 @@ import Config
 
 # Configure your database
 #
+# Tests connect as `gtfs_planner_test`, a role that cannot connect to
+# `gtfs_planner_dev`. `bin/setup-test-db-role` creates it and revokes PUBLIC connect
+# on the dev database. That role owns only the databases it creates, so they use the
+# `gtfs_planner_exunit` prefix; the older `gtfs_planner_test*` databases belong to
+# `postgres`.
+#
 # The MIX_TEST_PARTITION environment variable can be used
 # to provide built-in test partitioning in CI environment.
 # Run `mix help test` for more information.
+database = "gtfs_planner_exunit#{System.get_env("MIX_TEST_PARTITION")}"
+
+# Only `bin/test-browser` and the browser CI job set this variable, to point the Repo
+# at a throwaway Postgres; the partition-based default above stays in effect for
+# ordinary `mix test` runs. A plain DATABASE_URL is ignored in test on purpose. The
+# `gtfs_planner_exunit` prefix and the name `test` are also what
+# `GtfsPlanner.DatabaseGuard` allows the drop task to touch.
+database_url = System.get_env("GTFS_PLANNER_TEST_DATABASE_URL")
+
+url_database =
+  if database_url do
+    uri = URI.parse(database_url)
+    name = String.trim_leading(uri.path || "", "/")
+
+    allowed? =
+      uri.host in ["127.0.0.1", "localhost", "::1"] and is_nil(uri.query) and
+        (name == "test" or String.starts_with?(name, "gtfs_planner_exunit"))
+
+    if not allowed? do
+      raise """
+      GTFS_PLANNER_TEST_DATABASE_URL is refused (host #{inspect(uri.host)}, database \
+      #{inspect(name)}). In test it must have a loopback host (127.0.0.1, localhost \
+      or ::1), no query string, and a database named `test` (pg_tmp's) or starting \
+      with `gtfs_planner_exunit`.
+      """
+    end
+
+    name
+  end
+
+if (url_database || database) == "gtfs_planner_dev" do
+  raise "The test environment must never use the gtfs_planner_dev database."
+end
+
 config :gtfs_planner, GtfsPlanner.Repo,
-  username: "postgres",
-  password: "postgres",
+  username: "gtfs_planner_test",
+  password: "gtfs_planner_test",
   hostname: "localhost",
-  database: "gtfs_planner_test#{System.get_env("MIX_TEST_PARTITION")}",
+  database: database,
   pool: Ecto.Adapters.SQL.Sandbox,
   # Two connections per scheduler is two on a single-scheduler host. The interleaving
   # cases in `test/gtfs_planner/gtfs/blocking/concurrency_test.exs` hold one connection
@@ -19,9 +59,7 @@ config :gtfs_planner, GtfsPlanner.Repo,
   # `config/runtime.exs` already use.
   pool_size: max(System.schedulers_online() * 2, 10)
 
-# `bin/test-browser` points the Repo at a throwaway Postgres this way; the
-# partition-based default above stays in effect for ordinary `mix test` runs.
-if database_url = System.get_env("DATABASE_URL") do
+if database_url do
   config :gtfs_planner, GtfsPlanner.Repo, url: database_url
 end
 
