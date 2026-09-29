@@ -270,16 +270,18 @@ body {
    design system's dense-chart exception to the 44px target: every bar and gap is
    a real button, and the List view is the full-size control surface. */
 #blocks-page {
+  --blocks-meta-select: 44px;
   --blocks-meta-block: 112px;
   --blocks-meta-garage: 132px;
   --blocks-meta-out: 140px;
   --blocks-meta-hours: 58px;
   --blocks-meta-status: 208px;
   --blocks-meta-width: calc(
-    var(--blocks-meta-block) + var(--blocks-meta-garage) + var(--blocks-meta-out) +
-      var(--blocks-meta-hours) + var(--blocks-meta-status)
+    var(--blocks-meta-select) + var(--blocks-meta-block) + var(--blocks-meta-garage) +
+      var(--blocks-meta-out) + var(--blocks-meta-hours) + var(--blocks-meta-status)
   );
-  --blocks-meta-offset-2: var(--blocks-meta-block);
+  --blocks-meta-offset-1: var(--blocks-meta-select);
+  --blocks-meta-offset-2: calc(var(--blocks-meta-offset-1) + var(--blocks-meta-block));
   --blocks-meta-offset-3: calc(var(--blocks-meta-offset-2) + var(--blocks-meta-garage));
   --blocks-meta-offset-4: calc(var(--blocks-meta-offset-3) + var(--blocks-meta-out));
   --blocks-meta-offset-5: calc(var(--blocks-meta-offset-4) + var(--blocks-meta-hours));
@@ -321,6 +323,7 @@ body {
   min-width: calc(var(--blocks-meta-width) + 2 * var(--blocks-track-min));
 }
 
+#blocks-timeline .blocks-col-select { width: var(--blocks-meta-select); }
 #blocks-timeline .blocks-col-block { width: var(--blocks-meta-block); }
 #blocks-timeline .blocks-col-garage { width: var(--blocks-meta-garage); }
 #blocks-timeline .blocks-col-out { width: var(--blocks-meta-out); }
@@ -353,7 +356,8 @@ body {
   z-index: 2;
 }
 
-#blocks-timeline .blocks-meta-block { left: 0; }
+#blocks-timeline .blocks-meta-select { left: 0; }
+#blocks-timeline .blocks-meta-block { left: var(--blocks-meta-offset-1); }
 #blocks-timeline .blocks-meta-garage { left: var(--blocks-meta-offset-2); }
 #blocks-timeline .blocks-meta-out { left: var(--blocks-meta-offset-3); }
 #blocks-timeline .blocks-meta-hours { left: var(--blocks-meta-offset-4); }

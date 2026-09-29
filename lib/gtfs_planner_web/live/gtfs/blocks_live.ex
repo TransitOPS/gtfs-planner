@@ -192,6 +192,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:load_state, :loading)
      |> assign(:open_drawer, nil)
      |> assign(:selection, MapSet.new())
+     # The block selection is the Blocks tab's own cross-page selection of block
+     # IDs, kept beside the trip selection rather than inside it: the two are
+     # never read together, so selecting blocks cannot change what the Unassigned
+     # panel's bar counts and selecting trips cannot change this one (AC-42).
+     |> assign(:block_selection, MapSet.new())
      |> assign(:visible_count, 0)
      |> assign(:timeline_key, nil)
      |> stream(:block_rows, [], dom_id: &block_dom_id/1)
@@ -220,9 +225,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   @impl true
+  # A day type is a different plan, so its blocks are not the blocks the reader
+  # was selecting; the trip selection clears with it (AC-24, AC-42).
   def handle_event("select_day", %{"day" => day}, socket) do
     patch(socket, %{day: blank_to_nil(day), trip: nil, page: 1, pool_page: 1},
       clear_selection: true,
+      clear_block_selection: true,
       clear_command: true
     )
   end
@@ -234,10 +242,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     # AC-24: a route filter keeps only the selected trips that run on that route.
     # The selection is not in the URL, so it is pruned before the patch and both
     # stream keys carry it, which re-sends the page with its new checked state.
+    # The block selection is not pruned: the filters narrow which blocks a
+    # rebuild would plan, and a block the reader picked under one filter is not
+    # a block the reader picked under the next, so the filter clears it (AC-42).
     socket =
       socket
       |> assign(:selection, retain_on_route(socket, route))
       |> assign_selected_trips()
+      |> assign(block_selection: MapSet.new(), selected_blocks: [])
 
     patch(socket, %{route: route, status: status, page: 1, pool_page: 1})
   end
@@ -316,6 +328,49 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   def handle_event("clear_selection", _params, socket) do
     {:noreply, put_selection(socket, MapSet.new())}
+  end
+
+  # --- the block selection (step 43, AC-42) ------------------------------------
+
+  # The row checkbox toggles one block by its own block ID, so the selection
+  # survives a page change and a sort exactly as the trip selection does, and the
+  # two events are distinct: `toggle_block` never reads the trip selection and
+  # `toggle_trip` never reads this one.
+  def handle_event("toggle_block", %{"block" => block_id}, socket) do
+    case find_block(socket.assigns.day, block_id) do
+      nil ->
+        {:noreply, socket}
+
+      block ->
+        selection = toggle_block_selection(socket.assigns.block_selection, block.summary.block_id)
+        {:noreply, put_block_selection(socket, selection)}
+    end
+  end
+
+  def handle_event("toggle_block", _params, socket), do: {:noreply, socket}
+
+  # The header checkbox selects the whole page, and unselects it when the page is
+  # already selected, so one control builds and clears a page-sized selection
+  # (AC-42).
+  def handle_event("select_block_page", _params, socket) do
+    selection =
+      toggle_block_page(socket.assigns.block_selection, socket.assigns.timeline_block_ids)
+
+    {:noreply, put_block_selection(socket, selection)}
+  end
+
+  # The Suggest blocks drawer's "Selected blocks" scope is step 44's; this step
+  # only carries the reader to it, and only with a selection to plan (AC-42).
+  def handle_event("rebuild_selected", _params, socket) do
+    if MapSet.size(socket.assigns.block_selection) == 0 do
+      {:noreply, socket}
+    else
+      patch(socket, %{drawer: "suggest"})
+    end
+  end
+
+  def handle_event("clear_block_selection", _params, socket) do
+    {:noreply, put_block_selection(socket, MapSet.new())}
   end
 
   # The assignment form lives in the trip drawer, so opening it from a pool row
@@ -781,6 +836,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       end
 
     socket =
+      if Keyword.get(opts, :clear_block_selection, false),
+        do: assign(socket, block_selection: MapSet.new(), selected_blocks: []),
+        else: socket
+
+    socket =
       if Keyword.get(opts, :close_drawer, false),
         do: assign(socket, :open_drawer, nil),
         else: socket
@@ -845,6 +905,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # Every non-default parameter, in a fixed order, so a patch carries only what
   # the reader needs and an empty day type stays at `/blocks` (CR-7).
+  #
+  # `drawer` carries the page's own drawers, including the Suggest blocks drawer
+  # that `rebuild_selected` opens; step 44 adds the drawer itself.
   defp blocks_path(state) do
     case path_params(state) do
       [] -> "/gtfs/#{state.version_id}/blocks"
@@ -957,7 +1020,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # and a replaced stream container is empty until the page is sent again, so the
   # reset must happen on that change too. The selection is in the key because a
   # checkbox is rendered inside its row, so a selection change re-sends the page
-  # with the new checked state (AGENTS.md streams rule). `load_day/1` and the
+  # with the new checked state (AGENTS.md streams rule). The block selection is in
+  # the key for the same reason: its checkbox is rendered inside the same streamed
+  # row, and a stream does not re-render on an assign change. `load_day/1` and the
   # empty states clear the key, so a reload always resends.
   defp assign_timeline(socket) do
     %{state: state} = socket.assigns
@@ -967,12 +1032,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
     key =
       {state.panel, state.view, state.route, state.status, state.sort, state.dir, page,
-       socket.assigns.selection}
+       socket.assigns.selection, socket.assigns.block_selection}
 
     socket =
       assign(socket,
         visible_count: length(visible),
-        timeline_page_ids: page_trip_ids(rows, state.route)
+        timeline_page_ids: page_trip_ids(rows, state.route),
+        timeline_block_ids: MapSet.new(rows, & &1.summary.block_id)
       )
 
     if socket.assigns.timeline_key == key do
@@ -1079,6 +1145,40 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       else: MapSet.put(selected, id)
   end
 
+  # --- the block selection (step 43, AC-42) -------------------------------------
+
+  # A MapSet of block IDs, resolved against the loaded day the same way the trip
+  # selection is: `selected_blocks` is what the bar counts and what the Suggest
+  # blocks drawer will plan, so a block the day no longer holds is never counted.
+  defp put_block_selection(%{assigns: %{day: nil}} = socket, _selection), do: socket
+
+  defp put_block_selection(socket, selection) do
+    socket
+    |> assign(:block_selection, selection)
+    |> assign(:selected_blocks, selected_blocks(socket.assigns.day, selection))
+    |> assign_page_rows()
+  end
+
+  defp selected_blocks(nil, _selection), do: []
+
+  defp selected_blocks(day, selection) do
+    Enum.filter(day.blocks, &MapSet.member?(selection, &1.summary.block_id))
+  end
+
+  defp toggle_block_selection(selected, block_id) do
+    if MapSet.member?(selected, block_id),
+      do: MapSet.delete(selected, block_id),
+      else: MapSet.put(selected, block_id)
+  end
+
+  # The header checkbox's one rule: a page that is already wholly selected is
+  # unselected, and any other page is added whole. An empty page changes nothing.
+  defp toggle_block_page(selection, page_ids) do
+    if MapSet.size(page_ids) > 0 and MapSet.subset?(page_ids, selection),
+      do: MapSet.difference(selection, page_ids),
+      else: MapSet.union(selection, page_ids)
+  end
+
   # A route filter keeps only the selected trips that run on that route; clearing
   # the filter keeps the whole selection (AC-24).
   defp retain_on_route(socket, nil), do: socket.assigns.selection
@@ -1096,6 +1196,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       selection
     else
       MapSet.intersection(selection, MapSet.new(day_trips(day), & &1.id))
+    end
+  end
+
+  # The block selection's own pruning: a reload can drop a block the previous day
+  # type held, and a block that is gone is not a block a rebuild can plan.
+  defp retain_blocks_in_day(selection, day) do
+    if MapSet.size(selection) == 0 do
+      selection
+    else
+      MapSet.intersection(selection, MapSet.new(day.blocks, & &1.summary.block_id))
     end
   end
 
@@ -2677,10 +2787,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   defp assign_derived(socket, day) do
     selection = retain_in_day(socket.assigns.selection, day)
+    block_selection = retain_blocks_in_day(socket.assigns.block_selection, day)
 
     socket
     |> assign(:selection, selection)
     |> assign(:selected_trips, selected_trips(day, selection))
+    |> assign(:block_selection, block_selection)
+    |> assign(:selected_blocks, selected_blocks(day, block_selection))
     |> assign(
       day_types: day.day_types,
       day_type: day.day_type,
@@ -2811,8 +2924,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       vehicle_types: [],
       route_settings: %{},
       selected_trips: [],
+      selected_blocks: [],
+      block_selection: MapSet.new(),
       pool_page_ids: MapSet.new(),
       timeline_page_ids: MapSet.new(),
+      timeline_block_ids: MapSet.new(),
       visible_count: 0,
       timeline_key: nil,
       pool_visible_count: 0,
@@ -3090,6 +3206,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   max_piece_minutes={@max_piece_minutes}
                   routes={@routes}
                   selected_ids={@selection}
+                  selected_block_ids={@block_selection}
+                  page_block_ids={@timeline_block_ids}
+                  block_selected_count={length(@selected_blocks)}
                   bulk={@bulk}
                 />
 
