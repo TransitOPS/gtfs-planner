@@ -343,7 +343,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       # R3: a manual duplicate is never suffixed and never renamed.
       assert has_element?(view, "#new-route-id-error", "already used in this version")
       assert has_element?(view, "#new-route-id-manual[value='DUP1']")
-      assert has_element?(view, "#new-route-form-error")
+
+      assert has_element?(
+               view,
+               "#new-route-form-error a[href='#new-route-id-manual']",
+               "Route ID: This route ID is already used in this version."
+             )
+
       assert has_element?(view, "#new-route-drawer-overlay[data-open='true']")
       assert_push_event(view, "focus_form_error", %{form_id: "new-route-form"})
 

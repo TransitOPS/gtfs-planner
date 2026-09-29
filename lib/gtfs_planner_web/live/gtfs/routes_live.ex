@@ -8,7 +8,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   import GtfsPlannerWeb.Gtfs.FeedSettingsComponents,
     only: [agency_form_fields: 1, unsaved_guard: 1]
 
-  import GtfsPlannerWeb.PlannerComponents, only: [constraint_chip: 1, sort_header: 1]
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [
+      constraint_chip: 1,
+      drawer_footer: 1,
+      drawer_scroll: 1,
+      form_error_summary: 1,
+      message: 1,
+      sort_header: 1,
+      unsaved_badge: 1
+    ]
 
   alias Ecto.Changeset
   alias GtfsPlanner.Accounts
@@ -935,39 +944,45 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         </div>
       </section>
 
-      <.new_route_drawer
-        form={@new_route_form}
-        attempt={@new_route_attempt}
-        agency_options={@agency_options}
-        mode_counts={@new_route_mode_counts}
-        id_mode={@new_route_id_mode}
-        id_suggestion={@new_route_id_suggestion}
-        text_mode={@new_route_text_mode}
-        dirty?={@new_route_dirty?}
-        pending?={@new_route_pending?}
-        blocked?={@new_route_blocked?}
-        failure={@new_route_failure}
-        agency_required?={@new_route_agency_required?}
-        field_warnings={@field_warnings}
-        version={@current_gtfs_version}
-      />
+      <%!-- The create drawer and its discard confirmation are design-system
+             surfaces: `ds-page` gives them the action colour, the field grammar
+             and the display face without restyling the list behind them. --%>
+      <div id="new-route-surfaces" class="ds-page">
+        <.new_route_drawer
+          form={@new_route_form}
+          attempt={@new_route_attempt}
+          agency_options={@agency_options}
+          mode_counts={@new_route_mode_counts}
+          id_mode={@new_route_id_mode}
+          id_suggestion={@new_route_id_suggestion}
+          text_mode={@new_route_text_mode}
+          dirty?={@new_route_dirty?}
+          pending?={@new_route_pending?}
+          blocked?={@new_route_blocked?}
+          failure={@new_route_failure}
+          agency_required?={@new_route_agency_required?}
+          field_warnings={@field_warnings}
+          version={@current_gtfs_version}
+        />
 
-      <.confirm_dialog
-        :if={@new_route_confirm_discard?}
-        id="new-route-discard"
-        open={true}
-        title="Discard this route?"
-        confirm_label="Discard route"
-        pending_label="Discarding\u2026"
-        cancel_label="Keep editing"
-        on_confirm="confirm_discard_new_route"
-        on_cancel="cancel_discard_new_route"
-        described_by="new-route-discard-message"
-      >
-        <p id="new-route-discard-message">
-          You started this route. Nothing has been created yet, and your entries will be lost.
-        </p>
-      </.confirm_dialog>
+        <.confirm_dialog
+          :if={@new_route_confirm_discard?}
+          id="new-route-discard"
+          chrome="planner"
+          open={true}
+          title="Discard this route?"
+          confirm_label="Discard route"
+          pending_label="Discarding\u2026"
+          cancel_label="Keep editing"
+          on_confirm="confirm_discard_new_route"
+          on_cancel="cancel_discard_new_route"
+          described_by="new-route-discard-message"
+        >
+          <p id="new-route-discard-message">
+            You started this route. Nothing has been created yet, and your entries will be lost.
+          </p>
+        </.confirm_dialog>
+      </div>
 
       <.agency_setup_drawer
         form={@agency_setup_form}
@@ -1175,6 +1190,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
     ~H"""
     <.drawer
       id="new-route-drawer"
+      chrome="planner"
       open={not is_nil(@form)}
       pending={@pending?}
       on_close="close_new_route"
@@ -1184,65 +1200,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       class="max-w-[min(100vw,520px)]"
     >
       <:header_actions>
-        <span
-          :if={@dirty?}
-          id="new-route-unsaved"
-          class="badge badge-warning badge-sm whitespace-nowrap"
-        >
-          Unsaved changes
-        </span>
+        <.unsaved_badge :if={@dirty?} id="new-route-unsaved" />
       </:header_actions>
+      <:lede>
+        <span id="new-route-drawer-scope">Adds a route to {@version.name}</span>
+      </:lede>
 
-      <div id="new-route-form-panel" phx-hook="FormErrorFocus">
-        <p id="new-route-drawer-scope" class="text-[13px] text-muted">
-          Adds a route to {@version.name}
-        </p>
-
-        <%!-- The header preview: the badge and name as riders will see them,
-               computed from this draft alone and never from a saved row. --%>
-        <div
-          id="new-route-preview"
-          class="mt-4 flex min-h-12 items-center gap-3 rounded-control bg-canvas px-3 py-2"
-        >
-          <RouteIdentity.route_badge
-            route={@preview.route}
-            class="h-8 min-w-9 text-[15px] font-extrabold"
-          />
-          <span class="min-w-0 flex-1">
-            <span
-              id="new-route-preview-name"
-              class={[
-                "block truncate text-[15px] font-[650]",
-                if(@preview.name == "", do: "text-muted", else: "text-strong")
-              ]}
-            >
-              {if(@preview.name == "", do: "Name appears here", else: @preview.name)}
-            </span>
-            <span id="new-route-preview-meta" class="block text-[13px] text-muted">
-              {@preview.meta}
-            </span>
-          </span>
-        </div>
-
-        <div :if={@agency_required?} class="mt-4">
-          <.callout
-            id="new-route-agency-required"
-            kind="warning"
-            title="This version has no agency"
-            tabindex="-1"
-          >
-            Add the agency that operates this route in Settings › Agencies, then create the route
-            again. Nothing was saved.
-            <.link
-              id="new-route-agency-settings"
-              navigate={agencies_path(@version.id)}
-              class="mt-2 block font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-            >
-              Open Settings › Agencies
-            </.link>
-          </.callout>
-        </div>
-
+      <div id="new-route-form-panel" phx-hook="FormErrorFocus" class="flex min-h-0 flex-1 flex-col">
         <.form
           :if={@form}
           for={@form}
@@ -1252,151 +1216,201 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
           phx-submit="save_new_route"
           data-recovery="true"
           data-recovery-event="recover_new_route"
-          class="mt-5 grid gap-6"
+          class="flex min-h-0 flex-1 flex-col"
         >
-          <%!-- One signed attempt per drawer opening, minted by the server and
-                verified before the command runs: field edits never mint a new
-                one, and the domain never sees a browser-claimed actor (R3). --%>
-          <input type="hidden" name="_attempt" id="new-route-attempt" value={@attempt} />
+          <.drawer_scroll>
+            <%!-- The header preview: the badge and name as riders will see them,
+                   computed from this draft alone and never from a saved row. --%>
+            <div
+              id="new-route-preview"
+              class="flex min-h-12 items-center gap-3 rounded-control bg-canvas px-3 py-2"
+            >
+              <RouteIdentity.route_badge
+                route={@preview.route}
+                class="h-8 min-w-9 text-[15px] font-extrabold"
+              />
+              <span class="min-w-0 flex-1">
+                <span
+                  id="new-route-preview-name"
+                  class={[
+                    "block truncate text-[15px] font-[650]",
+                    if(@preview.name == "", do: "text-muted", else: "text-strong")
+                  ]}
+                >
+                  {if(@preview.name == "", do: "Name appears here", else: @preview.name)}
+                </span>
+                <span id="new-route-preview-meta" class="block text-[13px] text-muted">
+                  {@preview.meta}
+                </span>
+              </span>
+            </div>
 
-          <%!-- Connectivity state the client hook owns: hidden while connected,
-                filled locally while offline and with the server's revalidation
-                outcome after reconnect. The server never writes it, so a
-                queued stale event cannot present a stale connectivity state. --%>
-          <p id="new-route-recovery" role="status" hidden class="text-[13px] text-default"></p>
-
-          <div :if={new_route_save_failed?(@form)}>
-            <.callout
-              id="new-route-form-error"
-              kind="error"
-              title="Route not created. Check the highlighted fields"
+            <.message
+              :if={@agency_required?}
+              id="new-route-agency-required"
+              kind="warning"
+              title="This version has no agency"
               tabindex="-1"
             >
-              Nothing was created. Correct the fields marked below, then create the route again.
-            </.callout>
-          </div>
+              Add the agency that operates this route in Settings › Agencies, then create the
+              route again. Nothing was saved.
+              <:action>
+                <.button
+                  id="new-route-agency-settings"
+                  variant="secondary"
+                  class="min-h-11"
+                  navigate={agencies_path(@version.id)}
+                >
+                  Open Settings › Agencies
+                </.button>
+              </:action>
+            </.message>
 
-          <div :if={@failure} id="new-route-failure" tabindex="-1">
-            <.callout kind="error" title="Route not created">
-              {@failure.message}
-              <.link
-                :if={@failure.link}
-                id="new-route-failure-link"
-                navigate={@failure.link}
-                class="mt-2 block font-medium text-primary underline-offset-2 hover:underline"
-              >
-                Open the route this drawer already created
-              </.link>
-            </.callout>
-          </div>
+            <%!-- One signed attempt per drawer opening, minted by the server and
+                  verified before the command runs: field edits never mint a new
+                  one, and the domain never sees a browser-claimed actor (R3). --%>
+            <input type="hidden" name="_attempt" id="new-route-attempt" value={@attempt} />
 
-          <RouteFormComponents.identity_fields
-            form={@form}
-            prefix="new-route"
-            mode_counts={@mode_counts}
-            agency_options={@agency_options}
-            short_warning={@field_warnings[:short]}
-          />
+            <%!-- Connectivity state the client hook owns: hidden while connected,
+                  filled locally while offline and with the server's revalidation
+                  outcome after reconnect. The server never writes it, so a
+                  queued stale event cannot present a stale connectivity state. --%>
+            <p id="new-route-recovery" role="status" hidden class="text-[13px] text-default"></p>
 
-          <RouteFormComponents.color_fields
-            form={@form}
-            prefix="new-route"
-            text_mode={@text_mode}
-            similar_warning={@field_warnings[:similar]}
-          />
+            <%!-- A rejected submit lists every problem at once, each linking to
+                  its field; the first invalid field takes focus. --%>
+            <.form_error_summary
+              :if={new_route_save_failed?(@form)}
+              id="new-route-form-error"
+              title="Route not created. Fix these fields:"
+              failures={RouteFormComponents.error_failures(@form, "new-route")}
+              class=""
+            />
 
-          <%!-- Natural ID is creation-only (R1): the drawer either shows the
+            <div :if={@failure} id="new-route-failure" tabindex="-1">
+              <.message kind="error" title="Route not created">
+                {@failure.message}
+                <:action :if={@failure.link}>
+                  <.button
+                    id="new-route-failure-link"
+                    variant="secondary"
+                    class="min-h-11"
+                    navigate={@failure.link}
+                  >
+                    Open created route
+                  </.button>
+                </:action>
+              </.message>
+            </div>
+
+            <RouteFormComponents.identity_fields
+              form={@form}
+              prefix="new-route"
+              mode_counts={@mode_counts}
+              agency_options={@agency_options}
+              short_warning={@field_warnings[:short]}
+            />
+
+            <RouteFormComponents.color_fields
+              form={@form}
+              prefix="new-route"
+              text_mode={@text_mode}
+              similar_warning={@field_warnings[:similar]}
+            />
+
+            <%!-- Natural ID is creation-only (R1): the drawer either shows the
                 value the command will allocate, with the reason, or takes an
                 override the command rechecks under the version lock. --%>
-          <div id="new-route-identity-fields" class="grid gap-1.5 border-t border-subtle pt-5">
-            <div class="flex items-center justify-between gap-3">
-              <label
-                :if={@manual_id?}
-                for="new-route-id-manual"
-                class="text-[13px] font-[650] text-default"
-              >
-                Route ID
-              </label>
-              <p :if={not @manual_id?} class="text-[13px] font-[650] text-default">Route ID</p>
-              <button
-                :if={not @manual_id?}
-                type="button"
-                id="new-route-id-edit"
-                phx-click="use_manual_route_id"
-                class="inline-flex min-h-9 items-center font-[650] text-action underline underline-offset-2 hover:no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
-              >
-                <.icon name="hero-pencil-square" class="mr-1 size-3.5" /> Change
-              </button>
-              <button
-                :if={@manual_id?}
-                type="button"
-                id="new-route-id-auto"
-                phx-click="use_generated_route_id"
-                class="inline-flex min-h-9 items-center font-[650] text-action underline underline-offset-2 hover:no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
-              >
-                Use the generated ID
-              </button>
-            </div>
+            <div id="new-route-identity-fields" class="grid gap-1.5 border-t border-subtle pt-5">
+              <div class="flex items-center justify-between gap-3">
+                <label
+                  :if={@manual_id?}
+                  for="new-route-id-manual"
+                  class="text-[13px] font-[650] text-default"
+                >
+                  Route ID
+                </label>
+                <p :if={not @manual_id?} class="text-[13px] font-[650] text-default">Route ID</p>
+                <button
+                  :if={not @manual_id?}
+                  type="button"
+                  id="new-route-id-edit"
+                  phx-click="use_manual_route_id"
+                  class="inline-flex min-h-9 items-center font-[650] text-action underline underline-offset-2 hover:no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+                >
+                  <.icon name="hero-pencil-square" class="mr-1 size-3.5" /> Change
+                </button>
+                <button
+                  :if={@manual_id?}
+                  type="button"
+                  id="new-route-id-auto"
+                  phx-click="use_generated_route_id"
+                  class="inline-flex min-h-9 items-center font-[650] text-action underline underline-offset-2 hover:no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+                >
+                  Use the generated ID
+                </button>
+              </div>
 
-            <div :if={not @manual_id?} id="new-route-id-generated">
+              <div :if={not @manual_id?} id="new-route-id-generated">
+                <p
+                  id="new-route-id-value"
+                  class={[
+                    "flex min-h-11 items-center rounded-control bg-canvas px-3 font-mono text-sm",
+                    if(generated_route_id(@id_suggestion) == "",
+                      do: "text-muted",
+                      else: "text-strong"
+                    )
+                  ]}
+                >
+                  {generated_route_id(@id_suggestion)}
+                </p>
+                <p id="new-route-id-reason" class="mt-1.5 text-[13px] text-muted">
+                  {generated_route_id_reason(@id_suggestion, @preview.mode)}
+                </p>
+              </div>
+
+              <div :if={@manual_id?} class="grid gap-1.5">
+                <input
+                  type="text"
+                  id="new-route-id-manual"
+                  name="route[route_id]"
+                  value={@form[:route_id].value}
+                  phx-debounce="blur"
+                  autocomplete="off"
+                  spellcheck="false"
+                  maxlength="255"
+                  aria-invalid={to_string(@id_errors != [])}
+                  aria-describedby={
+                    if(@id_errors == [],
+                      do: "new-route-id-help",
+                      else: "new-route-id-error new-route-id-help"
+                    )
+                  }
+                  class="h-11 max-w-[240px] w-full rounded-control border border-control bg-white px-3 font-mono text-sm text-strong placeholder:text-muted aria-[invalid=true]:border-2 aria-[invalid=true]:border-error-fg"
+                />
+                <p id="new-route-id-help" class="mt-1.5 text-[13px] text-muted">
+                  Unique in this version. Trips, transfers and fare rules refer to it, so it can't
+                  change later.
+                </p>
+              </div>
+
               <p
-                id="new-route-id-value"
-                class={[
-                  "flex min-h-11 items-center rounded-control bg-canvas px-3 font-mono text-sm",
-                  if(generated_route_id(@id_suggestion) == "",
-                    do: "text-muted",
-                    else: "text-strong"
-                  )
-                ]}
+                :if={@id_errors != []}
+                id="new-route-id-error"
+                class="mt-1.5 flex items-start gap-1.5 text-[13px] font-semibold text-error-fg"
               >
-                {generated_route_id(@id_suggestion)}
-              </p>
-              <p id="new-route-id-reason" class="mt-1.5 text-[13px] text-muted">
-                {generated_route_id_reason(@id_suggestion, @preview.mode)}
+                <.icon name="hero-exclamation-circle" class="mt-px size-3.5 shrink-0" />
+                {Enum.join(@id_errors, " ")}
               </p>
             </div>
 
-            <div :if={@manual_id?} class="grid gap-1.5">
-              <input
-                type="text"
-                id="new-route-id-manual"
-                name="route[route_id]"
-                value={@form[:route_id].value}
-                phx-debounce="blur"
-                autocomplete="off"
-                spellcheck="false"
-                maxlength="255"
-                aria-invalid={to_string(@id_errors != [])}
-                aria-describedby={
-                  if(@id_errors == [],
-                    do: "new-route-id-help",
-                    else: "new-route-id-error new-route-id-help"
-                  )
-                }
-                class="h-11 max-w-[240px] w-full rounded-control border border-control bg-white px-3 font-mono text-sm text-strong placeholder:text-muted aria-[invalid=true]:border-2 aria-[invalid=true]:border-error-fg"
-              />
-              <p id="new-route-id-help" class="mt-1.5 text-[13px] text-muted">
-                Unique in this version. Trips, transfers and fare rules refer to it, so it can't
-                change later.
-              </p>
-            </div>
-
-            <p
-              :if={@id_errors != []}
-              id="new-route-id-error"
-              class="mt-1.5 flex items-start gap-1.5 text-[13px] font-semibold text-error-fg"
-            >
-              <.icon name="hero-exclamation-circle" class="mt-px size-3.5 shrink-0" />
-              {Enum.join(@id_errors, " ")}
+            <p class="rounded-control bg-canvas px-3 py-2.5 text-[13px] text-muted">
+              Add a description, web page and display order on the route's Details tab after you
+              create it.
             </p>
-          </div>
+          </.drawer_scroll>
 
-          <p class="rounded-control bg-canvas px-3 py-2.5 text-[13px] text-muted">
-            Add a description, web page and display order on the route's Details tab after you
-            create it.
-          </p>
-
-          <div class="flex flex-wrap items-center justify-end gap-3">
+          <.drawer_footer>
             <.button
               id="new-route-cancel"
               type="button"
@@ -1415,7 +1429,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
             >
               Create route
             </.button>
-          </div>
+          </.drawer_footer>
         </.form>
       </div>
     </.drawer>
