@@ -1171,6 +1171,50 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: route lifecycle deletion routes (delete with 2 trips, empty)")
 
+    # ── Route with unlocated stops (spec 16, AC-20 boarding advisory) ──
+    #
+    # BROWSER_ROUTE16_UNLOCATED's one pattern visits two stops stored without
+    # coordinates, so its connector section is known missing
+    # (`patterns_missing` is 1) while the route draws nothing on the map. The
+    # advisory's positive path needs such a route; BROWSER_PATTERNS_READY, whose
+    # stops all carry coordinates, is its "no warning" control.
+    {:ok, _unlocated_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "BROWSER_ROUTE16_UNLOCATED",
+        route_short_name: "U16",
+        route_long_name: "Browser Route16 Unlocated",
+        route_type: 3
+      })
+
+    unlocated_pattern =
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: "BROWSER_ROUTE16_UNLOCATED",
+        route_pattern_id: "BROWSER-U16-P1",
+        route_pattern_name: "U16 Local",
+        direction_id: 0
+      })
+
+    Enum.each(1..2, fn position ->
+      {:ok, stop} =
+        Gtfs.create_stop(%{
+          stop_id: "BROWSER_ROUTE16_NOCOORD_#{position}",
+          stop_name: "Unlocated Stop #{position}",
+          location_type: 0,
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id
+        })
+
+      GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(
+        unlocated_pattern,
+        stop.stop_id,
+        position
+      )
+    end)
+
+    IO.puts("Browser seed: route with a pattern over stops stored without coordinates")
+
     # ── Route lifecycle browser workflow fixtures (spec 16 step 33) ──
     #
     # BROWSER_ROUTE16_FLOW gives the composed stale-review and denial journeys
