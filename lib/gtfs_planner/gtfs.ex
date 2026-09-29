@@ -2731,6 +2731,46 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Lists the station editing statuses for an organization and GTFS version.
+
+  Each entry names its station and user, and the list is ordered by `started_at`
+  ascending. A status whose station belongs to another organization or version is
+  omitted.
+  """
+  @spec list_station_editors(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          [
+            %{
+              station_id: Ecto.UUID.t(),
+              station_stop_id: String.t(),
+              station_name: String.t() | nil,
+              user_id: Ecto.UUID.t(),
+              email: String.t(),
+              started_at: DateTime.t()
+            }
+          ]
+  def list_station_editors(organization_id, gtfs_version_id) do
+    from(s in StationEditingStatus,
+      join: station in Stop,
+      on:
+        station.id == s.station_id and station.organization_id == ^organization_id and
+          station.gtfs_version_id == ^gtfs_version_id,
+      join: user in Accounts.User,
+      on: user.id == s.user_id,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
+      order_by: [asc: s.started_at],
+      select: %{
+        station_id: s.station_id,
+        station_stop_id: station.stop_id,
+        station_name: station.stop_name,
+        user_id: s.user_id,
+        email: user.email,
+        started_at: s.started_at
+      }
+    )
+    |> Repo.all()
+  end
+
+  @doc """
   Subscribes to station editing status updates for an organization, GTFS version, and station.
   """
   @spec subscribe_station_editing_status(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t()) ::
