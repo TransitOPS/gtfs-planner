@@ -232,34 +232,30 @@ test.describe("durable import and export browser journeys", () => {
     await expect(page.locator("[phx-hook='DownloadHook']")).toHaveCount(0);
   });
 
-  test("validation form launches a persisted run and exposes its result and history", async ({
+  test("check feed launches a persisted run and exposes its result and history", async ({
     page,
   }) => {
     await openRoute(page, "export");
-    await expectKeyboardAccess(page, "#validation-checks-mobility_data");
-    await page.locator("#run-validation").click();
-    await expect(page.locator("#validation-checks-error")).toBeVisible();
-    await page.locator("#validation-checks-mobility_data").check();
-    await expect(
-      page.locator("#validation-checks-mobility_data"),
-    ).toBeChecked();
-    await expect(page.locator("#validation-checks-error")).toHaveCount(0);
+    // openRoute ends by following the Export tab to the page it is already on,
+    // so the view can still remount once after it reports connected.
+    await expect(async () => {
+      await expectKeyboardAccess(page, "#run-validation");
+    }).toPass({ timeout: 10_000 });
 
-    const historyLinks = page.locator("table tbody a", {
-      hasText: "MobilityData",
-    });
-    const historyCountBefore = await historyLinks.count();
-    await page
-      .locator("#validation-form")
-      .evaluate((form) => form.requestSubmit());
+    await page.locator("#run-validation").click();
 
     await expect(page.locator("#mobility-summary-metrics")).toBeVisible();
-    await expect(page.locator("#validation-history-counts")).toBeVisible();
-    await expect(historyLinks).toHaveCount(historyCountBefore + 1);
+    await expect(page.locator("#check-verdict")).toContainText(
+      "Review the 1 warning.",
+    );
+    await expect(page.locator("#recent-checks")).toBeVisible();
 
-    const resultLink = page.getByRole("link", { name: "View Full Results" });
+    const resultLink = page.locator("#view-validation-results");
     const resultHref = await resultLink.getAttribute("href");
-    await expect(historyLinks.first()).toHaveAttribute("href", resultHref);
+    // Recent checks lists the newest run first, and it is this run.
+    await expect(
+      page.locator("#recent-checks a", { hasText: "Feed check" }).first(),
+    ).toHaveAttribute("href", resultHref);
     await resultLink.click();
     await page.waitForURL(new RegExp("/gtfs/[^/]+/validation/[^/]+$"));
     await expect(page.locator("#validation-summary")).toBeVisible();
@@ -368,6 +364,7 @@ test.describe("durable import and export browser journeys", () => {
       await openRoute(page, "export", { authenticate: false });
       await expect(page.locator("#gtfs-export-form")).toBeVisible();
       await expect(page.locator("#export-workspace")).toBeVisible();
+      await page.locator("#export-files summary").click();
       await expect(page.locator("#export-inventory")).toBeVisible();
       await expect(page.locator("#export-download-link")).toBeVisible();
       await expectKeyboardAccess(page, "#export-type-full");
