@@ -417,8 +417,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
       assert yard_id == scope.yard.id
       assert type_id == scope.diesel.id
 
-      # Clearing one value must not leave the other behind on the same row.
-      assert {:ok, _result} = confirmed_save(scope, school_key, "101", %{"vehicle_type_id" => ""})
+      # Clearing one value must not leave the other behind on the same row; the
+      # page submits both values, so a blank is what clears a column.
+      assert {:ok, _result} =
+               confirmed_save(scope, school_key, "101", %{
+                 "garage_id" => scope.yard.id,
+                 "vehicle_type_id" => ""
+               })
+
       assert [%{garage_id: yard_id, vehicle_type_id: nil}] = attribute_rows(scope)
       assert yard_id == scope.yard.id
 
