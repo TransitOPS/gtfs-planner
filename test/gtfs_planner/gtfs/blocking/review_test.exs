@@ -19,6 +19,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReviewTest do
     `updated_at`, any of its four times, or the resolved target changes.
   - The selected day type is the first effect and `affected_date_count` is the sum
     of the affected day types' dates.
+  - A spec 05 `:assign` still produces the fingerprint it produced before this
+    review learned about plans, and a review that names an `:inputs_digest` is
+    fingerprinted with it.
+  - A plan's changes land in their own `to` blocks, a `:touched` block is diffed
+    although no trip moves, an `:attributes` command confirms only when it reaches
+    another day type or adds a problem, and a `{:plan, _}` command always confirms.
 
   Every value is derived from R3/AC-12 and hand-written integer clock seconds; the
   module reads no database, clock, files or network. The focused gate command is
@@ -32,6 +38,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReviewTest do
   @monday ~D[2026-01-05]
   @tuesday ~D[2026-01-06]
   @wednesday ~D[2026-01-07]
+
+  # The fingerprint this review produced for the safe single-trip assign below
+  # before it learned about plans, attribute saves and input digests (CR-2).
+  @spec05_assign_fingerprint "ea82baed9c78d58c607f36e071881c8b5341e9d7cfe4f23f67373a104673b3bc"
 
   describe "build/1 with a shared trip across day types" do
     test "lists the added overlap on the other day type and needs confirmation" do
@@ -400,6 +410,238 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReviewTest do
     end
   end
 
+  describe "build/1 for plans and attribute saves" do
+    test "a spec 05 assign keeps the fingerprint it produced before this step" do
+      {day_type, service_dates} = solo_day()
+      x = trip("x", "A", nil, at(8, 0), at(9, 0))
+
+      review =
+        build(%{
+          command: {:assign, [x.id], "7"},
+          target: "7",
+          selected_key: day_type.key,
+          affected: [day_type],
+          rows: [x],
+          changes: [%{trip: x, from: nil, to: "7"}],
+          service_dates: service_dates
+        })
+
+      assert review.fingerprint == @spec05_assign_fingerprint
+      assert review.target == "7"
+      assert Enum.map(review.effects, & &1.changed_trip_ids) == [[x.id]]
+    end
+
+    test "an inputs_digest fingerprints the review and is absent by default" do
+      {day_type, service_dates} = solo_day()
+      x = trip("x", "A", "101", at(8, 0), at(9, 0))
+
+      fingerprint = fn inputs_digest ->
+        build(%{
+          command: {:assign, ["x"], "202"},
+          target: "202",
+          selected_key: day_type.key,
+          affected: [day_type],
+          rows: [x],
+          changes: [%{trip: x, from: "101", to: "202"}],
+          service_dates: service_dates,
+          inputs_digest: inputs_digest
+        }).fingerprint
+      end
+
+      assert fingerprint.(nil) != fingerprint.("a")
+      assert fingerprint.("a") == fingerprint.("a")
+      assert fingerprint.("a") != fingerprint.("b")
+    end
+
+    test "each change lands in its own block on every affected day type" do
+      calendars = [calendar("A", [@monday, @tuesday], 1), calendar("B", [@monday], 1)]
+      {monday, tuesday} = two_day_types(calendars, ["A", "B"], ["A"])
+
+      p = trip("p", "A", "101", at(8, 0), at(9, 0))
+      q = trip("q", "A", "101", at(10, 0), at(11, 0))
+      x1 = trip("x1", "A", nil, at(8, 0), at(9, 0))
+      x2 = trip("x2", "A", nil, at(10, 0), at(11, 0))
+
+      review =
+        build(%{
+          command: {:plan, :replace_all},
+          target: nil,
+          selected_key: monday.key,
+          affected: DayTypes.containing(DayTypes.derive(calendars), "A"),
+          rows: [p, q, x1, x2],
+          changes: [%{trip: x1, from: nil, to: "105"}, %{trip: x2, from: nil, to: "101"}],
+          service_dates: DayTypes.service_dates(calendars)
+        })
+
+      assert Enum.map(review.effects, & &1.day_type.key) == [monday.key, tuesday.key]
+
+      # x2 joins 101 and overlaps q there; x1 goes to 105 and overlaps nothing, so
+      # the pairs name exactly the block each change's own `to` put it in.
+      for day_type <- [monday, tuesday] do
+        result = effect(review, day_type)
+
+        assert result.changed_trip_ids == [x1.id, x2.id]
+
+        assert Enum.map(result.added, &{&1.code, Enum.sort(&1.trip_ids)}) ==
+                 [{:overlap, [q.id, x2.id]}]
+
+        refute Enum.any?(result.added, &(&1.trip_ids == [p.id, x1.id]))
+        assert result.joins == []
+        assert result.splits == []
+      end
+
+      assert review.added_problem_count == 2
+      assert review.needs_confirmation?
+    end
+
+    test "a plan always needs confirmation although it adds no problem" do
+      {day_type, service_dates} = solo_day()
+      x = trip("x", "A", nil, at(8, 0), at(9, 0))
+
+      review =
+        build(%{
+          command: {:plan, :replace_all},
+          target: nil,
+          selected_key: day_type.key,
+          affected: [day_type],
+          rows: [x],
+          changes: [%{trip: x, from: nil, to: "7"}],
+          service_dates: service_dates
+        })
+
+      assert review.added_problem_count == 0
+      assert review.needs_confirmation?
+    end
+
+    test "a touched block is diffed although no trip moves" do
+      {day_type, service_dates} = solo_day()
+      p = trip("p", "A", "101", at(8, 0), at(9, 0))
+      q = trip("q", "A", "101", at(9, 8), at(10, 0))
+
+      review =
+        build(%{
+          command: {:attributes, "101", "g", nil},
+          target: nil,
+          selected_key: day_type.key,
+          affected: [day_type],
+          rows: [p, q],
+          changes: [],
+          touched: ["101"],
+          context_after: Context.layover_only(10),
+          service_dates: service_dates
+        })
+
+      result = effect(review, day_type)
+
+      assert result.changed_trip_ids == []
+      assert result.joins == []
+      assert result.splits == []
+      assert Enum.any?(result.added, &(&1.code == :short_layover and &1.trip_ids == [p.id, q.id]))
+      assert result.existing == []
+      assert review.added_problem_count == 1
+      assert review.needs_confirmation?
+    end
+
+    test "an attribute row the after context breaks is added" do
+      {day_type, service_dates} = solo_day()
+      p = trip("p", "A", "101", at(8, 0), at(9, 0))
+
+      before = %Context{
+        min_layover_minutes: @min_layover,
+        route_settings: %{"R1" => %{required_vehicle_type_id: "t1"}},
+        vehicle_types: %{"t1" => vehicle_type("t1"), "t2" => vehicle_type("t2")},
+        attributes: %{{"A", "101"} => %{garage_id: nil, vehicle_type_id: "t1"}}
+      }
+
+      review =
+        build(%{
+          command: {:attributes, "101", nil, "t2"},
+          target: nil,
+          selected_key: day_type.key,
+          affected: [day_type],
+          rows: [p],
+          changes: [],
+          touched: ["101"],
+          context: before,
+          context_after: %{
+            before
+            | attributes: %{{"A", "101"} => %{garage_id: nil, vehicle_type_id: "t2"}}
+          },
+          service_dates: service_dates
+        })
+
+      assert [
+               %{
+                 code: :type_mismatch,
+                 severity: :error,
+                 block_id: "101",
+                 trip_ids: [trip_id],
+                 detail: detail
+               }
+             ] = effect(review, day_type).added
+
+      assert trip_id == p.id
+      assert detail == %{vehicle_type_id: "t2", required_vehicle_type_id: "t1"}
+      assert review.added_problem_count == 1
+      assert review.needs_confirmation?
+    end
+
+    test "an attribute save needs no confirmation on the selected day type alone" do
+      {day_type, service_dates} = solo_day()
+      p = trip("p", "A", "101", at(8, 0), at(9, 0))
+
+      review =
+        build(%{
+          command: {:attributes, "101", "g", nil},
+          target: nil,
+          selected_key: day_type.key,
+          affected: [day_type],
+          rows: [p],
+          changes: [],
+          touched: ["101"],
+          service_dates: service_dates
+        })
+
+      assert review.added_problem_count == 0
+
+      assert review.effects == [
+               %{
+                 day_type: day_type,
+                 selected?: true,
+                 changed_trip_ids: [],
+                 joins: [],
+                 splits: [],
+                 added: [],
+                 existing: []
+               }
+             ]
+
+      refute review.needs_confirmation?
+    end
+
+    test "an attribute save on another day type needs confirmation" do
+      calendars = [calendar("A", [@monday, @tuesday], 1), calendar("B", [@monday], 1)]
+      {monday, tuesday} = two_day_types(calendars, ["A", "B"], ["A"])
+      p = trip("p", "A", "101", at(8, 0), at(9, 0))
+
+      review =
+        build(%{
+          command: {:attributes, "101", "g", nil},
+          target: nil,
+          selected_key: monday.key,
+          affected: DayTypes.containing(DayTypes.derive(calendars), "A"),
+          rows: [p],
+          changes: [],
+          touched: ["101"],
+          service_dates: DayTypes.service_dates(calendars)
+        })
+
+      assert Enum.map(review.effects, & &1.day_type.key) == [monday.key, tuesday.key]
+      assert review.added_problem_count == 0
+      assert review.needs_confirmation?
+    end
+  end
+
   defp build(attrs) do
     Review.build(
       Map.merge(
@@ -485,6 +727,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReviewTest do
       last_stop: Keyword.get(opts, :last_stop, stop("S")),
       plottable?: Keyword.get(opts, :plottable?, true)
     }
+  end
+
+  defp vehicle_type(id) do
+    %{id: id, name: id, max_out_minutes: nil}
   end
 
   defp stop(stop_id, opts \\ []) do
