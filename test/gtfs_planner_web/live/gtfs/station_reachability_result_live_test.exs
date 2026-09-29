@@ -53,6 +53,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLiveTest do
       assert html =~ "Reachability analysis is running"
     end
 
+    test "renders an interrupted run as failed with a plain explanation", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      {:ok, run} =
+        Validations.create_validation_run(organization.id, version.id, "station_reachability")
+
+      run
+      |> ValidationRun.changeset(%{
+        status: "failed",
+        error_details: "The run was interrupted before it finished.",
+        completed_at: DateTime.utc_now()
+      })
+      |> Repo.update!()
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/station-reachability/#{run.id}")
+
+      assert has_element?(
+               view,
+               "#reachability-failed",
+               "The run was interrupted before it finished. Run it again from the Reachability tab."
+             )
+    end
+
     test "redirects non-station runs to shared validation result page", %{
       conn: conn,
       user: user,

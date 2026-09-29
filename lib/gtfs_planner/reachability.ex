@@ -15,6 +15,13 @@ defmodule GtfsPlanner.Reachability do
 
   @pubsub GtfsPlanner.PubSub
 
+  # A run still active after this long is treated as orphaned by a restart or
+  # deploy. Ceiling: a run that legitimately outlasts it is failed while still
+  # working. Upgrade path: a heartbeat column the run task refreshes.
+  @stale_run_after_seconds 15 * 60
+
+  @interrupted_message "The run was interrupted before it finished."
+
   @spec start_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) ::
           {:ok, ValidationRun.t()}
           | {:error,
@@ -25,6 +32,7 @@ defmodule GtfsPlanner.Reachability do
     with {:ok, station} <- fetch_station(organization_id, gtfs_version_id, station_stop_id),
          snapshot <- build_snapshot(organization_id, gtfs_version_id, station),
          :ok <- check_battery_size(snapshot),
+         :ok <- fail_stale_runs(organization_id, gtfs_version_id, station_stop_id),
          {:ok, run} <- insert_run(organization_id, gtfs_version_id, station_stop_id) do
       case spawn_run(run, station, snapshot, runner) do
         {:ok, _pid} ->
@@ -58,6 +66,7 @@ defmodule GtfsPlanner.Reachability do
         r.gtfs_version_id == ^gtfs_version_id and
         r.run_type == "station_reachability" and
         r.status in ["pending", "started", "running"] and
+        r.started_at >= ^stale_run_cutoff() and
         fragment("result_json -> 'metadata' ->> 'station_stop_id' = ?", ^station_stop_id)
     )
     |> order_by([r], desc: r.inserted_at)
@@ -258,6 +267,35 @@ defmodule GtfsPlanner.Reachability do
       :ok
     end
   end
+
+  # The task that would finish an active run dies with the node, so a row left
+  # active past the timeout would otherwise block every later start.
+  defp fail_stale_runs(organization_id, gtfs_version_id, station_stop_id) do
+    now = DateTime.utc_now()
+
+    ValidationRun
+    |> where(
+      [r],
+      r.organization_id == ^organization_id and
+        r.gtfs_version_id == ^gtfs_version_id and
+        r.run_type == "station_reachability" and
+        r.status in ["pending", "started", "running"] and
+        r.started_at < ^stale_run_cutoff() and
+        fragment("result_json -> 'metadata' ->> 'station_stop_id' = ?", ^station_stop_id)
+    )
+    |> Repo.update_all(
+      set: [
+        status: "failed",
+        error_details: @interrupted_message,
+        completed_at: now,
+        updated_at: now
+      ]
+    )
+
+    :ok
+  end
+
+  defp stale_run_cutoff, do: DateTime.add(DateTime.utc_now(), -@stale_run_after_seconds, :second)
 
   defp insert_run(organization_id, gtfs_version_id, station_stop_id) do
     now = DateTime.utc_now()
