@@ -615,6 +615,133 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   end
 
   @doc """
+  Reads a GeoJSON document into the polygon features the area editor can offer.
+
+  Accepts a JSON binary or an already-decoded document, and a
+  `FeatureCollection`, a single `Feature` or a bare `Polygon`/`MultiPolygon`.
+  Returns the polygon features in document order with the name each one carries
+  (`properties` keys `name`, `zone_name`, `Name`, `NAME` or `title`, the first
+  the file uses; `"Area N"` when it has none) plus that key, or the reason the
+  file cannot offer an area: `:unreadable` for a binary that is not JSON,
+  `:lines` for a document with no Polygon or MultiPolygon feature, and
+  `:swapped` when the polygons' positions look latitude-first (AC-13), the same
+  rule `normalize/1` reports as `:swapped_coordinates`.
+  """
+  @spec import_features(map() | binary()) ::
+          {:ok,
+           %{
+             features: [%{index: pos_integer(), name: String.t(), geojson: map()}],
+             name_field: String.t() | nil
+           }}
+          | {:error, :unreadable | :lines | :swapped}
+  def import_features(input) do
+    with {:ok, document} <- decode(input) do
+      polygons = Enum.filter(features(document), &polygon_feature?/1)
+
+      cond do
+        polygons == [] -> {:error, :lines}
+        swapped_positions?(polygons) -> {:error, :swapped}
+        true -> {:ok, %{features: named_features(polygons), name_field: name_field(polygons)}}
+      end
+    end
+  end
+
+  @doc """
+  Swaps every position of a GeoJSON document from latitude-first to
+  longitude-first (AC-13's "Swap and preview").
+
+  A file whose coordinates are reversed is read, offered, and only then fixed,
+  so the editor can show the file it was given. The transform walks `features`,
+  `geometry` and `coordinates` and leaves everything else untouched; a binary
+  that is not JSON answers `:unreadable`.
+  """
+  @spec swap_coordinates(map() | binary()) :: {:ok, map()} | {:error, :unreadable}
+  def swap_coordinates(input) do
+    with {:ok, document} <- decode(input) do
+      {:ok, swap_positions(document)}
+    end
+  end
+
+  # The document's candidate features: a collection's `features`, a `Feature`,
+  # or a bare geometry wrapped as one, so a single-polygon file needs no
+  # special case. Anything else yields none and is answered as `:lines`.
+  defp features(%{"type" => "FeatureCollection", "features" => features}) when is_list(features),
+    do: features
+
+  defp features(%{"type" => "Feature"} = feature), do: [feature]
+
+  defp features(%{"type" => type} = geometry) when type in ["Polygon", "MultiPolygon"],
+    do: [%{"type" => "Feature", "properties" => %{}, "geometry" => geometry}]
+
+  defp features(_document), do: []
+
+  defp polygon_feature?(%{"geometry" => %{"type" => type}})
+       when type in ["Polygon", "MultiPolygon"],
+       do: true
+
+  defp polygon_feature?(_feature), do: false
+
+  # One name key per file, the first of the prototype's keys any feature carries,
+  # so every feature in one file is named the same way.
+  @name_keys ["name", "zone_name", "Name", "NAME", "title"]
+
+  defp name_field(polygons) do
+    Enum.find_value(@name_keys, fn key ->
+      if Enum.any?(polygons, &present_name?(&1, key)), do: key
+    end)
+  end
+
+  defp present_name?(%{"properties" => properties}, key) when is_map(properties),
+    do: is_binary(properties[key]) and String.trim(properties[key]) != ""
+
+  defp present_name?(_feature, _key), do: false
+
+  defp named_features(polygons) do
+    field = name_field(polygons)
+
+    polygons
+    |> Enum.with_index(1)
+    |> Enum.map(fn {feature, index} ->
+      %{index: index, name: feature_name(feature, field, index), geojson: feature["geometry"]}
+    end)
+  end
+
+  defp feature_name(%{"properties" => properties}, field, _index)
+       when is_map(properties) and is_binary(field),
+       do: String.trim(properties[field])
+
+  defp feature_name(_feature, _field, index), do: "Area #{index}"
+
+  defp swapped_positions?(polygons) do
+    positions =
+      Enum.flat_map(polygons, fn feature ->
+        case polygon_geometry(feature) do
+          {:ok, _geometry, positions} -> positions
+          _error -> []
+        end
+      end)
+
+    validate_coordinate_order(positions) == {:error, :swapped_coordinates}
+  end
+
+  defp swap_positions(%{"coordinates" => coordinates} = geometry),
+    do: Map.put(geometry, "coordinates", swap_lists(coordinates))
+
+  defp swap_positions(%{"geometry" => geometry} = feature),
+    do: Map.put(feature, "geometry", swap_positions(geometry))
+
+  defp swap_positions(%{"features" => features} = collection) when is_list(features),
+    do: Map.put(collection, "features", Enum.map(features, &swap_positions/1))
+
+  defp swap_positions(node), do: node
+
+  # A position is a list whose first two elements are numbers; every other list
+  # is a ring or a list of rings, so the recursion bottoms out at positions.
+  defp swap_lists([lon, lat | rest]) when is_number(lon) and is_number(lat), do: [lat, lon | rest]
+  defp swap_lists(list) when is_list(list), do: Enum.map(list, &swap_lists/1)
+  defp swap_lists(other), do: other
+
+  @doc """
   Applies the R8 output transform to a stored or derived geometry.
 
   The result carries at most six decimals per coordinate. It is not validated;

@@ -84,10 +84,17 @@ defmodule GtfsPlanner.Gtfs.Flex do
   @type area_input :: map()
 
   @typedoc """
-  One route the create drawer's detour select offers: `%{id: route_id, name:
-  "20 Valley Line"}`.
+  One route the create drawer's detour select and the area editor's routes panel
+  offer: `%{id: route_id, name: "20 Valley Line"}`, plus the parts the editor's
+  reusable badge draws (`short_name`, `long_name`, `color`).
   """
-  @type route_choice :: %{id: String.t(), name: String.t()}
+  @type route_choice :: %{
+          id: String.t(),
+          name: String.t(),
+          short_name: String.t() | nil,
+          long_name: String.t() | nil,
+          color: String.t() | nil
+        }
 
   # --- reads ------------------------------------------------------------------
 
@@ -294,13 +301,50 @@ defmodule GtfsPlanner.Gtfs.Flex do
     from(r in Route,
       where: r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id,
       order_by: [asc: r.route_id],
-      select: {r.route_id, r.route_short_name, r.route_long_name}
+      select: {r.route_id, r.route_short_name, r.route_long_name, r.route_color}
     )
     |> Repo.all()
-    |> Enum.map(fn {route_id, short_name, long_name} ->
-      %{id: route_id, name: route_name(route_id, short_name, long_name)}
+    |> Enum.map(fn {route_id, short_name, long_name, color} ->
+      %{
+        id: route_id,
+        name: route_name(route_id, short_name, long_name),
+        short_name: short_name,
+        long_name: long_name,
+        color: route_color(color)
+      }
     end)
   end
+
+  @doc """
+  The bounding box of the version's stops that have coordinates, as
+  `{west, south, east, north}`, or `nil` when no stop of the version has both.
+
+  The area editor asks TIGERweb for the places intersecting this box, so the
+  version's own extent bounds the picker's list (AC-10). A version without stops
+  answers `nil`, which is the editor's name-and-state search instead. The read is
+  scoped to the organization and version (R10).
+  """
+  @spec stop_extent(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {float(), float(), float(), float()} | nil
+  def stop_extent(organization_id, version_id) do
+    from(s in Stop,
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^version_id and
+          not is_nil(s.stop_lon) and not is_nil(s.stop_lat),
+      select: {min(s.stop_lon), min(s.stop_lat), max(s.stop_lon), max(s.stop_lat)}
+    )
+    |> Repo.one()
+    |> case do
+      {nil, nil, nil, nil} ->
+        nil
+
+      {west, south, east, north} ->
+        {to_float(west), to_float(south), to_float(east), to_float(north)}
+    end
+  end
+
+  defp to_float(%Decimal{} = value), do: Decimal.to_float(value)
+  defp to_float(value) when is_number(value), do: value * 1.0
 
   # The name riders read in the create drawer's select. A version that carries
   # only one of the two names (or neither) still gets one label per route.

@@ -7,6 +7,14 @@
 # General application configuration
 import Config
 
+# The flex area editor uploads GeoJSON, and `.geojson` is not a suffix MIME
+# knows; registering the RFC 7946 media type is what `allow_upload`'s
+# `accept: ~w(.geojson .json)` needs on both sides (the file input's `accept`
+# attribute and the server's entry validation).
+config :mime, :types, %{
+  "application/geo+json" => ["geojson"]
+}
+
 config :gtfs_planner,
   ecto_repos: [GtfsPlanner.Repo],
   generators: [timestamp_type: :utc_datetime],

@@ -512,3 +512,90 @@ test("export-flex", async ({ page }) => {
 
   await captureReference(page, "flex-services-prototype.html", "service-export", "export-flex");
 });
+
+// ── area editor ───────────────────────────────────────────────────────────
+
+// The area editor's creation routes. The case enters the editor from the seeded
+// Newport Dial-a-Ride's first area, captures the choose panel, then walks the
+// Census picker: the extent's places with the CDP label, the chosen Newport
+// boundary measured as the recorded land polygon (25.8 km²) with its GEOID and
+// vintage, and "Use this area" keeping the work in the page's draft — the where
+// section shows it and the page asks for a Save, which the case never presses.
+test("area-editor", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  const versionId = await openFlex(page);
+
+  await page.getByRole("link", { name: "Newport Dial-a-Ride", exact: true }).click();
+  await waitForLiveView(page);
+
+  await page.locator("#edit-area-a1").click();
+  await waitForLiveView(page);
+
+  // The editor names the area it edits, starts on the choose panel, and keeps
+  // "Use this area" disabled until the area is usable.
+  await expect(page).toHaveURL(
+    new RegExp(`/gtfs/${versionId}/flex/[0-9a-f-]+/area\\?area=a1$`),
+  );
+  await expect(page.locator("#area-title")).toHaveText("Edit area");
+  await expect(page.locator("#area-mode-town")).toBeVisible();
+  await expect(page.locator("#use-area")).toBeDisabled();
+  await expect(page.locator("#use-area-reason")).toBeVisible();
+
+  await waitForTiles(page, "#flex-area-map");
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "area-editor");
+
+  // At 320 px the map stacks above the panel and the page still fits.
+  await page.setViewportSize(NARROW);
+  await expect(page.locator("#area-mode-import")).toBeVisible();
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "area-editor");
+
+  // Town or city limits: the places the Census service answers, with the
+  // census-designated place labelled as one.
+  await page.setViewportSize(DESKTOP);
+  await page.locator("#area-mode-town").click();
+
+  await expect(page.locator("#census-place-4152450")).toContainText("Newport city");
+  await expect(page.locator("#census-place-4104850")).toContainText("Census-designated place");
+
+  await page.locator("#census-place-4152450 input").check();
+
+  // The pick stores the water-removed land boundary with its provenance, and
+  // the editor measures it against the version.
+  await expect(page.locator("#area-stats")).toContainText("25.8 km²");
+  await expect(page.locator("#area-source")).toContainText(
+    "U.S. Census Bureau 2026 boundaries (GEOID 4152450)",
+  );
+  await expect(page.locator("#use-area")).toBeEnabled();
+
+  await waitForTiles(page, "#flex-area-map");
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "area-town");
+
+  await page.setViewportSize(NARROW);
+  await expect(page.locator("#area-stats")).toBeVisible();
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "area-town");
+
+  // "Use this area" returns to the service page with the area in the draft: the
+  // where section shows the Census source and the page is dirty. Nothing is
+  // stored, so the case stops before Save.
+  await page.setViewportSize(DESKTOP);
+  await page.locator("#use-area").click();
+  await waitForLiveView(page);
+
+  await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/flex/[0-9a-f-]+$`));
+  await expect(page.locator("#flex-service-page")).toHaveAttribute("data-dirty", "true");
+  await expect(page.locator("#f-area-a1")).toContainText("U.S. Census Bureau 2026");
+  await expect(page.locator("#save-bar")).toBeVisible();
+
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "area-used");
+
+  await captureReference(page, "flex-service-area-prototype.html", "choose", "area-choose");
+  await captureReference(page, "flex-service-area-prototype.html", "town", "area-town");
+});

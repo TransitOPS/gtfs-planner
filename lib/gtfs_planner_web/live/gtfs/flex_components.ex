@@ -1647,6 +1647,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
             variant="secondary"
             class="min-h-11"
             phx-click="edit_area"
+            phx-value-key={summary.area.key}
           >
             <.icon name="hero-pencil-square" class="size-4" /> Edit area
           </.button>
@@ -2864,8 +2865,13 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     """
   end
 
-  # How one area was chosen, in the words the editor met it in.
-  defp source_line(%FlexArea{source: :census} = area) do
+  @doc """
+  How one area was chosen, in the words the editor met it in.
+
+  Shared with the area editor's "From:" line (step 24), so a stored area and a
+  draft read the same sentence.
+  """
+  def source_line(%FlexArea{source: :census} = area) do
     join_help([
       census_layer_label(area.census_layer),
       "U.S. Census Bureau #{area.census_vintage}",
@@ -2873,7 +2879,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     ])
   end
 
-  defp source_line(%FlexArea{source: :route_distance} = area) do
+  def source_line(%FlexArea{source: :route_distance} = area) do
     case area.distance_m do
       distance when is_integer(distance) ->
         "Distance from the current routes · #{distance_metres(distance)}"
@@ -2883,24 +2889,30 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
     end
   end
 
-  defp source_line(%FlexArea{source: :drawn}), do: "Drawn boundary"
-  defp source_line(%FlexArea{source: :file}), do: "Imported from a file"
-  defp source_line(%FlexArea{}), do: "Area"
+  def source_line(%FlexArea{source: :drawn}), do: "Drawn boundary"
+  def source_line(%FlexArea{source: :file}), do: "Imported from a file"
+  def source_line(%FlexArea{}), do: "Area"
 
-  defp census_layer_label("place"), do: "Town or city limits"
-  defp census_layer_label("cdp"), do: "Census-designated place"
-  defp census_layer_label("county_subdivision"), do: "County subdivision"
-  defp census_layer_label("county"), do: "County"
-  defp census_layer_label(_layer), do: nil
+  @doc "The Census layer's reader-facing label, or `nil` for a layer this app does not pick."
+  def census_layer_label("place"), do: "Town or city limits"
+  def census_layer_label("cdp"), do: "Census-designated place"
+  def census_layer_label("county_subdivision"), do: "County subdivision"
+  def census_layer_label("county"), do: "County"
+  def census_layer_label(_layer), do: nil
 
-  defp join_help(parts) do
+  @doc "The non-empty parts joined with the app's separator."
+  def join_help(parts) do
     parts |> Enum.reject(&(&1 in [nil, ""])) |> Enum.join(" · ")
   end
+
+  @doc "Metres as the reference words them (`\"800 m\"`)."
+  def distance_metres(distance), do: "#{distance} m"
 
   defp area_size(km2) when is_number(km2), do: "#{km2_text(km2)} km²"
   defp area_size(_km2), do: "size not measured yet"
 
-  defp km2_text(value) do
+  @doc "A measured area in km², one decimal at most (shared with the area editor)."
+  def km2_text(value) do
     value
     |> Kernel.*(1.0)
     |> Float.round(1)
@@ -2922,8 +2934,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   defp hub_name(stop_choices, stop_id) do
     Enum.find_value(stop_choices, stop_id, fn {name, id} -> if id == stop_id, do: name end)
   end
-
-  defp distance_metres(distance), do: "#{distance} m"
 
   defp zone_km2([]), do: nil
 

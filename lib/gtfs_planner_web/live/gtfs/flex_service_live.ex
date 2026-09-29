@@ -41,6 +41,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
   import GtfsPlannerWeb.Gtfs.FlexComponents
 
+  alias GtfsPlanner.Boundaries
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.ExportDefaults
@@ -54,6 +55,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   alias GtfsPlanner.Gtfs.FlexHours
   alias GtfsPlanner.Gtfs.FlexService
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents
   alias GtfsPlannerWeb.Gtfs.FlexComponents
   alias GtfsPlannerWeb.Layouts
 
@@ -94,6 +96,28 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   # choosing ADA-only with no distance chosen yet preselects that distance.
   @ada_distance_m 1_200
 
+  # The three distances the area editor's routes panel offers, the first three
+  # of the reference's `DISTANCES`; the reference's distance for an area service
+  # is the general-public half-mile.
+  @area_distance_choices [
+    {"A few blocks (0.2 km)", 200},
+    {"¼ mile (0.4 km)", 400},
+    {"½ mile (0.8 km)", 800}
+  ]
+
+  # The one reason the editor's name field shows inline: the same sentence the
+  # editor's header uses to keep "Use this area" disabled.
+  @area_name_reason "Enter the area name riders see."
+
+  # The ways the candidate area can be set, from the event's own strings.
+  @area_sources %{
+    "choose" => :choose,
+    "town" => :town,
+    "routes" => :routes,
+    "draw" => :draw,
+    "import" => :import
+  }
+
   # The prototype's ADA preset: the eligibility sentence and the next-day rule
   # 49 CFR 37.131(b) describes.
   @ada_eligibility "Riders with ADA paratransit eligibility. Visitors eligible elsewhere may ride up to 21 days a year"
@@ -111,6 +135,13 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   def mount(_params, _session, socket) do
     {:ok,
      socket
+     |> allow_upload(:area_file,
+       accept: ~w(.geojson .json),
+       max_entries: 1,
+       max_file_size: 5_000_000,
+       auto_upload: true,
+       progress: &handle_area_upload_progress/3
+     )
      |> assign(:page_title, "Flex service")
      |> assign(:service_state, :loading)
      |> assign(:service_id, nil)
@@ -145,12 +176,48 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
      |> assign(:field_errors, %{})
      |> assign(:save_error, nil)
      |> assign(:pending_discard, false)
-     |> assign(:pending_leave, nil)}
+     |> assign(:pending_leave, nil)
+     |> assign(:area_param, nil)
+     |> assign(:area_key, nil)
+     |> assign(:area_source, :choose)
+     |> assign(:area_candidate, nil)
+     |> assign(:area_name, "")
+     |> assign(:area_name_form, to_form(%{"name" => ""}, as: :area))
+     |> assign(:area_stats, nil)
+     |> assign(:area_saved_stats, nil)
+     |> assign(:area_overlaps, [])
+     |> assign(:area_compare, nil)
+     |> assign(:area_places, [])
+     |> assign(:area_census_state, :idle)
+     |> assign(:area_census_slow, false)
+     |> assign(:area_census_failed, nil)
+     |> assign(:area_stop_extent, nil)
+     |> assign(:area_search, %{"name" => "", "state" => ""})
+     |> assign(:area_routes, [])
+     |> assign(:area_route_ids, [])
+     |> assign(:area_distance, 800)
+     |> assign(:area_distance_choices, [])
+     |> assign(:area_file, nil)
+     |> assign(:area_file_state, :idle)
+     |> assign(:area_file_error, nil)
+     |> assign(:area_upload_error, nil)
+     |> assign(:area_error, nil)
+     |> assign(:area_map_base, nil)
+     |> assign(:area_map, nil)
+     |> assign(:area_use_reason, nil)
+     |> assign(:area_name_error, nil)}
   end
 
   @impl true
-  def handle_params(%{"service" => id}, _uri, socket) do
+  def handle_params(%{"service" => id} = params, _uri, socket) do
     socket = assign(socket, :service_id, id)
+
+    socket =
+      if socket.assigns.live_action == :area do
+        assign(socket, :area_param, Map.get(params, "area"))
+      else
+        socket
+      end
 
     # The first paint defers its read, so the disconnected render shows the
     # loading state and the connected mount runs the load once. A patch to the
@@ -159,12 +226,91 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
       send(self(), :load_flex_service)
       {:noreply, socket}
     else
-      {:noreply, socket}
+      {:noreply, enter_or_leave_area(socket)}
     end
   end
 
   @impl true
   def handle_info(:load_flex_service, socket), do: {:noreply, load_service(socket)}
+
+  # The Census picker's delayed spinner: a request that is still running after
+  # 300 ms shows it, and a reply that already landed makes the flag harmless.
+  @impl true
+  def handle_info(:area_census_slow, socket),
+    do: {:noreply, assign(socket, :area_census_slow, true)}
+
+  def handle_info(_message, socket), do: {:noreply, socket}
+
+  # --- the area editor's Census answers -----------------------------------------
+
+  @impl true
+  def handle_async(
+        :area_census,
+        {:ok, {:ok, %{geojson: geojson, geoid: geoid, layer: layer, vintage: vintage}}},
+        socket
+      ) do
+    candidate = %{
+      geojson: geojson,
+      source: :census,
+      census_geoid: geoid,
+      census_layer: layer,
+      census_vintage: vintage,
+      route_ids: [],
+      distance_m: nil
+    }
+
+    {:noreply,
+     socket
+     |> assign(:area_census_state, :ok)
+     |> assign(:area_census_slow, false)
+     |> put_area_name(pick_name(socket, geoid))
+     |> put_area_candidate(candidate)}
+  end
+
+  def handle_async(:area_census, {:ok, {:ok, places}}, socket) when is_list(places) do
+    {:noreply,
+     socket
+     |> assign(:area_places, places)
+     |> assign(:area_census_state, :ok)
+     |> assign(:area_census_slow, false)
+     |> assign(:area_error, nil)}
+  end
+
+  def handle_async(:area_census, {:ok, {:error, :unavailable}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:area_census_state, :unavailable)
+     |> assign(:area_census_slow, false)}
+  end
+
+  def handle_async(:area_census, {:ok, {:error, :not_found}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:area_census_state, :ok)
+     |> assign(:area_census_slow, false)
+     |> assign(
+       :area_error,
+       "The Census Bureau no longer publishes that boundary. Choose another place."
+     )}
+  end
+
+  def handle_async(:area_census, {:ok, {:error, reason}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:area_census_state, :ok)
+     |> assign(:area_census_slow, false)
+     |> assign(
+       :area_error,
+       "That boundary could not be prepared for this area (#{inspect(reason)}). Choose another place."
+     )}
+  end
+
+  def handle_async(:area_census, {:exit, _reason}, socket) do
+    {:noreply,
+     socket
+     |> assign(:area_census_state, :unavailable)
+     |> assign(:area_census_slow, false)}
+  end
 
   @impl true
   def handle_event("retry", _params, socket) do
@@ -321,18 +467,215 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     {:noreply, push_patch(socket, to: service_path(socket))}
   end
 
-  # --- the where section -------------------------------------------------------
+  # --- the area editor ---------------------------------------------------------
 
-  # Both ways into the area editor patch to `:area`, which keeps the draft in
-  # the socket (CR-8): the editor's own work and its Save arrive in step 24.
+  # Both ways into the area editor patch to `:area` with the area they name
+  # (`?area=<key>` or `?area=new`), which keeps the draft in the socket (CR-8).
+  # The editor works on a candidate area and writes it into the draft only when
+  # the editor chooses "Use this area"; the service page's Save is the one write.
   @impl true
-  def handle_event("edit_area", _params, socket) do
-    {:noreply, push_patch(socket, to: service_path(socket) <> "/area")}
+  def handle_event("edit_area", %{"key" => key}, socket) when is_binary(key) do
+    key =
+      if Enum.any?(socket.assigns.draft.areas, &(&1.key == key)) do
+        key
+      else
+        new_area_key(socket)
+      end
+
+    {:noreply, push_patch(socket, to: area_path(socket, key))}
   end
 
-  def handle_event("add_area", _params, socket) do
-    {:noreply, push_patch(socket, to: service_path(socket) <> "/area")}
+  def handle_event("edit_area", _params, socket) do
+    {:noreply, push_patch(socket, to: area_path(socket, new_area_key(socket)))}
   end
+
+  @impl true
+  def handle_event("add_area", _params, socket) do
+    {:noreply, push_patch(socket, to: area_path(socket, "new"))}
+  end
+
+  # The candidate a source has to offer. Choosing a source clears whatever the
+  # editor was looking at, so the map, the stats and the comparison always
+  # describe the panel on screen.
+  @impl true
+  def handle_event("choose_source", %{"source" => source}, socket) do
+    case Map.fetch(@area_sources, source) do
+      {:ok, source} -> {:noreply, put_area_source(socket, source)}
+      :error -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("choose_source", _params, socket), do: {:noreply, socket}
+
+  # The name field's own change event: it is outside the service form, so typing
+  # a name never dirties or saves the service.
+  @impl true
+  def handle_event("area_name", %{"area" => %{"name" => name}}, socket) when is_binary(name) do
+    {:noreply, put_area_name(socket, name)}
+  end
+
+  def handle_event("area_name", _params, socket), do: {:noreply, socket}
+
+  # --- the area editor's creation routes ---------------------------------------
+
+  @impl true
+  def handle_event("census_search", %{"place_name" => name, "state_fips" => state}, socket) do
+    name = if is_binary(name), do: String.trim(name), else: ""
+    state = if is_binary(state), do: state, else: ""
+
+    socket = assign(socket, :area_search, %{"name" => name, "state" => state})
+
+    if name == "" or state == "" do
+      {:noreply, assign(socket, :area_error, "Enter a place name and choose a state.")}
+    else
+      {:noreply,
+       start_census(socket, {:search, name, state}, fn -> Boundaries.search(name, state) end)}
+    end
+  end
+
+  @impl true
+  def handle_event("census_pick", %{"geoid" => geoid}, socket) when is_binary(geoid) do
+    case Enum.find(socket.assigns.area_places, &(&1.geoid == geoid)) do
+      nil ->
+        {:noreply, assign(socket, :area_error, "Choose a place from the list.")}
+
+      place ->
+        {:noreply,
+         socket
+         |> assign(:area_pick_place, place)
+         |> start_census({:pick, place.layer, place.geoid}, fn ->
+           Boundaries.land_boundary(place.layer, place.geoid)
+         end)}
+    end
+  end
+
+  def handle_event("census_pick", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("census_retry", _params, socket) do
+    case socket.assigns.area_census_failed do
+      {:pick, layer, geoid} ->
+        {:noreply,
+         start_census(socket, {:pick, layer, geoid}, fn ->
+           Boundaries.land_boundary(layer, geoid)
+         end)}
+
+      {:search, name, state} ->
+        {:noreply,
+         start_census(socket, {:search, name, state}, fn -> Boundaries.search(name, state) end)}
+
+      {:places, bbox} ->
+        {:noreply, start_census(socket, {:places, bbox}, fn -> Boundaries.places_near(bbox) end)}
+
+      _missing ->
+        {:noreply, start_census_places(socket)}
+    end
+  end
+
+  @impl true
+  def handle_event("route_buffer", params, socket) when is_map(params) do
+    route_ids =
+      params
+      |> Map.get("route_ids", [])
+      |> List.wrap()
+      |> Enum.filter(&(is_binary(&1) and known_area_route?(socket, &1)))
+
+    distance =
+      parse_distance(Map.get(params, "distance_m")) || socket.assigns.area_distance
+
+    {:noreply, put_area_routes(socket, route_ids, distance)}
+  end
+
+  def handle_event("route_buffer", _params, socket), do: {:noreply, socket}
+
+  # --- the area editor's file import -------------------------------------------
+
+  # The upload's change event. The entry completes asynchronously
+  # (`handle_area_upload_progress/3`), so this only asks for the file's own
+  # errors to be rendered; the progress callback consumes the completed entry.
+  @impl true
+  def handle_event("validate_upload", _params, socket) do
+    case uploaded_entries(socket, :area_file) do
+      {[entry], []} -> {:noreply, consume_area_file(socket, entry)}
+      {_entries, _errors} -> {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("cancel_area_upload", %{"ref" => ref}, socket) do
+    {:noreply, cancel_upload(socket, :area_file, ref)}
+  end
+
+  def handle_event("cancel_area_upload", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("pick_feature", %{"feature" => index}, socket) when is_binary(index) do
+    case Integer.parse(index) do
+      {index, ""} -> {:noreply, pick_area_feature(socket, index)}
+      _other -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("pick_feature", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("swap_coordinates", _params, socket) do
+    case socket.assigns.area_file do
+      %{contents: contents, name: name} ->
+        with {:ok, swapped} <- Geometry.swap_coordinates(contents),
+             {:ok, %{features: features, name_field: name_field}} <-
+               Geometry.import_features(swapped) do
+          [first | _rest] = features
+
+          file = %{
+            name: name,
+            contents: Jason.encode!(swapped),
+            features: features,
+            name_field: name_field,
+            pick: nil
+          }
+
+          {:noreply,
+           socket
+           |> assign(:area_file, file)
+           |> assign(:area_file_error, nil)
+           |> assign(:area_upload_error, nil)
+           |> pick_area_feature(first.index)}
+        else
+          _error ->
+            {:noreply,
+             socket
+             |> assign(:area_file, nil)
+             |> assign(:area_file_error, :unreadable)
+             |> assign(:area_error, nil)}
+        end
+
+      _missing ->
+        {:noreply, assign(socket, :area_error, "Choose a file first.")}
+    end
+  end
+
+  # --- using and leaving the candidate ------------------------------------------
+
+  # "Use this area" is the one event that touches the draft: it writes the
+  # candidate (or the area being edited) into `@draft.areas`, keeps the geometry
+  # the editor normalized in `@area_geojson`, refreshes the summaries, the plan
+  # and the map card that read the areas, and returns to the service page with
+  # the page dirty. Still nothing is stored (CR-8).
+  @impl true
+  def handle_event("use_area", _params, socket) do
+    case socket.assigns.area_use_reason do
+      nil -> {:noreply, socket |> put_area_in_draft() |> push_patch(to: service_path(socket))}
+      reason -> {:noreply, assign(socket, :area_error, reason)}
+    end
+  end
+
+  @impl true
+  def handle_event("cancel_area", _params, socket) do
+    {:noreply, push_patch(socket, to: service_path(socket))}
+  end
+
+  # --- the where section -------------------------------------------------------
 
   @impl true
   def handle_event("pick_hub", %{"hub_stop" => stop_id}, socket) when is_binary(stop_id) do
@@ -485,7 +828,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
 
   @impl true
   def handle_event("flex_map_ready", _params, socket) do
-    case socket.assigns[:map] do
+    payload =
+      if socket.assigns.live_action == :area,
+        do: socket.assigns[:area_map],
+        else: socket.assigns[:map]
+
+    case payload do
       %{} = payload -> {:noreply, push_event(socket, "flex_map:load", payload)}
       _missing -> {:noreply, socket}
     end
@@ -560,24 +908,83 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
         data-focus-on-mount="svc-title"
         class={@dirty? && "pb-28"}
       >
+        <%!-- The editor's own header replaces the service header while the
+        editor is open, exactly as the reference's editor page has one header
+        with the service name on the way back. --%>
         <.service_header
+          :if={@live_action == :show}
           service={@draft}
           status={@status}
           version_id={@current_gtfs_version.id}
         />
 
-        <section :if={@live_action == :area} id="flex-service-area" class="mt-6">
-          <.callout kind="info" title="Area editor">
-            <p>
-              Choosing where this service runs arrives in the next step. Nothing is stored before Save, and your unsaved edits are kept.
-            </p>
-            <div class="mt-3">
-              <.button id="area-back" type="button" class="min-h-11" phx-click="back_to_service">
-                Back to service
-              </.button>
+        <div :if={@live_action == :area} id="flex-service-area" class="mt-2">
+          <FlexAreaEditorComponents.editor_header
+            service={@draft}
+            title={@area_title}
+            use_reason={@area_use_reason}
+          />
+
+          <div class="grid overflow-hidden rounded-card border border-subtle bg-white lg:grid-cols-[minmax(0,392px)_minmax(0,1fr)]">
+            <div
+              id="area-panel"
+              class="order-2 min-w-0 bg-white px-4 py-5 sm:px-5 lg:order-none lg:max-h-[calc(100dvh-200px)] lg:overflow-y-auto lg:border-r lg:border-subtle"
+            >
+              <div class="grid gap-5">
+                <%= case @area_source do %>
+                  <% :town -> %>
+                    <FlexAreaEditorComponents.census_panel
+                      places={@area_places}
+                      state={@area_census_state}
+                      slow?={@area_census_slow}
+                      no_stops?={is_nil(@area_stop_extent)}
+                      search_name={@area_search["name"]}
+                      search_state={@area_search["state"]}
+                      error={@area_error}
+                    />
+                  <% :routes -> %>
+                    <FlexAreaEditorComponents.routes_panel
+                      routes={@area_routes}
+                      route_ids={@area_route_ids}
+                      distance={@area_distance}
+                      distance_choices={@area_distance_choices}
+                      error={@area_error}
+                    />
+                  <% :draw -> %>
+                    <FlexAreaEditorComponents.draw_panel />
+                  <% :import -> %>
+                    <FlexAreaEditorComponents.import_panel
+                      upload={@uploads.area_file}
+                      upload_state={@area_file_state}
+                      upload_error={@area_upload_error}
+                      file_name={@area_file && @area_file.name}
+                      file_error={@area_file_error}
+                      features={(@area_file && @area_file.features) || []}
+                      pick={@area_file && @area_file.pick}
+                      name_field={@area_file && @area_file.name_field}
+                    />
+                  <% _choose -> %>
+                    <FlexAreaEditorComponents.choose_panel />
+                <% end %>
+
+                <FlexAreaEditorComponents.stats_panel
+                  :if={@area_candidate}
+                  candidate={@area_candidate}
+                  name_form={@area_name_form}
+                  name_error={@area_name_error}
+                  stats={@area_stats}
+                  overlaps={@area_overlaps}
+                  compare={@area_compare}
+                  stop_choices={@stop_choices}
+                />
+              </div>
             </div>
-          </.callout>
-        </section>
+
+            <div class="order-1 min-w-0 lg:order-none">
+              <FlexAreaEditorComponents.area_map />
+            </div>
+          </div>
+        </div>
 
         <div
           :if={@live_action == :show}
@@ -845,8 +1252,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     |> assign(:save_error, nil)
     |> assign(:pending_discard, false)
     |> assign(:pending_leave, nil)
+    |> assign(:area_routes, Flex.route_choices(organization_id, version_id))
+    |> assign(:area_stop_extent, Flex.stop_extent(organization_id, version_id))
+    |> assign(:area_distance_choices, @area_distance_choices)
     |> assign_hub_choices()
     |> assign_checks()
+    |> enter_or_leave_area()
   end
 
   defp calendar_rows(organization_id, version_id) do
@@ -908,8 +1319,8 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     Geometry.route_buffer(organization_id, version_id, route_ids, distance)
   end
 
-  defp area_geometry(%FlexArea{id: id}, area_geojson, _organization_id, _version_id) do
-    case Map.fetch(area_geojson, id) do
+  defp area_geometry(%FlexArea{} = area, area_geojson, _organization_id, _version_id) do
+    case Map.fetch(area_geojson, geojson_key(area)) do
       {:ok, geojson} -> {:ok, geojson}
       :error -> :error
     end
@@ -1050,7 +1461,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
       )
     )
     |> assign_hub_choices()
-    |> assign(:dirty?, page_attrs(draft) != page_attrs(socket.assigns.saved))
+    |> assign(
+      :dirty?,
+      draft_changed?(draft, socket.assigns.saved, socket.assigns.area_geojson)
+    )
     |> refresh_map_for(draft, socket.assigns.draft)
     |> assign_checks()
   end
@@ -1216,19 +1630,36 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
   end
 
   defp saved(socket, saved) do
-    socket
-    |> assign(:saved, saved)
-    |> assign(:draft, normalize_rules(saved))
-    |> assign(:form, to_form(FlexService.changeset(saved, %{}), as: :service))
-    |> assign(:dirty?, false)
-    |> assign(:stale?, false)
-    |> assign(:stale_changes, [])
-    |> assign(:saving, false)
-    |> assign(:save_errors, [])
-    |> assign(:field_errors, %{})
-    |> assign(:save_error, nil)
-    |> assign_checks()
-    |> put_flash(:info, "Saved #{saved.name}.")
+    saved_draft = normalize_rules(saved)
+    geojson = Map.merge(socket.assigns.area_geojson, area_geojson(saved))
+
+    areas_changed? =
+      area_signature(socket.assigns.draft.areas, socket.assigns.area_geojson) !=
+        area_signature(saved.areas, geojson)
+
+    socket =
+      socket
+      |> assign(:saved, saved)
+      |> assign(:area_geojson, geojson)
+      |> assign(:stale?, false)
+      |> assign(:stale_changes, [])
+      |> assign(:saving, false)
+      |> assign(:save_errors, [])
+      |> assign(:field_errors, %{})
+      |> assign(:save_error, nil)
+
+    socket =
+      if areas_changed? do
+        put_areas_draft(socket, saved_draft)
+      else
+        socket
+        |> assign(:draft, saved_draft)
+        |> assign(:form, to_form(FlexService.changeset(saved_draft, %{}), as: :service))
+        |> assign(:dirty?, false)
+        |> assign_checks()
+      end
+
+    put_flash(socket, :info, "Saved #{saved.name}.")
   end
 
   # A refusal keeps the draft exactly as the editor left it, lists every problem
@@ -1345,7 +1776,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
         key: area.key,
         name: area.name,
         source: area.source,
-        geojson: Map.get(socket.assigns.area_geojson, area.id),
+        geojson: Map.get(socket.assigns.area_geojson, geojson_key(area)),
         census_geoid: area.census_geoid,
         census_layer: area.census_layer,
         census_vintage: area.census_vintage,
@@ -1501,6 +1932,599 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
     Enum.find_value(options, fn {_label, service_id} ->
       if MapSet.member?(used, service_id), do: nil, else: service_id
     end) || options |> List.first() |> then(&(&1 && elem(&1, 1)))
+  end
+
+  # --- the area editor's state -------------------------------------------------
+
+  defp area_path(socket, key) do
+    service_path(socket) <> "/area?area=" <> URI.encode_www_form(key)
+  end
+
+  defp new_area_key(socket), do: next_area_key(socket.assigns.draft.areas)
+
+  defp next_area_key(areas) do
+    used = MapSet.new(areas, & &1.key)
+
+    Enum.find_value(1..1_000, "a1", fn number ->
+      key = "a#{number}"
+      if MapSet.member?(used, key), do: nil, else: key
+    end)
+  end
+
+  defp enter_or_leave_area(%{assigns: %{live_action: :area, service_state: :ready}} = socket),
+    do: enter_area(socket)
+
+  defp enter_or_leave_area(socket), do: socket
+
+  # Entering the editor starts on the choose panel with no candidate: the stored
+  # area being edited is the comparison's baseline and stays on the map (muted),
+  # and the editor builds a candidate from one of the four sources.
+  defp enter_area(socket) do
+    {key, stored} = area_target(socket.assigns.draft, socket.assigns.area_param)
+    start = area_start(stored)
+
+    socket
+    |> assign(:area_key, key)
+    |> assign(:area_title, area_title(stored))
+    |> assign(:area_source, :choose)
+    |> assign(:area_candidate, nil)
+    |> assign(:area_name, start.name)
+    |> assign(:area_name_form, area_name_form(start.name))
+    |> assign(:area_saved_stats, saved_area_stats(socket, stored))
+    |> assign(:area_stats, nil)
+    |> assign(:area_overlaps, [])
+    |> assign(:area_compare, nil)
+    |> assign(:area_places, [])
+    |> assign(:area_pick_place, nil)
+    |> assign(:area_census_state, :idle)
+    |> assign(:area_census_slow, false)
+    |> assign(:area_census_failed, nil)
+    |> assign(:area_search, %{"name" => "", "state" => ""})
+    |> assign(:area_route_ids, start.route_ids)
+    |> assign(:area_distance, start.distance)
+    |> assign(:area_file, nil)
+    |> assign(:area_file_state, :idle)
+    |> assign(:area_file_error, nil)
+    |> assign(:area_upload_error, nil)
+    |> assign(:area_error, nil)
+    |> assign(:area_name_error, nil)
+    |> assign(:area_map_base, area_map_base(socket))
+    |> refresh_area_map()
+    |> assign_area_use_reason()
+  end
+
+  # The title and the starting values an area offers when the editor opens: the
+  # area being edited keeps its name, and a `:route_distance` area opens on the
+  # routes panel's own choices.
+  defp area_title(%FlexArea{}), do: "Edit area"
+  defp area_title(_stored), do: "Add area"
+
+  defp area_start(%FlexArea{source: :route_distance} = stored) do
+    %{name: stored.name, route_ids: stored.route_ids, distance: stored.distance_m}
+  end
+
+  defp area_start(%FlexArea{name: name}), do: %{name: name, route_ids: [], distance: 800}
+  defp area_start(_stored), do: %{name: "", route_ids: [], distance: 800}
+
+  defp saved_area_stats(_socket, nil), do: nil
+  defp saved_area_stats(socket, %FlexArea{} = stored), do: area_stats(socket, stored)
+
+  defp area_target(draft, "new"), do: {next_area_key(draft.areas), nil}
+
+  defp area_target(draft, key) when is_binary(key) do
+    case Enum.find(draft.areas, &(&1.key == key)) do
+      nil -> {next_area_key(draft.areas), nil}
+      area -> {area.key, area}
+    end
+  end
+
+  defp area_target(draft, _missing) do
+    case draft.areas do
+      [first | _rest] -> {first.key, first}
+      [] -> {next_area_key([]), nil}
+    end
+  end
+
+  # The saved side of the comparison: the stored area measured exactly as the
+  # where section measures it (a `:route_distance` area is derived first).
+  defp area_stats(socket, %FlexArea{} = area) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    case area_geometry(area, socket.assigns.area_geojson, organization_id, version_id) do
+      {:ok, geojson} ->
+        stats = Geometry.stats(organization_id, version_id, geojson)
+        %{km2: stats.km2, stop_ids: stats.stop_ids, route_ids: stats.route_ids}
+
+      :error ->
+        nil
+    end
+  end
+
+  # The map the editor draws on. The base is the service card's own payload: the
+  # service's areas, the other active services' areas as "other", the version's
+  # route lines and the service's connecting stops. The editor re-roles the
+  # service's own areas and adds the candidate, so one payload builder serves
+  # both surfaces (INV-1: the payload carries GeoJSON only).
+  defp area_map_base(socket) do
+    payload = socket.assigns.map || %{areas: [], routes: [], stops: []}
+
+    %{areas: payload.areas, routes: payload.routes, stops: payload.stops}
+  end
+
+  # The editor's map: the candidate (when there is one), the draft's own areas
+  # from the geometry the editor holds, and every other active service's stored
+  # areas muted. The draft's areas are drawn from `@area_geojson`, not from the
+  # rows, because an area the editor has not saved yet has no row to read.
+  defp area_payload(socket) do
+    base = socket.assigns.area_map_base || %{routes: [], stops: []}
+    candidate_areas = candidate_areas(socket)
+    own_role = if candidate_areas == [], do: "selected", else: "other"
+
+    %{
+      areas:
+        candidate_areas ++
+          draft_areas(socket, socket.assigns.draft, own_role) ++
+          other_areas(socket, socket.assigns.draft),
+      routes: base.routes,
+      stops: base.stops
+    }
+  end
+
+  # The service card's map while the draft holds areas the save has not written:
+  # the draft's areas selected, the other active services' stored areas muted.
+  defp service_card_payload(socket, service) do
+    base = socket.assigns.area_map_base || socket.assigns.map || %{routes: [], stops: []}
+
+    %{
+      areas: draft_areas(socket, service, "selected") ++ other_areas(socket, service),
+      routes: base.routes,
+      stops: base.stops
+    }
+  end
+
+  defp candidate_areas(socket) do
+    case socket.assigns.area_candidate do
+      %{geojson: %{} = geojson} -> [%{id: "area-candidate", geojson: geojson, role: "selected"}]
+      _no_candidate -> []
+    end
+  end
+
+  defp draft_areas(socket, service, role) do
+    Enum.flat_map(service.areas, fn area ->
+      case Map.fetch(socket.assigns.area_geojson, geojson_key(area)) do
+        {:ok, geojson} ->
+          [%{id: area.id || "draft-#{area.key}", geojson: geojson, role: role}]
+
+        :error ->
+          []
+      end
+    end)
+  end
+
+  defp other_areas(socket, service) do
+    base = socket.assigns.area_map_base || %{areas: []}
+
+    own =
+      service.areas
+      |> Enum.map(& &1.id)
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    base.areas
+    |> Enum.reject(&MapSet.member?(own, &1.id))
+    |> Enum.map(&Map.put(&1, :role, "other"))
+  end
+
+  defp refresh_area_map(socket) do
+    payload = area_payload(socket)
+    socket |> assign(:area_map, payload) |> push_event("flex_map:load", payload)
+  end
+
+  # --- the area editor's sources ------------------------------------------------
+
+  defp put_area_source(socket, source) do
+    socket =
+      socket
+      |> reset_area_source(source)
+      |> assign(:area_source, source)
+      |> assign(:area_error, nil)
+      |> put_area_candidate(nil)
+      |> push_event("focus_scoped_target", %{id: "area-panel-title"})
+
+    case source do
+      :town ->
+        start_census_places(socket)
+
+      :routes ->
+        put_area_routes(socket, socket.assigns.area_route_ids, socket.assigns.area_distance)
+
+      _other ->
+        socket
+    end
+  end
+
+  # Each source starts fresh: the picker's own results and the imported file's
+  # features belong to the panel that produced them, not to the next one.
+  defp reset_area_source(socket, :town), do: assign(socket, :area_places, [])
+
+  defp reset_area_source(socket, :import) do
+    socket
+    |> assign(:area_file, nil)
+    |> assign(:area_file_state, :idle)
+    |> assign(:area_file_error, nil)
+    |> assign(:area_upload_error, nil)
+  end
+
+  defp reset_area_source(socket, _source), do: socket
+
+  # A version with no stops cannot bound an extent query, so the picker becomes
+  # the name-and-state search (AC-10).
+  defp start_census_places(socket) do
+    case socket.assigns.area_stop_extent do
+      nil ->
+        socket
+        |> assign(:area_census_state, :idle)
+        |> assign(:area_census_failed, :search)
+
+      bbox ->
+        start_census(socket, {:places, bbox}, fn -> Boundaries.places_near(bbox) end)
+    end
+  end
+
+  defp start_census(socket, failed, fun) do
+    socket
+    |> assign(:area_census_state, :loading)
+    |> schedule_census_slow()
+    |> assign(:area_census_failed, failed)
+    |> start_async(:area_census, fun)
+  end
+
+  defp schedule_census_slow(socket) do
+    Process.send_after(self(), :area_census_slow, 300)
+    assign(socket, :area_census_slow, false)
+  end
+
+  defp pick_name(socket, geoid) do
+    case socket.assigns.area_pick_place do
+      %{geoid: ^geoid, name: name} when is_binary(name) -> name
+      _other -> socket.assigns.area_name
+    end
+  end
+
+  defp known_area_route?(socket, route_id),
+    do: Enum.any?(socket.assigns.area_routes, &(&1.id == route_id))
+
+  defp parse_distance(value) when is_integer(value) and value > 0, do: value
+
+  defp parse_distance(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {distance, ""} when distance > 0 -> distance
+      _other -> nil
+    end
+  end
+
+  defp parse_distance(_value), do: nil
+
+  defp put_area_routes(socket, [], distance) do
+    socket
+    |> assign(:area_route_ids, [])
+    |> assign(:area_distance, distance)
+    |> put_area_candidate(nil)
+  end
+
+  defp put_area_routes(socket, route_ids, distance) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    socket = socket |> assign(:area_route_ids, route_ids) |> assign(:area_distance, distance)
+
+    case Geometry.route_buffer(organization_id, version_id, route_ids, distance) do
+      {:ok, geojson} ->
+        candidate = %{
+          geojson: geojson,
+          source: :route_distance,
+          route_ids: route_ids,
+          distance_m: distance
+        }
+
+        socket |> put_area_candidate(candidate) |> maybe_name_corridor(route_ids)
+
+      {:error, :empty} ->
+        socket
+        |> put_area_candidate(nil)
+        |> assign(
+          :area_error,
+          "These routes have no shapes in this version yet, so there is nothing to follow."
+        )
+
+      {:error, {:missing_routes, missing}} ->
+        socket
+        |> put_area_candidate(nil)
+        |> assign(
+          :area_error,
+          "These routes are not in this version: #{Enum.join(missing, ", ")}."
+        )
+
+      {:error, {:invalid, reason, _location}} ->
+        socket
+        |> put_area_candidate(nil)
+        |> assign(
+          :area_error,
+          "The area around these routes is not a usable shape (#{reason}). Try another distance."
+        )
+    end
+  end
+
+  # The prototype names a route buffer after the route the editor measured from,
+  # so the where section has a name to show before the editor types one.
+  defp maybe_name_corridor(socket, route_ids) do
+    if String.trim(socket.assigns.area_name) == "" do
+      names =
+        socket.assigns.area_routes
+        |> Enum.filter(&(&1.id in route_ids))
+        |> Enum.map(&(&1.long_name || &1.name))
+
+      put_area_name(socket, Enum.join(names, " and ") <> " corridor")
+    else
+      socket
+    end
+  end
+
+  # --- the area editor's imported file -----------------------------------------
+
+  # The upload is set with `auto_upload: true`, so choosing a file parses it
+  # without a second action; this callback runs as the entry completes.
+  defp handle_area_upload_progress(:area_file, entry, socket) do
+    socket = if entry.done?, do: consume_area_file(socket, entry), else: socket
+    {:noreply, socket}
+  end
+
+  defp consume_area_file(socket, entry) do
+    # `consume_uploaded_entry/3` unwraps one `{:ok, value}` layer, so the
+    # callback carries the read's own result as its value.
+    case consume_uploaded_entry(socket, entry, fn %{path: path} -> {:ok, File.read(path)} end) do
+      {:ok, contents} ->
+        put_area_file(socket, entry.client_name, contents)
+
+      {:error, _reason} ->
+        socket
+        |> assign(:area_file, nil)
+        |> assign(:area_file_state, :failed)
+        |> assign(:area_upload_error, "The file could not be read. Choose it again.")
+    end
+  end
+
+  defp put_area_file(socket, name, contents) do
+    case Geometry.import_features(contents) do
+      {:ok, %{features: [first | _rest] = features, name_field: name_field}} ->
+        file = %{
+          name: name,
+          contents: contents,
+          features: features,
+          name_field: name_field,
+          pick: nil
+        }
+
+        socket
+        |> assign(:area_file, file)
+        |> assign(:area_file_state, :idle)
+        |> assign(:area_file_error, nil)
+        |> assign(:area_upload_error, nil)
+        |> pick_area_feature(first.index)
+
+      {:error, :unreadable} ->
+        socket
+        |> assign(:area_file, nil)
+        |> assign(:area_file_state, :failed)
+        |> assign(:area_file_error, :unreadable)
+
+      {:error, reason} ->
+        # A file that offered no area (or a swapped one) is kept by its bytes
+        # alone: `swap_coordinates/1` reads them, and the panel renders the
+        # file's own problem without a candidate.
+        file = %{name: name, contents: contents, features: [], name_field: nil, pick: nil}
+
+        socket
+        |> assign(:area_file, file)
+        |> assign(:area_file_state, :idle)
+        |> assign(:area_file_error, reason)
+    end
+  end
+
+  defp pick_area_feature(socket, index) do
+    file = socket.assigns.area_file
+    feature = file && Enum.find(file.features, &(&1.index == index))
+
+    case feature && Geometry.normalize(feature.geojson) do
+      {:ok, %{geojson: geojson}} ->
+        candidate = %{
+          geojson: geojson,
+          source: :file,
+          route_ids: [],
+          distance_m: nil,
+          file_name: file.name
+        }
+
+        socket
+        |> assign(:area_file, %{file | pick: index})
+        |> put_area_name(feature.name)
+        |> put_area_candidate(candidate)
+
+      {:error, reason} ->
+        assign(
+          socket,
+          :area_error,
+          "That area could not be used: #{area_reason(reason)}."
+        )
+
+      _no_feature ->
+        socket
+    end
+  end
+
+  # --- the candidate ------------------------------------------------------------
+
+  # The candidate's own measurements: the area in km², the stops inside it, the
+  # routes serving them, the overlap with other active services and the
+  # comparison with the saved area (AC-14, FH-7).
+  defp put_area_candidate(socket, candidate) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    {stats, overlaps, compare} =
+      case candidate do
+        %{geojson: %{} = geojson} ->
+          measured = Geometry.stats(organization_id, version_id, geojson)
+
+          stats = %{km2: measured.km2, stop_ids: measured.stop_ids, route_ids: measured.route_ids}
+
+          overlaps =
+            Geometry.overlaps(organization_id, version_id, geojson, socket.assigns.service_id)
+
+          compare =
+            case socket.assigns.area_saved_stats do
+              nil -> nil
+              saved -> Geometry.compare(saved, stats)
+            end
+
+          {stats, overlaps, compare}
+
+        _no_candidate ->
+          {nil, [], nil}
+      end
+
+    socket
+    |> assign(:area_candidate, candidate)
+    |> assign(:area_stats, stats)
+    |> assign(:area_overlaps, overlaps)
+    |> assign(:area_compare, compare)
+    |> assign(:area_error, nil)
+    |> refresh_area_map()
+    |> assign_area_use_reason()
+  end
+
+  defp assign_area_use_reason(socket) do
+    reason =
+      cond do
+        not candidate_ready?(socket) -> no_candidate_reason(socket.assigns.area_source)
+        String.trim(socket.assigns.area_name) == "" -> @area_name_reason
+        true -> nil
+      end
+
+    name_error = if reason == @area_name_reason, do: reason
+
+    socket
+    |> assign(:area_use_reason, reason)
+    |> assign(:area_name_error, name_error)
+  end
+
+  defp candidate_ready?(socket), do: match?(%{geojson: %{}}, socket.assigns.area_candidate)
+
+  defp no_candidate_reason(:draw), do: "Draw the area on the map first."
+  defp no_candidate_reason(:choose), do: "Choose how to set the area first."
+  defp no_candidate_reason(:import), do: "Choose an area from the file first."
+  defp no_candidate_reason(_source), do: "Set the area first."
+
+  defp put_area_name(socket, name) do
+    socket
+    |> assign(:area_name, name)
+    |> assign(:area_name_form, area_name_form(name))
+    |> assign_area_use_reason()
+  end
+
+  defp area_name_form(name), do: to_form(%{"name" => name}, as: :area)
+
+  # --- writing the candidate into the draft -------------------------------------
+
+  # The one event that touches the draft: the candidate becomes an area of the
+  # service (a new key, or the key being edited), with the geometry the editor
+  # normalized held beside it until the service page's Save.
+  defp put_area_in_draft(socket) do
+    candidate = socket.assigns.area_candidate
+    existing = Enum.find(socket.assigns.draft.areas, &(&1.key == socket.assigns.area_key))
+
+    area = %{
+      struct(existing || %FlexArea{}, %{
+        key: socket.assigns.area_key,
+        name: socket.assigns.area_name
+      })
+      | source: candidate.source,
+        census_geoid: candidate[:census_geoid],
+        census_layer: candidate[:census_layer],
+        census_vintage: candidate[:census_vintage],
+        route_ids: candidate[:route_ids] || [],
+        distance_m: candidate[:distance_m]
+    }
+
+    areas =
+      case existing do
+        nil ->
+          socket.assigns.draft.areas ++ [area]
+
+        _existing ->
+          Enum.map(socket.assigns.draft.areas, &if(&1.key == area.key, do: area, else: &1))
+      end
+
+    geojson = Map.put(socket.assigns.area_geojson, geojson_key(area), candidate.geojson)
+
+    put_areas_draft(socket |> assign(:area_geojson, geojson), %{
+      socket.assigns.draft
+      | areas: areas
+    })
+  end
+
+  # The geometry map is keyed by the stored area's id; an area the editor has
+  # not saved yet has no id, so its key is the marker until the save gives it
+  # one (the save's own refresh merges the stored id back in).
+  defp geojson_key(%FlexArea{id: id, key: key}), do: id || {:new, key}
+
+  # The draft's areas changed: the summaries, the plan and the map card all read
+  # them, so they are rebuilt together (and `dirty?` counts the areas, so
+  # "Use this area" asks for a Save).
+  defp put_areas_draft(socket, draft) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    geojson = socket.assigns.area_geojson
+    summaries = area_summaries(organization_id, version_id, draft, geojson)
+
+    payload = service_card_payload(socket, draft)
+
+    socket
+    |> assign(:draft, draft)
+    |> assign(:area_summaries, summaries)
+    |> assign(:plan, plan(organization_id, version_id, draft, geojson, summaries))
+    |> assign(:map, payload)
+    |> assign(:form, to_form(FlexService.changeset(draft, %{}), as: :service))
+    |> assign(:dirty?, draft_changed?(draft, socket.assigns.saved, geojson))
+    |> assign_hub_choices()
+    |> assign_checks()
+    |> maybe_push_card_payload(payload)
+  end
+
+  # The mounted card already holds its hook, so a payload that changed under it
+  # is pushed; in the editor the card is not on screen and the patch back to
+  # `:show` mounts it with `@map` through the hook's own handshake.
+  defp maybe_push_card_payload(socket, payload) do
+    if socket.assigns.live_action == :show do
+      push_event(socket, "flex_map:load", payload)
+    else
+      socket
+    end
+  end
+
+  # The page is dirty when the fields it renders differ from the stored ones, or
+  # when the areas do: adding an area is a change the Save has to write.
+  defp draft_changed?(draft, saved, geojson) do
+    page_attrs(draft) != page_attrs(saved) or
+      area_signature(draft.areas, geojson) != area_signature(saved.areas, geojson)
+  end
+
+  defp area_signature(areas, geojson) do
+    Enum.map(areas, fn area ->
+      {area.key, area.name, area.source, area.census_geoid, area.census_layer,
+       area.census_vintage, area.route_ids, area.distance_m, Map.get(geojson, geojson_key(area))}
+    end)
   end
 
   defp service_path(socket) do
