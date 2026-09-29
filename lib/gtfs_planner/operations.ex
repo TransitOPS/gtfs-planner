@@ -215,6 +215,22 @@ defmodule GtfsPlanner.Operations do
   end
 
   @doc """
+  Gets a vehicle type by organization and id, or nil when it does not exist or
+  belongs to another organization. A malformed id is treated as missing.
+
+  The ownership check every `route_operating_settings` and `block_attributes`
+  writer makes: a type of another organization is a rejected field value, not a
+  stored reference resolved later (AC-2, CR-3).
+  """
+  @spec get_vehicle_type(Ecto.UUID.t(), Ecto.UUID.t()) :: VehicleType.t() | nil
+  def get_vehicle_type(organization_id, id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, id} -> Repo.get_by(VehicleType, id: id, organization_id: organization_id)
+      :error -> nil
+    end
+  end
+
+  @doc """
   Returns a changeset for tracking vehicle type changes, presenting any stored
   minute limit as editable hours.
   """
@@ -241,7 +257,7 @@ defmodule GtfsPlanner.Operations do
   @spec update_vehicle_type(Ecto.UUID.t(), actor(), Ecto.UUID.t(), map()) ::
           {:ok, VehicleType.t()} | {:error, Ecto.Changeset.t() | :not_found}
   def update_vehicle_type(organization_id, actor, id, attrs) do
-    case fetch_vehicle_type(organization_id, id) do
+    case get_vehicle_type(organization_id, id) do
       nil ->
         {:error, :not_found}
 
@@ -263,7 +279,7 @@ defmodule GtfsPlanner.Operations do
   @spec delete_vehicle_type(Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, VehicleType.t()} | {:error, {:in_use, vehicles: non_neg_integer()} | :not_found}
   def delete_vehicle_type(organization_id, id) do
-    case fetch_vehicle_type(organization_id, id) do
+    case get_vehicle_type(organization_id, id) do
       nil ->
         {:error, :not_found}
 
@@ -911,13 +927,6 @@ defmodule GtfsPlanner.Operations do
   defp fetch_vehicle(organization_id, id) do
     case Ecto.UUID.cast(id) do
       {:ok, id} -> Repo.get_by(Vehicle, id: id, organization_id: organization_id)
-      :error -> nil
-    end
-  end
-
-  defp fetch_vehicle_type(organization_id, id) do
-    case Ecto.UUID.cast(id) do
-      {:ok, id} -> Repo.get_by(VehicleType, id: id, organization_id: organization_id)
       :error -> nil
     end
   end
