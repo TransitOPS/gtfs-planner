@@ -244,19 +244,31 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
              )
 
       # The two single figures: the moves are the plan's, and so is the count of
-      # problems the plan adds, which is the review's own. Each metric is read as
-      # its label immediately followed by its own figure, so a figure cannot be
-      # matched against a different metric's label.
+      # problems the plan adds, which is the review's own. A metric's label and
+      # its value are separate elements, so each is read on its own — that way a
+      # figure cannot be matched against a different metric's label.
       assert has_element?(
                view,
-               "#suggestion [data-role='suggestion-metric']",
-               "Trips changing block#{length(plan.moves)}"
+               "#suggestion [data-role='suggestion-metric-label']",
+               "Trips changing block"
              )
 
       assert has_element?(
                view,
-               "#suggestion [data-role='suggestion-metric']",
-               "New problems#{plan.review.added_problem_count}"
+               "#suggestion [data-role='suggestion-metric-value']",
+               Integer.to_string(length(plan.moves))
+             )
+
+      assert has_element?(
+               view,
+               "#suggestion [data-role='suggestion-metric-label']",
+               "New problems"
+             )
+
+      assert has_element?(
+               view,
+               "#suggestion [data-role='suggestion-metric-value']",
+               Integer.to_string(plan.review.added_problem_count)
              )
     end
 
@@ -477,19 +489,32 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
       end
 
       # And a reader who opens the page a second time gets the saved day, not the
-      # preview: the preview is one page's state and never becomes the day.
-      {:ok, other, _html} = live(editor_conn(context), blocks_path(context.version.id))
-
-      assert has_element?(other, "#blocks-timeline tr[data-block='101']")
-      assert has_element?(other, "#blocks-timeline tr[data-block='102']")
+      # preview: the preview is one page's state and never becomes the day. The
+      # page opens on the Unassigned panel, because that is the panel the pool
+      # table belongs to.
+      {:ok, other, _html} =
+        live(editor_conn(context), blocks_path(context.version.id) <> "?panel=pool")
 
       refute has_element?(other, "#suggestion")
       refute has_element?(other, "#blocks-preview-chip")
 
+      # The timeline carries the same two saved blocks either panel shows.
+      {:ok, timeline, _html} = live(editor_conn(context), blocks_path(context.version.id))
+
+      assert has_element?(timeline, "#blocks-timeline tr[data-block='101']")
+      assert has_element?(timeline, "#blocks-timeline tr[data-block='102']")
+
       # The unassigned panel still holds both pool trips, so the saved day the
       # second reader loads is the one before the suggestion.
-      assert has_element?(other, "#blocks-pool-table", "8105")
-      assert has_element?(other, "#blocks-pool-table", "6106")
+      # The pool table holds all three unassigned trips at once, so each is found
+      # by its own row rather than by matching the whole table's text.
+      # The pool arrives as a stream, so its rows land in a patch after the
+      # first render and the assertions wait for them.
+      assert wait_for(fn -> has_element?(other, "#blocks-pool-table tr") end) == :ok
+
+      for trip_id <- ["8105", "6106", "F30"] do
+        assert has_element?(other, "#blocks-pool-table tr", trip_id)
+      end
     end
 
     test "the loaded day assign is the saved one, not the proposal", context do
@@ -503,7 +528,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
       # `render/1` draws the proposal from the `:suggestion` assign; the day it
       # came from is still the loaded one, so discarding needs no reload and a
       # later apply can still match the plan's fingerprint.
-      assert assigns(view)[:day].counts.unassigned == 2
+      # The pool is 8105, 6106 and the frequency row F30, so three trips are
+      # unassigned; the preview does not change the saved day they sit in.
+      assert assigns(view)[:day].counts.unassigned == 3
     end
   end
 

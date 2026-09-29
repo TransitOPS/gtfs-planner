@@ -178,11 +178,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksApplyPlanLiveTest do
     assert wait_for(fn -> has_element?(view, "#suggestion") end) == :ok
   end
 
+  # The apply is asynchronous, so the click returns before its result lands. A
+  # refusal has no message to wait for — it is an apply *state* — so the wait is
+  # for the pending state to be replaced by any other one.
   defp apply_suggestion(view) do
     view |> element("#apply-suggestion") |> render_click()
 
-    assert wait_for(fn -> applied?(view) or has_element?(view, "#suggestion-apply-message") end) ==
-             :ok
+    # The click answers with the pending state, and the result replaces it. The
+    # wait is on that assign rather than on the rendered DOM, so it cannot be
+    # satisfied by a render that has not caught up.
+    assert wait_for(fn -> assigns(view)[:apply].status != :pending end) == :ok
   end
 
   defp applied?(view), do: not is_nil(assigns(view)[:applied])
@@ -401,10 +406,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksApplyPlanLiveTest do
       moved = plan(view).moves
 
       # Another writer enters a driving time after this preview was built, so the
-      # plan's fingerprint no longer matches the locked rows (INV-7).
+      # plan's fingerprint no longer matches the locked rows (INV-7). The pair is
+      # the one the unassigned scope planned — 8105 ends at Valley College and
+      # 6106 leaves Riverside Station — so this drive is one the plan read.
       deadhead_time_fixture(context.organization.id, context.version.id, %{
         from_ref: {:stop, "AB_VALLEY"},
-        to_ref: {:stop, "AB_MKT"},
+        to_ref: {:stop, "AB_RS_A"},
         minutes: 20
       })
 
