@@ -130,7 +130,10 @@ defmodule GtfsPlanner.Agents.Model do
       "tools" => Enum.map(tools, &tool_payload/1),
       "tool_choice" => "auto",
       "max_tokens" => @max_tokens,
-      "provider" => @provider
+      "provider" => @provider,
+      # OpenRouter returns `usage.cost` only when the request asks for usage
+      # accounting; without this flag every turn would settle at cost nil.
+      "usage" => %{"include" => true}
     }
 
     if byte_size(Jason.encode!(body)) <= @request_envelope_limit do

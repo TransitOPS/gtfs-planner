@@ -51,7 +51,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsHelperHandoffTest do
   @competing_date ~D[2026-11-03]
 
   @missing_notice "One of these calendars is no longer in this service version. Refresh the list and ask again."
-  @edited_notice "The change you applied differs from the prepared change, so its card is not marked Applied."
+  @edited_notice "Your edited change was saved. The original prepared change was not applied."
 
   setup {Req.Test, :verify_on_exit!}
 
