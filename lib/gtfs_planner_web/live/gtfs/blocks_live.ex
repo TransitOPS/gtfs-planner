@@ -56,7 +56,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     "service_dates" => :service_dates,
     "checks" => :checks,
     "peak" => :peak,
-    "problems" => :checks
+    "problems" => :checks,
+    # The plan figures send `plan_summary` (AC-34). Step 36 replaces the Peak
+    # drawer with that drawer, so the key resolves to the Peak drawer until
+    # then and the old `peak` key keeps opening it for older links.
+    "plan_summary" => :peak
   }
 
   # The settings save keeps the reader's value when the save is refused, so the
@@ -84,6 +88,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   @empty_counts %{blocks: 0, trips: 0, unassigned: 0, problems: 0, notices: 0}
   @empty_peak %{count: 0, at_secs: nil, excluded_unassigned: 0, excluded_frequency: 0}
+  @empty_figures %{vehicles: 0, minimum: 0, riders: 0}
 
   # The destination picker offers at most this many matches, so a day type with
   # thousands of blocks still narrows by search rather than by scrolling (AC-26).
@@ -1605,6 +1610,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       day_types: day.day_types,
       day_type: day.day_type,
       counts: day.counts,
+      figures: day.figures,
+      fleet: day.fleet,
+      fleet_shortfalls: fleet_shortfall_rows(day),
+      garages?: map_size(day.context.garages) > 0,
+      vehicles?: day.context.fleet != [],
       peak: day.peak,
       bins: day.bins,
       axis: timeline_axis(day),
@@ -1658,6 +1668,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       day_types: [],
       day_type: nil,
       counts: @empty_counts,
+      figures: @empty_figures,
+      fleet: [],
+      fleet_shortfalls: [],
+      garages?: false,
+      vehicles?: false,
       peak: @empty_peak,
       bins: [],
       axis: nil,
@@ -1687,6 +1702,41 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     |> stream(:block_rows, [], reset: true)
     |> stream(:list_rows, [], reset: true)
     |> stream(:pool_rows, [], reset: true)
+  end
+
+  # The plan figures of one day type, as Day loading step 4 derived them, and the
+  # short fleet rows with the garage and type names the day resolved, so
+  # `render/1` prints numbers and words rather than re-deriving either (CR-6).
+  # A row is short only against a real listing, so `at_secs` is always set here.
+  defp fleet_shortfall_rows(day) do
+    for %{status: :short} = row <- day.fleet do
+      %{
+        garage: garage_name(day.context.garages, row.garage_id),
+        type: vehicle_type_name(day.context.vehicle_types, row.vehicle_type_id),
+        needed: row.needed,
+        listed: row.listed,
+        at_secs: row.at_secs
+      }
+    end
+  end
+
+  # A garage or type the context no longer carries cannot reach a short row — a
+  # block resolves both through the same context — so the fallbacks here are for
+  # a deleted name, never for a planned one.
+  defp garage_name(garages, garage_id) do
+    case Map.fetch(garages, garage_id) do
+      {:ok, %{name: name}} -> name
+      :error -> "Unknown garage"
+    end
+  end
+
+  defp vehicle_type_name(_vehicle_types, :all), do: "All types"
+
+  defp vehicle_type_name(vehicle_types, vehicle_type_id) do
+    case Map.fetch(vehicle_types, vehicle_type_id) do
+      {:ok, %{name: name}} -> name
+      :error -> "Any type"
+    end
   end
 
   # Each finding names trips by UUID; a deep link names them by their natural
@@ -1801,8 +1851,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 <BlocksComponents.summary_strip
                   day_type={@day_type}
                   counts={@counts}
+                  figures={@figures}
                   peak={@peak}
                   open_drawer={@open_drawer}
+                />
+
+                <BlocksComponents.plan_notices
+                  fleet_shortfalls={@fleet_shortfalls}
+                  garages?={@garages?}
+                  vehicles?={@vehicles?}
+                  version_id={@state.version_id}
                 />
 
                 <BlocksComponents.workspace
