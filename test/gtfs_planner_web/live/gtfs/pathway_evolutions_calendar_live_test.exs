@@ -104,11 +104,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsCalendarLiveTest do
     station = stop_fixture(organization.id, version.id, @station_stop)
 
     platform =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "CAL_DATES_PLATFORM",
         stop_name: "Platform 1",
-        location_type: 0,
-        parent_station: station.stop_id
+        location_type: 0
       })
 
     walkway =
@@ -161,11 +160,16 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsCalendarLiveTest do
 
   # A dates-only calendar: no weekly row at all, two added days in the current
   # month and one in the next, which only month navigation reveals.
+  # Three stored dates around the agency's own month, anchored so the grid
+  # always opens on that month: the agency's today is one of its added dates.
   defp dates_only_calendar(organization, version) do
     today = agency_today()
-    first = first_of_month(today)
+    month = first_of_month(today)
+    added = if Date.compare(month, today) == :eq, do: Date.add(today, 1), else: month
+    next_month = shift_month(month, 1)
+    plain = Enum.find(Date.range(month, Date.end_of_month(month)), &(&1 != today and &1 != added))
 
-    for date <- [Date.add(first, 4), Date.add(first, 24), Date.add(first, 32)] do
+    for date <- [today, added, next_month] do
       calendar_date_fixture(organization.id, version.id, %{
         service_id: @dates_service,
         date: date,
@@ -174,9 +178,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsCalendarLiveTest do
     end
 
     %{
-      first_date: Date.add(first, 4),
-      second_date: Date.add(first, 24),
-      next_month_date: Date.add(first, 32)
+      first_date: today,
+      second_date: added,
+      plain_date: plain,
+      next_month_date: next_month
     }
   end
 
@@ -320,11 +325,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsCalendarLiveTest do
       # Dates are read-only: no input, no select, and no event on any cell.
       doc = LazyHTML.from_fragment(html)
 
-      assert LazyHTML.query(doc, "#closure-dates input") == []
-      assert LazyHTML.query(doc, "#closure-dates select") == []
-      assert LazyHTML.query(doc, "#closure-dates textarea") == []
-      assert LazyHTML.query(doc, "#closure-dates-months [phx-click]") == []
-      assert LazyHTML.query(doc, "#closure-dates-months [phx-value-date]") == []
+      assert Enum.empty?(LazyHTML.query(doc, "#closure-dates input"))
+      assert Enum.empty?(LazyHTML.query(doc, "#closure-dates select"))
+      assert Enum.empty?(LazyHTML.query(doc, "#closure-dates textarea"))
+      assert Enum.empty?(LazyHTML.query(doc, "#closure-dates-months [phx-click]"))
+      assert Enum.empty?(LazyHTML.query(doc, "#closure-dates-months [phx-value-date]"))
 
       # The buttons and the preview's own keyboard binding move the same month.
       assert render_click(view, "dates_step", %{"step" => "next"}) =~
@@ -360,6 +365,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsCalendarLiveTest do
       %{
         first_date: first_date,
         second_date: second_date,
+        plain_date: plain_date,
         next_month_date: next_month_date
       } = dates_only_calendar(organization, version)
 
@@ -378,7 +384,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsCalendarLiveTest do
 
       assert cell_aria_label(html, first_date) =~ "Service added"
       assert cell_aria_label(html, second_date) =~ "Service added"
-      assert cell_aria_label(html, Date.add(first_date, 1)) =~ "No service scheduled"
+      assert cell_aria_label(html, plain_date) =~ "No service scheduled"
       refute html =~ "month-cell-#{Date.to_iso8601(next_month_date)}"
 
       # The box names the calendar the grid belongs to, and there is no

@@ -158,27 +158,24 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
     station = stop_fixture(organization.id, version.id, @station_stop)
 
     entrance =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "EVOLUTIONS_ENTRANCE",
         stop_name: "North entrance",
-        location_type: 2,
-        parent_station: station.stop_id
+        location_type: 2
       })
 
     mezzanine =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "EVOLUTIONS_MEZZANINE",
         stop_name: "Mezzanine hall",
-        location_type: 0,
-        parent_station: station.stop_id
+        location_type: 0
       })
 
     platform =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "EVOLUTIONS_PLATFORM",
         stop_name: "Platform 1",
-        location_type: 0,
-        parent_station: station.stop_id
+        location_type: 0
       })
 
     walkway =
@@ -383,6 +380,30 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
             stop_name: "Evolutions Empty Station"
         })
 
+      empty_entrance =
+        child_stop_fixture(organization.id, version.id, empty_station.stop_id, %{
+          stop_id: "EVOLUTIONS_EMPTY_ENTRANCE",
+          location_type: 2
+        })
+
+      empty_platform =
+        child_stop_fixture(organization.id, version.id, empty_station.stop_id, %{
+          stop_id: "EVOLUTIONS_EMPTY_PLATFORM",
+          location_type: 0
+        })
+
+      pathway_fixture(
+        organization.id,
+        version.id,
+        empty_entrance.stop_id,
+        empty_platform.stop_id,
+        %{
+          pathway_id: "PW-EMPTY",
+          pathway_mode: 1,
+          is_bidirectional: true
+        }
+      )
+
       {:ok, empty_view, _html} = live(conn, evolutions_path(version, empty_station.stop_id))
 
       assert has_element?(
@@ -490,11 +511,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
             stop_name: "Evolutions No Pathway Station"
         })
 
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "EVOLUTIONS_NO_PATHWAYS_CHILD",
         stop_name: "Unconnected platform",
-        location_type: 0,
-        parent_station: station.stop_id
+        location_type: 0
       })
 
       conn = log_in_user(conn, user, organization: organization)
@@ -516,14 +536,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
       station = stop_fixture(organization.id, version.id, @station_stop)
 
       platform =
-        stop_fixture(organization.id, version.id, %{
+        child_stop_fixture(organization.id, version.id, station.stop_id, %{
           stop_id: "EVOLUTIONS_NOCAL_PLATFORM",
           stop_name: "Platform without calendars",
-          location_type: 0,
-          parent_station: station.stop_id
+          location_type: 0
         })
 
-      pathway_fixture(organization.id, version.id, station.id, platform.stop_id, %{
+      pathway_fixture(organization.id, version.id, station.stop_id, platform.stop_id, %{
         pathway_id: "PW-NOCAL",
         pathway_mode: 1,
         is_bidirectional: true
@@ -665,8 +684,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
 
       view |> element("#closure-open-#{daytime.id}") |> render_click()
 
-      submitted_at = Repo.get!(PathwayEvolution, daytime.id).updated_at
-
       html =
         view
         |> form("#closure-form", %{
@@ -683,6 +700,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
       assert html =~ "Closure saved."
       assert has_element?(view, "#closure-end[value='16:00']")
       assert Repo.get!(PathwayEvolution, daytime.id).end_time == 57_600
+
+      saved_at = Repo.get!(PathwayEvolution, daytime.id).updated_at
 
       assert [update_log] =
                Gtfs.list_change_logs_for_entity(
@@ -722,7 +741,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
                )
              ) == 1
 
-      assert Repo.get!(PathwayEvolution, daytime.id).updated_at == submitted_at
+      assert Repo.get!(PathwayEvolution, daytime.id).updated_at == saved_at
     end
 
     test "a duplicate tuple opens the existing closure of this station and writes nothing",
@@ -883,7 +902,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
       })
 
       assert has_element?(view, "#closure-notice-overlap", "also closes 10:00–12:00")
-      assert has_element?(view, "#closure-notice-overlap", "Every day service")
+      assert has_element?(view, "#closure-notice-overlap", "CAL_DAILY")
 
       # A calendar with no active dates saves and says the closure does not
       # apply yet.
@@ -1063,18 +1082,20 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
 
-      # The editor mounts the dirty guard hook with the saved tuple the client
-      # compares the form against, and nothing is unsaved yet.
+      # The editor mounts the dirty guard hook, and nothing is unsaved yet.
       assert has_element?(
                view,
                ~s(#closure-editor[phx-hook="CalendarEditor"][data-dirty="false"])
              )
 
-      assert has_element?(view, "#closure-editor[data-dirty-baseline]")
       refute has_element?(view, "#closure-dirty-chip")
-      assert has_element?(view, "#discard-closure", "Close")
 
       view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      # The open form carries the saved tuple the client compares against, and
+      # an unchanged editor offers Close rather than a discard.
+      assert has_element?(view, "#closure-editor[data-dirty-baseline]")
+      assert has_element?(view, "#discard-closure", "Close")
 
       # One typed field is unsaved input: the chip says so in words and the
       # footer's second action becomes the discard action.
@@ -1340,13 +1361,27 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
              )
 
       # The confirmation's own render is the busy state: both actions are
-      # disabled and the confirm action says what is happening.
+      # disabled and the confirm action says what is happening. It is read from
+      # the render the confirmation returned, because the delete it deferred
+      # runs as soon as this view's process is free again.
       pending = view |> element("#closure-delete-dialog-confirm") |> render_click()
+      pending_doc = LazyHTML.from_fragment(pending)
 
       assert dialog_open?(pending, "closure-delete-dialog")
-      assert has_element?(view, "#closure-delete-dialog[data-pending='true']")
-      assert has_element?(view, "#closure-delete-dialog-confirm[disabled]", "Deleting…")
-      assert has_element?(view, "#closure-delete-dialog-cancel[disabled]")
+
+      assert LazyHTML.attribute(
+               LazyHTML.query(pending_doc, "#closure-delete-dialog"),
+               "data-pending"
+             ) == ["true"]
+
+      assert LazyHTML.text(LazyHTML.query(pending_doc, "#closure-delete-dialog-confirm")) =~
+               "Deleting…"
+
+      assert Enum.count(LazyHTML.query(pending_doc, "#closure-delete-dialog-confirm[disabled]")) ==
+               1
+
+      assert Enum.count(LazyHTML.query(pending_doc, "#closure-delete-dialog-cancel[disabled]")) ==
+               1
 
       # The delete itself runs after that busy render.
       _ = :sys.get_state(view.pid)
@@ -1640,11 +1675,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
         })
 
       other_platform =
-        stop_fixture(other_organization.id, other_version.id, %{
+        child_stop_fixture(other_organization.id, other_version.id, other_station.stop_id, %{
           stop_id: "FOREIGN_PLATFORM",
           stop_name: "Foreign platform",
-          location_type: 0,
-          parent_station: other_station.stop_id
+          location_type: 0
         })
 
       pathway_fixture(

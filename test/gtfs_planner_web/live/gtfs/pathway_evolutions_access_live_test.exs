@@ -57,8 +57,12 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
     base = "/gtfs/#{version.id}/stops/#{stop_id}/evolutions/access"
 
     case {date, time} do
-      {nil, nil} -> base
-      {date, time} -> base <> "?date=#{date}&time=#{time}"
+      {nil, nil} ->
+        base
+
+      {date, time} ->
+        query = URI.encode_query([{"date", to_string(date)}, {"time", to_string(time)}])
+        base <> "?#{query}"
     end
   end
 
@@ -98,43 +102,38 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
     agency_fixture(organization.id, version.id, %{agency_timezone: "America/New_York"})
 
     entrance =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "ACCESS_ENTRANCE",
         stop_name: "North entrance",
-        location_type: 2,
-        parent_station: station.stop_id
+        location_type: 2
       })
 
     lonely_entrance =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "ACCESS_LONELY_ENTRANCE",
         stop_name: "East entrance",
-        location_type: 2,
-        parent_station: station.stop_id
+        location_type: 2
       })
 
     mezzanine =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "ACCESS_MEZZANINE",
         stop_name: "Mezzanine hall",
-        location_type: 0,
-        parent_station: station.stop_id
+        location_type: 0
       })
 
     platform =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "ACCESS_PLATFORM",
         stop_name: "Platform 1",
-        location_type: 0,
-        parent_station: station.stop_id
+        location_type: 0
       })
 
     _boarding =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "ACCESS_BOARDING",
         stop_name: "Platform 1 boarding area",
-        location_type: 4,
-        parent_station: station.stop_id
+        location_type: 4
       })
 
     walkway =
@@ -202,19 +201,17 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
       })
 
     entrance =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, stop_id, %{
         stop_id: stop_id <> "_ENTRANCE",
         stop_name: names.entrance,
-        location_type: 2,
-        parent_station: stop_id
+        location_type: 2
       })
 
     platform =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, stop_id, %{
         stop_id: stop_id <> "_PLATFORM",
         stop_name: names.platform,
-        location_type: 0,
-        parent_station: stop_id
+        location_type: 0
       })
 
     pathway_fixture(organization.id, version.id, entrance.stop_id, platform.stop_id, %{
@@ -271,6 +268,23 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
     |> LazyHTML.query(selector)
     |> Enum.map(&LazyHTML.attribute(&1, name))
     |> List.flatten()
+  end
+
+  # The text one element carries in the render an event returned. A state the
+  # view advances again as soon as its process is free — a loading label, a
+  # retained result — is deterministic only in that render.
+  defp rendered_text(html, selector) do
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(selector)
+    |> LazyHTML.text()
+  end
+
+  defp rendered?(html, selector) do
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(selector)
+    |> Enum.any?()
   end
 
   # One range request through the access view's own form, submitted the way a
@@ -463,7 +477,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
                "Directed paths and step-free connections at the selected moment."
              )
 
-      assert html =~ "does not certify slopes, widths, or all wheelchair requirements."
+      assert has_element?(
+               view,
+               "#preview-coverage",
+               "does not certify slopes, widths, or all wheelchair requirements."
+             )
 
       # The cause list names the active closure by its exact natural ID and
       # window, and links back to the closure that carries it.
@@ -594,14 +612,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
         })
         |> render_submit()
 
-      assert has_element?(view, "#analysis-stale", "Results are from an earlier check")
-      assert html =~ "showing 12:00 on Fri, Jan 15 while 16:00 on Fri, Jan 15 is calculated"
+      assert rendered_text(html, "#analysis-stale") =~ "Results are from an earlier check"
 
-      assert has_element?(
-               view,
-               "#preview-result-title",
+      assert rendered_text(html, "#analysis-stale-detail") =~
+               "showing 12:00 on Fri, Jan 15 while 16:00 on Fri, Jan 15 is calculated"
+
+      assert rendered_text(html, "#preview-result-title") =~
                "No step-free route to or from Platform 1"
-             )
 
       html = render_async(view, 5_000)
 
@@ -649,7 +666,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
       assert has_element?(view, "#analysis-retry", "Check again")
       assert has_element?(view, "#analysis-stale")
       assert html =~ "showing 12:00 on Fri, Jan 15"
-      assert html =~ "stopped before it finished"
+      assert has_element?(view, "#analysis-stale", "stopped before it finished")
 
       assert has_element?(
                view,
@@ -658,11 +675,12 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
              )
 
       # Retry re-runs the same moment: the failure clears while the check runs
-      # and comes back, and the retained answer is still untouched.
-      view |> element("#analysis-retry") |> render_click()
+      # and comes back, and the retained answer is still untouched. The loading
+      # state belongs to the retry's own render.
+      retry = view |> element("#analysis-retry") |> render_click()
 
-      refute has_element?(view, "#analysis-error")
-      assert has_element?(view, "#analysis-stale")
+      refute rendered?(retry, "#analysis-error")
+      assert rendered_text(retry, "#analysis-stale") =~ "Results are from an earlier check"
 
       html = render_async(view, 5_000)
 
@@ -780,19 +798,17 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
         })
 
       concourse =
-        stop_fixture(organization.id, version.id, %{
+        child_stop_fixture(organization.id, version.id, station.stop_id, %{
           stop_id: "ACCESS_NOE_CONCOURSE",
           stop_name: "Entrance-less concourse",
-          location_type: 0,
-          parent_station: station.stop_id
+          location_type: 0
         })
 
       platform =
-        stop_fixture(organization.id, version.id, %{
+        child_stop_fixture(organization.id, version.id, station.stop_id, %{
           stop_id: "ACCESS_NOE_PLATFORM",
           stop_name: "Entrance-less platform",
-          location_type: 0,
-          parent_station: station.stop_id
+          location_type: 0
         })
 
       pathway_fixture(organization.id, version.id, concourse.stop_id, platform.stop_id, %{
@@ -1008,7 +1024,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
                "Service dates Jan 15, 2027 · Jan 15 12:00 AM to Jan 16 2:00 AM (America/New_York)"
              )
 
-      assert has_element?(view, "#range-computed", "2 periods with lost connections")
+      # Three periods: the daytime window, the overnight one, and the previous
+      # service date's overnight instance whose 26:00 end spills past midnight
+      # into the covered span.
+      assert has_element?(view, "#range-computed", "3 periods with lost connections")
       refute has_element?(view, "#range-stale")
 
       # A range the context refuses leaves the retained range under its own
@@ -1027,9 +1046,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
       # Refreshing the moment is the preview's own request: it labels the
       # retained moment under `#analysis-stale` and must not touch the range's
       # label, its result or its refused entries.
-      render_patch(view, access_path(version, station.stop_id, @friday, "16:00:00"))
+      patched = render_patch(view, access_path(version, station.stop_id, @friday, "16:00:00"))
 
-      assert has_element?(view, "#analysis-stale", "Results are from an earlier check")
+      assert rendered_text(patched, "#analysis-stale") =~ "Results are from an earlier check"
       assert has_element?(view, "#range-stale", "Results are from an earlier check")
 
       assert has_element?(

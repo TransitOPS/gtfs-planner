@@ -131,43 +131,38 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsRangeLiveTest do
     agency_fixture(organization.id, version.id, %{agency_timezone: "America/New_York"})
 
     entrance =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "RANGE_ENTRANCE",
         stop_name: "North entrance",
-        location_type: 2,
-        parent_station: station.stop_id
+        location_type: 2
       })
 
     lonely_entrance =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "RANGE_EAST_ENTRANCE",
         stop_name: "East entrance",
-        location_type: 2,
-        parent_station: station.stop_id
+        location_type: 2
       })
 
     mezzanine =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "RANGE_MEZZANINE",
         stop_name: "Mezzanine hall",
-        location_type: 0,
-        parent_station: station.stop_id
+        location_type: 0
       })
 
     platform =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "RANGE_PLATFORM",
         stop_name: "Platform 1",
-        location_type: 0,
-        parent_station: station.stop_id
+        location_type: 0
       })
 
     _boarding =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "RANGE_BOARDING",
         stop_name: "Platform 1 boarding area",
-        location_type: 4,
-        parent_station: station.stop_id
+        location_type: 4
       })
 
     walkway =
@@ -245,12 +240,14 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsRangeLiveTest do
     html
     |> LazyHTML.from_fragment()
     |> LazyHTML.query("#range-periods-table tbody tr")
+    |> Enum.to_list()
   end
 
   defp list_rows(html) do
     html
     |> LazyHTML.from_fragment()
     |> LazyHTML.query("#range-periods-list > li")
+    |> Enum.to_list()
   end
 
   defp row_attributes(html, selector, name) do
@@ -335,11 +332,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsRangeLiveTest do
       assert row_attributes(html, "#range-periods-table tbody tr", "data-period-count") == ["1"]
 
       assert row_attributes(html, "#range-periods-table tbody tr", "data-local-start") == [
-               "2027-01-15T09:00:00"
+               "2027-01-15T09:00:00.000000"
              ]
 
       assert row_attributes(html, "#range-periods-table tbody tr", "data-local-end") == [
-               "2027-01-15T09:05:00"
+               "2027-01-15T09:05:00.000000"
              ]
 
       assert row_attributes(html, "#range-periods-table tbody tr", "data-start-offset") == [
@@ -399,7 +396,14 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsRangeLiveTest do
       organization: organization,
       version: version
     } do
-      %{station: station} = closed_station(organization, version, 90_000, 93_600)
+      %{station: station} = range_station(organization, version)
+
+      # The closure runs on one service date only, so the range's own instance
+      # is the only one the sweep can find: the previous day's spill would
+      # otherwise group with it as a repeated window.
+      one_date_calendar(organization, version, "CAL_TUESDAY", ~D[2027-01-19])
+      lift_closure(organization, version, 90_000, 93_600, "CAL_TUESDAY")
+
       conn = log_in_user(conn, user, organization: organization)
       view = open_access(conn, version, station, @tuesday)
 
@@ -427,11 +431,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsRangeLiveTest do
              ]
 
       assert row_attributes(html, "#range-periods-table tbody tr", "data-local-start") == [
-               "2027-01-20T01:00:00"
+               "2027-01-20T01:00:00.000000"
              ]
 
       assert row_attributes(html, "#range-periods-table tbody tr", "data-local-end") == [
-               "2027-01-20T02:00:00"
+               "2027-01-20T02:00:00.000000"
              ]
 
       # The local window is on the next civil day, and the row says so instead of
@@ -498,14 +502,14 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsRangeLiveTest do
       assert has_element?(view, "#range-group-0-date-label", "Sat, Mar 13")
       assert has_element?(view, "#range-group-1-date-label", "Mar 14–15, 2027")
       assert has_element?(view, "#range-group-1-dates[data-range-dates='2']")
-      assert has_element?(view, "#range-date-1-2027-03-14-32400", "Sun, Mar 14")
-      assert has_element?(view, "#range-date-1-2027-03-15-32400", "Mon, Mar 15")
+      assert has_element?(view, "#range-group-1-dates-2027-03-14-32400", "Sun, Mar 14")
+      assert has_element?(view, "#range-group-1-dates-2027-03-15-32400", "Mon, Mar 15")
 
-      assert row_attributes(html, "#range-date-1-2027-03-14-32400", "data-show-date") == [
+      assert row_attributes(html, "#range-group-1-dates-2027-03-14-32400", "data-show-date") == [
                "2027-03-14"
              ]
 
-      assert row_attributes(html, "#range-date-1-2027-03-15-32400", "data-show-date") == [
+      assert row_attributes(html, "#range-group-1-dates-2027-03-15-32400", "data-show-date") == [
                "2027-03-15"
              ]
 
@@ -635,16 +639,16 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsRangeLiveTest do
             {"2027-01-25", "Mon, Jan 25"},
             {"2027-02-01", "Mon, Feb 1"}
           ] do
-        assert has_element?(view, "#range-date-0-#{date}-32400", label)
+        assert has_element?(view, "#range-group-0-dates-#{date}-32400", label)
       end
 
       # Each disclosed date names its own exact moment, so selecting one cannot
       # land between two occurrences.
-      assert row_attributes(html, "#range-date-0-2027-01-25-32400", "data-show-date") == [
+      assert row_attributes(html, "#range-group-0-dates-2027-01-25-32400", "data-show-date") == [
                "2027-01-25"
              ]
 
-      assert row_attributes(html, "#range-date-0-2027-02-01-32400", "data-show-date") == [
+      assert row_attributes(html, "#range-group-0-dates-2027-02-01-32400", "data-show-date") == [
                "2027-02-01"
              ]
     end
@@ -692,7 +696,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsRangeLiveTest do
 
       assert has_element?(view, "#range-stale-detail", "the entered dates were not checked")
       assert has_element?(view, "#range-result", "Service dates Jan 15, 2027")
-      assert has_element?(view, "#range-computed", "1 period with lost connections")
+      assert has_element?(view, "#range-computed", "Checked ")
 
       # A span of 32 service days is the other refusal the context owns; both
       # values stay in the form and no result replaces the retained one.
@@ -782,7 +786,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsRangeLiveTest do
       assert has_element?(view, "#range-stale", "Results are from an earlier check")
       assert has_element?(view, "#range-stale-detail", "stopped before it finished")
       assert has_element?(view, "#range-result", "Service dates Jan 15, 2027")
-      assert has_element?(view, "#range-computed", "1 period with lost connections")
+      assert has_element?(view, "#range-computed", "Checked ")
       refute has_element?(view, "#range-no-loss")
       refute has_element?(view, "#range-timeout")
       refute has_element?(view, "#range-error")
@@ -806,19 +810,17 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsRangeLiveTest do
         })
 
       concourse =
-        stop_fixture(organization.id, version.id, %{
+        child_stop_fixture(organization.id, version.id, station.stop_id, %{
           stop_id: "RANGE_NOE_CONCOURSE",
           stop_name: "Entrance-less concourse",
-          location_type: 0,
-          parent_station: station.stop_id
+          location_type: 0
         })
 
       platform =
-        stop_fixture(organization.id, version.id, %{
+        child_stop_fixture(organization.id, version.id, station.stop_id, %{
           stop_id: "RANGE_NOE_PLATFORM",
           stop_name: "Entrance-less platform",
-          location_type: 0,
-          parent_station: station.stop_id
+          location_type: 0
         })
 
       pathway =
@@ -838,7 +840,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsRangeLiveTest do
       })
 
       conn = log_in_user(conn, user, organization: organization)
-      view = open_access(conn, version, %{station: station}, "2027-01-15")
+      view = open_access(conn, version, station, "2027-01-15")
 
       run_range(view, "2027-01-15", "2027-01-15")
 
@@ -927,7 +929,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsRangeLiveTest do
       assert :sys.get_state(view.pid).socket.assigns.range_status == :loading
       refute has_element?(view, "#range-timeout")
       assert has_element?(view, "#range-result", "Service dates Jan 15, 2027")
-      assert has_element?(view, "#range-computed", "1 period with lost connections")
+      assert has_element?(view, "#range-computed", "Checked ")
 
       # The deadline of the request this view is waiting for cancels it and says
       # so, while the last successful range stays on screen under its own

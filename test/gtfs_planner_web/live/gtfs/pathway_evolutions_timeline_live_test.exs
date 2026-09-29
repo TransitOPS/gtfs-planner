@@ -59,7 +59,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsTimelineLiveTest do
   end
 
   defp access_path(version, stop_id, date, time) do
-    "/gtfs/#{version.id}/stops/#{stop_id}/evolutions/access?date=#{date}&time=#{time}"
+    query = URI.encode_query([{"date", to_string(date)}, {"time", to_string(time)}])
+
+    "/gtfs/#{version.id}/stops/#{stop_id}/evolutions/access?#{query}"
   end
 
   # A daily native calendar that covers the agency's own today (so a default
@@ -99,27 +101,24 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsTimelineLiveTest do
     agency_fixture(organization.id, version.id, %{agency_timezone: "America/New_York"})
 
     entrance =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "TIMELINE_ENTRANCE",
         stop_name: "North entrance",
-        location_type: 2,
-        parent_station: station.stop_id
+        location_type: 2
       })
 
     mezzanine =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "TIMELINE_MEZZANINE",
         stop_name: "Mezzanine hall",
-        location_type: 0,
-        parent_station: station.stop_id
+        location_type: 0
       })
 
     platform =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "TIMELINE_PLATFORM",
         stop_name: "Platform 1",
-        location_type: 0,
-        parent_station: station.stop_id
+        location_type: 0
       })
 
     pathway_fixture(organization.id, version.id, entrance.stop_id, mezzanine.stop_id, %{
@@ -184,7 +183,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsTimelineLiveTest do
 
   defp boundary_id(closure_id, date, phase), do: "boundary-#{closure_id}-#{date}-#{phase}"
 
-  defp row_id(closure_id, date), do: "timeline-instance-#{closure_id}-#{date}"
+  defp row_id(closure_id, date), do: "#timeline-instance-#{closure_id}-#{date}"
 
   describe "the closure timeline" do
     setup :editor_setup
@@ -212,7 +211,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsTimelineLiveTest do
                "Service hours 00:00–24:00. Choose a boundary to preview that moment."
 
       assert label(html, "#timeline-cursor-label") == "Selected time · 12:00"
-      assert style(html, "#timeline-cursor") == "left: 50.000%"
+      assert style(html, "[data-timeline-cursor]") == "left: 50.000%"
 
       row = row_id(daytime.id, "2027-01-19")
 
@@ -225,7 +224,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsTimelineLiveTest do
       assert style(html, "#{row} [data-timeline-closed]") == "left: 37.500%; width: 25.000%"
 
       # A row of the selected service date carries no spill label.
-      assert attribute(html, row, "data-spill") == []
+      assert attribute(html, "#{row} [data-spill]", "data-spill") == []
 
       # The four actions are the domain's own targets: start - 60 s, start,
       # midpoint and end, all inside the selected service date.
@@ -297,20 +296,20 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsTimelineLiveTest do
       assert attribute(html, spill, "data-start-time") == ["79200"]
       assert attribute(html, spill, "data-end-time") == ["93600"]
       assert style(html, "#{spill} [data-timeline-closed]") == "left: 0.000%; width: 7.692%"
-      assert attribute(html, spill, "data-spill") == ["2027-01-18"]
+      assert attribute(html, "#{spill} [data-spill]", "data-spill") == ["2027-01-18"]
       assert label(html, spill) =~ "From Mon, Jan 18 service"
       assert label(html, spill) =~ "22:00–26:00"
 
       # Its drawn edge is the display span's start, not the instance's own
       # start, and its actions belong to the service date it started on.
-      assert label(html, "##{spill}-actions") ==
+      assert label(html, "#{spill}-actions") ==
                "Boundary actions are on the Mon, Jan 18 service date."
 
       # Tuesday's own instance keeps its whole window and the four actions the
       # domain derived for it.
       assert attribute(html, row, "data-from-seconds") == ["79200"]
       assert attribute(html, row, "data-to-seconds") == ["93600"]
-      assert attribute(html, row, "data-spill") == []
+      assert attribute(html, "#{row} [data-spill]", "data-spill") == []
 
       assert attribute(html, "#{row} button", "id") == [
                boundary_id(overnight.id, "2027-01-19", "before"),
@@ -321,7 +320,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsTimelineLiveTest do
 
       # The cursor is the selected moment, 01:00 of Tuesday's service day.
       assert label(html, "#timeline-cursor-label") == "Selected time · 01:00"
-      assert style(html, "#timeline-cursor") == "left: 3.846%"
+      assert style(html, "[data-timeline-cursor]") == "left: 3.846%"
     end
 
     test "a boundary action previews the exact instant it names, past 24:00", %{
@@ -346,11 +345,14 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsTimelineLiveTest do
       view |> element(closes) |> render_click()
 
       assert_patch(view, access_path(version, station.stop_id, @tuesday, "22:00:00"))
-      render_patch(view, access_path(version, station.stop_id, @tuesday, "22:00:00"))
+
+      patched =
+        render_patch(view, access_path(version, station.stop_id, @tuesday, "22:00:00"))
 
       # The earlier answer stays on screen under its stale label while the new
-      # moment is calculated.
-      assert has_element?(view, "#analysis-stale")
+      # moment is calculated. That state belongs to the patch's own render: the
+      # completion is free to arrive before any later render request.
+      assert label(patched, "#analysis-stale") =~ "Results are from an earlier check"
 
       html = render_async(view, 5_000)
 

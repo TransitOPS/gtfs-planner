@@ -67,10 +67,11 @@ defmodule GtfsPlanner.Repo.Migrations.CreatePathwayEvolutionsTest do
 
       constraints = constraint_names(schema, "pathway_evolutions")
 
+      # The closure tuple's uniqueness is a unique index, asserted above with
+      # the other index names; `pg_constraint` holds only the checks and the FK.
       for name <- ~w(
             pathway_evolutions_identity_check
             pathway_evolutions_window_check
-            pathway_evolutions_closure_index
             pathway_evolutions_pathway_fkey
           ) do
         assert name in constraints, "expected constraint #{name}, got: #{inspect(constraints)}"
@@ -80,9 +81,13 @@ defmodule GtfsPlanner.Repo.Migrations.CreatePathwayEvolutionsTest do
     test "the closure tuple is unique only within its organization and version", scope do
       insert_closure(scope, pathway_id: "PW_A", service_id: "SVC_1")
 
-      assert_raise Postgrex.Error, fn ->
-        insert_closure(scope, pathway_id: "PW_A", service_id: "SVC_1")
-      end
+      error =
+        assert_raise Postgrex.Error, fn ->
+          insert_closure(scope, pathway_id: "PW_A", service_id: "SVC_1")
+        end
+
+      assert error.postgres.code == :unique_violation
+      assert error.postgres.constraint == "pathway_evolutions_closure_index"
 
       # A different window, service, pathway, version or organization is a new tuple.
       insert_closure(scope, pathway_id: "PW_A", service_id: "SVC_1", start_time: 3600)

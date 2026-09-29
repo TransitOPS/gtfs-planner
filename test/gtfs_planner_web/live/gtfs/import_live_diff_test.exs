@@ -723,21 +723,17 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveDiffTest do
       })
 
     entrance =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "MERGE_ENTRANCE",
         stop_name: "North entrance",
-        location_type: 2,
-        level_id: "L_MERGE",
-        parent_station: station.stop_id
+        location_type: 2
       })
 
     platform =
-      stop_fixture(organization.id, version.id, %{
+      child_stop_fixture(organization.id, version.id, station.stop_id, %{
         stop_id: "MERGE_PLATFORM",
         stop_name: "Platform 1",
-        location_type: 0,
-        level_id: "L_MERGE",
-        parent_station: station.stop_id
+        location_type: 0
       })
 
     blocked =
