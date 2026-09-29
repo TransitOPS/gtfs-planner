@@ -2037,7 +2037,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
          creation_failure(
            socket,
            "Nothing was created: an earlier save from this drawer already created a route with different values.",
-           "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{route_id}"
+           ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{route_id}"
          )}
 
       {:error, :not_found} ->
@@ -2159,7 +2159,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   end
 
   defp new_route_details_path(socket, route) do
-    "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{route.route_id}?created=1"
+    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{route.route_id}?created=1"
   end
 
   # Mount-time access is not enough for a write: the membership may have lost

@@ -464,6 +464,21 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       assert scoped_route_count(organization, version) == 1
     end
 
+    test "a route ID with reserved URL characters navigates to its encoded Details path", %{
+      conn: conn,
+      organization: organization,
+      version: version
+    } do
+      north_coast(organization, version)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+      open_drawer(view)
+
+      drawer_submit(view, %{"route_short_name" => "QA/1 X", "route_type" => "3"})
+
+      assert [%{route_id: "QA/1 X"}] = scoped_routes(organization, version)
+      assert_redirect(view, "/gtfs/#{version.id}/routes/QA%2F1%20X?created=1")
+    end
+
     test "an invalid submit marks each invalid field and saves nothing", %{
       conn: conn,
       organization: organization,
