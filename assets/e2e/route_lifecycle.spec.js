@@ -2267,7 +2267,7 @@ test.describe("Lifecycle denial and stale review", () => {
     await sessionB.close();
   });
 
-  test("a removed membership keeps the draft, refuses the write, and restores cleanly", async ({
+  test("a deactivated membership ends the session without writing the draft, and restores cleanly", async ({
     browser,
   }) => {
     test.setTimeout(180_000);
@@ -2307,13 +2307,12 @@ test.describe("Lifecycle denial and stale review", () => {
       "diagram-test@gtfs-planner.test deactivated.",
     );
 
-    // The socket survives, the write does not: the refusal speaks, and the
-    // draft is still on the page (AC-23's permission-loss half).
-    await editorPage.locator("#route-save").click();
-    await expect(editorPage.locator("#route-details-save-error")).toContainText(
-      "editor access was removed",
-    );
-    await expect(long).toHaveValue("Revoked draft rename");
+    // Deactivation ends the editor's sessions and closes their open LiveViews,
+    // so the dirty page cannot write: the socket's reconnect is refused and the
+    // page lands on the ordinary login. The refusal with the draft kept on a
+    // still-open page (a role revoked while the session lives) is covered by the
+    // route Details and status ExUnit cases.
+    await expect(editorPage.locator('input[name="user[email]"]')).toBeVisible();
 
     // Restore access, then prove nothing was written: the saved row still
     // holds the name the draft never overwrote.
@@ -2325,11 +2324,8 @@ test.describe("Lifecycle denial and stale review", () => {
     );
     await admin.close();
 
-    // Deactivation revoked the editor's HTTP session with the membership: the
-    // reload lands on the ordinary login, and signing back in shows the saved
-    // row still holding the name the refused draft never overwrote.
-    await editorPage.reload();
-    await expect(editorPage.locator('input[name="user[email]"]')).toBeVisible();
+    // Signing back in shows the saved row still holding the name the abandoned
+    // draft never overwrote.
     await logIn(editorPage);
     await editorPage.goto(`/gtfs/${version}/routes/BROWSER_ROUTE16_INACTIVE`);
     await awaitConnectedStep033(editorPage);
