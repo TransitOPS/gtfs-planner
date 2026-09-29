@@ -202,10 +202,24 @@ async function blockBoxes(page) {
     [...document.querySelectorAll("#blocks-timeline-body tr[data-block]")].map(
       (row) => ({
         block: row.dataset.block,
-        trips: Number(row.querySelector(".blocks-meta-trips")?.textContent ?? -1),
+        // The Trips column is gone (AC-32), so the bars are the trip count.
+        trips: row.querySelectorAll("[data-role='trip-bar']").length,
+        out: row.querySelector(".blocks-meta-out")?.textContent ?? "",
       }),
     ),
   );
+}
+
+// The Time out cell as service-day seconds, so a sorted page can be compared
+// without reading its labels. A block with no span prints a dash and has no
+// place in either order, which the caller sees as `null`.
+function outSeconds(text) {
+  const [clock, day] = text.split("–")[0].split(" ");
+  if (!/^\d\d:\d\d$/.test(clock)) return null;
+  const [hours, minutes] = clock.split(":").map(Number);
+  const days =
+    day === undefined ? 0 : Number(day.replace("−", "-").replace("d", ""));
+  return hours * 3600 + minutes * 60 + days * 86400;
 }
 
 // The whole-day strip's Problems figure, read from the strip's own value cell.
@@ -456,7 +470,7 @@ test.describe("Blocks workspace 1440x1000", () => {
     await capture(page, testInfo, "zoom-1440");
   });
 
-  test("sorting by Trips puts the day's busiest block first", async ({
+  test("sorting by Time out orders the day type and the busiest block still reads", async ({
     page,
   }, testInfo) => {
     await logIn(page);
@@ -467,45 +481,53 @@ test.describe("Blocks workspace 1440x1000", () => {
     const before = await blockBoxes(page);
     expect(before.length).toBe(BLOCKS);
     expect(before[0].block).not.toBe(BUSIEST_BLOCK);
+    // The Trips column is gone, but the busiest block's six trips are still
+    // countable from its bars.
+    expect(before.find((row) => row.block === BUSIEST_BLOCK).trips).toBe(6);
 
-    const tripsHeader = page
+    const outHeader = page
       .locator("#blocks-timeline thead th")
-      .filter({ has: page.locator("button.blocks-sort", { hasText: "Trips" }) });
+      .filter({ has: page.locator("button.blocks-sort", { hasText: "Time out" }) });
 
-    // The first click sorts ascending; the second reverses to descending, so
-    // the day type's most-travelled block leads page 1.
-    await tripsHeader.locator("button.blocks-sort").click();
-    await expect(tripsHeader).toHaveAttribute("aria-sort", "ascending");
-    await expect(tripsHeader.locator("button.blocks-sort")).toContainText("↑");
-    expect((await blockBoxes(page))[0].block).not.toBe(BUSIEST_BLOCK);
+    // The first click sorts ascending, so the day type's earliest platform start
+    // leads page 1.
+    await outHeader.locator("button.blocks-sort").click();
+    await expect(outHeader).toHaveAttribute("aria-sort", "ascending");
+    await expect(outHeader.locator("button.blocks-sort")).toContainText("↑");
 
-    await tripsHeader.locator("button.blocks-sort").click();
-    await expect(tripsHeader).toHaveAttribute("aria-sort", "descending");
-    await expect(tripsHeader.locator("button.blocks-sort")).toContainText("↓");
+    const ascending = (await blockBoxes(page)).map((row) => outSeconds(row.out));
+    for (let index = 1; index < ascending.length; index += 1) {
+      if (ascending[index] === null || ascending[index - 1] === null) continue;
+      expect(ascending[index - 1]).toBeLessThanOrEqual(ascending[index]);
+    }
+
+    await outHeader.locator("button.blocks-sort").click();
+    await expect(outHeader).toHaveAttribute("aria-sort", "descending");
+    await expect(outHeader.locator("button.blocks-sort")).toContainText("↓");
 
     const sorted = await blockBoxes(page);
-    expect(sorted[0]).toEqual({ block: BUSIEST_BLOCK, trips: 6 });
     // The order is non-increasing down the page, and the sort kept the whole day
     // type on one page: the pager still reports its own 34 blocks.
-    for (let index = 1; index < sorted.length; index += 1) {
-      expect(sorted[index - 1].trips).toBeGreaterThanOrEqual(sorted[index].trips);
+    const starts = sorted.map((row) => outSeconds(row.out));
+    for (let index = 1; index < starts.length; index += 1) {
+      if (starts[index] === null || starts[index - 1] === null) continue;
+      expect(starts[index - 1]).toBeGreaterThanOrEqual(starts[index]);
     }
-    expect(sorted[sorted.length - 1].trips).toBeLessThan(sorted[0].trips);
     await expect(page.locator("#blocks-pager")).toContainText(
       `Showing 1–${BLOCKS} of ${BLOCKS} blocks`,
     );
-    await expect(page).toHaveURL(/sort=trips&dir=desc/);
+    await expect(page).toHaveURL(/sort=out&dir=desc/);
 
     tour.sort = {
       defaultFirst: before[0].block,
       sortedFirst: sorted[0].block,
-      sortedFirstTrips: sorted[0].trips,
-      sortedLastTrips: sorted[sorted.length - 1].trips,
+      sortedFirstOut: sorted[0].out,
+      sortedLastOut: sorted[sorted.length - 1].out,
       pageSize: PAGE_SIZE,
       dayBlocks: sorted.length,
     };
 
-    await capture(page, testInfo, "sorted-by-trips-1440");
+    await capture(page, testInfo, "sorted-by-time-out-1440");
   });
 
   test("the Unassigned panel pages: 100 trips, then the remaining 30", async ({
@@ -656,7 +678,7 @@ test.describe("Blocks workspace 1440x1000", () => {
       `#blocks-timeline-body tr[data-block="${TARGET_BLOCK}"]`,
     );
     await expect(targetRow).toBeVisible();
-    await expect(targetRow.locator(".blocks-meta-trips")).toHaveText("2");
+    await expect(targetRow.locator("[data-role='trip-bar']")).toHaveCount(2);
     await expect(
       targetRow.locator(`[data-role="trip-bar"][data-trip="${SHARED_TRIP}"]`),
     ).toHaveCount(1);
@@ -816,7 +838,7 @@ test.describe("qa tour", () => {
       "| Zoom in | A known bar doubles within 2px, the overflow stays inside the container and the page does not scroll sideways | " +
         value("zoom"),
       " |",
-      "| Sort by Trips (descending) | The day type's busiest block leads page 1 | " +
+      "| Sort by Time out (descending) | The day type's rows are in non-increasing platform-start order, and the busiest block still shows its six trips | " +
         value("sort"),
       " |",
       "| Unassigned panel | 100 trips on page 1, the remaining 30 on page 2 | " +

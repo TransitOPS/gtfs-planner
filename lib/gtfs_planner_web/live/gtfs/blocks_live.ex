@@ -65,9 +65,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   @sort_keys %{
     "block" => :block,
-    "trips" => :trips,
-    "start" => :start,
-    "end" => :end,
+    "garage" => :garage,
+    "out" => :out,
     "hours" => :hours,
     "status" => :status
   }

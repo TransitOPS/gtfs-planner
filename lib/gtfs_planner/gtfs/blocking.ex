@@ -3205,7 +3205,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       |> Enum.uniq_by(&Checks.finding_key/1)
 
     %{
-      summary: Summary.block_summary(block_id, trips, findings, platform_span_tuple(movements)),
+      summary:
+        block_id
+        |> Summary.block_summary(trips, findings, platform_span_tuple(movements))
+        |> Map.merge(resolution_names(resolution, context)),
       trips: order_block_trips(trips),
       gaps: Checks.gaps(sequence),
       findings: findings,
@@ -3213,6 +3216,28 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       movements: movements,
       stretches: Relief.stretches(movements, windows, limit_secs)
     }
+  end
+
+  # The timeline's Garage · type column reads these three keys, so the names are
+  # resolved here, off the one resolution every other consumer uses (INV-9), and
+  # not re-derived by the page. A garage or type the resolution names but the
+  # context does not hold — a row deleted since the load — falls back to `nil`,
+  # which the page prints as no garage rather than as a blank cell.
+  defp resolution_names(resolution, context) do
+    %{
+      garage_name: name_of(context.garages, resolution.garage_id),
+      type_name: name_of(context.vehicle_types, resolution.vehicle_type_id),
+      conflict?: not is_nil(resolution.conflict)
+    }
+  end
+
+  defp name_of(_records, nil), do: nil
+
+  defp name_of(records, id) do
+    case Map.get(records, id) do
+      %{name: name} -> name
+      _missing -> nil
+    end
   end
 
   # `Summary.block_summary/4` takes the platform span as a pair so a `nil` span is
