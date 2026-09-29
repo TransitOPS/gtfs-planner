@@ -1561,6 +1561,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :untimed_trips, :list, required: true
   attr :findings_by_trip, :map, required: true
   attr :axis, :map, default: nil
+  attr :max_piece_minutes, :integer, default: nil
   attr :routes, :map, required: true
   attr :selected_ids, :any, required: true
   attr :bulk, :map, required: true
@@ -1704,6 +1705,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             block_rows={@block_rows}
             axis={@axis}
             routes={@routes}
+            max_piece_minutes={@max_piece_minutes}
           />
         <% true -> %>
           <.block_list
@@ -2281,6 +2283,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :block_rows, :any, required: true
   attr :axis, :map, default: nil
   attr :routes, :map, required: true
+  attr :max_piece_minutes, :integer, default: nil
 
   def timeline(assigns) do
     assigns =
@@ -2290,6 +2293,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       |> assign(:track_style, track_style(assigns.axis))
 
     ~H"""
+    <.timeline_legend relief?={not is_nil(@max_piece_minutes)} />
     <div id="blocks-timeline-scroll">
       <table
         id="blocks-timeline"
@@ -2346,6 +2350,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             routes={@routes}
             track_style={@track_style}
             route_filter={@state.route}
+            max_piece_minutes={@max_piece_minutes}
           />
         </tbody>
       </table>
@@ -2368,6 +2373,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   in its block and in the Status cell's finding instead of as a bar. With a route
   filter applied, a trip of another route renders no bar and no gap, matching the
   filter that already excluded the block when it has no trip on the route.
+
+  The garage legs and the drives come from the block's derived movements (R2, R3,
+  INV-8) rather than from a second rule: a pull-out before the first bar and a
+  pull-back after the last one open the block drawer, a feasible drive splits its
+  gap into the hatched drive and the wait that follows it, a drive the vehicle
+  cannot make in time is one clipped mark carrying `!` and no wait, and a drive
+  the version cannot compute carries `?` with no wait either. Every one of them
+  is a button with a title, so no information is hover-only.
   """
   attr :dom, :string, required: true
   attr :block, :map, required: true
@@ -2375,14 +2388,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :routes, :map, required: true
   attr :track_style, :string, default: nil
   attr :route_filter, :string, default: nil
+  attr :max_piece_minutes, :integer, default: nil
 
   def block_row(assigns) do
+    movements = assigns.block.movements
+
     assigns =
       assigns
       |> assign(:summary, assigns.block.summary)
       |> assign(:plotted, plotted(assigns.block))
       |> assign(:status, status_label(assigns.block.summary))
       |> assign(:garage, garage_type(assigns.block.summary))
+      |> assign(:pull_out, movements.pull_out)
+      |> assign(:pull_back, movements.pull_back)
+      |> assign(:relief, relief_gaps(assigns.block, assigns.max_piece_minutes))
 
     ~H"""
     <tr id={@dom} data-block={@summary.block_id} class="blocks-row">
@@ -2410,15 +2429,34 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         </span>
       </td>
       <td class="blocks-track" style={@track_style}>
+        <.pull_bar
+          :if={@pull_out}
+          pull={@pull_out}
+          block_id={@summary.block_id}
+          garage={@summary.garage_name}
+          direction={:out}
+          axis={@axis}
+        />
         <%= for row <- @plotted do %>
           <%= if visible?(row.trip, @route_filter) do %>
             <%!-- A negative gap_secs is an overlap, whose bars already carry the mark. --%>
+            <%!-- A drive the vehicle cannot make, or one the version cannot compute, --%>
+            <%!-- takes the whole gap: there is no honest wait to draw after it. --%>
+            <.drive_bar
+              :if={row.movement && row.movement.kind != :layover && row.gap.gap_secs >= 0}
+              gap={row.movement}
+              from={row.previous}
+              to={row.trip}
+              axis={@axis}
+            />
             <.gap
-              :if={row.gap && row.gap.gap_secs >= 0}
+              :if={row.gap && row.gap.gap_secs >= 0 && waitable?(row.movement)}
               gap={row.gap}
               from={row.previous}
               axis={@axis}
               short?={row.short?}
+              drive_secs={row.movement && row.movement.drive_secs}
+              relief?={MapSet.member?(@relief, row.gap_index)}
             />
             <.trip_bar
               trip={row.trip}
@@ -2429,8 +2467,139 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             />
           <% end %>
         <% end %>
+        <.pull_bar
+          :if={@pull_back}
+          pull={@pull_back}
+          block_id={@summary.block_id}
+          garage={@summary.garage_name}
+          direction={:back}
+          axis={@axis}
+        />
       </td>
     </tr>
+    """
+  end
+
+  @doc """
+  Renders the legend above the timeline: what each mark on a row means.
+
+  The keys are the same marks the rows draw, in the order the reference lists
+  them — garage travel, driving without riders and the waiting minutes, with the
+  operator-change key only when a relief limit is set, because with no limit
+  there is no operator change to place and no `⇄` can appear on a row.
+  """
+  attr :relief?, :boolean, required: true
+
+  def timeline_legend(assigns) do
+    ~H"""
+    <div
+      id="blocks-timeline-legend"
+      class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-base-300 bg-canvas px-4 py-2 text-[13px] text-base-content"
+    >
+      <span :for={{class, label} <- legend_keys(@relief?)} class="inline-flex items-center gap-1.5">
+        <span class={["blocks-legend-key", class]} aria-hidden="true">{legend_mark(class)}</span>
+        <span>{label}</span>
+      </span>
+    </div>
+    """
+  end
+
+  defp legend_keys(relief?) do
+    [
+      {"blocks-pull", "Garage travel"},
+      {"blocks-drive", "Driving without riders"},
+      {"blocks-wait", "Waiting · minutes"}
+    ] ++ if(relief?, do: [{"blocks-legend-relief", "Operators can change"}], else: [])
+  end
+
+  # Each key paints the mark it names, so the legend cannot drift from the
+  # surface it explains; the operator-change key carries the `⇄` a marked wait
+  # ends with, the others carry no text.
+  defp legend_mark("blocks-legend-relief"), do: "⇄"
+  defp legend_mark(_class), do: ""
+
+  @doc """
+  Renders one garage leg as a button positioned by the day type's axis.
+
+  A pull-out runs from the garage to the first departure and a pull-back from the
+  last arrival back to the garage; both open the block drawer, and the title
+  names the garage, the time and where the driving time came from — an entered
+  time and an estimate are different claims about the same bar. The bar itself
+  carries no text, as in the reference: its minutes are in the title rather than
+  competing with a trip bar's route label.
+  """
+  attr :pull, :map, required: true
+  attr :block_id, :string, required: true
+  attr :garage, :string, default: nil
+  attr :direction, :atom, required: true, values: [:out, :back]
+  attr :axis, :map, default: nil
+
+  def pull_bar(assigns) do
+    assigns = assign(assigns, :style, span_geometry(assigns.pull, assigns.axis))
+
+    ~H"""
+    <button
+      type="button"
+      data-role={(@direction == :out && "pull-out") || "pull-back"}
+      data-block={@block_id}
+      phx-click="open_block"
+      phx-value-block={@block_id}
+      style={@style}
+      class="blocks-track-mark blocks-pull"
+      title={pull_title(@pull, @garage, @direction)}
+    >
+    </button>
+    """
+  end
+
+  @doc """
+  Renders one drive as a button positioned by the day type's axis.
+
+  Three shapes, each carrying its own text so the status is never colour alone: a
+  feasible drive is hatched and starts the wait that follows it; a drive the
+  vehicle cannot make in time takes the whole gap in a red hatch with a 2px
+  outline and `!`; a drive the version cannot compute takes the gap with `?` and
+  claims nothing about it (FH-40). All three open the gap drawer.
+  """
+  attr :gap, :map, required: true
+  attr :from, :map, required: true
+  attr :to, :map, required: true
+  attr :axis, :map, default: nil
+
+  def drive_bar(assigns) do
+    assigns =
+      assigns
+      |> assign(:bad?, assigns.gap.feasible? == false)
+      |> assign(:unknown?, assigns.gap.kind == :unknown)
+      |> assign(:style, drive_geometry(assigns.gap, assigns.axis))
+
+    ~H"""
+    <button
+      type="button"
+      data-role={
+        cond do
+          @bad? -> "drive-bad"
+          @unknown? -> "drive-unknown"
+          true -> "drive"
+        end
+      }
+      data-from={@from.id}
+      data-to={@to.id}
+      phx-click="open_gap"
+      phx-value-from={@from.id}
+      phx-value-to={@to.id}
+      style={@style}
+      class={[
+        "blocks-track-mark",
+        "blocks-drive",
+        @bad? && "blocks-drive-bad",
+        @unknown? && "blocks-drive-unknown"
+      ]}
+      title={drive_title(@gap, @from, @to)}
+    >
+      <span :if={@bad?} data-role="drive-bad-mark">!</span>
+      <span :if={@unknown?} data-role="drive-unknown-mark">?</span>
+    </button>
     """
   end
 
@@ -2492,21 +2661,28 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   Renders the gap before a trip as a button spanning the layover.
 
   The bar spans from the previous trip's last arrival to this trip's first
-  departure, so `from` is the earlier trip of the pair. Its minutes print only
-  when the bar is at least 32px wide, which the container query reads from the
-  bar's own width. An empty move draws dashed with the move icon and a short
-  layover draws the warning outline, so the two differ by more than colour.
+  departure, so `from` is the earlier trip of the pair; a gap the vehicle spends
+  part of driving starts after that drive instead, and prints the wait it is left
+  with rather than the whole gap. Its minutes print only when the bar is at least
+  32px wide, which the container query reads from the bar's own width. An empty
+  move draws dashed with the move icon and a short layover draws the warning
+  outline, so the two differ by more than colour. A wait at a marked stop ends
+  its label with `⇄` once the bar is wide enough for both, which is the instant an
+  operator change is possible there (R5).
   """
   attr :gap, :map, required: true
   attr :from, :map, required: true
   attr :axis, :map, default: nil
   attr :short?, :boolean, default: false
+  attr :drive_secs, :integer, default: nil
+  attr :relief?, :boolean, default: false
 
   def gap(assigns) do
     assigns =
       assigns
       |> assign(:move?, match?({:moves, _}, assigns.gap.handoff))
-      |> assign(:style, gap_geometry(assigns.gap, assigns.from, assigns.axis))
+      |> assign(:wait_secs, assigns.gap.gap_secs - (assigns.drive_secs || 0))
+      |> assign(:style, gap_geometry(assigns.gap, assigns.from, assigns.axis, assigns.drive_secs))
 
     ~H"""
     <button
@@ -2514,9 +2690,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       data-role="blocks-gap"
       data-from={@from.id}
       data-to={@gap.to_id}
-      data-minutes={div(@gap.gap_secs, 60)}
+      data-minutes={div(@wait_secs, 60)}
       data-handoff={handoff_key(@gap.handoff)}
       data-short={to_string(@short?)}
+      data-relief={to_string(@relief?)}
       phx-click="open_gap"
       phx-value-from={@from.id}
       phx-value-to={@gap.to_id}
@@ -2531,7 +2708,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       <span :if={@move?} data-role="gap-move-icon" class="blocks-gap-icon">
         <.icon name="hero-arrow-up-right-mini" class="size-3" />
       </span>
-      <span class="blocks-gap-label">{div(@gap.gap_secs, 60)}</span>
+      <span class="blocks-gap-label">
+        {div(@wait_secs, 60)}<span :if={@relief?} data-role="blocks-gap-relief"> ⇄</span>
+      </span>
     </button>
     """
   end
@@ -2859,17 +3038,41 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp axis_geometry(_axis), do: {0, @min_track_span_secs}
 
   defp bar_geometry(trip, axis) do
-    {start, span} = axis_geometry(axis)
-
-    "left: #{percent(trip.first_departure - start, span)}%; " <>
-      "width: #{percent(trip.last_arrival - trip.first_departure, span)}%"
+    span_geometry(%{start_secs: trip.first_departure, end_secs: trip.last_arrival}, axis)
   end
 
-  defp gap_geometry(gap, previous, axis) do
+  defp gap_geometry(gap, previous, axis, drive_secs) do
+    drive = drive_secs || 0
+
+    span_geometry(
+      %{
+        start_secs: previous.last_arrival + drive,
+        end_secs: previous.last_arrival + gap.gap_secs
+      },
+      axis
+    )
+  end
+
+  defp drive_geometry(gap, axis) do
+    # A drive the vehicle cannot make, and one the version cannot compute, take
+    # the whole gap: there is no honest width to give them but the gap's.
+    width =
+      case {gap.kind, gap.feasible?} do
+        {:drive, true} -> gap.drive_secs
+        _takes_the_gap -> gap.gap_secs
+      end
+
+    span_geometry(
+      %{start_secs: gap.arrival_secs, end_secs: gap.arrival_secs + max(width, 0)},
+      axis
+    )
+  end
+
+  defp span_geometry(%{start_secs: start_secs, end_secs: end_secs}, axis) do
     {start, span} = axis_geometry(axis)
 
-    "left: #{percent(previous.last_arrival - start, span)}%; " <>
-      "width: #{percent(gap.gap_secs, span)}%"
+    "left: #{percent(start_secs - start, span)}%; " <>
+      "width: #{percent(end_secs - start_secs, span)}%"
   end
 
   # Two decimals, so a test can read the geometry straight out of the style and
@@ -2897,12 +3100,32 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         trip: trip,
         previous: if(index == 0, do: nil, else: Enum.at(sequence, index - 1)),
         gap: gap,
+        gap_index: index,
+        # The derived movement for the same pair, in the same order, so a drive
+        # and the wait it leaves behind line up with the bars between them.
+        movement: if(index == 0, do: nil, else: Enum.at(block.movements.gaps, index - 1)),
         overlap?: overlap?,
         shift?: overlap? and rem(overlapping_depth(sequence, index, trip), 2) == 1,
         short?: gap != nil and MapSet.member?(short_pairs, MapSet.new([gap.from_id, gap.to_id]))
       }
     end)
   end
+
+  # The gaps whose wait an operator change can happen in, as R5's windows name
+  # them. With no relief limit set there is no piece of work to hand over, so no
+  # gap is marked and the legend carries no operator-change key either.
+  defp relief_gaps(_block, nil), do: MapSet.new()
+
+  defp relief_gaps(block, _max_piece_minutes) do
+    block.windows
+    |> MapSet.new(& &1.gap_index)
+  end
+
+  # A wait exists only where the movements derived one: an unknown drive has no
+  # wait behind it, and an infeasible one has a gap the vehicle cannot cover.
+  defp waitable?(%{kind: :drive, feasible?: true}), do: true
+  defp waitable?(%{kind: :layover}), do: true
+  defp waitable?(_gap), do: false
 
   defp overlap_trip_ids(findings) do
     findings
@@ -3001,6 +3224,44 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp handoff_key(:same_station), do: "same_station"
   defp handoff_key({:nearby, meters}), do: "nearby-#{meters}"
   defp handoff_key({:moves, _meters}), do: "moves"
+
+  # Copy for where a driving time came from. An entered time is a human's known
+  # route, an estimate is this version's own guess and an unknown is neither, so
+  # the three never read alike.
+  defp source_phrase(:entered, seconds), do: "#{minutes(seconds)} entered"
+  defp source_phrase(:estimated, seconds), do: "#{minutes(seconds)} estimated"
+  defp source_phrase(_unknown, _seconds), do: "driving time unknown"
+
+  defp pull_title(pull, garage, :out) do
+    "Pull-out · leaves #{garage_label(garage)} at #{clock(pull.start_secs)}, " <>
+      "#{source_phrase(pull.source, pull.drive_secs)}"
+  end
+
+  defp pull_title(pull, garage, :back) do
+    "Pull-back · returns to #{garage_label(garage)} at #{clock(pull.end_secs)}, " <>
+      "#{source_phrase(pull.source, pull.drive_secs)}"
+  end
+
+  defp garage_label(nil), do: "the garage"
+  defp garage_label(name), do: "#{name} garage"
+
+  defp drive_title(%{feasible?: false} = gap, _from, to) do
+    "Can't reach #{stop_name(to.first_stop)} · needs #{minutes(gap.drive_secs)} " <>
+      "to get there, has #{minutes(gap.gap_secs)}"
+  end
+
+  defp drive_title(%{kind: :unknown} = gap, from, to) do
+    "Drive to #{stop_name(to.first_stop)} · the driving time from " <>
+      "#{stop_name(from.last_stop)} is not known for " <>
+      "#{clock(gap.arrival_secs)}–#{clock(gap.departure_secs)}"
+  end
+
+  defp drive_title(gap, _from, to) do
+    "Drive to #{stop_name(to.first_stop)} · " <>
+      "#{clock(gap.arrival_secs)}–#{clock(gap.arrival_secs + gap.drive_secs)}, " <>
+      "#{source_phrase(gap.source, gap.drive_secs)}, then wait " <>
+      "#{minutes(gap.wait_secs)}"
+  end
 
   # --- the assignment form and the review (step 25) --------------------------
 
