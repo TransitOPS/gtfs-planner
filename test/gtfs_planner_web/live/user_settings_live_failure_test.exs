@@ -43,8 +43,10 @@ defmodule GtfsPlannerWeb.UserSettingsLiveFailureTest do
       # No success flash
       refute has_element?(view, "#flash-info")
 
-      # Error/retry flash is present with retry guidance
-      assert has_element?(view, "#flash-error", "We couldn't send the confirmation email")
+      # Error/retry flash is present with retry guidance. Nothing was written,
+      # so the message must not leave the reader believing the address changed.
+      assert has_element?(view, "#flash-error", "We couldn't send the confirmation link")
+      assert has_element?(view, "#flash-error", "so nothing changed")
 
       # Persisted email unchanged
       reloaded = Accounts.get_user!(user.id)

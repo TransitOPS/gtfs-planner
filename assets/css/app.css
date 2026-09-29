@@ -95,6 +95,19 @@
   --color-navy-300: #7a85ac; /* sort indicator, inverse surfaces */
   --color-navy-800: #0a1330; /* toast */
   --color-cyan-300: #7dd3cb; /* toast icon */
+
+  /* Cyan 700/800 and the soft ground, added for the account settings redesign
+     (2026-09-28) so its informational callouts can be built from the design
+     system's own ramp rather than daisyUI's `info` pair, whose light-theme
+     stock values do not carry text at AA. */
+  --color-cyan-700: #2c8888; /* informational icon, cyan-50 text */
+  --color-cyan-800: #134848; /* informational text on cyan-50 — 9.1:1 */
+  --color-soft: #e5f5f2; /* informational ground (cyan-50) */
+
+  --color-success-bg: #e3f4e9;
+  --color-success-fg: #0f7a3e;
+  --color-warning-bg: #fcf1db;
+  --color-warning-fg: #8a5a0e;
   --color-error-bg: #fbe3e3;
   --color-error-fg: #9b1c1c;
   --color-error-line: #d33a3a;
@@ -795,6 +808,281 @@ body {
 #user-menu-panel [role="menuitem"]:focus {
   outline: 2px solid var(--color-primary);
   outline-offset: -2px;
+}
+
+/* ── Account settings page theme ──
+   /users/settings adopts the TransitOps application design system's fonts, ink
+   and action colour, scoped to `#account-page` for the same reason the Blocks
+   page is (proposal *Theme*, design-critique S1, AC-30): the header and every
+   other page keep the daisyUI palette. `--color-primary` is the token daisyUI's
+   filled controls read, so a primary button inside the page paints #C81870
+   (5.5:1 for white text); unlayered rules beat the layered daisyUI theme, so no
+   `!important` is needed. Values come from the design system's application theme
+   as recorded in `.specs/00-information-architecture/evidence/header-nav/
+   header-tokens.css` and `tmp/redesign/_src/theme.css`. */
+#account-page {
+  --color-primary: var(--color-action);
+  font-family: var(--font-ds);
+  color: var(--color-strong);
+}
+
+/* 28px/600 Gabarito over a 13px muted subtitle, per the design system's
+   `.title` rule, so the heading reads as one unit with its subtitle. */
+#account-page :is(h1, h2) {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+#account-page header p {
+  margin-top: 3px;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+#account-page :is(a, button, summary, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* `<.input>` is the app's one input implementation and emits daisyUI's
+   `fieldset` / `label` / `label-text` structure. The design system's `.field`
+   grammar is the same shape — label over a 44px control over 13px help — so the
+   app's own component is restyled here instead of being replaced, and every
+   other form in the app keeps working. `.label` is an inline element by default
+   and `input-lg` is 48px; both are reset to the design system's measurements. */
+#account-page .fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+}
+
+#account-page .fieldset > label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+#account-page .fieldset .label {
+  min-height: 0;
+  height: auto;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--color-strong);
+}
+
+#account-page .fieldset .input {
+  height: 44px;
+  min-height: 44px;
+  border: 1px solid var(--color-control);
+  border-radius: var(--radius-control);
+  background: var(--color-base-100);
+  color: var(--color-strong);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+/* An invalid control carries a 2px error-line border (4.7:1 on base-100) rather
+   than a colour change alone, so the state survives greyscale and the 3:1
+   component-boundary floor in WCAG 1.4.11. The selector is a descendant of
+   `#account-page` so it outranks daisyUI's single-class `.input-error`. */
+#account-page .fieldset input[aria-invalid="true"] {
+  border: 2px solid var(--color-error-line);
+  padding: 9px 11px;
+}
+
+/* Card. A white raised surface with a visible hairline, matching the design
+   system's `.workbench`: cards use subtle borders, and elevation is reserved
+   for overlays rather than spent on a page section. */
+#account-page .account-card {
+  border: 1px solid var(--color-subtle);
+  border-radius: var(--radius-card);
+  background: var(--color-base-100);
+  overflow: hidden;
+}
+
+#account-page .account-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-subtle);
+  background: var(--color-canvas);
+}
+
+#account-page .account-card-head h2 {
+  font-size: 18px;
+  letter-spacing: -0.01em;
+}
+
+#account-page .account-card-head p {
+  margin-top: 2px;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+#account-page .account-card-body {
+  padding: 20px;
+}
+
+/* Field. A 13px/650 label over a 44px control with 13px help text, the design
+   system's `.field` grammar. The control keeps its own boundary: `--color-
+   control` reads 3.7:1 on base-100, where `base-300` would vanish. */
+#account-page .account-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+#account-page .account-field small {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--color-muted);
+}
+
+/* The help text `<.input>` renders below its control is muted at 13px, the
+   design system's help weight. daisyUI ships it at 14px/70% base-content. */
+#account-page .fieldset > p {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--color-muted);
+}
+
+/* An invalid control carries a 2px error-line border (4.7:1 on base-100) rather
+   than a colour change alone, so the state survives greyscale and the 3:1
+   component-boundary floor in WCAG 1.4.11. */
+#account-page .account-field input[aria-invalid="true"] {
+  border: 2px solid var(--color-error-line);
+  padding: 9px 11px;
+}
+
+/* Error summary. The design system's `.form-error-summary`, rebuilt from the
+   app's error triple rather than its own raw hex, so the page and the
+   validation messages beneath the fields read as one family. It takes focus
+   after a rejected submit, which is why it is focusable at all — hence the
+   `:focus` ring, not `:focus-visible`: a programmatic focus must still show
+   where the reader landed. */
+#account-page .account-error-summary {
+  border: 1px solid var(--color-error-line);
+  border-radius: var(--radius-control);
+  background: var(--color-error-bg);
+  color: var(--color-error-fg);
+  padding: 12px 14px;
+}
+
+#account-page .account-error-summary strong,
+#account-page .account-error-summary a {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  font-size: 14px;
+}
+
+#account-page .account-error-summary strong {
+  min-height: 0;
+  align-items: flex-start;
+  line-height: 1.45;
+}
+
+/* The summary's links are the reader's route to the broken field, so they are
+   targets, not prose: at 44px they can be hit and followed by touch, and
+   focusing one scrolls the field it names into view. */
+#account-page .account-error-summary a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: background-color 120ms ease-out;
+}
+
+#account-page .account-error-summary a:hover {
+  background: color-mix(in oklab, var(--color-error-fg) 8%, transparent);
+}
+
+#account-page .account-error-summary:focus {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* Callout. Cyan-50 ground with cyan-800 text is 9.1:1; the warning and error
+   variants are 5.3:1 and 6.7:1. */
+#account-page .account-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  border-radius: var(--radius-control);
+  padding: 12px 16px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+#account-page .account-callout.soft {
+  background: var(--color-soft);
+  color: var(--color-cyan-800);
+}
+
+#account-page .account-callout.warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning-fg);
+}
+
+#account-page .account-callout.error {
+  background: var(--color-error-bg);
+  color: var(--color-error-fg);
+}
+
+#account-page .account-callout .icon,
+#account-page .account-callout > span {
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+
+/* Badge. Selection ground with action ink: 5.0:1, which clears AA for its
+   13px/650 text. */
+#account-page .account-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--radius-badge);
+  padding: 4px 8px;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+/* An icon in a badge or a callout must not stretch the row or sink the
+   baseline, so the shrink and the optical nudge ride on the icon element
+   itself. `<.icon>` renders a `<span>` tinted by `currentColor`, which is why
+   `text-cyan-700` on the icon reaches it. */
+#account-page .account-badge > span {
+  flex-shrink: 0;
+}
+
+#account-page .account-badge.selected {
+  background: var(--color-selection);
+  color: var(--color-action);
+}
+
+#account-page .account-badge.success {
+  background: var(--color-success-bg);
+  color: var(--color-success-fg);
+}
+
+#account-page .account-badge.warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning-fg);
 }
 
 /* ── Transfer rules list ── */

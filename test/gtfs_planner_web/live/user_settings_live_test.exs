@@ -12,6 +12,13 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
   alias GtfsPlanner.OrganizationsFixtures
   alias GtfsPlanner.Repo
 
+  @months ~w(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)
+
+  # The house date format the LiveView's format_date/1 produces.
+  defp date_string(%{year: year, month: month, day: day}) do
+    "#{Enum.at(@months, month - 1)} #{day}, #{year}"
+  end
+
   describe "authenticated mount" do
     test "renders the account-settings surface with exact stable IDs once and no email history",
          %{
@@ -22,7 +29,7 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/users/settings")
 
-      assert has_element?(view, "#account-settings")
+      assert has_element?(view, "#account-page")
       assert has_element?(view, "#account-settings-title")
       assert has_element?(view, "#email_form")
       assert has_element?(view, "#password_form")
@@ -31,8 +38,7 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
       refute has_element?(view, "#emails")
     end
 
-    test "document title, H1/H2 hierarchy, section IDs, 40rem bounds, and secondary submits",
-         %{conn: conn} do
+    test "document title, H1/H2 hierarchy, card headings, and primary submits", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)
 
@@ -42,24 +48,41 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
 
       assert has_element?(view, "#account-settings-title", "Profile settings")
       assert has_element?(view, "#email-settings")
-      assert has_element?(view, "#email-settings-title", "Change email")
+      assert has_element?(view, "#email-settings-title", "Email address")
       assert has_element?(view, "#password-settings")
-      assert has_element?(view, "#password-settings-title", "Change password")
+      assert has_element?(view, "#password-settings-title", "Password")
 
-      assert html =~ ~r/id="email-settings"[^>]*class="[^"]*max-w-\[40rem\]/
-      assert html =~ ~r/id="password-settings"[^>]*class="[^"]*max-w-\[40rem\]/
-      assert html =~ ~r/id="email-settings"[^>]*class="[^"]*w-full/
-      assert html =~ ~r/id="password-settings"[^>]*class="[^"]*w-full/
+      # Two independent credential cards, each its own surface.
+      assert html =~ ~r/id="email-settings"[^>]*class="[^"]*account-card/
+      assert html =~ ~r/id="password-settings"[^>]*class="[^"]*account-card/
 
-      assert has_element?(view, "#email-submit.btn-outline")
-      assert has_element?(view, "#password-submit.btn-outline")
-      refute has_element?(view, "#email-submit.btn-primary")
-      refute has_element?(view, "#password-submit.btn-primary")
+      # Each card's submit is the page's one committed action for that form.
+      assert has_element?(view, "#email-submit.btn-primary")
+      assert has_element?(view, "#password-submit.btn-primary")
+      refute has_element?(view, "#email-submit.btn-outline")
+      refute has_element?(view, "#password-submit.btn-outline")
 
       refute html =~ "Email Change History"
       refute html =~ "API key"
       refute html =~ "api_key"
       refute has_element?(view, "#emails")
+    end
+
+    test "the sign-out consequence of a password change is stated before the button", %{
+      conn: conn
+    } do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/users/settings")
+
+      # update_user_password/3 deletes every UserToken, so this is a real
+      # consequence and the reader must not learn it by being signed out.
+      assert has_element?(
+               view,
+               "#password-settings .account-callout",
+               "Changing your password signs you out everywhere."
+             )
     end
 
     test "retains authorized organization and version shell context from optional hook", %{
@@ -82,11 +105,65 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/users/settings")
 
-      assert has_element?(view, "#account-settings")
+      assert has_element?(view, "#account-page")
       # Version switcher only mounts when Layouts.app receives org + version + list.
       assert has_element?(view, "#gtfs-version-switcher")
       assert has_element?(view, ~s(a[href^="/gtfs/"]))
       assert has_element?(view, ~s(a[href="/users/settings"][aria-current="page"]))
+
+      # The organization is named in the page subtitle and again on the access
+      # card, so the scope of "access" in that sentence is not left to guesswork.
+      assert has_element?(view, "#access-title", "Access in this organization")
+      assert has_element?(view, "#access-card", organization.name)
+    end
+
+    test "the account aside shows roles, confirmation, and account created", %{conn: conn} do
+      organization = OrganizationsFixtures.organization_fixture()
+      user = user_fixture()
+
+      {:ok, _} =
+        Organizations.add_user_to_organization(user.id, organization.id, [
+          "pathways_studio_editor",
+          "pathways_studio_admin"
+        ])
+
+      {:ok, view, _html} =
+        live(log_in_user(conn, user, organization: organization), ~p"/users/settings")
+
+      # Role names and descriptions come from Authorization.Roles, so they
+      # cannot drift from the canonical copy.
+      assert has_element?(view, "#access-roles", "Pathways Studio Editor")
+      assert has_element?(view, "#access-roles", "Full access to view and modify GTFS data")
+      assert has_element?(view, "#access-roles", "Pathways Studio Admin")
+      assert has_element?(view, "#access-roles", "Manages users within their organization")
+
+      assert has_element?(view, "#fact-email", user.email)
+      assert has_element?(view, "#fact-created", date_string(user.inserted_at))
+      assert has_element?(view, "#manage-members")
+    end
+
+    test "an unconfirmed address is flagged and given a next step", %{conn: conn} do
+      user = user_fixture()
+      refute user.confirmed_at
+
+      {:ok, view, _html} = live(log_in_user(conn, user), ~p"/users/settings")
+
+      assert has_element?(view, "#fact-unconfirmed", "Not confirmed")
+      assert has_element?(view, "#email-settings .account-badge", "Not confirmed")
+      # The next step has to be one the reader can actually take: resubmitting
+      # the same address re-sends the link, because email_changeset/2 is valid
+      # with no change and deliver_user_update_email_instructions/3 runs anyway.
+      assert has_element?(view, "#confirm-reminder", "send a fresh link")
+    end
+
+    test "no organization gets a next step instead of an empty panel", %{conn: conn} do
+      user = user_fixture()
+      {:ok, view, _html} = live(log_in_user(conn, user), ~p"/users/settings")
+
+      # AssignOrganization is :optional, so a system administrator lands here.
+      assert has_element?(view, "#access-title", "No organization access")
+      assert has_element?(view, "#access-card", "invite this email address")
+      refute has_element?(view, "#access-roles")
     end
 
     test "every required visible control has the specified unique ID and name", %{conn: conn} do
@@ -194,7 +271,7 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
       {:ok, view, html} = live(conn, ~p"/users/settings")
 
       assert has_element?(view, "#password-new-password-help")
-      assert html =~ "Use 12–72 characters."
+      assert html =~ "12 to 72 characters."
 
       assert has_element?(
                view,
@@ -443,7 +520,7 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
   end
 
   describe "focus event after failed submit" do
-    test "pushed focus_settings_error after failed submit", %{conn: conn} do
+    test "pushed the error summary target after a failed email submit", %{conn: conn} do
       user = user_fixture()
       conn = log_in_user(conn, user)
 
@@ -456,7 +533,25 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
         "current_password" => "wrong"
       })
 
-      assert_push_event(view, "focus_settings_error", %{form_id: "email_form"})
+      # The summary is the landing place, not the first invalid control: it
+      # lists every problem at once and links to each field.
+      assert_push_event(view, "focus_scoped_target", %{id: "email-error-summary"})
+    end
+
+    test "pushed the error summary target after a failed password submit", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/users/settings")
+
+      view
+      |> element("#password_form")
+      |> render_submit(%{
+        "user" => %{"password" => "short", "password_confirmation" => "short"},
+        "current_password" => "wrong"
+      })
+
+      assert_push_event(view, "focus_scoped_target", %{id: "password-error-summary"})
     end
 
     test "validate does not push focus event", %{conn: conn} do
@@ -472,7 +567,160 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
         "current_password" => "something"
       })
 
-      refute_push_event(view, "focus_settings_error", %{form_id: "email_form"})
+      refute_push_event(view, "focus_scoped_target", %{id: "email-error-summary"})
+    end
+  end
+
+  describe "error summary" do
+    test "lists every failing field and marks exactly those fields invalid", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/users/settings")
+
+      view
+      |> element("#password_form")
+      |> render_submit(%{
+        "user" => %{"password" => "short", "password_confirmation" => "short"},
+        "current_password" => "wrong"
+      })
+
+      # A summary that names a field the form has not marked would be lying.
+      assert has_element?(view, "#password-error-summary a[href=\"#password-new-password\"]")
+      assert has_element?(view, "#password-error-summary a[href=\"#password-current-password\"]")
+      assert has_element?(view, "#password-new-password[aria-invalid=\"true\"]")
+      assert has_element?(view, "#password-current-password[aria-invalid=\"true\"]")
+      # The confirmation matched, so it is not implicated.
+      refute has_element?(view, "#password-confirmation[aria-invalid=\"true\"]")
+    end
+
+    test "says what to do rather than 'is invalid'", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/users/settings")
+
+      view
+      |> element("#email_form")
+      |> render_submit(%{
+        "user" => %{"email" => "not-an-address"},
+        "current_password" => "wrong"
+      })
+
+      assert has_element?(view, "#email-error-summary", "Your current password is not correct.")
+      assert has_element?(view, "#email-error-summary", "Enter a valid email address.")
+
+      # translate_error/1 falls through to Ecto's own wording for a
+      # current_password failure, which renders as "is invalid" — a summary that
+      # says that has failed at its only job.
+      refute render(view) =~ ~r/id="email-error-summary"[^>]*>[^<]*(is invalid)/
+    end
+
+    test "no summary on a live keystroke, and no secret is echoed", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/users/settings")
+
+      view
+      |> element("#password_form")
+      |> render_submit(%{
+        "user" => %{
+          "password" => "a good long passphrase",
+          "password_confirmation" => "a different one"
+        },
+        "current_password" => "wrong"
+      })
+
+      html = render(view)
+      # sanitize_changeset_secrets/1 blanks the params rather than removing the
+      # keys, because used_input?/1 treats an absent key as an unused field and
+      # would then drop the error entirely. Blanking keeps the error and still
+      # echoes nothing.
+      refute html =~ "a good long passphrase"
+      refute html =~ "a different one"
+      assert has_element?(view, "#password-confirmation[aria-invalid=\"true\"]")
+      refute has_element?(view, "#password-new-password[aria-invalid=\"true\"]")
+    end
+  end
+
+  describe "password confirmation mismatch" do
+    test "lands on the field the reader is typing in, not the other one", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/users/settings")
+
+      # validate_confirmation/3 attaches "does not match" to :password, so before
+      # this was remapped the red border appeared on the field the reader was not
+      # editing.
+      view
+      |> element("#password_form")
+      |> render_change(%{
+        "user" => %{
+          "password" => "a good long passphrase",
+          "password_confirmation" => "something else entirely"
+        },
+        "current_password" => "whatever"
+      })
+
+      assert has_element?(view, "#password-confirmation[aria-invalid=\"true\"]")
+      refute has_element?(view, "#password-new-password[aria-invalid=\"true\"]")
+    end
+
+    test "announces politely and gets no summary, because it is not a rejection", %{conn: conn} do
+      user = user_fixture()
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/users/settings")
+
+      view
+      |> element("#password_form")
+      |> render_change(%{
+        "user" => %{
+          "password" => "a good long passphrase",
+          "password_confirmation" => "something else entirely"
+        },
+        "current_password" => "whatever"
+      })
+
+      assert has_element?(view, "#password-mismatch-message[aria-live=\"polite\"]")
+      refute has_element?(view, "#password-error-summary")
+    end
+  end
+
+  describe "email change copy" do
+    test "says the link is what completes the change, and which address is live", %{conn: conn} do
+      user = user_fixture()
+      old_email = user.email
+      conn = log_in_user(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/users/settings")
+
+      # apply_user_email/3 ends in apply_action/2, which validates but does not
+      # write, so the account is still on the old address until the token is
+      # redeemed. The copy must not imply the change already happened.
+      assert has_element?(
+               view,
+               "#email-address-help",
+               "Your sign-in address only changes once you open that link"
+             )
+
+      view
+      |> element("#email_form")
+      |> render_submit(%{
+        "user" => %{"email" => "brand-new-address@example.com"},
+        "current_password" => valid_user_password()
+      })
+
+      # Nothing was written; the emailed token is the only record of the change.
+      assert Accounts.get_user!(user.id).email == old_email
+
+      assert has_element?(
+               view,
+               "#flash-info",
+               "Your sign-in address changes when you open it"
+             )
     end
   end
 
