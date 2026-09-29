@@ -2978,7 +2978,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       trips: Map.new(trips, &{&1.trip_id, &1}),
       service_dates: service_dates,
       day_types: day_types,
-      sequences: projection_sequences(day_types, trips)
+      sequences: projection_sequences(day_types, trips),
+      trip_ids_by_uuid: Map.new(trips, &{&1.id, &1.trip_id})
     }
   end
 
@@ -3572,7 +3573,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         trips: trips,
         service_dates: service_dates,
         day_types: evaluated,
-        sequences: sequences(evaluated, block_rows)
+        sequences: sequences(evaluated, block_rows),
+        trip_ids_by_uuid: Map.new(block_rows, &{&1.id, &1.trip_id})
       }
     }
   end

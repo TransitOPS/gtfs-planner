@@ -102,7 +102,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatLoadTest do
       assert day.counts.trips == 1
       assert Enum.map(block(day, "7").trips, & &1.trip_id) == ["a"]
 
-      not_next = %{key: DayTypes.key(["W", "S"]), label: "School + Weekday", date_count: 1}
+      not_next = %{
+        key: DayTypes.key(["W", "S"]),
+        label: "School + Weekday",
+        date_count: 1,
+        next_trip_id: "x"
+      }
 
       assert day.in_seat == %{
                a.id => [
@@ -231,7 +236,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatLoadTest do
       scope: scope
     } do
       {day, a, b, record} = not_next_day(scope)
-      not_next = %{key: DayTypes.key(["W"]), label: "Weekday", date_count: 3}
+      not_next = %{key: DayTypes.key(["W"]), label: "Weekday", date_count: 3, next_trip_id: "c"}
 
       assert Enum.sort(Map.keys(day.in_seat)) == Enum.sort([a.id, b.id])
 
@@ -278,7 +283,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatLoadTest do
       assert {:ok, day} =
                Gtfs.load_blocking_day(organization.id, version.id, DayTypes.key(["W"]))
 
-      not_next = %{key: DayTypes.key(["W"]), label: "Weekday", date_count: 3}
+      # The two trips are in different blocks and each block holds one trip, so
+      # nothing runs after the first trip's on that day type.
+      not_next = %{key: DayTypes.key(["W"]), label: "Weekday", date_count: 3, next_trip_id: nil}
 
       assert day.in_seat == %{
                a.id => [%{row: in_seat_row(record), state: {:stale, {:not_next, [not_next]}}}],
@@ -308,7 +315,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatLoadTest do
       scope: scope
     } do
       {day, a, b, record} = not_next_day(scope)
-      not_next = %{key: DayTypes.key(["W"]), label: "Weekday", date_count: 3}
+      not_next = %{key: DayTypes.key(["W"]), label: "Weekday", date_count: 3, next_trip_id: "c"}
 
       assert day.counts.trips == 3
       assert day.counts.problems == 1
