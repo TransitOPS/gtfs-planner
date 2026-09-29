@@ -26,6 +26,11 @@ defmodule GtfsPlanner.Gtfs.Flex do
   writers; the caller's struct still carries the `lock_version` that decides
   the `:stale` outcome.
 
+  `map_payload/2` is the read the browser's flex maps draw from: the active
+  services' stored geometry, the version's fixed route lines and its connecting
+  stops, all through the same scoped reads and through
+  `GtfsPlanner.Gtfs.Flex.Geometry` for the geometry itself (INV-1).
+
   Areas are replaced by key: an input whose key is already stored is updated, a
   new key is inserted, and a stored area whose key is absent from the input is
   deleted. The input order is the stored `position` (1-based), which is the
@@ -38,6 +43,11 @@ defmodule GtfsPlanner.Gtfs.Flex do
   alias GtfsPlanner.Gtfs.Flex.Geometry
   alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexService
+  alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.Shape
+  alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopTime
+  alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
@@ -124,6 +134,58 @@ defmodule GtfsPlanner.Gtfs.Flex do
 
       {attribute.service_id, %{name: name, plural: blank_to(attribute.description, name)}}
     end)
+  end
+
+  @typedoc """
+  The payload the `FlexAreaMap` hook draws for one version.
+
+  `areas` are the active services' stored areas: each carries the area's own
+  id and the R8 GeoJSON `GtfsPlanner.Gtfs.Flex.Geometry.get_geojson/1` reads for
+  it. An area with no stored geometry — a `:route_distance` area until the
+  export derives it — is absent, so the map draws exactly what is stored.
+
+  `routes` is one line per fixed route of the version that has at least two
+  points, in `route_id` order: the shape the route's trips use most, or, for a
+  route whose trips name no shape, straight lines between the stops of its
+  first trip (R13's rule for a pattern without a shape). `coordinates` are
+  `[lon, lat]`, the order `Geometry`'s GeoJSON uses and the order
+  `assets/js/alignment_geometry.js`'s `toLatLng/1` converts; `color` is the
+  route's own colour, or `nil` for the map's fallback.
+
+  `stops` are the connecting stops the active services name, each with the
+  coordinates the map draws it at and `hub: true`; the service page's map adds
+  the stops along a detour service's route with `hub: false`.
+  """
+  @type map_payload :: %{
+          areas: [%{id: Ecto.UUID.t(), geojson: map()}],
+          routes: [%{id: String.t(), color: String.t() | nil, coordinates: [[float()]]}],
+          stops: [%{id: String.t(), name: String.t(), lon: float(), lat: float(), hub: boolean()}]
+        }
+
+  @doc """
+  Builds the map payload the version's flex map draws.
+
+  This is a read for the browser, so it composes the same scoped reads the Flex
+  pages use: `list_services/2` for the services and their areas (so an inactive
+  service contributes nothing) and `Geometry.get_geojson/1` for their stored
+  geometry (R8, INV-1). The feed rows the map draws — the version's fixed
+  routes, the shapes their trips name and the stops they serve — are read the
+  way the app's other feed reads are: scoped to the organization and version,
+  with no publication filter. The page that renders the map only ever shows a
+  published version of the current organization (R10, INV-4).
+
+  A version with no flex service still gets its fixed route lines: the map
+  card's own empty state is "Fixed routes in this version".
+  """
+  @spec map_payload(Ecto.UUID.t(), Ecto.UUID.t()) :: map_payload()
+  def map_payload(organization_id, version_id) do
+    active = organization_id |> list_services(version_id) |> Enum.filter(& &1.active)
+
+    %{
+      areas: map_areas(active),
+      routes: map_routes(organization_id, version_id),
+      stops: map_stops(organization_id, version_id, active)
+    }
   end
 
   @doc """
@@ -445,6 +507,181 @@ defmodule GtfsPlanner.Gtfs.Flex do
     )
     |> Repo.all()
   end
+
+  # --- map reads --------------------------------------------------------------
+
+  # The stored geometry of the given services' areas, in service-name then area
+  # position order. `Geometry.get_geojson/1` omits an area with no stored
+  # geometry (a `:route_distance` area before the export derives it) and keys its
+  # result by the area's own id, so the payload keeps the order and loses only
+  # the areas the map cannot draw.
+  defp map_areas(services) do
+    areas = Enum.flat_map(services, & &1.areas)
+    geojson = Geometry.get_geojson(Enum.map(areas, & &1.id))
+
+    Enum.flat_map(areas, fn area ->
+      case Map.fetch(geojson, area.id) do
+        {:ok, shape} -> [%{id: area.id, geojson: shape}]
+        :error -> []
+      end
+    end)
+  end
+
+  # One line per route, in `route_id` order: the route's shape points when its
+  # trips name a shape, otherwise the straight lines between the stops of its
+  # first trip. A route with no drawable line at all (no shaped trip and no trip
+  # that visits two stops with coordinates) is left out rather than sent as an
+  # empty line.
+  defp map_routes(organization_id, version_id) do
+    routes =
+      from(r in Route,
+        where: r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id,
+        order_by: [asc: r.route_id],
+        select: {r.route_id, r.route_color}
+      )
+      |> Repo.all()
+
+    shape_ids = primary_route_shapes(organization_id, version_id)
+    shape_points = shape_points(organization_id, version_id, Map.values(shape_ids))
+
+    shapeless =
+      for {route_id, _color} <- routes, not Map.has_key?(shape_ids, route_id), do: route_id
+
+    stop_points = route_stop_points(organization_id, version_id, shapeless)
+
+    lines =
+      Map.new(routes, fn {route_id, _color} ->
+        {route_id, route_line(route_id, shape_ids, shape_points, stop_points)}
+      end)
+
+    routes
+    |> Enum.map(fn {route_id, color} ->
+      %{id: route_id, color: route_color(color), coordinates: Map.get(lines, route_id, [])}
+    end)
+    |> Enum.filter(&(length(&1.coordinates) >= 2))
+  end
+
+  defp route_line(route_id, shape_ids, shape_points, stop_points) do
+    case Map.fetch(shape_ids, route_id) do
+      {:ok, shape_id} -> Map.get(shape_points, shape_id, [])
+      :error -> Map.get(stop_points, route_id, [])
+    end
+  end
+
+  # The shape each route's trips name most, counted in distinct trips; a tie
+  # keeps the shape that sorts last, so the choice is deterministic. A route
+  # whose trips name no shape has no entry.
+  defp primary_route_shapes(organization_id, version_id) do
+    from(t in Trip,
+      join: s in Shape,
+      on:
+        s.organization_id == t.organization_id and s.gtfs_version_id == t.gtfs_version_id and
+          s.shape_id == t.shape_id,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+          not is_nil(t.shape_id) and t.shape_id != "",
+      group_by: [t.route_id, s.shape_id],
+      select: %{route_id: t.route_id, shape_id: s.shape_id, trips: count(t.id, :distinct)}
+    )
+    |> Repo.all()
+    |> Enum.group_by(& &1.route_id)
+    |> Map.new(fn {route_id, entries} ->
+      best = entries |> Enum.sort_by(&{&1.trips, &1.shape_id}) |> List.last()
+      {route_id, best.shape_id}
+    end)
+  end
+
+  # `shape_id => [[lon, lat], …]` in shape point order.
+  defp shape_points(_organization_id, _version_id, []), do: %{}
+
+  defp shape_points(organization_id, version_id, shape_ids) do
+    from(s in Shape,
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^version_id and
+          s.shape_id in ^shape_ids,
+      order_by: [asc: s.shape_id, asc: s.shape_pt_sequence],
+      select: {s.shape_id, s.shape_pt_lon, s.shape_pt_lat}
+    )
+    |> Repo.all()
+    |> Enum.group_by(&elem(&1, 0), fn {_shape_id, lon, lat} ->
+      [coordinate(lon), coordinate(lat)]
+    end)
+  end
+
+  # `route_id =>` the stops of its first trip (by `trip_id`) that visits at least
+  # two stops with coordinates, in stop order: R13's straight-line fallback for
+  # a route whose trips name no shape.
+  defp route_stop_points(_organization_id, _version_id, []), do: %{}
+
+  defp route_stop_points(organization_id, version_id, route_ids) do
+    from(t in Trip,
+      join: st in StopTime,
+      on:
+        st.organization_id == t.organization_id and st.gtfs_version_id == t.gtfs_version_id and
+          st.trip_id == t.trip_id,
+      join: stop in Stop,
+      on:
+        stop.organization_id == t.organization_id and
+          stop.gtfs_version_id == t.gtfs_version_id and stop.stop_id == st.stop_id,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+          t.route_id in ^route_ids and not is_nil(stop.stop_lat) and not is_nil(stop.stop_lon),
+      order_by: [asc: t.route_id, asc: t.trip_id, asc: st.stop_sequence],
+      select: {t.route_id, t.trip_id, stop.stop_lon, stop.stop_lat}
+    )
+    |> Repo.all()
+    |> Enum.group_by(&elem(&1, 0))
+    |> Map.new(fn {route_id, rows} -> {route_id, first_trip_points(rows)} end)
+  end
+
+  # The first trip in the (already ordered) rows that visits two stops or more.
+  # `nil` from a trip with fewer leaves `find_value/2` looking; its default is
+  # the empty line a route with no usable trip gets.
+  defp first_trip_points(rows) do
+    rows
+    |> Enum.chunk_by(&elem(&1, 1))
+    |> Enum.find_value([], fn trip_rows ->
+      points =
+        Enum.map(trip_rows, fn {_route_id, _trip_id, lon, lat} ->
+          [coordinate(lon), coordinate(lat)]
+        end)
+
+      if length(points) >= 2, do: points
+    end)
+  end
+
+  # The connecting stops the active services name, in `stop_id` order. A hub id
+  # the version does not hold is a readiness error (AC-8) and simply has no
+  # marker here; a stop without coordinates cannot be drawn.
+  defp map_stops(organization_id, version_id, services) do
+    hub_ids = services |> Enum.flat_map(& &1.hub_stop_ids) |> Enum.uniq()
+
+    from(s in Stop,
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^version_id and
+          s.stop_id in ^hub_ids and not is_nil(s.stop_lat) and not is_nil(s.stop_lon),
+      order_by: [asc: s.stop_id],
+      select: %{id: s.stop_id, name: s.stop_name, lat: s.stop_lat, lon: s.stop_lon}
+    )
+    |> Repo.all()
+    |> Enum.map(fn stop ->
+      %{
+        id: stop.id,
+        name: blank_to(stop.name, stop.id),
+        lon: coordinate(stop.lon),
+        lat: coordinate(stop.lat),
+        hub: true
+      }
+    end)
+  end
+
+  # Feed coordinates are decimals; the browser draws floats.
+  defp coordinate(%Decimal{} = value), do: Decimal.to_float(value)
+
+  # `route_color` is the feed's hex string without the leading `#`; the map adds
+  # it. A route with no colour sends nil and the hook falls back.
+  defp route_color(value) when is_binary(value) and value != "", do: "#" <> value
+  defp route_color(_value), do: nil
 
   # --- write steps ------------------------------------------------------------
 

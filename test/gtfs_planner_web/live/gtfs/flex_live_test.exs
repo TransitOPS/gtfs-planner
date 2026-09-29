@@ -4,11 +4,12 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
 
   The page is the version's flex workspace: one row per service in name order
   with its hours summary, booking summary and readiness badge, the export-state
-  line, the first-use question when the version has none, and the map card whose
-  hook arrives in step 20. The load's states are judged through the catalog read
-  adapter seam the repository already uses for the other operational list loads:
-  the disconnected render carries the loading placeholder, a lost connection is
-  the retryable error, and `retry` re-runs the same load.
+  line, the first-use question when the version has none, and the map card the
+  `FlexAreaMap` hook draws from the load's `map` payload. The load's states are
+  judged through the catalog read adapter seam the repository already uses for
+  the other operational list loads: the disconnected render carries the loading
+  placeholder, a lost connection is the retryable error, and `retry` re-runs the
+  same load.
   """
 
   use GtfsPlannerWeb.ConnCase, async: false
@@ -142,6 +143,101 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
 
       assert row =~ "Inactive"
       refute row =~ "Ready"
+    end
+  end
+
+  describe "the map payload" do
+    setup :editor_with_flex_version
+
+    test "answers flex_map_ready with the stored areas, the route lines and the connecting stops",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           version: version,
+           feed: feed
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, flex_path(version))
+      loaded(view)
+
+      # The card's hook asks for the map once it mounts.
+      render_hook(view, "flex_map_ready", %{})
+
+      assert_push_event(view, "flex_map:load", %{
+        areas: areas,
+        routes: routes,
+        stops: stops
+      })
+
+      stored =
+        (feed.services.area.areas ++ feed.services.registered.areas)
+        |> Enum.map(& &1.id)
+
+      # Every active service's stored area, from `Flex.Geometry.get_geojson/1`;
+      # the detour service has none and the list of areas is complete.
+      assert Enum.sort(Enum.map(areas, & &1.id)) == Enum.sort(stored)
+      assert Enum.all?(areas, &(&1.geojson["type"] == "MultiPolygon"))
+
+      # One line per fixed route: Route 20's shape, and Route 1's stops because
+      # its trips name no shape.
+      assert Enum.map(routes, & &1.id) == ["1", "20"]
+
+      assert Enum.find(routes, &(&1.id == "1")).coordinates == [
+               [-124.04, 44.6],
+               [-124.03, 44.61]
+             ]
+
+      # The dial-a-ride's connecting stops, with the coordinates the map draws.
+      assert Enum.sort(Enum.map(stops, & &1.id)) == ["DPB", "OTR"]
+      assert Enum.all?(stops, &(&1.hub and is_float(&1.lat) and is_float(&1.lon)))
+    end
+
+    test "an inactive service contributes nothing to the map", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version,
+      feed: feed
+    } do
+      {:ok, _inactive} =
+        Flex.set_active(organization.id, version.id, feed.services.area.id, false)
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, flex_path(version))
+      loaded(view)
+
+      render_hook(view, "flex_map_ready", %{})
+
+      assert_push_event(view, "flex_map:load", %{areas: areas, stops: stops})
+
+      assert Enum.map(areas, & &1.id) == Enum.map(feed.services.registered.areas, & &1.id)
+      assert stops == []
+    end
+  end
+
+  describe "the map payload without a load" do
+    setup :use_mock_adapter
+
+    test "a failed load answers flex_map_ready with nothing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      stub_flex_list({:error, :unavailable})
+
+      {:ok, view, _html} = live(conn, flex_path(version))
+      loaded(view)
+
+      # The page already shows the retryable error; the map must not draw a
+      # half-loaded version.
+      render_hook(view, "flex_map_ready", %{})
+
+      refute_push_event(view, "flex_map:load", %{})
     end
   end
 
@@ -456,7 +552,13 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
   end
 
   defp empty_load do
-    %{services: [], calendars: %{}, has_fixed_routes?: true, include_flex: true}
+    %{
+      services: [],
+      calendars: %{},
+      map: %{areas: [], routes: [], stops: []},
+      has_fixed_routes?: true,
+      include_flex: true
+    }
   end
 
   # --- helpers ----------------------------------------------------------------

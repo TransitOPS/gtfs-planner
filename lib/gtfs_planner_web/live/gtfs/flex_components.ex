@@ -10,10 +10,11 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   label always carries the meaning, so the status is never signalled by colour
   alone.
 
-  The map card renders an empty `#flex-list-map` container. Step 20 attaches the
-  `FlexAreaMap` hook and fills it with the version's areas, routes and stops; the
-  server never patches inside it (`phx-update="ignore"`), because the hook owns
-  that subtree once it mounts.
+  The map card renders the `FlexAreaMap` hook's root (`#flex-list-map`) with the
+  Leaflet stage inside it and the legend beneath it. The server never patches
+  inside the root (`phx-update="ignore"`), because the hook owns that subtree
+  once it mounts and draws the version's areas, route lines and connecting stops
+  from the `map` payload `Flex.map_payload/2` builds.
   """
 
   use GtfsPlannerWeb, :html
@@ -220,12 +221,19 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
   end
 
   @doc """
-  Renders the map card with its empty map container.
+  Renders the map card, its Leaflet stage and its legend.
 
-  The title names what the hook will draw: the version's flex areas under "Where
-  flex runs", or only its fixed routes when the version has no service yet.
+  The title names what the hook draws: the version's flex areas under "Where
+  flex runs", or only its fixed routes when the version has no service yet. The
+  legend follows the reference: every item when flex services are on the map,
+  and the fixed route alone when none is.
+
+  `#flex-list-map` is the `FlexAreaMap` hook's root and is `phx-update="ignore"`,
+  so the hook owns the stage for the life of the mount; the legend stays outside
+  it so the server can word it for the state on screen.
   """
   attr :title, :string, required: true
+  attr :legend, :atom, values: [:all, :routes], default: :all
 
   def list_map_card(assigns) do
     ~H"""
@@ -239,7 +247,42 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
       >
         {@title}
       </h2>
-      <div id="flex-list-map" phx-update="ignore" class="relative" style="height: 480px"></div>
+      <div id="flex-list-map" phx-hook="FlexAreaMap" phx-update="ignore">
+        <div class="flex-map-stage h-[480px] bg-canvas"></div>
+      </div>
+      <div
+        id="flex-list-map-legend"
+        class="flex flex-wrap gap-x-4 gap-y-1 border-t border-subtle px-4 py-2 text-[13px] text-default"
+      >
+        <span :if={@legend == :all} class="inline-flex items-center gap-1.5">
+          <svg width="18" height="12" aria-hidden="true">
+            <rect
+              x="1"
+              y="1"
+              width="16"
+              height="10"
+              fill="#24c7d938"
+              stroke="#087b95"
+              stroke-width="1.5"
+            />
+          </svg>
+          Flex area
+        </span>
+        <span class="inline-flex items-center gap-1.5">
+          <svg width="22" height="12" aria-hidden="true">
+            <path d="M1 6h20" stroke="#fff" stroke-width="6" />
+            <path d="M1 6h20" stroke="#0d737d" stroke-width="3" />
+          </svg>
+          Fixed route
+        </span>
+        <span :if={@legend == :all} class="inline-flex items-center gap-1.5">
+          <svg width="14" height="14" aria-hidden="true">
+            <circle cx="7" cy="7" r="5" fill="#fff" stroke="#0a1330" stroke-width="2" />
+            <circle cx="7" cy="7" r="2" fill="#0a1330" />
+          </svg>
+          Connecting stop
+        </span>
+      </div>
     </section>
     """
   end

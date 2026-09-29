@@ -3534,3 +3534,55 @@ body:has(#home-page) {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+
+/* ── Flex map areas ──
+   A flex map's areas carry the prototype's own zone treatments, so an area
+   reads the same on the list's map, the service page's map and the editor's.
+   The plain rule is what the reference's list draws for every area it shows.
+   A role modifier adds emphasis: `selected` is the service the page is about,
+   `other` its neighbours, and `overlap` where two services' areas meet. The
+   overlap's hatch is the prototype's inline SVG pattern, which a Leaflet SVG
+   root does not carry; its amber at the same alpha keeps the warning tone.
+
+   Leaflet writes colours and opacities as path attributes, and `fill-opacity`
+   defaults to 0.2, which would drown the fills below; the rules here are
+   unlayered, so they win over both the attributes and the utility layers. */
+.flex-map-area {
+  fill: #24c7d91f;
+  fill-opacity: 1;
+  stroke: #087b95;
+  stroke-opacity: 1;
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+
+.flex-map-area--selected {
+  fill: #24c7d938;
+  stroke-width: 2.25;
+  stroke-dasharray: none;
+}
+
+.flex-map-area--other {
+  fill: #24c7d910;
+  stroke-opacity: 0.5;
+}
+
+.flex-map-area--overlap {
+  fill: #d6982229;
+  stroke: #d69822;
+  stroke-width: 1.5;
+  stroke-dasharray: none;
+}
+
+/* A connecting stop is named on the map rather than on hover: the label is the
+   permanent tooltip Leaflet adds to the marker, restyled from its default white
+   box to the prototype's haloed text. */
+.flex-map-stop-label {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: #0a1330;
+  font: 600 12px Inter, system-ui, sans-serif;
+  text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff;
+}

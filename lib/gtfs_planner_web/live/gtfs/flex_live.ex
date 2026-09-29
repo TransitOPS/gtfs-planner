@@ -14,6 +14,13 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   retryable banner, never an empty list that reads as the version's own answer,
   and `retry` re-runs the same load.
 
+  The map card is the same read's `map` payload, drawn by the `FlexAreaMap` hook:
+  the hook mounts on the card's `#flex-list-map` root, pushes `flex_map_ready`,
+  and this page answers with `flex_map:load`. The payload is pushed only when the
+  read has produced one, so the hook on the loading placeholder's card never
+  draws a half-loaded version, and the card the ready render inserts asks again
+  and gets it.
+
   Access is authorized at mount through `EnsureRole`, following the other GTFS
   pages. Every read is scoped to the selected organization and version inside the
   Flex context and `Flex.Checks` (R10, INV-4); the version switch is accepted
@@ -40,6 +47,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
      |> assign(:services_count, 0)
      |> assign(:include_flex, true)
      |> assign(:has_fixed_routes?, true)
+     |> assign(:flex_map, nil)
      |> stream_configure(:services, dom_id: &"flex-service-#{&1.id}")
      |> stream(:services, [])}
   end
@@ -61,6 +69,17 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
   def handle_event("retry", _params, socket) do
     send(self(), :load_flex_services)
     {:noreply, assign(socket, :flex_state, :loading)}
+  end
+
+  @impl true
+  def handle_event("flex_map_ready", _params, socket) do
+    # The hook asks once per mount and the payload answers every mount of the
+    # card; before the load has one there is nothing to draw, and the ready
+    # card's own mount asks again.
+    case socket.assigns[:flex_map] do
+      %{} = payload -> {:noreply, push_event(socket, "flex_map:load", payload)}
+      _missing -> {:noreply, socket}
+    end
   end
 
   @impl true
@@ -132,7 +151,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
           count={@services_count}
         />
 
-        <.list_map_card title={FlexComponents.map_title(@services_count)} />
+        <.list_map_card
+          title={FlexComponents.map_title(@services_count)}
+          legend={if @services_count > 0, do: :all, else: :routes}
+        />
       </div>
     </Layouts.app>
     """
@@ -158,12 +180,14 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLive do
         |> assign(:services_count, length(rows))
         |> assign(:include_flex, load.include_flex)
         |> assign(:has_fixed_routes?, load.has_fixed_routes?)
+        |> assign(:flex_map, load.map)
         |> stream(:services, rows, reset: true)
 
       {:error, :unavailable} ->
         socket
         |> assign(:flex_state, :unavailable)
         |> assign(:services_count, 0)
+        |> assign(:flex_map, nil)
         |> stream(:services, [], reset: true)
     end
   end
