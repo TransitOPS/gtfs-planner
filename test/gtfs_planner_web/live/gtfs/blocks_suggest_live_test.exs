@@ -139,8 +139,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
   # Every leg of the day is given an entered driving time, so the day has no
   # estimated pair left and the drawer's warning has nothing to warn about. The
   # pairs and the refs are the context's own, stored through its own writer.
+  # A day type is named by its opaque key, not by the service ID it runs on, so
+  # the fixture's single "Weekday" day type is read for its key.
+  defp day_key!(context, label) do
+    {:ok, day} = Gtfs.load_blocking_day(context.organization.id, context.version.id, nil)
+
+    case Enum.find(day.day_types, &(&1.label == label)) do
+      nil -> raise "no #{label} day type in the fixture"
+      day_type -> day_type.key
+    end
+  end
+
   defp enter_every_drive!(context) do
-    {:ok, pairs} = Gtfs.list_deadhead_pairs(context.organization.id, context.version.id, "WK")
+    {:ok, pairs} =
+      Gtfs.list_deadhead_pairs(
+        context.organization.id,
+        context.version.id,
+        day_key!(context, "Weekday")
+      )
 
     Enum.each(pairs, fn pair ->
       {:ok, _row} =
@@ -335,7 +351,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
         Gtfs.update_relief_settings(
           context.organization.id,
           context.version.id,
-          "WK",
+          day_key!(context, "Weekday"),
           %{max_piece_minutes: 300, marked: []}
         )
 
@@ -454,7 +470,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
 
       plan = assigns(view)[:plan_preview]
       assert plan.mode == :unassigned_only
-      assert plan.day_type_key == "WK"
+      assert plan.day_type_key == day_key!(context, "Weekday")
       assert is_list(plan.moves)
       assert is_binary(plan.fingerprint)
 
@@ -540,7 +556,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
       stop_name: "Bulk Stop"
     })
 
-    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    # The trip timestamps are `:utc_datetime_usec` columns, so the value carries
+    # microseconds; truncating to seconds is what the column refuses.
+    now = DateTime.utc_now()
 
     trips =
       for index <- 1..count do
