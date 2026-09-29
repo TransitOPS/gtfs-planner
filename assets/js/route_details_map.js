@@ -292,6 +292,38 @@ export function occurrenceMarkers(pattern) {
   return markers;
 }
 
+// The stops to draw as white dots ringed in the line color. With nothing
+// highlighted the map shows every stop the saved patterns visit, small, and a
+// stop that patterns share is drawn once. Highlighting a pattern narrows the map
+// to that pattern's own visits, larger, with the first visit biggest.
+export function stopMarkers(patterns, highlightId) {
+  const highlighted = highlightId
+    ? patterns.filter((pattern) => pattern.route_pattern_id === highlightId)
+    : [];
+  if (highlightId && highlighted.length === 0) return [];
+
+  if (highlighted.length) {
+    return highlighted.flatMap((pattern) =>
+      occurrenceMarkers(pattern).map((marker) => ({
+        ...marker,
+        radius: marker.position === 1 ? 7 : 5,
+      })),
+    );
+  }
+
+  const seen = new Set();
+  const markers = [];
+  for (const pattern of patterns) {
+    for (const marker of occurrenceMarkers(pattern)) {
+      const at = JSON.stringify(marker.latlng);
+      if (seen.has(at)) continue;
+      seen.add(at);
+      markers.push({ ...marker, radius: 4 });
+    }
+  }
+  return markers;
+}
+
 export function unlocatedPhrase(reason) {
   switch (reason) {
     case "coordinates_absent":
@@ -939,19 +971,17 @@ const RouteDetailsMapHook = {
   _paintMarkers() {
     if (!this._L) return;
     this._markers.clearLayers();
-    if (!this._highlight) return;
-
-    const pattern = (this._payload?.patterns || []).find(
-      (candidate) => candidate.route_pattern_id === this._highlight,
-    );
-    if (!pattern) return;
 
     const stroke =
       this._lineColor === WHITE ? SWATCH_FALLBACK : `#${this._lineColor}`;
-    for (const marker of occurrenceMarkers(pattern)) {
+
+    for (const marker of stopMarkers(
+      this._payload?.patterns || [],
+      this._highlight,
+    )) {
       this._L
         .circleMarker(marker.latlng, {
-          radius: marker.position === 1 ? 7 : 5,
+          radius: marker.radius,
           color: stroke,
           weight: 2.5,
           fillOpacity: 1,

@@ -15,6 +15,7 @@ import RouteDetailsMapHook, {
   roundBounds,
   sameViewportBounds,
   sectionPaths,
+  stopMarkers,
   swatchColorFor,
   unlocatedPhrase,
   variantPaths,
@@ -276,6 +277,38 @@ describe("occurrenceMarkers", () => {
     expect(markers[0].stopId).toBe("LOOP");
     expect(markers[2].stopId).toBe("LOOP");
     expect(markers[0].latlng).toEqual(markers[2].latlng);
+  });
+});
+
+describe("stopMarkers", () => {
+  const other = patternFixture({
+    route_pattern_id: "P2",
+    visits: [
+      { position: 1, stop_id: "B", coordinates: [-75.1, 40.1] },
+      { position: 2, stop_id: "C", coordinates: [-75.2, 40.2] },
+    ],
+  });
+
+  it("shows every stop the patterns visit as a small dot, once per shared stop", () => {
+    const markers = stopMarkers([patternFixture(), other], null);
+
+    expect(markers.map((marker) => marker.stopId)).toEqual(["A", "B", "C"]);
+    expect(new Set(markers.map((marker) => marker.radius))).toEqual(
+      new Set([4]),
+    );
+  });
+
+  it("narrows to the highlighted pattern's own visits, first visit largest", () => {
+    const markers = stopMarkers([patternFixture(), other], "P2");
+
+    expect(markers.map((marker) => [marker.stopId, marker.radius])).toEqual([
+      ["B", 7],
+      ["C", 5],
+    ]);
+  });
+
+  it("draws nothing for a highlight that is not a saved pattern", () => {
+    expect(stopMarkers([patternFixture()], "SHAPE_1")).toEqual([]);
   });
 });
 
