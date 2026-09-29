@@ -517,7 +517,7 @@ test.describe("Transfers", () => {
     await expect(ruleRow(page, "Transfer Market Street", "Transfer Harbor")).toHaveCount(1);
   });
 
-  test("related: the route's Transfers here link lists exactly those rules", async ({
+  test("related: the route's View transfers link lists exactly the rules it counts", async ({
     page,
   }, testInfo) => {
     await logIn(page);
@@ -529,8 +529,8 @@ test.describe("Transfers", () => {
     await expect(link).toBeVisible();
     await waitForLiveView(page);
 
-    const label = await link.innerText();
-    const count = Number(label.match(/Transfers here \((\d+)\)/)[1]);
+    const summary = await page.locator("#route-transfers-summary").innerText();
+    const count = Number(summary.match(/^(\d+) transfer rules? mentions?/)[1]);
     expect(count).toBeGreaterThan(0);
 
     await link.click();

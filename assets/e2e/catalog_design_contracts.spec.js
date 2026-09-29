@@ -334,7 +334,8 @@ test.describe("Route detail responsive contracts", () => {
   test("route detail uses semantic dl/dt/dd structure", async ({ page }) => {
     await openRouteDetail(page);
 
-    const dl = page.locator("dl");
+    // One list per group of facts: what riders see, agency and boarding, availability.
+    const dl = page.locator("dl").first();
     await expect(dl).toBeVisible();
 
     const dt = page.locator("dl dt");

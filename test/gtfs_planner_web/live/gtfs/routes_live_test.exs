@@ -895,11 +895,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLiveTest do
 
       {:ok, detail_view, _html} = live(conn, href)
 
-      assert has_element?(
-               detail_view,
-               "nav[aria-label='Route navigation'] h1",
-               "QA1 - Slash Route"
-             )
+      assert has_element?(detail_view, "#route-workspace h1#route-title", "Slash Route")
     end
   end
 end
