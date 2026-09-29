@@ -224,7 +224,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
 
       assert text(d, "#resume-title") == "What your team changed recently"
       assert text(d, "li#resume-1 a") =~ "lee@northcoast.example"
-      assert LazyHTML.query(d, "#resume-latest") == []
+      refute LazyHTML.query(d, "#resume-latest") |> Enum.any?()
     end
 
     test "an item whose entity is gone renders as text without a link" do
@@ -241,7 +241,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
       d = doc(html)
 
       assert text(d, "li#resume-1") =~ "Deleted route"
-      assert LazyHTML.query(d, "li#resume-1 a") == []
+      refute LazyHTML.query(d, "li#resume-1 a") |> Enum.any?()
     end
 
     test "renders the empty copy when the version has no changes" do
@@ -320,7 +320,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
       assert text(d, "#check-badge") == "No errors · no warnings"
       assert attr(d, "#check-badge", "class") =~ "bg-success-bg"
       assert text(d, "#check-link") == "View the check"
-      assert LazyHTML.query(d, "#check-note") == []
+      refute LazyHTML.query(d, "#check-note") |> Enum.any?()
     end
 
     test "an expired export shows the expired status, the changes since and the export action" do
@@ -367,7 +367,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
       d = doc(html)
 
       assert text(d, "#export-note") == "No Full GTFS export yet."
-      assert LazyHTML.query(d, "#export-status") == []
+      refute LazyHTML.query(d, "#export-status") |> Enum.any?()
       assert text(d, "#export-link") == "Export GTFS"
     end
 
@@ -377,8 +377,8 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
       d = doc(html)
 
       assert text(d, "#check-empty") == "No check yet. Run one from the export page."
-      assert LazyHTML.query(d, "#check-link") == []
-      assert LazyHTML.query(d, "#check-badge") == []
+      refute LazyHTML.query(d, "#check-link") |> Enum.any?()
+      refute LazyHTML.query(d, "#check-badge") |> Enum.any?()
     end
   end
 
@@ -410,9 +410,9 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
 
       d = doc(html)
 
-      assert LazyHTML.query(d, "#area-routes") != []
-      assert LazyHTML.query(d, "#area-operations") == []
-      assert LazyHTML.query(d, "#area-gtfs") != []
+      assert LazyHTML.query(d, "#area-routes") |> Enum.any?()
+      refute LazyHTML.query(d, "#area-operations") |> Enum.any?()
+      assert LazyHTML.query(d, "#area-gtfs") |> Enum.any?()
     end
 
     test "an absent count renders no number" do
@@ -478,7 +478,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
       assert attr(d, "#resume-loading", "aria-hidden") == "true"
       assert attr(d, "#resume-loading", "class") =~ "animate-pulse"
       assert LazyHTML.query(d, "#resume-loading .min-h-16") |> length() == 4
-      assert LazyHTML.query(d, "#resume-open") == []
+      refute LazyHTML.query(d, "#resume-open") |> Enum.any?()
     end
 
     test "the check skeleton mirrors the share card and its footer" do
