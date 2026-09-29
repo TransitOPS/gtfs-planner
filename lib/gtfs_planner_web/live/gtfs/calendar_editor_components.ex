@@ -1398,7 +1398,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarEditorComponents do
           <td class="py-0 pr-3">
             <.link
               id={"calendar-usage-route-#{route.route_id}"}
-              navigate={"/gtfs/#{@version_id}/routes/#{route.route_id}"}
+              navigate={~p"/gtfs/#{@version_id}/routes/#{route.route_id}"}
               class="inline-flex min-h-11 items-center font-semibold text-action underline-offset-4 hover:underline"
             >
               {route.route_id}

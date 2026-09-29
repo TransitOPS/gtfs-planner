@@ -6,7 +6,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   from the weekly, exception and metadata tables through
   `Gtfs.load_calendar_screen/3`, one protected snapshot that also carries the
   agency-local date, the version-wide horizon and gaps, and every row's derived
-  periods, exceptions and grouped trip usage. The Service dates column draws each
+  periods, exceptions and grouped trip usage. The "When it runs" column draws each
   row's effective dates on one shared axis (`GtfsPlannerWeb.Gtfs.CalendarCoverage`),
   so two calendars can be compared instead of only being described. Search, status,
   sort and the timeline range are URL state with allowlists, so reload and back
@@ -32,6 +32,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [drawer_footer: 1, drawer_scroll: 1, first_use: 1, message: 1]
+
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendars
@@ -44,9 +47,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   @status_options [
     {"All calendars", "all"},
-    {"Active period", "active_period"},
-    {"Active today", "active_today"},
-    {"Ends within 14 days", "ends_soon"},
+    {"In service period", "active_period"},
+    {"Running today", "active_today"},
+    {"Ending within 14 days", "ends_soon"},
     {"Ended", "ended"},
     {"Not used by trips", "unused"}
   ]
@@ -62,7 +65,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
   @sort_dirs ~w(asc desc)
   @range_keys ~w(whole near all)
   @range_options [
-    %{value: "whole", label: "Whole feed"},
+    %{value: "whole", label: "All dates"},
     %{value: "near", label: "Next 3 months"}
   ]
 
@@ -1770,18 +1773,40 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   defp format_date(date), do: Calendar.strftime(date, "%b %-d, %Y")
 
-  defp badge(%{status: %{ended?: true}}), do: {:draft, "Ended"}
+  defp format_day(date), do: Calendar.strftime(date, "%a, %b %-d")
+
+  @badge_tones %{
+    success: "bg-success-bg text-success-fg",
+    warning: "bg-warning-bg text-warning-fg",
+    neutral: "bg-canvas text-muted"
+  }
+
+  # The status says the one fact about the calendar's dates that needs a decision, in the
+  # order the domain summary ranks them. Only a running calendar is green: that is the
+  # design system's "Active", and every other state is a warning or neutral.
+  defp badge(%{status: %{ended?: true}}), do: {:neutral, "Ended"}
 
   defp badge(%{status: %{ends_soon?: true, days_remaining: 0}}), do: {:warning, "Ends today"}
 
   defp badge(%{status: %{ends_soon?: true, days_remaining: days}}),
-    do: {:warning, "Ends in #{days} days"}
+    do: {:warning, "Ends in #{days} #{if days == 1, do: "day", else: "days"}"}
 
   defp badge(%{status: %{no_service?: true}}), do: {:warning, "No service"}
 
-  defp badge(%{status: %{used_by_trips?: false}}), do: {:draft, "Not used by trips"}
-  defp badge(%{status: %{active_today?: true}}), do: {:active, "Runs today"}
-  defp badge(_summary), do: {:draft, "Scheduled"}
+  defp badge(%{status: %{used_by_trips?: false}}), do: {:neutral, "Not used by trips"}
+  defp badge(%{status: %{active_today?: true}}), do: {:success, "Runs today"}
+  defp badge(_summary), do: {:neutral, "Scheduled"}
+
+  # Why "today" and the ending-soon dates are read in UTC: the version's agencies gave no
+  # single usable time zone.
+  defp zone_fallback_text(:conflicting),
+    do: "The agencies use different time zones, so “today” and ending-soon dates use UTC."
+
+  defp zone_fallback_text(:invalid),
+    do: "The agency time zone isn’t a valid time zone, so “today” and ending-soon dates use UTC."
+
+  defp zone_fallback_text(_missing),
+    do: "The agency time zone is missing, so “today” and ending-soon dates use UTC."
 
   defp gap_label(%{first_date: date, last_date: date}), do: format_date(date)
 
@@ -1841,6 +1866,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     end
   end
 
+  # A review with nothing to do offers only a way out, so its exit is Close; every other
+  # review is one the reviewer can walk away from, which is Cancel.
+  defp combine_exit_label(assigns) do
+    if CalendarComponents.combination_nothing?(assigns.combine_review),
+      do: "Close",
+      else: "Cancel"
+  end
+
   # The status banner takes the tone of the state it reports: a missing answer and a refusal are
   # errors, a stale review and an unconfirmed confirmation are warnings the reviewer must resolve,
   # and a refreshed review is information.
@@ -1852,12 +1885,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       :unconfirmed -> "warning"
       _status -> "info"
     end
-  end
-
-  # A row the confirmed combination touched is tinted until the summary is dismissed: the
-  # destination that received the trips and each source that now holds none (AC-24).
-  defp combine_row_class({_id, row}, highlight) do
-    if MapSet.member?(highlight, row.service_id), do: "bg-success/10", else: nil
   end
 
   ## Date-change presentation
@@ -1880,7 +1907,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
 
   defp date_change_label([]), do: "No dates selected"
 
-  defp date_change_label([date]), do: format_date(date)
+  defp date_change_label([date]), do: Calendar.strftime(date, "%a, %b %-d, %Y")
 
   defp date_change_label([first | _rest] = dates) do
     "#{length(dates)} dates · #{format_date(first)} – #{format_date(List.last(dates))}"
@@ -1903,28 +1930,71 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     date_change_lines(assigns.date_change_review, assigns.date_change_sources)
   end
 
-  # Every reviewed line names the calendar, its real trip count and whether the
-  # reviewed command actually changes it, so the drawer never implies a write that
-  # the atomic command would skip.
+  # Every reviewed line names the calendar, the dates it is actually changed on, its real
+  # trip count and whether the reviewed command changes it at all, so the drawer never implies
+  # a write that the atomic command would skip.
   defp date_change_lines(review, sources) do
     changed = MapSet.new(review.affected_service_ids)
+    dates = review.selected_dates
 
-    removals = Enum.map(review.remove_from, &target_line("− Stop", &1, sources, changed))
-    additions = Enum.map(review.add_to, &target_line("+ Run", &1, sources, changed))
-
-    removals ++ additions
+    Enum.map(review.remove_from, &target_line(:stop, &1, dates, sources, changed)) ++
+      Enum.map(review.add_to, &target_line(:run, &1, dates, sources, changed))
   end
 
-  defp target_line(prefix, service_id, sources, changed) do
+  defp target_line(kind, service_id, dates, sources, changed) do
     source = Map.fetch!(sources, service_id)
-    effect = if MapSet.member?(changed, service_id), do: "changes", else: "already matches"
-    "#{prefix} #{source.name} · #{source.trip_count} trips · #{effect}"
+    changes? = MapSet.member?(changed, service_id)
+
+    hit =
+      case kind do
+        :stop -> Enum.filter(dates, &MapSet.member?(source.dates, &1))
+        :run -> Enum.reject(dates, &MapSet.member?(source.dates, &1))
+      end
+
+    %{
+      kind: kind,
+      name: source.name,
+      trips: source.trip_count,
+      changes?: changes?,
+      dates: if(changes? and hit != [], do: hit, else: dates)
+    }
   end
+
+  defp line_predicate(%{kind: :stop, changes?: true} = line),
+    do: "stops running on #{line_dates(line)}."
+
+  defp line_predicate(%{kind: :stop} = line),
+    do: "already has no service on #{line_these(line)}."
+
+  defp line_predicate(%{kind: :run, changes?: true} = line),
+    do: "runs on #{line_dates(line)}."
+
+  defp line_predicate(%{kind: :run} = line), do: "already runs on #{line_these(line)}."
+
+  defp line_effect(%{changes?: false}), do: "Nothing changes."
+  defp line_effect(%{kind: :stop, trips: trips}), do: "#{trips_label(trips)} affected."
+  defp line_effect(%{kind: :run, trips: trips}), do: "#{trips_label(trips)} will run."
+
+  defp trips_label(1), do: "1 trip"
+  defp trips_label(count), do: "#{count} trips"
+
+  defp line_dates(%{dates: [date]}), do: format_day(date)
+  defp line_dates(%{dates: dates}), do: "#{length(dates)} dates"
+
+  defp line_these(%{dates: [_date]}), do: "this date"
+  defp line_these(_line), do: "these dates"
+
+  defp rows_change_label(1), do: "1 row changes"
+  defp rows_change_label(count), do: "#{count} rows change"
+
+  defp calendars_label(1), do: "1 calendar"
+  defp calendars_label(count), do: "#{count} calendars"
 
   defp warning_text(%{reason: :no_service}), do: "No service would remain on any selected date."
 
   defp warning_text(%{reason: :ends_soon, last_date: date, days_remaining: days}),
-    do: "Service ends #{format_date(date)} · #{days} days away."
+    do:
+      "Service ends #{format_date(date)} · #{days} #{if days == 1, do: "day", else: "days"} away."
 
   defp warning_text(%{reason: :ended, last_date: date}),
     do: "Service ended #{format_date(date)}."
@@ -1954,792 +2024,845 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <.header>
-        Calendars
-        <:subtitle>Set the days your trips run, including holidays and breaks.</:subtitle>
-      </.header>
-
-      <%!--
-      The combination transport hook owns this page's connection lifecycle, and the notice it reveals
-      lives here rather than inside the drawer: the shared dialog hook closes a modal when the socket
-      drops, so an in-drawer notice could never be seen by the reviewer it is meant to warn. The
-      notice is pre-rendered by the server and only revealed by the hook (its own subtree is never
-      patched), and the hook never computes a date, decides a review or retries a confirmation. --%>
-      <div
-        id="calendar-combine-transport"
-        phx-hook="CalendarCombination"
-        data-combine-dispatched={to_string(@combine_dispatched?)}
-        data-combine-pending={to_string(@combine_pending?)}
-        class="mt-4"
-      >
-        <div
-          id="calendar-combine-connection"
-          phx-update="ignore"
-          role="status"
-          hidden
-          class="rounded-box border border-warning bg-warning/10 px-4 py-3"
-        >
-          <p class="font-medium">Connection lost. Reconnecting…</p>
-          <p class="mt-0.5 text-sm" data-combine-connection="idle">
-            Nothing has been sent, and your choices are kept. Combine is available again when the
-            connection returns.
-          </p>
-          <p class="mt-0.5 text-sm" data-combine-connection="dispatched" hidden>
-            Your confirmation was dispatched and this page has no answer for it, so its outcome is
-            unconfirmed — it may have been applied. Reconnecting reloads the authoritative list;
-            review the current calendars before confirming again.
-          </p>
-        </div>
-      </div>
-
-      <div :if={@calendars_state in [:ready, :refreshing]} class="mt-4 flex flex-wrap gap-3">
-        <button
-          :if={not @calendars_empty?}
-          id="calendar-date-change"
-          type="button"
-          phx-click="open_date_change"
-          class="btn btn-sm btn-secondary min-h-11"
-        >
-          Change service on a date
-        </button>
-        <.link
-          id="calendars-create"
-          navigate={create_path(assigns)}
-          class="btn btn-sm btn-primary min-h-11"
-        >
-          Create calendar
-        </.link>
-      </div>
-
-      <p
-        :if={@date_change_status}
-        id="calendars-date-change-status"
-        role="status"
-        aria-live="polite"
-        class="mt-4 text-sm text-base-content/70"
-      >
-        {@date_change_status}
-      </p>
-
-      <div
-        :if={@calendars_state == :loading}
-        id="calendars-loading"
-        class="mt-6 bg-base-100 border border-base-300 rounded-box p-4"
-        aria-busy="true"
-      >
-        <.skeleton rows={4} label="Loading calendars…" />
-      </div>
-
-      <div :if={@calendars_state == :unavailable} id="calendars-unavailable" class="mt-6" role="alert">
-        <.callout kind="error" title="Calendars couldn’t be loaded">
-          Try again to see calendars for this service version.
-          <.button
-            id="calendars-retry"
-            phx-click="retry"
-            variant="secondary"
-            size="sm"
-            class="mt-2"
-          >
-            Retry
-          </.button>
-        </.callout>
-      </div>
-
-      <div :if={@calendars_state == :not_found} id="calendars-version-unavailable" class="mt-6">
-        <.callout kind="info" title="Calendars aren’t available for this service version">
-          Open a published version you can edit to review its calendars.
-        </.callout>
-      </div>
-
-      <div :if={@calendars_state in [:ready, :refreshing]} class="mt-6 space-y-4">
-        <CalendarComponents.combination_success
-          :if={@combine_success}
-          id="calendar-combine-success"
-          success={@combine_success}
-        />
-
-        <CalendarComponents.coverage_invalid
-          invalid={@invalid_calendars}
-          version_id={@current_gtfs_version.id}
-        />
-
-        <p
-          :if={@calendars_state == :refreshing}
-          id="calendars-refreshing"
-          role="status"
-          class="text-sm text-base-content/70"
-        >
-          Refreshing calendars. The last loaded list stays visible.
-        </p>
-
-        <div :if={@calendars_state == :ready and not @calendars_empty?}>
-          <div class="flex flex-wrap items-center gap-x-6 gap-y-2">
-            <.count_strip
-              id="calendar-counts"
-              items={[
-                %{key: "calendars", label: "calendars", count: @counts.calendars, tone: :neutral},
-                %{key: "run-today", label: "run today", count: @counts.run_today, tone: :success},
-                %{
-                  key: "ending-soon",
-                  label: "ending soon",
-                  count: @counts.ending_soon,
-                  tone: :warning
-                }
-              ]}
-            />
-            <p :if={@zone && @zone.fallback?} id="calendars-timezone-fallback" role="status">
-              Agency timezone {@zone.fallback_reason}; Today and expiry filters use UTC.
-            </p>
-            <span :if={@today} id="calendars-today" class="text-sm text-base-content/70">
-              Today · {format_date(@today)}
-            </span>
-          </div>
-
-          <div :if={is_list(@gaps) and @gaps != []} id="calendars-feed-gap" class="mt-4">
-            <.callout kind="warning" title={"No service on any calendar: #{gap_label(hd(@gaps))}"}>
-              This may be intentional. If trips should run, add service for that date.
-              <span :if={length(@gaps) > 1} class="block mt-1 text-sm">
-                {length(@gaps)} service gaps exist between the first and last active dates.
-              </span>
-              <button
-                id="calendars-feed-gap-review"
-                type="button"
-                phx-click="open_date_change"
-                phx-value-date={Date.to_iso8601(hd(@gaps).first_date)}
-                class="btn btn-sm btn-secondary min-h-11 mt-3"
-              >
-                Review date
-              </button>
-            </.callout>
-          </div>
-        </div>
-
-        <.form
-          :if={not @calendars_empty?}
-          for={@filter_form}
-          id="calendar-filter-form"
-          phx-change="filters"
-          class="bg-base-100 border border-base-300 rounded-box p-4 flex flex-wrap gap-4 items-end"
-        >
-          <div class="flex-1 min-w-[240px]">
-            <.input
-              id="calendar-search"
-              field={@filter_form[:search]}
-              type="search"
-              label="Find a calendar"
-              placeholder="Search by name or service ID"
-              phx-debounce="300"
-            />
-          </div>
-          <div class="flex-1 min-w-[200px]">
-            <.input
-              id="calendar-status"
-              field={@filter_form[:status]}
-              type="select"
-              label="Show calendars"
-              options={@status_options}
-            />
-          </div>
-          <div class="grid gap-1.5">
-            <span id="calendar-coverage-range-label" class="text-sm font-medium">Timeline</span>
-            <div
-              id="calendar-coverage-range"
-              role="group"
-              aria-labelledby="calendar-coverage-range-label"
-              class="calendar-coverage-range"
+      <div id="calendars-page" class="ds-page">
+        <.header>
+          Calendars
+          <:subtitle>
+            See which days each service runs in {combination_scope(assigns)}, then fix holidays,
+            closures and duplicates.
+          </:subtitle>
+          <%!-- With no calendars yet, the first-use panel carries the one way forward. --%>
+          <:actions :if={@calendars_state in [:ready, :refreshing] and not @calendars_empty?}>
+            <.button
+              id="calendars-create"
+              navigate={create_path(assigns)}
+              variant="secondary"
+              class="min-h-11"
             >
-              <.link
-                :for={option <- @range_options}
-                id={"calendar-coverage-range-#{option.value}"}
-                patch={range_path(assigns, option.value)}
-                aria-current={
-                  if @range == option.value or (@range == "all" and option.value == "whole"),
-                    do: "true"
-                }
-                class="calendar-coverage-range-option"
-              >
-                {option.label}
-              </.link>
+              <.icon name="hero-plus" class="size-4" /> Create calendar
+            </.button>
+            <.button
+              id="calendar-date-change"
+              type="button"
+              phx-click="open_date_change"
+              class="min-h-11"
+            >
+              Change service on a date
+            </.button>
+          </:actions>
+        </.header>
+
+        <%!--
+        The combination transport hook owns this page's connection lifecycle, and the notice it reveals
+        lives here rather than inside the drawer: the shared dialog hook closes a modal when the socket
+        drops, so an in-drawer notice could never be seen by the reviewer it is meant to warn. The
+        notice is pre-rendered by the server and only revealed by the hook (its own subtree is never
+        patched), and the hook never computes a date, decides a review or retries a confirmation. --%>
+        <div
+          id="calendar-combine-transport"
+          phx-hook="CalendarCombination"
+          data-combine-dispatched={to_string(@combine_dispatched?)}
+          data-combine-pending={to_string(@combine_pending?)}
+        >
+          <div id="calendar-combine-connection" phx-update="ignore" role="status" hidden>
+            <div class="mb-5 flex items-start gap-3 rounded-control bg-warning-bg px-4 py-3 text-warning-fg">
+              <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0" />
+              <div class="min-w-0 text-sm">
+                <p class="font-bold">Connection lost. Reconnecting…</p>
+                <p class="mt-0.5" data-combine-connection="idle">
+                  Nothing has been sent, and your choices are kept. Combine is available again when
+                  the connection returns.
+                </p>
+                <p class="mt-0.5" data-combine-connection="dispatched" hidden>
+                  Your confirmation was sent and this page has no answer for it, so its outcome is
+                  unconfirmed: it may have been applied. When the connection returns, the list
+                  reloads from the server. Review the current calendars before you confirm again.
+                </p>
+              </div>
             </div>
           </div>
-          <div class="flex items-center gap-3">
-            <.button id="calendar-refresh" phx-click="refresh" variant="secondary" size="sm">
-              Refresh
-            </.button>
-            <span
-              id="result-count"
-              role="status"
-              aria-live="polite"
-              class="text-sm text-base-content/70"
-            >
-              {result_count(assigns)}
-            </span>
-          </div>
-        </.form>
-
-        <div
-          :if={@calendars_empty? and @calendars_state == :ready}
-          id="calendars-first-use-empty"
-        >
-          <.empty_state title="No calendars yet">
-            Calendars say which days trips run. Start with a regular schedule, such as weekdays, or
-            choose specific dates.
-            <:action>
-              <.link navigate={create_path(assigns)} class="btn btn-sm btn-primary min-h-11">
-                Create calendar
-              </.link>
-            </:action>
-          </.empty_state>
         </div>
 
         <div
-          :if={@filtered_empty? and not @calendars_empty? and @calendars_state == :ready}
-          id="calendars-filtered-empty"
+          :if={@calendars_state in [:ready, :refreshing]}
+          id="calendars-notices"
+          class="grid gap-3 has-[*]:mb-5"
         >
-          <.empty_state title="No calendars match these filters">
-            Try another name or show all calendars.
+          <CalendarComponents.combination_success
+            :if={@combine_success}
+            id="calendar-combine-success"
+            success={@combine_success}
+          />
+
+          <CalendarComponents.coverage_invalid
+            invalid={@invalid_calendars}
+            version_id={@current_gtfs_version.id}
+          />
+
+          <.message
+            :if={@date_change_status}
+            id="calendars-date-change-status"
+            kind="success"
+            title={@date_change_status}
+          />
+
+          <.message
+            :if={(@zone && @zone.fallback?) and not @calendars_empty?}
+            id="calendars-timezone-fallback"
+            kind="warning"
+            title="Today and expiry use UTC"
+          >
+            {zone_fallback_text(@zone.fallback_reason)}
+          </.message>
+
+          <div
+            :if={@calendars_state == :ready and is_list(@gaps) and @gaps != []}
+            id="calendars-feed-gap"
+          >
+            <.message kind="warning" title={"No service on any calendar: #{gap_label(hd(@gaps))}"}>
+              This may be intentional. If trips should run, add service for that date.
+              <span :if={length(@gaps) > 1} class="mt-1 block">
+                {length(@gaps)} service gaps exist between the first and last active dates.
+              </span>
+              <:action>
+                <.button
+                  id="calendars-feed-gap-review"
+                  type="button"
+                  phx-click="open_date_change"
+                  phx-value-date={Date.to_iso8601(hd(@gaps).first_date)}
+                  variant="secondary"
+                  class="min-h-11"
+                >
+                  Review date
+                </.button>
+              </:action>
+            </.message>
+          </div>
+        </div>
+
+        <div
+          :if={@calendars_state == :loading}
+          id="calendars-loading"
+          role="status"
+          aria-busy="true"
+          class="overflow-clip rounded-card border border-subtle bg-white"
+        >
+          <div class="flex gap-3 border-b border-subtle px-4 py-4 md:px-5" aria-hidden="true">
+            <span class="h-11 flex-1 rounded-badge bg-canvas"></span>
+            <span class="h-11 w-[212px] rounded-badge bg-canvas max-md:hidden"></span>
+            <span class="h-11 w-[190px] rounded-badge bg-canvas max-md:hidden"></span>
+          </div>
+          <p class="flex h-[52px] items-center border-b border-subtle px-4 text-[13px] text-muted md:px-5">
+            Loading calendars…
+          </p>
+          <div
+            :for={_row <- 1..6}
+            aria-hidden="true"
+            class="flex h-[68px] items-center gap-6 border-b border-subtle px-5 last:border-b-0 motion-safe:animate-pulse"
+          >
+            <span class="size-[18px] rounded-badge bg-canvas"></span>
+            <span class="grid w-[200px] gap-2">
+              <span class="h-3 w-32 rounded-badge bg-canvas"></span>
+              <span class="h-2.5 w-20 rounded-badge bg-canvas"></span>
+            </span>
+            <span class="h-3 flex-1 rounded-badge bg-canvas"></span>
+            <span class="h-3 w-10 rounded-badge bg-canvas max-md:hidden"></span>
+            <span class="h-5 w-24 rounded-badge bg-canvas max-md:hidden"></span>
+          </div>
+        </div>
+
+        <div :if={@calendars_state == :unavailable} id="calendars-unavailable">
+          <.message kind="error" title="Calendars couldn’t be loaded">
+            Nothing was changed. Try again to see calendars for this service version.
             <:action>
               <.button
+                id="calendars-retry"
+                type="button"
+                phx-click="retry"
+                variant="secondary"
+                class="min-h-11"
+              >
+                <.icon name="hero-arrow-path" class="size-4" /> Reload calendars
+              </.button>
+            </:action>
+          </.message>
+        </div>
+
+        <div :if={@calendars_state == :not_found} id="calendars-version-unavailable">
+          <.message kind="info" title="Calendars aren’t available for this service version">
+            Open a published version you can edit to review its calendars.
+          </.message>
+        </div>
+
+        <div :if={@calendars_state in [:ready, :refreshing]}>
+          <p
+            :if={@calendars_state == :refreshing and @calendars_empty?}
+            id="calendars-refreshing"
+            role="status"
+            class="text-sm text-muted"
+          >
+            Refreshing calendars…
+          </p>
+
+          <.first_use
+            :if={@calendars_empty? and @calendars_state == :ready}
+            id="calendars-first-use-empty"
+            title={"No calendars in #{combination_scope(assigns)} yet"}
+            icon="hero-calendar-days"
+          >
+            Calendars say which days each service runs, such as Weekday, Saturday, and Sunday &amp;
+            holidays. Create your first calendar to start.
+            <:action>
+              <.button id="calendars-create" navigate={create_path(assigns)} class="min-h-11">
+                <.icon name="hero-plus" class="size-4" /> Create calendar
+              </.button>
+            </:action>
+          </.first_use>
+
+          <section
+            :if={not @calendars_empty?}
+            id="calendars-workbench"
+            aria-label="Calendars"
+            class="overflow-clip rounded-card border border-subtle bg-white"
+          >
+            <.form
+              for={@filter_form}
+              id="calendar-filter-form"
+              role="search"
+              phx-change="filters"
+              class="flex flex-wrap items-end gap-3 border-b border-subtle px-4 py-4 md:px-5"
+            >
+              <div class="min-w-0 flex-1 basis-[220px]">
+                <.input
+                  id="calendar-search"
+                  field={@filter_form[:search]}
+                  type="search"
+                  label="Find a calendar"
+                  placeholder="Name or service ID"
+                  autocomplete="off"
+                  phx-debounce="300"
+                />
+              </div>
+              <div class="min-w-0 flex-1 basis-[136px] md:w-[212px] md:flex-none">
+                <.input
+                  id="calendar-status"
+                  field={@filter_form[:status]}
+                  type="select"
+                  label="Show"
+                  options={@status_options}
+                />
+              </div>
+              <div class="grid gap-1.5">
+                <span
+                  id="calendar-coverage-range-label"
+                  class="mb-1 text-[13px] font-[650] text-default"
+                >
+                  Timeline
+                </span>
+                <div
+                  id="calendar-coverage-range"
+                  role="group"
+                  aria-labelledby="calendar-coverage-range-label"
+                  class="calendar-coverage-range"
+                >
+                  <.link
+                    :for={option <- @range_options}
+                    id={"calendar-coverage-range-#{option.value}"}
+                    patch={range_path(assigns, option.value)}
+                    aria-current={
+                      if @range == option.value or (@range == "all" and option.value == "whole"),
+                        do: "true"
+                    }
+                    class="calendar-coverage-range-option"
+                  >
+                    {option.label}
+                  </.link>
+                </div>
+              </div>
+            </.form>
+
+            <%!-- One row of fixed height: the result count, or the selection's actions once a
+            calendar is ticked. Swapping them in place keeps the table from jumping. --%>
+            <div id="calendar-summary" class="border-b border-subtle">
+              <div
+                :if={@calendars_state == :ready and MapSet.size(@selected_service_ids) > 0}
+                id="calendar-selection-bar"
+                class="flex min-h-[60px] flex-wrap items-center gap-x-3 gap-y-1 bg-selection px-4 py-1 text-[13px] md:px-5"
+              >
+                <p
+                  id="calendar-selection-count"
+                  role="status"
+                  class="font-[650] tabular-nums text-strong"
+                >
+                  {selection_count_label(MapSet.size(@selected_service_ids))}
+                </p>
+                <.button
+                  id="calendar-combine-open"
+                  type="button"
+                  phx-click="open_combine"
+                  disabled={MapSet.size(@selected_service_ids) < 2 or @invalid_calendars != []}
+                  variant="secondary"
+                  class="min-h-11"
+                >
+                  Combine calendars
+                </.button>
+                <p
+                  :if={MapSet.size(@selected_service_ids) == 1}
+                  id="calendar-combine-hint"
+                  class="text-muted"
+                >
+                  Select one more calendar to combine.
+                </p>
+                <p :if={@invalid_calendars != []} id="calendar-combine-unavailable" class="text-muted">
+                  Combining is unavailable until the calendar with an end date before its start date is fixed. Use Fix dates on that calendar.
+                </p>
+                <p
+                  :if={@combine_error}
+                  id="calendar-combine-error"
+                  role="alert"
+                  class="font-[650] text-error-fg"
+                >
+                  {@combine_error}
+                </p>
+                <.button
+                  id="calendar-clear-selection"
+                  type="button"
+                  phx-click="clear_calendar_selection"
+                  variant="quiet"
+                  class="ml-auto min-h-11 text-action hover:underline"
+                >
+                  Clear selection
+                </.button>
+              </div>
+
+              <div
+                :if={@calendars_state != :ready or MapSet.size(@selected_service_ids) == 0}
+                class="flex min-h-[60px] flex-wrap items-center gap-x-3 gap-y-1 px-4 py-1 text-[13px] md:px-5"
+              >
+                <p
+                  id="result-count"
+                  role="status"
+                  aria-live="polite"
+                  class="font-[650] tabular-nums text-strong"
+                >
+                  {result_count(assigns)}
+                </p>
+                <ul id="calendar-counts" class="flex flex-wrap gap-x-3 tabular-nums">
+                  <li
+                    id="calendar-counts-item-run-today"
+                    data-key="run-today"
+                    class={@counts.run_today > 0 && "text-success-fg"}
+                  >
+                    {@counts.run_today} run today
+                  </li>
+                  <li
+                    id="calendar-counts-item-ending-soon"
+                    data-key="ending-soon"
+                    class={if(@counts.ending_soon > 0, do: "text-warning-fg", else: "text-muted")}
+                  >
+                    {@counts.ending_soon} ending soon
+                  </li>
+                </ul>
+                <span :if={@today} id="calendars-today" class="text-muted">
+                  Today · {format_date(@today)}
+                </span>
+                <p
+                  :if={
+                    @calendars_state == :ready and not @constraints? and @calendars != [] and
+                      @invalid_calendars == []
+                  }
+                  id="calendar-selection-hint"
+                  class="text-muted max-md:hidden"
+                >
+                  Select two or more calendars to combine them.
+                </p>
+                <p
+                  :if={@calendars_state == :ready and @invalid_calendars != []}
+                  id="calendar-combine-unavailable"
+                  class="text-muted"
+                >
+                  Combining is unavailable until the calendar with an end date before its start date is fixed. Use Fix dates on that calendar.
+                </p>
+                <p
+                  :if={@calendars_state == :ready and @combine_error}
+                  id="calendar-combine-error"
+                  role="alert"
+                  class="font-[650] text-error-fg"
+                >
+                  {@combine_error}
+                </p>
+                <.button
+                  :if={@constraints?}
+                  id="calendar-clear-filters"
+                  type="button"
+                  phx-click="clear_filters"
+                  variant="quiet"
+                  class="min-h-11 text-action hover:underline"
+                >
+                  Clear filters
+                </.button>
+                <span class="ml-auto flex items-center gap-3">
+                  <span
+                    :if={@calendars_state == :refreshing}
+                    id="calendars-refreshing"
+                    role="status"
+                    class="text-muted"
+                  >
+                    Refreshing. The list stays as it was.
+                  </span>
+                  <.button
+                    id="calendar-refresh"
+                    type="button"
+                    phx-click="refresh"
+                    disabled={@calendars_state == :refreshing}
+                    variant="quiet"
+                    class="min-h-11 text-action hover:underline disabled:text-muted disabled:no-underline"
+                  >
+                    <.icon
+                      name="hero-arrow-path"
+                      class={["size-4", @calendars_state == :refreshing && "motion-safe:animate-spin"]}
+                    />
+                    {if @calendars_state == :refreshing, do: "Refreshing…", else: "Refresh"}
+                  </.button>
+                </span>
+              </div>
+            </div>
+
+            <div
+              :if={
+                @coverage != nil and
+                  ((@range == "whole" and @coverage.clipped?) or
+                     (@range == "all" and @long_history?))
+              }
+              id="calendar-coverage-window"
+              class="flex flex-wrap items-center gap-x-2 border-b border-subtle px-4 text-[13px] text-muted md:px-5"
+            >
+              <span :if={@range == "whole"}>
+                Timeline starts {format_date(@coverage.first_date)}; earlier service since {format_date(
+                  @screen.horizon.first_date
+                )} is hidden.
+              </span>
+              <span :if={@range == "all"}>Every year of this version is shown.</span>
+              <.link
+                :if={@range == "whole"}
+                id="calendar-coverage-show-all"
+                patch={range_path(assigns, "all")}
+                class="inline-flex min-h-11 items-center font-[650] text-action hover:underline"
+              >
+                Show all years
+              </.link>
+              <.link
+                :if={@range == "all"}
+                id="calendar-coverage-restore"
+                patch={range_path(assigns, "whole")}
+                class="inline-flex min-h-11 items-center font-[650] text-action hover:underline"
+              >
+                Show recent years
+              </.link>
+            </div>
+
+            <div
+              :if={@filtered_empty? and @calendars_state == :ready}
+              id="calendars-filtered-empty"
+              class="px-5 py-12 text-center"
+            >
+              <h2 class="font-sans text-base font-bold tracking-normal text-strong">
+                No calendars match these filters
+              </h2>
+              <p class="mx-auto mt-1.5 max-w-[46ch] text-sm text-muted">
+                Try another name, or show all calendars.
+              </p>
+              <.button
                 id="calendars-clear-filters"
+                type="button"
                 phx-click="clear_filters"
                 variant="secondary"
-                size="sm"
+                class="mt-5 min-h-11"
               >
                 Clear filters
               </.button>
-            </:action>
-          </.empty_state>
+            </div>
+
+            <div :if={@calendars != []} id="calendars-results">
+              <.calendars_table
+                rows={@streams.calendars}
+                coverage={@coverage}
+                sort_by={@sort_by}
+                sort_dir={@sort_dir}
+                all_selected?={select_all_selected?(assigns)}
+                selected_ids={@selected_service_ids}
+                marked_ids={@combine_highlight}
+                version_id={@current_gtfs_version.id}
+                scope={combination_scope(assigns)}
+              />
+              <CalendarComponents.coverage_legend />
+            </div>
+          </section>
+
+          <p
+            :if={not @calendars_empty?}
+            id="calendars-shared-note"
+            class="mt-4 text-[13px] text-muted"
+          >
+            Routes share calendars. Changing a calendar changes every trip that uses it.
+          </p>
         </div>
 
-        <div
-          :if={
-            @coverage != nil and
-              ((@range == "whole" and @coverage.clipped?) or (@range == "all" and @long_history?))
-          }
-          id="calendar-coverage-window"
-          class="flex flex-wrap items-center gap-x-2 text-sm text-base-content/70"
+        <.drawer
+          id="calendar-date-change-drawer"
+          chrome="planner"
+          open={@date_change_open?}
+          pending={@date_change_pending?}
+          on_close="close_date_change"
+          title="Change service on a date"
+          initial_focus={:first_field}
+          return_focus_id={@date_change_return_focus}
+          class="max-w-[560px]"
         >
-          <span :if={@range == "whole"}>
-            Timeline starts {format_date(@coverage.first_date)}; earlier service since {format_date(
-              @screen.horizon.first_date
-            )} is hidden.
-          </span>
-          <span :if={@range == "all"}>Every year of this version is shown.</span>
-          <.link
-            :if={@range == "whole"}
-            id="calendar-coverage-show-all"
-            patch={range_path(assigns, "all")}
-            class="link link-primary"
+          <:lede>Holidays, closures and one-off changes</:lede>
+          <.form
+            for={@date_change_form}
+            id="calendar-date-change-form"
+            phx-hook="CalendarDateChange"
+            phx-change="date_change_form"
+            phx-submit="date_change_add_date"
+            class="flex min-h-0 flex-1 flex-col"
           >
-            Show all years
-          </.link>
-          <.link
-            :if={@range == "all"}
-            id="calendar-coverage-restore"
-            patch={range_path(assigns, "whole")}
-            class="link link-primary"
-          >
-            Restore recent range
-          </.link>
-        </div>
+            <.drawer_scroll>
+              <p class="text-sm text-muted">
+                Use a different schedule for a holiday, or stop service for a closure. This changes
+                the published version, {combination_scope(assigns)}, so you review the result first.
+              </p>
 
-        <div
-          :if={@calendars != [] and @calendars_state == :ready}
-          id="calendar-selection-bar"
-          class={[
-            "flex flex-wrap items-center gap-x-4 gap-y-1 rounded-box border border-base-300 px-4 py-1",
-            MapSet.size(@selected_service_ids) > 0 && "bg-secondary/5"
-          ]}
-        >
-          <label class="inline-flex min-h-11 cursor-pointer items-center gap-2">
-            <input
-              id="calendar-select-all"
-              type="checkbox"
-              class="checkbox checkbox-sm"
-              checked={select_all_selected?(assigns)}
-              aria-label="Select all matching calendars"
-              phx-click="select_all_calendars"
-            />
-            <span class="text-sm">Select all</span>
-          </label>
-          <p
-            :if={MapSet.size(@selected_service_ids) > 0}
-            id="calendar-selection-count"
-            role="status"
-            class="text-sm font-semibold"
-          >
-            {selection_count_label(MapSet.size(@selected_service_ids))}
-          </p>
-          <.button
-            :if={MapSet.size(@selected_service_ids) > 0}
-            id="calendar-combine-open"
-            type="button"
-            phx-click="open_combine"
-            disabled={MapSet.size(@selected_service_ids) < 2 or @invalid_calendars != []}
-            variant="secondary"
-            size="sm"
-            class="min-h-11"
-          >
-            Combine calendars
-          </.button>
-          <p
-            :if={MapSet.size(@selected_service_ids) == 0}
-            id="calendar-selection-hint"
-            class="text-sm text-base-content/70"
-          >
-            Select two or more calendars to combine them.
-          </p>
-          <p
-            :if={MapSet.size(@selected_service_ids) == 1}
-            id="calendar-combine-hint"
-            class="text-sm text-base-content/70"
-          >
-            Select one more calendar to combine.
-          </p>
-          <p
-            :if={@invalid_calendars != []}
-            id="calendar-combine-unavailable"
-            class="text-sm text-base-content/70"
-          >
-            Combining is unavailable until the calendar with an end date before its start date is fixed. Use Fix dates on that calendar.
-          </p>
-          <p
-            :if={@combine_error}
-            id="calendar-combine-error"
-            role="alert"
-            class="text-sm text-error"
-          >
-            {@combine_error}
-          </p>
-          <button
-            :if={MapSet.size(@selected_service_ids) > 0}
-            id="calendar-clear-selection"
-            type="button"
-            phx-click="clear_calendar_selection"
-            class="btn btn-sm btn-ghost min-h-11 ml-auto"
-          >
-            Clear selection
-          </button>
-        </div>
+              <.message
+                :if={@date_change_errors != %{}}
+                id="calendar-date-change-error"
+                kind="error"
+                title={Enum.join(Map.values(@date_change_errors), " ")}
+              />
 
-        <div
-          :if={@calendars != []}
-          id="calendars-results"
-          class="bg-base-100 border border-base-300 rounded-box"
-        >
-          <.table
-            id="calendars-list"
-            rows={@streams.calendars}
-            responsive="stack"
-            row_class={&combine_row_class(&1, @combine_highlight)}
-          >
-            <:col
-              :let={{_id, summary}}
-              label="Calendar"
-              sort_key="name"
-              sort_event="sort"
-              sort={column_sort_state(@sort_by, @sort_dir, "name")}
-            >
-              <div class="flex items-start gap-2">
-                <label
-                  :if={is_nil(summary.coverage_error)}
-                  class="inline-flex min-h-11 min-w-8 cursor-pointer items-center justify-center"
-                >
-                  <input
-                    id={"calendar-select-#{URI.encode_www_form(summary.service_id)}"}
-                    type="checkbox"
-                    class="checkbox checkbox-sm"
-                    checked={MapSet.member?(@selected_service_ids, summary.service_id)}
-                    data-calendar-selected={
-                      to_string(MapSet.member?(@selected_service_ids, summary.service_id))
-                    }
-                    aria-label={"Select #{summary.name || summary.service_id}"}
-                    phx-click="toggle_calendar_selection"
-                    phx-value-service-id={summary.service_id}
-                  />
-                </label>
-                <%!-- An identity whose retained range cannot be read has no evaluated dates,
-                so it cannot be a combination source: the checkbox stays disabled and the
-                repair callout names the fix. --%>
-                <label
-                  :if={summary.coverage_error}
-                  class="inline-flex min-h-11 min-w-8 items-center justify-center"
-                >
-                  <input
-                    id={"calendar-select-#{URI.encode_www_form(summary.service_id)}"}
-                    type="checkbox"
-                    class="checkbox checkbox-sm"
-                    disabled
-                    aria-label={"#{summary.name || summary.service_id} cannot be selected because its retained range needs repair."}
-                  />
-                </label>
-                <div class="min-w-0">
-                  <.link
-                    :if={is_nil(summary.coverage_error)}
-                    navigate={detail_path(assigns, summary)}
-                    data-calendar-link={summary.service_id}
-                    class="link link-primary font-semibold"
+              <CalendarComponents.date_selection
+                id="calendar-date-change-dates"
+                form={@date_change_form}
+                mode={@date_change_mode}
+                dates={@date_change_dates}
+                errors={@date_change_errors}
+                mode_options={@date_change_modes}
+              />
+
+              <fieldset
+                :if={@date_change_review == nil}
+                id="calendar-date-change-remove"
+                class={[
+                  "min-w-0 rounded-card border px-4 pb-3 pt-2",
+                  if(@date_change_errors["targets"],
+                    do: "border-2 border-error-line",
+                    else: "border-subtle"
+                  )
+                ]}
+              >
+                <legend class="px-1 text-sm font-bold text-strong">Stop service on</legend>
+                <p class="text-[13px] text-muted">
+                  Calendars running on at least one of these dates are checked. Pick your own and
+                  your choice stays when the dates change.
+                </p>
+                <ul class="mt-1">
+                  <li
+                    :for={source <- date_change_remove_options(assigns)}
+                    id={"calendar-date-change-remove-#{URI.encode_www_form(source.service_id)}"}
                   >
-                    {summary.name || "Untitled calendar"}
-                  </.link>
-                  <%!-- An identity whose retained range cannot be read has no date set to
-                  inspect, so its name is plain text here; the "Fix dates" link in the
-                  Service dates cell opens the detail page to correct the range. --%>
-                  <span :if={summary.coverage_error} class="font-semibold">
-                    {summary.name || "Untitled calendar"}
-                  </span>
-                  <div class="text-sm text-base-content/70">
-                    <code class="font-mono">{summary.service_id}</code>
-                  </div>
+                    <label class="flex min-h-11 cursor-pointer items-start gap-3 py-1.5">
+                      <input
+                        type="checkbox"
+                        class="mt-0.5 size-[18px] shrink-0 cursor-pointer accent-action"
+                        checked={MapSet.member?(@date_change_remove, source.service_id)}
+                        phx-click="date_change_toggle"
+                        phx-value-group="remove"
+                        phx-value-service-id={source.service_id}
+                        aria-label={"Stop service on the selected dates for #{source.name}"}
+                      />
+                      <span>
+                        <span class="block text-sm font-[650] text-strong">{source.name}</span>
+                        <span class="block text-[13px] text-muted">
+                          <code class="font-mono">{source.service_id}</code>
+                          · {trips_label(source.trip_count)}
+                        </span>
+                      </span>
+                    </label>
+                  </li>
+                  <li
+                    :if={date_change_remove_options(assigns) == []}
+                    class="py-2 text-sm text-muted"
+                  >
+                    No calendar runs on these dates yet.
+                  </li>
+                </ul>
+              </fieldset>
+
+              <fieldset
+                :if={@date_change_review == nil}
+                id="calendar-date-change-add"
+                class={[
+                  "min-w-0 rounded-card border px-4 pb-3 pt-2",
+                  if(@date_change_errors["targets"],
+                    do: "border-2 border-error-line",
+                    else: "border-subtle"
+                  )
+                ]}
+              >
+                <legend class="px-1 text-sm font-bold text-strong">
+                  Run instead <span class="font-normal text-muted">(optional)</span>
+                </legend>
+                <p class="text-[13px] text-muted">
+                  Choose every calendar that should run on these dates, such as Sunday &amp;
+                  holidays. A calendar can’t be stopped and run on the same date.
+                </p>
+                <ul class="mt-1">
+                  <li
+                    :for={source <- date_change_add_options(assigns)}
+                    id={"calendar-date-change-add-#{URI.encode_www_form(source.service_id)}"}
+                  >
+                    <label class="flex min-h-11 cursor-pointer items-start gap-3 py-1.5">
+                      <input
+                        type="checkbox"
+                        class="mt-0.5 size-[18px] shrink-0 cursor-pointer accent-action"
+                        checked={MapSet.member?(@date_change_add, source.service_id)}
+                        phx-click="date_change_toggle"
+                        phx-value-group="add"
+                        phx-value-service-id={source.service_id}
+                        aria-label={"Run #{source.name} on the selected dates"}
+                      />
+                      <span>
+                        <span class="block text-sm font-[650] text-strong">{source.name}</span>
+                        <span class="block text-[13px] text-muted">
+                          <code class="font-mono">{source.service_id}</code>
+                          · {trips_label(source.trip_count)}
+                        </span>
+                      </span>
+                    </label>
+                  </li>
+                </ul>
+              </fieldset>
+
+              <div
+                :if={@date_change_review == nil}
+                id="calendar-date-change-summary"
+                aria-live="polite"
+                class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-card bg-canvas p-4 text-sm"
+              >
+                <div>
+                  <h3 class="font-bold text-strong">Selected</h3>
+                  <p id="calendar-date-change-selection">{date_change_label(@date_change_dates)}</p>
+                  <p class="mt-1 text-muted">
+                    Nothing changes until you review the result and apply it.
+                  </p>
                 </div>
+                <.button
+                  id="calendar-date-change-refresh"
+                  type="button"
+                  phx-click="date_change_refresh"
+                  variant="quiet"
+                  class="min-h-11 text-action hover:underline"
+                >
+                  <.icon name="hero-arrow-path" class="size-4" /> Refresh calendars
+                </.button>
               </div>
-            </:col>
-            <:col :let={{_id, summary}} label="Regular days">
-              {CalendarComponents.regular_days(summary)}
-            </:col>
-            <:col
-              :let={{_id, summary}}
-              label="Service dates"
-              sort_key="period"
-              sort_event="sort"
-              sort={column_sort_state(@sort_by, @sort_dir, "period")}
-              axis={true}
-            >
-              <CalendarComponents.coverage_repair
-                :if={summary.coverage_error}
-                row={summary}
+
+              <div
+                :if={@date_change_review != nil}
+                id="calendar-date-change-review-panel"
+                class="grid gap-3 rounded-card bg-canvas p-4"
+              >
+                <h3 class="text-base font-bold text-strong">Result after applying</h3>
+                <p id="calendar-date-change-review-summary" class="text-sm font-[650] text-strong">
+                  {date_change_label(@date_change_review.selected_dates)}
+                </p>
+                <ul id="calendar-date-change-review-lines" class="grid gap-2 text-sm">
+                  <li
+                    :for={line <- date_change_review_lines(assigns)}
+                    class="flex items-start gap-2.5"
+                  >
+                    <span class={[
+                      "mt-px inline-flex min-w-11 shrink-0 justify-center rounded-badge px-2 py-0.5 text-[13px] font-[650]",
+                      if(line.kind == :stop,
+                        do: "bg-warning-bg text-warning-fg",
+                        else: "bg-success-bg text-success-fg"
+                      )
+                    ]}>
+                      {if line.kind == :stop, do: "Stop", else: "Run"}{" "}
+                    </span>
+                    <span class="min-w-0">
+                      <strong class="font-[650] text-strong">{line.name}</strong>
+                      {line_predicate(line)}
+                      <span class="text-muted">{line_effect(line)}</span>
+                    </span>
+                  </li>
+                </ul>
+                <p id="calendar-date-change-review-count" class="text-sm">
+                  <span :if={@date_change_review.affected_service_ids != []}>
+                    This changes <strong>{calendars_label(length(@date_change_review.affected_service_ids))}</strong>.
+                  </span>
+                  <span :if={@date_change_review.affected_service_ids == []}>
+                    No calendar changes.
+                  </span>
+                  <span class="text-[13px] text-muted">
+                    GTFS: {rows_change_label(@date_change_review.changed_count)}.
+                  </span>
+                </p>
+                <.message
+                  :if={@date_change_review.warnings != []}
+                  id="calendar-date-change-warnings"
+                  kind="warning"
+                  title={"#{length(@date_change_review.warnings)} warnings to read first"}
+                >
+                  <ul class="grid gap-0.5">
+                    <li :for={warning <- @date_change_review.warnings}>{warning_text(warning)}</li>
+                  </ul>
+                </.message>
+              </div>
+            </.drawer_scroll>
+
+            <.drawer_footer>
+              <.button
+                id="calendar-date-change-cancel"
+                type="button"
+                phx-click="close_date_change"
+                variant="secondary"
+                class="min-h-11"
+              >
+                Cancel
+              </.button>
+              <.button
+                :if={@date_change_review == nil}
+                id="calendar-date-change-review"
+                type="button"
+                phx-click="date_change_review"
+                class="min-h-11"
+              >
+                Review change
+              </.button>
+              <.button
+                :if={@date_change_review != nil}
+                id="calendar-date-change-back"
+                type="button"
+                phx-click="date_change_back"
+                variant="secondary"
+                class="min-h-11"
+              >
+                Change selection
+              </.button>
+              <.button
+                :if={@date_change_review != nil}
+                id="calendar-date-change-apply"
+                type="button"
+                phx-click={JS.dispatch("calendar:apply", to: "#calendar-date-change-form")}
+                disabled={@date_change_pending?}
+                class="min-h-11 min-w-[168px]"
+              >
+                {if @date_change_pending?, do: "Applying…", else: "Apply date change"}
+              </.button>
+            </.drawer_footer>
+          </.form>
+        </.drawer>
+
+        <.drawer
+          id="calendar-combine-drawer"
+          chrome="planner"
+          open={@combine_open?}
+          pending={@combine_pending?}
+          on_close="close_combine"
+          title="Combine calendars"
+          return_focus_id={@combine_return_focus_id}
+          class="max-w-[760px]"
+        >
+          <:lede :if={@combine_review != nil}>
+            <span id="calendar-combine-subtitle">
+              {selection_count_label(length(@combine_rows))} · {combination_scope(assigns)}
+            </span>
+          </:lede>
+          <.form
+            :if={@combine_review != nil}
+            for={@combine_form}
+            id="calendar-combine-form"
+            phx-hook="FormErrorFocus"
+            phx-change="combine_change"
+            phx-submit="combine_apply"
+            class="flex min-h-0 flex-1 flex-col"
+          >
+            <.drawer_scroll>
+              <.message
+                :if={@combine_error}
+                id="calendar-combine-drawer-error"
+                kind="error"
+                title={@combine_error}
+              />
+
+              <.message
+                :if={@combine_status && @combine_status.kind != :pending}
+                id="calendar-combine-errors"
+                tabindex="-1"
+                kind={combine_status_kind(assigns)}
+                title={@combine_status.title}
+              >
+                {@combine_status.message}
+              </.message>
+
+              <CalendarComponents.combination_controls
+                id="calendar-combine-destination"
+                form={@combine_form}
+                rows={@combine_rows}
+                destination_id={@combine_destination_id}
+                review={@combine_review}
                 version_id={@current_gtfs_version.id}
               />
-              <CalendarComponents.coverage_bar
-                :if={is_nil(summary.coverage_error)}
-                row={summary}
-                coverage={@coverage.rows[summary.service_id]}
-                axis={@coverage}
+
+              <CalendarComponents.combination_decisions
+                id="calendar-combine-decisions"
+                review={@combine_review}
+                rows={@combine_rows}
+                decisions={@combine_decisions}
+                attempted?={@combine_attempted?}
               />
-            </:col>
-            <:col :let={{_id, summary}} label="Trips" align="right">
-              <span class="tabular-nums">{summary.trip_count}</span>
-            </:col>
-            <:col :let={{_id, summary}} label="Status">
-              <% {tone, word} = badge(summary) %>
-              <.status_badge status={tone} label={word} />
-            </:col>
-            <:axis>
-              <CalendarComponents.coverage_axis axis={@coverage} />
-            </:axis>
-          </.table>
-          <CalendarComponents.coverage_legend />
-        </div>
 
-        <p :if={not @calendars_empty?} class="text-sm text-base-content/70">
-          A calendar can be shared by several routes. Changes affect every trip that uses it.
-        </p>
-      </div>
+              <CalendarComponents.combination_result
+                id="calendar-combine-result"
+                review={@combine_review}
+                rows={@combine_rows}
+                destination_id={@combine_destination_id}
+                stored={@combine_stored}
+                today={@today}
+                version_id={@current_gtfs_version.id}
+              />
 
-      <.drawer
-        id="calendar-date-change-drawer"
-        open={@date_change_open?}
-        pending={@date_change_pending?}
-        on_close="close_date_change"
-        title="Change service on a date"
-        initial_focus={:first_field}
-        return_focus_id={@date_change_return_focus}
-      >
-        <.form
-          for={@date_change_form}
-          id="calendar-date-change-form"
-          phx-hook="CalendarDateChange"
-          phx-change="date_change_form"
-          phx-submit="date_change_add_date"
-          class="space-y-6"
-        >
-          <p class="text-sm text-base-content/70">
-            Use a different schedule for a holiday, or stop service for a closure. The reviewed
-            command applies to this published version in one transaction.
-          </p>
+              <CalendarComponents.combination_effects
+                id="calendar-combine-effects"
+                review={@combine_review}
+                rows={@combine_rows}
+                destination_id={@combine_destination_id}
+              />
 
-          <p
-            :if={@date_change_errors != %{}}
-            id="calendar-date-change-error"
-            role="alert"
-            class="text-sm text-error"
-          >
-            {Enum.join(Map.values(@date_change_errors), " ")}
-          </p>
+              <CalendarComponents.combination_impacts
+                id="calendar-combine-impacts"
+                review={@combine_review}
+                rows={@combine_rows}
+                destination_id={@combine_destination_id}
+                version_id={@current_gtfs_version.id}
+              />
+            </.drawer_scroll>
 
-          <CalendarComponents.date_selection
-            id="calendar-date-change-dates"
-            form={@date_change_form}
-            mode={@date_change_mode}
-            dates={@date_change_dates}
-            errors={@date_change_errors}
-            mode_options={@date_change_modes}
-          />
-
-          <fieldset
-            :if={@date_change_review == nil}
-            id="calendar-date-change-remove"
-            class="border border-base-300 rounded-box p-4"
-          >
-            <legend class="font-medium px-1">Stop service on</legend>
-            <p class="text-sm text-base-content/70">
-              Calendars running on at least one selected date are checked. Choose them yourself and
-              this selection stays while the dates change.
-            </p>
-            <ul class="mt-3 space-y-2">
-              <li
-                :for={source <- date_change_remove_options(assigns)}
-                id={"calendar-date-change-remove-#{URI.encode_www_form(source.service_id)}"}
-              >
-                <label class="flex items-start gap-3 min-h-11">
-                  <input
-                    type="checkbox"
-                    checked={MapSet.member?(@date_change_remove, source.service_id)}
-                    phx-click="date_change_toggle"
-                    phx-value-group="remove"
-                    phx-value-service-id={source.service_id}
-                    aria-label={"Stop service on the selected dates for #{source.name}"}
-                  />
-                  <span>
-                    <span class="font-medium">{source.name}</span>
-                    <span class="block text-sm text-base-content/70">
-                      <code class="font-mono">{source.service_id}</code> · {source.trip_count} trips
-                    </span>
-                  </span>
-                </label>
-              </li>
-              <li :if={date_change_remove_options(assigns) == []} class="text-sm text-base-content/70">
-                No calendar runs on these dates yet.
-              </li>
-            </ul>
-          </fieldset>
-
-          <fieldset
-            :if={@date_change_review == nil}
-            id="calendar-date-change-add"
-            class="border border-base-300 rounded-box p-4"
-          >
-            <legend class="font-medium px-1">
-              Run instead <span class="font-normal text-base-content/70">(optional)</span>
-            </legend>
-            <p class="text-sm text-base-content/70">
-              Choose every schedule that should run on these dates. A calendar cannot be stopped and
-              run at the same time.
-            </p>
-            <ul class="mt-3 space-y-2">
-              <li
-                :for={source <- date_change_add_options(assigns)}
-                id={"calendar-date-change-add-#{URI.encode_www_form(source.service_id)}"}
-              >
-                <label class="flex items-start gap-3 min-h-11">
-                  <input
-                    type="checkbox"
-                    checked={MapSet.member?(@date_change_add, source.service_id)}
-                    phx-click="date_change_toggle"
-                    phx-value-group="add"
-                    phx-value-service-id={source.service_id}
-                    aria-label={"Run #{source.name} on the selected dates"}
-                  />
-                  <span>
-                    <span class="font-medium">{source.name}</span>
-                    <span class="block text-sm text-base-content/70">
-                      <code class="font-mono">{source.service_id}</code> · {source.trip_count} trips
-                    </span>
-                  </span>
-                </label>
-              </li>
-            </ul>
-          </fieldset>
-
-          <div
-            :if={@date_change_review == nil}
-            id="calendar-date-change-summary"
-            aria-live="polite"
-            class="bg-base-200 rounded-box p-4 text-sm"
-          >
-            <h3 class="font-semibold">Selection</h3>
-            <p id="calendar-date-change-selection">{date_change_label(@date_change_dates)}</p>
-            <p class="mt-1 text-base-content/70">Review the result before anything is written.</p>
-          </div>
-
-          <div
-            :if={@date_change_review != nil}
-            id="calendar-date-change-review-panel"
-            class="bg-base-200 rounded-box p-4 space-y-3"
-          >
-            <h3 class="font-semibold">Result after applying</h3>
-            <p id="calendar-date-change-review-summary">
-              {date_change_label(@date_change_review.selected_dates)}
-            </p>
-            <ul id="calendar-date-change-review-lines" class="space-y-1 text-sm">
-              <li :for={line <- date_change_review_lines(assigns)}>{line}</li>
-            </ul>
-            <p id="calendar-date-change-review-count" class="text-sm">
-              <strong>{@date_change_review.changed_count}</strong>
-              rows change across <strong>{length(@date_change_review.affected_service_ids)}</strong>
-              {if length(@date_change_review.affected_service_ids) == 1,
-                do: "calendar",
-                else: "calendars"}.
-            </p>
-            <div :if={@date_change_review.warnings != []} id="calendar-date-change-warnings">
-              <p class="font-medium">
-                {length(@date_change_review.warnings)} warnings to read first
+            <.drawer_footer>
+              <p id="calendar-combine-footer-note" class="mr-auto text-[13px] text-muted">
+                {combination_footer_note(assigns)}
               </p>
-              <ul class="mt-1 space-y-1 text-sm text-base-content/80">
-                <li :for={warning <- @date_change_review.warnings}>{warning_text(warning)}</li>
-              </ul>
-            </div>
-          </div>
-
-          <div class="-mx-6 -mb-6 sticky bottom-0 z-10 flex flex-wrap items-center gap-3 border-t border-base-300 bg-base-100 px-6 pt-3 pb-6">
-            <button
-              type="button"
-              id="calendar-date-change-cancel"
-              phx-click="close_date_change"
-              class="btn btn-sm btn-ghost min-h-11"
-            >
-              Cancel
-            </button>
-            <button
-              :if={@date_change_review == nil}
-              type="button"
-              id="calendar-date-change-review"
-              phx-click="date_change_review"
-              class="btn btn-sm btn-primary min-h-11"
-            >
-              Review change
-            </button>
-            <button
-              :if={@date_change_review != nil}
-              type="button"
-              id="calendar-date-change-back"
-              phx-click="date_change_back"
-              class="btn btn-sm btn-ghost min-h-11"
-            >
-              Change selection
-            </button>
-            <button
-              :if={@date_change_review != nil}
-              type="button"
-              id="calendar-date-change-apply"
-              phx-click={JS.dispatch("calendar:apply", to: "#calendar-date-change-form")}
-              disabled={@date_change_pending?}
-              class="btn btn-sm btn-primary min-h-11"
-            >
-              {if @date_change_pending?, do: "Applying…", else: "Apply date change"}
-            </button>
-            <button
-              type="button"
-              id="calendar-date-change-refresh"
-              phx-click="date_change_refresh"
-              class="btn btn-sm btn-ghost min-h-11"
-            >
-              Refresh snapshot
-            </button>
-          </div>
-        </.form>
-      </.drawer>
-
-      <.drawer
-        id="calendar-combine-drawer"
-        open={@combine_open?}
-        pending={@combine_pending?}
-        on_close="close_combine"
-        title="Combine calendars"
-        return_focus_id={@combine_return_focus_id}
-        class="max-w-[min(100vw,760px)]"
-      >
-        <.form
-          :if={@combine_review != nil}
-          for={@combine_form}
-          id="calendar-combine-form"
-          phx-hook="FormErrorFocus"
-          phx-change="combine_change"
-          phx-submit="combine_apply"
-          class="space-y-8"
-        >
-          <p id="calendar-combine-subtitle" class="text-sm text-base-content/70">
-            {selection_count_label(length(@combine_rows))} · {combination_scope(assigns)}
-          </p>
-
-          <p
-            :if={@combine_error}
-            id="calendar-combine-drawer-error"
-            role="alert"
-            class="text-sm text-error"
-          >
-            {@combine_error}
-          </p>
-
-          <.callout
-            :if={@combine_status && @combine_status.kind != :pending}
-            id="calendar-combine-errors"
-            tabindex="-1"
-            class="focus:outline-none"
-            kind={combine_status_kind(assigns)}
-            title={@combine_status.title}
-            role="alert"
-          >
-            {@combine_status.message}
-          </.callout>
-
-          <CalendarComponents.combination_controls
-            id="calendar-combine-destination"
-            form={@combine_form}
-            rows={@combine_rows}
-            destination_id={@combine_destination_id}
-            review={@combine_review}
-            version_id={@current_gtfs_version.id}
-          />
-
-          <CalendarComponents.combination_result
-            id="calendar-combine-result"
-            review={@combine_review}
-            rows={@combine_rows}
-            destination_id={@combine_destination_id}
-            stored={@combine_stored}
-            today={@today}
-            version_id={@current_gtfs_version.id}
-          />
-
-          <CalendarComponents.combination_decisions
-            id="calendar-combine-decisions"
-            review={@combine_review}
-            rows={@combine_rows}
-            decisions={@combine_decisions}
-            attempted?={@combine_attempted?}
-          />
-
-          <CalendarComponents.combination_effects
-            id="calendar-combine-effects"
-            review={@combine_review}
-            rows={@combine_rows}
-            destination_id={@combine_destination_id}
-          />
-
-          <CalendarComponents.combination_impacts
-            id="calendar-combine-impacts"
-            review={@combine_review}
-            rows={@combine_rows}
-            destination_id={@combine_destination_id}
-            version_id={@current_gtfs_version.id}
-          />
-
-          <div class="-mx-6 -mb-6 sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-base-300 bg-base-100 px-6 pt-3 pb-6">
-            <p id="calendar-combine-footer-note" class="text-sm text-base-content/70">
-              {combination_footer_note(assigns)}
-            </p>
-            <div class="flex flex-wrap items-center gap-3">
               <.button
                 id="calendar-combine-close"
                 type="button"
                 phx-click="close_combine"
                 disabled={@combine_pending?}
                 variant="secondary"
-                size="sm"
                 class="min-h-11"
               >
-                Close
+                {combine_exit_label(assigns)}
               </.button>
               <.button
                 :if={@combine_refresh_required?}
@@ -2747,10 +2870,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                 type="button"
                 phx-click="combine_refresh"
                 disabled={@combine_pending?}
-                size="sm"
                 class="min-h-11 min-w-[196px]"
               >
-                Refresh review
+                <.icon name="hero-arrow-path" class="size-4" /> Refresh review
               </.button>
               <.button
                 :if={
@@ -2760,31 +2882,212 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
                 id="calendar-combine-apply"
                 type="submit"
                 disabled={@combine_pending?}
-                size="sm"
                 class="min-h-11 min-w-[196px]"
               >
                 {combine_submit_label(assigns)}
               </.button>
-            </div>
-          </div>
-        </.form>
-      </.drawer>
+            </.drawer_footer>
+          </.form>
+        </.drawer>
 
-      <.drawer
-        id="calendar-coverage-details"
-        open={@coverage_detail != nil}
-        on_close="close_coverage_details"
-        title={coverage_details_title(assigns)}
-        return_focus_id={@coverage_return_focus}
-        class="max-w-[min(100vw,30rem)]"
-      >
-        <CalendarComponents.coverage_details
-          :if={@coverage_detail}
-          detail={@coverage_detail}
-          version_id={@current_gtfs_version.id}
-        />
-      </.drawer>
+        <.drawer
+          id="calendar-coverage-details"
+          chrome="planner"
+          open={@coverage_detail != nil}
+          on_close="close_coverage_details"
+          title={coverage_details_title(assigns)}
+          return_focus_id={@coverage_return_focus}
+          class="max-w-[520px]"
+        >
+          <CalendarComponents.coverage_details
+            :if={@coverage_detail}
+            detail={@coverage_detail}
+            version_id={@current_gtfs_version.id}
+          />
+        </.drawer>
+      </div>
     </Layouts.app>
+    """
+  end
+
+  # One semantic table from 1024px up, the same rows as cards below it: a stream renders one
+  # structure, so the layout is CSS (`.calendar-table` in `app.css`). The heading holds "Select
+  # all" and the two sortable columns, and its second row is the shared date axis; the bar in
+  # every row is drawn against the same inner box.
+  attr :rows, :any, required: true, doc: "the `:calendars` stream"
+  attr :coverage, :map, required: true
+  attr :sort_by, :string, required: true
+  attr :sort_dir, :string, required: true
+  attr :all_selected?, :boolean, required: true
+  attr :selected_ids, :any, required: true
+  attr :marked_ids, :any, required: true
+  attr :version_id, :any, required: true
+  attr :scope, :string, required: true
+
+  defp calendars_table(assigns) do
+    ~H"""
+    <div id="calendars-list-container">
+      <table class="calendar-table">
+        <caption class="sr-only">
+          Calendars in {@scope} and the dates they run
+        </caption>
+        <thead>
+          <tr>
+            <th
+              scope="col"
+              aria-sort={sort_aria(@sort_by, @sort_dir, "name")}
+              class="calendar-col-calendar"
+            >
+              <div class="flex items-center">
+                <label class="calendar-check">
+                  <input
+                    id="calendar-select-all"
+                    type="checkbox"
+                    checked={@all_selected?}
+                    aria-label="Select all matching calendars"
+                    phx-click="select_all_calendars"
+                  />
+                </label>
+                <span class="pr-3 text-[13px] font-[650] text-default lg:hidden">Select all</span>
+                <button type="button" phx-click="sort" phx-value-key="name" class="calendar-sort">
+                  Calendar <.sort_icon state={column_sort_state(@sort_by, @sort_dir, "name")} />
+                </button>
+              </div>
+            </th>
+            <th scope="col" aria-sort={sort_aria(@sort_by, @sort_dir, "period")}>
+              <div class="lg:px-4">
+                <button type="button" phx-click="sort" phx-value-key="period" class="calendar-sort">
+                  When it runs <.sort_icon state={column_sort_state(@sort_by, @sort_dir, "period")} />
+                </button>
+              </div>
+            </th>
+            <th scope="col" class="calendar-col-trips">Trips</th>
+            <th scope="col" class="calendar-col-status">Status</th>
+          </tr>
+          <tr>
+            <td></td>
+            <td class="calendar-axis-cell">
+              <CalendarComponents.coverage_axis axis={@coverage} />
+            </td>
+            <td></td>
+            <td></td>
+          </tr>
+        </thead>
+        <tbody id="calendars-list" phx-update="stream">
+          <tr
+            :for={{dom_id, summary} <- @rows}
+            id={dom_id}
+            data-marked={MapSet.member?(@marked_ids, summary.service_id) || nil}
+          >
+            <td data-label="Calendar" class="calendar-col-calendar">
+              <div class="flex items-start">
+                <label :if={is_nil(summary.coverage_error)} class="calendar-check">
+                  <input
+                    id={"calendar-select-#{URI.encode_www_form(summary.service_id)}"}
+                    type="checkbox"
+                    checked={MapSet.member?(@selected_ids, summary.service_id)}
+                    data-calendar-selected={
+                      to_string(MapSet.member?(@selected_ids, summary.service_id))
+                    }
+                    aria-label={"Select #{summary.name || summary.service_id}"}
+                    phx-click="toggle_calendar_selection"
+                    phx-value-service-id={summary.service_id}
+                  />
+                </label>
+                <%!-- An identity whose retained range cannot be read has no evaluated dates,
+                so it cannot be a combination source: the checkbox stays disabled and the
+                repair callout names the fix. --%>
+                <label :if={summary.coverage_error} class="calendar-check">
+                  <input
+                    id={"calendar-select-#{URI.encode_www_form(summary.service_id)}"}
+                    type="checkbox"
+                    disabled
+                    aria-label={"#{summary.name || summary.service_id} cannot be selected because its retained range needs repair."}
+                  />
+                </label>
+                <div class="min-w-0 py-2.5">
+                  <.link
+                    :if={is_nil(summary.coverage_error)}
+                    navigate={detail_path(@version_id, summary)}
+                    data-calendar-link={summary.service_id}
+                    class="calendar-name"
+                  >
+                    {summary.name || "Untitled calendar"}
+                  </.link>
+                  <%!-- An identity whose retained range cannot be read has no date set to
+                  inspect or edit, and the detail read evaluates the dates, so its name is
+                  plain text here; the repair action is the import link in the dates cell. --%>
+                  <span :if={summary.coverage_error} class="font-[650] text-strong">
+                    {summary.name || "Untitled calendar"}
+                  </span>
+                  <div class="mt-0.5 text-[13px] leading-5 text-muted">
+                    {CalendarComponents.runs_line(summary)} ·
+                    <code class="font-mono">{summary.service_id}</code>
+                  </div>
+                </div>
+              </div>
+            </td>
+            <td data-label="Service dates" class="calendar-dates-cell">
+              <CalendarComponents.coverage_repair
+                :if={summary.coverage_error}
+                row={summary}
+                version_id={@version_id}
+              />
+              <CalendarComponents.coverage_bar
+                :if={is_nil(summary.coverage_error)}
+                row={summary}
+                coverage={@coverage.rows[summary.service_id]}
+                axis={@coverage}
+              />
+            </td>
+            <td
+              data-label="Trips"
+              data-count={summary.trip_count}
+              data-empty={summary.trip_count == 0 || nil}
+              class="calendar-col-trips"
+            >
+              {summary.trip_count}
+            </td>
+            <td data-label="Status" class="calendar-col-status">
+              <% {tone, word} = badge(summary) %>
+              <span class={[
+                "inline-flex items-center whitespace-nowrap rounded-badge px-2 py-0.5 text-[13px] font-[650]",
+                Map.fetch!(badge_tones(), tone)
+              ]}>
+                {word}
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    """
+  end
+
+  defp badge_tones, do: @badge_tones
+
+  defp sort_aria(sort_by, sort_dir, column) do
+    case column_sort_state(sort_by, sort_dir, column) do
+      "asc" -> "ascending"
+      "desc" -> "descending"
+      _none -> "none"
+    end
+  end
+
+  attr :state, :string, required: true
+
+  defp sort_icon(assigns) do
+    ~H"""
+    <.icon
+      name={
+        case @state do
+          "asc" -> "hero-arrow-up"
+          "desc" -> "hero-arrow-down"
+          _none -> "hero-chevron-up-down"
+        end
+      }
+      class={["size-3.5", @state == "none" && "text-muted"]}
+    />
     """
   end
 
@@ -2792,8 +3095,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
     "/gtfs/#{assigns.current_gtfs_version.id}/calendars/new"
   end
 
-  defp detail_path(assigns, summary) do
-    "/gtfs/#{assigns.current_gtfs_version.id}/calendars/show?service_id=" <>
-      URI.encode_www_form(summary.service_id)
+  defp detail_path(version_id, summary) do
+    "/gtfs/#{version_id}/calendars/show?service_id=" <> URI.encode_www_form(summary.service_id)
   end
 end

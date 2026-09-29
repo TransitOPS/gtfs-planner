@@ -1,18 +1,17 @@
 defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   @moduledoc """
-  Presentation pieces shared by the calendar list and the calendar editor.
+  Presentation pieces for the calendar list: coverage timeline, date selection,
+  and calendar combination.
 
   Every value here comes from the domain: `Gtfs.Calendars` derived the periods,
-  breaks, holidays, extra days and month cells from the native rows, so these
-  functions only choose wording, symbols and structure. No date logic lives in a
-  template, and the preview therefore cannot disagree with the stored schedule.
-
-  The symbols carry text as well: each month cell exposes its exact accessible
-  date label plus a visually hidden state word, and the legend names all four
-  states, so a reader who cannot see the symbol still learns the same fact.
+  breaks, holidays and extra days from the native rows, so these functions only
+  choose wording, marks and structure. No date logic lives in a template.
+  `GtfsPlannerWeb.Gtfs.CalendarEditorComponents` holds the editor's presentation.
   """
 
   use GtfsPlannerWeb, :html
+
+  import GtfsPlannerWeb.PlannerComponents, only: [drawer_footer: 1, message: 1]
 
   alias GtfsPlanner.Gtfs.Blocking.Checks
 
@@ -20,16 +19,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   @seasonal_threshold 14
   @year_only_months 36
 
-  @symbols %{service: "●", removed: "×", added: "+", none: "–"}
-  @state_words %{
-    service: "Regular service",
-    removed: "Service removed",
-    added: "Service added",
-    none: "No service scheduled"
-  }
-  @exception_words %{added: "Service added", removed: "Service removed"}
   @date_format "%b %-d, %Y"
-  @month_day_format "%a, %b %-d, %Y"
   @short_date_format "%b %-d"
 
   @doc "Formats one civil date for calendar surfaces."
@@ -120,126 +110,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   end
 
   @doc """
-  Renders the reviewed warnings that need a decision before a write.
-
-  Each warning names its calendar, its date and why the stored change has no
-  effect, so a reader can find the redundant exception in the date list.
-  """
-  attr :id, :string, required: true
-  attr :warnings, :list, required: true
-  attr :service_label, :string, default: nil
-
-  def warning_list(assigns) do
-    assigns =
-      assign(
-        assigns,
-        :entries,
-        Enum.map(assigns.warnings, &warning_entry(&1, assigns.service_label))
-      )
-
-    ~H"""
-    <div :if={@entries != []} id={@id} class="mt-3">
-      <.callout kind="warning" title={warning_title(length(@entries))}>
-        <ul class="mt-2 space-y-1 text-sm">
-          <li :for={entry <- @entries}>{entry}</li>
-        </ul>
-      </.callout>
-    </div>
-    """
-  end
-
-  @doc """
-  Renders the three-month service preview with its legend and keyboard hints.
-
-  The focusable preview container handles ArrowLeft/ArrowRight and Home to
-  move the month window. Individual cells expose their civil date and service state.
-  """
-  attr :id, :string, required: true
-  attr :months, :list, required: true
-  attr :preview_label, :string, required: true
-
-  def preview_section(assigns) do
-    assigns =
-      assigns
-      |> assign(:symbols, @symbols)
-      |> assign(:state_words, @state_words)
-      |> assign(:exception_words, @exception_words)
-
-    ~H"""
-    <div
-      id={@id}
-      tabindex="0"
-      role="group"
-      aria-label={@preview_label}
-      phx-keydown="preview_keys"
-      class="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-    >
-      <div class="grid gap-6 md:grid-cols-3">
-        <div :for={month <- @months} id={"#{@id}-#{month.year}-#{month.month}"}>
-          <h3 class="text-sm font-semibold">{month.title}</h3>
-          <table class="mt-1 w-full text-center text-xs">
-            <thead>
-              <tr class="text-base-content/70">
-                <th
-                  :for={day <- ~w(Monday Tuesday Wednesday Thursday Friday Saturday Sunday)}
-                  scope="col"
-                  class="pb-1 font-medium"
-                >
-                  <span aria-hidden="true">{String.first(day)}</span>
-                  <span class="sr-only">{day}</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr :for={week <- month.weeks}>
-                <td :for={cell <- week} class="p-0.5">
-                  <span
-                    :if={cell}
-                    id={"month-cell-#{Date.to_iso8601(cell.date)}"}
-                    class={[
-                      "flex h-7 w-full items-center justify-center rounded-sm text-xs font-medium",
-                      cell_class(cell.state)
-                    ]}
-                    title={"#{cell.label} · #{Map.fetch!(@symbols, cell.state)}"}
-                    aria-label={cell_aria_label(cell)}
-                  >
-                    <span aria-hidden="true">{cell.day}</span>
-                    <span class="sr-only">{Map.fetch!(@state_words, cell.state)}</span>
-                    <span
-                      :if={cell.exception}
-                      class="ml-0.5 text-[10px] font-bold"
-                      aria-hidden="true"
-                    >
-                      {exception_symbol(cell.exception)}
-                    </span>
-                    <span :if={cell.exception} class="sr-only">
-                      {Map.fetch!(@exception_words, cell.exception)} recorded
-                    </span>
-                  </span>
-                  <span :if={is_nil(cell)} aria-hidden="true">&nbsp;</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <ul id={"#{@id}-legend"} class="mt-4 flex flex-wrap gap-4 text-sm">
-        <li :for={{state, symbol} <- legend_order()} class="inline-flex items-center gap-2">
-          <span class={[
-            "inline-flex h-5 w-5 items-center justify-center rounded-sm",
-            cell_class(state)
-          ]}>
-            <span aria-hidden="true">{symbol}</span>
-          </span>
-          <span>{Map.fetch!(@state_words, state)}</span>
-        </li>
-      </ul>
-    </div>
-    """
-  end
-
-  @doc """
   Renders the individual exception dates as removable chips.
 
   A chip names the date and its type and removes exactly that stored row through
@@ -295,87 +165,90 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
   def date_selection(assigns) do
     ~H"""
-    <div id={@id} class="space-y-3">
-      <.input
-        id={"#{@id}-mode"}
-        field={@form[:mode]}
-        type="select"
-        label="Dates to change"
-        options={@mode_options}
-        errors={errors_for(@errors, "mode")}
-      />
-
-      <div :if={@mode == "single"}>
+    <fieldset id={@id} class="min-w-0">
+      <legend class="mb-3 text-base font-bold text-strong">Which dates?</legend>
+      <div class="grid gap-3">
         <.input
-          id={"#{@id}-date"}
-          field={@form[:date]}
-          type="date"
-          label="Date"
-          errors={errors_for(@errors, "date")}
+          id={"#{@id}-mode"}
+          field={@form[:mode]}
+          type="select"
+          label="Pick by"
+          options={@mode_options}
+          errors={errors_for(@errors, "mode")}
         />
-      </div>
 
-      <div :if={@mode == "range"} class="grid gap-3 sm:grid-cols-2">
-        <.input
-          id={"#{@id}-date-from"}
-          field={@form[:date_from]}
-          type="date"
-          label="First date"
-          errors={errors_for(@errors, "date_from")}
-        />
-        <.input
-          id={"#{@id}-date-to"}
-          field={@form[:date_to]}
-          type="date"
-          label="Last date"
-          errors={errors_for(@errors, "date_to")}
-        />
-      </div>
-
-      <div :if={@mode == "several"} class="space-y-2">
-        <div class="flex flex-wrap items-end gap-3">
-          <div class="w-48">
-            <.input
-              id={"#{@id}-date-add"}
-              field={@form[:date_add]}
-              type="date"
-              label="Add dates"
-              errors={errors_for(@errors, "date_add")}
-            />
-          </div>
-          <button id={"#{@id}-add"} type="submit" class="btn btn-sm btn-outline min-h-11">
-            Add date
-          </button>
+        <div :if={@mode == "single"} class="max-w-[200px]">
+          <.input
+            id={"#{@id}-date"}
+            field={@form[:date]}
+            type="date"
+            label="Date"
+            errors={errors_for(@errors, "date")}
+          />
         </div>
 
-        <ul
-          :if={@dates != []}
-          id={"#{@id}-chips"}
-          class="flex flex-wrap gap-2"
-          aria-label="Selected dates"
-        >
-          <li
-            :for={date <- @dates}
-            id={"#{@id}-chip-#{Date.to_iso8601(date)}"}
-            class="inline-flex items-center gap-2 rounded-full border border-control-border px-3 py-1 text-sm"
-          >
-            <span class="font-medium">{format_date(date)}</span>
-            <button
-              id={"#{@id}-chip-remove-#{Date.to_iso8601(date)}"}
-              type="button"
-              class="link text-xs"
-              phx-click="date_change_remove_date"
-              phx-value-date={Date.to_iso8601(date)}
-            >
-              <span aria-hidden="true">Remove</span>
-              <span class="sr-only">Remove {format_date(date)} from the selected dates</span>
-            </button>
-          </li>
-        </ul>
+        <div :if={@mode == "range"} class="grid gap-3 sm:grid-cols-2">
+          <.input
+            id={"#{@id}-date-from"}
+            field={@form[:date_from]}
+            type="date"
+            label="First date"
+            errors={errors_for(@errors, "date_from")}
+          />
+          <.input
+            id={"#{@id}-date-to"}
+            field={@form[:date_to]}
+            type="date"
+            label="Last date"
+            errors={errors_for(@errors, "date_to")}
+          />
+        </div>
 
-        <p :if={@dates == []} class="text-sm text-base-content/70">Add each date to change.</p>
+        <div :if={@mode == "several"} class="grid gap-3">
+          <div class="flex flex-wrap items-end gap-3">
+            <div class="w-[200px]">
+              <.input
+                id={"#{@id}-date-add"}
+                field={@form[:date_add]}
+                type="date"
+                label="Add dates"
+                errors={errors_for(@errors, "date_add")}
+              />
+            </div>
+            <.button id={"#{@id}-add"} type="submit" variant="secondary" class="min-h-11">
+              Add date
+            </.button>
+          </div>
+
+          <ul
+            :if={@dates != []}
+            id={"#{@id}-chips"}
+            class="flex flex-wrap gap-2"
+            aria-label="Selected dates"
+          >
+            <li
+              :for={date <- @dates}
+              id={"#{@id}-chip-#{Date.to_iso8601(date)}"}
+              class="inline-flex items-center rounded-badge bg-canvas text-[13px] font-[650] text-strong"
+            >
+              <span class="py-1 pl-2">{format_date(date)}</span>
+              <button
+                id={"#{@id}-chip-remove-#{Date.to_iso8601(date)}"}
+                type="button"
+                class="relative inline-flex min-h-8 min-w-8 items-center justify-center rounded-badge text-muted hover:text-strong after:absolute after:-inset-1 after:content-['']"
+                phx-click="date_change_remove_date"
+                phx-value-date={Date.to_iso8601(date)}
+              >
+                <.icon name="hero-x-mark" class="size-3.5" />
+                <span class="sr-only">Remove {format_date(date)} from the selected dates</span>
+              </button>
+            </li>
+          </ul>
+
+          <p :if={@dates == []} class="text-[13px] text-muted">Add each date to change.</p>
+        </div>
       </div>
-    </div>
+    </fieldset>
     """
   end
 
@@ -384,40 +257,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
       nil -> []
       message -> [message]
     end
-  end
-
-  @doc """
-  Renders the used-by callout with links to the existing route details.
-
-  The count and every route ID come from the scoped grouped usage read, so a
-  blocked deletion states the real number of trips.
-  """
-  attr :id, :string, required: true
-  attr :usage, :map, required: true
-  attr :version_id, :any, required: true
-
-  def usage_strip(assigns) do
-    ~H"""
-    <div id={@id} class="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-      <span>
-        <strong>{@usage.trip_count}</strong>
-        {if @usage.trip_count == 1, do: "trip uses this calendar", else: "trips use this calendar"}
-      </span>
-      <ul :if={@usage.routes != []} class="flex flex-wrap gap-2">
-        <li :for={route <- @usage.routes} class="text-base-content/70">
-          <.link
-            id={"#{@id}-route-#{route.route_id}"}
-            navigate={~p"/gtfs/#{@version_id}/routes/#{route.route_id}"}
-            class="link link-primary"
-          >
-            {route.route_id}
-          </.link>
-          <span>({route.trip_count})</span>
-        </li>
-      </ul>
-      <span :if={@usage.routes == []} class="text-base-content/70">No routes yet</span>
-    </div>
-    """
   end
 
   ## Coverage presentation
@@ -494,6 +333,29 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
   def coverage_bar(assigns) do
     ~H"""
+    <%!-- The layers behind the bar cross the whole row, not only its 16px lane: past shading,
+    the version-wide gaps and the Today line. They are decoration, so they sit beside the
+    control instead of inside its accessible name. --%>
+    <span class="calendar-coverage-back" aria-hidden="true">
+      <span
+        :if={@axis.today_position}
+        class="calendar-coverage-past"
+        style={"width: #{pct(@axis.today_position)}"}
+      >
+      </span>
+      <span
+        :for={band <- @axis.gap_bands}
+        class="calendar-coverage-band"
+        style={band_style(band)}
+      >
+      </span>
+      <span
+        :if={@axis.today_position}
+        class="calendar-coverage-today-line"
+        style={"left: #{pct(@axis.today_position)}"}
+      >
+      </span>
+    </span>
     <button
       type="button"
       id={coverage_control_id(@row.service_id)}
@@ -506,28 +368,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
       <span class="sr-only">{@row.name || @row.service_id} coverage details</span>
       <span class="calendar-coverage-lane" aria-hidden="true">
         <span
-          :if={@axis.today_position}
-          class="calendar-coverage-past"
-          style={"width: #{pct(@axis.today_position)}"}
-        >
-        </span>
-        <span
-          :for={band <- @axis.gap_bands}
-          class="calendar-coverage-band"
-          style={band_style(band)}
-        >
-        </span>
-        <span
           :for={mark <- @coverage.marks}
           class={["calendar-coverage-mark", mark_class(mark)]}
           style={mark_style(mark)}
           title={mark_title(mark)}
-        >
-        </span>
-        <span
-          :if={@axis.today_position}
-          class="calendar-coverage-today-line"
-          style={"left: #{pct(@axis.today_position)}"}
         >
         </span>
         <span
@@ -573,82 +417,128 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
       |> assign(:empty_dates_text, empty_dates_text(assigns.detail.row))
       |> assign(:outside_lines, outside_lines(assigns.detail))
 
+    assigns = assign(assigns, :next_class, next_class(assigns))
+
     ~H"""
-    <div id="calendar-coverage-details-content" class="space-y-6">
-      <div>
-        <p id="calendar-coverage-details-identity">
+    <div class="flex min-h-0 flex-1 flex-col">
+      <div
+        id="calendar-coverage-details-content"
+        class="grid flex-1 content-start gap-5 overflow-y-auto px-5 py-5 sm:px-6"
+      >
+        <p id="calendar-coverage-details-identity" class="text-sm">
           <code class="font-mono">{@row.service_id}</code>
-          <span class="text-sm text-base-content/70">{" · "}{@detail.regular_days}</span>
+          <span class="text-muted">{" · "}{@detail.regular_days}</span>
         </p>
-        <p class="mt-1 text-sm text-base-content/70">
-          Exact service dates behind the bar on the list.
-        </p>
+
+        <.details_section
+          id="calendar-coverage-details-next-section"
+          title="Next service"
+          first?={true}
+        >
+          <p id="calendar-coverage-details-next" class={@next_class}>{next_service_label(assigns)}</p>
+        </.details_section>
+
+        <.details_section
+          :if={@row.kind == :weekly}
+          id="calendar-coverage-details-periods-section"
+          title="Regular service and changes"
+          hint="The weekly range, its breaks, the single days off and the added dates."
+        >
+          <.periods_section
+            id="calendar-coverage-details-periods"
+            periods={@periods}
+            exceptions={@exceptions}
+            timeline_label={"Service periods with #{length(@periods.breaks)} breaks"}
+          />
+          <p
+            :if={@periods.periods == [] and @periods.breaks == []}
+            class="text-sm text-muted"
+          >
+            This calendar has no regular service days.
+          </p>
+        </.details_section>
+
+        <.details_section
+          id="calendar-coverage-details-dates-section"
+          title={if @row.kind == :weekly, do: "Stored date changes", else: "Service dates"}
+          hint={
+            if @row.kind == :weekly,
+              do:
+                "Every added and removed date exactly as it is stored, including the ones outside the weekly range."
+          }
+        >
+          <.date_chips id="calendar-coverage-details-dates" entries={@exceptions} />
+          <p :if={@exceptions == []} class="text-sm text-muted">
+            {@empty_dates_text}
+          </p>
+        </.details_section>
+
+        <.details_section id="calendar-coverage-details-usage-section" title="Used by">
+          <div id="calendar-coverage-details-usage" class="grid gap-2 text-sm">
+            <p>
+              <strong class="font-bold text-strong">{@row.trip_count}</strong>
+              {if @row.trip_count == 1,
+                do: "trip uses this calendar",
+                else: "trips use this calendar"}
+            </p>
+            <ul :if={@row.routes != []} class="flex flex-wrap gap-2">
+              <li :for={route <- @row.routes}>
+                <.link
+                  id={"calendar-coverage-details-usage-route-#{route.route_id}"}
+                  navigate={~p"/gtfs/#{@version_id}/routes/#{route.route_id}"}
+                  class="inline-flex min-h-11 items-center gap-1.5 rounded-control border border-subtle px-2.5 no-underline hover:bg-canvas"
+                >
+                  <span class="font-[650] text-strong">{route.route_id}</span>
+                  <span class="text-[13px] tabular-nums text-muted">{route.trip_count} trips</span>
+                </.link>
+              </li>
+            </ul>
+            <p :if={@row.routes == []} class="text-muted">No routes yet</p>
+          </div>
+        </.details_section>
+
+        <.details_section id="calendar-coverage-details-outside" title="Outside the timeline">
+          <ul class="grid gap-1 text-sm text-muted">
+            <li :for={line <- @outside_lines}>{line}</li>
+          </ul>
+          <p
+            :if={@approximate?}
+            id="calendar-coverage-details-approximate"
+            class="mt-2 text-[13px] text-muted"
+          >
+            Some marks in this range are compressed into bins and drawn approximately. Every
+            date above is exact.
+          </p>
+        </.details_section>
       </div>
 
-      <section :if={@row.kind == :weekly} id="calendar-coverage-details-periods-section">
-        <h3 class="font-semibold">Regular service and changes</h3>
-        <p class="mb-2 text-sm text-base-content/70">
-          The weekly range, its breaks, the single days off and the added dates.
-        </p>
-        <.periods_section
-          id="calendar-coverage-details-periods"
-          periods={@periods}
-          exceptions={@exceptions}
-          timeline_label={"Service periods with #{length(@periods.breaks)} breaks"}
-        />
-        <p :if={@periods.periods == [] and @periods.breaks == []} class="text-sm text-base-content/70">
-          This calendar has no regular service days.
-        </p>
-      </section>
-
-      <section id="calendar-coverage-details-dates-section">
-        <h3 class="font-semibold">
-          {if @row.kind == :weekly, do: "Stored date changes", else: "Service dates"}
-        </h3>
-        <p :if={@row.kind == :weekly} class="text-sm text-base-content/70">
-          Every added and removed date exactly as it is stored, including the ones outside the
-          weekly range.
-        </p>
-        <.date_chips
-          id="calendar-coverage-details-dates"
-          entries={@exceptions}
-        />
-        <p :if={@exceptions == []} class="mt-2 text-sm text-base-content/70">
-          {@empty_dates_text}
-        </p>
-      </section>
-
-      <section id="calendar-coverage-details-next-section">
-        <h3 class="font-semibold">Next service</h3>
-        <p id="calendar-coverage-details-next" class="mt-1">{next_service_label(assigns)}</p>
-      </section>
-
-      <section id="calendar-coverage-details-usage-section">
-        <h3 class="font-semibold">Used by</h3>
-        <div class="mt-1">
-          <.usage_strip
-            id="calendar-coverage-details-usage"
-            usage={%{trip_count: @row.trip_count, routes: @row.routes}}
-            version_id={@version_id}
-          />
-        </div>
-      </section>
-
-      <section id="calendar-coverage-details-outside">
-        <h3 class="font-semibold">Outside the timeline</h3>
-        <ul class="mt-1 space-y-1 text-sm text-base-content/70">
-          <li :for={line <- @outside_lines}>{line}</li>
-        </ul>
-        <p
-          :if={@approximate?}
-          id="calendar-coverage-details-approximate"
-          class="mt-2 text-sm text-base-content/70"
+      <.drawer_footer>
+        <.button
+          id="calendar-coverage-details-open"
+          navigate={"/gtfs/#{@version_id}/calendars/show?service_id=" <> URI.encode_www_form(@row.service_id)}
+          variant="secondary"
+          class="min-h-11"
         >
-          Some marks in this range are compressed into bins and drawn approximately. Every
-          date above is exact.
-        </p>
-      </section>
+          Open calendar
+        </.button>
+      </.drawer_footer>
     </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :hint, :string, default: nil
+  attr :first?, :boolean, default: false
+  slot :inner_block, required: true
+
+  defp details_section(assigns) do
+    ~H"""
+    <section id={@id} class={[!@first? && "border-t border-subtle pt-5"]}>
+      <h3 class="text-base font-bold text-strong">{@title}</h3>
+      <p :if={@hint} class="mt-0.5 text-[13px] text-muted">{@hint}</p>
+      <div class="mt-2">{render_slot(@inner_block)}</div>
+    </section>
     """
   end
 
@@ -667,7 +557,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   def coverage_repair(assigns) do
     ~H"""
     <div data-calendar-coverage-repair={@row.service_id} class="calendar-coverage-repair">
-      <span class="font-medium text-warning">Range needs repair</span>
+      <span class="font-[650] text-warning-fg">Range needs repair</span>
       <p class="mt-0.5">
         <code class="font-mono">{@row.service_id}</code>
         {reason_text(@row.coverage_error.reason)}
@@ -675,14 +565,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
       <.link
         id={"calendar-coverage-fix-#{URI.encode_www_form(@row.service_id)}"}
         navigate={"/gtfs/#{@version_id}/calendars/show?service_id=#{URI.encode_www_form(@row.service_id)}"}
-        class="link link-primary mt-0.5 mr-3 inline-block"
+        class="mt-0.5 mr-4 inline-block font-[650] text-action underline decoration-subtle underline-offset-4 hover:text-action-hover hover:decoration-action"
       >
         Fix dates
       </.link>
       <.link
         id={"calendar-coverage-repair-#{URI.encode_www_form(@row.service_id)}"}
         navigate={"/gtfs/#{@version_id}/import"}
-        class="link link-primary mt-0.5 inline-block"
+        class="mt-0.5 inline-block font-[650] text-strong underline decoration-subtle underline-offset-4 hover:text-action hover:decoration-action"
       >
         Correct the calendar file and import the feed again
       </.link>
@@ -702,12 +592,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
   def coverage_invalid(assigns) do
     ~H"""
-    <div :if={@invalid != []} id={@id} class="mt-4">
-      <.callout kind="warning" title={invalid_title(length(@invalid))}>
+    <div :if={@invalid != []} id={@id}>
+      <.message kind="warning" title={invalid_title(length(@invalid))}>
         These rows stay listed with their names and trip usage. Their dates were never
         evaluated, so this version asserts no complete set of service gaps until their
         ranges are corrected.
-        <ul class="mt-2 space-y-1">
+        <ul class="mt-2 grid gap-0.5">
           <li :for={error <- @invalid}>
             <code class="font-mono">{error.service_id}</code> — {reason_text(error.reason)}
           </li>
@@ -715,11 +605,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
         <.link
           id="calendar-coverage-invalid-repair"
           navigate={"/gtfs/#{@version_id}/import"}
-          class="link link-primary mt-2 inline-block"
+          class="-mb-2 mt-1 inline-flex min-h-11 items-center font-[650] underline underline-offset-4"
         >
           Correct the calendar file and import the feed again
         </.link>
-      </.callout>
+      </.message>
     </div>
     """
   end
@@ -786,6 +676,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   end
 
   defp next_service(_row, _today), do: nil
+
+  # Service that starts today is the one fact the header row wants noticed.
+  defp next_class(%{next_service: %Date{} = date, detail: %{today: %Date{} = today}})
+       when date == today,
+       do: "text-sm font-[650] text-success-fg"
+
+  defp next_class(_assigns), do: "text-sm text-strong"
 
   defp next_service_label(%{next_service: nil}), do: "None scheduled"
 
@@ -1093,6 +990,34 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
     end
   end
 
+  @day_plurals %{
+    "Mon" => "Mondays",
+    "Tue" => "Tuesdays",
+    "Wed" => "Wednesdays",
+    "Thu" => "Thursdays",
+    "Fri" => "Fridays",
+    "Sat" => "Saturdays",
+    "Sun" => "Sundays"
+  }
+
+  @doc """
+  Says which days a calendar runs as a fragment a list row can lead with: "Runs Mon–Fri",
+  "Runs Saturdays", "Runs on specific dates".
+
+  It reads the same weekly pattern as `regular_days/1`, so a row and the combination review
+  cannot name a calendar's days differently; only the sentence around them changes.
+  """
+  def runs_line(%{calendar: nil}), do: "Runs on specific dates"
+
+  def runs_line(%{calendar: %{}} = row) do
+    case regular_days(row) do
+      "Every day" -> "Runs every day"
+      "No weekly days" -> "Has no weekly days"
+      day when is_map_key(@day_plurals, day) -> "Runs " <> Map.fetch!(@day_plurals, day)
+      days -> "Runs " <> days
+    end
+  end
+
   @doc """
   Reports whether a reviewed combination changes nothing at all.
 
@@ -1134,37 +1059,46 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
     ~H"""
     <fieldset id={@id} class="min-w-0">
-      <legend class="text-base font-semibold">Keep one calendar</legend>
-      <p class="mt-1 text-sm text-base-content/70">
-        Trips move into it, and it keeps its name and service ID. The others stay in the list
-        with 0 trips, so anything that refers to them keeps working.
+      <legend class="text-base font-bold text-strong">Which calendar do you want to keep?</legend>
+      <p class="mt-1 text-[13px] text-muted">
+        Trips move into it, and it keeps its name and service ID. The other calendars stay in the
+        list with 0 trips, so anything that refers to them keeps working.
       </p>
       <div class="mt-3 grid gap-2">
         <label
           :for={row <- @candidates}
           id={"#{@id}-option-#{URI.encode_www_form(row.service_id)}"}
           class={[
-            "flex min-h-14 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 rounded-box border px-3 py-2",
-            row.service_id == @destination_id && "border-secondary bg-secondary/5"
+            "flex min-h-14 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 rounded-control border px-3 py-2",
+            if(row.service_id == @destination_id,
+              do: "border-action bg-selection",
+              else: "border-subtle hover:bg-canvas"
+            )
           ]}
         >
           <input
             type="radio"
-            class="radio radio-sm accent-secondary"
+            class="size-[18px] shrink-0 cursor-pointer accent-action"
             name={@field.name}
             value={row.service_id}
             checked={row.service_id == @destination_id}
             aria-label={"Keep #{row.name || row.service_id}"}
           />
           <span class="min-w-0 flex-1">
-            <span class="block font-semibold">{row.name || row.service_id}</span>
-            <span class="block text-sm text-base-content/70">
-              <code class="font-mono">{row.service_id}</code>
-              {" · "}{regular_days(row)}
+            <span class="block font-[650] text-strong">{row.name || row.service_id}</span>
+            <span class="block text-[13px] text-muted">
+              {runs_line(row)}
               <span :if={coverage_caption(row)}>{" · "}{coverage_caption(row)}</span>
+              {" · "}<code class="font-mono">{row.service_id}</code>
             </span>
           </span>
-          <span class="shrink-0 text-sm">
+          <span class={[
+            "shrink-0 text-[13px] tabular-nums",
+            if(row.service_id == @destination_id,
+              do: "font-[650] text-strong",
+              else: "text-muted"
+            )
+          ]}>
             {destination_trips_label(row, assigns)}
           </span>
         </label>
@@ -1205,9 +1139,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
     ~H"""
     <section id={@id} class="min-w-0" aria-labelledby={@id <> "-heading"}>
-      <h3 id={@id <> "-heading"} class="text-base font-semibold">Result</h3>
+      <h3 id={@id <> "-heading"} class="text-base font-bold text-strong">What changes</h3>
       <div class="mt-2">
-        <.callout kind={@headline.kind} title={@headline.title}>
+        <.message kind={@headline.kind} title={@headline.title}>
           {@headline.text}
           <.link
             :if={@headline.link}
@@ -1216,52 +1150,69 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
               "/gtfs/#{@version_id}/calendars/show?service_id=" <>
                 URI.encode_www_form(@headline.link.service_id)
             }
-            class="link link-primary font-semibold"
+            class="font-[650] underline underline-offset-4"
           >
             Open {@headline.link.name}
           </.link>
-        </.callout>
+        </.message>
       </div>
 
       <dl
         id={@id <> "-totals"}
-        class="mt-3 grid divide-y divide-base-300 rounded-box border border-base-300 sm:grid-cols-3 sm:divide-x sm:divide-y-0"
+        class="mt-3 grid divide-y divide-subtle rounded-card border border-subtle sm:grid-cols-3 sm:divide-x sm:divide-y-0"
       >
-        <div class="min-w-0 px-3 py-2">
-          <dt class="text-sm text-base-content/70">Trips moving</dt>
-          <dd id={@id <> "-moved"} class="text-xl font-semibold tabular-nums">
+        <div class="min-w-0 px-3 py-2.5">
+          <dt class="text-[13px] text-muted">Trips moving</dt>
+          <dd
+            id={@id <> "-moved"}
+            class="font-display text-[22px] font-semibold leading-tight tabular-nums text-strong"
+          >
             {@review.moved_trip_count}
           </dd>
         </div>
-        <div class="min-w-0 px-3 py-2">
-          <dt class="truncate text-sm text-base-content/70">
+        <div class="min-w-0 px-3 py-2.5">
+          <dt class="truncate text-[13px] text-muted">
             Upcoming dates, {@destination && (@destination.name || @destination.service_id)}
           </dt>
-          <dd id={@id <> "-upcoming"} class="text-xl font-semibold tabular-nums">
+          <dd
+            id={@id <> "-upcoming"}
+            class="font-display text-[22px] font-semibold leading-tight tabular-nums text-strong"
+          >
             {@upcoming}
           </dd>
         </div>
-        <div class="min-w-0 px-3 py-2">
-          <dt class="text-sm text-base-content/70">Left with 0 trips</dt>
-          <dd id={@id <> "-sources"} class="text-xl font-semibold tabular-nums">
+        <div class="min-w-0 px-3 py-2.5">
+          <dt class="text-[13px] text-muted">Left with 0 trips</dt>
+          <dd
+            id={@id <> "-sources"}
+            class="font-display text-[22px] font-semibold leading-tight tabular-nums text-strong"
+          >
             {plural(length(@review.retained_sources), "calendar")}
           </dd>
         </div>
       </dl>
 
-      <p :if={stored_label(@stored)} id={@id <> "-stored"} class="mt-3 text-sm">
-        Stored as {stored_label(@stored)}.
-      </p>
       <p
-        :if={@stored && dates_only_note(assigns)}
-        id={@id <> "-dates-only"}
-        class="mt-1 text-sm text-base-content/70"
+        :if={@stored}
+        id={@id <> "-no-new-dates"}
+        class="mt-3 flex items-center gap-1.5 text-[13px] text-cyan-800"
       >
-        {dates_only_note(assigns)}
-      </p>
-      <p :if={@stored} id={@id <> "-no-new-dates"} class="mt-1 text-sm text-success">
+        <.icon name="hero-check-circle" class="size-4 shrink-0 text-cyan-700" />
         No new service dates: every date comes from a selected calendar.
       </p>
+
+      <%!-- How the result is stored is a detail an operator rarely needs, so it stays a click away. --%>
+      <details :if={stored_label(@stored)} class="mt-2 text-[13px] text-muted">
+        <summary class="inline-flex min-h-11 cursor-pointer items-center font-[650] text-action hover:underline">
+          How the result is saved
+        </summary>
+        <p id={@id <> "-stored"} class="pb-1">
+          Stored as {stored_label(@stored)}.
+        </p>
+        <p :if={dates_only_note(assigns)} id={@id <> "-dates-only"} class="pb-2">
+          {dates_only_note(assigns)}
+        </p>
+      </details>
     </section>
     """
   end
@@ -1290,15 +1241,20 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
     assigns =
       assigns
       |> assign(:date_count, length(assigns.review.conflicts))
+      |> assign(
+        :these,
+        if(length(assigns.review.conflicts) == 1, do: "this date", else: "these dates")
+      )
+      |> assign(:them, if(length(assigns.review.conflicts) == 1, do: "it", else: "them"))
       |> assign(:items, decision_items(assigns))
 
     ~H"""
     <section :if={@items != []} id={@id} class="min-w-0" aria-labelledby={@id <> "-heading"}>
-      <h3 id={@id <> "-heading"} class="text-base font-semibold">
+      <h3 id={@id <> "-heading"} class="text-base font-bold text-strong">
         Choose what happens on {plural(@date_count, "date")}
       </h3>
-      <p class="mt-1 text-sm text-base-content/70">
-        One calendar has these dates off while another runs them. A combined calendar can't do
+      <p class="mt-1 text-[13px] text-muted">
+        One calendar has {@these} off while another runs {@them}. A combined calendar can’t do
         both, so every trip follows your choice.
       </p>
       <div class="mt-3 grid gap-3">
@@ -1309,12 +1265,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
           data-conflict-unanswered={to_string(item.unanswered?)}
           aria-describedby={item.marked? && @id <> "-" <> item.group.key <> "-error"}
           class={[
-            "min-w-0 rounded-box border bg-warning/10 px-4 pt-2 pb-4",
-            if(item.marked?, do: "border-2 border-error", else: "border-warning")
+            "min-w-0 rounded-card border bg-warning-bg/50 px-4 pt-2 pb-4",
+            if(item.marked?, do: "border-2 border-error-line", else: "border-warning-line")
           ]}
         >
-          <legend class="px-1 text-sm font-semibold">{item.group.label}</legend>
-          <p class="text-sm">
+          <legend class="px-1 text-sm font-bold text-strong">{item.group.label}</legend>
+          <p class="text-[13px] text-default">
             {item.group.removing_names} {if length(item.group.removing_ids) == 1,
               do: "has no service",
               else: "have no service"}. {item.group.running_names} {if length(item.group.running_ids) ==
@@ -1325,7 +1281,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
           <div class="mt-3 grid gap-2 sm:grid-cols-2">
             <label
               :for={option <- item.options}
-              class="flex min-h-14 cursor-pointer items-start gap-2.5 rounded-box border border-base-300 bg-base-100 px-3 py-2 has-[:checked]:border-secondary has-[:checked]:bg-secondary/5"
+              class="flex cursor-pointer items-start gap-2.5 rounded-control border border-control bg-white px-3 py-2.5 hover:bg-canvas has-[:checked]:border-action has-[:checked]:bg-selection"
             >
               <input
                 type="radio"
@@ -1335,20 +1291,20 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
                 checked={item.choice == option.value}
                 aria-invalid={option.invalid? && "true"}
                 aria-label={"#{option.title} on #{item.group.short_label}"}
-                class="radio radio-sm mt-0.5 scroll-mb-44 accent-secondary"
+                class="mt-0.5 size-[18px] shrink-0 scroll-mb-44 cursor-pointer accent-action"
               />
               <span class="min-w-0">
-                <span class="block text-sm font-semibold">{option.title}</span>
-                <span class="block text-sm text-base-content/70">{option.hint}</span>
+                <span class="block text-sm font-[650] text-strong">{option.title}</span>
+                <span class="block text-[13px] text-muted">{option.hint}</span>
               </span>
             </label>
           </div>
           <p
             :if={item.marked?}
             id={@id <> "-" <> item.group.key <> "-error"}
-            class="mt-2 flex items-center gap-1.5 text-sm font-semibold text-error"
+            class="mt-2 flex items-center gap-1.5 text-[13px] font-[650] text-error-fg"
           >
-            <.icon name="hero-exclamation-circle" class="size-4" />
+            <.icon name="hero-exclamation-circle" class="size-4 shrink-0" />
             Choose what happens on {item.group.short_label}.
           </p>
         </fieldset>
@@ -1385,63 +1341,56 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
       )
 
     ~H"""
-    <div
+    <.message
       :if={@success.action == :combined}
       id={@id}
-      role="status"
       tabindex="-1"
       data-combine-success="combined"
-      class="focus:outline-none rounded-box border border-success bg-success/10 px-4 py-3"
+      kind="success"
+      title={"Combined into #{@success.destination_name}."}
     >
-      <div class="flex flex-wrap items-start gap-x-3 gap-y-2">
-        <.icon name="hero-check-circle" class="mt-0.5 size-5 shrink-0 text-success" />
-        <p class="min-w-0 flex-1 basis-[320px] text-sm">
-          <strong class="font-semibold">Combined into {@success.destination_name}.</strong>
-          {moved_phrase(@success.moved_trip_count)} from {@success.retained_names}, which {@retained_verb} in the list with 0 trips. Delete {@retained_pronoun} from {@retained_pages} when you no longer need {@retained_pronoun}.
-          <span :if={@success.cleared_trip_count > 0}>
-            {plural(@success.cleared_trip_count, "trip")} left {@block_phrase}.
-          </span>
-          <span :if={@success.hidden_names != []}>
-            {@success.hidden_names} {@hidden_verb} outside the current filters, so clear them to see
-            the retained {@hidden_noun}.
-          </span>
-        </p>
-        <button
-          id={@id <> "-dismiss"}
-          type="button"
-          phx-click="dismiss_combine_success"
-          class="btn btn-ghost btn-sm min-h-11 min-w-11"
-          aria-label="Dismiss the combination summary"
-        >
-          <.icon name="hero-x-mark" class="size-5" />
-        </button>
-      </div>
-    </div>
+      {moved_phrase(@success.moved_trip_count)} from {@success.retained_names}, which {@retained_verb} in the list with 0 trips. Delete {@retained_pronoun} from {@retained_pages} when you no longer need {@retained_pronoun}.
+      <span :if={@success.cleared_trip_count > 0}>
+        {plural(@success.cleared_trip_count, "trip")} left {@block_phrase}.
+      </span>
+      <span :if={@success.hidden_names != []}>
+        {@success.hidden_names} {@hidden_verb} outside the current filters, so clear them to see
+        the retained {@hidden_noun}.
+      </span>
+      <:action>
+        <.combination_dismiss id={@id <> "-dismiss"} />
+      </:action>
+    </.message>
 
-    <div
+    <.message
       :if={@success.action == :unchanged}
       id={@id}
-      role="status"
       tabindex="-1"
       data-combine-success="unchanged"
-      class="focus:outline-none rounded-box border border-base-300 bg-base-100 px-4 py-3"
+      kind="info"
+      title="Nothing changed."
     >
-      <div class="flex flex-wrap items-start gap-x-3 gap-y-2">
-        <p class="min-w-0 flex-1 basis-[320px] text-sm">
-          Nothing changed: no trip moved and {@success.destination_name} already ran on the reviewed
-          dates.
-        </p>
-        <button
-          id={@id <> "-dismiss"}
-          type="button"
-          phx-click="dismiss_combine_success"
-          class="btn btn-ghost btn-sm min-h-11 min-w-11"
-          aria-label="Dismiss the combination summary"
-        >
-          <.icon name="hero-x-mark" class="size-5" />
-        </button>
-      </div>
-    </div>
+      No trip moved and {@success.destination_name} already ran on the reviewed dates.
+      <:action>
+        <.combination_dismiss id={@id <> "-dismiss"} />
+      </:action>
+    </.message>
+    """
+  end
+
+  attr :id, :string, required: true
+
+  defp combination_dismiss(assigns) do
+    ~H"""
+    <button
+      id={@id}
+      type="button"
+      phx-click="dismiss_combine_success"
+      class="-my-2 -mr-2 inline-flex min-h-11 min-w-11 items-center justify-center rounded-control hover:bg-white/60"
+      aria-label="Dismiss the combination summary"
+    >
+      <.icon name="hero-x-mark" class="size-5" />
+    </button>
     """
   end
 
@@ -1489,25 +1438,25 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
     ~H"""
     <section id={@id} class="min-w-0" aria-labelledby={@id <> "-heading"}>
-      <h3 id={@id <> "-heading"} class="text-base font-semibold">
+      <h3 id={@id <> "-heading"} class="text-base font-bold text-strong">
         When trips run after combining
       </h3>
-      <p :if={@undecided?} class="mt-1 text-sm text-base-content/70">
+      <p :if={@undecided?} class="mt-1 text-[13px] text-muted">
         The dates below the undecided ones depend on your choice.
       </p>
-      <ul class="mt-3 divide-y divide-base-300 rounded-box border border-base-300">
+      <ul class="mt-3 divide-y divide-subtle rounded-card border border-subtle">
         <li
           :for={entry <- @entries}
           id={@id <> "-" <> URI.encode_www_form(entry.service_id)}
           class="flex gap-3 px-4 py-3"
         >
-          <.icon name={entry.icon} class={["size-5 shrink-0", entry.icon_class]} />
+          <.icon name={entry.icon} class={["mt-0.5 size-4 shrink-0", entry.icon_class]} />
           <div class="min-w-0">
             <p class="text-sm">
-              <strong>{entry.name}</strong>
-              <span class="text-base-content/70">{" · "}{entry.role}</span>
+              <strong class="font-[650] text-strong">{entry.name}</strong>
+              <span class="text-muted">{" · "}{entry.role}</span>
             </p>
-            <p class="mt-0.5 text-sm">{entry.line}</p>
+            <p class="mt-0.5 text-[13px] text-default">{entry.line}</p>
           </div>
         </li>
       </ul>
@@ -1541,10 +1490,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
     ~H"""
     <section :if={@items != []} id={@id} class="min-w-0" aria-labelledby={@id <> "-heading"}>
-      <h3 id={@id <> "-heading"} class="text-base font-semibold">Also check</h3>
+      <h3 id={@id <> "-heading"} class="text-base font-bold text-strong">Also check</h3>
       <ul class="mt-3 grid gap-3 text-sm">
         <li :for={item <- @items} id={@id <> "-" <> item.key} class="flex gap-2.5">
-          <.icon name={item.icon} class={["size-5 shrink-0", item.icon_class]} />
+          <.icon name={item.icon} class={["mt-0.5 size-4 shrink-0", item.icon_class]} />
           <span>
             {item.text}
             <.link
@@ -1553,14 +1502,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
                 "/gtfs/#{@version_id}/calendars/show?service_id=" <>
                   URI.encode_www_form(item.link.service_id)
               }
-              class="link link-primary font-semibold"
+              class="font-[650] text-action hover:underline"
             >
               Open {item.link.name}
             </.link>
           </span>
         </li>
       </ul>
-      <p class="mt-5 border-t border-base-300 pt-4 text-sm text-base-content/70">
+      <p class="mt-5 border-t border-subtle pt-4 text-[13px] text-muted">
         Blocks groups calendars into day types without combining them, so combining is not needed
         only to view calendars together.
       </p>
@@ -1580,9 +1529,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
         "Keeps #{plural(row.trip_count, "trip")}"
       end
     else
-      if row.trip_count > 0, do: "#{row.trip_count} trips move", else: "No trips"
+      moving_trips_label(row.trip_count)
     end
   end
+
+  defp moving_trips_label(0), do: "No trips"
+  defp moving_trips_label(1), do: "1 trip moves"
+  defp moving_trips_label(count), do: "#{count} trips move"
 
   defp result_headline(assigns) do
     review = assigns.review
@@ -1899,11 +1852,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   defp effect_role(%{trip_count: count}), do: "#{plural(count, "trip")} stay"
 
   defp effect_line(%{trip_count: 0}) do
-    {"hero-minus-circle", "text-base-content/50", "No trips, so nothing changes for riders."}
+    {"hero-minus-circle", "text-muted", "No trips, so nothing changes for riders."}
   end
 
   defp effect_line(%{gained_dates: nil}) do
-    {"hero-question-mark-circle", "text-warning",
+    {"hero-question-mark-circle", "text-warning-fg",
      "The dates these trips run depend on your choice."}
   end
 
@@ -1913,16 +1866,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
 
     cond do
       upcoming_gained != [] or upcoming_lost != [] ->
-        {"hero-exclamation-triangle", "text-warning", upcoming_line(effect)}
+        {"hero-exclamation-triangle", "text-warning-fg", upcoming_line(effect)}
 
       effect.past_gained_dates != [] or effect.past_lost_dates != [] ->
         past = length(effect.past_gained_dates) + length(effect.past_lost_dates)
 
-        {"hero-information-circle", "text-base-content/50",
+        {"hero-information-circle", "text-muted",
          "Only past dates change (#{plural(past, "date")} before today). Upcoming service stays the same."}
 
       true ->
-        {"hero-check-circle", "text-success", "No change to the dates they run."}
+        {"hero-check-circle", "text-success-fg", "No change to the dates they run."}
     end
   end
 
@@ -2014,7 +1967,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
       %{
         key: "cleared-blocks",
         icon: "hero-exclamation-triangle",
-        icon_class: "text-warning",
+        icon_class: "text-warning-fg",
         text:
           "#{plural(count, "moved trip")} #{if count == 1, do: "leaves", else: "leave"} " <>
             "#{block_label(blocks)} and #{if count == 1, do: "goes", else: "go"} to the unassigned pool on Blocks.",
@@ -2046,7 +1999,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
     %{
       key: "finding-#{code}",
       icon: "hero-exclamation-triangle",
-      icon_class: "text-warning",
+      icon_class: "text-warning-fg",
       text:
         "#{plural(length(findings), "new #{finding_label(code)} warning")}" <>
           if(blocks == [], do: " on the new dates.", else: " on #{block_label(blocks)}."),
@@ -2073,7 +2026,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
         %{
           key: "transfer-#{transfer.id}",
           icon: "hero-exclamation-triangle",
-          icon_class: "text-warning",
+          icon_class: "text-warning-fg",
           text:
             "In-seat transfer #{transfer.id} #{in_seat_label(transfer.before)} before the move " <>
               "and #{in_seat_label(transfer.after)} after it.",
@@ -2091,7 +2044,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
             %{
               key: "transfers-unchanged",
               icon: "hero-check-circle",
-              icon_class: "text-success",
+              icon_class: "text-success-fg",
               text: unchanged_transfer_text(length(transfers)),
               link: nil
             }
@@ -2143,7 +2096,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
     %{
       key: "retained-#{URI.encode_www_form(service_id)}",
       icon: "hero-information-circle",
-      icon_class: "text-base-content/50",
+      icon_class: "text-muted",
       text:
         "#{name} stays in the list with 0 trips and its own service ID. Delete it from its " <>
           "page once nothing uses it. ",
@@ -2169,7 +2122,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
           %{
             key: "routes",
             icon: "hero-information-circle",
-            icon_class: "text-base-content/50",
+            icon_class: "text-muted",
             text:
               "Schedules for #{if length(route_ids) == 1, do: "route", else: "routes"} " <>
                 "#{Enum.join(route_ids, ", ")} list the moved trips under " <>
@@ -2196,62 +2149,4 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
       row -> row.name || row.service_id
     end
   end
-
-  ## Warning helpers
-
-  defp warning_title(1), do: "1 service warning to review"
-  defp warning_title(count), do: "#{count} service warnings to review"
-
-  defp warning_entry(%{reason: :outside_range} = warning, _label) do
-    "#{format_date(warning.date)} is outside the regular date range; it is stored as an explicit change."
-  end
-
-  defp warning_entry(%{reason: :redundant_addition} = warning, _label) do
-    "#{format_date(warning.date)} is already a regular service day, so the addition has no effect."
-  end
-
-  defp warning_entry(%{reason: :removal_on_nonservice_day} = warning, _label) do
-    "#{format_date(warning.date)} had no service, so the removal has no effect."
-  end
-
-  defp warning_entry(%{reason: :coverage_gap} = warning, _label) do
-    "No service between #{format_date(warning.first_date)} and #{format_date(warning.last_date)}."
-  end
-
-  defp warning_entry(%{reason: :ends_soon} = warning, _label) do
-    "Ends in #{warning.days_remaining} days, on #{format_date(warning.last_date)}."
-  end
-
-  defp warning_entry(%{reason: :ended} = warning, _label) do
-    "Ended on #{format_date(warning.last_date)}."
-  end
-
-  defp warning_entry(%{reason: :no_service}, label) do
-    "No service days#{if label, do: " on #{label}", else: ""}. Choose regular days or add service dates."
-  end
-
-  defp warning_entry(warning, _label), do: inspect(warning.reason)
-
-  ## Preview helpers
-
-  defp cell_class(:service), do: "bg-primary/15 text-base-content"
-  defp cell_class(:added), do: "bg-success/25 text-base-content"
-  defp cell_class(:removed), do: "bg-error/20 text-base-content line-through"
-  defp cell_class(:none), do: "bg-base-200 text-base-content/60"
-
-  defp cell_aria_label(cell) do
-    base =
-      Elixir.Calendar.strftime(cell.date, @month_day_format) <>
-        ": " <> Map.fetch!(@state_words, cell.state)
-
-    case cell.exception do
-      nil -> base
-      exception -> base <> "; " <> Map.fetch!(@exception_words, exception) <> " recorded"
-    end
-  end
-
-  defp exception_symbol(:added), do: "+"
-  defp exception_symbol(:removed), do: "×"
-
-  defp legend_order, do: [service: "●", removed: "×", added: "+", none: "–"]
 end

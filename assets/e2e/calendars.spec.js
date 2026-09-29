@@ -101,23 +101,21 @@ test.describe("calendar list", () => {
       await expect(calendarsNav).toHaveText("Calendars", { timeout: 5000 });
       await expect(calendarsNav).toHaveAttribute("aria-current", "page");
 
-      // Semantic table with the reference's five columns.
+      // Semantic table: the calendar's name and regular days share one column.
       const table = page.locator("#calendars-list-container table");
       await expect(table).toBeVisible();
       await expect(table.locator("thead th")).toHaveText([
         /Calendar/,
-        "Regular days",
-        /Service dates/,
+        /When it runs/,
         "Trips",
         "Status",
       ]);
 
       expect(await rowNames(page)).toEqual(SEEDED_NAMES);
 
-      // Count strip, agency-local today, and the feed-gap callout.
-      await expect(
-        page.locator("#calendar-counts-item-calendars"),
-      ).toContainText("6");
+      // Result count, run-today and ending-soon counts, agency-local today, and the
+      // feed-gap callout.
+      await expect(page.locator("#result-count")).toContainText("6");
       await expect(
         page.locator("#calendar-counts-item-run-today"),
       ).toContainText(String((await runsTodayNames(page)).length));
@@ -278,7 +276,7 @@ test.describe("calendar list", () => {
 
     // Period sorting keeps identities without an active date last in both directions.
     const periodHeader = page.locator("#calendars-list-container thead th", {
-      hasText: "Service dates",
+      hasText: "When it runs",
     });
     await periodHeader.locator("button").click();
     await expect(periodHeader).toHaveAttribute("aria-sort", "ascending", {
@@ -305,7 +303,7 @@ test.describe("calendar list", () => {
 
     await expect(page.locator("#calendars-first-use-empty")).toBeVisible();
     await expect(page.locator("#calendars-first-use-empty")).toContainText(
-      "No calendars yet",
+      "No calendars in Catalog Empty Version yet",
     );
     await expect(page.locator("#calendars-list-container")).toHaveCount(0);
     await expect(page.locator("#calendars-unavailable")).toHaveCount(0);
@@ -358,13 +356,13 @@ test.describe("calendar coverage", () => {
       await page.waitForSelector("#calendars-list-container", { timeout: 15000 });
       await page.waitForSelector("#calendar-coverage-axis");
 
-      // One axis for the whole table, one bar for every row, and the five columns stay
-      // the reference's five: the axis row's cells are not header cells.
+      // One axis for the whole table, one bar for every row, and the four columns stay
+      // four: the axis row's cells are not header cells.
       await expect(page.locator("#calendar-coverage-axis")).toHaveCount(1);
       await expect(page.locator("[data-calendar-coverage]")).toHaveCount(6);
       await expect(
         page.locator("#calendars-list-container thead th"),
-      ).toHaveText([/Calendar/, "Regular days", /Service dates/, "Trips", "Status"]);
+      ).toHaveText([/Calendar/, /When it runs/, "Trips", "Status"]);
 
       // The range control is a labelled group whose default is the whole feed.
       await expect(page.locator("#calendar-coverage-range")).toHaveAttribute(
@@ -1010,7 +1008,7 @@ test.describe("cross-calendar date change drawer", () => {
       ).toContainText("Run Unused calendar");
       await expect(
         page.locator("#calendar-date-change-review-count"),
-      ).toContainText("rows change across");
+      ).toContainText("This changes 2 calendars");
 
       await page.click("#calendar-date-change-apply");
       await expect(page.locator("#calendars-date-change-status")).toContainText(

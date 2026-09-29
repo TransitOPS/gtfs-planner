@@ -640,7 +640,7 @@ test.describe("calendar combination", () => {
       rows.filter({ hasText: "COMBINE_SAT" }).locator('td[data-label="Trips"]'),
     ).toHaveText("5");
     await expect(
-      page.locator('#calendars-list tr[class*="bg-success/10"]'),
+      page.locator('#calendars-list tr[data-marked]'),
     ).toHaveCount(2);
     await expect(page.locator("#calendar-selection-count")).toHaveCount(0);
 
@@ -648,7 +648,7 @@ test.describe("calendar combination", () => {
     await page.locator("#calendar-combine-success-dismiss").click();
     await expect(success).toHaveCount(0);
     await expect(
-      page.locator('#calendars-list tr[class*="bg-success/10"]'),
+      page.locator('#calendars-list tr[data-marked]'),
     ).toHaveCount(0);
 
     // The result is a persisted one: a real reload of the ordinary route reads the retained source
