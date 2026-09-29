@@ -54,7 +54,7 @@ defmodule GtfsPlanner.Gtfs.Export.TransfersValidatorTest do
   @moduletag :validator_cli
   @moduletag timeout: 300_000
 
-  @validator_version "7.1.0"
+  @validator_version "8.0.1"
 
   @transfers_header "from_stop_id,to_stop_id,from_route_id,to_route_id,from_trip_id,to_trip_id," <>
                       "transfer_type,min_transfer_time"
@@ -505,7 +505,7 @@ defmodule GtfsPlanner.Gtfs.Export.TransfersValidatorTest do
     end
   end
 
-  # The 7.1.0 report gives every notice code one entry with "code", "severity", "totalNotices" and
+  # The 8.0.1 report gives every notice code one entry with "code", "severity", "totalNotices" and
   # "sampleNotices"; a sample's keys are the notice's own field names, so a file-scoped notice
   # carries "filename" and a foreign-key violation carries "childFilename".
   defp error_codes(report) do
@@ -571,7 +571,7 @@ defmodule GtfsPlanner.Gtfs.Export.TransfersValidatorTest do
     end
   end
 
-  # Validator 7.1.0's transfers rules are `transfer_with_invalid_trip_and_stop`,
+  # Validator 8.0.1's transfers rules are `transfer_with_invalid_trip_and_stop`,
   # `transfer_with_invalid_trip_and_route` and `transfer_with_invalid_stop_location_type` (all
   # ERROR); their samples carry `csvRowNumber` and ids but no filename, so looking for the file in
   # the sample, as `transfers_error_notices/1` does, cannot see them.

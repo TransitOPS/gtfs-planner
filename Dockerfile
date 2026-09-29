@@ -78,10 +78,10 @@ RUN apt-get update --allow-releaseinfo-change && apt-get install -y --no-install
     /app/bin/gtfs_planner eval "[_ | _] = :crypto.supports()" || exit 1 && \
     /app/bin/gtfs_planner eval ":ok = :public_key.cacerts_load()" || exit 1
 
-# Install MobilityData GTFS Validator 7.1.0 (not started automatically)
+# Install MobilityData GTFS Validator 8.0.1 (not started automatically)
 RUN mkdir -p /opt/gtfs-validator && \
     curl -L -o /opt/gtfs-validator/gtfs-validator-cli.jar \
-    "https://github.com/MobilityData/gtfs-validator/releases/download/v7.1.0/gtfs-validator-7.1.0-cli.jar" && \
+    "https://github.com/MobilityData/gtfs-validator/releases/download/v8.0.1/gtfs-validator-8.0.1-cli.jar" && \
     chown -R nobody:root /opt/gtfs-validator
 
 USER nobody

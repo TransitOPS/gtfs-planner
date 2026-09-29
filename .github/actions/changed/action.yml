@@ -22,6 +22,7 @@ runs:
             - 'mix.lock'
             - '**/*.ex'
             - '**/*.exs'
+            - 'priv/gtfs_validator/**'
             - '.credo.exs'
             - '.formatter.exs'
             - '.sobelow-conf'

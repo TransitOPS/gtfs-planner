@@ -3,14 +3,14 @@ defmodule GtfsPlanner.GtfsValidatorCli do
   Runs the tracked MobilityData validator CLI on an exported GTFS ZIP and reads its report.
 
   `run!/2` shells out to the JDK configured by `config/runtime.exs` (`:java_path`) and the
-  tracked 7.1.0 jar (`:gtfs_validator_path`) with `--skip_validator_update`, so the CLI makes
+  tracked 8.0.1 jar (`:gtfs_validator_path`) with `--skip_validator_update`, so the CLI makes
   no update or network request. Because the call starts a JVM, tests using it carry
   `@moduletag :validator_cli` (excluded by `test/test_helper.exs`) and branch review runs them
   explicitly:
 
       mix test --only validator_cli test/gtfs_planner/gtfs/export/transfers_validator_test.exs
 
-  `notices/1` and `severity/1` read the 7.1.0 report shape: `report["notices"]` holds one entry
+  `notices/1` and `severity/1` read the 8.0.1 report shape: `report["notices"]` holds one entry
   per notice code with `"code"`, `"severity"`, `"totalNotices"` and `"sampleNotices"`. A sample's
   keys are the notice's own field names, so a foreign-key violation carries
   `"childFilename"`/`"childFieldName"`/`"fieldValue"` where other notices carry `"filename"`.

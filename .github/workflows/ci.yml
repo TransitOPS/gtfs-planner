@@ -117,6 +117,13 @@ jobs:
             _build
       - name: Run tests with coverage
         run: mise run test:elixir --cover
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Run validator CLI tests
+        run: mise run elixir:deps && mix test --only validator_cli
 
   elixir_dev:
     name: Elixir (dev)
