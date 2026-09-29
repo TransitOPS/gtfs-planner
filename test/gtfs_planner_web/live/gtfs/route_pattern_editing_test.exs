@@ -182,6 +182,39 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
 
   defp arrival_clocks(trip), do: trip_clocks(trip) |> Enum.map(&elem(&1, 2))
 
+  defp trip_timepoints(trip) do
+    Repo.all(
+      from(st in StopTime,
+        where: st.trip_id == ^trip.trip_id,
+        order_by: st.stop_sequence,
+        select: st.timepoint
+      )
+    )
+  end
+
+  defp timepoints(timing), do: timing |> timing_rows() |> Enum.map(& &1.timepoint)
+
+  # Writes stored timepoints row by row, as an import or an earlier save leaves them.
+  defp set_timepoints(timing, values) do
+    timing
+    |> timing_rows()
+    |> Enum.zip(values)
+    |> Enum.each(fn {row, value} ->
+      row |> Ecto.Changeset.change(timepoint: value) |> Repo.update!()
+    end)
+  end
+
+  # Edits one control through the rendered timing form, so the change event carries
+  # every row's current values exactly as a browser posts them. A checkbox takes
+  # its value "1"; a form cannot untick one, so that test posts the row itself.
+  defp edit_timing_field(view, position, field, value) do
+    position = Integer.to_string(position)
+
+    view
+    |> form("#timing-edit-form", %{"timing" => %{position => %{field => value}}})
+    |> render_change(%{"_target" => ["timing", position, field]})
+  end
+
   defp audit_count, do: Repo.aggregate(ChangeLog, :count)
 
   # The timing editor posts one form, so a change carries the whole row map and
@@ -996,6 +1029,81 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
 
       assert timing_rows(blank) |> Enum.map(&{&1.arrival_offset, &1.departure_offset}) ==
                [{0, 0}, {0, 0}, {0, 0}]
+    end
+
+    test "ticking timepoints on an unset timing stores the unticked stops as 0 and carries them to trips",
+         %{conn: conn, organization: organization, version: version} do
+      %{route: route, pattern: pattern, timing: timing_row, trip: trip} =
+        used_pattern(organization, version, "TPT1")
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route, pattern, "?task=timings"))
+
+      edit_timing_field(view, 1, "timepoint", "1")
+      edit_timing_field(view, 3, "timepoint", "1")
+
+      render_click(view, "save_timing")
+      render_click(view, "apply_timing_review")
+
+      assert timepoints(timing_row) == [1, 0, 1]
+      assert trip_timepoints(trip) == [1, 0, 1]
+    end
+
+    test "editing only a departure leaves an unset timing's timepoints unset",
+         %{conn: conn, organization: organization, version: version} do
+      %{route: route, pattern: pattern, timing: timing_row} =
+        three_stop_pattern(organization, version, "TPT2")
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route, pattern, "?task=timings"))
+
+      edit_timing_field(view, 3, "departure", "12:00")
+
+      render_click(view, "save_timing")
+
+      assert has_element?(view, "#status", "Changes saved in this version.")
+      assert timing_rows(timing_row) |> Enum.map(& &1.departure_offset) == [0, 300, 720]
+      assert timepoints(timing_row) == [nil, nil, nil]
+    end
+
+    test "a save that leaves a stored timepoint unset beside marked ones writes it as 0",
+         %{conn: conn, organization: organization, version: version} do
+      %{route: route, pattern: pattern, timing: timing_row} =
+        three_stop_pattern(organization, version, "TPT3")
+
+      set_timepoints(timing_row, [1, nil, 1])
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route, pattern, "?task=timings"))
+
+      refute has_element?(view, "#timing-timepoint-2[checked]")
+
+      edit_timing_field(view, 2, "pickup", "2")
+
+      render_click(view, "save_timing")
+
+      assert has_element?(view, "#status", "Changes saved in this version.")
+      assert timepoints(timing_row) == [1, 0, 1]
+      assert timing_rows(timing_row) |> Enum.map(& &1.pickup_type) == [nil, 2, nil]
+    end
+
+    test "unticking a marked timepoint stores 0",
+         %{conn: conn, organization: organization, version: version} do
+      %{route: route, pattern: pattern, timing: timing_row} =
+        three_stop_pattern(organization, version, "TPT4")
+
+      set_timepoints(timing_row, [1, 1, 1])
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route, pattern, "?task=timings"))
+
+      # A browser omits an unticked checkbox from the posted row.
+      render_change(view, "validate_timing_row", %{
+        "timing" => %{"2" => %{"arrival" => "04:00", "departure" => "05:00"}},
+        "_target" => ["timing", "2", "timepoint"]
+      })
+
+      refute has_element?(view, "#timing-timepoint-2[checked]")
+
+      render_click(view, "save_timing")
+
+      assert timepoints(timing_row) == [1, 0, 1]
     end
   end
 

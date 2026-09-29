@@ -2681,9 +2681,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
             stop_headsign: touched_value(row, :headsign, stored_row)
           }
         end)
+        |> fill_unset_timepoints()
     }
 
     changed_headsign(socket, attrs)
+  end
+
+  # GTFS reads an empty timepoint as exact, but the editor shows an unset row as
+  # unchecked. Once any row holds an explicit value, the rest are written as 0 so
+  # the export matches the checkboxes; a timing that never set one stays all nil.
+  defp fill_unset_timepoints(rows) do
+    if Enum.all?(rows, &is_nil(&1.timepoint)),
+      do: rows,
+      else: Enum.map(rows, &%{&1 | timepoint: &1.timepoint || 0})
   end
 
   # An edited field takes its staged value; an untouched field keeps the stored
