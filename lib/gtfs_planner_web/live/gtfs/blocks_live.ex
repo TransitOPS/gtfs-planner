@@ -70,7 +70,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     # the URL, so `?drawer=driving_times&pair=…` opens the same drawer a click
     # does (step 41, step 42). Nothing renders them until those steps build them.
     "driving_times" => :driving_times,
-    "operator_changes" => :operator_changes
+    "operator_changes" => :operator_changes,
+    # The Suggest blocks drawer is a page drawer too, and the selection bar's
+    # “Rebuild selected blocks” reaches it by patching `?drawer=suggest` (step 43
+    # wrote the hand-off, step 44 builds what it opens). The Block rules key is
+    # here for the same reason: the suggest drawer's “Block rules” link is a
+    # navigation, not a panel swap, so the URL it leaves behind is one the page
+    # can resolve again.
+    "suggest" => :suggest,
+    "block_rules" => :block_rules
   }
 
   # The settings save keeps the reader's value when the save is refused, so the
@@ -148,6 +156,25 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # (AC-1, research question 1).
   @default_piece_minutes 330
 
+  # The Suggest blocks drawer's transient state (AC-43). The scope is the mode the
+  # reader chose, `:too_large` the trips the generator refused to plan, and
+  # `:busy` the one suggestion being built at a time. Everything else the drawer
+  # prints is derived from the loaded day.
+  @empty_suggest %{scope: :unassigned_only, too_large: nil, error: nil, busy: false}
+
+  # A scope of no selection cannot reach the generator's `{:selected, ids}` mode
+  # (AC-26), so a payload that asks for one is refused here in the drawer's own
+  # words rather than turned into a scope the reader did not choose.
+  @suggest_no_selection "Select blocks on the timeline first."
+
+  @suggest_unavailable "A suggestion could not be built. Your blocks are unchanged. Try again."
+
+  # A suggestion is one bounded read of the day type (AC-26, AC-28), so it runs
+  # under `start_async` the way the page's other bounded reads do: the drawer shows
+  # that it is working instead of freezing on the button, and the result is applied
+  # when it arrives.
+  @suggest_preview_key :suggest_preview
+
   @sort_keys %{
     "block" => :block,
     "garage" => :garage,
@@ -208,6 +235,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:block_rules, @empty_block_rules)
      |> assign(:driving_times, @empty_driving_times)
      |> assign(:operator_changes, @empty_operator_changes)
+     |> assign(:suggest, @empty_suggest)
+     |> assign(:plan_preview, nil)
      |> assign(:block_attributes, nil)
      |> assign_empty_derived()}
   end
@@ -548,12 +577,33 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # them — the reference opens one drawer over another, and two open panels would
   # cover the page twice.
   def handle_event("open_drawer", %{"key" => key} = params, socket)
-      when key in ["driving_times", "operator_changes"] do
+      when key in ["driving_times", "operator_changes", "suggest"] do
     patch(socket, %{
       trip: nil,
       gap: nil,
       block: nil,
       drawer: key,
+      pair: blank_to_nil(params["pair"])
+    })
+  end
+
+  # The Suggest blocks drawer's “Block rules” link is a navigation, not a panel
+  # swap: the rules are another drawer's own state, so opening one leaves the
+  # suggest drawer rather than covering the page twice, and the URL names the
+  # drawer that is open. The page header's own Block rules button keeps its
+  # panel behaviour, which no URL change can undo.
+  def handle_event(
+        "open_drawer",
+        %{"key" => "block_rules"} = params,
+        %{assigns: %{open_drawer: :suggest}} = socket
+      ) do
+    socket
+    |> load_block_rules()
+    |> patch(%{
+      trip: nil,
+      gap: nil,
+      block: nil,
+      drawer: "block_rules",
       pair: blank_to_nil(params["pair"])
     })
   end
@@ -586,6 +636,42 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     do: handle_event("open_drawer", %{"key" => key}, socket)
 
   def handle_event("open_drawer", _params, socket), do: {:noreply, socket}
+
+  # The Suggest blocks drawer's own two events (AC-43). Choosing a scope is a
+  # client-side answer the page keeps, not a URL change: the drawer is reached by
+  # `?drawer=suggest` and the scope is one of the generator's modes, so a reader
+  # who opens the drawer again is offered the scope that is offered now — the
+  # block selection, when there is one, or unassigned trips.
+  def handle_event("suggest_scope_change", %{"scope" => scope}, socket) do
+    if suggest_scope?(scope) do
+      {:noreply, put_suggest(socket, %{socket.assigns.suggest | scope: scope, too_large: nil})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("suggest_scope_change", _params, socket), do: {:noreply, socket}
+
+  # Preview builds the plan and stores it; it writes nothing (AC-26, AC-43). A
+  # second submit while one is being built is refused, and a submit on a page with
+  # no loaded day type is not a preview at all.
+  def handle_event("preview_suggestion", _params, %{assigns: %{day_type: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("preview_suggestion", _params, %{assigns: %{suggest: %{busy: true}}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("preview_suggestion", _params, socket) do
+    socket =
+      put_suggest(socket, %{socket.assigns.suggest | busy: true, error: nil, too_large: nil})
+
+    request = suggest_request(socket)
+
+    # The task hands the request back with its result: the page cannot read the
+    # closure, and the pairing is what tells a late result from a stale one.
+    {:noreply,
+     start_async(socket, @suggest_preview_key, fn -> {request, run_suggestion(request)} end)}
+  end
 
   # The trip, gap and block drawers are part of the URL, so closing one drops the
   # parameters as well as the panel-only drawer's own state; the other drawers
@@ -1305,6 +1391,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         )
         |> resolve_driving_times(day, Map.get(@drawers, state.drawer))
         |> resolve_operator_changes(day, Map.get(@drawers, state.drawer))
+        |> resolve_suggest(Map.get(@drawers, state.drawer))
 
       _other ->
         assign(socket,
@@ -2499,6 +2586,159 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp operator_changes_key(socket, day),
     do: {socket.assigns.state.version_id, day.day_type && day.day_type.key}
 
+  # --- the Suggest blocks drawer (step 44, AC-43) ----------------------------
+
+  # The drawer's scope is derived, not read: the reader chose it, and opening the
+  # drawer is the moment the choice is made. A block selection is an explicit
+  # answer about which blocks to plan again, so it is the scope offered when the
+  # timeline has one — which is what “Rebuild selected blocks” means; with no
+  # selection the day type's unassigned trips are the safe default, and the
+  # rebuild-all scope stays one click away.
+  defp resolve_suggest(socket, :suggest) do
+    assign(socket, :suggest, %{@empty_suggest | scope: suggest_scope(socket)})
+  end
+
+  defp resolve_suggest(socket, _drawer), do: assign(socket, :suggest, @empty_suggest)
+
+  defp suggest_scope(%{assigns: %{selected_blocks: [_ | _]}}), do: :selected
+  defp suggest_scope(%{assigns: %{suggest_pool_count: 0}}), do: :replace_all
+  defp suggest_scope(_socket), do: :unassigned_only
+
+  @scopes [:unassigned_only, :selected, :replace_all]
+
+  defp suggest_scope?(value), do: value in @scopes
+
+  defp put_suggest(socket, state), do: assign(socket, :suggest, state)
+
+  # The three scopes are the generator's three modes, so the drawer carries the
+  # names a reader reads and the context carries the modes (AC-26). The selected
+  # mode names the blocks the reader actually selected, in the order the timeline
+  # lists them, so the plan and the bar agree on which blocks are in scope.
+  defp suggest_mode(:unassigned_only, _socket), do: :unassigned_only
+  defp suggest_mode(:replace_all, _socket), do: :replace_all
+
+  defp suggest_mode(:selected, socket),
+    do: {:selected, Enum.map(socket.assigns.selected_blocks, & &1.summary.block_id)}
+
+  # The request carries the identity of what was asked for, so a result that
+  # arrives after the reader changed the day type, the version or the scope is
+  # dropped rather than shown as a plan for something else. The organization
+  # travels in it too, because the task that reads the plan has no socket.
+  defp suggest_request(socket) do
+    scope = socket.assigns.suggest.scope
+
+    {socket.assigns.current_organization.id, socket.assigns.state.version_id,
+     socket.assigns.day_type && socket.assigns.day_type.key, scope, suggest_mode(scope, socket)}
+  end
+
+  # The context call itself: the facade's `suggest_blocks/4`, which reads the
+  # version's rows and writes nothing.
+  defp run_suggestion({organization_id, version_id, day_type_key, _scope, mode}) do
+    Gtfs.suggest_blocks(organization_id, version_id, day_type_key, mode)
+  end
+
+  # The result is one of the context's own answers, and each is handled where it
+  # belongs: a plan is stored and the drawer closes, a too-large scope keeps the
+  # drawer open with its count and writes no preview, and a scope with no
+  # selection is refused in the drawer's own words.
+  defp apply_suggestion(socket, {:ok, plan}) do
+    socket =
+      socket
+      |> assign(:plan_preview, plan)
+      |> put_suggest(%{@empty_suggest | scope: socket.assigns.suggest.scope})
+      |> assign(:open_drawer, nil)
+
+    patch(socket, %{trip: nil, gap: nil, block: nil, drawer: nil, pair: nil})
+  end
+
+  defp apply_suggestion(socket, {:error, {:too_large, trips}}) do
+    put_suggest(socket, %{socket.assigns.suggest | busy: false, too_large: trips})
+  end
+
+  defp apply_suggestion(socket, {:error, :no_selection}) do
+    put_suggest(socket, %{socket.assigns.suggest | busy: false, error: @suggest_no_selection})
+  end
+
+  defp apply_suggestion(socket, {:error, _reason}) do
+    put_suggest(socket, %{socket.assigns.suggest | busy: false, error: @suggest_unavailable})
+  end
+
+  # The three scope cards, in the reference's order. Each carries the generator's
+  # own mode under the name a reader reads, the trips the scope would plan, and
+  # whether it can be chosen at all on this day type. “Selected blocks” names the
+  # blocks in the timeline's own order, so the card, the selection bar and the
+  # mode the plan was built from are the same list.
+  defp suggest_scope_options(assigns) do
+    selected = Enum.map(assigns.selected_blocks, & &1.summary.block_id)
+    unassigned = assigns.suggest_pool_count
+
+    [
+      %{
+        value: :unassigned_only,
+        title: "Unassigned trips only",
+        description:
+          "Keep current blocks. Add the #{unassigned} unassigned #{plural(unassigned, "trip")} to existing or new blocks.",
+        disabled?: unassigned == 0
+      },
+      %{
+        value: :selected,
+        title: "Selected blocks#{selected_title(selected)}",
+        description:
+          if(selected == [],
+            do: @suggest_no_selection,
+            else:
+              "Plan these blocks’ trips again. Other blocks and unassigned trips stay as they are."
+          ),
+        disabled?: selected == []
+      },
+      %{
+        value: :replace_all,
+        title: "Rebuild this day type’s blocks",
+        description:
+          "Plan every scheduled trip again. Hand-tuned blocks may change; applying asks you to confirm.",
+        disabled?: false
+      }
+    ]
+  end
+
+  defp selected_title([]), do: ""
+  defp selected_title(selected), do: " (#{Enum.join(selected, ", ")})"
+
+  defp plural(1, word), do: word
+  defp plural(_count, word), do: word <> "s"
+
+  # The rules the suggestion would use, read from the loaded day's own settings
+  # and relief marks. They are the same answers the Block rules and Operator
+  # changes drawers print, taken from the same load, so the drawer cannot describe
+  # rules the generator would not apply (CR-6).
+  defp suggest_rules(assigns) do
+    settings = assigns.settings
+
+    [
+      {"Minimum layover", "#{assigns.min_layover_minutes} min"},
+      {"Longest time out", longest_time_out(Map.get(settings, :max_block_minutes))},
+      {"Route switches", route_switches(Map.get(settings, :interlining))},
+      {"Operator changes",
+       operator_changes(Map.get(settings, :max_piece_minutes), assigns.relief_stop_count)}
+    ]
+  end
+
+  defp longest_time_out(nil), do: "Vehicle type limits"
+  defp longest_time_out(minutes), do: "#{minutes} min"
+
+  defp route_switches(:same_stop), do: "Same stop only"
+  defp route_switches(:none), do: "Not allowed"
+  defp route_switches(_any), do: "Anywhere"
+
+  defp operator_changes(nil, _marks), do: "Not checked"
+  defp operator_changes(minutes, marks), do: "Within #{minutes} min · #{marks} marked"
+
+  # The repeating trips of the day type, named as the GTFS names them. Repeating
+  # service is never blocked, so every one of them is in the pool and the note is
+  # exactly the set of trips no scope of the drawer can plan.
+  defp repeating_trip_ids(day),
+    do: day.pool |> Enum.filter(& &1.frequency?) |> Enum.map(& &1.trip_id)
+
   # With no stored limit the field is pre-filled with the researched common
   # contract limit rather than left blank, because a blank limit is a real
   # answer — it turns the checks off — and an empty field would offer that answer
@@ -2804,6 +3044,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       plan_chart: plan_chart(day),
       longest_stretch: day.longest_stretch,
       relief_stop_count: MapSet.size(day.context.relief_stop_ids),
+      # The Suggest blocks drawer's two day facts (AC-43): how many trips the
+      # unassigned scope would plan, and which repeating service is left out of
+      # every scope. Both come from the day's own pool, so the drawer and the
+      # generator read the same trips (CR-6). Repeating service is never blocked,
+      # so it is always in the pool.
+      suggest_pool_count: Enum.count(day.pool, &(not &1.frequency?)),
+      suggest_repeating_trip_ids: repeating_trip_ids(day),
       estimated?: day.estimated_pairs > 0,
       estimated_pairs: day.estimated_pairs,
       repeating?: day.peak.excluded_frequency > 0,
@@ -2896,6 +3143,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       plan_chart: nil,
       longest_stretch: nil,
       relief_stop_count: 0,
+      suggest_pool_count: 0,
+      suggest_repeating_trip_ids: [],
       estimated?: false,
       estimated_pairs: 0,
       repeating?: false,
@@ -3064,6 +3313,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   @impl true
+  def handle_async(@suggest_preview_key, {:ok, {request, result}}, socket) do
+    if request == suggest_request(socket) do
+      apply_suggestion(socket, result)
+    else
+      # A day type, version or scope changed while the suggestion was being
+      # built, so the plan describes a scope the reader is no longer looking at.
+      {:noreply, socket}
+    end
+  end
+
+  # A task that exited rather than returning carries no plan, and no refusal the
+  # drawer can explain: the drawer's own sentence, and no preview.
+  def handle_async(@suggest_preview_key, {:exit, _reason}, socket) do
+    {:noreply,
+     put_suggest(socket, %{socket.assigns.suggest | busy: false, error: @suggest_unavailable})}
+  end
+
+  @impl true
   def render(assigns) do
     {options, total} =
       destination_options(
@@ -3128,6 +3395,22 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 class="btn btn-sm min-h-11"
               >
                 Review checks
+              </button>
+
+              <%!-- A suggestion is built from garages, so a version with none
+              cannot produce one; the button says so rather than opening a
+              drawer that could only fail. --%>
+              <button
+                :if={@load_state == :loaded}
+                id="blocks-suggest"
+                type="button"
+                phx-click="open_drawer"
+                phx-value-key="suggest"
+                disabled={not @garages?}
+                title={if @garages?, do: nil, else: "Add a garage in Settings first"}
+                class="btn btn-sm min-h-11"
+              >
+                Suggest blocks
               </button>
             </div>
 
@@ -3270,6 +3553,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   limit={@operator_changes.limit}
                   limit_error={@operator_changes.limit_error}
                   error={@operator_changes.error}
+                />
+
+                <BlocksComponents.suggest_drawer
+                  open={@open_drawer == :suggest}
+                  scope={@suggest.scope}
+                  options={suggest_scope_options(assigns)}
+                  rules={suggest_rules(assigns)}
+                  estimated_pairs={@estimated_pairs}
+                  repeating_trip_ids={@suggest_repeating_trip_ids}
+                  operator_checked?={not is_nil(@max_piece_minutes)}
+                  too_large={@suggest.too_large}
+                  error={@suggest.error}
+                  busy={@suggest.busy}
+                  day_label={@day_type.label}
                 />
 
                 <%= case @trip_view do %>

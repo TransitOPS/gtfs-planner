@@ -1324,6 +1324,192 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
+  Renders the Suggest blocks drawer: which trips a suggestion would plan again,
+  the rules it would use, and the two facts that change how far a reader trusts
+  it — how many driving times are still estimates, and which repeating service
+  is left out (AC-43).
+
+  The three scopes are the generator's own modes (`AC-26`): unassigned trips
+  only, the selected blocks, and every trip in the day type. “Selected blocks” is
+  disabled with its reason when the timeline has no selection and names the
+  blocks it would plan when it has one; the unassigned scope is disabled when the
+  day type has nothing unassigned to plan, which is what the generator's own pool
+  would answer. Each card is a real label around its radio, so the whole card is
+  the 44 px target and its visible title is the radio's accessible name.
+
+  `rules` is the `{label, value}` list the page derived from the loaded day, so
+  the drawer prints the stored answers rather than re-reading them (CR-6). The two
+  links leave this drawer for the drawer that owns those rules, as the reference
+  does; a reader who comes back opens this one again.
+
+  The drawer writes nothing: it asks for a preview and the page renders that
+  separately. `busy` is the state the reference has no word for, and it is the
+  double-submit guard — while a suggestion is being built the footer names what is
+  happening and both actions are disabled.
+  """
+  attr :open, :boolean, required: true
+  attr :scope, :atom, required: true
+  attr :options, :list, required: true
+  attr :rules, :list, required: true
+  attr :estimated_pairs, :integer, default: 0
+  attr :repeating_trip_ids, :list, default: []
+  attr :operator_checked?, :boolean, default: false
+  attr :too_large, :integer, default: nil
+  attr :error, :string, default: nil
+  attr :busy, :boolean, default: false
+  attr :day_label, :string, default: ""
+
+  def suggest_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="suggest-drawer"
+      open={@open}
+      pending={@busy}
+      title="Suggest blocks"
+      initial_focus={:heading}
+      return_focus_id="blocks-suggest"
+    >
+      <div id="suggest-content" class="flex flex-col gap-4">
+        <p id="suggest-scope" class="text-sm text-base-content/70">{@day_label}</p>
+
+        <p id="suggest-intro">
+          Try a plan using your garages, driving times and limits. Nothing is saved until you
+          review it and apply it.
+        </p>
+
+        <p :if={not is_nil(@error)} id="suggest-error" role="alert" class="text-sm text-error">
+          {@error}
+        </p>
+
+        <form id="suggest-scope-form" phx-change="suggest_scope_change">
+          <fieldset id="suggest-scopes" class="grid gap-2">
+            <legend class="mb-1 font-semibold">Trips to plan</legend>
+            <label
+              :for={option <- @options}
+              class={[
+                "flex min-h-11 cursor-pointer items-start gap-3 rounded-control border px-4 py-3",
+                if(@scope == option.value,
+                  do: "border-primary bg-primary/10",
+                  else: "border-base-300"
+                ),
+                if(option.disabled?, do: "cursor-not-allowed opacity-70", else: "opacity-100")
+              ]}
+            >
+              <input
+                type="radio"
+                id={"suggest-scope-#{option.value}"}
+                name="scope"
+                value={option.value}
+                checked={@scope == option.value}
+                disabled={option.disabled?}
+                class="radio mt-0.5"
+              />
+              <span>
+                <span class="block font-semibold">{option.title}</span>
+                <span class="block text-sm text-base-content/70">{option.description}</span>
+              </span>
+            </label>
+          </fieldset>
+        </form>
+
+        <section id="suggest-rules">
+          <h3 class="text-base font-bold">Rules used</h3>
+          <dl id="suggest-rules-list" class="mt-2 grid gap-1">
+            <div :for={{label, value} <- @rules} class="flex justify-between gap-4">
+              <dt class="text-sm text-base-content/70">{label}</dt>
+              <dd class="text-sm font-medium">{value}</dd>
+            </div>
+          </dl>
+          <div id="suggest-rules-links" class="mt-1 flex flex-wrap gap-x-4">
+            <button
+              type="button"
+              id="suggest-open-rules"
+              phx-click="open_drawer"
+              phx-value-key="block_rules"
+              class="link link-primary min-h-11"
+            >
+              Block rules
+            </button>
+            <button
+              type="button"
+              id="suggest-open-operator-changes"
+              phx-click="open_drawer"
+              phx-value-key="operator_changes"
+              class="link link-primary min-h-11"
+            >
+              Operator changes
+            </button>
+          </div>
+        </section>
+
+        <.callout
+          :if={@estimated_pairs > 0}
+          id="suggest-estimated-warning"
+          kind="warning"
+          title={"#{@estimated_pairs} driving times are estimates."}
+        >
+          Traffic and road access can make them too short. Check the busiest connections before
+          applying a plan.
+          <button
+            type="button"
+            id="suggest-review-driving-times"
+            phx-click="open_drawer"
+            phx-value-key="driving_times"
+            class="link min-h-11 font-semibold"
+          >
+            Review driving times
+          </button>
+        </.callout>
+
+        <p
+          :if={@repeating_trip_ids != []}
+          id="suggest-repeating"
+          class="text-sm text-base-content/70"
+        >
+          {Enum.join(@repeating_trip_ids, ", ")} repeats without individual departures and stays
+          unassigned.
+        </p>
+
+        <p
+          :if={not @operator_checked?}
+          id="suggest-operator-note"
+          class="text-sm text-base-content/70"
+        >
+          Operator changes aren’t checked, so suggestions may produce blocks no single operator can
+          work.
+        </p>
+
+        <p :if={not is_nil(@too_large)} id="suggest-too-large" role="alert" class="text-sm">
+          This scope has {@too_large} trips. A suggestion plans up to 3,000 trips at a time. Choose
+          a narrower scope, or plan this day type in more than one suggestion.
+        </p>
+
+        <div class="mt-1 flex flex-wrap items-center gap-3" aria-busy={to_string(@busy)}>
+          <button
+            type="button"
+            id="suggest-cancel"
+            phx-click="close_drawer"
+            disabled={@busy}
+            class={["btn min-h-11", @busy && "btn-disabled"]}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            id="suggest-preview"
+            phx-click="preview_suggestion"
+            disabled={@busy}
+            class={["btn btn-primary min-h-11", @busy && "btn-disabled"]}
+          >
+            {if @busy, do: "Building suggestion…", else: "Preview suggestion"}
+          </button>
+        </div>
+      </div>
+    </.drawer>
+    """
+  end
+
+  @doc """
   Renders the read-only trip drawer: the trip's identity, its stored times and
   block, every day type it runs in with the all-dates scope sentence, its own
   findings and every type 4/5 record naming it.
