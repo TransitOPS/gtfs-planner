@@ -1114,7 +1114,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   defp allocate_route_id(attrs, audit) do
     case suggest_route_id(audit.organization_id, audit.gtfs_version_id, attrs) do
       {:ok, allocation} -> {:ok, allocation}
-      {:error, :duplicate_route_id} -> {:error, {:route_id, "has already been taken"}}
+      {:error, :duplicate_route_id} -> {:error, {:route_id, Route.duplicate_id_message()}}
     end
   end
 
