@@ -3229,6 +3229,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :max_piece_minutes, :integer, default: nil
   attr :routes, :map, required: true
   attr :selected_ids, :any, required: true
+  attr :selected_block_ids, :any, required: true, doc: "the block IDs the reader has selected"
+  attr :page_block_ids, :any, required: true, doc: "the block IDs the current page holds"
+  attr :block_selected_count, :integer, required: true
   attr :bulk, :map, required: true
 
   def workspace(assigns) do
@@ -3317,7 +3320,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       </p>
 
       <%!-- The bar sits between the toolbar and the records, so it stays in view
-      while the reader pages through the selection (AC-24, UX obligations). --%>
+      while the reader pages through the selection (AC-24, UX obligations). The
+      block bar is the Blocks tab's own: it counts blocks, not trips, and its two
+      events never touch the Unassigned panel's trip selection (AC-42). --%>
+      <.block_selection_bar :if={@block_selected_count > 0} count={@block_selected_count} />
+
       <.bulk_bar
         :if={@bulk.count > 0}
         count={@bulk.count}
@@ -3371,6 +3378,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             axis={@axis}
             routes={@routes}
             max_piece_minutes={@max_piece_minutes}
+            selected_block_ids={@selected_block_ids}
+            page_block_ids={@page_block_ids}
           />
         <% true -> %>
           <.block_list
@@ -3485,6 +3494,51 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           class="btn btn-sm btn-primary min-h-11"
         >
           Assign {count_label(@count, "trip", "trips")}
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the block selection bar: how many blocks are selected, the two actions.
+
+  It is the trip bar's sibling rather than a second mode of it: the count names
+  blocks, and “Clear selection” (`clear_block_selection`) and “Rebuild selected
+  blocks” (`rebuild_selected`) never read the Unassigned panel's trip selection
+  (AC-42). The wording and the placement above the table are the reference's, and
+  the styling is the built bulk bar's within `#blocks-page` (CR-5).
+  """
+  attr :count, :integer, required: true
+
+  def block_selection_bar(assigns) do
+    ~H"""
+    <div
+      id="block-selection-bar"
+      role="region"
+      aria-label="Selected blocks"
+      class="mx-4 my-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border border-primary/30 bg-primary/10 px-4 py-2.5"
+    >
+      <strong id="block-selection-count">
+        {count_label(@count, "block selected", "blocks selected")}
+      </strong>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <button
+          id="block-selection-clear"
+          type="button"
+          phx-click="clear_block_selection"
+          class="btn btn-sm min-h-11"
+        >
+          Clear selection
+        </button>
+        <button
+          id="block-selection-rebuild"
+          type="button"
+          phx-click="rebuild_selected"
+          class="btn btn-sm btn-primary min-h-11"
+        >
+          Rebuild selected blocks
         </button>
       </div>
     </div>
@@ -3830,6 +3884,71 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     """
   end
 
+  # The timeline row's block checkbox: the same 44px target around a daisyUI
+  # checkbox as the trip one, but carrying the block's own ID in its own event, so
+  # the Blocks tab's block selection and the Unassigned panel's trip selection
+  # never share state (AC-42).
+  attr :block_id, :string, required: true
+  attr :checked, :boolean, required: true
+
+  defp select_block(assigns) do
+    ~H"""
+    <label
+      class="grid min-h-11 min-w-11 place-items-center"
+      for={"block-select-" <> dom_token(@block_id)}
+    >
+      <input
+        type="checkbox"
+        id={"block-select-" <> dom_token(@block_id)}
+        data-role="select-block"
+        data-block={@block_id}
+        checked={@checked}
+        phx-click="toggle_block"
+        phx-value-block={@block_id}
+        aria-label={"Select block " <> @block_id}
+        class="checkbox"
+      />
+    </label>
+    """
+  end
+
+  # The header's page checkbox. It is checked when every block on the current page
+  # is selected and unchecked otherwise, so the control never claims more than it
+  # did, and it carries a visible “Select” label under the checkbox so the column
+  # is named on the page rather than only in its accessible name (Accessibility
+  # posture, AC-42).
+  attr :checked, :boolean, required: true
+
+  defp select_page_blocks(assigns) do
+    ~H"""
+    <label
+      class="flex min-h-11 min-w-11 cursor-pointer flex-col items-center justify-center gap-0.5"
+      for="blocks-select-all-blocks"
+    >
+      <input
+        type="checkbox"
+        id="blocks-select-all-blocks"
+        data-role="select-all-blocks"
+        checked={@checked}
+        phx-click="select_block_page"
+        aria-label="Select all blocks on this page"
+        class="checkbox checkbox-xs"
+      />
+      <span class="text-[11px] leading-none text-muted">Select</span>
+    </label>
+    """
+  end
+
+  # The header checkbox's rule: a page that holds a block and has every one of them
+  # selected is fully selected. A partly selected page shows an unchecked control,
+  # which is the state the reader's next click acts on (adding the rest). The
+  # page's own block IDs are an assign rather than a walk of `@block_rows`,
+  # because a live stream may only be consumed by the `for` comprehension that
+  # renders it.
+  defp page_all_selected?(%{selected_block_ids: selected, page_block_ids: page_ids}) do
+    MapSet.size(page_ids) > 0 and MapSet.subset?(page_ids, selected)
+  end
+
   # The trip's endpoint stops: the origin, then the destination on its own line
   # as “→ <terminal>”, which is the reference's From → To cell.
   attr :trip, :map, required: true
@@ -3949,6 +4068,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :axis, :map, default: nil
   attr :routes, :map, required: true
   attr :max_piece_minutes, :integer, default: nil
+  attr :selected_block_ids, :any, required: true, doc: "the block IDs the reader has selected"
+  attr :page_block_ids, :any, required: true, doc: "the block IDs the current page holds"
 
   def timeline(assigns) do
     assigns =
@@ -3956,6 +4077,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       |> assign(:columns, sort_columns())
       |> assign(:ticks, axis_ticks(assigns.axis))
       |> assign(:track_style, track_style(assigns.axis))
+      |> assign(:page_all_selected?, page_all_selected?(assigns))
 
     ~H"""
     <.timeline_legend relief?={not is_nil(@max_piece_minutes)} />
@@ -3966,6 +4088,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         aria-label="Blocks by service-day time"
       >
         <colgroup>
+          <col class="blocks-col-select" />
           <col class="blocks-col-block" />
           <col class="blocks-col-garage" />
           <col class="blocks-col-out" />
@@ -3975,6 +4098,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         </colgroup>
         <thead>
           <tr>
+            <th scope="col" class="blocks-meta blocks-meta-select">
+              <.select_page_blocks checked={@page_all_selected?} />
+            </th>
             <th
               :for={column <- @columns}
               scope="col"
@@ -4016,6 +4142,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             track_style={@track_style}
             route_filter={@state.route}
             max_piece_minutes={@max_piece_minutes}
+            selected?={MapSet.member?(@selected_block_ids, block.summary.block_id)}
           />
         </tbody>
       </table>
@@ -4054,6 +4181,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :track_style, :string, default: nil
   attr :route_filter, :string, default: nil
   attr :max_piece_minutes, :integer, default: nil
+  attr :selected?, :boolean, default: false, doc: "whether the block is in the reader's selection"
 
   def block_row(assigns) do
     movements = assigns.block.movements
@@ -4070,6 +4198,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
     ~H"""
     <tr id={@dom} data-block={@summary.block_id} class="blocks-row">
+      <td class={["blocks-meta", "blocks-meta-select"]}>
+        <.select_block block_id={@summary.block_id} checked={@selected?} />
+      </td>
       <td class={["blocks-meta", "blocks-meta-block"]}>
         <button
           type="button"
