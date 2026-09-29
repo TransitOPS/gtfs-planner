@@ -326,13 +326,18 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksFiguresLiveTest do
     log_in_user(context.conn, context.user, organization: context.organization)
   end
 
+  # The item's label and its value are separate elements, and `LazyHTML.text/1`
+  # concatenates siblings with no separator, so each is read and joined with a
+  # space rather than run together as "Blocks4".
   defp item_text(view, strip, key) do
     view
     |> render()
     |> LazyHTML.from_fragment()
-    |> LazyHTML.query("##{strip}-item-#{key}")
-    |> LazyHTML.text()
-    |> String.replace(~r/\s+/, " ")
+    |> LazyHTML.query("##{strip}-item-#{key} *")
+    |> Enum.map_join(
+      " ",
+      &(&1 |> LazyHTML.text() |> String.replace(~r/\s+/, " ") |> String.trim())
+    )
     |> String.trim()
   end
 

@@ -388,8 +388,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       conn = editor_conn(context)
       {:ok, view, _html} = live(conn, blocks_path(version.id))
 
+      # A move whose driving time the version cannot compute is drawn as a
+      # `drive-unknown` mark rather than a gap bar, so that is what opens the
+      # drawer here.
       view
-      |> element("[data-role='blocks-gap'][data-from='#{a.id}'][data-to='#{b.id}']")
+      |> element("[data-role='drive-unknown'][data-from='#{a.id}'][data-to='#{b.id}']")
       |> render_click()
 
       # The same sentence as a measured move, with the reason it is unknown.
