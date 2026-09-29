@@ -32,6 +32,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
   use GtfsPlannerWeb, :html
 
+  alias GtfsPlanner.Gtfs.Coordinates
+  alias GtfsPlanner.Gtfs.DiagramStorage
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Pathway
@@ -41,6 +43,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   # vocabulary the moment preview's table already uses.
   @range_modes %{step_free: "Step-free", walking: "Walking"}
   @range_directions %{to_platform: "to platform", to_exit: "from platform"}
+
+  # The untouched locator's own prompt. The client hook owns this caption after
+  # mount and reads the same words back when nothing is hovered or selected.
+  @floorplan_caption_empty "Point at or focus a pathway to see its name. Select it to schedule a closure."
 
   # Group order and group labels for the pathway list. Modes outside this list
   # are grouped under their own mode label rather than dropped, so a fare gate or
@@ -282,10 +288,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   attr :groups, :list, required: true
   attr :closure_counts, :map, required: true, doc: "closure count keyed by pathway_id"
   attr :selected_id, :string, default: nil
+  attr :class, :string, default: "", doc: "extra classes, such as the diagram mode's md:hidden"
 
   def pathway_list(assigns) do
     ~H"""
-    <div id="closure-pathway-list" class="grid gap-5 px-4 pt-4 pb-5 md:px-5">
+    <div id="closure-pathway-list" class={["grid gap-5 px-4 pt-4 pb-5 md:px-5", @class]}>
       <section :for={group <- @groups}>
         <h3 class="text-[13px] font-[650] text-base-content">
           {group.label}
@@ -330,6 +337,628 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   @spec pluralize_closures(non_neg_integer()) :: String.t()
   def pluralize_closures(1), do: "1 closure"
   def pluralize_closures(count), do: "#{count} closures"
+
+  @doc """
+  Prepares one station's static floorplan for the authoring locator and the
+  access preview.
+
+  Only a level with a resolvable floorplan image is selectable; the caption
+  names the levels that have no floorplan rather than hiding them, because a
+  missing image never means the station has no pathways. The image URL comes
+  from `DiagramStorage.public_url_path/4`, the single resolver the station
+  diagram and the published API already use, so an unpublished or absent file
+  yields no floorplan at all instead of a broken image.
+
+  Stops and pathways keep the station snapshot's stored width-normalized
+  coordinates (`Coordinates.normalize_point/1`), the same normalizer the
+  mutation-time preview uses. A pathway belongs to a floorplan when one of its
+  endpoints is plotted on the selected level: two plotted endpoints are a
+  same-level line, and one plotted endpoint is the cross-level marker at that
+  endpoint. Nothing here converts a coordinate, and no pathway is dropped
+  silently - a pathway with no plotted endpoint on this level simply has no
+  place on this floorplan.
+
+  `ordered_pathways` is the locator list's own order (mode group, then
+  `pathway_id`), so the overlay's arrow order and the list's reading order are
+  the same order. Returns `nil` when no level has a floorplan image.
+  """
+  @spec floorplan_display(map(), [map()], keyword()) :: map() | nil
+  def floorplan_display(station_data, ordered_pathways, options) do
+    organization_id = Keyword.fetch!(options, :organization_id)
+    gtfs_version_id = Keyword.fetch!(options, :gtfs_version_id)
+    station_stop_id = Keyword.fetch!(options, :station_stop_id)
+    station = station_data.station
+
+    levels =
+      station_data.levels
+      |> Enum.map(&floorplan_level(&1, organization_id, gtfs_version_id, station_stop_id))
+      |> Enum.reject(&is_nil/1)
+
+    case levels do
+      [] ->
+        nil
+
+      levels ->
+        selected =
+          selected_floorplan_level(
+            levels,
+            options[:selected_level_id],
+            options[:selected_pathway]
+          )
+
+        level_id = selected.level_id
+        stop_points = floorplan_stop_points(station_data.child_stops, level_id)
+        image_level_ids = Enum.map(levels, & &1.level_id)
+
+        %{
+          levels: levels,
+          selected_level_id: level_id,
+          selected_level_label: selected.label,
+          levels_without_image:
+            station_data.levels
+            |> Enum.reject(&(&1.level.level_id in image_level_ids))
+            |> Enum.map(&level_label(&1.level)),
+          image_url: selected.image_url,
+          image_alt: "Floorplan of #{station_label(station)}, #{selected.label}",
+          stops: Map.values(stop_points) |> Enum.sort_by(& &1.stop_id),
+          stop_points: stop_points,
+          pathways:
+            floorplan_pathways(
+              ordered_pathways,
+              stop_points,
+              Keyword.get(options, :closure_counts, %{})
+            ),
+          selected_id: selected_pathway_uuid(options[:selected_pathway])
+        }
+    end
+  end
+
+  defp floorplan_level(
+         %{level: level, diagram_filename: filename},
+         organization_id,
+         gtfs_version_id,
+         station_stop_id
+       )
+       when is_binary(filename) and filename != "" do
+    case DiagramStorage.public_url_path(
+           organization_id,
+           gtfs_version_id,
+           station_stop_id,
+           filename
+         ) do
+      {:ok, url} -> %{level_id: level.level_id, label: level_label(level), image_url: url}
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp floorplan_level(_level, _organization_id, _gtfs_version_id, _station_stop_id), do: nil
+
+  defp level_label(%{level_name: name}) when is_binary(name) and name != "", do: name
+  defp level_label(%{level_id: level_id}), do: level_id
+  defp level_label(_level), do: "Level"
+
+  # The explicit level choice wins while it still has an image; otherwise the
+  # level of the selected pathway decides, so a selection made in the list or
+  # the overlay is always shown on its own level unless the reader chose one.
+  defp selected_floorplan_level(levels, chosen_id, selected_pathway) do
+    ids = Enum.map(levels, & &1.level_id)
+
+    cond do
+      chosen_id in ids ->
+        Enum.find(levels, &(&1.level_id == chosen_id))
+
+      pathway_level(selected_pathway) in ids ->
+        pathway_level = pathway_level(selected_pathway)
+        Enum.find(levels, &(&1.level_id == pathway_level))
+
+      true ->
+        hd(levels)
+    end
+  end
+
+  defp pathway_level(%{from_stop: %{level_id: level_id}}) when level_id not in [nil, ""],
+    do: level_id
+
+  defp pathway_level(%{to_stop: %{level_id: level_id}}) when level_id not in [nil, ""],
+    do: level_id
+
+  defp pathway_level(_pathway), do: nil
+
+  defp selected_pathway_uuid(%{id: id}), do: id
+  defp selected_pathway_uuid(_pathway), do: nil
+
+  defp station_label(%{stop_name: name}) when is_binary(name) and name != "", do: name
+  defp station_label(%{stop_id: stop_id}), do: stop_id
+  defp station_label(_station), do: "this station"
+
+  # One plotted point per stop of the selected level, keyed by the exact
+  # `stop_id` the pathway endpoints use. A stop without usable coordinates has
+  # no point and therefore no place on this floorplan.
+  defp floorplan_stop_points(child_stops, level_id) do
+    child_stops
+    |> Enum.filter(&(&1.level_id == level_id))
+    |> Enum.reduce(%{}, fn stop, points ->
+      case Coordinates.normalize_point(stop.diagram_coordinate) do
+        nil ->
+          points
+
+        point ->
+          Map.put(points, stop.stop_id, %{
+            stop_id: stop.stop_id,
+            name: stop_label(stop),
+            type: stop.location_type,
+            x: point.x,
+            y: point.y
+          })
+      end
+    end)
+  end
+
+  defp floorplan_pathways(ordered_pathways, stop_points, closure_counts) do
+    ordered_pathways
+    |> Enum.flat_map(fn pathway ->
+      from = Map.get(stop_points, pathway.from_stop_id)
+      to = Map.get(stop_points, pathway.to_stop_id)
+
+      if is_nil(from) and is_nil(to) do
+        []
+      else
+        [
+          %{
+            id: pathway.id,
+            pathway_id: pathway.pathway_id,
+            label: pathway_label(pathway),
+            closures: Map.get(closure_counts, pathway.pathway_id, 0),
+            from: from,
+            to: to
+          }
+        ]
+      end
+    end)
+  end
+
+  @doc """
+  Renders the authoring floorplan, its one caption and its legend.
+
+  The image and the SVG overlay are one island the client hook owns: the island
+  keeps a stable id, carries the exact stored coordinates and the current
+  closed/selected state as data attributes, and is never patched by the server,
+  so an overlay redraw cannot move stored geometry. The legend spells out every
+  mark in words, and the caption names the selected or focused pathway.
+  """
+  attr :id, :string, required: true
+  attr :levels, :list, required: true
+  attr :selected_level_id, :string, required: true
+  attr :selected_level_label, :string, required: true
+  attr :levels_without_image, :list, required: true
+  attr :image_url, :string, required: true
+  attr :image_alt, :string, required: true
+  attr :stops, :list, required: true, doc: "plotted stops of the selected level"
+  attr :pathways, :list, required: true, doc: "pathways drawn on the selected level"
+  attr :closed_pathway_ids, :list, required: true
+  attr :selected_pathway_id, :string, default: nil
+  attr :select_event, :string, default: nil
+
+  def closure_floorplan(assigns) do
+    ~H"""
+    <div id={@id <> "-panel"} data-floorplan-panel class="max-md:hidden">
+      <div
+        :if={length(@levels) > 1}
+        id={@id <> "-levels"}
+        role="group"
+        aria-label="Floorplan level"
+        class="inline-flex h-11 max-w-full overflow-hidden rounded-control border border-control bg-white"
+      >
+        <button
+          :for={level <- @levels}
+          id={@id <> "-level-" <> level.level_id}
+          type="button"
+          phx-click="select_floorplan_level"
+          phx-value-level={level.level_id}
+          aria-pressed={to_string(level.level_id == @selected_level_id)}
+          class="max-w-[14rem] truncate px-3.5 text-sm font-[650] text-base-content hover:bg-canvas aria-pressed:bg-strong aria-pressed:text-white"
+        >
+          {level.label}
+        </button>
+      </div>
+
+      <p id={@id <> "-level-label"} class="mt-2 text-[13px] text-muted">
+        Level: {@selected_level_label}{floorplan_without_image_suffix(@levels_without_image)}
+      </p>
+
+      <.floorplan_island
+        id={@id}
+        mode={:authoring}
+        note_id={@id <> "-missing"}
+        list_id="closure-pathway-list"
+        image_url={@image_url}
+        image_alt={@image_alt}
+        stops={@stops}
+        pathways={@pathways}
+        closed_pathway_ids={@closed_pathway_ids}
+        selected_pathway_id={@selected_pathway_id}
+        select_event={@select_event}
+      />
+
+      <ul
+        id={@id <> "-legend"}
+        aria-label="Floorplan legend"
+        class="mt-3 flex flex-wrap gap-x-5 gap-y-1.5 border-t border-subtle pt-3 text-[13px] text-muted"
+      >
+        <.floorplan_legend_item label="Selected">
+          <svg width="22" height="8" aria-hidden="true">
+            <line
+              x1="1"
+              y1="4"
+              x2="21"
+              y2="4"
+              class="stroke-action"
+              stroke-width="5"
+              stroke-linecap="round"
+            />
+          </svg>
+        </.floorplan_legend_item>
+        <.floorplan_legend_item label="Other pathways">
+          <svg width="22" height="8" aria-hidden="true">
+            <line
+              x1="1"
+              y1="4"
+              x2="21"
+              y2="4"
+              class="stroke-evo-pathway"
+              stroke-width="3"
+              stroke-linecap="round"
+            />
+          </svg>
+        </.floorplan_legend_item>
+        <.floorplan_legend_item label="Continues to another level">
+          <svg width="20" height="20" viewBox="-10 -10 20 20" aria-hidden="true">
+            <circle r="8.5" class="fill-white stroke-evo-pathway" stroke-width="1.5" />
+            <path
+              d="M0 -5V5M-3 -2 0 -5 3 -2M-3 2 0 5 3 2"
+              class="fill-none stroke-evo-node"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </.floorplan_legend_item>
+        <.floorplan_legend_item label="Entrance">
+          <svg width="14" height="14" aria-hidden="true">
+            <rect x="2" y="2" width="10" height="10" rx="1.5" class="fill-evo-entrance" />
+          </svg>
+        </.floorplan_legend_item>
+        <.floorplan_legend_item label="Has closures">
+          <svg width="12" height="12" aria-hidden="true">
+            <circle
+              cx="6"
+              cy="6"
+              r="4.5"
+              class="fill-evo-dot stroke-white"
+              stroke-width="1.5"
+            />
+          </svg>
+        </.floorplan_legend_item>
+      </ul>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the access preview's read-only floorplan with the moment's closed set.
+
+  The overlay draws the same stored coordinates as the authoring picker and
+  marks each pathway closed with a dashed error line and a cross beside the
+  word `Closed`; the list beneath names every closed pathway in text as well,
+  so the state never depends on colour. Activating a pathway only highlights
+  the existing cause rows the preview already computed - it changes nothing.
+  """
+  attr :display, :map, required: true
+  attr :snapshot, :map, required: true
+  attr :closed_instances, :list, required: true, doc: "the preview's closed instances"
+  attr :moment, :string, required: true
+
+  def preview_floorplan(assigns) do
+    pathways = Map.new(assigns.snapshot.pathways, &{&1.pathway_id, &1})
+
+    closed_ids =
+      assigns.closed_instances
+      |> Enum.map(& &1.pathway_id)
+      |> Enum.uniq()
+
+    assigns =
+      assign(assigns,
+        closed_ids: closed_ids,
+        closed_count: length(closed_ids),
+        closed_lines:
+          Enum.map(closed_ids, fn pathway_id ->
+            floorplan_closed_line(pathway_id, Map.get(pathways, pathway_id), assigns.display)
+          end)
+      )
+
+    ~H"""
+    <section
+      id="preview-floorplan"
+      data-floorplan-panel
+      aria-labelledby="preview-floorplan-title"
+      class="mt-6 flex min-w-0 flex-col overflow-clip rounded-card border border-subtle bg-white max-md:hidden"
+    >
+      <header class="border-b border-subtle px-5 py-3.5">
+        <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          <h2
+            id="preview-floorplan-title"
+            class="flex min-h-[26px] items-center font-display text-[18px] tracking-[-0.02em]"
+          >
+            Station at {@moment}
+          </h2>
+          <span
+            :if={@closed_count > 0}
+            id="preview-floorplan-badge"
+            class="inline-flex items-center gap-1.5 rounded-evo-badge bg-error/10 px-2 py-0.5 text-[13px] font-[650] text-error"
+          >
+            <.icon name="hero-x-circle" class="size-3.5" />
+            {pluralize_pathways(@closed_count)} closed
+          </span>
+          <span
+            :if={@closed_count == 0}
+            id="preview-floorplan-badge"
+            class="inline-flex items-center gap-1.5 rounded-evo-badge bg-success/10 px-2 py-0.5 text-[13px] font-[650] text-success"
+          >
+            <.icon name="hero-check-circle" class="size-3.5" />No pathway closed
+          </span>
+        </div>
+        <p class="mt-0.5 text-[13px] text-muted">
+          {@display.selected_level_label}{floorplan_without_image_suffix(
+            @display.levels_without_image
+          )}
+        </p>
+      </header>
+
+      <div class="p-4">
+        <.floorplan_island
+          id="preview-floorplan-canvas"
+          mode={:preview}
+          frame_class="mx-auto w-full max-w-[640px]"
+          note_id="preview-floorplan-missing"
+          image_url={@display.image_url}
+          image_alt={@display.image_alt}
+          stops={@display.stops}
+          pathways={@display.pathways}
+          closed_pathway_ids={@closed_ids}
+        />
+
+        <p id="preview-floorplan-closed" class="mt-3 text-[13px] text-default">
+          <span :if={@closed_lines == []} class="text-muted">
+            Every pathway on this floorplan is open at this time.
+          </span>
+          <span :for={line <- @closed_lines} class="block">
+            <span class="font-[650] text-error">
+              <.icon name="hero-x-mark" class="inline size-3.5" />Closed:
+            </span>
+            {line.label}
+            <span class="font-mono text-muted">{line.pathway_id}</span>
+            <span class="text-muted">· {line.placement}</span>
+          </span>
+        </p>
+
+        <ul
+          id="preview-floorplan-legend"
+          aria-label="Floorplan legend"
+          class="mt-3 flex flex-wrap gap-x-3.5 gap-y-1.5 text-[13px] text-muted"
+        >
+          <.floorplan_legend_item label="Open pathway">
+            <svg width="22" height="10" aria-hidden="true">
+              <line
+                x1="1"
+                y1="5"
+                x2="21"
+                y2="5"
+                class="stroke-evo-pathway"
+                stroke-width="2.5"
+                stroke-linecap="round"
+              />
+            </svg>
+          </.floorplan_legend_item>
+          <.floorplan_legend_item label="Closed">
+            <svg width="36" height="10" aria-hidden="true">
+              <line
+                x1="1"
+                y1="5"
+                x2="21"
+                y2="5"
+                class="stroke-evo-closed"
+                stroke-width="3"
+                stroke-dasharray="5 3"
+              />
+              <circle
+                cx="13"
+                cy="5"
+                r="4"
+                class="fill-evo-closed-bg stroke-evo-closed"
+                stroke-width="1.2"
+              />
+              <path
+                d="M11.2 3.2L14.8 6.8M14.8 3.2L11.2 6.8"
+                class="stroke-evo-closed-ink"
+                stroke-width="1.2"
+                stroke-linecap="round"
+              />
+            </svg>
+          </.floorplan_legend_item>
+          <.floorplan_legend_item label="To another level">
+            <svg width="20" height="20" viewBox="-10 -10 20 20" aria-hidden="true">
+              <circle r="8.5" class="fill-white stroke-evo-pathway" stroke-width="1.5" />
+              <path
+                d="M0 -5V5M-3 -2 0 -5 3 -2M-3 2 0 5 3 2"
+                class="fill-none stroke-evo-node"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </.floorplan_legend_item>
+          <.floorplan_legend_item label="Entrance">
+            <svg width="14" height="14" aria-hidden="true">
+              <rect x="2" y="2" width="10" height="10" rx="1.5" class="fill-evo-entrance" />
+            </svg>
+          </.floorplan_legend_item>
+        </ul>
+      </div>
+    </section>
+    """
+  end
+
+  @doc """
+  Renders the floorplan note shown when no image can be shown: either the
+  station has no published floorplan file, or the browser could not load one.
+
+  The client hook unhides the same note when an image request fails, so a
+  broken image falls back to the visible pathway list with an explicit reason
+  instead of an empty picture.
+  """
+  attr :id, :string, required: true
+  attr :hidden, :boolean, default: false
+
+  def floorplan_missing_note(assigns) do
+    ~H"""
+    <p
+      id={@id}
+      hidden={@hidden}
+      class="flex items-start gap-2.5 border-b border-subtle bg-canvas px-4 py-3 text-[13px] text-muted md:px-5"
+    >
+      <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0" />
+      <span>
+        No floorplan image is available for this station. Use the list below to choose a pathway.
+      </span>
+    </p>
+    """
+  end
+
+  attr :id, :string, required: true, doc: "the ignored island's stable id"
+  attr :mode, :atom, required: true, values: [:authoring, :preview]
+  attr :frame_class, :string, default: ""
+  attr :note_id, :string, required: true
+  attr :list_id, :string, default: nil
+  attr :image_url, :string, required: true
+  attr :image_alt, :string, required: true
+  attr :stops, :list, required: true
+  attr :pathways, :list, required: true
+  attr :closed_pathway_ids, :list, required: true
+  attr :selected_pathway_id, :string, default: nil
+  attr :select_event, :string, default: nil
+
+  # The island the hook owns completely: LiveView merges only `data-` attributes
+  # onto it and never touches its children, so the image, the SVG overlay and
+  # the caption are one client-managed region. Every value the overlay draws
+  # travels in a data attribute from the server; the hook writes nothing back.
+  defp floorplan_island(assigns) do
+    assigns = assign(assigns, :caption_empty, @floorplan_caption_empty)
+
+    ~H"""
+    <div
+      id={@id}
+      phx-hook="PathwayEvolutionsFloorplan"
+      phx-update="ignore"
+      data-image-url={@image_url}
+      data-image-alt={@image_alt}
+      data-stops={Jason.encode!(@stops)}
+      data-pathways={Jason.encode!(@pathways)}
+      data-selected-id={@selected_pathway_id || ""}
+      data-closed-ids={Jason.encode!(Enum.sort(@closed_pathway_ids))}
+      data-select-event={@select_event || ""}
+      data-show-stop-names={to_string(@mode == :preview)}
+      data-note-id={@note_id}
+      data-list-id={@list_id || ""}
+      class="mt-3"
+    >
+      <div
+        id={@id <> "-frame"}
+        data-floorplan-frame
+        class={[
+          "relative overflow-hidden rounded-control border border-subtle bg-white",
+          @frame_class
+        ]}
+      >
+        <img
+          id={@id <> "-image"}
+          data-floorplan-image
+          src={@image_url}
+          alt={@image_alt}
+          class="block w-full"
+        />
+        <svg
+          id={@id <> "-svg"}
+          data-floorplan-svg
+          viewBox="0 0 100 100"
+          class="absolute inset-0 size-full"
+          role="group"
+          aria-label="Pathways on this floorplan"
+        >
+        </svg>
+      </div>
+
+      <p
+        :if={@mode == :authoring}
+        id={@id <> "-caption"}
+        data-floorplan-caption
+        class="flex min-h-11 flex-wrap items-center gap-x-2 py-1 text-sm text-muted"
+      >
+        {@caption_empty}
+      </p>
+    </div>
+    """
+  end
+
+  attr :label, :string, required: true
+  slot :inner_block, required: true
+
+  defp floorplan_legend_item(assigns) do
+    ~H"""
+    <li class="inline-flex items-center gap-2">{render_slot(@inner_block)} {@label}</li>
+    """
+  end
+
+  defp floorplan_without_image_suffix([]), do: ""
+
+  defp floorplan_without_image_suffix(labels) do
+    " · " <> Enum.join(labels, " and ") <> " " <> has_no_floorplan(labels)
+  end
+
+  defp has_no_floorplan([_label]), do: "level has no floorplan"
+  defp has_no_floorplan(_labels), do: "levels have no floorplan"
+
+  defp pluralize_pathways(1), do: "1 pathway"
+  defp pluralize_pathways(count), do: "#{count} pathways"
+
+  # One closed pathway's own line: its label when the snapshot still has it,
+  # its exact natural id, and where on this floorplan it is (or that it is not
+  # on this floorplan at all). The floorplan never silently drops a closed
+  # pathway just because its endpoints are on another level.
+  defp floorplan_closed_line(pathway_id, pathway, display) do
+    from_on? = pathway && Map.has_key?(display.stop_points, pathway.from_stop_id)
+    to_on? = pathway && Map.has_key?(display.stop_points, pathway.to_stop_id)
+
+    placement =
+      cond do
+        from_on? and to_on? -> "dashed line"
+        from_on? -> "marker at " <> endpoint_name(display.stop_points, pathway.from_stop_id)
+        to_on? -> "marker at " <> endpoint_name(display.stop_points, pathway.to_stop_id)
+        true -> "not on this floorplan"
+      end
+
+    %{
+      pathway_id: pathway_id,
+      label: if(pathway, do: pathway_label(pathway), else: pathway_id),
+      placement: placement
+    }
+  end
+
+  defp endpoint_name(stop_points, stop_id) do
+    case Map.get(stop_points, stop_id) do
+      %{name: name} -> name
+      _point -> stop_id
+    end
+  end
 
   @doc """
   Returns one window endpoint for the editor's text field: `H:MM` when the
@@ -747,6 +1376,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   attr :moment, :string, required: true, doc: "the selected moment, short form"
   attr :incomplete?, :boolean, required: true
   attr :lost?, :boolean, required: true
+  attr :floorplan_missing?, :boolean, default: false
+  attr :floorplan_href, :string, default: nil
 
   def preview_findings(assigns) do
     assigns =
@@ -780,6 +1411,17 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
         >
           <.icon name="hero-exclamation-triangle" class="size-3.5" />Incomplete
         </span>
+        <p
+          id="preview-floorplan-missing"
+          hidden={not @floorplan_missing?}
+          class="flex items-center gap-1.5 text-[13px] text-muted"
+        >
+          <.icon name="hero-information-circle" class="size-4" />
+          <span>
+            No floorplan image is available for this station, so the station view is not shown.
+            <a :if={@floorplan_href} href={@floorplan_href} class="font-[650]">Floorplans</a>
+          </span>
+        </p>
       </header>
 
       <table
@@ -921,6 +1563,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
           <li
             :for={cause <- @causes}
             id={"preview-cause-" <> cause.id}
+            data-cause-pathway={cause.pathway_id}
             class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-subtle/60 py-2 first:border-t-0"
           >
             <div class="min-w-0">

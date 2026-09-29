@@ -4140,3 +4140,314 @@ test.describe("range", () => {
     });
   });
 });
+
+// Step 29 / EV-9. The static pathway floorplan on the authoring locator and on
+// the access preview. Expected coordinates, natural IDs and states are literal
+// values from the seeded browser fixtures: the Evolutions station has a
+// non-square 100 x 80 diagram with one drawing-free closure dot per scheduled
+// pathway, and the diagram station keeps a second level whose cross-level
+// elevator ends on it. The group reads the shared station and writes nothing to
+// the database, so it can run on its own (`--grep floorplan`) or with the rest
+// of the file.
+const FLOORPLAN_STATION = "BROWSER_STATION";
+const FLOORPLAN_L1_ELEVATOR = "BROWSER_PW_ELEVATOR";
+const FLOORPLAN_L1_CROSS_LEVEL = "BROWSER_PW_CROSS_LEVEL";
+
+test.describe("floorplan", () => {
+  test.beforeEach(async ({ page }) => {
+    await logIn(page);
+  });
+
+  // One diagram unit is one percent of the image width on both axes, so a
+  // stored point always lands at x% across and y% of the width down - which for
+  // a 100 x 80 image is y / 80 of the height.
+  function storedPixel(box, x, y) {
+    return { x: box.x + (x / 100) * box.width, y: box.y + (y / 100) * box.width };
+  }
+
+  async function expectCenteredOnStoredPoint(page, selector, box, x, y) {
+    const target = await page.locator(selector).boundingBox();
+    const expected = storedPixel(box, x, y);
+
+    expect(target).not.toBeNull();
+    expect(Math.abs(target.x + target.width / 2 - expected.x)).toBeLessThanOrEqual(2);
+    expect(Math.abs(target.y + target.height / 2 - expected.y)).toBeLessThanOrEqual(2);
+  }
+
+  test("lays the stored coordinates on the non-square image without spilling", async ({
+    page,
+  }) => {
+    await page.setViewportSize(DESKTOP);
+    const versionId = await seededVersionId(page);
+
+    await page.goto(evolutionsPath(versionId, STATION));
+    await waitForLiveView(page);
+
+    const island = page.locator("#closure-floorplan");
+    await expect(island).toHaveAttribute("phx-update", "ignore");
+    await expect(island).toHaveAttribute("phx-hook", "PathwayEvolutionsFloorplan");
+    await expect(page.locator('#closure-locator [phx-hook="DiagramCanvas"]')).toHaveCount(0);
+    await expect(page.locator("#locator-view-diagram")).toHaveAttribute("aria-pressed", "true");
+
+    // The seeded image is 100 x 80: the viewBox must be the image's own aspect
+    // ratio, not the prototype's 1060 x 936 fixture.
+    await expect(page.locator("#closure-floorplan-svg")).toHaveAttribute("viewBox", "0 0 100 80");
+
+    const imageBox = await page.locator("#closure-floorplan-image").boundingBox();
+    const svgBox = await page.locator("#closure-floorplan-svg").boundingBox();
+    expect(imageBox).not.toBeNull();
+    expect(svgBox).not.toBeNull();
+    expect(Math.abs(svgBox.x - imageBox.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(svgBox.y - imageBox.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(svgBox.width - imageBox.width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(svgBox.height - imageBox.height)).toBeLessThanOrEqual(1);
+
+    // The walkway runs from the North entrance (20,15) to the Mezzanine (50,30);
+    // its own midpoint sits exactly on the stored average in screen pixels.
+    const walkway = page.locator('#closure-floorplan-svg [data-pathway-id="BROWSER_EVO_PW_WALK"]');
+    await expect(walkway.locator("line.evo-fp-line")).toHaveAttribute("x1", "20");
+    await expect(walkway.locator("line.evo-fp-line")).toHaveAttribute("y1", "15");
+    await expect(walkway.locator("line.evo-fp-line")).toHaveAttribute("x2", "50");
+    await expect(walkway.locator("line.evo-fp-line")).toHaveAttribute("y2", "30");
+    await expectCenteredOnStoredPoint(
+      page,
+      '#closure-floorplan-svg [data-pathway-id="BROWSER_EVO_PW_WALK"]',
+      imageBox,
+      35,
+      22.5,
+    );
+
+    // Every pathway group stays inside the image's own bounds.
+    const groups = page.locator("#closure-floorplan-svg [data-pathway-id]");
+    await expect(groups).toHaveCount(3);
+
+    for (let index = 0; index < 3; index += 1) {
+      const groupBox = await groups.nth(index).boundingBox();
+      expect(groupBox.x).toBeGreaterThanOrEqual(imageBox.x - 1);
+      expect(groupBox.x + groupBox.width).toBeLessThanOrEqual(imageBox.x + imageBox.width + 1);
+      expect(groupBox.y).toBeGreaterThanOrEqual(imageBox.y - 1);
+      expect(groupBox.y + groupBox.height).toBeLessThanOrEqual(imageBox.y + imageBox.height + 1);
+    }
+
+    // A saved closure is a dot, never a phantom closed-time state; the lift and
+    // the staircase each carry one.
+    await expect(
+      page.locator('#closure-floorplan-svg [data-pathway-id="BROWSER_EVO/PW LIFT 1"] .evo-fp-dot'),
+    ).toHaveCount(1);
+    await expect(
+      page.locator('#closure-floorplan-svg [data-pathway-id="BROWSER_EVO_PW_STAIR"] .evo-fp-dot'),
+    ).toHaveCount(1);
+    await expect(
+      page.locator('#closure-floorplan-svg [data-pathway-id="BROWSER_EVO_PW_WALK"] .evo-fp-dot'),
+    ).toHaveCount(0);
+
+    // At md+ the floorplan replaces the list.
+    await expect(page.locator("#closure-floorplan-panel")).toBeVisible();
+    await expect(page.locator("#closure-pathway-list")).toBeHidden();
+  });
+
+  test("draws a cross-level pathway as a marker at its on-level endpoint", async ({ page }) => {
+    await page.setViewportSize(DESKTOP);
+    const versionId = await seededVersionId(page);
+
+    await page.goto(evolutionsPath(versionId, FLOORPLAN_STATION));
+    await waitForLiveView(page);
+
+    // Level 1: the cross-level elevator is a marker at Platform A's stored point
+    // and keeps its own labelled button, while a same-level pathway is a line.
+    await expect(page.locator("#closure-floorplan-level-BROWSER_L1")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    const box = await page.locator("#closure-floorplan-image").boundingBox();
+    const crossLevel = page.locator(
+      `#closure-floorplan-svg [data-pathway-id="${FLOORPLAN_L1_CROSS_LEVEL}"]`,
+    );
+
+    await expect(crossLevel).toHaveAttribute("transform", "translate(30 40)");
+    await expect(crossLevel.locator(".evo-fp-marker-icon")).toHaveCount(1);
+    await expect(crossLevel.locator("line.evo-fp-line")).toHaveCount(0);
+    await expectCenteredOnStoredPoint(
+      page,
+      `#closure-floorplan-svg [data-pathway-id="${FLOORPLAN_L1_CROSS_LEVEL}"]`,
+      box,
+      30,
+      40,
+    );
+    await expect(
+      page.locator(
+        `#closure-floorplan-svg [data-pathway-id="${FLOORPLAN_L1_ELEVATOR}"] line.evo-fp-line`,
+      ),
+    ).toHaveCount(1);
+
+    // The other level's own 1 x 1 image keeps the same stored point space: the
+    // marker moves to Mezzanine Landing D (45,55) with no geometry change.
+    await page.locator("#closure-floorplan-level-BROWSER_L2").click();
+
+    await expect(page.locator("#closure-floorplan-level-BROWSER_L2")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(page.locator("#closure-floorplan-svg")).toHaveAttribute("viewBox", "0 0 100 100");
+    await expect(crossLevel).toHaveAttribute("transform", "translate(45 55)");
+    await expect(page.locator("#closure-floorplan-level-label")).toContainText("Browser Level 2");
+  });
+
+  test("selects the same pathway from the floorplan keyboard and the list", async ({ page }) => {
+    await page.setViewportSize(DESKTOP);
+    const versionId = await seededVersionId(page);
+
+    await page.goto(evolutionsPath(versionId, STATION));
+    await waitForLiveView(page);
+
+    // The list route: choosing the walkway opens a new closure on it.
+    await page.locator("#locator-view-list").click();
+    await page.locator('#closure-pathway-list button[data-pathway-id="BROWSER_EVO_PW_WALK"]').click();
+    await expect(page.locator("#closure-pathway")).toHaveValue("BROWSER_EVO_PW_WALK");
+
+    // Back to the floorplan with a clean draft closed, so the overlay starts on
+    // the list's own first pathway (the elevator).
+    await page.locator("#locator-view-diagram").click();
+    await page.locator("#discard-closure").click();
+
+    const lift = page.locator('#closure-floorplan-svg [data-pathway-id="BROWSER_EVO/PW LIFT 1"]');
+    await expect(lift).toHaveAttribute("tabindex", "0");
+
+    await lift.focus();
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowRight");
+
+    const walkway = page.locator('#closure-floorplan-svg [data-pathway-id="BROWSER_EVO_PW_WALK"]');
+    await expect(walkway).toHaveAttribute("tabindex", "0");
+    await page.keyboard.press("Enter");
+
+    // Enter selects exactly the pathway the list selected, and focus stays on
+    // the pathway the reader activated.
+    await expect(page.locator("#closure-pathway")).toHaveValue("BROWSER_EVO_PW_WALK");
+    await expect(walkway).toBeFocused();
+
+    // Space activates the same control after the draft is closed again.
+    await page.locator("#discard-closure").click();
+    const elevator = page.locator(
+      '#closure-floorplan-svg [data-pathway-id="BROWSER_EVO/PW LIFT 1"]',
+    );
+    await elevator.focus();
+    await page.keyboard.press("Space");
+    await expect(page.locator("#closure-pathway")).toHaveValue("BROWSER_EVO/PW LIFT 1");
+  });
+
+  test("falls back to the visible list when the floorplan image cannot load", async ({ page }) => {
+    await page.setViewportSize(DESKTOP);
+    const versionId = await seededVersionId(page);
+
+    await page.route("**/uploads/diagrams/**", (route) => route.abort());
+    await page.goto(evolutionsPath(versionId, STATION));
+    await waitForLiveView(page);
+
+    await expect(page.locator("#closure-floorplan-missing")).toBeVisible();
+    await expect(page.locator("#closure-floorplan-panel")).toBeHidden();
+    await expect(page.locator("#locator-toggle")).toBeHidden();
+    await expect(page.locator("#closure-pathway-list")).toBeVisible();
+    await expect(page.locator("#locator-view-diagram")).toBeVisible();
+
+    await page.unroute("**/uploads/diagrams/**");
+  });
+
+  test("renders the list and the availability note for a station with no floorplan", async ({
+    page,
+  }) => {
+    await page.setViewportSize(DESKTOP);
+    const versionId = await seededVersionId(page);
+
+    await page.goto(evolutionsPath(versionId, EMPTY_STATION));
+    await waitForLiveView(page);
+
+    await expect(page.locator("#closure-floorplan-missing")).toBeVisible();
+    await expect(page.locator("#locator-toggle")).toHaveCount(0);
+    await expect(page.locator("#closure-floorplan")).toHaveCount(0);
+    await expect(page.locator("#closure-pathway-list")).toBeVisible();
+  });
+
+  test("draws the moment's closed set with text and pattern on the access preview", async ({
+    page,
+  }) => {
+    await page.setViewportSize(DESKTOP);
+    const versionId = await seededVersionId(page);
+
+    await page.goto(accessPath(versionId, STATION));
+    await waitForLiveView(page);
+    await expect(page.locator("#preview-floorplan")).toBeVisible();
+
+    await expect(page.locator("#preview-floorplan-badge")).toContainText("1 pathway closed");
+    await expect(page.locator("#preview-floorplan-closed")).toContainText("BROWSER_EVO/PW LIFT 1");
+    await expect(page.locator("#preview-floorplan-closed")).toContainText(
+      "Elevator · Mezzanine hall ↔ Platform 1",
+    );
+    await expect(page.locator("#preview-floorplan-closed")).toContainText("dashed line");
+    await expect(page.locator("#preview-floorplan-missing")).toBeHidden();
+
+    const lift = page.locator(
+      '#preview-floorplan-canvas-svg [data-pathway-id="BROWSER_EVO/PW LIFT 1"]',
+    );
+    await expect(lift.locator("line.evo-fp-line")).toHaveAttribute("stroke-dasharray", "7 5");
+    await expect(lift.locator(".evo-fp-closed-word")).toHaveText("Closed");
+
+    // Activating the closed pathway highlights its existing cause rows only;
+    // it selects nothing and writes nothing.
+    const cause = page.locator('#preview-causes li[data-cause-pathway="BROWSER_EVO/PW LIFT 1"]');
+    await expect(cause).toHaveCount(1);
+    await expect(cause).not.toHaveClass(/evo-cause-highlight/);
+
+    await lift.click();
+    await expect(cause).toHaveClass(/evo-cause-highlight/);
+    await expect(page.locator("#preview-causes a", { hasText: "Review closure" }).first()).toBeVisible();
+
+    await lift.click();
+    await expect(cause).not.toHaveClass(/evo-cause-highlight/);
+
+    // Below md the findings and their causes carry the answer, as the reference
+    // does, and the page still has no horizontal overflow.
+    await page.setViewportSize(MOBILE);
+    await page.goto(accessPath(versionId, STATION));
+    await waitForLiveView(page);
+    await expect(page.locator("#preview-floorplan")).toBeHidden();
+    expect(await bodyFitsViewport(page)).toBe(true);
+  });
+
+  test.describe("reference capture", () => {
+    test.skip(() => !fs.existsSync(REFERENCE_PATH), "reference file not present");
+
+    test("captures the reference floorplan at both viewports", async ({ page }, testInfo) => {
+      await page.setViewportSize(DESKTOP);
+      await page.goto(pathToFileURL(REFERENCE_PATH).href);
+      await expect(page.locator("#closure-floorplan")).toBeVisible();
+      await page.locator("#closure-floorplan").scrollIntoViewIfNeeded();
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-029-reference-desktop.png"),
+        fullPage: true,
+      });
+
+      // Below md the reference hides the panel and shows the list instead.
+      await page.setViewportSize(MOBILE);
+      await page.goto(pathToFileURL(REFERENCE_PATH).href);
+      await expect(page.locator("#closure-floorplan-panel")).toBeHidden();
+      await expect(page.locator("#closure-pathway-list")).toBeVisible();
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-029-reference-mobile.png"),
+        fullPage: true,
+      });
+
+      // The companion access preview shows the closed overlay at md+ only.
+      await page.setViewportSize(DESKTOP);
+      await page.goto(pathToFileURL(ACCESS_REFERENCE_PATH).href);
+      await expect(page.locator("#preview-floorplan")).toBeVisible();
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-029-reference-access-desktop.png"),
+        fullPage: true,
+      });
+    });
+  });
+});

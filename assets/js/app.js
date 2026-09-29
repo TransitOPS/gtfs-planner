@@ -42,6 +42,7 @@ import CalendarEditor from "./calendar_editor"
 import RoutePatternEditorHook from "./route_pattern_editor"
 import RouteDetailsEditorHook from "./route_details_editor"
 import RouteDetailsMapHook from "./route_details_map"
+import PathwayEvolutionsFloorplan from "./pathway_evolutions_floorplan"
 import TransferMapHook from "./transfer_map_hook"
 import "../vendor/leaflet"
 import LiveSelect from "../vendor/live_select"
@@ -56,7 +57,7 @@ const liveSocket = new LiveSocket("/live", Socket, {
     _csrf_token: csrfToken,
     new_route_attempt: el?.querySelector("#new-route-attempt")?.value,
   }),
-  hooks: {...colocatedHooks, CalendarDateChange, CalendarCombination, CalendarEditor, DraftGuard: CalendarEditor, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, DiagramCandidateProbe, MapAlignment: MapAlignmentHook, FareZoneMap: FareZoneMapHook, FlexAreaMap: FlexAreaMapHook, PatternAlignment, OverlayDialog: OverlayDialogHook, FormErrorFocus: FormErrorFocusHook, TablistHook, UserMenu: UserMenuHook, JournalPanelHook, LiveSelect: LiveSelect.LiveSelect, RoutePatternEditor: RoutePatternEditorHook, RouteDetailsEditor: RouteDetailsEditorHook, RouteDetailsMap: RouteDetailsMapHook, TransferMap: TransferMapHook},
+  hooks: {...colocatedHooks, CalendarDateChange, CalendarCombination, CalendarEditor, DraftGuard: CalendarEditor, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, DiagramCandidateProbe, MapAlignment: MapAlignmentHook, FareZoneMap: FareZoneMapHook, FlexAreaMap: FlexAreaMapHook, PatternAlignment, OverlayDialog: OverlayDialogHook, FormErrorFocus: FormErrorFocusHook, TablistHook, UserMenu: UserMenuHook, JournalPanelHook, LiveSelect: LiveSelect.LiveSelect, RoutePatternEditor: RoutePatternEditorHook, RouteDetailsEditor: RouteDetailsEditorHook, RouteDetailsMap: RouteDetailsMapHook, TransferMap: TransferMapHook, PathwayEvolutionsFloorplan},
 })
 
 const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")
