@@ -144,6 +144,17 @@ function evolutionsPath(versionId, stopId, query = "") {
   return `/gtfs/${versionId}/stops/${stopId}/evolutions${query}`;
 }
 
+// The real beforeunload listener the editor mounts guards unsaved input; the
+// only way to observe it without leaving the browser is to dispatch the event
+// in the page and read whether the listener refused it.
+async function unloadGuarded(page) {
+  return page.evaluate(() => {
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+}
+
 test.describe("authoring", () => {
   test.describe("the station closure list", () => {
     test.beforeEach(async ({ page }) => {
@@ -795,6 +806,175 @@ test.describe("authoring", () => {
       await expect(page.locator("#save-closure")).toBeEnabled();
     });
 
+    // Step 19 / EV-7. Unsaved input is never dropped silently: an in-app link,
+    // the browser's own Back guard and the unload listener all refuse to leave
+    // until the reader makes an explicit choice.
+    test("guards a link departure, the unload event and history traversal while edits are unsaved", async ({
+      page,
+    }, testInfo) => {
+      const versionId = await seededVersionId(page);
+      await page.setViewportSize(DESKTOP);
+      await page.goto(evolutionsPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      await page.locator("#closures-list tr[data-closure-id]").first().locator("button").first().click();
+      await expect(page.locator("#closure-start")).toHaveValue("09:00");
+      await expect(page.locator("#closure-dirty-chip")).toHaveCount(0);
+      await expect(page.locator("#discard-closure")).toHaveText("Close");
+
+      // A clean inspector leaves without a question.
+      expect(await unloadGuarded(page)).toBe(false);
+
+      // The seeded lift closure with its saved window changed to 16:00.
+      await page.fill("#closure-end", "16:00");
+
+      // The in-app link is stopped in the same moment as the blur that has not
+      // round-tripped yet, so the guard has to know the saved values itself.
+      await page
+        .getByRole("navigation", { name: "Station views" })
+        .getByRole("link", { name: "Details" })
+        .click();
+
+      await expect(page.locator("#closure-dirty-dialog")).toBeVisible();
+      await expect(page.locator("#closure-dirty-dialog-title")).toHaveText(
+        "Discard closure edits?",
+      );
+      await expect(page.locator("#closure-dirty-body")).toContainText(
+        "Your changes to Elevator · Mezzanine hall ↔ Platform 1 are not saved. Discarding restores the saved closure.",
+      );
+      await expect(page.locator("#closure-dirty-dialog-cancel")).toHaveText("Keep editing");
+      await expect(page.locator("#closure-dirty-dialog-confirm")).toHaveText("Discard edits");
+      expect(page.url()).toContain("/evolutions");
+
+      // A native modal dialog is anchored to the viewport and lives in the top
+      // layer, so a full-page capture composites it over the wrong page offset;
+      // the panel's own paint also lands a frame after `open`.
+      await page.evaluate(
+        () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+      );
+      await page.waitForTimeout(300);
+      await page.screenshot({
+        path: capturePath(testInfo, "step-019-production-dirty-dialog.png"),
+      });
+
+      // Keeping the edits retains the entry and the announced reason.
+      await page.locator("#closure-dirty-dialog-cancel").click();
+      await expect(page.locator("#closure-dirty-dialog")).toBeHidden();
+      await expect(page.locator("#closure-end")).toHaveValue("16:00");
+      await expect(page.locator("#closure-dirty-chip")).toHaveText(/Unsaved changes/);
+      await expect(page.locator("#discard-closure")).toHaveText("Discard edits");
+      await expect(page.locator("#evolutions-status")).toContainText(
+        "Your unsaved changes are still here.",
+      );
+
+      // The mounted unload listener now refuses to leave.
+      expect(await unloadGuarded(page)).toBe(true);
+
+      // Browser Back asks too. Cancelling the confirmation stays on the page
+      // with every entered string intact.
+      let asked = 0;
+
+      page.once("dialog", (dialog) => {
+        asked += 1;
+        dialog.dismiss();
+      });
+
+      await page.evaluate(() => window.history.back());
+      await expect.poll(() => asked).toBe(1);
+      expect(page.url()).toContain("/evolutions");
+      await expect(page.locator("#closure-end")).toHaveValue("16:00");
+
+      // Accepting it leaves the page.
+      page.once("dialog", (dialog) => {
+        asked += 1;
+        dialog.accept();
+      });
+
+      await page.evaluate(() => window.history.back());
+      await expect.poll(() => asked).toBe(2);
+      await expect(page).not.toHaveURL(/evolutions/);
+    });
+
+    // Step 19 / EV-7. The server-side half of the same guard: switching rows or
+    // starting a new closure is a choice, not a silent replacement of input.
+    test("row switching and starting a new closure ask before unsaved edits are dropped", async ({
+      page,
+    }) => {
+      const versionId = await seededVersionId(page);
+      await page.setViewportSize(DESKTOP);
+      await page.goto(evolutionsPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      const lift = page
+        .locator("#closures-list tr[data-closure-id]")
+        .filter({ hasText: "BROWSER_EVO/PW LIFT 1" });
+      const stairs = page
+        .locator("#closures-list tr[data-closure-id]")
+        .filter({ hasText: "BROWSER_EVO_PW_STAIR" });
+
+      await lift.locator("button").first().click();
+      await page.fill("#closure-end", "16:00");
+      await page.locator("#closure-end").blur();
+      await expect(page.locator("#discard-closure")).toHaveText("Discard edits");
+
+      // Switching rows while dirty waits for the explicit choice.
+      await stairs.locator("button").first().click();
+      await expect(page.locator("#closure-dirty-dialog")).toBeVisible();
+      await expect(page.locator("#closure-editor-title")).toHaveText("Edit closure");
+      await expect(page.locator("#closure-end")).toHaveValue("16:00");
+
+      await page.locator("#closure-dirty-dialog-cancel").click();
+      await expect(page.locator("#closure-dirty-dialog")).toBeHidden();
+      await expect(page.locator("#closure-end")).toHaveValue("16:00");
+
+      // Asking again and discarding opens the other row on its saved values.
+      await stairs.locator("button").first().click();
+      await page.locator("#closure-dirty-dialog-confirm").click();
+
+      await expect(page.locator("#closure-end")).toHaveValue("26:00");
+      await expect(page.locator("#closure-note")).toHaveValue(
+        "Slip replacement across the overnight window.",
+      );
+      await expect(page.locator("#closure-dirty-chip")).toHaveCount(0);
+      await expect(page.locator("#evolutions-status")).toContainText(
+        "Closure edits discarded.",
+      );
+
+      // Starting a new closure while dirty asks the same question, and its own
+      // confirmation clears the draft instead of leaving it behind.
+      await page.fill("#closure-note", "Draft note for a new closure.");
+      await page.locator("#new-closure").click();
+
+      await expect(page.locator("#closure-dirty-dialog")).toBeVisible();
+      await page.locator("#closure-dirty-dialog-confirm").click();
+
+      await expect(page.locator("#closure-editor-title")).toHaveText("New closure");
+      await expect(page.locator("#closure-note")).toHaveValue("");
+      await expect(page.locator("#closure-start")).toHaveValue("");
+      await expect(page.locator("#closure-dirty-chip")).toHaveCount(0);
+      await expect(page.locator("#closure-pathway")).toBeFocused();
+
+      // The footer's own action restores an existing row in place, then closes
+      // the clean inspector.
+      await stairs.locator("button").first().click();
+      await page.fill("#closure-end", "23:00");
+      await page.locator("#closure-end").blur();
+      await expect(page.locator("#discard-closure")).toHaveText("Discard edits");
+
+      await page.locator("#discard-closure").click();
+
+      await expect(page.locator("#closure-end")).toHaveValue("26:00");
+      await expect(page.locator("#closure-dirty-chip")).toHaveCount(0);
+      await expect(page.locator("#evolutions-status")).toContainText(
+        "Closure edits discarded.",
+      );
+
+      await page.locator("#discard-closure").click();
+
+      await expect(page.locator("#closure-idle")).toBeVisible();
+      await expect(page.locator("#evolutions-status")).toContainText("Closure closed.");
+    });
+
     // The reference is a self-contained file in the gitignored `.specs/`
     // workspace, so this case skips (rather than fails) in a checkout without it.
     test.describe("reference capture", () => {
@@ -814,6 +994,8 @@ test.describe("authoring", () => {
           ["forbidden", "forbidden"],
           ["saved-overlap", "saved-overlap"],
           ["saved-no-dates", "saved-no-dates"],
+          ["dirty", "dirty"],
+          ["dirty-dialog", "dirty-dialog"],
         ]) {
           await page.goto(`${pathToFileURL(REFERENCE_PATH).href}?state=${state}`);
           await expect(page.locator("#closure-editor")).toBeVisible();

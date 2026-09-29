@@ -5,18 +5,36 @@ import FormErrorFocus from "./form_error_focus_hook"
 let activeEditor = null
 window.addEventListener("popstate", event => activeEditor?.historyDeparture(event), true)
 
+// `data-dirty` only catches up once a field's debounced change event has
+// round-tripped, so a click that lands in the same moment as a blur would slip
+// past it. An editor that renders the saved tuple it is compared against
+// (`data-dirty-baseline`, keyed by the form field names) lets the client answer
+// the same question exactly, with the same service-time normalization the
+// server applies. Without that attribute the hook keeps its `data-dirty`
+// behaviour unchanged.
+const serviceTime = value => {
+  const match = /^(\d{1,3}):([0-5]?\d)(?::([0-5]?\d))?$/.exec(String(value ?? "").trim())
+  return match ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3] ?? 0) : null
+}
+
+const comparableField = (name, value) => {
+  const text = String(value ?? "").trim()
+  if (name.endsWith("start_time") || name.endsWith("end_time")) return serviceTime(text) ?? text
+  return text
+}
+
 const CalendarEditor = {
   ...FormErrorFocus,
   mounted() {
     FormErrorFocus.mounted.call(this)
     this.beforeUnload = event => {
-      if (this.el.dataset.dirty !== "true") return
+      if (!this.isDirty()) return
       event.preventDefault()
       event.returnValue = ""
     }
     this.depart = event => {
       const link = event.target.closest("a[href]")
-      if (this.el.dataset.dirty !== "true" || !link || link.target === "_blank" ||
+      if (!this.isDirty() || !link || link.target === "_blank" ||
           event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
       const url = new URL(link.href, window.location.href)
       if (url.origin !== window.location.origin ||
@@ -35,7 +53,7 @@ const CalendarEditor = {
         this.restoringHistory = false
         return
       }
-      if (this.el.dataset.dirty !== "true") return
+      if (!this.isDirty()) return
       if (window.confirm(this.el.dataset.discardMessage || "Discard unsaved schedule changes? Cancel to keep editing.")) return
       event.stopImmediatePropagation()
       const delta = this.liveSocket.currentHistoryPosition - (event.state?.position || 0)
@@ -62,6 +80,24 @@ const CalendarEditor = {
     const details = target?.closest?.("details")
     if (details) details.open = true
     FormErrorFocus._attemptFocus.call(this, target)
+  },
+  // Unsaved input, as the browser currently holds it. A field the baseline does
+  // not carry (LiveView's own hidden fields) is not part of the comparison.
+  isDirty() {
+    const baseline = this.el.dataset.dirtyBaseline
+    if (!baseline) return this.el.dataset.dirty === "true"
+
+    let saved
+    try {
+      saved = JSON.parse(baseline)
+    } catch (_error) {
+      return this.el.dataset.dirty === "true"
+    }
+
+    return Array.from(this.el.querySelectorAll("form [name]")).some(field => {
+      if (saved[field.name] === undefined) return false
+      return comparableField(field.name, field.value) !== comparableField(field.name, saved[field.name])
+    })
   },
   destroyed() {
     FormErrorFocus.destroyed?.call(this)

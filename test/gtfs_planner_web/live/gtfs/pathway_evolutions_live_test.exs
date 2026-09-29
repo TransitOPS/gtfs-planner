@@ -80,6 +80,22 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
     |> List.flatten()
   end
 
+  # A confirmation dialog is open when the server rendered it open; the native
+  # `open` attribute is the client hook's business, so the test reads the state
+  # the server owns.
+  defp dialog_open?(html, id) do
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("##{id}[data-open='true']")
+    |> Enum.count() > 0
+  end
+
+  # Changing one field of the open editor the way a reader does: the whole tuple
+  # is submitted and only the named values differ from the saved row.
+  defp change_editor(view, values) do
+    view |> form("#closure-form", %{"closure" => values}) |> render_change()
+  end
+
   # Fills the open editor's form and submits it, the way an editor does after
   # choosing Create closure or a row in the list. Values default to the tuple
   # the fixture station already holds, so a caller only names what it changes.
@@ -1029,6 +1045,256 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
       })
 
       assert render(view) =~ "Closure saved."
+    end
+  end
+
+  # Step 19 / EV-7: unsaved input is never dropped silently. An in-app link, a
+  # row switch and the start of a new closure all wait for the same explicit
+  # choice, and only the dialog's own confirmation runs the interrupted action.
+  describe "unsaved closure edits" do
+    setup :editor_setup
+
+    test "a dirty form asks before switching rows and honors keep or discard",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime, overnight: overnight} =
+        station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      # The editor mounts the dirty guard hook with the saved tuple the client
+      # compares the form against, and nothing is unsaved yet.
+      assert has_element?(
+               view,
+               ~s(#closure-editor[phx-hook="CalendarEditor"][data-dirty="false"])
+             )
+
+      assert has_element?(view, "#closure-editor[data-dirty-baseline]")
+      refute has_element?(view, "#closure-dirty-chip")
+      assert has_element?(view, "#discard-closure", "Close")
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      # One typed field is unsaved input: the chip says so in words and the
+      # footer's second action becomes the discard action.
+      change_editor(view, %{
+        "pathway_id" => @punctuated_pathway_id,
+        "service_id" => "CAL_DAILY",
+        "start_time" => "09:00",
+        "end_time" => "16:00",
+        "note" => ""
+      })
+
+      assert has_element?(view, ~s(#closure-editor[data-dirty="true"]))
+      assert has_element?(view, "#closure-dirty-chip", "Unsaved changes")
+      assert has_element?(view, "#discard-closure", "Discard edits")
+
+      # Selecting another row interrupts instead of switching.
+      asked = view |> element("#closure-open-#{overnight.id}") |> render_click()
+
+      assert dialog_open?(asked, "closure-dirty-dialog")
+      assert has_element?(view, "#closure-dirty-dialog-title", "Discard closure edits?")
+      assert has_element?(view, "#closure-dirty-dialog-cancel", "Keep editing")
+      assert has_element?(view, "#closure-dirty-dialog-confirm", "Discard edits")
+
+      assert has_element?(
+               view,
+               "#closure-dirty-body",
+               "Your changes to Elevator · Mezzanine hall ↔ Platform 1 are not saved. " <>
+                 "Discarding restores the saved closure."
+             )
+
+      # The row that was asked for is not open, and nothing was written.
+      assert has_element?(view, "#closure-end[value='16:00']")
+      assert has_element?(view, "#closure-editor-title", "Edit closure")
+      assert Repo.get!(PathwayEvolution, daytime.id).end_time == 54_000
+
+      # Keeping the edits leaves every entered string in place.
+      kept = view |> element("#closure-dirty-dialog-cancel") |> render_click()
+
+      refute dialog_open?(kept, "closure-dirty-dialog")
+      assert has_element?(view, "#closure-end[value='16:00']")
+      assert has_element?(view, "#evolutions-status", "Your unsaved changes are still here.")
+      assert Repo.get!(PathwayEvolution, daytime.id).end_time == 54_000
+
+      # Asking again and discarding opens the other row on its persisted values.
+      assert view
+             |> element("#closure-open-#{overnight.id}")
+             |> render_click()
+             |> dialog_open?("closure-dirty-dialog")
+
+      discarded = view |> element("#closure-dirty-dialog-confirm") |> render_click()
+
+      refute dialog_open?(discarded, "closure-dirty-dialog")
+      assert has_element?(view, "#closure-end[value='26:00']")
+      assert has_element?(view, "#evolutions-status", "Closure edits discarded.")
+      refute has_element?(view, "#closure-dirty-chip")
+      assert has_element?(view, "#discard-closure", "Close")
+    end
+
+    test "a link departure waits for the same choice and a foreign path is refused",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      change_editor(view, %{
+        "pathway_id" => @punctuated_pathway_id,
+        "service_id" => "CAL_DAILY",
+        "start_time" => "09:00",
+        "end_time" => "16:00",
+        "note" => ""
+      })
+
+      path = "/gtfs/#{version.id}/stops"
+
+      # The client hook pushes the address it was about to open; the dialog holds
+      # it until the reader chooses.
+      asked = render_hook(view, "calendar_depart", %{"path" => path})
+
+      assert dialog_open?(asked, "closure-dirty-dialog")
+      assert has_element?(view, "#closure-end[value='16:00']")
+
+      refute dialog_open?(render_hook(view, "keep_editing", %{}), "closure-dirty-dialog")
+      assert has_element?(view, "#closure-end[value='16:00']")
+
+      # A path outside this application is refused outright: no dialog is kept,
+      # and no pending navigation can be confirmed later.
+      for foreign <- [
+            "https://evil.example/gtfs/#{version.id}/stops",
+            "//evil.example/gtfs/#{version.id}/stops",
+            "javascript:alert(1)",
+            "gtfs/#{version.id}/stops"
+          ] do
+        refute dialog_open?(
+                 render_hook(view, "calendar_depart", %{"path" => foreign}),
+                 "closure-dirty-dialog"
+               )
+      end
+
+      assert has_element?(view, "#closure-end[value='16:00']")
+
+      # Discarding runs the interrupted navigation itself.
+      render_hook(view, "calendar_depart", %{"path" => path})
+
+      assert {:error, {:live_redirect, %{to: ^path}}} = render_hook(view, "discard_edits", %{})
+    end
+
+    test "the footer restores a dirty row in place and closes a clean inspector",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      change_editor(view, %{
+        "pathway_id" => @punctuated_pathway_id,
+        "service_id" => "CAL_DAILY",
+        "start_time" => "09:00",
+        "end_time" => "16:00",
+        "note" => ""
+      })
+
+      assert has_element?(view, "#discard-closure", "Discard edits")
+
+      discarded = view |> element("#discard-closure") |> render_click()
+
+      assert has_element?(view, "#closure-end[value='15:00']")
+
+      assert has_element?(
+               view,
+               "#evolutions-status",
+               "Closure edits discarded. The saved closure is shown."
+             )
+
+      refute has_element?(view, "#closure-dirty-chip")
+      assert has_element?(view, "#discard-closure", "Close")
+      assert has_element?(view, ~s(#closure-editor[data-closure-id="#{daytime.id}"]))
+      assert Repo.get!(PathwayEvolution, daytime.id).end_time == 54_000
+      refute dialog_open?(discarded, "closure-dirty-dialog")
+
+      # A clean inspector closes to the idle card and says so.
+      closed = view |> element("#discard-closure") |> render_click()
+
+      assert has_element?(view, "#closure-idle", "No closure selected")
+      refute has_element?(view, "#closure-form")
+      assert has_element?(view, "#evolutions-status", "Closure closed.")
+      assert_push_event(view, "focus_scoped_target", %{id: "closure-idle-title"})
+      refute dialog_open?(closed, "closure-dirty-dialog")
+    end
+
+    test "a dirty form asks before starting a new closure and discarding clears the draft",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime, walkway: walkway} =
+        station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      change_editor(view, %{
+        "pathway_id" => @punctuated_pathway_id,
+        "service_id" => "CAL_DAILY",
+        "start_time" => "09:00",
+        "end_time" => "16:00",
+        "note" => ""
+      })
+
+      # The header's Create closure action is guarded the same way.
+      asked = view |> element("#new-closure") |> render_click()
+
+      assert dialog_open?(asked, "closure-dirty-dialog")
+      assert has_element?(view, "#closure-end[value='16:00']")
+      assert has_element?(view, "#closure-editor-title", "Edit closure")
+
+      refute dialog_open?(
+               view |> element("#closure-dirty-dialog-cancel") |> render_click(),
+               "closure-dirty-dialog"
+             )
+
+      assert has_element?(view, "#closure-end[value='16:00']")
+
+      # Discarding abandons the draft and opens the new-closure form on nothing.
+      view |> element("#new-closure") |> render_click()
+      discarded = view |> element("#closure-dirty-dialog-confirm") |> render_click()
+
+      refute dialog_open?(discarded, "closure-dirty-dialog")
+      assert has_element?(view, "#closure-editor-title", "New closure")
+      assert has_element?(view, "#closure-start[value='']")
+      assert has_element?(view, "#closure-end[value='']")
+      refute has_element?(view, "#closure-dirty-chip")
+      assert_push_event(view, "focus_scoped_target", %{id: "closure-pathway"})
+
+      # Opening a new closure from the pathway list preselects it; that alone is
+      # not unsaved input.
+      view |> element("#pathway-option-#{walkway.id}") |> render_click()
+
+      refute has_element?(view, "#closure-dirty-chip")
+      assert has_element?(view, "#discard-closure", "Close")
+
+      # Typing into the new form makes it dirty, and discarding abandons it
+      # instead of leaving a half-filled draft behind.
+      change_editor(view, %{
+        "pathway_id" => walkway.pathway_id,
+        "service_id" => "CAL_DAILY",
+        "start_time" => "10:00",
+        "end_time" => "",
+        "note" => ""
+      })
+
+      assert has_element?(view, "#discard-closure", "Discard edits")
+
+      view |> element("#discard-closure") |> render_click()
+
+      assert has_element?(view, "#closure-idle", "No closure selected")
+      assert has_element?(view, "#evolutions-status", "New closure discarded.")
+      refute has_element?(view, "#closure-form")
     end
   end
 
