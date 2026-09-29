@@ -19,6 +19,7 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
   schema "gtfs_export_runs" do
     field :export_type, Ecto.Enum, values: @export_types, default: :full
     field :state, Ecto.Enum, values: @states, default: :pending
+    field :include_flex, :boolean, default: false
     field :phase, Ecto.Enum, values: @phases
     field :progress_current, :integer
     field :progress_total, :integer
@@ -32,6 +33,10 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
     field :artifact_sha256, :string
     field :artifact_size_bytes, :integer
     field :artifact_expires_at, :utc_datetime_usec
+    field :flex_artifact_key, :string
+    field :flex_artifact_filename, :string
+    field :flex_artifact_sha256, :string
+    field :flex_artifact_size_bytes, :integer
     field :download_claimed_until, :utc_datetime_usec
     field :download_count, :integer, default: 0
     field :last_downloaded_at, :utc_datetime_usec
@@ -50,7 +55,7 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
   def states, do: @states
   def terminal_states, do: @terminal_states
 
-  @doc "Public params cannot alter durable scope, actor, lease, artifact, receipt, or lifecycle state."
+  @doc "Public params cannot alter durable scope, actor, lease, flex inclusion, artifact, receipt, or lifecycle state."
   def changeset(run, _attrs), do: change(run)
 
   @doc false
@@ -59,6 +64,7 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
     |> cast(attrs, [
       :export_type,
       :state,
+      :include_flex,
       :phase,
       :progress_current,
       :progress_total,
@@ -72,6 +78,10 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
       :artifact_sha256,
       :artifact_size_bytes,
       :artifact_expires_at,
+      :flex_artifact_key,
+      :flex_artifact_filename,
+      :flex_artifact_sha256,
+      :flex_artifact_size_bytes,
       :download_claimed_until,
       :download_count,
       :last_downloaded_at,
@@ -133,13 +143,21 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
     changeset
     |> validate_length(:artifact_key, max: 255)
     |> validate_length(:artifact_filename, max: 255)
+    |> validate_length(:flex_artifact_key, max: 255)
+    |> validate_length(:flex_artifact_filename, max: 255)
     |> validate_number(:artifact_size_bytes, greater_than_or_equal_to: 0)
-    |> validate_change(:artifact_sha256, fn :artifact_sha256, value ->
+    |> validate_number(:flex_artifact_size_bytes, greater_than_or_equal_to: 0)
+    |> validate_digest(:artifact_sha256)
+    |> validate_digest(:flex_artifact_sha256)
+    |> validate_ready_artifact()
+  end
+
+  defp validate_digest(changeset, field) do
+    validate_change(changeset, field, fn changed_field, value ->
       if is_binary(value) and Regex.match?(~r/\A[0-9a-f]{64}\z/, value),
         do: [],
-        else: [artifact_sha256: "must be a lowercase SHA-256 digest"]
+        else: [{changed_field, "must be a lowercase SHA-256 digest"}]
     end)
-    |> validate_ready_artifact()
   end
 
   defp validate_ready_artifact(changeset) do
