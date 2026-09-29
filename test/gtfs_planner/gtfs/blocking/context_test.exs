@@ -2,14 +2,18 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
   @moduledoc """
   Merge evidence for the planning context: the layover-only context that
   reproduces spec 05's behaviour, the fingerprint every reviewed planning write
-  carries (INV-7, R12), and the builder that fills the struct from a version's
-  reads.
+  carries (INV-7, R12), the builder that fills the struct from a version's
+  reads, and `resolve_block/3` — the one rule that decides a block's garage and
+  vehicle type (R4, INV-9).
 
-  The first two groups are pure — `Context` reads its arguments and touches no
-  repository, clock, file or network — so `layover_only/1` and `digest/1` need no
-  fixtures. The third group goes through the real `Blocking.load_day/3`, because
-  that is the path the builder runs on and the only place its reads can be
-  observed as a whole.
+  The first three groups are pure — `Context` reads its arguments and touches no
+  repository, clock, file or network — so `layover_only/1`, `digest/1` and
+  `resolve_block/3` need no fixtures. The resolution cases are written against
+  hand-built `Checks.trip_row()` values because the rule reads only four fields
+  of a trip; the last group goes through the real `Blocking.load_day/3` and
+  resolves a real block from the `day.context` and `day.blocks[].trips` the page
+  would use, because that is the path the rule runs on and the only place its
+  reads can be observed as a whole.
 
   The digest cases are the ones that matter for INV-7, and they are written to
   fail if the fingerprint narrows. A digest covering only the inputs one plan
@@ -39,7 +43,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
   import GtfsPlanner.VersionsFixtures
 
   @garage_uuid "11111111-1111-4111-8111-111111111111"
+  @garage_north_uuid "33333333-3333-4333-8333-333333333333"
   @vehicle_type_uuid "22222222-2222-4222-8222-222222222222"
+  @bus_type_uuid "44444444-4444-4444-8444-444444444444"
+  @deleted_uuid "99999999-9999-4999-8999-999999999999"
 
   describe "layover_only/1" do
     test "carries the layover and nothing else" do
@@ -182,6 +189,428 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
       second = %Context{first | fleet: Enum.reverse(first.fleet)}
 
       assert Context.digest(first) != Context.digest(second)
+    end
+  end
+
+  describe "resolve_block/3" do
+    test "the block's own attribute row names the garage and the type" do
+      context =
+        complete_context(
+          attributes: %{
+            {"WKDY", "101"} => %{garage_id: @garage_uuid, vehicle_type_id: @vehicle_type_uuid}
+          }
+        )
+
+      assert Context.resolve_block(context, "101", [trip_row(%{})]) == %{
+               garage_id: @garage_uuid,
+               vehicle_type_id: @vehicle_type_uuid,
+               garage_source: :attribute,
+               conflict: nil
+             }
+    end
+
+    test "with no rows the first trip's route home garage answers" do
+      context =
+        complete_context(
+          garages: known_garages(),
+          attributes: %{},
+          route_settings: %{
+            "12" => %{garage_id: @garage_north_uuid, required_vehicle_type_id: nil}
+          }
+        )
+
+      assert Context.resolve_block(context, "101", [trip_row(%{route_id: "12"})]) == %{
+               garage_id: @garage_north_uuid,
+               vehicle_type_id: nil,
+               garage_source: :route,
+               conflict: nil
+             }
+    end
+
+    test "with no rows and no route garage the version's default garage answers" do
+      context =
+        complete_context(
+          attributes: %{},
+          route_settings: %{"12" => %{garage_id: nil, required_vehicle_type_id: nil}},
+          default_garage_id: @garage_uuid
+        )
+
+      assert Context.resolve_block(context, "101", [trip_row(%{route_id: "12"})]) == %{
+               garage_id: @garage_uuid,
+               vehicle_type_id: nil,
+               garage_source: :default,
+               conflict: nil
+             }
+    end
+
+    test "with nothing set at all the block has no garage and no type" do
+      nothing_set = complete_context(attributes: %{}, route_settings: %{}, default_garage_id: nil)
+
+      expected = %{garage_id: nil, vehicle_type_id: nil, garage_source: :none, conflict: nil}
+
+      # A route row that sets neither value is the same answer as no route row:
+      # "no row at all" and "a row that says nothing" both fall through, and R4
+      # never invents a garage between them.
+      route_says_nothing =
+        complete_context(
+          attributes: %{},
+          route_settings: %{"R1" => %{garage_id: nil, required_vehicle_type_id: nil}},
+          default_garage_id: nil
+        )
+
+      assert Context.resolve_block(nothing_set, "101", [trip_row(%{})]) == expected
+      assert Context.resolve_block(route_says_nothing, "101", [trip_row(%{})]) == expected
+    end
+
+    test "the type falls back to the first trip's route required type" do
+      context =
+        complete_context(
+          vehicle_types: known_vehicle_types(),
+          attributes: %{{"WKDY", "101"} => %{garage_id: @garage_uuid, vehicle_type_id: nil}},
+          route_settings: %{"30" => %{garage_id: nil, required_vehicle_type_id: @bus_type_uuid}}
+        )
+
+      result = Context.resolve_block(context, "101", [trip_row(%{route_id: "30"})])
+
+      assert result.vehicle_type_id == @bus_type_uuid
+      assert result.garage_id == @garage_uuid
+      assert result.garage_source == :attribute
+    end
+
+    test "rows naming different garages conflict and the first trip's service row decides" do
+      context =
+        complete_context(
+          garages: known_garages(),
+          vehicle_types: known_vehicle_types(),
+          route_settings: %{},
+          attributes: %{
+            {"WKDY", "102"} => %{garage_id: @garage_uuid, vehicle_type_id: @vehicle_type_uuid},
+            {"SCHOOL", "102"} => %{
+              garage_id: @garage_north_uuid,
+              vehicle_type_id: @vehicle_type_uuid
+            }
+          }
+        )
+
+      weekday = trip_row(%{trip_id: "T-1", service_id: "WKDY", hour: 8})
+      school = trip_row(%{trip_id: "T-2", service_id: "SCHOOL", hour: 10})
+
+      result = Context.resolve_block(context, "102", [weekday, school])
+
+      assert result.garage_id == @garage_uuid
+      assert result.garage_source == :attribute
+      assert result.vehicle_type_id == @vehicle_type_uuid
+
+      # Every row for the block's services is listed, in `service_id` order and
+      # not in trip order, and not only the two that disagree — AC-8 asks for
+      # "every calendar's values".
+      assert result.conflict == [
+               %{
+                 service_id: "SCHOOL",
+                 garage_id: @garage_north_uuid,
+                 vehicle_type_id: @vehicle_type_uuid
+               },
+               %{service_id: "WKDY", garage_id: @garage_uuid, vehicle_type_id: @vehicle_type_uuid}
+             ]
+
+      # The same block with the later trip first: the row that decides is still
+      # the earliest trip's service's, and the report is unchanged.
+      assert Context.resolve_block(context, "102", [school, weekday]) == result
+    end
+
+    test "a row naming a garage the context does not carry falls through" do
+      context =
+        complete_context(
+          garages: known_garages(),
+          attributes: %{
+            {"WKDY", "103"} => %{garage_id: @deleted_uuid, vehicle_type_id: @vehicle_type_uuid}
+          },
+          route_settings: %{
+            "R1" => %{garage_id: @garage_north_uuid, required_vehicle_type_id: nil}
+          }
+        )
+
+      # The deleted UUID is not a garage the block can pull out of, so the route
+      # answers instead of a dead identifier reaching every downstream plan.
+      assert Context.resolve_block(context, "103", [trip_row(%{})]) == %{
+               garage_id: @garage_north_uuid,
+               vehicle_type_id: @vehicle_type_uuid,
+               garage_source: :route,
+               conflict: nil
+             }
+    end
+
+    test "a row naming a vehicle type the context does not carry falls through" do
+      context =
+        complete_context(
+          vehicle_types: known_vehicle_types(),
+          attributes: %{{"WKDY", "104"} => %{garage_id: nil, vehicle_type_id: @deleted_uuid}},
+          route_settings: %{
+            "R1" => %{garage_id: nil, required_vehicle_type_id: @vehicle_type_uuid}
+          }
+        )
+
+      result = Context.resolve_block(context, "104", [trip_row(%{})])
+
+      assert result.vehicle_type_id == @vehicle_type_uuid
+      assert result.garage_id == nil
+      assert result.garage_source == :none
+    end
+
+    test "a route garage the context does not carry falls through to the default" do
+      context =
+        complete_context(
+          route_settings: %{"R1" => %{garage_id: @deleted_uuid, required_vehicle_type_id: nil}},
+          default_garage_id: @garage_uuid
+        )
+
+      result = Context.resolve_block(context, "101", [trip_row(%{})])
+
+      assert result.garage_id == @garage_uuid
+      assert result.garage_source == :default
+    end
+
+    test "the same block number on two services keeps two rows and two answers" do
+      context =
+        complete_context(
+          garages: known_garages(),
+          attributes: %{
+            {"WKDY", "101"} => %{garage_id: @garage_uuid, vehicle_type_id: nil},
+            {"SAT", "101"} => %{garage_id: @garage_north_uuid, vehicle_type_id: nil}
+          }
+        )
+
+      weekday = Context.resolve_block(context, "101", [trip_row(%{service_id: "WKDY"})])
+
+      saturday =
+        Context.resolve_block(context, "101", [trip_row(%{trip_id: "T-S", service_id: "SAT"})])
+
+      assert weekday.garage_id == @garage_uuid
+      assert saturday.garage_id == @garage_north_uuid
+      assert weekday.conflict == nil
+      assert saturday.conflict == nil
+    end
+
+    test "a row for another block or a service with no trip is not read" do
+      context =
+        complete_context(
+          garages: known_garages(),
+          attributes: %{
+            {"WKDY", "101"} => %{garage_id: @garage_uuid, vehicle_type_id: nil},
+            {"WKDY", "999"} => %{garage_id: @garage_north_uuid, vehicle_type_id: nil},
+            {"SAT", "101"} => %{garage_id: @garage_north_uuid, vehicle_type_id: nil}
+          }
+        )
+
+      result = Context.resolve_block(context, "101", [trip_row(%{service_id: "WKDY"})])
+
+      assert result.garage_id == @garage_uuid
+      assert result.conflict == nil
+    end
+
+    test "a row naming a garage beside a row naming none is not a conflict" do
+      context =
+        complete_context(
+          garages: known_garages(),
+          route_settings: %{},
+          attributes: %{
+            {"WKDY", "105"} => %{garage_id: @garage_uuid, vehicle_type_id: nil},
+            {"SCHOOL", "105"} => %{garage_id: nil, vehicle_type_id: nil}
+          }
+        )
+
+      result =
+        Context.resolve_block(context, "105", [
+          trip_row(%{trip_id: "T-1", service_id: "WKDY", hour: 8}),
+          trip_row(%{trip_id: "T-2", service_id: "SCHOOL", hour: 10})
+        ])
+
+      assert result.garage_id == @garage_uuid
+      assert result.garage_source == :attribute
+      assert result.conflict == nil
+    end
+
+    test "rows agreeing on the garage and disagreeing on the type are a conflict" do
+      context =
+        complete_context(
+          garages: known_garages(),
+          vehicle_types: known_vehicle_types(),
+          route_settings: %{},
+          attributes: %{
+            {"WKDY", "106"} => %{garage_id: @garage_uuid, vehicle_type_id: @vehicle_type_uuid},
+            {"SCHOOL", "106"} => %{garage_id: @garage_uuid, vehicle_type_id: @bus_type_uuid}
+          }
+        )
+
+      result =
+        Context.resolve_block(context, "106", [
+          trip_row(%{trip_id: "T-1", service_id: "WKDY", hour: 8}),
+          trip_row(%{trip_id: "T-2", service_id: "SCHOOL", hour: 10})
+        ])
+
+      assert result.garage_id == @garage_uuid
+      assert result.vehicle_type_id == @vehicle_type_uuid
+
+      assert result.conflict == [
+               %{service_id: "SCHOOL", garage_id: @garage_uuid, vehicle_type_id: @bus_type_uuid},
+               %{service_id: "WKDY", garage_id: @garage_uuid, vehicle_type_id: @vehicle_type_uuid}
+             ]
+    end
+
+    test "a block whose trips cannot be sequenced uses the smallest trip id" do
+      context =
+        complete_context(
+          garages: known_garages(),
+          route_settings: %{},
+          attributes: %{
+            {"WKDY", "107"} => %{garage_id: @garage_uuid, vehicle_type_id: nil},
+            {"SCHOOL", "107"} => %{garage_id: @garage_north_uuid, vehicle_type_id: nil}
+          }
+        )
+
+      # Frequency-based and unplottable trips are exactly what `Checks.sequence/1`
+      # leaves out, so this block has no sequence. It still has a first trip, and
+      # the answer must not depend on the order the caller passed them in.
+      unsequenced = [
+        trip_row(%{
+          trip_id: "T-2",
+          service_id: "SCHOOL",
+          frequency?: true,
+          plottable?: false,
+          hour: 8
+        }),
+        trip_row(%{trip_id: "T-1", service_id: "WKDY", plottable?: false, hour: 10})
+      ]
+
+      result = Context.resolve_block(context, "107", unsequenced)
+
+      assert result.garage_id == @garage_uuid
+      assert result.garage_source == :attribute
+      assert Context.resolve_block(context, "107", Enum.reverse(unsequenced)) == result
+    end
+
+    test "a block with no trips resolves to nothing" do
+      context = complete_context(default_garage_id: @garage_uuid)
+
+      # No trips means no services, so no row and no route: the version's default
+      # garage is still a real garage and still answers. A block that exists with
+      # nothing in it is described, not crashed on.
+      assert Context.resolve_block(context, "108", []) == %{
+               garage_id: @garage_uuid,
+               vehicle_type_id: nil,
+               garage_source: :default,
+               conflict: nil
+             }
+
+      assert Context.resolve_block(complete_context(), "108", []) == %{
+               garage_id: nil,
+               vehicle_type_id: nil,
+               garage_source: :none,
+               conflict: nil
+             }
+    end
+  end
+
+  describe "the resolution a real day load makes" do
+    setup do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+
+      calendar_service_fixture(organization.id, version.id, %{service_id: "WK", name: "Weekday"})
+
+      for {stop_id, lat} <- [{"S1", "40.0"}, {"S2", "40.01"}] do
+        stop_with_coordinates_fixture(organization.id, version.id, %{
+          stop_id: stop_id,
+          stop_lat: Decimal.new(lat),
+          stop_lon: Decimal.new("-74.0")
+        })
+      end
+
+      %{organization: organization, version: version}
+    end
+
+    test "reads the block's own row through the day the page loads", %{
+      organization: organization,
+      version: version
+    } do
+      main = garage_fixture(organization.id, %{"name" => "Main"})
+      north = garage_fixture(organization.id, %{"name" => "North"})
+      cutaway = vehicle_type_fixture(organization.id, %{"name" => "Cutaway"})
+
+      route_operating_setting_fixture(organization.id, version.id, %{
+        route_id: "R1",
+        garage_id: north.id
+      })
+
+      block_attribute_fixture(organization.id, version.id, %{
+        service_id: "WK",
+        block_id: "101",
+        garage_id: main.id,
+        vehicle_type_id: cutaway.id
+      })
+
+      trip!(organization, version, "a", block_id: "101")
+      trip!(organization, version, "b", block_id: "101", first: "10:00:00", last: "11:00:00")
+
+      assert {:ok, day} = load_day(organization.id, version.id, nil)
+
+      [block] = day.blocks
+      resolution = Context.resolve_block(day.context, "101", block.trips)
+
+      # The row wins over the route's home garage, which is the whole of R4's
+      # first rule, and the row's type is the block's type.
+      assert resolution.garage_id == main.id
+      assert resolution.vehicle_type_id == cutaway.id
+      assert resolution.garage_source == :attribute
+      assert resolution.conflict == nil
+    end
+
+    test "a block with no row resolves from the route the day's trips run", %{
+      organization: organization,
+      version: version
+    } do
+      north = garage_fixture(organization.id, %{"name" => "North"})
+      cutaway = vehicle_type_fixture(organization.id, %{"name" => "Cutaway"})
+
+      route_operating_setting_fixture(organization.id, version.id, %{
+        route_id: "R1",
+        garage_id: north.id,
+        required_vehicle_type_id: cutaway.id
+      })
+
+      trip!(organization, version, "a", block_id: "101")
+
+      assert {:ok, day} = load_day(organization.id, version.id, nil)
+
+      [block] = day.blocks
+      resolution = Context.resolve_block(day.context, "101", block.trips)
+
+      assert resolution.garage_id == north.id
+      assert resolution.vehicle_type_id == cutaway.id
+      assert resolution.garage_source == :route
+      assert resolution.conflict == nil
+    end
+
+    test "a block with neither a row nor a route garage falls back to the default", %{
+      organization: organization,
+      version: version
+    } do
+      main = garage_fixture(organization.id, %{"name" => "Main"})
+
+      assert {:ok, _settings} =
+               update_settings(organization.id, version.id, %{
+                 "default_garage_id" => main.id
+               })
+
+      trip!(organization, version, "a", block_id: "101")
+
+      assert {:ok, day} = load_day(organization.id, version.id, nil)
+
+      [block] = day.blocks
+      resolution = Context.resolve_block(day.context, "101", block.trips)
+
+      assert resolution.garage_id == main.id
+      assert resolution.garage_source == :default
     end
   end
 
@@ -427,18 +856,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
   defp complete_context(opts \\ []) do
     base = %Context{
       min_layover_minutes: 7,
-      garages: %{
-        @garage_uuid => %{
-          id: @garage_uuid,
-          garage_id: "G-MAIN",
-          name: "Main",
-          lat: 40.7128,
-          lon: -74.006
-        }
-      },
-      vehicle_types: %{
-        @vehicle_type_uuid => %{id: @vehicle_type_uuid, name: "Cutaway", max_out_minutes: 330}
-      },
+      garages: known_garages(),
+      vehicle_types: known_vehicle_types(),
       route_settings: %{"R1" => %{garage_id: @garage_uuid, required_vehicle_type_id: nil}},
       attributes: %{{"WKDY", "101"} => %{garage_id: @garage_uuid, vehicle_type_id: nil}},
       entered_minutes: %{{{:stop, "S1"}, {:stop, "S2"}} => 12},
@@ -448,6 +867,66 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
     }
 
     Enum.reduce(opts, base, fn {key, value}, acc -> Map.put(acc, key, value) end)
+  end
+
+  # Two garages and two types, so a resolution can be asked for one of each and
+  # for a second one to disagree with. `@garage_uuid` is Main and
+  # `@garage_north_uuid` is North, which is what the R4 cases below name.
+  defp known_garages do
+    %{
+      @garage_uuid => garage(@garage_uuid, "Main"),
+      @garage_north_uuid => garage(@garage_north_uuid, "North")
+    }
+  end
+
+  defp known_vehicle_types do
+    %{
+      @vehicle_type_uuid => %{id: @vehicle_type_uuid, name: "Cutaway", max_out_minutes: 330},
+      @bus_type_uuid => %{id: @bus_type_uuid, name: "Bus", max_out_minutes: nil}
+    }
+  end
+
+  defp garage(id, name) do
+    %{id: id, garage_id: "G-" <> name, name: name, lat: 40.0, lon: -74.0}
+  end
+
+  # One `Checks.trip_row()` for the pure resolution cases: a plottable,
+  # non-frequency trip that sequences, anchored on `hour` so a case can put two
+  # trips of the same block in a known order. `Checks.sequence/1` reads exactly
+  # these fields, and building the rest of the row keeps the case honest about
+  # the shape `resolve_block/3` is handed.
+  defp trip_row(attrs) do
+    defaults = %{
+      id: Ecto.UUID.generate(),
+      trip_id: "T-1",
+      route_id: "R1",
+      service_id: "WKDY",
+      block_id: "101",
+      trip_headsign: nil,
+      route_pattern_id: nil,
+      shape_id: nil,
+      updated_at: ~U[2026-01-01 00:00:00Z],
+      frequency?: false,
+      headway_secs: nil,
+      first_arrival: 8 * 3600,
+      first_departure: 8 * 3600,
+      last_arrival: 9 * 3600,
+      last_departure: 9 * 3600,
+      first_stop: nil,
+      last_stop: nil,
+      plottable?: true
+    }
+
+    attrs = Map.new(attrs)
+
+    defaults
+    |> Map.merge(Map.drop(attrs, [:hour]))
+    |> then(fn row ->
+      case Map.fetch(attrs, :hour) do
+        {:ok, hour} -> %{row | first_arrival: hour * 3600, first_departure: hour * 3600}
+        :error -> row
+      end
+    end)
   end
 
   # Writes the shape's points and returns the path length in kilometres expected
