@@ -3838,6 +3838,24 @@ body:has(#home-page) {
   }
 }
 
+/* ── Evolutions timeline: the closed span of a bar and its gridlines ──
+   A closed window on the timeline is the error ink plus a diagonal hatch, the
+   way the v2 reference draws it, so the status never depends on colour alone.
+   Both rules are scoped to the feature root and use the DS error token the rest
+   of the feature already uses. */
+#evolutions .evo-closed-bar {
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--color-error) 18%, white) 0 4px,
+    var(--color-error) 4px 6px
+  );
+  border: 1.5px solid var(--color-error);
+}
+
+#evolutions .evo-axis-grid {
+  background-color: var(--color-subtle);
+}
+
 /* ── Floorplan pathway drawer: the bidirectional checkbox label ──
    daisyUI's `.label` is `white-space: nowrap`, so the pathway form's
    "Can be traversed in both directions?" label ran past 320px and the
