@@ -35,6 +35,9 @@ alias GtfsPlanner.Accounts
 alias GtfsPlanner.Accounts.User
 alias GtfsPlanner.Accounts.UserToken
 alias GtfsPlanner.Gtfs
+alias GtfsPlanner.Gtfs.Agency
+alias GtfsPlanner.Gtfs.Calendar
+alias GtfsPlanner.Gtfs.CalendarAttribute
 alias GtfsPlanner.Gtfs.ChangeLog
 alias GtfsPlanner.Gtfs.DiagramStorage
 alias GtfsPlanner.Gtfs.Export.ArtifactStorage
@@ -44,11 +47,18 @@ alias GtfsPlanner.Gtfs.FareAttribute
 alias GtfsPlanner.Gtfs.FareRule
 alias GtfsPlanner.Gtfs.FareZones
 alias GtfsPlanner.Gtfs.FeedInfo
+alias GtfsPlanner.Gtfs.Flex
 alias GtfsPlanner.Gtfs.FloorplanTransform
 alias GtfsPlanner.Gtfs.Import.ChangeRuns
 alias GtfsPlanner.Gtfs.Import.Run, as: ImportRun
+alias GtfsPlanner.Gtfs.Route
+alias GtfsPlanner.Gtfs.RoutePattern
+alias GtfsPlanner.Gtfs.RoutePatternStop
+alias GtfsPlanner.Gtfs.Shape
 alias GtfsPlanner.Gtfs.Stop
+alias GtfsPlanner.Gtfs.StopTime
 alias GtfsPlanner.Gtfs.Transfer
+alias GtfsPlanner.Gtfs.Trip
 alias GtfsPlanner.Organizations
 alias GtfsPlanner.Reachability.Runner
 alias GtfsPlanner.Repo
@@ -2631,6 +2641,881 @@ case Accounts.register_first_admin(%{
         Enum.map_join(fare_scale_zone_list, ", ", fn zone ->
           "#{zone.zone_id}=#{zone.stop_count}"
         end) <> ")"
+    )
+
+    # ── Flex fixture version (package 22; the data steps 18–27 capture) ──
+    #
+    # "Browser Flex Version" gives the flex pages their data: an agency, weekday
+    # and Saturday calendars with names, Route 20 with an outbound and an
+    # inbound pattern (one shape and two weekday trips each way, one Saturday
+    # trip each way), five stops along the Newport–Toledo valley road, and the
+    # two services the flex list, the service page and the area editor render:
+    #
+    #   * "Newport Dial-a-Ride", an area service with one drawn Newport area,
+    #     weekday 07:00–18:00 and Saturday 09:00–16:00 hours and an earlier-day
+    #     booking rule, following the prototype's dial-a-ride fixture;
+    #   * "Valley Line detours", a detour service on Route 20 over the Newport
+    #     Heights–Toledo Junction stretch, ¾ mile (1200 m), wording set, one
+    #     same-day booking rule, on the weekday and Saturday calendars.
+    #
+    # The two services are written through the production `Flex.create_service/3`
+    # and `Flex.save_service/5`, so the seed stores exactly what the service page
+    # would, geometry normalisation included. The area polygon is the Census
+    # place boundary for Newport from the prototype's
+    # `.specs/22-gtfs-flex/evidence/prototype-src/basemap/census/place-Newport.geojson`,
+    # repaired (the published ring self-intersects at −124.047924,44.602130) and
+    # simplified to 342 positions at a 0.0003° Douglas-Peucker tolerance, which
+    # is 0.06% of the original area and well inside R8's 5,000-position limit.
+    # Feed rows are direct inserts with one fixed seed timestamp, the way the
+    # fare-zones fixtures above are written: a pattern's `shape_id` and a pattern
+    # stop's `shape_dist_traveled` are not castable through the changesets.
+    #
+    # The version is created before the "latest default" restore below, so the
+    # diagram version stays the organization's default version.
+    {:ok, flex_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Flex Version"})
+
+    flex_seed_at = ~U[2026-09-01 00:00:00.000000Z]
+    flex_today = Gtfs.DisplayClock.today(org.id, flex_version.id).date
+    flex_coordinate = fn value -> Decimal.new(:erlang.float_to_binary(value, decimals: 6)) end
+    flex_id = fn -> Ecto.UUID.generate() end
+    flex_start_date = Date.add(flex_today, -30)
+    flex_end_date = Date.add(flex_today, 335)
+
+    {1, nil} =
+      Repo.insert_all(Agency, [
+        %{
+          id: flex_id.(),
+          organization_id: org.id,
+          gtfs_version_id: flex_version.id,
+          agency_id: "NCT",
+          agency_name: "North Coast Transit",
+          agency_url: "https://northcoast.example",
+          agency_timezone: "America/Los_Angeles",
+          agency_phone: "(541) 555-0142",
+          inserted_at: flex_seed_at,
+          updated_at: flex_seed_at
+        }
+      ])
+
+    {1, nil} =
+      Repo.insert_all(Route, [
+        %{
+          id: flex_id.(),
+          organization_id: org.id,
+          gtfs_version_id: flex_version.id,
+          route_id: "20",
+          route_short_name: "20",
+          route_long_name: "Valley Line",
+          route_type: 3,
+          agency_id: "NCT",
+          route_color: "0D737D",
+          route_text_color: "FFFFFF",
+          active: true,
+          inserted_at: flex_seed_at,
+          updated_at: flex_seed_at
+        }
+      ])
+
+    # Newport Heights and Olalla Road sit east of the Newport town limits, so
+    # only the city-center stop falls inside the drawn area; that is what the
+    # real valley road does.
+    flex_stops = [
+      {"BROWSER_FLEX_NP1", "Newport City Center", 44.63437, -124.05343},
+      {"BROWSER_FLEX_NP2", "Newport Heights", 44.63536, -124.03225},
+      {"BROWSER_FLEX_OLR", "Olalla Road", 44.63162, -123.98500},
+      {"BROWSER_FLEX_TLD1", "Toledo Junction", 44.63187, -123.95000},
+      {"BROWSER_FLEX_TLD2", "Toledo City Hall", 44.62202, -123.93740}
+    ]
+
+    {5, nil} =
+      Repo.insert_all(
+        Stop,
+        Enum.map(flex_stops, fn {stop_id, stop_name, lat, lon} ->
+          %{
+            id: flex_id.(),
+            organization_id: org.id,
+            gtfs_version_id: flex_version.id,
+            stop_id: stop_id,
+            stop_name: stop_name,
+            stop_lat: flex_coordinate.(lat),
+            stop_lon: flex_coordinate.(lon),
+            location_type: 0,
+            inserted_at: flex_seed_at,
+            updated_at: flex_seed_at
+          }
+        end)
+      )
+
+    # Weekday and Saturday service, each named through a calendar attribute (the
+    # flex hours rows and the rider text read those names). The span stays
+    # relative to the version's local today so the week strip on the service page
+    # always shows live service.
+    flex_calendars = [
+      {"weekday", "Weekday", "Weekdays", {1, 1, 1, 1, 1, 0, 0}},
+      {"saturday", "Saturday", "Saturdays", {0, 0, 0, 0, 0, 1, 0}}
+    ]
+
+    {2, nil} =
+      Repo.insert_all(
+        Calendar,
+        Enum.map(flex_calendars, fn {service_id, _name, _plural, days} ->
+          {monday, tuesday, wednesday, thursday, friday, saturday, sunday} = days
+
+          %{
+            id: flex_id.(),
+            organization_id: org.id,
+            gtfs_version_id: flex_version.id,
+            service_id: service_id,
+            monday: monday,
+            tuesday: tuesday,
+            wednesday: wednesday,
+            thursday: thursday,
+            friday: friday,
+            saturday: saturday,
+            sunday: sunday,
+            start_date: flex_start_date,
+            end_date: flex_end_date,
+            inserted_at: flex_seed_at,
+            updated_at: flex_seed_at
+          }
+        end)
+      )
+
+    {2, nil} =
+      Repo.insert_all(
+        CalendarAttribute,
+        Enum.map(flex_calendars, fn {service_id, name, plural, _days} ->
+          %{
+            id: flex_id.(),
+            organization_id: org.id,
+            gtfs_version_id: flex_version.id,
+            service_id: service_id,
+            service_schedule_name: name,
+            service_description: plural,
+            service_schedule_type: nil,
+            service_schedule_typicality: 0,
+            rating_start_date: nil,
+            rating_end_date: nil,
+            rating_description: nil,
+            inserted_at: flex_seed_at,
+            updated_at: flex_seed_at
+          }
+        end)
+      )
+
+    # One shape per direction along the valley road, with the stop-to-stop
+    # distances the pattern stops and the detour zone cuts measure against.
+    flex_shapes = [
+      {"BROWSER_FLEX_20_OUT",
+       [
+         {-124.05343, 44.63437, 1, 0},
+         {-124.03225, 44.63536, 2, 1680},
+         {-123.98500, 44.63162, 3, 5440},
+         {-123.95000, 44.63187, 4, 8210},
+         {-123.93740, 44.62202, 5, 9690}
+       ]},
+      {"BROWSER_FLEX_20_IN",
+       [
+         {-123.93740, 44.62202, 1, 0},
+         {-123.95000, 44.63187, 2, 1480},
+         {-123.98500, 44.63162, 3, 4250},
+         {-124.03225, 44.63536, 4, 8010},
+         {-124.05343, 44.63437, 5, 9690}
+       ]}
+    ]
+
+    {10, nil} =
+      Repo.insert_all(
+        Shape,
+        Enum.flat_map(flex_shapes, fn {shape_id, points} ->
+          Enum.map(points, fn {lon, lat, sequence, distance} ->
+            %{
+              id: flex_id.(),
+              organization_id: org.id,
+              gtfs_version_id: flex_version.id,
+              shape_id: shape_id,
+              shape_pt_lon: flex_coordinate.(lon),
+              shape_pt_lat: flex_coordinate.(lat),
+              shape_pt_sequence: sequence,
+              shape_dist_traveled: Decimal.new(distance),
+              inserted_at: flex_seed_at,
+              updated_at: flex_seed_at
+            }
+          end)
+        end)
+      )
+
+    # Two trips a direction on the weekday calendar and one on Saturdays, each
+    # calling at all five stops in its direction's order. The trips stay in the
+    # default "pending" pattern-derivation state, like the export fixtures: the
+    # patterns below are the flex detour derivation's input, not a link.
+    flex_trips = [
+      {"BROWSER_FLEX_20_OUT_1", 0, "weekday", "BROWSER_FLEX_20_OUT", "Toledo",
+       [
+         {"BROWSER_FLEX_NP1", "07:00:00"},
+         {"BROWSER_FLEX_NP2", "07:10:00"},
+         {"BROWSER_FLEX_OLR", "07:22:00"},
+         {"BROWSER_FLEX_TLD1", "07:32:00"},
+         {"BROWSER_FLEX_TLD2", "07:45:00"}
+       ]},
+      {"BROWSER_FLEX_20_OUT_2", 0, "weekday", "BROWSER_FLEX_20_OUT", "Toledo",
+       [
+         {"BROWSER_FLEX_NP1", "12:00:00"},
+         {"BROWSER_FLEX_NP2", "12:10:00"},
+         {"BROWSER_FLEX_OLR", "12:22:00"},
+         {"BROWSER_FLEX_TLD1", "12:32:00"},
+         {"BROWSER_FLEX_TLD2", "12:45:00"}
+       ]},
+      {"BROWSER_FLEX_20_OUT_SAT", 0, "saturday", "BROWSER_FLEX_20_OUT", "Toledo",
+       [
+         {"BROWSER_FLEX_NP1", "09:00:00"},
+         {"BROWSER_FLEX_NP2", "09:10:00"},
+         {"BROWSER_FLEX_OLR", "09:22:00"},
+         {"BROWSER_FLEX_TLD1", "09:32:00"},
+         {"BROWSER_FLEX_TLD2", "09:45:00"}
+       ]},
+      {"BROWSER_FLEX_20_IN_1", 1, "weekday", "BROWSER_FLEX_20_IN", "Newport",
+       [
+         {"BROWSER_FLEX_TLD2", "08:00:00"},
+         {"BROWSER_FLEX_TLD1", "08:13:00"},
+         {"BROWSER_FLEX_OLR", "08:23:00"},
+         {"BROWSER_FLEX_NP2", "08:35:00"},
+         {"BROWSER_FLEX_NP1", "08:45:00"}
+       ]},
+      {"BROWSER_FLEX_20_IN_2", 1, "weekday", "BROWSER_FLEX_20_IN", "Newport",
+       [
+         {"BROWSER_FLEX_TLD2", "16:00:00"},
+         {"BROWSER_FLEX_TLD1", "16:13:00"},
+         {"BROWSER_FLEX_OLR", "16:23:00"},
+         {"BROWSER_FLEX_NP2", "16:35:00"},
+         {"BROWSER_FLEX_NP1", "16:45:00"}
+       ]},
+      {"BROWSER_FLEX_20_IN_SAT", 1, "saturday", "BROWSER_FLEX_20_IN", "Newport",
+       [
+         {"BROWSER_FLEX_TLD2", "11:00:00"},
+         {"BROWSER_FLEX_TLD1", "11:13:00"},
+         {"BROWSER_FLEX_OLR", "11:23:00"},
+         {"BROWSER_FLEX_NP2", "11:35:00"},
+         {"BROWSER_FLEX_NP1", "11:45:00"}
+       ]}
+    ]
+
+    {6, nil} =
+      Repo.insert_all(
+        Trip,
+        Enum.map(flex_trips, fn {trip_id, direction_id, service_id, shape_id, headsign, _times} ->
+          %{
+            id: flex_id.(),
+            organization_id: org.id,
+            gtfs_version_id: flex_version.id,
+            trip_id: trip_id,
+            route_id: "20",
+            service_id: service_id,
+            trip_headsign: headsign,
+            direction_id: direction_id,
+            block_id: "BROWSER_FLEX_B20",
+            shape_id: shape_id,
+            inserted_at: flex_seed_at,
+            updated_at: flex_seed_at
+          }
+        end)
+      )
+
+    {30, nil} =
+      Repo.insert_all(
+        StopTime,
+        flex_trips
+        |> Enum.flat_map(fn {trip_id, _direction_id, _service_id, _shape_id, _headsign, times} ->
+          times
+          |> Enum.with_index(1)
+          |> Enum.map(fn {{stop_id, time}, sequence} ->
+            %{
+              id: flex_id.(),
+              organization_id: org.id,
+              gtfs_version_id: flex_version.id,
+              trip_id: trip_id,
+              stop_id: stop_id,
+              stop_sequence: sequence,
+              arrival_time: time,
+              departure_time: time,
+              inserted_at: flex_seed_at,
+              updated_at: flex_seed_at
+            }
+          end)
+        end)
+      )
+
+    # Outbound and inbound patterns with the same stops as the trips. The detour
+    # service's zones come from these patterns and shapes.
+    flex_patterns = [
+      {"BROWSER_FLEX_P20_OUT", "BROWSER_FLEX_20_OUT", 0, "Toledo", "Newport – Toledo",
+       [
+         {"BROWSER_FLEX_NP1", 1, 0},
+         {"BROWSER_FLEX_NP2", 2, 1680},
+         {"BROWSER_FLEX_OLR", 3, 5440},
+         {"BROWSER_FLEX_TLD1", 4, 8210},
+         {"BROWSER_FLEX_TLD2", 5, 9690}
+       ]},
+      {"BROWSER_FLEX_P20_IN", "BROWSER_FLEX_20_IN", 1, "Newport", "Toledo – Newport",
+       [
+         {"BROWSER_FLEX_TLD2", 1, 0},
+         {"BROWSER_FLEX_TLD1", 2, 1480},
+         {"BROWSER_FLEX_OLR", 3, 4250},
+         {"BROWSER_FLEX_NP2", 4, 8010},
+         {"BROWSER_FLEX_NP1", 5, 9690}
+       ]}
+    ]
+
+    flex_pattern_rows =
+      Enum.map(flex_patterns, fn {pattern_id, shape_id, direction_id, headsign, name, _stops} ->
+        %{
+          id: flex_id.(),
+          organization_id: org.id,
+          gtfs_version_id: flex_version.id,
+          route_pattern_id: pattern_id,
+          route_id: "20",
+          direction_id: direction_id,
+          headsign: headsign,
+          route_pattern_name: name,
+          route_pattern_time_desc: "All day",
+          route_pattern_typicality: 1,
+          route_pattern_sort_order: direction_id,
+          shape_id: shape_id,
+          inserted_at: flex_seed_at,
+          updated_at: flex_seed_at
+        }
+      end)
+
+    {2, nil} = Repo.insert_all(RoutePattern, flex_pattern_rows)
+
+    {10, nil} =
+      Repo.insert_all(
+        RoutePatternStop,
+        Enum.flat_map(flex_patterns, fn {pattern_id, _shape_id, _direction_id, _headsign, _name,
+                                         stops} ->
+          pattern = Enum.find(flex_pattern_rows, &(&1.route_pattern_id == pattern_id))
+
+          Enum.map(stops, fn {stop_id, position, distance} ->
+            %{
+              id: flex_id.(),
+              route_pattern_id: pattern.id,
+              organization_id: org.id,
+              gtfs_version_id: flex_version.id,
+              stop_id: stop_id,
+              position: position,
+              shape_dist_traveled: Decimal.new(distance),
+              inserted_at: flex_seed_at,
+              updated_at: flex_seed_at
+            }
+          end)
+        end)
+      )
+
+    # The drawn Newport area: the Census place polygon from the prototype's
+    # basemap, valid and simplified (see the block comment above).
+    flex_newport_area = %{
+      "type" => "Polygon",
+      "coordinates" => [
+        [
+          [-124.048056, 44.598582],
+          [-124.046076, 44.597975],
+          [-124.046524, 44.596962],
+          [-124.04588, 44.596816],
+          [-124.042773, 44.60053],
+          [-124.042845, 44.598462],
+          [-124.041238, 44.598473],
+          [-124.041332, 44.594963],
+          [-124.048187, 44.595035],
+          [-124.048097, 44.591496],
+          [-124.053342, 44.591566],
+          [-124.053277, 44.587998],
+          [-124.048015, 44.587945],
+          [-124.048148, 44.573647],
+          [-124.053421, 44.573633],
+          [-124.053404, 44.570995],
+          [-124.05584, 44.570971],
+          [-124.055748, 44.566458],
+          [-124.054218, 44.566422],
+          [-124.054204, 44.562099],
+          [-124.05324, 44.5621],
+          [-124.053462, 44.560893],
+          [-124.052652, 44.560808],
+          [-124.050876, 44.562099],
+          [-124.049257, 44.562093],
+          [-124.049099, 44.558309],
+          [-124.051877, 44.558265],
+          [-124.051802, 44.554556],
+          [-124.048964, 44.554575],
+          [-124.0488, 44.550607],
+          [-124.054256, 44.550552],
+          [-124.054068, 44.546985],
+          [-124.059234, 44.546893],
+          [-124.059184, 44.545139],
+          [-124.060759, 44.545146],
+          [-124.060317, 44.545584],
+          [-124.060746, 44.546971],
+          [-124.061719, 44.548076],
+          [-124.062536, 44.547425],
+          [-124.062036, 44.54702],
+          [-124.063481, 44.546511],
+          [-124.064351, 44.547064],
+          [-124.064379, 44.548783],
+          [-124.063236, 44.548815],
+          [-124.062408, 44.552321],
+          [-124.061857, 44.55233],
+          [-124.061862, 44.556047],
+          [-124.070887, 44.556016],
+          [-124.070888, 44.556722],
+          [-124.071355, 44.556733],
+          [-124.07109, 44.557771],
+          [-124.069308, 44.557769],
+          [-124.069309, 44.558739],
+          [-124.070958, 44.558738],
+          [-124.07074, 44.559635],
+          [-124.071736, 44.559819],
+          [-124.071718, 44.56161],
+          [-124.071029, 44.561779],
+          [-124.071026, 44.562994],
+          [-124.070254, 44.564172],
+          [-124.070568, 44.565405],
+          [-124.069193, 44.565613],
+          [-124.068745, 44.567355],
+          [-124.066001, 44.567325],
+          [-124.061257, 44.565707],
+          [-124.059393, 44.566254],
+          [-124.061179, 44.566545],
+          [-124.060595, 44.570079],
+          [-124.063671, 44.570096],
+          [-124.063682, 44.571843],
+          [-124.067271, 44.571847],
+          [-124.065907, 44.575946],
+          [-124.065801, 44.578548],
+          [-124.064856, 44.580977],
+          [-124.064337, 44.58454],
+          [-124.063761, 44.584507],
+          [-124.063767, 44.584943],
+          [-124.064281, 44.584977],
+          [-124.063197, 44.592078],
+          [-124.060866, 44.59293],
+          [-124.058467, 44.592129],
+          [-124.05849, 44.592562],
+          [-124.06233, 44.593846],
+          [-124.063817, 44.591594],
+          [-124.066066, 44.591357],
+          [-124.065808, 44.589521],
+          [-124.068492, 44.590132],
+          [-124.068606, 44.588883],
+          [-124.06979, 44.588334],
+          [-124.070392, 44.592768],
+          [-124.068776, 44.596284],
+          [-124.068687, 44.599363],
+          [-124.06804, 44.601546],
+          [-124.068429, 44.60488],
+          [-124.07191, 44.609548],
+          [-124.071172, 44.610002],
+          [-124.073439, 44.61054],
+          [-124.072919, 44.611324],
+          [-124.073444, 44.611802],
+          [-124.081274, 44.608457],
+          [-124.08358, 44.611147],
+          [-124.067254, 44.617706],
+          [-124.065706, 44.619534],
+          [-124.066532, 44.622642],
+          [-124.068738, 44.625346],
+          [-124.067658, 44.630628],
+          [-124.065457, 44.636191],
+          [-124.065685, 44.636703],
+          [-124.064332, 44.640199],
+          [-124.064056, 44.642687],
+          [-124.063377, 44.643705],
+          [-124.061823, 44.65339],
+          [-124.061289, 44.661963],
+          [-124.061824, 44.66272],
+          [-124.0627, 44.670432],
+          [-124.063892, 44.673087],
+          [-124.06464, 44.673608],
+          [-124.066714, 44.67288],
+          [-124.068853, 44.672823],
+          [-124.069885, 44.673357],
+          [-124.070751, 44.672647],
+          [-124.07106, 44.672964],
+          [-124.072487, 44.672596],
+          [-124.072591, 44.673068],
+          [-124.073336, 44.672635],
+          [-124.073351, 44.673392],
+          [-124.07449, 44.672898],
+          [-124.07515, 44.672991],
+          [-124.075608, 44.673686],
+          [-124.075848, 44.673289],
+          [-124.075773, 44.673829],
+          [-124.0761, 44.673551],
+          [-124.076276, 44.674091],
+          [-124.076322, 44.673752],
+          [-124.077172, 44.67428],
+          [-124.077506, 44.675245],
+          [-124.078853, 44.676318],
+          [-124.079269, 44.676407],
+          [-124.079866, 44.675531],
+          [-124.080306, 44.676191],
+          [-124.080697, 44.675673],
+          [-124.080816, 44.676136],
+          [-124.079907, 44.677256],
+          [-124.078952, 44.677309],
+          [-124.079038, 44.677727],
+          [-124.077792, 44.676925],
+          [-124.077464, 44.677372],
+          [-124.077269, 44.676794],
+          [-124.076796, 44.677348],
+          [-124.075717, 44.677016],
+          [-124.073816, 44.677305],
+          [-124.070458, 44.680128],
+          [-124.068537, 44.68458],
+          [-124.069235, 44.685987],
+          [-124.068977, 44.6874],
+          [-124.066779, 44.693206],
+          [-124.06651, 44.695551],
+          [-124.060722, 44.695573],
+          [-124.060563, 44.699197],
+          [-124.054291, 44.699175],
+          [-124.054485, 44.696409],
+          [-124.055565, 44.696324],
+          [-124.055594, 44.692632],
+          [-124.061007, 44.692877],
+          [-124.061054, 44.692079],
+          [-124.057317, 44.692038],
+          [-124.057325, 44.690241],
+          [-124.054053, 44.690326],
+          [-124.054858, 44.689525],
+          [-124.054878, 44.688232],
+          [-124.052187, 44.688214],
+          [-124.052277, 44.6739],
+          [-124.057344, 44.673919],
+          [-124.057376, 44.668925],
+          [-124.057205, 44.668521],
+          [-124.056339, 44.668696],
+          [-124.054839, 44.66454],
+          [-124.049341, 44.666271],
+          [-124.049602, 44.66695],
+          [-124.049152, 44.66721],
+          [-124.050444, 44.667898],
+          [-124.050907, 44.67027],
+          [-124.047201, 44.670258],
+          [-124.047126, 44.659311],
+          [-124.041324, 44.659365],
+          [-124.041318, 44.657405],
+          [-124.037955, 44.658868],
+          [-124.037671, 44.659424],
+          [-124.038558, 44.660056],
+          [-124.03803, 44.660414],
+          [-124.037315, 44.65968],
+          [-124.037045, 44.660671],
+          [-124.027212, 44.660706],
+          [-124.026836, 44.661617],
+          [-124.026744, 44.666587],
+          [-124.021855, 44.66656],
+          [-124.021938, 44.65948],
+          [-124.019444, 44.658893],
+          [-124.018083, 44.660848],
+          [-124.016996, 44.660847],
+          [-124.017026, 44.656976],
+          [-124.013161, 44.656087],
+          [-124.012786, 44.657239],
+          [-124.012117, 44.657537],
+          [-124.012124, 44.655688],
+          [-124.012772, 44.655715],
+          [-124.013822, 44.654839],
+          [-124.014762, 44.655753],
+          [-124.040526, 44.655739],
+          [-124.040525, 44.653942],
+          [-124.043822, 44.653941],
+          [-124.043822, 44.652132],
+          [-124.042954, 44.652138],
+          [-124.042953, 44.648302],
+          [-124.041792, 44.648309],
+          [-124.041619, 44.648791],
+          [-124.030902, 44.648849],
+          [-124.031469, 44.645305],
+          [-124.035553, 44.64527],
+          [-124.035551, 44.644606],
+          [-124.034868, 44.644607],
+          [-124.034864, 44.641784],
+          [-124.032031, 44.641786],
+          [-124.031542, 44.641039],
+          [-124.030185, 44.640636],
+          [-124.03024, 44.639965],
+          [-124.029756, 44.639831],
+          [-124.03007, 44.639401],
+          [-124.033414, 44.639455],
+          [-124.033414, 44.639849],
+          [-124.034859, 44.639437],
+          [-124.039973, 44.639419],
+          [-124.039781, 44.638148],
+          [-124.037712, 44.638152],
+          [-124.036825, 44.637421],
+          [-124.03684, 44.636481],
+          [-124.037765, 44.636503],
+          [-124.037706, 44.63585],
+          [-124.035321, 44.6353],
+          [-124.035326, 44.634543],
+          [-124.034054, 44.635158],
+          [-124.033585, 44.633496],
+          [-124.032584, 44.633498],
+          [-124.032573, 44.631084],
+          [-124.0301, 44.631114],
+          [-124.030112, 44.633606],
+          [-124.03116, 44.633611],
+          [-124.031149, 44.63452],
+          [-124.027635, 44.634389],
+          [-124.027637, 44.63224],
+          [-124.028406, 44.632231],
+          [-124.028401, 44.631137],
+          [-124.027633, 44.631143],
+          [-124.027636, 44.632189],
+          [-124.02467, 44.632172],
+          [-124.024671, 44.632967],
+          [-124.024095, 44.633203],
+          [-124.024094, 44.632168],
+          [-124.022699, 44.632166],
+          [-124.022509, 44.633872],
+          [-124.020549, 44.634351],
+          [-124.019066, 44.634279],
+          [-124.018294, 44.632189],
+          [-124.020005, 44.632227],
+          [-124.020003, 44.632818],
+          [-124.020789, 44.632818],
+          [-124.021021, 44.631886],
+          [-124.020443, 44.630987],
+          [-124.019242, 44.631123],
+          [-124.01932, 44.631685],
+          [-124.018616, 44.630826],
+          [-124.019863, 44.630642],
+          [-124.021094, 44.629559],
+          [-124.022641, 44.629545],
+          [-124.022218, 44.614354],
+          [-124.028407, 44.614459],
+          [-124.03345, 44.612279],
+          [-124.035066, 44.61234],
+          [-124.035597, 44.611772],
+          [-124.04037, 44.61163],
+          [-124.042535, 44.612726],
+          [-124.043293, 44.612674],
+          [-124.04252, 44.611709],
+          [-124.044229, 44.611765],
+          [-124.044214, 44.610827],
+          [-124.0462, 44.611063],
+          [-124.046213, 44.611851],
+          [-124.047678, 44.611604],
+          [-124.047658, 44.609185],
+          [-124.042478, 44.609007],
+          [-124.041933, 44.608437],
+          [-124.041796, 44.607183],
+          [-124.042722, 44.601989],
+          [-124.047924, 44.60213],
+          [-124.048056, 44.598582]
+        ],
+        [
+          [-124.047762, 44.605807],
+          [-124.047727, 44.607126],
+          [-124.050197, 44.607161],
+          [-124.050219, 44.606324],
+          [-124.051195, 44.606348],
+          [-124.051514, 44.605771],
+          [-124.051516, 44.609274],
+          [-124.052167, 44.609312],
+          [-124.05156, 44.610254],
+          [-124.050242, 44.610178],
+          [-124.050248, 44.611542],
+          [-124.051127, 44.610551],
+          [-124.052767, 44.610621],
+          [-124.05274, 44.612135],
+          [-124.052845, 44.609364],
+          [-124.055818, 44.609488],
+          [-124.055946, 44.60617],
+          [-124.052916, 44.606274],
+          [-124.053017, 44.605268],
+          [-124.054814, 44.60529],
+          [-124.054297, 44.606082],
+          [-124.058127, 44.60616],
+          [-124.058264, 44.603619],
+          [-124.057332, 44.603627],
+          [-124.057568, 44.603256],
+          [-124.053079, 44.603442],
+          [-124.053131, 44.602205],
+          [-124.047924, 44.60213],
+          [-124.047762, 44.605807]
+        ],
+        [
+          [-124.053208, 44.679018],
+          [-124.053167, 44.680306],
+          [-124.053772, 44.680252],
+          [-124.053873, 44.679039],
+          [-124.053208, 44.679018]
+        ],
+        [
+          [-124.066901, 44.598297],
+          [-124.058509, 44.597649],
+          [-124.058462, 44.598706],
+          [-124.067567, 44.599038],
+          [-124.067585, 44.598325],
+          [-124.066901, 44.598297]
+        ],
+        [
+          [-124.058323, 44.598816],
+          [-124.054205, 44.598723],
+          [-124.054071, 44.602202],
+          [-124.056849, 44.602203],
+          [-124.056474, 44.602757],
+          [-124.058283, 44.602756],
+          [-124.058323, 44.598816]
+        ]
+      ]
+    }
+
+    {:ok, flex_area_service} =
+      Flex.create_service(org.id, flex_version.id, %{name: "Newport Dial-a-Ride", kind: :area})
+
+    {:ok, _flex_area_saved} =
+      Flex.save_service(
+        org.id,
+        flex_version.id,
+        flex_area_service,
+        %{
+          phone: "(541) 555-0142",
+          phone_hours: %{"days" => "Mon–Fri", "from" => "08:00", "to" => "17:00"},
+          info_url: "https://northcoast.example/dial-a-ride",
+          hours: [
+            %{area_key: "a1", service_id: "weekday", start: "07:00", end: "18:00"},
+            %{area_key: "a1", service_id: "saturday", start: "09:00", end: "16:00"}
+          ],
+          booking_rules: [%{when: :earlier_day, days: 1, by: "16:00"}]
+        },
+        [%{key: "a1", name: "Newport", source: :drawn, geojson: flex_newport_area}]
+      )
+
+    {:ok, flex_detour_service} =
+      Flex.create_service(org.id, flex_version.id, %{
+        name: "Valley Line detours",
+        kind: :detour,
+        route_id: "20"
+      })
+
+    {:ok, _flex_detour_saved} =
+      Flex.save_service(
+        org.id,
+        flex_version.id,
+        flex_detour_service,
+        %{
+          phone: "(541) 555-0142",
+          distance_m: 1200,
+          measure: :route,
+          wording: "up to ¾ mile from the route",
+          dropoffs: :tell_driver,
+          first_stop_id: "BROWSER_FLEX_NP2",
+          last_stop_id: "BROWSER_FLEX_TLD1",
+          calendar_service_ids: ["weekday", "saturday"],
+          booking_rules: [%{when: :same_day, minutes: 120}]
+        },
+        []
+      )
+
+    # The seed is its own verifier: it reads the version back through the
+    # production functions and raises rather than printing counts the flex steps
+    # cannot rely on.
+    flex_services = Flex.list_services(org.id, flex_version.id)
+    flex_facts = Flex.Checks.version_facts(org.id, flex_version.id)
+    flex_area_saved = Enum.find(flex_services, &(&1.name == "Newport Dial-a-Ride"))
+    flex_detour_saved = Enum.find(flex_services, &(&1.name == "Valley Line detours"))
+
+    flex_weekday_trips =
+      from(t in Trip,
+        where:
+          t.organization_id == ^org.id and t.gtfs_version_id == ^flex_version.id and
+            t.route_id == "20" and t.service_id == "weekday",
+        select: {t.direction_id, count(t.id)},
+        group_by: t.direction_id
+      )
+      |> Repo.all()
+      |> Enum.sort()
+
+    flex_zones =
+      Flex.Geometry.detour_zones(org.id, flex_version.id, flex_detour_saved)
+
+    flex_expect = fn
+      true, _message -> :ok
+      false, message -> raise "Browser seed flex check failed: #{message}"
+    end
+
+    flex_expect.(
+      Enum.sort(Enum.map(flex_services, & &1.name)) == [
+        "Newport Dial-a-Ride",
+        "Valley Line detours"
+      ],
+      "expected the two flex services, got #{inspect(Enum.map(flex_services, & &1.name))}"
+    )
+
+    flex_expect.(
+      flex_area_saved != nil and flex_detour_saved != nil and
+        Enum.sort(Enum.map(flex_services, & &1.id)) ==
+          Enum.sort([flex_area_service.id, flex_detour_service.id]),
+      "expected the two saved services in the version listing"
+    )
+
+    flex_expect.(
+      Enum.map(flex_area_saved.areas, &{&1.key, &1.name, &1.source, &1.position}) ==
+        [{"a1", "Newport", :drawn, 1}],
+      "unexpected drawn areas: #{inspect(flex_area_saved.areas)}"
+    )
+
+    flex_expect.(
+      Enum.map(flex_area_saved.hours, &{&1.area_key, &1.service_id, &1.start, &1.end}) == [
+        {"a1", "weekday", "07:00", "18:00"},
+        {"a1", "saturday", "09:00", "16:00"}
+      ],
+      "unexpected area hours: #{inspect(flex_area_saved.hours)}"
+    )
+
+    flex_expect.(
+      length(flex_area_saved.booking_rules) == 1,
+      "expected one dial-a-ride booking rule, got #{length(flex_area_saved.booking_rules)}"
+    )
+
+    flex_expect.(
+      flex_detour_saved.route_id == "20" and flex_detour_saved.distance_m == 1200 and
+        flex_detour_saved.wording == "up to ¾ mile from the route",
+      "unexpected detour fields: #{inspect(flex_detour_saved)}"
+    )
+
+    flex_expect.(
+      flex_weekday_trips == [{0, 2}, {1, 2}],
+      "expected two weekday trips a direction on Route 20, got #{inspect(flex_weekday_trips)}"
+    )
+
+    flex_expect.(
+      match?({:ok, [_zone_a, _zone_b]}, flex_zones),
+      "expected two detour zones from the Newport Heights–Toledo Junction stretch, got #{inspect(flex_zones)}"
+    )
+
+    flex_statuses =
+      Enum.map(flex_services, fn service ->
+        others = Enum.reject(flex_services, &(&1.id == service.id))
+        checks = Flex.Checks.run(service, flex_facts, others)
+        status = Flex.Checks.status(service, checks)
+
+        flex_expect.(
+          status.errors == 0,
+          "#{service.name} has readiness errors: #{inspect(checks)}"
+        )
+
+        {service.name, status.label}
+      end)
+
+    IO.puts(
+      "Browser seed: Browser Flex Version (#{flex_version.id}) — " <>
+        Enum.map_join(flex_statuses, ", ", fn {name, label} -> "#{name}: #{label}" end) <>
+        "; Route 20 weekday trips #{inspect(flex_weekday_trips)}, " <>
+        "#{length(elem(flex_zones, 1))} detour zones, " <>
+        "#{length(flex_area_saved.areas)} drawn area with #{length(flex_area_saved.hours)} hours rows"
     )
 
     diagram_version
