@@ -29,12 +29,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ConcurrencyTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransactionMock
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatternStop
-  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
-  alias GtfsPlanner.Gtfs.ReviewedApplyTransactionMock
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern

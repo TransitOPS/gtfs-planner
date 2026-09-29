@@ -93,8 +93,8 @@ defmodule GtfsPlanner.Gtfs.Routes do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Gtfs.RoutePattern
-  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.RoutePatterns
+  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.StopTime
@@ -454,18 +454,24 @@ defmodule GtfsPlanner.Gtfs.Routes do
       digest = request_digest(attrs)
 
       run_command_transaction(fn ->
-        :ok = authorize_editor!(audit)
-        _version = lock_published_version!(audit)
-
-        case find_creation_log(audit, attempt_id) do
-          nil -> insert_created_route(attrs, audit, attempt_id, digest)
-          log -> committed_creation(log, digest, audit)
-        end
+        insert_or_replay_created_route(attrs, attempt_id, digest, audit)
       end)
     end
   end
 
   def create_editor_route(_attrs, _attempt, _audit), do: {:error, :invalid_input}
+
+  # The transaction body of `create_editor_route/3`: authorize and lock first,
+  # then either insert the route or replay the committed attempt.
+  defp insert_or_replay_created_route(attrs, attempt_id, digest, audit) do
+    :ok = authorize_editor!(audit)
+    _version = lock_published_version!(audit)
+
+    case find_creation_log(audit, attempt_id) do
+      nil -> insert_created_route(attrs, audit, attempt_id, digest)
+      log -> committed_creation(log, digest, audit)
+    end
+  end
 
   @doc """
   Reports a creation attempt's committed result without inserting (R3).
@@ -481,19 +487,23 @@ defmodule GtfsPlanner.Gtfs.Routes do
           | {:error, :not_started | :attempt_consumed | :forbidden | :not_found}
   def reconcile_creation(attempt, %AuditContext{} = audit) when is_map(attempt) do
     with {:ok, attempt_id} <- verify_creation_attempt(attempt, audit) do
-      Repo.transaction(fn ->
-        :ok = authorize_editor!(audit)
-        _version = lock_published_version!(audit, false)
-
-        case find_creation_log(audit, attempt_id) do
-          nil -> Repo.rollback(:not_started)
-          log -> committed_creation(log, nil, audit)
-        end
-      end)
+      Repo.transaction(fn -> reconcile_committed_creation(attempt_id, audit) end)
     end
   end
 
   def reconcile_creation(_attempt, _audit), do: {:error, :not_found}
+
+  # The transaction body of `reconcile_creation/2`: authorize, lock, then
+  # resolve the attempt's committed result without inserting.
+  defp reconcile_committed_creation(attempt_id, audit) do
+    :ok = authorize_editor!(audit)
+    _version = lock_published_version!(audit, false)
+
+    case find_creation_log(audit, attempt_id) do
+      nil -> Repo.rollback(:not_started)
+      log -> committed_creation(log, nil, audit)
+    end
+  end
 
   @doc """
   Applies reviewed route detail edits (R4).
@@ -1779,49 +1789,101 @@ defmodule GtfsPlanner.Gtfs.Routes do
 
     :ok = check_cross_route_timing!(org_id, version_id, route_id)
 
-    pattern_ids =
-      Repo.all(
-        from(p in RoutePattern,
-          where: p.organization_id == ^org_id and p.gtfs_version_id == ^version_id,
-          where: p.route_id == ^route_id,
-          select: p.id
-        )
-      )
-
-    timing_ids =
-      if pattern_ids == [] do
-        []
-      else
-        Repo.all(
-          from(tp in TimedPattern,
-            where: tp.organization_id == ^org_id and tp.gtfs_version_id == ^version_id,
-            where: tp.route_pattern_id in ^pattern_ids,
-            select: tp.id
-          )
-        )
-      end
-
-    trip_ids =
-      Repo.all(
-        from(t in Trip,
-          where: t.organization_id == ^org_id and t.gtfs_version_id == ^version_id,
-          where: t.route_id == ^route_id,
-          select: t.trip_id
-        )
-      )
-
-    attribution_ids =
-      Repo.all(
-        from(a in Attribution,
-          where: a.organization_id == ^org_id and a.gtfs_version_id == ^version_id,
-          where: a.route_id == ^route_id or a.trip_id in ^trip_ids,
-          where: not is_nil(a.attribution_id),
-          select: a.attribution_id
-        )
-      )
+    pattern_ids = deletion_pattern_ids(org_id, version_id, route_id)
+    timing_ids = deletion_timing_ids(org_id, version_id, pattern_ids)
+    trip_ids = deletion_trip_ids(org_id, version_id, route_id)
+    attribution_ids = deletion_attribution_ids(org_id, version_id, route_id, trip_ids)
 
     categories = [
-      route_category(route),
+      route_category(route)
+      | deletion_categories(
+          org_id,
+          version_id,
+          route_id,
+          pattern_ids,
+          timing_ids,
+          trip_ids,
+          attribution_ids
+        )
+    ]
+
+    retained = retained_summary(route, org_id, version_id, trip_ids)
+
+    %{
+      fingerprint: deletion_fingerprint(route, categories, retained),
+      route_uuid: route.id,
+      categories: categories,
+      retained: retained,
+      empty?: Enum.all?(categories, &(&1.key == "route" or &1.count == 0))
+    }
+  end
+
+  # The reviewed cascade's sorted ID scope, recomputed on the locked rows.
+  defp deletion_pattern_ids(org_id, version_id, route_id) do
+    Repo.all(
+      from(p in RoutePattern,
+        where: p.organization_id == ^org_id and p.gtfs_version_id == ^version_id,
+        where: p.route_id == ^route_id,
+        select: p.id
+      )
+    )
+  end
+
+  defp deletion_timing_ids(_org_id, _version_id, []), do: []
+
+  defp deletion_timing_ids(org_id, version_id, pattern_ids) do
+    Repo.all(
+      from(tp in TimedPattern,
+        where: tp.organization_id == ^org_id and tp.gtfs_version_id == ^version_id,
+        where: tp.route_pattern_id in ^pattern_ids,
+        select: tp.id
+      )
+    )
+  end
+
+  defp deletion_trip_ids(org_id, version_id, route_id) do
+    Repo.all(
+      from(t in Trip,
+        where: t.organization_id == ^org_id and t.gtfs_version_id == ^version_id,
+        where: t.route_id == ^route_id,
+        select: t.trip_id
+      )
+    )
+  end
+
+  defp deletion_attribution_ids(org_id, version_id, route_id, trip_ids) do
+    Repo.all(
+      from(a in Attribution,
+        where: a.organization_id == ^org_id and a.gtfs_version_id == ^version_id,
+        where: a.route_id == ^route_id or a.trip_id in ^trip_ids,
+        where: not is_nil(a.attribution_id),
+        select: a.attribution_id
+      )
+    )
+  end
+
+  # The affected sets beside the route row itself, in review order: the
+  # pattern family, the trip family, then the cross-route references. Each
+  # family keeps the predicates that mirror the cascade's relationship
+  # deletes exactly.
+  defp deletion_categories(
+         org_id,
+         version_id,
+         route_id,
+         pattern_ids,
+         timing_ids,
+         trip_ids,
+         attribution_ids
+       ) do
+    pattern_family_categories(org_id, version_id, route_id, pattern_ids, timing_ids) ++
+      trip_family_categories(org_id, version_id, route_id, trip_ids) ++
+      transfer_category(org_id, version_id, route_id, trip_ids) ++
+      simple_reference_categories(org_id, version_id, route_id, trip_ids) ++
+      [translation_category(org_id, version_id, route_id, trip_ids, attribution_ids)]
+  end
+
+  defp pattern_family_categories(org_id, version_id, route_id, pattern_ids, timing_ids) do
+    [
       stream_category(
         from(p in RoutePattern,
           where: p.organization_id == ^org_id and p.gtfs_version_id == ^version_id,
@@ -1860,7 +1922,12 @@ defmodule GtfsPlanner.Gtfs.Routes do
         "timed_pattern_stops",
         "Timing rows",
         &{&1.id, semantic_content(&1)}
-      ),
+      )
+    ]
+  end
+
+  defp trip_family_categories(org_id, version_id, route_id, trip_ids) do
+    [
       stream_category(
         from(t in Trip,
           where: t.organization_id == ^org_id and t.gtfs_version_id == ^version_id,
@@ -1903,7 +1970,12 @@ defmodule GtfsPlanner.Gtfs.Routes do
         "blocks",
         "Block IDs affected",
         &{&1, &1}
-      ),
+      )
+    ]
+  end
+
+  defp transfer_category(org_id, version_id, route_id, trip_ids) do
+    [
       stream_category(
         from(tr in Transfer,
           where: tr.organization_id == ^org_id and tr.gtfs_version_id == ^version_id,
@@ -1915,7 +1987,14 @@ defmodule GtfsPlanner.Gtfs.Routes do
         "transfers",
         "Transfers",
         &{&1.id, semantic_content(&1)}
-      ),
+      )
+    ]
+  end
+
+  # Fare rules, attributions and network links match explicit route or
+  # removed-trip targets only.
+  defp simple_reference_categories(org_id, version_id, route_id, trip_ids) do
+    [
       stream_category(
         from(fr in FareRule,
           where: fr.organization_id == ^org_id and fr.gtfs_version_id == ^version_id,
@@ -1945,32 +2024,27 @@ defmodule GtfsPlanner.Gtfs.Routes do
         "route_networks",
         "Route network links",
         &{&1.id, semantic_content(&1)}
-      ),
-      stream_category(
-        from(tr in Translation,
-          where: tr.organization_id == ^org_id and tr.gtfs_version_id == ^version_id,
-          where:
-            (tr.table_name == "routes" and tr.record_id == ^route_id) or
-              (tr.table_name == "trips" and tr.record_id in ^trip_ids) or
-              (tr.table_name == "stop_times" and tr.record_id in ^trip_ids) or
-              (tr.table_name == "attributions" and tr.record_id in ^attribution_ids),
-          order_by: [tr.id]
-        ),
-        "translations",
-        "Translations",
-        &{&1.id, semantic_content(&1)}
       )
     ]
+  end
 
-    retained = retained_summary(route, org_id, version_id, trip_ids)
-
-    %{
-      fingerprint: deletion_fingerprint(route, categories, retained),
-      route_uuid: route.id,
-      categories: categories,
-      retained: retained,
-      empty?: Enum.all?(categories, &(&1.key == "route" or &1.count == 0))
-    }
+  # Translations match the removed route/trip/stop-time/attribution record
+  # identities.
+  defp translation_category(org_id, version_id, route_id, trip_ids, attribution_ids) do
+    stream_category(
+      from(tr in Translation,
+        where: tr.organization_id == ^org_id and tr.gtfs_version_id == ^version_id,
+        where:
+          (tr.table_name == "routes" and tr.record_id == ^route_id) or
+            (tr.table_name == "trips" and tr.record_id in ^trip_ids) or
+            (tr.table_name == "stop_times" and tr.record_id in ^trip_ids) or
+            (tr.table_name == "attributions" and tr.record_id in ^attribution_ids),
+        order_by: [tr.id]
+      ),
+      "translations",
+      "Translations",
+      &{&1.id, semantic_content(&1)}
+    )
   end
 
   defp route_category(route) do
@@ -2131,42 +2205,47 @@ defmodule GtfsPlanner.Gtfs.Routes do
   # row whose occurrence belongs to another route's pattern, cannot be removed
   # by one route's cascade without touching the other route's rows.
   defp check_cross_route_timing!(org_id, version_id, route_id) do
-    trip_timing_crossing =
-      Repo.exists?(
-        from(t in Trip,
-          join: tp in TimedPattern,
-          on: tp.id == t.timed_pattern_id,
-          join: p in RoutePattern,
-          on: p.id == tp.route_pattern_id,
-          where: t.organization_id == ^org_id and t.gtfs_version_id == ^version_id,
-          where: tp.organization_id == ^org_id and tp.gtfs_version_id == ^version_id,
-          where: p.organization_id == ^org_id and p.gtfs_version_id == ^version_id,
-          where: t.route_id != p.route_id,
-          where: t.route_id == ^route_id or p.route_id == ^route_id
-        )
-      )
+    if trip_timing_crossing?(org_id, version_id, route_id) or
+         timing_rows_crossing?(org_id, version_id, route_id),
+       do: Repo.rollback(:malformed_cross_route_timing),
+       else: :ok
+  end
 
-    timing_rows_crossing =
-      Repo.exists?(
-        from(tps in TimedPatternStop,
-          join: tp in TimedPattern,
-          on: tp.id == tps.timed_pattern_id,
-          join: owning in RoutePattern,
-          on: owning.id == tp.route_pattern_id,
-          join: rps in RoutePatternStop,
-          on: rps.id == tps.route_pattern_stop_id,
-          join: visited in RoutePattern,
-          on: visited.id == rps.route_pattern_id,
-          where: owning.organization_id == ^org_id and owning.gtfs_version_id == ^version_id,
-          where: visited.organization_id == ^org_id and visited.gtfs_version_id == ^version_id,
-          where: owning.route_id != visited.route_id,
-          where: owning.route_id == ^route_id or visited.route_id == ^route_id
-        )
+  # A timed pattern of another route holding this route's trip.
+  defp trip_timing_crossing?(org_id, version_id, route_id) do
+    Repo.exists?(
+      from(t in Trip,
+        join: tp in TimedPattern,
+        on: tp.id == t.timed_pattern_id,
+        join: p in RoutePattern,
+        on: p.id == tp.route_pattern_id,
+        where: t.organization_id == ^org_id and t.gtfs_version_id == ^version_id,
+        where: tp.organization_id == ^org_id and tp.gtfs_version_id == ^version_id,
+        where: p.organization_id == ^org_id and p.gtfs_version_id == ^version_id,
+        where: t.route_id != p.route_id,
+        where: t.route_id == ^route_id or p.route_id == ^route_id
       )
+    )
+  end
 
-    if trip_timing_crossing or timing_rows_crossing,
-      do: Repo.rollback(:malformed_cross_route_timing),
-      else: :ok
+  # A timing row whose occurrence belongs to another route's pattern.
+  defp timing_rows_crossing?(org_id, version_id, route_id) do
+    Repo.exists?(
+      from(tps in TimedPatternStop,
+        join: tp in TimedPattern,
+        on: tp.id == tps.timed_pattern_id,
+        join: owning in RoutePattern,
+        on: owning.id == tp.route_pattern_id,
+        join: rps in RoutePatternStop,
+        on: rps.id == tps.route_pattern_stop_id,
+        join: visited in RoutePattern,
+        on: visited.id == rps.route_pattern_id,
+        where: owning.organization_id == ^org_id and owning.gtfs_version_id == ^version_id,
+        where: visited.organization_id == ^org_id and visited.gtfs_version_id == ^version_id,
+        where: owning.route_id != visited.route_id,
+        where: owning.route_id == ^route_id or visited.route_id == ^route_id
+      )
+    )
   end
 
   # --- reviewed cascade internals --------------------------------------------
@@ -2224,63 +2303,94 @@ defmodule GtfsPlanner.Gtfs.Routes do
   # mirror the review categories exactly and the counts are checked against
   # the recomputed review before anything commits.
   defp relationship_deletions!(route, trip_ids, attribution_ids) do
-    org_id = route.organization_id
-    version_id = route.gtfs_version_id
-    route_id = route.route_id
+    %{
+      "transfers" => delete_route_transfers!(route, trip_ids),
+      "fare_rules" => delete_route_fare_rules!(route),
+      "translations" => delete_route_translations!(route, trip_ids, attribution_ids),
+      "attributions" => delete_route_attributions!(route, trip_ids),
+      "route_networks" => delete_route_networks!(route)
+    }
+  end
 
-    {transfers, nil} =
+  # Explicit route or removed-trip targets only (R5): transfers match either
+  # route endpoint or either removed-trip endpoint and include stopless 4/5;
+  # stop-only/unrelated transfers survive.
+  defp delete_route_transfers!(route, trip_ids) do
+    {deleted, nil} =
       Repo.delete_all(
         from(tr in Transfer,
-          where: tr.organization_id == ^org_id and tr.gtfs_version_id == ^version_id,
           where:
-            tr.from_route_id == ^route_id or tr.to_route_id == ^route_id or
+            tr.organization_id == ^route.organization_id and
+              tr.gtfs_version_id == ^route.gtfs_version_id,
+          where:
+            tr.from_route_id == ^route.route_id or tr.to_route_id == ^route.route_id or
               tr.from_trip_id in ^trip_ids or tr.to_trip_id in ^trip_ids
         )
       )
 
-    {fare_rules, nil} =
+    deleted
+  end
+
+  defp delete_route_fare_rules!(route) do
+    {deleted, nil} =
       Repo.delete_all(
         from(fr in FareRule,
-          where: fr.organization_id == ^org_id and fr.gtfs_version_id == ^version_id,
-          where: fr.route_id == ^route_id
+          where:
+            fr.organization_id == ^route.organization_id and
+              fr.gtfs_version_id == ^route.gtfs_version_id,
+          where: fr.route_id == ^route.route_id
         )
       )
 
-    {translations, nil} =
+    deleted
+  end
+
+  # Translations match the removed route/trip/stop-time/attribution record
+  # identities.
+  defp delete_route_translations!(route, trip_ids, attribution_ids) do
+    {deleted, nil} =
       Repo.delete_all(
         from(tr in Translation,
-          where: tr.organization_id == ^org_id and tr.gtfs_version_id == ^version_id,
           where:
-            (tr.table_name == "routes" and tr.record_id == ^route_id) or
+            tr.organization_id == ^route.organization_id and
+              tr.gtfs_version_id == ^route.gtfs_version_id,
+          where:
+            (tr.table_name == "routes" and tr.record_id == ^route.route_id) or
               (tr.table_name == "trips" and tr.record_id in ^trip_ids) or
               (tr.table_name == "stop_times" and tr.record_id in ^trip_ids) or
               (tr.table_name == "attributions" and tr.record_id in ^attribution_ids)
         )
       )
 
-    {attributions, nil} =
+    deleted
+  end
+
+  defp delete_route_attributions!(route, trip_ids) do
+    {deleted, nil} =
       Repo.delete_all(
         from(a in Attribution,
-          where: a.organization_id == ^org_id and a.gtfs_version_id == ^version_id,
-          where: a.route_id == ^route_id or a.trip_id in ^trip_ids
+          where:
+            a.organization_id == ^route.organization_id and
+              a.gtfs_version_id == ^route.gtfs_version_id,
+          where: a.route_id == ^route.route_id or a.trip_id in ^trip_ids
         )
       )
 
-    {route_networks, nil} =
+    deleted
+  end
+
+  defp delete_route_networks!(route) do
+    {deleted, nil} =
       Repo.delete_all(
         from(rn in RouteNetwork,
-          where: rn.organization_id == ^org_id and rn.gtfs_version_id == ^version_id,
-          where: rn.route_id == ^route_id
+          where:
+            rn.organization_id == ^route.organization_id and
+              rn.gtfs_version_id == ^route.gtfs_version_id,
+          where: rn.route_id == ^route.route_id
         )
       )
 
-    %{
-      "transfers" => transfers,
-      "fare_rules" => fare_rules,
-      "translations" => translations,
-      "attributions" => attributions,
-      "route_networks" => route_networks
-    }
+    deleted
   end
 
   defp scoped_attribution_ids(route, trip_ids) do

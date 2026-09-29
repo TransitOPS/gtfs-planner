@@ -755,19 +755,11 @@ defmodule GtfsPlanner.Gtfs.Routes.DeletionTest do
       org_id = fixture.organization.id
       version_id = fixture.version.id
 
-      Repo.delete_all(
-        from f in Frequency,
-          where: f.organization_id == ^org_id or f.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(Frequency, org_id, version_id)
 
-      Repo.delete_all(
-        from st in StopTime,
-          where: st.organization_id == ^org_id or st.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(StopTime, org_id, version_id)
 
-      Repo.delete_all(
-        from t in Trip, where: t.organization_id == ^org_id or t.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(Trip, org_id, version_id)
 
       Repo.delete_all(
         from(tps in TimedPatternStop,
@@ -781,67 +773,31 @@ defmodule GtfsPlanner.Gtfs.Routes.DeletionTest do
       Repo.delete_all(from tp in TimedPattern, where: tp.organization_id == ^org_id)
       Repo.delete_all(from rps in RoutePatternStop, where: rps.organization_id == ^org_id)
 
-      Repo.delete_all(
-        from tr in Transfer,
-          where: tr.organization_id == ^org_id or tr.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(Transfer, org_id, version_id)
 
-      Repo.delete_all(
-        from fr in FareRule,
-          where: fr.organization_id == ^org_id or fr.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(FareRule, org_id, version_id)
 
-      Repo.delete_all(
-        from fa in FareAttribute,
-          where: fa.organization_id == ^org_id or fa.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(FareAttribute, org_id, version_id)
 
-      Repo.delete_all(
-        from a in Attribution,
-          where: a.organization_id == ^org_id or a.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(Attribution, org_id, version_id)
 
-      Repo.delete_all(
-        from rn in RouteNetwork,
-          where: rn.organization_id == ^org_id or rn.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(RouteNetwork, org_id, version_id)
 
-      Repo.delete_all(
-        from tr in Translation,
-          where: tr.organization_id == ^org_id or tr.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(Translation, org_id, version_id)
 
-      Repo.delete_all(
-        from s in Shape, where: s.organization_id == ^org_id or s.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(Shape, org_id, version_id)
 
-      Repo.delete_all(
-        from c in CalendarAttribute,
-          where: c.organization_id == ^org_id or c.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(CalendarAttribute, org_id, version_id)
 
-      Repo.delete_all(
-        from p in RoutePattern,
-          where: p.organization_id == ^org_id or p.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(RoutePattern, org_id, version_id)
 
-      Repo.delete_all(
-        from s in Stop, where: s.organization_id == ^org_id or s.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(Stop, org_id, version_id)
 
-      Repo.delete_all(
-        from l in ChangeLog,
-          where: l.organization_id == ^org_id or l.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(ChangeLog, org_id, version_id)
 
-      Repo.delete_all(
-        from r in Route, where: r.organization_id == ^org_id or r.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(Route, org_id, version_id)
 
-      Repo.delete_all(
-        from a in GtfsPlanner.Gtfs.Agency,
-          where: a.organization_id == ^org_id or a.gtfs_version_id == ^version_id
-      )
+      delete_org_or_version!(GtfsPlanner.Gtfs.Agency, org_id, version_id)
 
       Repo.delete_all(
         from m in UserOrgMembership,
@@ -853,5 +809,14 @@ defmodule GtfsPlanner.Gtfs.Routes.DeletionTest do
       Repo.delete_all(from o in Organization, where: o.id == ^org_id)
       :ok
     end)
+  end
+
+  # Cascading cleanup in dependency order: every row scoped by organization or
+  # version goes first, so fixtures never leak across tests.
+  defp delete_org_or_version!(schema, org_id, version_id) do
+    Repo.delete_all(
+      from s in schema,
+        where: s.organization_id == ^org_id or s.gtfs_version_id == ^version_id
+    )
   end
 end

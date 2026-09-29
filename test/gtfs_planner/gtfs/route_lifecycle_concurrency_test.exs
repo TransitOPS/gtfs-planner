@@ -428,17 +428,23 @@ defmodule GtfsPlanner.Gtfs.RouteLifecycleConcurrencyTest do
   # first statement (version FOR UPDATE) blocks after its snapshot is taken,
   # while writers that only take the version share lock commit freely.
   defp start_version_gate(supervisor, version_id, parent) do
-    Task.Supervisor.async_nolink(supervisor, fn ->
-      unboxed(fn ->
-        Repo.transaction(fn ->
-          Repo.all(from v in GtfsVersion, where: v.id == ^version_id, lock: "FOR SHARE")
-          send(parent, :gate_ready)
+    Task.Supervisor.async_nolink(supervisor, fn -> gate_task(version_id, parent) end)
+  end
 
-          receive do
-            :release -> :ok
-          end
-        end)
-      end)
+  defp gate_task(version_id, parent) do
+    unboxed(fn -> hold_version_share(version_id, parent) end)
+  end
+
+  # The gate's own committing transaction: take the share lock, announce
+  # readiness, and hold the row until the parent releases it.
+  defp hold_version_share(version_id, parent) do
+    Repo.transaction(fn ->
+      Repo.all(from v in GtfsVersion, where: v.id == ^version_id, lock: "FOR SHARE")
+      send(parent, :gate_ready)
+
+      receive do
+        :release -> :ok
+      end
     end)
   end
 

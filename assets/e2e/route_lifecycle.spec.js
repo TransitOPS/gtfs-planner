@@ -171,7 +171,11 @@ test.describe("Route identity controls", () => {
     await expect(page.locator("#route-details-mode-group legend")).toHaveText(
       "Mode",
     );
-    await expect(page.locator("input[type='radio'][checked]")).toHaveCount(1);
+    // Scoped to the mode group: the Details color fields carry their own
+    // text-mode radio set (step 20), which is checked independently.
+    await expect(
+      page.locator("#route-details-mode-group input[type='radio'][checked]"),
+    ).toHaveCount(1);
     await expect(page.locator("#route-details-mode-other")).toHaveAttribute(
       "name",
       "route[route_type]",
@@ -231,12 +235,11 @@ test.describe("Route color field", () => {
       page.locator("#new-route-form #new-route-color-fields"),
     ).toBeVisible();
 
-    // The picker is local: it carries no name, so the hex field is the one
-    // `route[route_color]` value that reaches the server (R7).
-    await expect(page.locator("#new-route-color-picker")).toHaveAttribute(
-      "name",
-      /^$/,
-    );
+    // The picker is local: it carries no name attribute at all, so the hex
+    // field is the one `route[route_color]` value that reaches the server (R7).
+    expect(
+      await page.locator("#new-route-color-picker").getAttribute("name"),
+    ).toBeNull();
     await expect(page.locator("#new-route-color")).toHaveAttribute(
       "name",
       "route[route_color]",
@@ -251,8 +254,10 @@ test.describe("Route color field", () => {
     await expect(page.locator("#new-route-color-picker")).toHaveValue(
       "#5bc5f2",
     );
+    // The automatic text for a light fill is the dark pick, so the readout
+    // reports that pair's ratio (the landed RouteIdentity math).
     await expect(page.locator("#new-route-contrast-ratio")).toHaveText(
-      /21\.0:1 contrast/,
+      /10\.7:1 contrast/,
     );
 
     // The Automatic chip resolves the text color server-side, so the custom
@@ -260,7 +265,9 @@ test.describe("Route color field", () => {
     await expect(page.locator("#new-route-text-mode-automatic")).toBeChecked();
     await expect(page.locator("#new-route-text-wrap")).toBeHidden();
 
-    await page.locator("#new-route-text-mode-custom").check();
+    // The mode radios are sr-only chips; the label is the click target
+    // (step-33 fix 6's idiom for the drawer's mode chip).
+    await page.locator("label[for='new-route-text-mode-custom']").click();
     await expect(page.locator("#new-route-text-wrap")).toBeVisible();
     await page.locator("#new-route-text").fill("FFFFFF");
     await expect(page.locator("#new-route-contrast-verdict-text")).toHaveText(
@@ -283,7 +290,7 @@ test.describe("Route color field", () => {
     await page.locator("#new-route-trigger").click();
 
     await page.locator("#new-route-color").fill("5BC5F2");
-    await page.locator("#new-route-text-mode-custom").check();
+    await page.locator("label[for='new-route-text-mode-custom']").click();
     await page.locator("#new-route-text").fill("FFFFFF");
 
     // The warning is advisory: nothing is disabled, so the save stays possible.
@@ -331,11 +338,12 @@ test.describe("Route color field", () => {
     );
 
     // Switching the mode and back leaves the saved value in the field, so an
-    // unrelated edit cannot rewrite a custom text color.
+    // unrelated edit cannot rewrite a custom text color. The mode radios are
+    // sr-only chips; the labels are the click targets (step-33 fix 6).
     const saved = await text.inputValue();
-    await page.locator("#route-details-text-mode-custom").check();
+    await page.locator("label[for='route-details-text-mode-custom']").click();
     await expect(text).toHaveValue(saved);
-    await page.locator("#route-details-text-mode-automatic").check();
+    await page.locator("label[for='route-details-text-mode-automatic']").click();
     await expect(text).toHaveValue(saved);
 
     const ids = await page
@@ -636,6 +644,9 @@ test.describe("Route details draft preview", () => {
     const routeUrl = `/gtfs/${version}/routes/${DETAILS_ROUTE}`;
     await page.goto(routeUrl);
     await awaitConnected(page);
+    const originalName = await page
+      .locator("#route-details-long")
+      .inputValue();
 
     // Count the form's own submit events, wherever they come from.
     await page.evaluate(() => {
@@ -663,16 +674,26 @@ test.describe("Route details draft preview", () => {
     await expect.poll(() => page.evaluate(() => window.__routeSubmits)).toBe(1);
     await expect(page.locator("#route-details-form")).toBeVisible();
 
-    // The draft survives on screen and the saved row is untouched: this step
-    // emits the submit, step 24 persists.
+    // The draft survives on screen: Ctrl+S is one ordinary submit, so the
+    // ordinary save outcome follows — the bar clears and the save is announced.
     await expect(page.locator("#route-details-long")).toHaveValue(
       "Preview rename",
     );
-    await page.goto(routeUrl);
+    await expect(page.locator("#route-details-save-bar")).toBeHidden();
+    await expect(page.locator("#route-details-saved")).toContainText("saved");
+
+    // Reload proves the submit persisted through the ordinary read, then the
+    // seeded name is restored so later cases meet the seeded route.
+    await page.reload();
     await awaitConnected(page);
-    await expect(page.locator("#route-details-long")).not.toHaveValue(
+    await expect(page.locator("#route-details-long")).toHaveValue(
       "Preview rename",
     );
+    await page.locator("#route-details-long").fill(originalName);
+    await page.locator("#route-details-heading").click();
+    await expect(page.locator("#route-details-save-bar")).toBeVisible();
+    await page.locator("#route-save").click();
+    await expect(page.locator("#route-details-saved")).toContainText("saved");
   });
 });
 
@@ -884,9 +905,8 @@ test.describe("Route details save and merge", () => {
 
     const conflict = pageA.locator("#route-conflict");
     await expect(conflict).toBeVisible();
-    await expect(conflict).toContainText(
-      "saved this route while you were editing",
-    );
+    // The landed surface names the saving actor and time beside the merge.
+    await expect(conflict).toContainText("while you were editing");
     await expect(pageA.locator("#route-conflict-table")).toContainText(
       theirDesc,
     );
@@ -957,6 +977,9 @@ test.describe("Route details dirty navigation", () => {
       "the lane seeds a second version to switch to",
     ).toBeGreaterThanOrEqual(0);
 
+    // The option list lives in the switcher's panel; open it first.
+    await page.locator("#gtfs-version-trigger").click();
+    await expect(page.locator("#gtfs-version-panel")).toBeVisible();
     await options.nth(targetIndex).click();
 
     // The guard intercepts the option before the version hook dispatches: the
@@ -1063,7 +1086,9 @@ test.describe("Route details dirty navigation", () => {
       page.locator("#route-details-leave[data-open='true']"),
     ).toBeVisible();
     await page.locator("#route-details-leave-save").click();
-    await expect(page).toHaveURL(/\/schedules$/);
+    // The landed save-and-continue lands on the route's schedules tab with
+    // its preselected service in the query.
+    await expect(page).toHaveURL(/\/schedules(\?.*)?$/);
 
     // The commit landed before the navigation: the route now holds the draft.
     await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
@@ -1111,8 +1136,11 @@ test.describe("Route connectivity recovery", () => {
     await expect(page.locator("#new-route-short")).toHaveValue("R9");
 
     await page.evaluate(() => window.liveSocket.connect());
+    // The reconnect roundtrip re-joins the socket and revalidates the signed
+    // attempt server-side; foreign-lane load can stretch it past the default.
     await expect(page.locator("#new-route-recovery")).toContainText(
       "Connection restored",
+      { timeout: 15_000 },
     );
     await expect(submit).toBeEnabled();
     await expect(page.locator("#new-route-short")).toHaveValue("R9");
@@ -1175,7 +1203,7 @@ test.describe("Route status actions", () => {
     await page.locator("#route-deactivate").click();
     const review = page.locator("#route-status-confirm[data-open='true']");
     await expect(review).toContainText("Deactivate PR?");
-    await expect(review).toContainText("stay in this version");
+    await expect(review).toContainText("stays in this version");
     await expect(review).toContainText(
       "Exports you already ran still include it",
     );
@@ -1300,8 +1328,11 @@ test.describe("Reviewed route deletion", () => {
 
     // Acknowledging and confirming applies the cascade and returns to the
     // scoped list with the real counts, and focus lands on the list's
-    // primary action.
+    // primary action. The acknowledgement's phx-change must land before the
+    // submit: the server reads the checkbox from the form's serialized
+    // params, and the same change clears the shown acknowledgement error.
     await page.locator("#route-delete-ack").check();
+    await expect(page.locator("#route-delete-ack-error")).toHaveCount(0);
     await page.locator("#route-delete-go").click();
 
     await expect(page).toHaveURL(new RegExp(`/routes\\?deleted=1$`));
@@ -1654,17 +1685,21 @@ test.describe("Other routes context", () => {
     await expect(page.locator("#route-map-context-more")).toBeVisible();
 
     await page.locator("#route-map-context-more").click();
-    await expect(page.locator("#route-map-context-status")).toContainText(
-      "Showing all 55 nearby routes in this view.",
-    );
 
+    // The exhausted total is seed-dependent (later spec steps add lanes), so
+    // the assertion derives it from the payload the page itself announces.
     const context = JSON.parse(
       await page.locator("#route-map").getAttribute("data-map-context"),
     );
-    expect(context.routes.length).toBe(55);
+    const total = context.routes.length;
+    expect(total).toBeGreaterThan(50);
+    await expect(page.locator("#route-map-context-status")).toContainText(
+      `Showing all ${total} nearby routes in this view.`,
+    );
+
     const ids = context.routes.map((route) => route.route_id);
     expect(ids).toEqual([...ids].sort());
-    expect(new Set(ids).size).toBe(55);
+    expect(new Set(ids).size).toBe(total);
     await expect(page.locator("#route-map-context-more")).toHaveCount(0);
   });
 });
