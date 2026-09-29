@@ -2216,15 +2216,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
     # The whole list is valid, so nothing has been deleted yet.
     snapshots = Enum.map(trips, &{&1, deleted_trip_snapshot(&1)})
-    natural_ids = Enum.map(trips, & &1.trip_id)
 
-    delete_children!(:stop_times, organization_id, version_id, natural_ids)
-    delete_children!(:frequencies, organization_id, version_id, natural_ids)
-
-    {transfers, nil} =
-      Repo.delete_all(trip_transfers_query(organization_id, version_id, natural_ids))
-
-    count = delete_trip_rows!(organization_id, version_id, trip_uuids)
+    result = remove_locked_trips!(organization_id, version_id, trips)
 
     operation_id = Ecto.UUID.generate()
     affected_trip_ids = Enum.map(trips, & &1.id)
@@ -2240,6 +2233,27 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         affected_trip_ids
       )
     end)
+
+    result
+  end
+
+  # Shared trip removal for `delete_trips/4` and the paste (R14/INV-6).
+  #
+  # `trips` are the locked scoped trips in UUID order. Deletes stop_times,
+  # frequencies and every transfer naming a removed natural `trip_id` via
+  # `trip_transfers_query/3`, then the trip rows. Callers own the locks and
+  # the audits; this helper only removes rows and reports the counts.
+  defp remove_locked_trips!(organization_id, version_id, trips) do
+    natural_ids = Enum.map(trips, & &1.trip_id)
+    trip_uuids = Enum.map(trips, & &1.id)
+
+    delete_children!(:stop_times, organization_id, version_id, natural_ids)
+    delete_children!(:frequencies, organization_id, version_id, natural_ids)
+
+    {transfers, nil} =
+      Repo.delete_all(trip_transfers_query(organization_id, version_id, natural_ids))
+
+    count = delete_trip_rows!(organization_id, version_id, trip_uuids)
 
     %{trips: count, transfers: transfers}
   end
