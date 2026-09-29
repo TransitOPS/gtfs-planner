@@ -511,7 +511,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
       garage = garage_fixture(organization.id)
       vehicle = vehicle_fixture(organization.id, %{"garage_id" => garage.id})
 
-      assert {:error, {:in_use, vehicles: 1}} =
+      assert {:error, {:in_use, %{vehicles: 1, blocks: 0, routes: 0}}} =
                Operations.delete_garage(organization.id, garage.id)
 
       assert Repo.get(Garage, garage.id)
@@ -589,7 +589,7 @@ defmodule GtfsPlanner.Operations.FleetTest do
           "vehicle_type_id" => vehicle_type.id
         })
 
-      assert {:error, {:in_use, vehicles: 1}} =
+      assert {:error, {:in_use, %{vehicles: 1, blocks: 0, routes: 0}}} =
                Operations.delete_vehicle_type(organization.id, vehicle_type.id)
 
       assert Repo.get(VehicleType, vehicle_type.id)
@@ -756,7 +756,8 @@ defmodule GtfsPlanner.Operations.FleetTest do
 
           assert_receive {:assign_result, ^assigner, {:ok, {:ok, %Vehicle{}}}}, @async_timeout
 
-          assert_receive {:delete_result, ^deleter, {:error, {:in_use, vehicles: 1}}},
+          assert_receive {:delete_result, ^deleter,
+                          {:error, {:in_use, %{vehicles: 1, blocks: 0, routes: 0}}}},
                          @async_timeout
 
           assert Repo.get(Garage, garage.id)
