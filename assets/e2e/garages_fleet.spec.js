@@ -82,12 +82,17 @@ async function openMovedPage(page, path, name = VERSION_NAME) {
 
 // A click that lands before the LiveView joins is dropped, so an action that is
 // not wrapped in its own retry waits for the mounted view first.
+// A click sent before the view has joined its channel is dropped, and an open
+// socket does not mean the join finished: the joined view carries `phx-connected`.
 async function waitForLiveView(page) {
   await page.waitForSelector("[data-phx-main]", { state: "attached" });
   await page.waitForFunction(() => {
     const main = document.querySelector("[data-phx-main]");
     return Boolean(
-      main && !main.hasAttribute("data-phx-pending") && window.liveSocket?.isConnected(),
+      main &&
+        main.classList.contains("phx-connected") &&
+        !main.hasAttribute("data-phx-pending") &&
+        window.liveSocket?.isConnected(),
     );
   });
 }
