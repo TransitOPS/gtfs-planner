@@ -33,6 +33,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
           stop_id: String.t(),
           name: String.t() | nil,
           parent_station: String.t() | nil,
+          parent_name: String.t() | nil,
           lat: float() | nil,
           lon: float() | nil
         }
@@ -43,6 +44,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
           route_id: String.t(),
           service_id: String.t(),
           block_id: String.t() | nil,
+          direction_id: 0 | 1 | nil,
           trip_headsign: String.t() | nil,
           route_pattern_id: String.t() | nil,
           shape_id: String.t() | nil,
@@ -53,6 +55,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
           first_departure: non_neg_integer() | nil,
           last_arrival: non_neg_integer() | nil,
           last_departure: non_neg_integer() | nil,
+          first_pickup_type: integer() | nil,
+          last_drop_off_type: integer() | nil,
           first_stop: stop_ref() | nil,
           last_stop: stop_ref() | nil,
           plottable?: boolean()

@@ -76,7 +76,8 @@ defmodule GtfsPlanner.BlockingFixtures do
   nothing else. `:first_arrival` and `:first_departure` fill stop sequence 1,
   `:last_arrival` and `:last_departure` stop sequence 2, and a departure defaults
   to its arrival. Any of the four may be `nil`, which stores an empty time and
-  leaves the trip unplottable.
+  leaves the trip unplottable. `:direction_id` is stored on the trip, and
+  `:first_pickup_type` and `:last_drop_off_type` on the two endpoint stop times.
   """
   def blocked_trip_fixture(organization_id, gtfs_version_id, route_id, attrs) do
     attrs = Map.new(attrs)
@@ -91,7 +92,14 @@ defmodule GtfsPlanner.BlockingFixtures do
         organization_id,
         gtfs_version_id,
         route_id,
-        Map.take(attrs, [:trip_id, :service_id, :block_id, :trip_headsign, :route_pattern_id])
+        Map.take(attrs, [
+          :trip_id,
+          :service_id,
+          :block_id,
+          :direction_id,
+          :trip_headsign,
+          :route_pattern_id
+        ])
       )
 
     stop_time_fixture(
@@ -99,7 +107,12 @@ defmodule GtfsPlanner.BlockingFixtures do
       gtfs_version_id,
       trip.trip_id,
       endpoint_stop_id(organization_id, gtfs_version_id, attrs, :first_stop),
-      %{stop_sequence: 1, arrival_time: first_arrival, departure_time: first_departure}
+      %{
+        stop_sequence: 1,
+        arrival_time: first_arrival,
+        departure_time: first_departure,
+        pickup_type: Map.get(attrs, :first_pickup_type)
+      }
     )
 
     stop_time_fixture(
@@ -107,7 +120,12 @@ defmodule GtfsPlanner.BlockingFixtures do
       gtfs_version_id,
       trip.trip_id,
       endpoint_stop_id(organization_id, gtfs_version_id, attrs, :last_stop),
-      %{stop_sequence: 2, arrival_time: last_arrival, departure_time: last_departure}
+      %{
+        stop_sequence: 2,
+        arrival_time: last_arrival,
+        departure_time: last_departure,
+        drop_off_type: Map.get(attrs, :last_drop_off_type)
+      }
     )
 
     trip

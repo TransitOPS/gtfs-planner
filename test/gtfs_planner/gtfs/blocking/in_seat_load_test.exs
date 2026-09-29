@@ -442,6 +442,52 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatLoadTest do
       assert block(day, "7").summary.status == :ok
       assert block(day, "7").summary.status_code == nil
     end
+
+    test "each listed row carries the stored record's updated_at for the expected guard",
+         %{scope: scope} do
+      %{organization: organization, version: version} = scope
+
+      _weekday =
+        calendar_service_fixture(organization.id, version.id, %{
+          service_id: "W",
+          name: "Weekday",
+          dates: @weekday_dates
+        })
+
+      stop = stop_fixture(organization.id, version.id)
+
+      a =
+        blocked_trip(scope, %{
+          trip_id: "a",
+          service_id: "W",
+          block_id: "7",
+          first_arrival: "06:00:00",
+          last_arrival: "07:00:00",
+          first_stop: stop.stop_id,
+          last_stop: stop.stop_id
+        })
+
+      b =
+        blocked_trip(scope, %{
+          trip_id: "b",
+          service_id: "W",
+          block_id: "7",
+          first_arrival: "07:10:00",
+          last_arrival: "08:10:00",
+          first_stop: stop.stop_id,
+          last_stop: stop.stop_id
+        })
+
+      record = in_seat_transfer_fixture(organization.id, version.id, a, b)
+
+      assert {:ok, day} =
+               Gtfs.load_blocking_day(organization.id, version.id, DayTypes.key(["W"]))
+
+      for trip_id <- [a.id, b.id] do
+        assert [%{row: row, state: :matches}] = day.in_seat[trip_id]
+        assert row.updated_at == record.updated_at
+      end
+    end
   end
 
   describe "the query count" do
@@ -579,7 +625,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.InSeatLoadTest do
       to_trip_id: record.to_trip_id,
       transfer_type: record.transfer_type,
       from_stop_id: record.from_stop_id,
-      to_stop_id: record.to_stop_id
+      to_stop_id: record.to_stop_id,
+      updated_at: record.updated_at
     }
   end
 
