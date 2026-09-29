@@ -365,13 +365,13 @@ test.describe("patterns list", () => {
     await page.setViewportSize({ width: 1440, height: 1000 });
     await openPatternsList(page, versionId);
 
-    // The Alignment column header and one status cell per pattern row.
+    // The Map line column header and one status cell per pattern row.
     await expect(page.locator("#patterns-list-container")).toContainText(
-      "Alignment",
+      "Map line",
     );
     await expect(
       page.locator(`#pattern-alignment-${EXPORTED_PATTERN}`),
-    ).toContainText("✓ Exported");
+    ).toContainText("Ready");
     await expect(page.locator("#patterns-list")).toContainText("missing");
     await page.locator("#patterns-list-container").scrollIntoViewIfNeeded();
     await captureViewport(page, "patterns-list-1440");
@@ -393,7 +393,7 @@ test.describe("patterns list", () => {
     await openPatternsList(page, versionId);
     await expect(
       page.locator(`#pattern-alignment-${EXPORTED_PATTERN}`),
-    ).toContainText("✓ Exported");
+    ).toContainText("Ready");
     await captureFullPage(page, "patterns-list-320");
     expect(await bodyFitsViewport(page)).toBe(true);
 
@@ -428,17 +428,20 @@ test.describe("bulk generation", () => {
     ).toBeVisible({ timeout: 15000 });
   }
 
-  async function selectOnlyGenPatterns(page) {
-    const checked = page.locator(
-      '#patterns-list input[name="bulk-pattern"]:checked',
-    );
+  // The dialog holds the selection: it opens with every pattern that still
+  // misses sections checked, and each toggle is a server round trip.
+  async function chooseOnlyGenPatterns(page) {
+    const boxes = page.locator('#alignment-bulk-dialog input[name="bulk-pattern"]');
+    const count = await boxes.count();
 
-    while ((await checked.count()) > 0) {
-      await checked.first().click();
+    for (let index = 0; index < count; index += 1) {
+      const box = boxes.nth(index);
+      const value = await box.getAttribute("value");
+      const wanted = value === GEN_OK_PATTERN || value === GEN_FAIL_PATTERN;
+
+      if ((await box.isChecked()) !== wanted) await box.click();
+      await expect(box).toBeChecked({ checked: wanted });
     }
-
-    await page.locator(`#pattern-bulk-select-${GEN_OK_PATTERN}`).check();
-    await page.locator(`#pattern-bulk-select-${GEN_FAIL_PATTERN}`).check();
   }
 
   test("confirms two patterns and reviews the per-pattern results at desktop and phone widths", async ({
@@ -451,14 +454,17 @@ test.describe("bulk generation", () => {
 
     await page.setViewportSize({ width: 1440, height: 1000 });
     await openPatternsList(page, versionId);
-    await selectOnlyGenPatterns(page);
 
     // The confirmation states the section count and the saved-paths
     // promise before any routing call happens.
     await page.locator("#patterns-bulk-generate").click();
     await expect(page.locator("#alignment-bulk-dialog")).toContainText(
-      "Create suggestions for 2 sections in 2 patterns. Saved paths and custom paths stay unchanged. Review the results before saving.",
+      "Saved and custom paths stay unchanged, and nothing is saved until you review each suggestion.",
       { timeout: 15000 },
+    );
+    await chooseOnlyGenPatterns(page);
+    await expect(page.locator("#alignment-bulk-summary")).toContainText(
+      "2 sections in 2 patterns will get a suggested path.",
     );
     await page.locator("#patterns-list-container").scrollIntoViewIfNeeded();
     await captureViewport(page, "bulk-dialog-1440");
@@ -467,15 +473,15 @@ test.describe("bulk generation", () => {
     // per row with a shared summary notice.
     await page.locator("#alignment-bulk-dialog-confirm").click();
     await expect(page.locator("#patterns-bulk-notice")).toContainText(
-      "1 of 2 sections generated",
+      "Suggested paths for 1 of 2 sections",
       { timeout: 30000 },
     );
     await expect(
       page.locator(`#pattern-bulk-success-${GEN_OK_PATTERN}`),
-    ).toContainText("◷ Review suggestion");
+    ).toContainText("Review suggestion");
     await expect(
       page.locator(`#pattern-bulk-failed-${GEN_FAIL_PATTERN}`),
-    ).toContainText("! Draw 1 section");
+    ).toContainText("Draw 1 section");
     await page.locator("#patterns-list-container").scrollIntoViewIfNeeded();
     await captureViewport(page, "bulk-results-1440");
     expect(await bodyFitsViewport(page)).toBe(true);
@@ -695,11 +701,11 @@ test.describe("generation journeys", () => {
     await openPatternsList(page, versionId);
     await page.locator("#patterns-bulk-generate").click();
     await expect(page.locator("#alignment-bulk-dialog")).toContainText(
-      "Create suggestions for",
+      "Patterns to include",
       { timeout: 15000 },
     );
     await expect(page.locator("#alignment-bulk-dialog")).toContainText(
-      "Review the results before saving.",
+      "nothing is saved until you review each suggestion.",
     );
     await page.locator("#patterns-list-container").scrollIntoViewIfNeeded();
     await captureFullPage(page, "gen-journey-bulk-320");

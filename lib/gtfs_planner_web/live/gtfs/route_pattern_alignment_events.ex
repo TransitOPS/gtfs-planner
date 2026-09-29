@@ -975,12 +975,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   @bulk_key :alignment_bulk
   @bulk_section_limit 200
 
+  @doc "The most sections one bulk run may cover."
+  def bulk_section_limit, do: @bulk_section_limit
+
   @doc """
   Toggles one pattern in the Route › Patterns bulk selection (step 36).
 
   Selection is LiveView-local (a MapSet of natural ids); viewers leave
-  the socket unchanged. Unknown ids toggle harmlessly: `open_bulk/2`
-  counts only missing sections of scoped patterns.
+  the socket unchanged. Unknown ids toggle harmlessly: the dialog counts
+  only the missing sections of the candidate patterns. While the bulk
+  dialog is open its totals follow the selection.
   """
   def toggle_bulk_select(socket, %{"pattern-id" => route_pattern_id})
       when is_binary(route_pattern_id) do
@@ -992,7 +996,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
           do: MapSet.delete(selected, route_pattern_id),
           else: MapSet.put(selected, route_pattern_id)
 
-      Component.assign(socket, :bulk_selected, selected)
+      socket
+      |> Component.assign(:bulk_selected, selected)
+      |> refresh_bulk_dialog()
     else
       socket
     end
@@ -1000,22 +1006,28 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
 
   def toggle_bulk_select(socket, _params), do: socket
 
-  @doc """
-  Opens the bulk-generation confirmation (step 36, AC-41).
+  defp refresh_bulk_dialog(%{assigns: %{bulk_dialog: %{candidates: candidates}}} = socket),
+    do:
+      Component.assign(
+        socket,
+        :bulk_dialog,
+        bulk_dialog(candidates, socket.assigns.bulk_selected)
+      )
 
-  Counts the selected patterns' missing sections through the batched
-  `Gtfs.route_alignment_summary/3` read (step 34, still 5 queries).
-  Viewers and an empty selection leave the socket unchanged; a selection
-  over 200 sections opens the capped dialog with no confirm action.
+  defp refresh_bulk_dialog(socket), do: socket
+
+  @doc """
+  Opens the bulk-generation dialog (step 36, AC-41).
+
+  Counts each candidate pattern's missing sections again through the batched
+  `Gtfs.route_alignment_summary/3` read (step 34, still 5 queries), so the
+  dialog never offers a pattern that has been completed since the list
+  loaded. Viewers and a route with nothing missing leave the socket
+  unchanged; a selection over 200 sections opens the dialog with its
+  confirm unavailable.
   """
   def open_bulk(socket, _params) do
     if bulk_editor?(socket) do
-      selected =
-        (socket.assigns[:bulk_selected] || MapSet.new())
-        |> MapSet.to_list()
-        |> Enum.filter(&is_binary/1)
-        |> Enum.sort()
-
       summary =
         Gtfs.route_alignment_summary(
           socket.assigns.current_organization.id,
@@ -1023,32 +1035,47 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
           socket.assigns.route_id
         )
 
-      {total, count} =
-        Enum.reduce(selected, {0, 0}, fn route_pattern_id, {total, count} ->
-          count_bulk_missing(summary, route_pattern_id, total, count)
-        end)
+      candidates =
+        for candidate <- socket.assigns[:bulk_candidates] || [],
+            missing = missing_sections(summary, candidate.id),
+            missing > 0,
+            do: %{candidate | missing: missing}
 
-      if total == 0 and count == 0 do
+      if candidates == [] do
         socket
       else
-        Component.assign(socket, :bulk_dialog, bulk_dialog(total, count, selected))
+        socket
+        |> Component.assign(:bulk_error, nil)
+        |> Component.assign(
+          :bulk_dialog,
+          bulk_dialog(candidates, socket.assigns[:bulk_selected] || MapSet.new())
+        )
       end
     else
       socket
     end
   end
 
-  defp bulk_dialog(total, _count, _selected) when total > @bulk_section_limit,
-    do: %{too_many: true, total: total}
-
-  defp bulk_dialog(total, count, selected),
-    do: %{total: total, pattern_count: count, pattern_ids: selected}
-
-  defp count_bulk_missing(summary, route_pattern_id, total, count) do
+  defp missing_sections(summary, route_pattern_id) do
     case Map.get(summary, route_pattern_id) do
-      %{missing: missing} when missing > 0 -> {total + missing, count + 1}
-      _ -> {total, count}
+      %{missing: missing} -> missing
+      _ -> 0
     end
+  end
+
+  # The dialog holds the candidates it lists and what the selection adds up to,
+  # so a toggle recounts without another read.
+  defp bulk_dialog(candidates, selected) do
+    chosen = Enum.filter(candidates, &MapSet.member?(selected, &1.id))
+    total = chosen |> Enum.map(& &1.missing) |> Enum.sum()
+
+    %{
+      candidates: candidates,
+      total: total,
+      pattern_count: length(chosen),
+      pattern_ids: chosen |> Enum.map(& &1.id) |> Enum.sort(),
+      too_many?: total > @bulk_section_limit
+    }
   end
 
   @doc """
@@ -1074,8 +1101,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
       socket
       |> Component.assign(:bulk_dialog, nil)
       |> Component.assign(:bulk_result, nil)
+      |> Component.assign(:bulk_error, nil)
       |> Component.assign(:alignment_bulk, %{token: :erlang.make_ref(), pattern_ids: pattern_ids})
-      |> Component.assign(:status_message, "Finding street paths…")
       |> Phoenix.LiveView.start_async(@bulk_key, fn ->
         Gtfs.suggest_missing_alignments(organization_id, version_id, route_id, pattern_ids)
       end)
@@ -1093,7 +1120,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
   def cancel_bulk(socket, _params) do
     socket
     |> Component.assign(:alignment_bulk, nil)
-    |> Component.assign(:status_message, nil)
     |> Phoenix.LiveView.cancel_async(@bulk_key)
   end
 
@@ -1122,10 +1148,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
       {:ok, _bulk} ->
         {socket
          |> Component.assign(:alignment_bulk, nil)
-         |> Component.assign(
-           :status_message,
-           "Too many sections selected. Select fewer patterns (limit 200)."
-         ), false}
+         |> Component.assign(:bulk_error, :too_many_sections), false}
 
       :stale ->
         {Component.assign(socket, :alignment_bulk, nil), false}
@@ -1137,10 +1160,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
       {:ok, _bulk} ->
         {socket
          |> Component.assign(:alignment_bulk, nil)
-         |> Component.assign(
-           :status_message,
-           "Street routing is unavailable. Draw the sections or try again later."
-         ), false}
+         |> Component.assign(:bulk_error, :routing_unavailable), false}
 
       :stale ->
         {Component.assign(socket, :alignment_bulk, nil), false}
@@ -1173,22 +1193,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents do
 
     pending = Map.merge(socket.assigns[:alignment_suggestions] || %{}, suggestions)
 
-    generated = Enum.count(patterns, fn {_id, entry} -> map_size(entry.suggestions) > 0 end)
-
     socket
     |> Component.assign(:alignment_bulk, nil)
     |> Component.assign(:bulk_result, result)
     |> Component.assign(:alignment_suggestions, pending)
-    |> Component.assign(
-      :status_message,
-      bulk_ready_message(result, generated)
-    )
-  end
-
-  defp bulk_ready_message(%{generated: generated, total: total}, _pattern_count) do
-    if generated == total,
-      do: "Suggestions ready. Review each path before saving.",
-      else: "#{generated} of #{total} sections generated. Review the suggestions."
   end
 
   @doc """
