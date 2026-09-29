@@ -572,6 +572,13 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     }
   end
 
+  defp check_uuid!(changeset, field, value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, _uuid} -> changeset
+      :error -> Ecto.Changeset.add_error(changeset, field, "is invalid")
+    end
+  end
+
   defp value(entry, key) do
     case Map.get(entry, Atom.to_string(key), Map.get(entry, key)) do
       value when value in [nil, ""] -> nil
@@ -3227,6 +3234,14 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         garage_id: value(attrs, :garage_id),
         vehicle_type_id: value(attrs, :vehicle_type_id)
       })
+
+    changeset =
+      Enum.reduce([:garage_id, :vehicle_type_id], changeset, fn field, acc ->
+        case Ecto.Changeset.get_field(acc, field) do
+          nil -> acc
+          value -> check_uuid!(acc, field, value)
+        end
+      end)
 
     if changeset.valid? do
       {:ok,
