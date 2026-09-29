@@ -91,6 +91,33 @@ async function waitForLiveView(page) {
   });
 }
 
+// The same race applies to file inputs: LiveView only accepts an upload change
+// event once the input owns its upload ref. Stage through the ref and the
+// rendered entry, retrying the change once, so a dropped event cannot leave the
+// Compute diff button disabled.
+async function stageDiffFiles(page, files) {
+  const input = page.locator("#diff-upload-input input");
+  const entries = page.locator("#diff-upload-entries");
+  let lastError;
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await waitForLiveView(page);
+    await expect(input).toHaveAttribute("data-phx-upload-ref", /.+/);
+    await input.setInputFiles(files);
+
+    try {
+      for (const file of files) {
+        await expect(entries).toContainText(file.name, { timeout: 5_000 });
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError;
+}
+
 async function seededVersionId(page, name = VERSION_NAME) {
   // The version menu starts closed, so its options are attached to the document
   // but not visible; read them the way the other browser specs do.
@@ -527,7 +554,7 @@ test.describe("exchange", () => {
       "Reviewed changes apply to version",
     );
 
-    await page.locator("#diff-upload-input input").setInputFiles([
+    await stageDiffFiles(page, [
       {
         name: "levels.txt",
         mimeType: "text/plain",
@@ -596,6 +623,263 @@ test.describe("exchange", () => {
     await page.screenshot({
       path: capturePath(testInfo, "step-016-production-320.png"),
       fullPage: true,
+    });
+  });
+});
+
+// Step 17 / EV-30. A station-merge apply whose closure-backed pathway removal
+// fails keeps that failure, the applied sibling and the Retry path on the
+// Import page, rebuilt from the durable run after a reload. The upload lists
+// every pathway already in the version except the closure-backed lift, plus one
+// new walkway, so the apply has exactly one failed removal and one applied
+// sibling instead of deleting unrelated seeded data. The listed rows carry the
+// seeded attributes verbatim, which is what keeps them out of the decisions.
+const MERGE_RESULT_PATHWAYS = [
+  "pathway_id,from_stop_id,to_stop_id,pathway_mode,is_bidirectional,traversal_time,length,stair_count",
+  "BROWSER_PW_ELEVATOR,BROWSER_STOP_C,BROWSER_STOP_A,5,1,45,12.5,",
+  "BROWSER_PW_SAME_LEVEL,BROWSER_STOP_A,BROWSER_STOP_B,1,1,20,8.0,",
+  "BROWSER_PW_CROSS_LEVEL,BROWSER_STOP_A,BROWSER_STOP_D,5,0,60,25.0,",
+  "CATALOG_PW_FULL,CATALOG_PATHWAY_STATION,CATALOG_PATHWAY_TO_A,2,0,32,18.5,24",
+  "CATALOG_PW_PARTIAL,CATALOG_PATHWAY_STATION,CATALOG_PATHWAY_TO_B,1,1,,45.0,",
+  "BROWSER_EVO_PW_WALK,BROWSER_EVO_ENTRANCE,BROWSER_EVO_MEZZANINE,1,1,30,18.0,",
+  "BROWSER_EVO_PW_STAIR,BROWSER_EVO_MEZZANINE,BROWSER_EVO_PLATFORM,2,1,60,14.0,",
+  "BROWSER_EVO_EMPTY_PW,BROWSER_EVO_EMPTY_A,BROWSER_EVO_EMPTY_B,1,1,,,",
+  "BROWSER_EVO_PW_MERGE_ADDED,BROWSER_EVO_EMPTY_A,BROWSER_EVO_EMPTY_B,1,1,30,,",
+].join("\n");
+
+const FAILED_REMOVAL =
+  "Not removed: this pathway has scheduled closures.";
+
+const LIFT_CLOSURE_PATHWAY = PUNCTUATED_PATHWAY;
+
+test.describe("merge-results", () => {
+  test("a partial apply keeps the failed closure-backed removal and retries it", async ({
+    page,
+  }, testInfo) => {
+    await logIn(page);
+    const versionId = await seededVersionId(page);
+    const importPath = `/gtfs/${versionId}/import`;
+
+    await page.setViewportSize(DESKTOP);
+    await page.goto(importPath);
+    await waitForLiveView(page);
+    await page.waitForSelector("#diff-upload-input input");
+
+    // An earlier durable review in this version disables the upload step until
+    // Reset returns the form to it; a fresh browser database has no such run.
+    const resetButton = page.locator("#diff-reset-btn").first();
+    if (await resetButton.count()) {
+      await resetButton.click();
+      await page.waitForSelector("#diff-upload-input input");
+    }
+
+    await stageDiffFiles(page, [
+      {
+        name: "pathways.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from(MERGE_RESULT_PATHWAYS),
+      },
+      {
+        name: "pathway_evolutions.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from(IGNORED_CLOSURE_FILE),
+      },
+    ]);
+
+    await page.locator("#diff-compute-btn").click();
+    await page.locator("#diff-decisions [data-version-diff-row]").first().waitFor();
+
+    // One removal (the closure-backed lift) and one addition: nothing else in
+    // the version is proposed for removal, so the partial apply is exact.
+    await expect(page.locator("#diff-decisions [data-version-diff-row]")).toHaveCount(2);
+    await expect(
+      page.locator("#diff-decisions article[data-version-diff-action='remove']"),
+    ).toHaveCount(1);
+    await expect(
+      page.locator("#diff-decisions article[data-version-diff-action='add']"),
+    ).toHaveCount(1);
+
+    await page
+      .locator("button[phx-click='approve-all'][phx-value-action='remove']")
+      .click();
+    await page
+      .locator("button[phx-click='approve-all'][phx-value-action='add']")
+      .click();
+    await expect(page.locator("#diff-apply-btn")).toBeEnabled();
+    await page.locator("#diff-apply-btn").click();
+
+    await expect(page.locator("#diff-run-state[data-state='partial']")).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator("#diff-run-counts")).toHaveText(
+      "Applied 1 · Failed 1 · Unapplied 0",
+    );
+
+    const failedRow = page.locator(
+      "#diff-results article[data-version-diff-status='failed']",
+    );
+    const appliedRow = page.locator(
+      "#diff-results article[data-version-diff-status='applied']",
+    );
+
+    await expect(failedRow).toHaveCount(1);
+    await expect(appliedRow).toHaveCount(1);
+    await expect(failedRow).toHaveAttribute(
+      "data-apply-failure-code",
+      "pathway_in_use",
+    );
+    await expect(failedRow).toContainText(LIFT_CLOSURE_PATHWAY);
+    await expect(
+      failedRow.locator("[data-role='version-diff-summary']"),
+    ).toHaveText(FAILED_REMOVAL);
+    await expect(appliedRow).toContainText("BROWSER_EVO_PW_MERGE_ADDED");
+
+    // The terminal row links to the owning station with the exact encoded
+    // natural ID, names that station, and drops the approval controls.
+    const encodedQuery = new URLSearchParams({
+      pathway: LIFT_CLOSURE_PATHWAY,
+    }).toString();
+    const evolutionsHref = `/gtfs/${versionId}/stops/${STATION}/evolutions?${encodedQuery}`;
+    const evolutionsLink = failedRow.locator(
+      "[data-role='version-diff-evolutions-link']",
+    );
+
+    await expect(evolutionsLink).toHaveCount(1);
+    await expect(evolutionsLink).toHaveAttribute("href", evolutionsHref);
+    await expect(evolutionsLink).toContainText("Evolutions Test Station");
+    // The link carries the design system's action ink, as the reference does.
+    await expect(evolutionsLink).toHaveCSS("color", "rgb(200, 24, 112)");
+    await expect(
+      page.locator("#diff-results button[phx-click='approve-decision']"),
+    ).toHaveCount(0);
+    await expect(
+      page.locator("#diff-results button[phx-click='reject-decision']"),
+    ).toHaveCount(0);
+
+    // Step 16's omission notice is durable review state, so the apply keeps it.
+    await expect(page.locator(IGNORED_NOTICE_ID)).toContainText(IGNORED_NOTICE);
+
+    await page.screenshot({
+      path: capturePath(testInfo, "step-017-production-desktop.png"),
+      fullPage: true,
+    });
+
+    // The link really opens the owning station's Evolutions view with that one
+    // pathway selected.
+    await evolutionsLink.click();
+    await page.waitForURL((url) => url.pathname.endsWith("/evolutions"));
+    await waitForLiveView(page);
+
+    expect(new URL(page.url()).searchParams.get("pathway")).toBe(
+      LIFT_CLOSURE_PATHWAY,
+    );
+    await expect(page.locator("#closures-search")).toHaveValue(
+      LIFT_CLOSURE_PATHWAY,
+    );
+    await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(1);
+    await expect(page.locator("#closures-list")).toContainText("09:00–15:00");
+
+    // The durable run rebuilds the same partial result after any reconnect.
+    await page.goto(importPath);
+    await waitForLiveView(page);
+    await page.reload();
+    await waitForLiveView(page);
+
+    await expect(page.locator("#diff-run-state[data-state='partial']")).toBeVisible();
+    await expect(page.locator("#diff-run-counts")).toHaveText(
+      "Applied 1 · Failed 1 · Unapplied 0",
+    );
+    await expect(failedRow).toHaveCount(1);
+    await expect(appliedRow).toHaveCount(1);
+    await expect(
+      failedRow.locator("[data-role='version-diff-summary']"),
+    ).toHaveText(FAILED_REMOVAL);
+    await expect(evolutionsLink).toHaveAttribute("href", evolutionsHref);
+    await expect(page.locator(IGNORED_NOTICE_ID)).toBeVisible();
+    await expect(page.locator("#diff-retry-btn")).toBeVisible();
+    await expect(page.locator("#diff-retry-hint")).toContainText(
+      "After the closures are deleted, Retry applies the failed removal again.",
+    );
+
+    // Retry re-runs the real apply worker against the surviving closure. A
+    // client-side marker inside the streamed result makes the re-render
+    // observable even when the apply phase completes between two DOM frames.
+    await page.locator("#diff-results").evaluate((list) => {
+      const marker = document.createElement("li");
+      marker.id = "merge-results-retry-marker";
+      marker.textContent = "retry marker";
+      list.appendChild(marker);
+    });
+
+    await page.locator("#diff-retry-btn").click();
+    await expect(page.locator("#merge-results-retry-marker")).toHaveCount(0, {
+      timeout: 30_000,
+    });
+
+    await expect(page.locator("#diff-run-state[data-state='partial']")).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator("#diff-run-counts")).toHaveText(
+      "Applied 1 · Failed 1 · Unapplied 0",
+    );
+    await expect(failedRow).toHaveCount(1);
+    await expect(failedRow).toContainText(LIFT_CLOSURE_PATHWAY);
+    await expect(appliedRow).toHaveCount(1);
+    await expect(appliedRow).toContainText("BROWSER_EVO_PW_MERGE_ADDED");
+
+    // Mobile and the narrow overflow check keep the same result hierarchy.
+    await page.setViewportSize(MOBILE);
+    await page.reload();
+    await waitForLiveView(page);
+
+    await expect(page.locator("#diff-run-state[data-state='partial']")).toBeVisible();
+    await expect(failedRow).toBeVisible();
+    await expect(evolutionsLink).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-017-production-mobile.png"),
+      fullPage: true,
+    });
+
+    await page.setViewportSize(NARROW);
+    await page.reload();
+    await waitForLiveView(page);
+
+    await expect(page.locator("#diff-run-state[data-state='partial']")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-017-production-320.png"),
+      fullPage: true,
+    });
+  });
+
+  // The reference is a self-contained file in the gitignored `.specs/`
+  // workspace, so this case skips (rather than fails) in a checkout without it.
+  test.describe("reference capture", () => {
+    test.skip(() => !fs.existsSync(REFERENCE_PATH), "reference file not present");
+
+    test("captures the reference merge-result at both viewports", async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize(DESKTOP);
+      await page.goto(
+        `${pathToFileURL(REFERENCE_PATH).href}?state=merge-result`,
+      );
+      await page.waitForSelector("#diff-run-state");
+      await page.screenshot({
+        path: capturePath(testInfo, "step-017-reference-desktop.png"),
+        fullPage: true,
+      });
+
+      await page.setViewportSize(MOBILE);
+      await page.goto(
+        `${pathToFileURL(REFERENCE_PATH).href}?state=merge-result`,
+      );
+      await page.waitForSelector("#diff-run-state");
+      await page.screenshot({
+        path: capturePath(testInfo, "step-017-reference-mobile.png"),
+        fullPage: true,
+      });
     });
   });
 });

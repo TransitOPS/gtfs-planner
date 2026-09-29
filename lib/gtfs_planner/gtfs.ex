@@ -5236,6 +5236,10 @@ defmodule GtfsPlanner.Gtfs do
   def calendar_usage(organization_id, gtfs_version_id, service_id),
     do: Calendars.calendar_usage(organization_id, gtfs_version_id, service_id)
 
+  @doc "Returns the owning station stop ids of each pathway by scoped endpoint ancestry."
+  def pathway_station_ids(organization_id, gtfs_version_id, pathway_ids),
+    do: Calendars.pathway_station_ids(organization_id, gtfs_version_id, pathway_ids)
+
   @doc "Returns the version's maximal civil-date runs with no calendar service."
   def feed_service_gaps(organization_id, gtfs_version_id, today),
     do: Calendars.feed_service_gaps(organization_id, gtfs_version_id, today)

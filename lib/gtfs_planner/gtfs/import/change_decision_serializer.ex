@@ -110,6 +110,21 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeDecisionSerializer do
 
   def deserialize(_), do: {:error, :invalid_serialized_decision}
 
+  @doc """
+  Normalizes one entity into the persisted `current_values` form.
+
+  The stored fingerprint is computed from this normalization, so an apply-time
+  comparison must recompute it the same way; another JSON form (for example a
+  decimal's text with its scale) would make an unchanged row read as drifted.
+  """
+  @spec fingerprint_values(atom(), map()) :: map()
+  def fingerprint_values(entity_type, entity) do
+    case normalize_values(entity, entity_type, :current_values) do
+      {:ok, values} -> values
+      {:error, _reason} -> %{}
+    end
+  end
+
   def current_fingerprint(values) when is_map(values) do
     values
     |> Enum.map(fn {key, value} -> {to_string(key), value} end)

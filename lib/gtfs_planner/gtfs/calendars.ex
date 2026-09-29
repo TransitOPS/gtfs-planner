@@ -1466,9 +1466,21 @@ defmodule GtfsPlanner.Gtfs.Calendars do
     }
   end
 
-  defp pathway_station_ids(_organization_id, _version_id, []), do: %{}
+  @doc """
+  Returns the owning station stop ids of each requested pathway by endpoint ancestry.
 
-  defp pathway_station_ids(organization_id, version_id, pathway_ids) do
+  One entry per requested pathway id: the sorted, de-duplicated station stops
+  (`location_type` 1) at the top of each endpoint's `parent_station` chain,
+  boarding areas included. An endpoint without a station ancestor contributes no
+  id, so unresolved ownership stays an empty list rather than an invented owner.
+  Other organizations or versions are never consulted.
+  """
+  @spec pathway_station_ids(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) :: %{
+          String.t() => [String.t()]
+        }
+  def pathway_station_ids(_organization_id, _version_id, []), do: %{}
+
+  def pathway_station_ids(organization_id, version_id, pathway_ids) do
     endpoints =
       Repo.all(
         from(p in Pathway,
