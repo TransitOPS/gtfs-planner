@@ -57,7 +57,13 @@ config :gtfs_planner, GtfsPlanner.Repo,
   # four-connection case has no margin at `2 * 2` and does not fit below it. Ecto offers
   # no per-module pool size, and this 10 matches what `config/dev.exs` and
   # `config/runtime.exs` already use.
-  pool_size: max(System.schedulers_online() * 2, 10)
+  pool_size: max(System.schedulers_online() * 2, 10),
+  # A LiveView render and an async task share the test's sandbox connection, so
+  # a busy machine can queue a checkout past DBConnection's 50 ms target and
+  # have the request dropped. Wait like the dev and runtime pools do instead of
+  # failing a test for the host's load.
+  queue_target: 5_000,
+  queue_interval: 30_000
 
 if database_url do
   config :gtfs_planner, GtfsPlanner.Repo, url: database_url
