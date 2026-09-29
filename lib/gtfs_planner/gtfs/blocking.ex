@@ -53,10 +53,29 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Trip
+  alias GtfsPlanner.Operations
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
-  @default_min_layover_minutes 5
+  # The settings a version with no stored row reads (AC-1). The map is the single
+  # definition of the defaults: the reader merges stored columns over it and the form
+  # changeset fills a partial map from it, so the database defaults, this map and the
+  # drawn inputs cannot drift apart.
+  @defaults %{
+    min_layover_minutes: 5,
+    max_block_minutes: nil,
+    pull_out_buffer_minutes: 0,
+    interlining: :any,
+    default_garage_id: nil,
+    deadhead_speed_kmh: 30,
+    deadhead_circuity: 1.3,
+    max_piece_minutes: nil
+  }
+
+  # Every settings column plus the write timestamp: an upsert that replaced only
+  # some of them would leave a previous save's value behind on the same row (FH-17).
+  @replace_columns BlockingSetting.settings_fields() ++ [:updated_at]
+
   @published_status "published"
   @seconds_per_hour 3600
 
@@ -91,7 +110,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   @type day :: %{
           day_types: [DayTypes.day_type()],
           day_type: DayTypes.day_type() | nil,
-          settings: %{min_layover_minutes: 0..120},
+          settings: settings(),
           routes: %{String.t() => Queries.route_info()},
           blocks: [block()],
           pool: [Queries.trip_row()],
@@ -180,49 +199,68 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           transfers: [%{id: Ecto.UUID.t(), before: InSeat.state(), after: InSeat.state()}]
         }
 
-  @doc """
-  Returns the minimum layover for one organization's GTFS version.
-
-  A version with no stored row returns the default and stores nothing.
-
-  ## Examples
-
-      iex> get_settings(organization_id, gtfs_version_id)
-      %{min_layover_minutes: 5}
+  @typedoc """
+  The eight Block rules settings, with `nil` for an unset optional limit.
   """
-  @spec get_settings(Ecto.UUID.t(), Ecto.UUID.t()) :: %{min_layover_minutes: 0..120}
+  @type settings :: %{
+          min_layover_minutes: 0..120,
+          max_block_minutes: 60..1440 | nil,
+          pull_out_buffer_minutes: 0..60,
+          interlining: :any | :same_stop | :none,
+          default_garage_id: Ecto.UUID.t() | nil,
+          deadhead_speed_kmh: 5..120,
+          deadhead_circuity: float(),
+          max_piece_minutes: 60..720 | nil
+        }
+
+  @doc """
+  Returns every Block rules setting for one organization's GTFS version.
+
+  A version with no stored row returns the defaults and stores nothing. The stored
+  columns are merged over `@defaults`, so a setting the migration predates keeps
+  reading as its default until it is saved. `deadhead_circuity` is a float here
+  rather than the stored `Decimal`, because every consumer is pure arithmetic.
+  """
+  @spec get_settings(Ecto.UUID.t(), Ecto.UUID.t()) :: settings()
   def get_settings(organization_id, gtfs_version_id) do
     case Repo.one(settings_query(organization_id, gtfs_version_id)) do
-      %{min_layover_minutes: minutes} -> %{min_layover_minutes: minutes}
-      nil -> %{min_layover_minutes: @default_min_layover_minutes}
+      nil -> @defaults
+      stored -> Map.merge(@defaults, stored)
     end
   end
 
   @doc """
-  Returns the changeset rendered by the minimum layover form.
+  Returns the changeset rendered by the settings form.
 
-  `settings` is a value map from `get_settings/2` and `attrs` are the submitted
-  parameters; an invalid value carries the field error.
+  `settings` is a value map from `get_settings/2` — or any partial map, which is
+  filled from the defaults — and `attrs` are the submitted parameters; an invalid
+  value carries the field error.
   """
   @spec change_settings(map(), map()) :: Ecto.Changeset.t()
   def change_settings(settings, attrs) do
+    values = settings |> Map.merge(@defaults) |> Map.take(BlockingSetting.settings_fields())
+
     %BlockingSetting{}
-    |> Ecto.Changeset.change(
-      min_layover_minutes: Map.get(settings, :min_layover_minutes, @default_min_layover_minutes)
-    )
+    |> Ecto.Changeset.change(values)
     |> BlockingSetting.changeset(attrs)
   end
 
   @doc """
-  Stores the minimum layover for one organization's published GTFS version.
+  Stores the eight Block rules settings for one organization's published version.
 
   The save runs in one transaction whose first statement is the scoped version row
-  `FOR SHARE` (`Versions.lock_for_input_write!/2`), so the minimum layover a review
-  loaded cannot change under a calendar combination that owns the version, and this
-  save waits behind such an owner in turn. Returns `{:error, :not_found}` when the
-  version is unpublished or belongs to another organization, and
-  `{:error, changeset}` when the value is not a whole number from 0 to 120. One row
-  is kept per organization and version, so a repeated save replaces the stored value.
+  `FOR SHARE` (`Versions.lock_for_input_write!/2`), so the settings a review loaded
+  cannot change under a calendar combination that owns the version, and this save
+  waits behind such an owner in turn. It then takes `lock_blocking!/1`, so a settings
+  save serializes with every other block writer and cannot slip between a plan's
+  review and its apply (INV-1, INV-7, R12).
+
+  Returns `{:error, :not_found}` when the version is unpublished or belongs to
+  another organization, and `{:error, changeset}` when a value is outside its AC-1
+  range, names an interlining value that does not exist, or names a
+  `default_garage_id` that is not a garage of this organization. One row is kept per
+  organization and version, so a repeated save replaces every settings column of the
+  same row rather than merging into it.
   """
   @spec update_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
           {:ok, BlockingSetting.t()} | {:error, Ecto.Changeset.t() | :not_found}
@@ -238,17 +276,34 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # version's first one (INV-1). Nothing in this writer takes the version row `FOR UPDATE`,
   # so no caller upgrades the share lock, and the transaction makes the check and the write
   # one unit while returning the upsert's own result tuple.
+  #
+  # `lock_blocking!/1` follows the version lock and nothing else, in INV-1's order, so
+  # this writer joins the same serialization point as the block writers. It is taken
+  # before the garage lookup, which is a read of another table, and before the upsert's
+  # row lock.
   defp write_settings!(organization_id, gtfs_version_id, attrs) do
     version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
 
     if version.publication_status == @published_status do
-      %BlockingSetting{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
-      |> BlockingSetting.changeset(attrs)
-      |> Repo.insert(
-        on_conflict: {:replace, [:min_layover_minutes, :updated_at]},
-        conflict_target: [:organization_id, :gtfs_version_id],
-        returning: true
-      )
+      :ok = lock_blocking!(gtfs_version_id)
+
+      changeset =
+        %BlockingSetting{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
+        |> BlockingSetting.changeset(attrs)
+
+      case check_default_garage(organization_id, changeset) do
+        {:ok, changeset} ->
+          Repo.insert(changeset,
+            on_conflict: {:replace, @replace_columns},
+            conflict_target: [:organization_id, :gtfs_version_id],
+            returning: true
+          )
+
+        {:error, changeset} ->
+          # Nothing has been written yet, so the transaction can commit this result and
+          # still leave the stored row exactly as the previous save left it.
+          {:error, changeset}
+      end
     else
       # The shared lock takes no publication stance, so the published requirement stays here,
       # exactly as `Calendars` and `RoutePatterns` apply theirs after the lock.
@@ -256,10 +311,42 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     end
   end
 
+  # A default garage is a planning input of one organization: a garage of another
+  # organization is rejected as a field error rather than being stored and resolved
+  # later. Only a submitted value is checked — an untouched stored garage is the
+  # previous save's own already-validated choice.
+  defp check_default_garage(organization_id, changeset) do
+    case Ecto.Changeset.get_change(changeset, :default_garage_id) do
+      nil ->
+        {:ok, changeset}
+
+      garage_id ->
+        if Operations.get_garage(organization_id, garage_id) do
+          {:ok, changeset}
+        else
+          {:error,
+           Ecto.Changeset.add_error(
+             changeset,
+             :default_garage_id,
+             "is not a garage of this organization"
+           )}
+        end
+    end
+  end
+
   defp settings_query(organization_id, gtfs_version_id) do
     from(s in BlockingSetting,
       where: s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id,
-      select: %{min_layover_minutes: s.min_layover_minutes}
+      select: %{
+        min_layover_minutes: s.min_layover_minutes,
+        max_block_minutes: s.max_block_minutes,
+        pull_out_buffer_minutes: s.pull_out_buffer_minutes,
+        interlining: s.interlining,
+        default_garage_id: s.default_garage_id,
+        deadhead_speed_kmh: s.deadhead_speed_kmh,
+        deadhead_circuity: type(s.deadhead_circuity, :float),
+        max_piece_minutes: s.max_piece_minutes
+      }
     )
   end
 
