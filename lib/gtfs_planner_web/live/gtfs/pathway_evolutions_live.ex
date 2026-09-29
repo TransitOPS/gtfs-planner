@@ -90,6 +90,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
      |> assign(:notices, [])
      |> assign(:dirty?, false)
      |> assign(:pending_action, nil)
+     |> assign(:delete_confirm?, false)
+     |> assign(:delete_pending?, false)
      |> assign(:preview_href, nil)
      |> assign(:preview_reason, nil)
      |> stream_configure(:closures, dom_id: &"closure-#{&1.id}")
@@ -350,6 +352,43 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     end
   end
 
+  # The delete confirmation is offered for a persisted row only; opening it is
+  # not itself a write. Unlike a row switch, a delete has its own confirmation
+  # that names what it removes, so a dirty form does not need a second question
+  # first: cancelling this dialog leaves every entered string where it was.
+  def handle_event("request_delete", _params, %{assigns: %{editor_mode: :edit}} = socket) do
+    {:noreply, assign(socket, :delete_confirm?, true)}
+  end
+
+  def handle_event("request_delete", _params, socket), do: {:noreply, socket}
+
+  # Cancelling closes the dialog without touching the row or the form; the
+  # shared confirmation returns focus to the button that opened it.
+  def handle_event("cancel_delete", _params, %{assigns: %{delete_pending?: false}} = socket) do
+    {:noreply, assign(socket, :delete_confirm?, false)}
+  end
+
+  def handle_event("cancel_delete", _params, socket), do: {:noreply, socket}
+
+  # The confirmation renders the busy state the shared dialog already owns:
+  # both actions are disabled and the confirm action reads "Deleting…" while
+  # the context call runs. The call itself is deferred to `handle_info/2`, so
+  # the render this handler returns is that busy state and a second
+  # confirmation arriving before it completes is refused here.
+  def handle_event("confirm_delete", _params, socket) do
+    cond do
+      socket.assigns.delete_pending? ->
+        {:noreply, socket}
+
+      socket.assigns.editor_mode != :edit ->
+        {:noreply, socket}
+
+      true ->
+        send(self(), :delete_closure)
+        {:noreply, assign(socket, :delete_pending?, true)}
+    end
+  end
+
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
     if Versions.published_gtfs_version_for_org?(
          socket.assigns.current_organization.id,
@@ -374,6 +413,18 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     else
       {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_info(:delete_closure, socket) do
+    socket =
+      if socket.assigns.editor_mode == :edit do
+        perform_delete(socket)
+      else
+        close_delete_dialog(socket)
+      end
+
+    {:noreply, socket}
   end
 
   # The station is kept across a version change only because the mount resolves
@@ -542,6 +593,121 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     |> focus_scoped("closure-idle-title")
   end
 
+  # -- delete ----------------------------------------------------------------
+
+  # What the delete confirmation names: the selected row's pathway, calendar
+  # and window, derived from the same labels the list and the editor use. It is
+  # nil unless a persisted closure is open, so the dialog can only describe a
+  # row of this station's snapshot. The saved row is what a delete removes, so
+  # unsaved edits in the form are deliberately not part of it.
+  defp delete_target(%{editor_mode: :edit, editor_id: id} = assigns) when is_binary(id) do
+    case Enum.find(assigns.station_data.closures, &(to_string(&1.evolution.id) == id)) do
+      nil ->
+        nil
+
+      closure ->
+        {calendar_label, _detail} =
+          calendar_lines(closure.calendar, closure.evolution.service_id)
+
+        %{
+          pathway_label: pathway_full_label(closure.pathway),
+          pathway_id: closure.evolution.pathway_id,
+          calendar_label: calendar_label,
+          window: window_label(closure.evolution),
+          window_note: window_note(closure.evolution)
+        }
+    end
+  end
+
+  defp delete_target(_assigns), do: nil
+
+  # The row is addressed by the UUID and the fingerprint the editor holds, so a
+  # delete based on a row that moved under it is refused as stale and removes
+  # nothing. The confirmation's own target is read before the call, so the
+  # success message can still name the calendar the deleted row kept.
+  defp perform_delete(socket) do
+    target = delete_target(socket.assigns)
+
+    case Gtfs.delete_pathway_evolution(
+           socket.assigns.editor_id,
+           socket.assigns.editor_fingerprint,
+           audit_context(socket)
+         ) do
+      {:ok, _result} -> deleted_closure(socket, target)
+      {:error, reason} -> refused_delete(socket, reason)
+    end
+  end
+
+  # A committed delete is re-read rather than patched: the list loses the row,
+  # the editor returns to its idle state and the outcome is announced. Focus
+  # lands on the re-streamed list; when the last match went with the row the
+  # list is replaced by its own empty state, so the next useful target is that
+  # state's Create closure action.
+  defp deleted_closure(socket, target) do
+    socket =
+      socket
+      |> reload_station()
+      |> put_editor(nil)
+      |> assign(:selected_closure_id, nil)
+      |> assign(:selected_pathway_id, nil)
+      |> assign(:status_message, deleted_message(target))
+      |> render_closures()
+
+    focus_scoped(
+      socket,
+      if(socket.assigns.match_count > 0, do: "closures-list", else: "new-closure")
+    )
+  end
+
+  defp deleted_message(%{calendar_label: label}), do: "Closure deleted. #{label} is unchanged."
+  defp deleted_message(_target), do: "Closure deleted."
+
+  # A refused delete never removes anything and never drops the form: a stale
+  # fingerprint shows the same reload path a stale save does, a revoked role
+  # and a row that is already gone keep their values and say so.
+  defp refused_delete(socket, :stale_review) do
+    socket
+    |> close_delete_dialog()
+    |> assign(:form_errors, [])
+    |> assign(:duplicate_id, nil)
+    |> assign(:notices, [])
+    |> assign(:stale?, true)
+    |> assign(
+      :status_message,
+      "Delete refused: this closure changed after you opened it. Reload it and try again."
+    )
+    |> focus_scoped("closure-stale")
+  end
+
+  defp refused_delete(socket, :forbidden) do
+    socket
+    |> close_delete_dialog()
+    |> assign(:status_message, "Delete refused: you no longer have permission to edit closures.")
+    |> put_flash(:error, "You no longer have permission to edit closures.")
+  end
+
+  defp refused_delete(socket, :not_found) do
+    socket
+    |> close_delete_dialog()
+    |> assign(
+      :status_message,
+      "Delete refused: this closure is no longer in this service version."
+    )
+    |> put_flash(:error, "This closure is no longer available in this service version.")
+  end
+
+  defp refused_delete(socket, _reason) do
+    socket
+    |> close_delete_dialog()
+    |> assign(:status_message, "The closure was not deleted. Nothing was written; try again.")
+  end
+
+  defp close_delete_dialog(socket) do
+    socket
+    |> assign(:delete_confirm?, false)
+    |> assign(:delete_pending?, false)
+  end
+
   # With a pathway already chosen the calendar is the next field to fill in;
   # without one, the pathway picker is.
   defp focus_new_closure(socket, nil), do: focus_scoped(socket, "closure-pathway")
@@ -603,6 +769,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
     socket
     |> assign(:pending_action, nil)
+    |> assign(:delete_confirm?, false)
+    |> assign(:delete_pending?, false)
     |> assign(:editor_mode, editor && editor.mode)
     |> assign(:editor_id, editor && editor.id)
     |> assign(:editor_fingerprint, editor && editor.fingerprint)
@@ -1084,6 +1252,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
       )
       |> assign(:dirty_baseline, dirty_baseline(assigns.saved_values))
       |> assign(:dirty_dialog_body, dirty_dialog_body(assigns))
+      |> assign(:delete_target, delete_target(assigns))
 
     ~H"""
     <Layouts.app
@@ -1111,8 +1280,15 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
             is_nil(@blocked) && "lg:grid-cols-[minmax(0,1fr)_440px] lg:grid-rows-[auto_1fr]"
           ]}
         >
+          <%!--
+          The list region owns its own scoped focus hook, so the confirmed
+          delete can land focus on the re-streamed `#closures-list` (or on the
+          empty state's Create action when the last match went with the row).
+          The editor keeps its own `CalendarEditor` instance.
+          --%>
           <section
             id="closures-card"
+            phx-hook="FormErrorFocus"
             aria-labelledby="closures-title"
             class="min-w-0 rounded-card border border-subtle bg-white lg:col-start-1 lg:row-start-1"
           >
@@ -1539,6 +1715,22 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 id="closure-actions"
                 class="sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 border-t border-subtle bg-white px-5 py-4"
               >
+                <div
+                  :if={@editor_mode == :edit}
+                  id="delete-closure-wrap"
+                  class="mr-auto max-sm:basis-full"
+                >
+                  <.button
+                    id="delete-closure"
+                    type="button"
+                    phx-click="request_delete"
+                    variant="secondary"
+                    disabled={@delete_pending?}
+                    class="min-h-11 gap-1.5 rounded-control border-control bg-white px-3 text-sm font-[650] text-error hover:bg-error/10 disabled:pointer-events-none disabled:opacity-60"
+                  >
+                    <.icon name="hero-trash" class="size-4" /> Delete closure
+                  </.button>
+                </div>
                 <.button
                   id="discard-closure"
                   type="button"
@@ -1580,6 +1772,60 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
               return_focus_id="closure-editor-title"
             >
               <p id="closure-dirty-body">{@dirty_dialog_body}</p>
+            </.confirm_dialog>
+
+            <%!--
+            The delete confirmation: the one explicit choice before a closure
+            is removed. It names the saved row it would remove and states that
+            the calendar stays, and its confirmation is disabled while the
+            context's delete is in flight.
+            --%>
+            <.confirm_dialog
+              id="closure-delete-dialog"
+              open={@delete_confirm?}
+              title="Delete this closure?"
+              confirm_label="Delete closure"
+              cancel_label="Keep closure"
+              pending_label="Deleting…"
+              on_confirm="confirm_delete"
+              on_cancel="cancel_delete"
+              pending={@delete_pending?}
+              described_by="closure-delete-body"
+              confirm_variant="primary"
+              return_focus_id="delete-closure"
+            >
+              <div id="closure-delete-body">
+                <div :if={@delete_target} id="closure-delete-summary">
+                  <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
+                    <dt class="text-muted">Pathway</dt>
+                    <dd id="closure-delete-pathway" class="text-strong">
+                      {@delete_target.pathway_label}
+                      <span class="font-mono text-[12px] text-muted">
+                        {@delete_target.pathway_id}
+                      </span>
+                    </dd>
+                    <dt class="text-muted">Calendar</dt>
+                    <dd id="closure-delete-calendar" class="text-strong">
+                      {@delete_target.calendar_label}
+                    </dd>
+                    <dt class="text-muted">Window</dt>
+                    <dd id="closure-delete-window" class="tabular-nums text-strong">
+                      {@delete_target.window}
+                      <span :if={@delete_target.window_note} class="text-muted">
+                        · {@delete_target.window_note}
+                      </span>
+                    </dd>
+                  </dl>
+                  <p class="mt-3">
+                    Deleting changes this version immediately.
+                    <span id="closure-delete-calendar-note">{@delete_target.calendar_label}</span>
+                    stays unchanged.
+                  </p>
+                </div>
+                <p :if={is_nil(@delete_target)} id="closure-delete-unavailable">
+                  This closure is no longer available in this service version.
+                </p>
+              </div>
             </.confirm_dialog>
           </aside>
 

@@ -2,9 +2,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
   @moduledoc """
   The Evolutions destination through its ordinary route: the station tab that
   opens it, the scoped closure list it renders, its empty and unreachable
-  states, the exact natural IDs its search and links carry, and the editor
-  guard around it. Assertions are authored from AC-1, AC-7, AC-36 and AC-39,
-  not from the implementation's internals.
+  states, the exact natural IDs its search and links carry, the editor guard
+  around it, and the confirmed deletion of a saved closure. Assertions are
+  authored from AC-1, AC-6, AC-7, AC-36, AC-37 and AC-39, not from the
+  implementation's internals.
   """
   use GtfsPlannerWeb.ConnCase, async: true
 
@@ -1295,6 +1296,277 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
       assert has_element?(view, "#closure-idle", "No closure selected")
       assert has_element?(view, "#evolutions-status", "New closure discarded.")
       refute has_element?(view, "#closure-form")
+    end
+  end
+
+  describe "deleting a closure" do
+    setup :editor_setup
+
+    test "a confirmed delete removes one audited row and keeps its calendar and pathway",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime, overnight: overnight} =
+        station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      # Delete is offered only for a persisted row, and the confirmation names
+      # the saved pathway, calendar and window before anything is removed.
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+      assert has_element?(view, "#delete-closure", "Delete closure")
+
+      asked = view |> element("#delete-closure") |> render_click()
+
+      assert dialog_open?(asked, "closure-delete-dialog")
+      assert has_element?(view, "#closure-delete-dialog-title", "Delete this closure?")
+
+      assert has_element?(
+               view,
+               "#closure-delete-pathway",
+               "Elevator · Mezzanine hall ↔ Platform 1"
+             )
+
+      assert has_element?(view, "#closure-delete-pathway", @punctuated_pathway_id)
+      assert has_element?(view, "#closure-delete-calendar", "CAL_DAILY")
+      assert has_element?(view, "#closure-delete-window", "09:00–15:00")
+      assert has_element?(view, "#closure-delete-calendar-note", "CAL_DAILY")
+      assert render(view) =~ "stays unchanged."
+      assert has_element?(view, "#closure-delete-dialog-cancel", "Keep closure")
+      assert has_element?(view, "#closure-delete-dialog-confirm", "Delete closure")
+
+      assert has_element?(
+               view,
+               "#closure-delete-dialog[data-return-focus-id='delete-closure']"
+             )
+
+      # The confirmation's own render is the busy state: both actions are
+      # disabled and the confirm action says what is happening.
+      pending = view |> element("#closure-delete-dialog-confirm") |> render_click()
+
+      assert dialog_open?(pending, "closure-delete-dialog")
+      assert has_element?(view, "#closure-delete-dialog[data-pending='true']")
+      assert has_element?(view, "#closure-delete-dialog-confirm[disabled]", "Deleting…")
+      assert has_element?(view, "#closure-delete-dialog-cancel[disabled]")
+
+      # The delete itself runs after that busy render.
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#evolutions-status", "Closure deleted. CAL_DAILY is unchanged.")
+      refute dialog_open?(render(view), "closure-delete-dialog")
+      assert has_element?(view, "#closure-idle", "No closure selected")
+      assert row_ids(view) == [overnight.id]
+      assert_push_event(view, "focus_scoped_target", %{id: "closures-list"})
+
+      # The row is gone; its pathway and calendar are not part of a delete.
+      assert Repo.get(PathwayEvolution, daytime.id) == nil
+
+      assert {:ok, station_data} =
+               Gtfs.station_closures(organization.id, version.id, station.stop_id)
+
+      assert Enum.map(station_data.closures, & &1.evolution.id) == [overnight.id]
+      assert Enum.any?(station_data.pathways, &(&1.pathway_id == @punctuated_pathway_id))
+
+      assert {:ok, calendars} = Gtfs.closure_calendars(organization.id, version.id)
+      assert Enum.any?(calendars, &(&1.service_id == "CAL_DAILY"))
+
+      # One audited delete with the scope this page owns.
+      assert [log] =
+               Gtfs.list_change_logs_for_entity(
+                 organization.id,
+                 version.id,
+                 "pathway_evolution",
+                 daytime.id
+               )
+
+      assert log.action == "deleted"
+      assert log.actor_id == user.id
+      assert log.organization_id == organization.id
+      assert log.gtfs_version_id == version.id
+      assert log.station_stop_id == station.stop_id
+      assert log.changed_fields["before"]["end_time"] == 54_000
+
+      # A second mount rebuilds the list without the deleted row.
+      {:ok, reloaded, _html} = live(conn, evolutions_path(version, station.stop_id))
+      assert reloaded |> row_ids() == [overnight.id]
+    end
+
+    test "cancelling the delete keeps the row and a dirty form's values",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime, overnight: overnight} =
+        station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      # A delete has its own explicit confirmation, so the dirty guard does not
+      # intercept it: the dialog names the saved row, not the unsaved entry.
+      change_editor(view, %{
+        "pathway_id" => @punctuated_pathway_id,
+        "service_id" => "CAL_DAILY",
+        "start_time" => "09:00",
+        "end_time" => "16:00",
+        "note" => ""
+      })
+
+      assert has_element?(view, "#closure-dirty-chip", "Unsaved changes")
+
+      asked = view |> element("#delete-closure") |> render_click()
+
+      assert dialog_open?(asked, "closure-delete-dialog")
+      assert has_element?(view, "#closure-end[value='16:00']")
+
+      window_text =
+        view
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#closure-delete-window")
+        |> LazyHTML.text()
+        |> String.trim()
+
+      # The dialog names the saved window, not the unsaved 16:00 in the form.
+      assert window_text == "09:00–15:00"
+
+      cancelled = view |> element("#closure-delete-dialog-cancel") |> render_click()
+
+      refute dialog_open?(cancelled, "closure-delete-dialog")
+      assert has_element?(view, "#closure-end[value='16:00']")
+      assert has_element?(view, "#closure-dirty-chip", "Unsaved changes")
+      assert Repo.get!(PathwayEvolution, daytime.id).end_time == 54_000
+
+      assert Gtfs.list_change_logs_for_entity(
+               organization.id,
+               version.id,
+               "pathway_evolution",
+               daytime.id
+             ) == []
+
+      # An overnight window is named with its own note, in text.
+      view |> element("#discard-closure") |> render_click()
+      view |> element("#closure-open-#{overnight.id}") |> render_click()
+      view |> element("#delete-closure") |> render_click()
+
+      assert has_element?(view, "#closure-delete-window", "22:00–26:00")
+      assert has_element?(view, "#closure-delete-window", "Ends the next day")
+    end
+
+    test "a stale fingerprint refuses the delete and preserves the row and entries",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      change_editor(view, %{
+        "pathway_id" => @punctuated_pathway_id,
+        "service_id" => "CAL_DAILY",
+        "start_time" => "09:00",
+        "end_time" => "16:00",
+        "note" => ""
+      })
+
+      # Another session changes the same row after this editor loaded it, so
+      # the fingerprint the editor holds is no longer the row's.
+      edit_from_another_session!(organization, version, user, station.stop_id, daytime.id, %{
+        end_time: "17:00",
+        note: "Changed elsewhere."
+      })
+
+      view |> element("#delete-closure") |> render_click()
+      view |> element("#closure-delete-dialog-confirm") |> render_click()
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#closure-stale", "Closure changed after you opened it")
+      assert has_element?(view, "#closure-end[value='16:00']")
+      assert has_element?(view, "#evolutions-status", "Delete refused")
+      assert has_element?(view, "#closure-reload", "Reload closure")
+      refute dialog_open?(render(view), "closure-delete-dialog")
+
+      # Nothing was deleted: the other session's row stands, and the only audit
+      # this row has is that session's update.
+      assert Repo.get!(PathwayEvolution, daytime.id).end_time == 61_200
+
+      assert [log] =
+               Gtfs.list_change_logs_for_entity(
+                 organization.id,
+                 version.id,
+                 "pathway_evolution",
+                 daytime.id
+               )
+
+      assert log.action == "updated"
+    end
+
+    test "a revoked role refuses the delete and keeps the entered values",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      change_editor(view, %{
+        "pathway_id" => @punctuated_pathway_id,
+        "service_id" => "CAL_DAILY",
+        "start_time" => "09:00",
+        "end_time" => "16:00",
+        "note" => "Still mine."
+      })
+
+      revoke_editor_role!(user, organization)
+
+      view |> element("#delete-closure") |> render_click()
+      view |> element("#closure-delete-dialog-confirm") |> render_click()
+      _ = :sys.get_state(view.pid)
+
+      assert render(view) =~ "You no longer have permission to edit closures."
+      assert has_element?(view, "#evolutions-status", "Delete refused")
+      assert has_element?(view, "#closure-end[value='16:00']")
+      assert render(view) =~ "Still mine."
+      assert Repo.get!(PathwayEvolution, daytime.id).end_time == 54_000
+
+      assert Gtfs.list_change_logs_for_entity(
+               organization.id,
+               version.id,
+               "pathway_evolution",
+               daytime.id
+             ) == []
+    end
+
+    test "a repeated confirmation cannot delete twice",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime, overnight: overnight} =
+        station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+      view |> element("#delete-closure") |> render_click()
+
+      # The second confirmation arrives while the first is pending: the busy
+      # state refuses it, so only one delete can ever run.
+      view |> element("#closure-delete-dialog-confirm") |> render_click()
+      view |> element("#closure-delete-dialog-confirm") |> render_click()
+      _ = :sys.get_state(view.pid)
+
+      assert Repo.get(PathwayEvolution, daytime.id) == nil
+      assert Repo.aggregate(PathwayEvolution, :count) == 1
+      assert row_ids(view) == [overnight.id]
+
+      assert [log] =
+               Gtfs.list_change_logs_for_entity(
+                 organization.id,
+                 version.id,
+                 "pathway_evolution",
+                 daytime.id
+               )
+
+      assert log.action == "deleted"
     end
   end
 
