@@ -2,9 +2,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
   @moduledoc """
   Merge evidence (EV-24) for deleting transfer rules from the Transfers page.
 
-  The general view lists one checkbox per rule and select-all for the shown page,
-  and the count bar says how many rules are checked and offers "Delete selected";
-  the inspector's own Delete confirms the rule it shows. Confirming sends the exact
+  The general view lists one checkbox per rule and a select-all for the shown
+  page in the table head, and once a rule is checked the count row becomes a
+  selection bar that says how many rules are checked and offers "Delete N rules"
+  and "Clear selection"; the inspector's own Delete rule confirms the rule it
+  shows. Confirming sends the exact
   `{id, updated_at}` pairs of the rules the click captured, so a filter, a search,
   a sort, a page or a view change — each of which clears the checked set — never
   defines the delete scope, and an id the shown page does not hold (an in-seat
@@ -82,7 +84,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
     }
   end
 
-  describe "the select column and the count bar" do
+  describe "the select column and the selection bar" do
     test "each shown rule carries its own checkbox beside the count's selection", ctx do
       %{scoped: scoped, plain: plain} = three_rules!(ctx)
 
@@ -95,30 +97,53 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
       assert attribute(doc(view), "#transfer-check-#{plain.id}", "aria-label") ==
                "Select Market Street to Harbor"
 
-      assert text_of(doc(view), "#transfers-count") == "3 rules"
-      refute has_element?(view, "#transfers-select-all")
-      refute has_element?(view, "#transfers-delete-selected")
-      assert has_element?(view, "#transfers-direction-hint", "One direction per rule")
+      assert text_of(doc(view), "#transfers-count") == "3 transfer rules"
 
-      # Checking is the count bar's own live region: it says what the operator's
+      # Select all lives in the table head from the start, and the selection's
+      # controls appear only once a rule is checked.
+      assert has_element?(
+               view,
+               "#transfers-select-all[aria-label='Select all rules on this page']"
+             )
+
+      assert attribute(doc(view), "#transfers-select-all", "checked") == nil
+      refute has_element?(view, "#transfers-delete-selected")
+      refute has_element?(view, "#transfers-clear-selection")
+
+      # Checking is the count row's own live region: it says what the operator's
       # next decision is about, and the selection's controls appear with it.
       view |> check_row(scoped.id)
       view |> check_row(plain.id)
 
       assert attribute(doc(view), "#transfer-check-#{scoped.id}", "checked") != nil
       assert attribute(doc(view), "#transfer-check-#{plain.id}", "checked") != nil
-      assert text_of(doc(view), "#transfers-count") == "2 selected · this version"
-      assert has_element?(view, "#transfers-select-all")
-      assert text_of(doc(view), "label:has(#transfers-select-all)") == "Select all shown"
+      assert text_of(doc(view), "#transfers-count") == "2 selected"
       assert attribute(doc(view), "#transfers-select-all", "checked") == nil
-      assert has_element?(view, "#transfers-delete-selected", "Delete selected")
-      refute has_element?(view, "#transfers-direction-hint")
+      assert has_element?(view, "#transfers-delete-selected", "Delete 2 rules")
+      assert has_element?(view, "#transfers-clear-selection", "Clear selection")
 
-      # Unchecking one rule returns the count bar to the list count.
+      # Unchecking one rule keeps the bar for the rule still checked.
       view |> check_row(plain.id)
 
       assert attribute(doc(view), "#transfer-check-#{plain.id}", "checked") == nil
-      assert text_of(doc(view), "#transfers-count") == "1 selected · this version"
+      assert text_of(doc(view), "#transfers-count") == "1 selected"
+      assert has_element?(view, "#transfers-delete-selected", "Delete 1 rule")
+    end
+
+    test "Clear selection unchecks every rule and returns the count row", ctx do
+      %{scoped: scoped, plain: plain} = three_rules!(ctx)
+
+      {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
+
+      view |> check_row(scoped.id)
+      view |> check_row(plain.id)
+      view |> element("#transfers-clear-selection") |> render_click()
+
+      assert attribute(doc(view), "#transfer-check-#{scoped.id}", "checked") == nil
+      assert attribute(doc(view), "#transfer-check-#{plain.id}", "checked") == nil
+      refute has_element?(view, "#transfers-delete-selected")
+      refute has_element?(view, "#transfers-clear-selection")
+      assert text_of(doc(view), "#transfers-count") == "3 transfer rules"
     end
 
     test "select all checks every rule the page shows and clears them again", ctx do
@@ -126,11 +151,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      # The bar's select all appears with the first checked rule, as the reference
-      # does, and the page it selects is the one the server rendered.
-      refute has_element?(view, "#transfers-select-all")
-
-      view |> check_row(scoped.id)
+      # The head's select all works from an empty selection, and the page it
+      # selects is the one the server rendered.
       view |> element("#transfers-select-all") |> render_click()
 
       for rule <- [scoped, at_end, plain] do
@@ -138,7 +160,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
       end
 
       assert attribute(doc(view), "#transfers-select-all", "checked") != nil
-      assert text_of(doc(view), "#transfers-count") == "3 selected · this version"
+      assert text_of(doc(view), "#transfers-count") == "3 selected"
 
       view |> element("#transfers-select-all") |> render_click()
 
@@ -146,12 +168,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
         assert attribute(doc(view), "#transfer-check-#{rule.id}", "checked") == nil
       end
 
-      # An empty selection takes the controls away again and leaves the bar as a
-      # fresh page reads it.
-      refute has_element?(view, "#transfers-select-all")
+      # An empty selection takes the selection's controls away again and leaves the
+      # row as a fresh page reads it.
+      assert attribute(doc(view), "#transfers-select-all", "checked") == nil
       refute has_element?(view, "#transfers-delete-selected")
-      assert text_of(doc(view), "#transfers-count") == "3 rules"
-      assert has_element?(view, "#transfers-direction-hint", "One direction per rule")
+      assert text_of(doc(view), "#transfers-count") == "3 transfer rules"
     end
   end
 
@@ -171,23 +192,25 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
                "Delete 2 transfer rules?"
 
       assert text_of(doc(view), "#transfer-delete-row-#{scoped.id}") =~
-               "Central · Bay A → Central · Bay C"
+               "Central · Bay A to Central · Bay C"
 
       assert text_of(doc(view), "#transfer-delete-row-#{scoped.id}") =~
-               "Route 12 → Route 24 · Minimum time"
+               "Route 12 to Route 24 · Minimum time"
 
       assert text_of(doc(view), "#transfer-delete-row-#{plain.id}") =~
-               "Market Street → Harbor"
+               "Market Street to Harbor"
 
       assert text_of(doc(view), "#transfer-delete-row-#{plain.id}") =~
-               "All arriving routes → All departing routes · Recommended"
+               "Any arriving route to Any departing route · Preferred point"
 
       body = text_of(doc(view), "#transfer-delete-dialog-body")
 
-      assert body =~ "These exact rules will be removed from #{ctx.version.name}"
-      assert body =~ "Stops, routes, and rules outside this selection stay unchanged."
-      assert body =~ "In-seat records are excluded. This cannot be undone."
+      assert body =~
+               "These rules will be removed from #{ctx.version.name} and from its next export."
+
+      assert body =~ "Stops, routes and other rules stay as they are. This can’t be undone."
       assert text_of(doc(view), "#transfer-delete-dialog-confirm") == "Delete 2 rules"
+      assert text_of(doc(view), "#transfer-delete-dialog-cancel") == "Keep rules"
       refute has_element?(view, "#transfer-delete-error")
 
       # Cancelling closes the dialog and keeps every rule.
@@ -195,7 +218,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
 
       refute has_element?(view, "#transfer-delete-dialog")
       assert stored_transfer_count(ctx) == 3
-      assert text_of(doc(view), "#transfers-count") == "2 selected · this version"
+      assert text_of(doc(view), "#transfers-count") == "2 selected"
     end
 
     test "it deletes the checked rules only, and reloads the filtered list", ctx do
@@ -216,7 +239,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
       assert_patched(view, ~p"/gtfs/#{ctx.version.id}/transfers?stop=CEN-A")
       refute has_element?(view, "#transfer-delete-dialog")
       refute has_element?(view, "#transfers-delete-selected")
-      assert text_of(doc(view), "#transfers-count") == "0 rules"
+      assert text_of(doc(view), "#transfers-count") == "0 of 1 transfer rule"
       assert has_element?(view, "#transfers-no-results")
 
       assert Repo.get(Transfer, scoped.id) == nil
@@ -277,7 +300,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
       refute has_element?(view, "#transfers-delete-selected")
       refute has_element?(view, "#transfer-check-#{record.id}")
       refute has_element?(view, "#transfer-inspector-delete")
-      assert has_element?(view, "#transfers-direction-hint", "One direction per rule")
 
       # A crafted check of the in-seat record's id, and of a general rule the view
       # does not list, changes nothing here.
@@ -286,7 +308,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
 
       refute has_element?(view, "#transfers-delete-selected")
       refute has_element?(view, "#transfer-delete-dialog")
-      assert text_of(doc(view), "#transfers-count") == "1 in-seat record"
+      assert text_of(doc(view), "#transfers-count") == "1 stay-on-board record"
     end
   end
 
@@ -318,7 +340,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
       assert error =~ "Nothing was deleted."
 
       assert error =~
-               "One or more rules changed since you selected them. Close this dialog to see the latest rules."
+               "One or more rules changed after you selected them. Close this dialog to see the latest rules."
+
+      # Deleting again cannot change that outcome, so only Close remains.
+      refute has_element?(view, "#transfer-delete-dialog-confirm")
+      assert text_of(doc(view), "#transfer-delete-dialog-cancel") == "Close"
 
       refute has_element?(view, "#flash-info")
       assert Repo.get(Transfer, scoped.id) != nil
@@ -351,7 +377,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
       error = text_of(doc(view), "#transfer-delete-error")
 
       assert error =~ "Nothing was deleted."
-      assert error =~ "One or more rules were already removed or can't be deleted here."
+      assert error =~ "One or more rules were already removed or can’t be deleted here."
+      refute has_element?(view, "#transfer-delete-dialog-confirm")
 
       refute has_element?(view, "#flash-info")
       assert Repo.get(Transfer, scoped.id) != nil
@@ -391,7 +418,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
       error = text_of(doc(view), "#transfer-delete-error")
 
       assert error =~ "Nothing was deleted."
-      assert error =~ "The server was busy. Try again."
+      assert error =~ "The server didn’t respond. Try again."
 
       refute has_element?(view, "#flash-info")
       assert Repo.get(Transfer, scoped.id) != nil
@@ -426,7 +453,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
       assert_patched(view, ~p"/gtfs/#{ctx.version.id}/transfers?route=12")
       assert attribute(doc(view), "#transfer-check-#{scoped.id}", "checked") == nil
       refute has_element?(view, "#transfers-delete-selected")
-      assert text_of(doc(view), "#transfers-count") == "1 rule"
+      assert text_of(doc(view), "#transfers-count") == "1 of 3 transfer rules"
 
       view |> check_row(scoped.id)
       view |> form("#transfer-search-form", %{"q" => "central"}) |> render_change()
@@ -451,7 +478,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
 
       assert attribute(doc(view), "#transfer-check-#{scoped.id}", "checked") == nil
       assert attribute(doc(view), "#transfer-check-#{plain.id}", "checked") == nil
-      assert text_of(doc(view), "#transfers-count") == "3 rules"
+      assert text_of(doc(view), "#transfers-count") == "3 transfer rules"
     end
 
     test "moving to another page clears the checked rules", ctx do
@@ -459,21 +486,21 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      # The count bar names the version's whole list, not the page's slice of it:
-      # "Select all shown" and the pagination beside it carry the page's extent.
-      assert text_of(doc(view), "#transfers-count") == "51 rules"
+      # The count row names the version's whole list, not the page's slice of it:
+      # the pagination beside it carries the page's extent.
+      assert text_of(doc(view), "#transfers-count") == "51 transfer rules"
 
       first = hd(row_ids(doc(view))) |> String.replace_prefix("transfers-", "")
 
       view |> check_row(first)
-      assert text_of(doc(view), "#transfers-count") == "1 selected · this version"
+      assert text_of(doc(view), "#transfers-count") == "1 selected"
 
       view |> render_click("paginate", %{"page" => "2"})
 
       assert_patched(view, ~p"/gtfs/#{ctx.version.id}/transfers?page=2")
       refute has_element?(view, "#transfers-delete-selected")
-      # The checked rules are gone, so the count bar is back to the whole list.
-      assert text_of(doc(view), "#transfers-count") == "51 rules"
+      # The checked rules are gone, so the count row is back to the whole list.
+      assert text_of(doc(view), "#transfers-count") == "51 transfer rules"
       assert length(rules) == 51
     end
 
@@ -507,7 +534,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveDeleteTest do
 
       view |> render_click("toggle_check", %{"id" => scoped.id})
       assert has_element?(view, "#transfers-delete-selected")
-      assert text_of(doc(view), "#transfers-count") == "1 selected · this version"
+      assert text_of(doc(view), "#transfers-count") == "1 selected"
 
       # A confirm with no dialog behind it deletes nothing and says nothing.
       view |> render_click("apply_delete", %{})

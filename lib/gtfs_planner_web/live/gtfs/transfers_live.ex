@@ -20,9 +20,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   selecting a row keeps the rest of the params.
 
   Filtering and search are in the URL too: the search term, the stop, route and
-  type filters and the Needs attention checkbox each patch the list and drop the
+  type filters and the Needs attention toggle each patch the list and drop the
   page and the selected rule, and a filtered list that hides every rule shows its
-  own empty state rather than first use.
+  own empty state rather than first use. Every applied filter is also a removable
+  chip in the count row, and `@rule` is the rule the URL names: below 1024px it
+  decides whether the rule or the list has the screen, while the first row is
+  still selected (and drawn) on a wide screen when the URL names none.
 
   The context pane's map region draws whatever connection the pane describes: the
   selected rule in list mode and the open draft in editor mode, each time as a
@@ -134,6 +137,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
   @empty_filters %{q: nil, stop: nil, route: nil, type: nil, attention: false}
 
+  # The applied filters a chip can remove, by the key its button sends.
+  @filter_keys %{"q" => :q, "type" => :type, "stop" => :stop, "route" => :route}
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -161,6 +167,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
      |> assign(:editor, nil)
      |> assign(:pending_discard, nil)
      |> assign(:open_editor_for, nil)
+     |> assign(:back_path, "")
      |> assign(:map_generation, Ecto.UUID.generate())
      |> assign(:map_extent, map_extent(socket))
      |> assign(:map_state, :ready)
@@ -253,6 +260,38 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   end
 
   @impl true
+  def handle_event("remove_filter", %{"key" => key}, socket) do
+    case Map.get(@filter_keys, key) do
+      nil ->
+        {:noreply, socket}
+
+      filter ->
+        filters = Map.put(socket.assigns.filters, filter, nil)
+
+        {:noreply,
+         push_patch(clear_checked(socket),
+           to: list_path(socket, filters: filters, page: 1, rule: nil)
+         )}
+    end
+  end
+
+  @impl true
+  def handle_event("toggle_attention", _params, socket) do
+    # Only the general view has attention reasons; a crafted event in the other
+    # view changes nothing.
+    if socket.assigns.view == :general do
+      filters = %{socket.assigns.filters | attention: not socket.assigns.filters.attention}
+
+      {:noreply,
+       push_patch(clear_checked(socket),
+         to: list_path(socket, filters: filters, page: 1, rule: nil)
+       )}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
   def handle_event("switch_view", %{"view" => value}, socket) do
     # The chips switch the list to a view whose rows are a different set, so the
     # filters, the page, the selected rule and the checked rules are left behind
@@ -300,6 +339,13 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   @impl true
   def handle_event("toggle_check_all", _params, socket) do
     {:noreply, toggle_all_shown(socket)}
+  end
+
+  @impl true
+  def handle_event("clear_selection", _params, socket) do
+    # The checked rows are re-streamed so their checkboxes render unchecked.
+    ids = Map.keys(socket.assigns.checked)
+    {:noreply, socket |> clear_checked() |> restream_rows(ids)}
   end
 
   @impl true
@@ -615,7 +661,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     send_update(LiveSelectComponent,
       id: Map.fetch!(@stop_components, side),
       value: stop.stop_id,
-      options: [%{label: stop_label(stop), value: stop.stop_id}]
+      options: [%{label: stop_label(stop), value: stop.stop_id, hint: stop_hint(stop)}]
     )
 
     socket
@@ -812,7 +858,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
       parent_name: nil,
       child_count: endpoint.child_count,
       lat: nil,
-      lon: nil
+      lon: nil,
+      missing?: true
     }
   end
 
@@ -937,6 +984,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     scope = parse_scope(Map.get(params, "scope"), editor.scope)
     target = editor_target(params)
 
+    # The endpoints the map already draws, read before this change lands.
+    endpoints = draft_endpoints(editor)
+
     editor = %{
       editor
       | scope: scope,
@@ -946,7 +996,6 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
           |> strip_selectors(scope)
     }
 
-    endpoints = draft_endpoints(editor)
     editor = clear_dependents(editor, target)
     editor = refresh_stop(socket, editor, target)
     editor = refresh_options(socket, editor)
@@ -1071,7 +1120,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
 
       send_update(LiveSelectComponent,
         id: id,
-        options: Enum.map(stops, &%{label: stop_label(&1), value: &1.stop_id})
+        options:
+          Enum.map(stops, &%{label: stop_label(&1), value: &1.stop_id, hint: stop_hint(&1)})
       )
 
       socket
@@ -1171,7 +1221,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     socket
     |> end_pick()
     |> assign(:editor, nil)
-    |> put_flash(:info, "Transfer saved in #{socket.assigns.current_gtfs_version.name}.")
+    |> put_flash(:info, "Transfer rule saved in #{socket.assigns.current_gtfs_version.name}.")
     |> push_patch(to: list_path(socket, rule: transfer.id))
   end
 
@@ -1302,20 +1352,26 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
         <.routes_tabs gtfs_version_id={@current_gtfs_version.id} active_tab={:transfers} />
       </:sub_header>
 
-      <div id="transfers-page">
+      <div id="transfers-page" class="ds-page">
         <.header>
           Transfers
-          <:subtitle>Help riders make the right connection.</:subtitle>
-          <:actions :if={@catalog_state == :ready and @view == :general and is_nil(@editor)}>
+          <:subtitle>
+            Rules that tell trip planners where riders can change routes, how much time they need, and where a connection won’t work.
+          </:subtitle>
+          <%!-- With no rules yet, the first-use panel carries the one create action. --%>
+          <:actions :if={create_action?(assigns)}>
             <.button id="transfers-create" type="button" class="min-h-11" phx-click="open_create">
-              Create transfer
+              <.icon name="hero-plus" class="size-4" /> Create transfer rule
             </.button>
           </:actions>
         </.header>
 
-        <.workspace>
+        <.workspace detail={workspace_detail(assigns)} class="mt-6">
           <:list>
-            <.load_failure :if={@catalog_state == :unavailable} />
+            <.load_failure
+              :if={@catalog_state == :unavailable}
+              version_name={@current_gtfs_version.name}
+            />
             <div :if={@catalog_state == :ready}>
               <.editor
                 :if={editor_open?(@editor, @view)}
@@ -1330,12 +1386,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
                     <.button
                       id="transfers-first-use-create"
                       type="button"
-                      variant="secondary"
-                      size="sm"
                       class="min-h-11"
                       phx-click="open_create"
                     >
-                      Create transfer
+                      <.icon name="hero-plus" class="size-4" /> Create transfer rule
                     </.button>
                   </:action>
                 </.first_use>
@@ -1346,15 +1400,20 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
                     filter_options={@catalog.filter_options}
                     filter_count={filter_count(@filters)}
                     filters_open?={@filters_open?}
-                    in_seat?={@view == :in_seat}
                   />
                   <.rule_count
                     total_count={@total_count}
+                    all_count={view_count(@catalog, @view)}
+                    in_seat?={@view == :in_seat}
+                    chips={filter_chips(@filters, @catalog.filter_options)}
+                    attention?={@filters.attention}
                     checked_count={checked_count(@checked)}
-                    all_checked?={all_shown_checked?(@page_ids, @checked)}
+                  />
+                  <.no_results
+                    :if={@total_count == 0}
+                    all_count={view_count(@catalog, @view)}
                     in_seat?={@view == :in_seat}
                   />
-                  <.no_results :if={@total_count == 0} />
                   <.rules_table
                     :if={@total_count > 0}
                     rows={@streams.transfers}
@@ -1366,13 +1425,15 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
                     total_count={@total_count}
                     in_seat?={@view == :in_seat}
                     checked={@checked}
+                    all_checked?={all_shown_checked?(@page_ids, @checked)}
                   />
                 </div>
                 <.in_seat_empty :if={in_seat_empty?(@catalog, @view)} />
               </div>
             </div>
           </:list>
-          <:context>
+          <:context :if={@catalog_state == :ready}>
+            <.back_to_list :if={not editor_open?(@editor, @view) and @selected} path={@back_path} />
             <.map_region
               :if={editor_open?(@editor, @view) or not is_nil(@selected)}
               editor_open?={editor_open?(@editor, @view)}
@@ -1387,28 +1448,58 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
               :if={not editor_open?(@editor, @view) and @selected}
               row={@selected}
               competitors={@competitors}
-              compare_open?={@compare_open?}
               version_id={@current_gtfs_version.id}
               in_seat?={@view == :in_seat}
             />
-            <.context_empty :if={not editor_open?(@editor, @view) and is_nil(@selected)} />
-            <.compare_dialog
-              :if={not editor_open?(@editor, @view) and @compare_open?}
-              row={@selected}
-              competitors={@competitors}
+            <.context_empty
+              :if={not editor_open?(@editor, @view) and is_nil(@selected)}
+              none?={not list?(@catalog, @view)}
+              in_seat?={@view == :in_seat}
             />
-            <.delete_dialog
-              :if={@delete_dialog}
-              dialog={@delete_dialog}
-              version_name={@current_gtfs_version.name}
-            />
-            <.discard_dialog open={not is_nil(@pending_discard)} />
           </:context>
         </.workspace>
+
+        <.compare_dialog
+          :if={@catalog_state == :ready and not editor_open?(@editor, @view) and @compare_open?}
+          row={@selected}
+          competitors={@competitors}
+        />
+        <.delete_dialog
+          :if={@delete_dialog}
+          dialog={@delete_dialog}
+          version_name={@current_gtfs_version.name}
+        />
+        <.discard_dialog open={not is_nil(@pending_discard)} mode={@editor && @editor.mode} />
       </div>
     </Layouts.app>
     """
   end
+
+  # The header's one primary is the create action, except where the first-use panel
+  # carries it: a version without rules has nothing to compare, so the panel is the
+  # page's one call to action.
+  defp create_action?(assigns) do
+    assigns.catalog_state == :ready and assigns.view == :general and
+      is_nil(assigns.editor) and not first_use?(assigns.catalog, assigns.view)
+  end
+
+  # Which pane has the screen below 1024px: the rule the URL names, or the list.
+  # The editor shows its form over its preview, except while a pick asks for a stop
+  # on the map, when the map has the screen.
+  defp workspace_detail(%{catalog_state: :unavailable}), do: "none"
+
+  defp workspace_detail(%{editor: editor, view: view, pick: pick} = assigns) do
+    cond do
+      editor_open?(editor, view) -> if(pick, do: "open", else: "both")
+      not is_nil(assigns.rule) and not is_nil(assigns.selected) -> "open"
+      true -> "closed"
+    end
+  end
+
+  # How many rows the view holds before any filter: the whole of what the chip
+  # counts, so the count row can say "5 of 13".
+  defp view_count(%{counts: counts}, :general), do: counts.general
+  defp view_count(%{counts: counts}, :in_seat), do: counts.in_seat
 
   # A load runs the catalog for the requested params and then canonicalizes: the
   # socket keeps what the list actually shows, and the URL follows it in one
@@ -1459,6 +1550,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
           |> assign(:catalog_state, :ready)
           |> stream_rows(catalog, previous_selected_id)
           |> show_loaded_map(selection)
+
+        # Below 1024px an open rule has a way back to the same list without it.
+        socket = assign(socket, :back_path, list_path(socket, rule: nil))
 
         if canonical_params(socket.assigns) == url_params do
           {:noreply, socket}
@@ -1650,15 +1744,14 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     }
   end
 
-  # The filter form owns the three selects and the checkbox; the search term is
-  # the other form's, and survives a filter change.
+  # The filter form owns the three selects; the search term is the other form's,
+  # and Needs attention is a toggle of its own, so both survive a select change.
   defp merge_filters(filters, params, view) do
     %{
       filters
       | stop: parse_string(Map.get(params, "stop")),
         route: parse_string(Map.get(params, "route")),
-        type: parse_type(Map.get(params, "type"), view),
-        attention: view == :general and parse_checkbox(Map.get(params, "attention"))
+        type: parse_type(Map.get(params, "type"), view)
     }
   end
 
@@ -1673,8 +1766,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
     %{
       "stop" => filters.stop || "",
       "route" => filters.route || "",
-      "type" => (filters.type && to_string(filters.type)) || "",
-      "attention" => to_string(filters.attention)
+      "type" => (filters.type && to_string(filters.type)) || ""
     }
   end
 
@@ -1702,15 +1794,37 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLive do
   defp valid_type?(type, :in_seat), do: type in @in_seat_types
   defp valid_type?(type, _view), do: type in @general_types
 
-  # `<.input type="checkbox">` renders a hidden "false" beside the checked
-  # "true", so one form change arrives as both values for the one name; the box
-  # is on only when a "true" is among them.
-  defp parse_checkbox("true"), do: true
-  defp parse_checkbox(values) when is_list(values), do: "true" in values
-  defp parse_checkbox(_value), do: false
-
+  # How many of the two selects behind More filters apply; search and kind are in
+  # the toolbar row, and each applied filter is a chip.
   defp filter_count(filters) do
-    Enum.count([filters.stop, filters.route, filters.type], &(&1 != nil))
+    Enum.count([filters.stop, filters.route], &(&1 != nil))
+  end
+
+  # The applied filters as removable chips, in the toolbar's order: what the
+  # search says, the kind, the stop and the route, each named as the operator
+  # chose it.
+  defp filter_chips(filters, options) do
+    [
+      filters.q && %{key: "q", label: "“#{filters.q}”"},
+      filters.type && %{key: "type", label: type_label(filters.type)},
+      filters.stop && %{key: "stop", label: stop_chip_label(filters.stop, options.stops)},
+      filters.route && %{key: "route", label: route_chip_label(filters.route, options.routes)}
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp stop_chip_label(stop_id, stops) do
+    case Enum.find(stops, &(&1.stop_id == stop_id)) do
+      %{name: name} when is_binary(name) and name != "" -> name
+      _option -> stop_id
+    end
+  end
+
+  defp route_chip_label(route_id, routes) do
+    case Enum.find(routes, &(&1.route_id == route_id)) do
+      %{route_short_name: short} when is_binary(short) and short != "" -> "Route #{short}"
+      _option -> "Route #{route_id}"
+    end
   end
 
   # The list is the current view's own rows, whether or not a filter hides them

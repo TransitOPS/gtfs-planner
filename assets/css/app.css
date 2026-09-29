@@ -1383,15 +1383,151 @@ body {
   margin-top: 2px;
 }
 
-/* ── Transfer rules list ── */
+/* ── transfers (design system) ──
+   The Transfers page (`#transfers-page`, which also carries `ds-page` for the
+   field grammar, buttons and focus rules above) is one white card of a rule list
+   and a context pane. The list is one stream in one table: from `md` up it is a
+   table with a sticky head, and below `md` each row becomes a card without a
+   second stream, so the row's ids, checkbox and select button stay single. */
 
-/* The selected transfer rule takes the reference's own treatment: the theme's
-   base-200 tint with a left accent. The row button's `aria-current` is the state,
-   so the row is tinted because that button is the current one; the highlight is
-   never a second copy of the selection that could disagree with it. */
-#transfers tr:has(button[aria-current="true"]) {
-  background-color: var(--color-base-200);
-  box-shadow: inset 3px 0 var(--color-primary);
+/* The selected rule is the row whose button is current. The button's
+   `aria-current` is the state, so the row is tinted because that button is the
+   current one; the highlight is never a second copy of the selection that could
+   disagree with it. Below 1024px the list has the screen only while the URL names
+   no rule, and the first row is only selected by default, so a closed list draws
+   no selection. */
+#transfers-page .transfers-row:has(button[aria-current="true"]) {
+  background-color: var(--color-selection);
+}
+
+@media (max-width: 1023px) {
+  #transfers-workspace[data-detail="closed"] .transfers-row:has(button[aria-current="true"]) {
+    background-color: transparent;
+  }
+}
+
+/* The arrival cell's button is the row's one tab stop; its overlay makes the whole
+   row a target for the pointer. The checkbox cell sits above the overlay. */
+#transfers-page .transfers-row {
+  position: relative;
+}
+
+#transfers-page .transfers-row .tx-pick::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+#transfers-page .transfers-row .tx-check {
+  position: relative;
+  z-index: 1;
+}
+
+/* The focus ring goes round the row, not the button inside it, so the keyboard
+   position reads as a row. */
+#transfers-page .transfers-row:has(button.tx-pick:focus-visible) {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+
+#transfers-page .tx-pick:focus-visible {
+  outline: none;
+}
+
+/* Raw buttons, summaries and links take the design system's focus outline; `.btn`
+   controls keep the ring `<.button>` gives them. */
+#transfers-page :is(button:not(.btn), summary, a:not(.btn)):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* A stop field whose value was refused takes the 2px error border on the widget's
+   own input, which cannot carry `aria-invalid` itself. */
+#transfers-page .transfer-stop-field[data-invalid="true"] input[type="text"] {
+  border: 2px solid var(--color-error-line);
+  padding-left: calc(2.5rem - 1px);
+}
+
+/* The map draws the connection in the page's navy and its platforms and pick
+   candidates in the muted ink, rather than the action colour: the hook reads these
+   two tokens from its own container. */
+#transfers-page #transfer-map {
+  --color-primary: var(--color-muted);
+  --color-accent: var(--color-strong);
+}
+
+@media (max-width: 767px) {
+  #transfers-page .transfers-table,
+  #transfers-page .transfers-table tbody {
+    display: block;
+  }
+
+  #transfers-page .transfers-table colgroup {
+    display: none;
+  }
+
+  /* The head stays in the DOM for assistive technology and the sort buttons. */
+  #transfers-page .transfers-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
+  /* One card per rule: the arrival stop, the boarding stop, then the kind and time. */
+  #transfers-page .transfers-table tbody tr {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    grid-template-areas:
+      "from from"
+      "to to"
+      "rule time";
+    column-gap: 0.75rem;
+    padding: 0.5rem 1rem;
+  }
+
+  #transfers-page .transfers-table[data-checkable="true"] tbody tr {
+    grid-template-columns: 2.75rem max-content minmax(0, 1fr);
+    grid-template-areas:
+      "chk from from"
+      "chk to to"
+      "chk rule time";
+    padding-left: 0.25rem;
+  }
+
+  #transfers-page .transfers-table td {
+    padding: 0.125rem 0;
+    text-align: left;
+  }
+
+  #transfers-page .transfers-table .tx-check {
+    grid-area: chk;
+    padding: 0;
+  }
+
+  #transfers-page .transfers-table .tx-from {
+    grid-area: from;
+  }
+
+  #transfers-page .transfers-table .tx-to {
+    grid-area: to;
+  }
+
+  #transfers-page .transfers-table .tx-rule {
+    grid-area: rule;
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  #transfers-page .transfers-table .tx-time {
+    grid-area: time;
+    font-size: 13px;
+  }
 }
 
 /* Custom override for LiveSelect input text color to ensure theme compatibility */

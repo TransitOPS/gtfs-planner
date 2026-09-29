@@ -12,9 +12,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
   on is refused with the reload path while the draft stays, and a rule that was
   deleted closes the editor with a flash.
 
-  "Create reverse rule" must open an unsaved create draft with the six key fields
+  "Create the reverse rule" must open an unsaved create draft with the six key fields
   mirrored and the effect copied, so nothing reaches the database until the
-  operator saves it, and the duplicate callout's "Open existing rule" and the
+  operator saves it, and the duplicate message's "Open existing rule" and the
   compare view's "Edit rule" must name another rule in the URL — filters cleared —
   and open that rule's editor after the load. The in-seat view renders none of
   these controls and ignores the event, because types 4/5 belong to Blocks (R1).
@@ -91,8 +91,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, rule: rule.id))
 
-      assert has_element?(view, "#transfer-inspector-edit", "Edit transfer")
-      assert has_element?(view, "#transfer-inspector-reverse-create", "Create reverse rule")
+      assert has_element?(view, "#transfer-inspector-edit", "Edit rule")
+      assert has_element?(view, "#transfer-inspector-reverse-create", "Create the reverse rule")
 
       view |> element("#transfer-inspector-edit") |> render_click()
 
@@ -103,10 +103,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       assert has_element?(view, "#transfer-editor")
       refute has_element?(view, "#transfers")
 
-      assert text_of(document, "#transfer-editor h2") == "Edit transfer"
-      assert text_of(document, "#transfer-editor > p") == "#{ctx.version.name} · one direction"
+      assert text_of(document, "#transfer-editor h2") == "Edit transfer rule"
 
-      assert has_element?(view, "#transfer-scope option[value='routes'][selected]")
+      assert text_of(document, "#transfer-editor > p") ==
+               "#{ctx.version.name} · works in one direction"
+
+      assert has_element?(view, "#transfer-scope-routes[checked]")
       assert has_element?(view, "#transfer_from_stop_id[value='CEN-A']")
       assert has_element?(view, "#transfer_to_stop_id[value='CEN-C']")
 
@@ -116,8 +118,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
              )
 
       assert has_element?(view, "#transfer_to_stop_id_text_input[value='Central · Bay C']")
-      assert text_of(document, "#transfer-from-stop-hint") == "Platform A · Central Station"
-      assert text_of(document, "#transfer-to-stop-hint") == "Platform C · Central Station"
+      assert text_of(document, "#transfer-from-stop-hint") == "Platform A at Central Station"
+      assert text_of(document, "#transfer-to-stop-hint") == "Platform C at Central Station"
 
       assert has_element?(view, "#transfer-from-route option[value='12'][selected]")
       assert has_element?(view, "#transfer-to-route option[value='24'][selected]")
@@ -138,7 +140,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       assert has_element?(view, "#transfer-min-time[value='180']")
 
       assert text_of(document, "#transfer-min-time-readout") ==
-               "3m · include walking and a buffer."
+               "3 min · include the walk between the stops and a buffer for late buses."
 
       # The stored rule is not yet a change, and the trip select waits for the
       # mixed-selector scope.
@@ -170,7 +172,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
 
       document = doc(view)
 
-      assert has_element?(view, "#transfer-scope option[value='custom'][selected]")
+      assert has_element?(view, "#transfer-scope-custom[checked]")
       assert has_element?(view, "#transfer-from-route option[value='12'][selected]")
       assert has_element?(view, "#transfer-from-trip option[value='12-0815'][selected]")
 
@@ -228,7 +230,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
 
       document = doc(view)
 
-      assert has_element?(view, "#transfer-scope option[value='custom'][selected]")
+      assert has_element?(view, "#transfer-scope-custom[checked]")
 
       assert option_labels(document, "#transfer-from-trip option") == [
                "Any trip",
@@ -249,8 +251,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
 
       assert has_element?(view, "#transfer_to_stop_id[value='GHOST']")
       assert has_element?(view, "#transfer_to_stop_id_text_input[value='GHOST']")
-      assert text_of(document, "#transfer-to-stop-hint") == "GHOST"
-      assert has_element?(view, "#transfer-scope option[value='stops'][selected]")
+      assert text_of(document, "#transfer-to-stop-hint") == "Not in this version"
+      assert has_element?(view, "#transfer-scope-stops[checked]")
     end
   end
 
@@ -279,7 +281,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       assert has_element?(view, "#transfer-dirty")
 
       assert text_of(doc(view), "#transfer-min-time-readout") ==
-               "4m · include walking and a buffer."
+               "4 min · include the walk between the stops and a buffer for late buses."
 
       save_draft(view, :stops, %{
         "from_stop_id" => "CEN-A",
@@ -288,7 +290,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
         "min_transfer_time" => "240"
       })
 
-      assert has_element?(view, "#flash-info", "Transfer saved in #{ctx.version.name}.")
+      assert has_element?(view, "#flash-info", "Transfer rule saved in #{ctx.version.name}.")
       refute has_element?(view, "#transfer-editor")
 
       # The row is updated, the other rule and the row count are not.
@@ -345,11 +347,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
 
       document = doc(view)
 
-      assert text_of(document, "#transfer-stale") =~ "Rule changed"
-      assert text_of(document, "#transfer-stale") =~ "This rule changed since you opened it."
+      assert text_of(document, "#transfer-stale") =~ "This rule changed while you were editing"
+      assert text_of(document, "#transfer-stale") =~ "Someone saved a change to it."
 
       assert text_of(document, "#transfer-stale") =~
-               "Your entries are still here; reload the rule to continue."
+               "Your entries are still here. Reload the rule to see what changed before you save."
 
       assert has_element?(view, "#transfer-reload-rule", "Reload rule")
       refute has_element?(view, "#transfer-form-error")
@@ -366,7 +368,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       assert has_element?(view, "#transfer-min-time[value='300']")
       refute has_element?(view, "#transfer-stale")
       refute has_element?(view, "#transfer-dirty")
-      assert text_of(doc(view), "#transfer-editor h2") == "Edit transfer"
+      assert text_of(doc(view), "#transfer-editor h2") == "Edit transfer rule"
     end
 
     test "a rule deleted elsewhere closes the editor and flashes", ctx do
@@ -421,9 +423,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       document = doc(view)
 
       # A create draft, not an edit of the stored rule.
-      assert text_of(document, "#transfer-editor h2") == "Create transfer"
-      assert has_element?(view, "#transfer-save", "Create transfer")
-      assert has_element?(view, "#transfer-scope option[value='routes'][selected]")
+      assert text_of(document, "#transfer-editor h2") == "Create transfer rule"
+      assert has_element?(view, "#transfer-save", "Create rule")
+      assert has_element?(view, "#transfer-scope-routes[checked]")
 
       # The six key fields are mirrored and the effect is copied.
       assert has_element?(view, "#transfer_from_stop_id[value='CEN-C']")
@@ -451,7 +453,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
         "min_transfer_time" => "180"
       })
 
-      assert has_element?(view, "#flash-info", "Transfer saved in #{ctx.version.name}.")
+      assert has_element?(view, "#flash-info", "Transfer rule saved in #{ctx.version.name}.")
 
       reverse =
         Repo.get_by(Transfer,
@@ -495,7 +497,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       })
 
       assert text_of(doc(view), "#transfer-form-error") =~
-               "A rule already exists for these stops and services."
+               "A rule already covers these stops and services."
 
       assert has_element?(view, "#transfer-open-existing", "Open existing rule")
 
@@ -510,7 +512,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       # one that opened.
       assert_patch(view, transfers_path(ctx.version, rule: collision.id))
       assert has_element?(view, "#transfer-editor")
-      assert text_of(doc(view), "#transfer-editor h2") == "Edit transfer"
+      assert text_of(doc(view), "#transfer-editor h2") == "Edit transfer rule"
       assert has_element?(view, "#transfer-min-time[value='240']")
       assert has_element?(view, "#transfer_from_stop_id[value='CEN-A']")
 
@@ -560,9 +562,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       assert_patch(view, transfers_path(ctx.version, rule: departure.id))
 
       assert has_element?(view, "#transfer-editor")
-      assert text_of(doc(view), "#transfer-editor h2") == "Edit transfer"
+      assert text_of(doc(view), "#transfer-editor h2") == "Edit transfer rule"
       assert has_element?(view, "#transfer-type-3[checked]")
-      assert has_element?(view, "#transfer-scope option[value='routes'][selected]")
+      assert has_element?(view, "#transfer-scope-routes[checked]")
       assert has_element?(view, "#transfer-to-route option[value='24'][selected]")
       refute has_element?(view, "#transfer-min-time")
     end
@@ -608,7 +610,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveEditTest do
       render_hook(general_view, "open_edit", %{"id" => general.id})
 
       assert has_element?(general_view, "#transfer-editor")
-      assert has_element?(general_view, "#transfer-editor h2", "Edit transfer")
+      assert has_element?(general_view, "#transfer-editor h2", "Edit transfer rule")
     end
   end
 

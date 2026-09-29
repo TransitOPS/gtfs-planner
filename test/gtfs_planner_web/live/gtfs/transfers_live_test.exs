@@ -96,7 +96,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveTest do
       assert text_of(document, "h1") == "Transfers"
 
       assert text_of(document, "#transfers-page header p") ==
-               "Help riders make the right connection."
+               "Rules that tell trip planners where riders can change routes, how much time they need, and where a connection won’t work."
 
       assert Enum.count(LazyHTML.query(document, "#routes-tabs a")) == 2
 
@@ -107,9 +107,8 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveTest do
 
       assert Enum.empty?(LazyHTML.query(document, "#coming-soon, #coming-soon-status"))
 
-      # The workspace shell is one bordered container with both panes, and the
-      # list pane holds no list yet: the rules arrive with the list step, and a
-      # loaded version is not a first-use version.
+      # The workspace shell is one bordered container with both panes, and a
+      # loaded version with rules is not a first-use version.
       assert has_element?(view, "section[aria-label='Transfer rules']")
       assert has_element?(view, "section[aria-label='Connection preview']")
       refute has_element?(view, "#transfers-first-use")
@@ -122,12 +121,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveTest do
 
       {:ok, view, _html} = live(conn, transfers_path(version))
 
-      assert has_element?(view, "#transfer-inspector-empty", "A little context goes a long way")
+      assert has_element?(view, "#transfer-inspector-empty", "Connections appear here")
 
       assert has_element?(
                view,
                "#transfer-inspector-empty",
-               "Choose a connection to see where riders arrive, where they board next, and which rule applies."
+               "Each rule you add appears here on the map, with what it means for riders and trip planners."
              )
     end
 
@@ -140,11 +139,14 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveTest do
 
       document = doc(view)
 
-      assert text_of(document, "#transfers-first-use") =~
-               "Make connections clearer"
+      assert text_of(document, "#transfers-first-use") =~ "Most connections need no rule"
 
       assert text_of(document, "#transfers-first-use") =~
-               "Journey planners can infer transfers without these rules."
+               "Trip planners already work out transfers from stop distance and timetables."
+
+      # The panel carries the one create action, so the header has none.
+      assert has_element?(view, "#transfers-first-use-create", "Create transfer rule")
+      refute has_element?(view, "#transfers-create")
     end
 
     test "in-seat rows alone still show first use, because they are not general rules",
@@ -172,7 +174,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveTest do
       assert has_element?(view, "#transfers-first-use")
     end
 
-    test "a lost catalog connection shows the load failure and its retry keeps the shell",
+    test "a lost catalog connection shows the load failure and its retry restores the workspace",
          %{conn: conn, organization: organization, version: version} do
       substitute_read_adapter(%{})
 
@@ -202,24 +204,94 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveTest do
       assert has_element?(
                view,
                "#transfers-unavailable",
-               "Your rules haven’t changed. Try loading this version again."
+               "Your rules haven’t changed. Try loading #{version.name} again."
              )
 
       assert has_element?(view, "#transfers-retry", "Retry loading")
 
-      # The page shell stands behind the state: the heading, both panes and the
-      # context pane are still there while the list pane reports the failure.
+      # The heading and the list pane stand behind the state, and the list pane
+      # takes the whole card: a context pane that describes no rule has nothing
+      # to say.
       assert has_element?(view, "#transfers-page")
-      assert has_element?(view, "section[aria-label='Connection preview']")
-      assert has_element?(view, "#transfer-inspector-empty")
+      assert has_element?(view, "section[aria-label='Transfer rules']")
+      refute has_element?(view, "section[aria-label='Connection preview']")
+      refute has_element?(view, "#transfer-inspector-empty")
       refute has_element?(view, "#transfers-first-use")
+      refute has_element?(view, "#transfers-create")
 
       view |> element("#transfers-retry") |> render_click()
 
       refute has_element?(view, "#transfers-unavailable")
       refute has_element?(view, "#transfers-first-use")
       assert has_element?(view, "section[aria-label='Transfer rules']")
+      assert has_element?(view, "section[aria-label='Connection preview']")
+      assert has_element?(view, "#transfers-create")
       assert has_element?(view, "#transfers-page")
+    end
+  end
+
+  describe "the pane that has the screen below 1024px" do
+    setup :editor_setup
+
+    test "the list has it until the URL names a rule, then the rule does", ctx do
+      transfer_network_fixture(ctx.organization.id, ctx.version.id)
+
+      first =
+        transfer_fixture(ctx.organization.id, ctx.version.id, %{
+          from_stop_id: "CEN-A",
+          to_stop_id: "CEN-C"
+        })
+
+      {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
+
+      # The first rule is selected (and drawn on a wide screen) without being named
+      # in the URL, so it does not take a phone's screen from the list.
+      assert has_element?(view, "#transfers-workspace[data-detail='closed']")
+      assert has_element?(view, "#transfer-select-#{first.id}[aria-current='true']")
+
+      view |> element("#transfer-select-#{first.id}") |> render_click()
+
+      assert has_element?(view, "#transfers-workspace[data-detail='open']")
+
+      # The way back patches to the same list without the rule.
+      assert has_element?(
+               view,
+               "#transfer-inspector-back[href='#{transfers_path(ctx.version)}']",
+               "All transfer rules"
+             )
+
+      view |> element("#transfer-inspector-back") |> render_click()
+
+      assert_patched(view, transfers_path(ctx.version))
+      assert has_element?(view, "#transfers-workspace[data-detail='closed']")
+    end
+
+    test "the editor shows its form over its preview, and a pick gives the map the screen",
+         ctx do
+      transfer_network_fixture(ctx.organization.id, ctx.version.id)
+
+      {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
+
+      view |> element("#transfers-first-use-create") |> render_click()
+      assert has_element?(view, "#transfers-workspace[data-detail='both']")
+
+      view |> element("#transfer-pick-from") |> render_click()
+      assert has_element?(view, "#transfers-workspace[data-detail='open']")
+
+      view |> element("#transfer-pick-cancel") |> render_click()
+      assert has_element?(view, "#transfers-workspace[data-detail='both']")
+    end
+
+    test "a failed load gives the list the whole card", ctx do
+      substitute_read_adapter(%{})
+
+      stub(CatalogReadAdapterMock, :load_transfer_catalog, fn _org, _ver, _opts ->
+        {:error, :unavailable}
+      end)
+
+      {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
+
+      assert has_element?(view, "#transfers-workspace[data-detail='none']")
     end
   end
 

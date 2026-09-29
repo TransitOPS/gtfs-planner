@@ -69,7 +69,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveGuardTest do
     test "the editor carries the hook, the depart event and the discard message", ctx do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      view |> element("#transfers-create") |> render_click()
+      view |> element("#transfers-first-use-create") |> render_click()
 
       document = doc(view)
 
@@ -98,18 +98,18 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveGuardTest do
     test "a clean draft leaves without a question", ctx do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      view |> element("#transfers-create") |> render_click()
+      view |> element("#transfers-first-use-create") |> render_click()
       view |> element("#transfer-cancel") |> render_click()
 
       refute has_element?(view, "#transfer-editor")
       assert has_element?(view, "#transfer-discard-dialog[data-open='false']")
-      assert has_element?(view, "#transfers-create")
+      assert has_element?(view, "#transfers-first-use-create")
     end
 
     test "a dirty draft is asked about before Cancel, and kept by Keep editing", ctx do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      view |> element("#transfers-create") |> render_click()
+      view |> element("#transfers-first-use-create") |> render_click()
 
       change_draft(view, ["transfer", "min_transfer_time"], :stops, %{
         "min_transfer_time" => "120"
@@ -123,7 +123,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveGuardTest do
       assert text_of(document, "#transfer-discard-dialog-title") == "Discard unsaved changes?"
 
       assert text_of(document, "#transfer-discard-dialog-body") =~
-               "Your saved transfer will stay as it was. The changes in this form will be lost."
+               "Nothing has been saved yet. The changes in this form will be lost."
 
       assert has_element?(view, "#transfer-discard-dialog-cancel", "Keep editing")
       assert has_element?(view, "#transfer-discard-dialog-confirm", "Discard changes")
@@ -142,13 +142,13 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveGuardTest do
       refute has_element?(view, "#transfer-editor")
       # The version has no rules, so the pane comes back in its first-use state.
       assert has_element?(view, "#transfers-first-use")
-      assert has_element?(view, "#transfers-create")
+      assert has_element?(view, "#transfers-first-use-create")
     end
 
     test "a link departure asks the same question and then navigates", ctx do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      view |> element("#transfers-create") |> render_click()
+      view |> element("#transfers-first-use-create") |> render_click()
 
       change_draft(view, ["transfer", "min_transfer_time"], :stops, %{
         "min_transfer_time" => "120"
@@ -168,7 +168,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveGuardTest do
     test "a departure path this page did not author is refused", ctx do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      view |> element("#transfers-create") |> render_click()
+      view |> element("#transfers-first-use-create") |> render_click()
 
       change_draft(view, ["transfer", "min_transfer_time"], :stops, %{
         "min_transfer_time" => "120"
@@ -202,7 +202,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveGuardTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      view |> element("#transfers-create") |> render_click()
+      view |> element("#transfers-first-use-create") |> render_click()
 
       change_draft(view, ["transfer", "min_transfer_time"], :stops, %{
         "min_transfer_time" => "120"
@@ -236,7 +236,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveGuardTest do
       save_draft(view, :stops, draft)
 
       assert text_of(doc(view), "#transfer-form-error") =~
-               "A rule already exists for these stops and services."
+               "A rule already covers these stops and services."
 
       view |> element("#transfer-open-existing") |> render_click()
 
@@ -245,7 +245,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveGuardTest do
       view |> element("#transfer-discard-dialog-confirm") |> render_click()
 
       assert_patch(view, transfers_path(ctx.version, rule: collision.id))
-      assert text_of(doc(view), "#transfer-editor h2") == "Edit transfer"
+      assert text_of(doc(view), "#transfer-editor h2") == "Edit transfer rule"
       assert has_element?(view, "#transfer-min-time[value='240']")
     end
   end

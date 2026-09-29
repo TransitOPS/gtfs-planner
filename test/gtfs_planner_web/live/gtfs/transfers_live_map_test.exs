@@ -99,9 +99,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveMapTest do
                %{"south" => 39.99, "west" => -75.02, "north" => 40.01, "east" => -74.99}
 
       legend = text_of(document, "#transfer-map-legend")
-      assert legend =~ "A Arrival"
-      assert legend =~ "B Departure"
-      assert legend =~ "Rule direction · not a walking route"
+      assert legend =~ "Riders arrive"
+      assert legend =~ "Riders board"
+      assert legend =~ "Direction of the rule, not a walking route"
 
       # Nothing is failing, nothing is being picked and no endpoint is unplaced.
       refute has_element?(view, "#transfer-map-unavailable")
@@ -151,7 +151,47 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveMapTest do
         missing_coordinates: ["No Coordinates"]
       })
 
-      assert has_element?(view, "#transfer-map-missing", "No Coordinates has no coordinates")
+      assert has_element?(
+               view,
+               "#transfer-map-missing",
+               "No Coordinates has no location in this version."
+             )
+    end
+  end
+
+  describe "the draft's connection" do
+    test "a chosen stop redraws the map and a changed time does not", ctx do
+      {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
+      view |> element("#transfers-first-use-create") |> render_click()
+
+      change_draft(view, ["transfer", "from_stop_id"], :stops, %{"from_stop_id" => "CEN-A"})
+
+      assert_push_event(view, "transfer_map:show", %{
+        a: %{stop_id: "CEN-A"},
+        b: nil,
+        fit: true
+      })
+
+      change_draft(view, ["transfer", "to_stop_id"], :stops, %{
+        "from_stop_id" => "CEN-A",
+        "to_stop_id" => "CEN-C"
+      })
+
+      assert_push_event(view, "transfer_map:show", %{
+        a: %{stop_id: "CEN-A"},
+        b: %{stop_id: "CEN-C"},
+        fit: true
+      })
+
+      # Only the two endpoints move the map: a fit on every keystroke of the time
+      # would fight the operator's own view of it.
+      change_draft(view, ["transfer", "min_transfer_time"], :stops, %{
+        "from_stop_id" => "CEN-A",
+        "to_stop_id" => "CEN-C",
+        "min_transfer_time" => "120"
+      })
+
+      refute_push_event(view, "transfer_map:show", %{a: %{stop_id: "CEN-A"}})
     end
   end
 
@@ -177,7 +217,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveMapTest do
       assert has_element?(view, "#transfer-map-unavailable", "Map unavailable")
 
       assert text_of(document, "#transfer-map-unavailable") =~
-               "Stop names and rule details are still available."
+               "Stop names and rule details still work."
 
       assert has_element?(view, "#transfer-map-retry", "Retry map")
 
@@ -228,20 +268,20 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveMapTest do
     test "starting a pick opens a session and its candidates are this version's stops", ctx do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      view |> element("#transfers-create") |> render_click()
-      assert text_of(doc(view), "#transfer-map-title") == "Preview this connection"
+      view |> element("#transfers-first-use-create") |> render_click()
+      assert text_of(doc(view), "#transfer-map-title") == "Preview of this connection"
       assert has_element?(view, "#transfer-pick-from", "Pick on map")
       assert has_element?(view, "#transfer-pick-to", "Pick on map")
 
       view |> element("#transfer-pick-from") |> render_click()
 
       assert_push_event(view, "transfer_map:pick_start", %{pick_id: 1, side: "a"})
-      assert text_of(doc(view), "#transfer-map-title") == "Choose the arrival stop"
+      assert text_of(doc(view), "#transfer-map-title") == "Choose where riders arrive"
 
       assert has_element?(
                view,
                "#transfer-pick-callout",
-               "Select a stop on the map, or use the named stop field."
+               "Select a stop on the map, or type its name in the search field."
              )
 
       assert has_element?(view, "#transfer-pick-cancel", "Cancel picking")
@@ -287,7 +327,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveMapTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      view |> element("#transfers-create") |> render_click()
+      view |> element("#transfers-first-use-create") |> render_click()
       view |> element("#transfer-pick-to") |> render_click()
 
       assert_push_event(view, "transfer_map:pick_start", %{pick_id: 1, side: "b"})
@@ -307,7 +347,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveMapTest do
     test "picking a stop sets that side and clears the route and trip it had", ctx do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      view |> element("#transfers-create") |> render_click()
+      view |> element("#transfers-first-use-create") |> render_click()
 
       # A scope change drops every selector answered for the previous scope, so the
       # route is chosen after the scope is set.
@@ -331,15 +371,18 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveMapTest do
 
       document = doc(view)
 
-      assert text_of(document, "#transfer-map-title") == "Preview this connection"
+      assert text_of(document, "#transfer-map-title") == "Preview of this connection"
       refute has_element?(view, "#transfer-pick-callout")
 
       # The picked stop is the side's stop: the field, its LiveSelect and the
       # draft's own preview all answer it.
       assert has_element?(view, "#transfer_from_stop_id[value='CEN']")
       assert has_element?(view, "#transfer_from_stop_id_text_input[value='Central Station']")
-      assert text_of(document, "#transfer-from-stop-hint") == "Station · includes 2 platforms"
-      assert text_of(document, "#transfer-draft-preview") =~ "Central Station"
+      assert text_of(document, "#transfer-from-stop-hint") == "Station · covers 2 platforms"
+
+      # One stop is not yet a connection, so the preview still asks for both.
+      assert text_of(document, "#transfer-draft-preview") =~
+               "Choose both stops to preview the connection."
 
       # Its route was answered for the stop that is gone.
       refute has_element?(view, "#transfer-from-route option[value='12'][selected]")
@@ -358,7 +401,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveMapTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      view |> element("#transfers-create") |> render_click()
+      view |> element("#transfers-first-use-create") |> render_click()
       change_draft(view, "from_stop_id", :stops, %{"from_stop_id" => "MKT"})
 
       view |> element("#transfer-pick-from") |> render_click()
@@ -373,14 +416,14 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveMapTest do
 
       assert has_element?(view, "#transfer_from_stop_id[value='MKT']")
       refute has_element?(view, "#transfer_from_stop_id[value='CEN']")
-      assert text_of(doc(view), "#transfer-from-stop-hint") == "Stop in this version."
+      assert text_of(doc(view), "#transfer-from-stop-hint") == "Stop"
       assert has_element?(view, "#transfer-pick-callout")
     end
 
     test "cancel and Escape end the pick, and a finished session cannot pick", ctx do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      view |> element("#transfers-create") |> render_click()
+      view |> element("#transfers-first-use-create") |> render_click()
       view |> element("#transfer-pick-from") |> render_click()
       assert_push_event(view, "transfer_map:pick_start", %{pick_id: 1})
 
@@ -388,7 +431,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveMapTest do
 
       assert_push_event(view, "transfer_map:pick_end", %{pick_id: 1})
       refute has_element?(view, "#transfer-pick-callout")
-      assert text_of(doc(view), "#transfer-map-title") == "Preview this connection"
+      assert text_of(doc(view), "#transfer-map-title") == "Preview of this connection"
 
       # The ended session's id is not the current one any more.
       render_hook(view, "transfer_map_pick", %{"pick_id" => 1, "stop_id" => "CEN"})
@@ -400,7 +443,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveMapTest do
 
       view |> element("#transfer-pick-to") |> render_click()
       assert_push_event(view, "transfer_map:pick_start", %{pick_id: 2, side: "b"})
-      assert text_of(doc(view), "#transfer-map-title") == "Choose the departure stop"
+      assert text_of(doc(view), "#transfer-map-title") == "Choose where riders board"
 
       view |> element("#transfer-pick-cancel") |> render_keydown(%{"key" => "Escape"})
 
@@ -433,7 +476,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveMapTest do
     test "a draft still saves while the map is unavailable", ctx do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
 
-      view |> element("#transfers-create") |> render_click()
+      view |> element("#transfers-first-use-create") |> render_click()
 
       render_hook(view, "transfer_map_state", %{
         "generation" => generation(doc(view)),

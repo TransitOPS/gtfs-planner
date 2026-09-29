@@ -74,35 +74,35 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveListTest do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
       document = doc(view)
 
-      from_cell = text_of(document, "tr#transfers-#{scoped.id} td[data-label='From']")
+      from_cell = text_of(document, "tr#transfers-#{scoped.id} td[data-label='Arrive at']")
 
       assert from_cell =~ "Central · Bay A"
       assert from_cell =~ "Route 12"
 
-      to_cell = text_of(document, "tr#transfers-#{scoped.id} td[data-label='To']")
+      to_cell = text_of(document, "tr#transfers-#{scoped.id} td[data-label='Board at']")
 
       assert to_cell =~ "Central · Bay C"
       assert to_cell =~ "Route 24"
 
-      assert text_of(document, "tr#transfers-#{scoped.id} td[data-label='Type']") ==
+      assert text_of(document, "tr#transfers-#{scoped.id} td[data-label='Rule']") ==
                "Minimum time"
 
-      assert text_of(document, "tr#transfers-#{scoped.id} td[data-label='Min time']") == "3m"
+      assert text_of(document, "tr#transfers-#{scoped.id} td[data-label='Time']") == "3 min"
 
-      assert text_of(document, "tr#transfers-#{half_minute.id} td[data-label='Min time']") ==
-               "2m 30s"
+      assert text_of(document, "tr#transfers-#{half_minute.id} td[data-label='Time']") ==
+               "2 min 30 sec"
 
-      assert text_of(document, "tr#transfers-#{recommended.id} td[data-label='Type']") ==
-               "Recommended"
+      assert text_of(document, "tr#transfers-#{recommended.id} td[data-label='Rule']") ==
+               "Preferred point"
 
-      assert text_of(document, "tr#transfers-#{timed.id} td[data-label='Type']") ==
-               "Timed connection"
+      assert text_of(document, "tr#transfers-#{timed.id} td[data-label='Rule']") ==
+               "Timed transfer"
 
-      assert text_of(document, "tr#transfers-#{impossible.id} td[data-label='Type']") ==
+      assert text_of(document, "tr#transfers-#{impossible.id} td[data-label='Rule']") ==
                "Not possible"
 
       for row <- [recommended, timed, impossible] do
-        assert text_of(document, "tr#transfers-#{row.id} td[data-label='Min time']") == "—"
+        assert text_of(document, "tr#transfers-#{row.id} td[data-label='Time']") == "—"
       end
     end
 
@@ -124,21 +124,24 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveListTest do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
       document = doc(view)
 
-      station_from = text_of(document, "tr#transfers-#{station.id} td[data-label='From']")
+      station_from = text_of(document, "tr#transfers-#{station.id} td[data-label='Arrive at']")
 
       assert station_from =~ "Central Station"
-      assert station_from =~ "All arriving routes"
+      assert station_from =~ "Any route · whole station"
 
-      assert text_of(document, "tr#transfers-#{station.id} td[data-label='To']") =~
-               "All departing routes"
+      assert text_of(document, "tr#transfers-#{station.id} td[data-label='Board at']") =~
+               "Any route · whole station"
 
-      assert text_of(document, "tr#transfers-#{trips.id} td[data-label='From']") =~ "Trip 12-0815"
-      assert text_of(document, "tr#transfers-#{trips.id} td[data-label='To']") =~ "Trip 24-0840"
+      assert text_of(document, "tr#transfers-#{trips.id} td[data-label='Arrive at']") =~
+               "Trip 12-0815"
 
-      dangling_from = text_of(document, "tr#transfers-#{dangling.id} td[data-label='From']")
+      assert text_of(document, "tr#transfers-#{trips.id} td[data-label='Board at']") =~
+               "Trip 24-0840"
+
+      dangling_from = text_of(document, "tr#transfers-#{dangling.id} td[data-label='Arrive at']")
 
       assert dangling_from =~ "GHOST"
-      assert dangling_from =~ "All arriving routes"
+      assert dangling_from =~ "Any arriving route"
     end
 
     test "a competing rule carries a text badge and a clean rule carries none", ctx do
@@ -187,7 +190,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveListTest do
       refute has_element?(view, "#transfers-first-use")
     end
 
-    test "the count bar names the list, the direction hint and what a selection drives", ctx do
+    test "the count row names the list and the footer says what a selection drives", ctx do
       rule!(ctx, %{from_stop_id: "CEN-A", to_stop_id: "CEN-C", transfer_type: 0})
       rule!(ctx, %{from_stop_id: "MKT", to_stop_id: "HBR", transfer_type: 1})
       rule!(ctx, %{from_stop_id: "MUS", to_stop_id: "HBR", transfer_type: 3})
@@ -195,13 +198,12 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveListTest do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
       document = doc(view)
 
-      assert text_of(document, "#transfers-count") == "3 rules"
-      assert text_of(document, "#transfers-direction-hint") == "One direction per rule"
+      assert text_of(document, "#transfers-count") == "3 transfer rules"
 
       assert has_element?(
                view,
                "section[aria-label='Transfer rules'] p",
-               "Select a connection to see its map and rider impact."
+               "Select a rule to see it on the map and what it means for riders."
              )
     end
   end
@@ -251,9 +253,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveListTest do
       html = render(view)
       assert position(html, untimed.id) < position(html, timed.id)
 
-      assert text_of(doc(view), "tr#transfers-#{untimed.id} td[data-label='Min time']") == "—"
+      assert text_of(doc(view), "tr#transfers-#{untimed.id} td[data-label='Time']") == "—"
 
-      assert text_of(doc(view), "tr#transfers-#{timed.id} td[data-label='Min time']") == "3m"
+      assert text_of(doc(view), "tr#transfers-#{timed.id} td[data-label='Time']") == "3 min"
     end
   end
 

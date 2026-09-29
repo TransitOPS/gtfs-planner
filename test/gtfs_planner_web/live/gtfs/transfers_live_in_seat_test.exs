@@ -5,10 +5,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
   The chips must switch the list between the version's general rules and its
   type 4/5 in-seat records, counting each view from the whole version before the
   switch. The in-seat view must then render those records read-only: no create
-  control, no Needs attention checkbox, no row checkboxes, no inspector edit,
+  control, no Needs attention toggle, no row checkboxes, no inspector edit,
   delete, reverse, coverage, overlap or related-link element, a footer that says
-  the records are retained in export, an empty state that sends the operator to
-  Blocks, and a type filter limited to the view's own two types. A row without a
+  the records stay in the export, an empty state that says Blocks manages them,
+  and a kind filter limited to the view's own two kinds. A row without a
   stop must still render its endpoints, and the URL's `view`, `type`, `attention`
   and `rule` params must resolve inside the listed view, with a foreign or
   impossible value dropped rather than answered with an empty list.
@@ -39,7 +39,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
   # URL patches they make, and the two commands the always-rendered discard
   # dialog's own buttons send (they only close the dialog). A write event here
   # would mean this view can reach a mutation, which R1 forbids.
-  @read_only_events ~w(switch_view sort select_rule toggle_filters clear_filters search filter paginate keep_editing discard_changes)
+  @read_only_events ~w(switch_view sort select_rule toggle_filters clear_filters remove_filter search filter paginate keep_editing discard_changes)
 
   setup %{conn: conn} do
     organization = organization_fixture()
@@ -68,14 +68,14 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version))
       document = doc(view)
 
-      assert text_of(document, "#transfers-view-general") == "General rules (3)"
-      assert text_of(document, "#transfers-view-in-seat") == "In-seat (2) · managed on Blocks"
+      assert text_of(document, "#transfers-view-general") =~ ~r/Transfer rules\s+3/
+      assert text_of(document, "#transfers-view-in-seat") =~ ~r/Stay on board\s+2/
       assert attribute(document, "#transfers-view-general", "aria-pressed") == "true"
       assert attribute(document, "#transfers-view-in-seat", "aria-pressed") == "false"
 
       # The counts are the version's, not the listed page's: the general view
       # still says how many in-seat records wait behind the other chip.
-      assert text_of(document, "#transfers-count") == "3 rules"
+      assert text_of(document, "#transfers-count") == "3 transfer rules"
 
       for rule <- general, do: assert(has_element?(view, "tr#transfers-#{rule.id}"))
       for record <- in_seat, do: refute(has_element?(view, "tr#transfers-#{record.id}"))
@@ -96,7 +96,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
       # No general rules: the general view keeps its first-use state, and the chip
       # still reaches the version's in-seat records.
       assert has_element?(view, "#transfers-first-use")
-      assert text_of(doc(view), "#transfers-view-in-seat") == "In-seat (1) · managed on Blocks"
+      assert text_of(doc(view), "#transfers-view-in-seat") =~ ~r/Stay on board\s+1/
       refute has_element?(view, "tr#transfers-#{record.id}")
 
       view |> element("#transfers-view-in-seat") |> render_click()
@@ -104,7 +104,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
       assert_patched(view, transfers_path(ctx.version, view: "in_seat"))
       refute has_element?(view, "#transfers-first-use")
       assert has_element?(view, "tr#transfers-#{record.id}")
-      assert text_of(doc(view), "#transfers-count") == "1 in-seat record"
+      assert text_of(doc(view), "#transfers-count") == "1 stay-on-board record"
     end
   end
 
@@ -132,11 +132,11 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
       assert_patched(view, transfers_path(ctx.version, view: "in_seat"))
 
       refute has_element?(view, "#transfer-select-#{bay_a.id}")
-      refute has_element?(view, "#transfer-filter-attention")
+      refute has_element?(view, "#transfers-attention-toggle")
       assert has_element?(view, "#transfer-search-form input[name='q'][value='']")
 
       # The view the chips switched to lists its own rows, unfiltered.
-      assert text_of(doc(view), "#transfers-count") == "2 in-seat records"
+      assert text_of(doc(view), "#transfers-count") == "2 stay-on-board records"
       assert has_element?(view, "#transfer-select-#{stay.id}")
       assert has_element?(view, "#transfer-select-#{alight.id}")
     end
@@ -153,9 +153,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
       view |> element("#transfers-clear-filters") |> render_click()
 
       assert_patched(view, transfers_path(ctx.version, view: "in_seat"))
-      assert text_of(doc(view), "#transfers-count") == "2 in-seat records"
+      assert text_of(doc(view), "#transfers-count") == "2 stay-on-board records"
       assert has_element?(view, "#transfer-select-#{stay.id}")
-      refute has_element?(view, "#transfer-filter-attention")
+      refute has_element?(view, "#transfers-attention-toggle")
     end
 
     test "drops the page the operator was on", ctx do
@@ -164,7 +164,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, page: "2"))
       document = doc(view)
 
-      assert text_of(document, "#transfers-count") == "51 rules"
+      assert text_of(document, "#transfers-count") == "51 transfer rules"
       assert Enum.count(row_ids(document)) == 1
 
       view |> element("#transfers-view-in-seat") |> render_click()
@@ -206,13 +206,13 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, view: "in_seat"))
 
-      assert text_of(doc(view), "#transfers-count") == "2 in-seat records"
+      assert text_of(doc(view), "#transfers-count") == "2 stay-on-board records"
 
       view |> element("#transfers-view-general") |> render_click()
 
       assert_patched(view, transfers_path(ctx.version))
       assert has_element?(view, "#transfer-select-#{bay_a.id}")
-      assert text_of(doc(view), "#transfers-count") == "3 rules"
+      assert text_of(doc(view), "#transfers-count") == "3 transfer rules"
     end
   end
 
@@ -223,24 +223,25 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, view: "in_seat"))
       document = doc(view)
 
-      assert text_of(document, "#transfers-count") == "2 in-seat records"
+      assert text_of(document, "#transfers-count") == "2 stay-on-board records"
       assert has_element?(view, "tr#transfers-#{stay.id}")
       assert has_element?(view, "tr#transfers-#{alight.id}")
       for rule <- general, do: refute(has_element?(view, "tr#transfers-#{rule.id}"))
 
-      assert has_element?(view, "tr#transfers-#{stay.id} td[data-label='Type']", "Stay on board")
+      assert has_element?(view, "tr#transfers-#{stay.id} td[data-label='Rule']", "Stay on board")
 
       assert has_element?(
                view,
-               "tr#transfers-#{alight.id} td[data-label='Type']",
-               "Alight & reboard"
+               "tr#transfers-#{alight.id} td[data-label='Rule']",
+               "Must re-board"
              )
 
-      assert text_of(document, "#transfers-container + p") ==
-               "Read-only here. All records are retained in export."
+      assert text_of(document, "#transfers-table-note") ==
+               "Read-only here. Every record stays in your export."
 
-      # The page count names the same records the count bar does.
-      assert render(view) =~ "of 2 in-seat records"
+      # The view says who manages the records, beside its chips.
+      assert text_of(document, "#transfers-in-seat-note") ==
+               "Read-only here. Blocks manages these."
     end
 
     test "carries no attention badge, because in-seat rows need none", ctx do
@@ -265,18 +266,18 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
 
       assert has_element?(view, "tr#transfers-#{stopless.id}")
 
-      from_cell = text_of(document, "tr#transfers-#{stopless.id} td[data-label='From']")
+      from_cell = text_of(document, "tr#transfers-#{stopless.id} td[data-label='Arrive at']")
 
-      assert from_cell =~ "Stop not recorded"
+      assert from_cell =~ "No stop recorded"
       assert from_cell =~ "Trip 24-0840"
 
-      to_cell = text_of(document, "tr#transfers-#{stopless.id} td[data-label='To']")
+      to_cell = text_of(document, "tr#transfers-#{stopless.id} td[data-label='Board at']")
 
-      assert to_cell =~ "Stop not recorded"
+      assert to_cell =~ "No stop recorded"
       assert to_cell =~ "Trip 12-1010"
     end
 
-    test "offers only the in-seat types in its type filter", ctx do
+    test "offers only the in-seat kinds in its kind filter", ctx do
       mixed_version!(ctx)
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, view: "in_seat"))
@@ -285,9 +286,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
       options = LazyHTML.query(document, "#transfer-filter-type option")
 
       assert Enum.map(options, &LazyHTML.text(&1)) == [
-               "All types",
+               "All kinds",
                "Stay on board",
-               "Alight & reboard"
+               "Must re-board"
              ]
 
       assert Enum.map(options, &LazyHTML.attribute(&1, "value")) == [
@@ -311,7 +312,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
 
       document = doc(view)
 
-      assert text_of(document, "#transfers-count") == "1 in-seat record"
+      assert text_of(document, "#transfers-count") == "1 of 2 stay-on-board records"
       assert has_element?(view, "tr#transfers-#{alight.id}")
       refute has_element?(view, "tr#transfers-#{stay.id}")
 
@@ -369,21 +370,21 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
 
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, view: "in_seat"))
 
-      assert has_element?(view, "#transfers-in-seat-empty", "No in-seat records")
+      assert has_element?(view, "#transfers-in-seat-empty", "No stay-on-board records yet")
 
       assert has_element?(
                view,
                "#transfers-in-seat-empty",
-               "Stay-on-board connections are managed on Blocks."
+               "Records that let riders stay on one vehicle across two trips are set up in Blocks"
              )
 
       refute has_element?(view, "#transfers-first-use")
       refute has_element?(view, "#transfers-no-results")
       refute has_element?(view, "#transfers")
       refute has_element?(view, "#transfers-no-results-clear")
-      assert has_element?(view, "#transfer-inspector-empty")
-      assert text_of(doc(view), "#transfers-view-general") == "General rules (1)"
-      assert text_of(doc(view), "#transfers-view-in-seat") == "In-seat (0) · managed on Blocks"
+      assert has_element?(view, "#transfer-inspector-empty", "Stay-on-board records appear here")
+      assert text_of(doc(view), "#transfers-view-general") =~ ~r/Transfer rules\s+1/
+      assert text_of(doc(view), "#transfers-view-in-seat") =~ ~r/Stay on board\s+0/
     end
   end
 
@@ -394,7 +395,7 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, view: "in_seat"))
 
       refute has_element?(view, "#transfers-create")
-      refute has_element?(view, "#transfer-filter-attention")
+      refute has_element?(view, "#transfers-attention-toggle")
       refute has_element?(view, "[id^=transfer-check-]")
       refute has_element?(view, "#transfers-select-all")
       refute has_element?(view, "#transfers-delete-selected")
@@ -431,26 +432,31 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
       {:ok, view, _html} = live(ctx.conn, transfers_path(ctx.version, view: "in_seat"))
       document = doc(view)
 
-      assert text_of(document, "#transfer-inspector > p") == "In-seat record"
       assert text_of(document, "#transfer-inspector h2") == "Stay on board"
 
       inspector = text_of(document, "#transfer-inspector")
 
-      assert inspector =~ "Arrive at"
+      assert inspector =~ "Riders arrive at"
       assert inspector =~ "Trip 12-0815"
-      assert inspector =~ "Board at"
+      assert inspector =~ "Riders board at"
       assert inspector =~ "Trip 24-0840"
 
-      assert inspector =~
-               "Riders may stay on the vehicle as it continues on the next trip."
+      assert text_of(document, "#transfer-inspector-sentence") ==
+               "Riders can stay on board when trip 12-0815 continues as trip 24-0840."
 
       assert has_element?(
                view,
                "#transfer-inspector-blocks-note",
-               "Managed on Blocks. Changes to stay-on-board records are made there."
+               "Managed in Blocks"
              )
 
-      assert has_element?(view, "#transfer-inspector-details", "Rule scope & GTFS details")
+      assert has_element?(
+               view,
+               "#transfer-inspector-blocks-note",
+               "Stay-on-board records are set on the block that runs both trips. Changes are made there."
+             )
+
+      assert has_element?(view, "#transfer-inspector-details", "Technical details")
     end
 
     test "shows the alight-and-reboard record's own meaning when it is selected", ctx do
@@ -463,10 +469,10 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
       view |> element("#transfer-select-#{alight.id}") |> render_click()
 
       assert_patched(view, transfers_path(ctx.version, rule: alight.id, view: "in_seat"))
-      assert text_of(doc(view), "#transfer-inspector h2") == "Alight & reboard"
+      assert text_of(doc(view), "#transfer-inspector h2") == "Must re-board"
 
-      assert text_of(doc(view), "#transfer-inspector") =~
-               "Riders must get off and board again for the next trip."
+      assert text_of(doc(view), "#transfer-inspector-sentence") =~
+               "Riders must get off and board again when"
 
       refute has_element?(view, "#transfer-inspector-edit")
     end
@@ -487,11 +493,9 @@ defmodule GtfsPlannerWeb.Gtfs.TransfersLiveInSeatTest do
 
       document = doc(view)
 
-      assert text_of(document, "#transfer-inspector > p") == "In-seat record"
-
       inspector = text_of(document, "#transfer-inspector")
 
-      assert inspector =~ "Stop not recorded"
+      assert inspector =~ "No stop recorded"
       assert inspector =~ "Trip 24-0840"
 
       refute has_element?(view, "#transfer-inspector-coverage")

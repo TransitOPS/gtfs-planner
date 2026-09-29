@@ -2,10 +2,11 @@
  * TransferMapHook
  *
  * Owns the Transfers page's connection map: the selected rule's or the open
- * draft's A (arrival) and B (departure) endpoints, a station endpoint's child
- * platforms, the dashed A → B direction (or a loop when both sides are the same
+ * draft's Arrive and Board endpoints, a station endpoint's child platforms, the
+ * dashed direction from one to the other (or a loop when both sides are the same
  * station), and the pick-on-map candidates that resolve one side without its
- * named field.
+ * named field. Each endpoint is a dot with a text pill, so the words, not a
+ * colour or a letter key, say which is which.
  *
  * The container is `phx-update="ignore"`, so the server never patches inside it
  * and this hook owns its contents for the life of the mount — including tearing
@@ -46,8 +47,8 @@ const FIT_PADDING = [32, 32];
 const FIT_MAX_ZOOM = 18;
 const SINGLE_POINT_ZOOM = 17;
 
-// The A = B loop has to clear the 28px letter marker it surrounds, or the loop
-// hides behind the letter it belongs to.
+// The Arrive = Board loop has to clear the dot it surrounds, or the loop hides
+// behind it.
 const LOOP_RADIUS = 22;
 
 // The connection is drawn as a cased line: an accent dash over a white underlay.
@@ -59,9 +60,9 @@ const CASING_COLOR = "#ffffff";
 const CASING_OPACITY = 0.85;
 
 // Pick candidates are the only click targets on this map, so they are lifted
-// above the endpoint letters they can overlap. The endpoint letters in turn sit
+// above the endpoint pills they can overlap. The endpoint pills in turn sit
 // above the child platforms: Leaflet stacks markers by latitude, so a station's
-// children — metres from the endpoint — would otherwise cover the letter at any
+// children — metres from the endpoint — would otherwise cover the pill at any
 // zoom that fits a long connection.
 const LETTER_Z_OFFSET = 500;
 const CANDIDATE_Z_OFFSET = 1000;
@@ -71,14 +72,23 @@ const CANDIDATE_Z_OFFSET = 1000;
 const WORLD_CENTER = [20, 0];
 const WORLD_ZOOM = 1;
 
-// A and B letter markers. They name the endpoints, they are not actions, so
-// they stay out of the tab order (keyboard: false) and out of the marker pane's
-// keyboard handlers.
-const LETTER_ICON_SIZE = 28;
-const LETTER_CLASS =
-  "grid place-items-center rounded-full w-7 h-7 text-sm font-semibold ring-2 ring-base-100";
-const MARKER_A_CLASS = "bg-primary text-primary-content";
-const MARKER_B_CLASS = "bg-secondary text-secondary-content";
+// The Arrive and Board markers: a dot on the stop and a text pill beside it. They
+// name the endpoints, they are not actions, so they stay out of the tab order
+// (keyboard: false) and out of the marker pane's keyboard handlers. Arrive sits
+// above its dot and Board below, so two stops close together keep both words
+// readable; a rule that arrives and boards at one stop shows one pill above it.
+const DOT_ICON_SIZE = 16;
+const DOT_CLASS = "block size-4 rounded-full ring-2 ring-white";
+const PILL_CLASS =
+  "absolute left-1/2 -translate-x-1/2 whitespace-nowrap rounded-badge px-2 py-1 text-[13px] font-bold leading-none text-white";
+const ARRIVE_TONE = {
+  dot: "bg-strong",
+  pill: "bg-strong bottom-full mb-1.5",
+};
+const BOARD_TONE = {
+  dot: "bg-cyan-700",
+  pill: "bg-cyan-700 top-full mt-1.5",
+};
 
 // Theme colors, with the literals only protecting an isolated fixture or a
 // missing stylesheet from rendering nothing.
@@ -136,12 +146,14 @@ function pointTuple(point) {
   return [point.lat, point.lon];
 }
 
-function letterIcon(L, letter, tone) {
+function endpointIcon(L, label, tone) {
   return L.divIcon({
     className: "",
-    html: `<span class="${LETTER_CLASS} ${tone}">${letter}</span>`,
-    iconSize: [LETTER_ICON_SIZE, LETTER_ICON_SIZE],
-    iconAnchor: [LETTER_ICON_SIZE / 2, LETTER_ICON_SIZE / 2],
+    html:
+      `<span class="${DOT_CLASS} ${tone.dot}"></span>` +
+      `<span class="${PILL_CLASS} ${tone.pill}">${label}</span>`,
+    iconSize: [DOT_ICON_SIZE, DOT_ICON_SIZE],
+    iconAnchor: [DOT_ICON_SIZE / 2, DOT_ICON_SIZE / 2],
   });
 }
 
@@ -235,6 +247,17 @@ const TransferMapHook = {
     };
     this.el.addEventListener("transfer-map:fit", this._onFitRequest);
 
+    // Below 1024px the page hides this pane (display: none) while the list has the
+    // screen, and Leaflet cannot size a hidden container: it would keep the view it
+    // computed for nothing. When the pane is shown again, remeasure and fit the
+    // connection once, so a rule chosen on a phone opens on its own streets. A
+    // resize while the pane stays visible is Leaflet's own to handle.
+    this._wasHidden = this.el.clientWidth === 0;
+    if (typeof ResizeObserver !== "undefined") {
+      this._resizeObserver = new ResizeObserver(() => this._onContainerResize());
+      this._resizeObserver.observe(this.el);
+    }
+
     this.handleEvent("transfer_map:show", (payload) => this._show(payload));
     this.handleEvent("transfer_map:pick_start", (payload) =>
       this._startPick(payload),
@@ -259,6 +282,11 @@ const TransferMapHook = {
       this.el.removeEventListener("transfer-map:fit", this._onFitRequest);
     }
     this._onFitRequest = null;
+
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
+      this._resizeObserver = null;
+    }
 
     if (this.map) {
       try {
@@ -328,7 +356,7 @@ const TransferMapHook = {
   },
 
   // One marker on the map. `keyboard` is the whole difference between an inert
-  // shape (A/B, a child platform) and an action (a pick candidate): Leaflet adds
+  // shape (an endpoint, a child platform) and an action (a pick candidate): Leaflet adds
   // tabindex and role="button" only when it is true, and it never turns Enter
   // into a click, so the candidate binds its own Enter below.
   _marker(point, options, group) {
@@ -344,8 +372,8 @@ const TransferMapHook = {
     const b = mapPoint(payload.b);
     const children = (payload.children || []).map(mapPoint).filter(Boolean);
     // Both sides at one station is the station-vs-station rule: the endpoints
-    // coincide, so the reference draws one "A/B" node inside the loop instead of
-    // two letters stacked on the same pixel.
+    // coincide, so one "Arrive and board" pill is drawn inside the loop instead of
+    // two pills stacked on the same pixel.
     const loop = Boolean(a && b && a.stop_id === b.stop_id);
 
     this.layers.clearLayers();
@@ -363,7 +391,7 @@ const TransferMapHook = {
 
     if (a && b && loop) {
       this._marker(a, {
-        icon: letterIcon(this._L, "A/B", MARKER_A_CLASS),
+        icon: endpointIcon(this._L, "Arrive and board", ARRIVE_TONE),
         title: a.name,
         zIndexOffset: LETTER_Z_OFFSET,
       });
@@ -393,7 +421,7 @@ const TransferMapHook = {
     } else {
       if (a) {
         this._marker(a, {
-          icon: letterIcon(this._L, "A", MARKER_A_CLASS),
+          icon: endpointIcon(this._L, "Arrive", ARRIVE_TONE),
           title: a.name,
           zIndexOffset: LETTER_Z_OFFSET,
         });
@@ -401,7 +429,7 @@ const TransferMapHook = {
       }
       if (b) {
         this._marker(b, {
-          icon: letterIcon(this._L, "B", MARKER_B_CLASS),
+          icon: endpointIcon(this._L, "Board", BOARD_TONE),
           title: b.name,
           zIndexOffset: LETTER_Z_OFFSET,
         });
@@ -543,6 +571,25 @@ const TransferMapHook = {
     }
 
     this.candidates?.clearLayers();
+  },
+
+  _onContainerResize() {
+    if (this._destroyed || !this.map) return;
+
+    if (this.el.clientWidth === 0) {
+      this._wasHidden = true;
+      return;
+    }
+    if (!this._wasHidden) return;
+
+    this._wasHidden = false;
+    this.map.invalidateSize();
+
+    if (this._points.length) {
+      this._fit(this._points);
+    } else {
+      this._fitExtent();
+    }
   },
 
   _retry() {
