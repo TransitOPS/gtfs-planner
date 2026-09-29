@@ -12,7 +12,7 @@
  * screen-reader smoke runs, and nonvisual equivalents are deliberately NOT
  * asserted and must not be added to this file.
  *
- * Fixtures come from `mix ecto.reset` + `test/support/browser_seed.exs`:
+ * Fixtures come from `test/support/browser_seed.exs`, run by `bin/test-browser`:
  * station BROWSER_STATION with platforms A/B, entrance C, one elevator
  * pathway, one long-named isolated generic node, and one agency in
  * America/New_York. The history case writes through the production editor and

@@ -1,8 +1,8 @@
 // Integrated information-architecture navigation and restyled header journey
 // (EV-6, step 7).
 //
-// Runs against the reset-and-seeded browser database the repository's Playwright
-// configuration already uses (`mise run prepare:browser`, workers: 1, retries: 0)
+// Runs against the freshly seeded browser database the repository's Playwright
+// configuration already uses (`bin/test-browser`, workers: 1, retries: 0)
 // with `BROWSER_E2E=true`. The journey is read-only: it navigates, opens the two
 // header menus and captures the composed surfaces at the two required viewports.
 // Expected labels, paths, roles and initials are literal values from the spec and

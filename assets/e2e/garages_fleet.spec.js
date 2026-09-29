@@ -1,11 +1,11 @@
 // Garages, Fleet and operations-export browser journey (EV-18, step 18).
 //
-// Runs against the reset-and-seeded browser database the repository's Playwright
-// configuration already uses (`mise run prepare:browser`, workers: 1, retries: 0)
+// Runs against the freshly seeded browser database the repository's Playwright
+// configuration already uses (`bin/test-browser`, workers: 1, retries: 0)
 // with `BROWSER_E2E=true`, so `GtfsPlanner.BrowserGeocoding` replaces the Mox
 // geocoding mock inside the server. Every run derives its own asset names and
 // vehicle numbers, so the journey can be repeated against the same seeded
-// database as long as the reset ran first.
+// database as long as the seed ran first.
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
 import { dirname, resolve } from "node:path";

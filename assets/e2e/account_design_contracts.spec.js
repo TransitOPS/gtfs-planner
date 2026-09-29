@@ -60,7 +60,7 @@ const SETTINGS_USER = {
   password: "AccountSettings123!",
 };
 
-// One-use password mutation per `mise run prepare:browser` reset.
+// One-use password mutation per `bin/test-browser` database.
 const PASSWORD_MUTATE_USER = {
   email: "account-password-mutate@gtfs-planner.test",
   password: "AccountPassword123!",

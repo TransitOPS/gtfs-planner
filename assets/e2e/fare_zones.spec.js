@@ -1,7 +1,7 @@
 // Fare zones workspace browser journey.
 //
-// Runs against the reset-and-seeded browser database the repository's Playwright
-// configuration already uses (`mise run prepare:browser`, workers: 1, retries: 0)
+// Runs against the freshly seeded browser database the repository's Playwright
+// configuration already uses (`bin/test-browser`, workers: 1, retries: 0)
 // with `BROWSER_E2E=true`. The seeded "Browser Fare Zones Version" is resolved by
 // name through the version panel, so the journey reads the fare-zone fixture the
 // later steps assert against instead of whichever version is the organization's
@@ -657,7 +657,7 @@ test("assignment review", async ({ page }, testInfo) => {
 // a version whose inventory carries no zone at all, which the seeded "Browser E2E
 // Version" is: it carries the diagram journey's stops and no fare-zone row. The
 // drawer's own journeys run on the version this file owns, and the case leaves one
-// created zone behind, named so a re-run without `prepare:browser` is obvious.
+// created zone behind, named so a re-run against a used database is obvious.
 test("zone drawer", async ({ page }, testInfo) => {
   await routeBlankTiles(page);
   await logIn(page);

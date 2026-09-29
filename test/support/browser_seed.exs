@@ -1,6 +1,7 @@
 # Creates deterministic browser-test users for Playwright E2E tests.
-# This script runs after `MIX_ENV=test mix ecto.reset`, so the database
-# is empty and idempotency is unneeded.
+# `bin/test-browser` runs this script against a new throwaway database that is
+# already created and migrated, so the database is empty and idempotency is
+# unneeded.
 #
 # User 1 (admin): browser-test@gtfs-planner.test — used by overlays.spec.js
 # User 2 (editor): diagram-test@gtfs-planner.test — used by diagram_keyboard.spec.js
@@ -2085,7 +2086,8 @@ case Accounts.register_first_admin(%{
     IO.puts("Browser seed: account settings user #{settings_user.email}")
 
     # One-use password mutation handoff. After a successful password change the
-    # seed password is invalid until the next `mise run prepare:browser` reset.
+    # seed password is invalid until the next `bin/test-browser` run creates a new
+    # database.
     {:ok, password_user} =
       Accounts.register_user(%{
         email: "account-password-mutate@gtfs-planner.test",

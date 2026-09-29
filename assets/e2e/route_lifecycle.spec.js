@@ -1812,7 +1812,7 @@ test.describe("Other routes context", () => {
  * The journeys are stateful like the rest of the suite: the journey route is
  * created and deleted by its own journey, the stale journey deletes the
  * seeded BROWSER_ROUTE16_FLOW, and the membership journey restores the
- * revoked member before it ends. A fresh reset-and-seeded database restores
+ * revoked member before it ends. A freshly seeded database restores
  * every record (the lane contract in spec.md).
  *
  * Seeded records consumed, from test/support/browser_seed.exs:

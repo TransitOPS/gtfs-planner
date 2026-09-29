@@ -260,6 +260,10 @@ jobs:
           cache-dependency-path: "assets/package-lock.json"
       - name: Run browser tests
         run: mise run test:browser
+        env:
+          # The service container above is the disposable server, so the browser
+          # wrapper does not start pg_tmp.
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/gtfs_planner_test
 
   docker:
     name: Build Docker image
