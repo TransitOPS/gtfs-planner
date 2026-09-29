@@ -5976,6 +5976,46 @@ defmodule GtfsPlanner.Gtfs do
     Blocking.suggest_blocks(organization_id, gtfs_version_id, day_type_key, mode)
   end
 
+  @doc """
+  Applies a reviewed suggestion as one reviewed transaction.
+
+  `plan` is a `%Blocking.Plan{}` returned by `suggest_blocks/4` and `day_type_key`
+  names the day type it was suggested for. The apply re-runs the generator and
+  `Blocking.Plan.build/1` under `Blocking.lock_blocking!/1` from the locked rows and
+  writes only when the fresh fingerprint still matches the reviewed one, so a setting,
+  a driving time, a relief mark, a route setting, an attribute, a garage coordinate,
+  a fleet count or a trip added or removed since the review is
+  `{:error, :stale_plan}` and changes nothing (INV-7).
+
+  Every move, every new block's attribute row and every `"trip"` change log is written
+  in the one transaction, or nothing is: a failed audit returns
+  `{:error, {:audit_failed, reason}}` and a count mismatch or three serialization
+  failures return `{:error, :busy}`, both with no `block_id` changed (AC-27). A plan
+  that is not a plan, a day type the version does not derive and a version of another
+  organization are `{:error, :invalid_plan}`, `{:error, {:unknown_day_type, day_types}}`
+  and `{:error, :not_found}`. No `transfers` row is ever written (INV-3).
+  """
+  @spec apply_block_plan(
+          String.t(),
+          GtfsPlanner.Gtfs.Blocking.Plan.t(),
+          AuditContext.t()
+        ) ::
+          {:ok,
+           %{
+             operation_id: Ecto.UUID.t() | nil,
+             changed_trip_ids: [Ecto.UUID.t()]
+           }}
+          | {:error,
+             :stale_plan
+             | :invalid_plan
+             | {:unknown_day_type, [GtfsPlanner.Gtfs.Blocking.DayTypes.day_type()]}
+             | :not_found
+             | :busy
+             | {:audit_failed, term()}}
+  def apply_block_plan(day_type_key, plan, %AuditContext{} = audit_context) do
+    Blocking.apply_block_plan(day_type_key, plan, audit_context)
+  end
+
   # ============================================================================
   # Station Naming
   # ============================================================================

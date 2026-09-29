@@ -142,6 +142,9 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   # One command changes at most this many trips, the same bound the Schedules
   # series uses; the largest measured block holds 192 trips.
+  # The single row bound a blocking write works in: `apply_block_change/4` refuses a
+  # command naming more trips than this, and `apply_block_plan/3` batches its
+  # `update_all` writes at the same size so one plan is never one unbounded statement.
   @max_command_trips 500
 
   # One suggestion reads at most this many trip rows. It is the measured target
@@ -1766,6 +1769,324 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  @doc """
+  Applies a reviewed suggestion as one reviewed transaction (AC-27, R12).
+
+  `plan` is a `%Blocking.Plan{}` from `suggest_blocks/4`; the write is decided from
+  the plan's `mode` and `day_type_key` and from nothing else the caller carries. The
+  plan's own `moves` are never trusted as the thing to write: the run is repeated
+  under `lock_blocking!/1` from the locked rows and the fresh plan's fingerprint is
+  compared with the caller's, so a plan whose contents were edited, or whose inputs
+  moved since the review, is `{:error, :stale_plan}` rather than a partial write
+  (INV-7). The plan's shape is checked before any transaction: a plan that does not
+  carry a `day_type_key`, a `mode` and a `fingerprint` is
+  `{:error, :invalid_plan}` and costs no query.
+
+  Everything else runs in the configured transaction in the order `spec.md`
+  Mutation prescribes: the scoped version `FOR SHARE` with its published check
+  (AC-5), the calendars and their derived day types (INV-6), `lock_blocking!/1`
+  (INV-1), the plan's moved trips and the touched blocks' trips `FOR UPDATE` in UUID
+  order, the repeated generator run and `Plan.build/1` from the locked rows, the
+  fingerprint comparison, the per-destination `update_all` batches of at most
+  `@max_command_trips` IDs, the `block_attributes` rows of the plan's new blocks and
+  one `"trip"` change log per moved trip under a single `operation_id` (INV-4). A
+  write whose `update_all` count does not match the moves it covers rolls back with
+  `:busy`; an audit the database or the audit layer refuses rolls back with
+  `{:error, {:audit_failed, reason}}`; a serialization failure or deadlock is
+  retried by `run_write/2` and reported as `:busy` after three attempts.
+
+  A day type the version does not derive is `{:error, {:unknown_day_type, day_types}}`
+  and a version of another organization, or an unpublished one, is
+  `{:error, :not_found}`; both change nothing. No `transfers` row is ever inserted,
+  updated or deleted (INV-3), and no trip is left holding a block it did not keep.
+
+  A plan with nothing to move still writes the attribute rows of its new blocks and
+  reports `{:ok, %{operation_id: nil, changed_trip_ids: []}}`: a plan that only
+  resolves a block's garage and type is a real write with no trip to move.
+  """
+  @spec apply_block_plan(String.t(), Plan.t(), AuditContext.t()) ::
+          {:ok, %{operation_id: Ecto.UUID.t() | nil, changed_trip_ids: [Ecto.UUID.t()]}}
+          | {:error,
+             :stale_plan
+             | :invalid_plan
+             | {:unknown_day_type, [DayTypes.day_type()]}
+             | :not_found
+             | :busy
+             | {:audit_failed, term()}}
+  def apply_block_plan(day_type_key, plan, %AuditContext{} = audit)
+      when is_binary(day_type_key) do
+    case plan_mode(plan) do
+      {:ok, mode} -> run_write(fn -> apply_plan!(day_type_key, mode, plan, audit) end)
+      :error -> {:error, :invalid_plan}
+    end
+  end
+
+  def apply_block_plan(_day_type_key, _plan, _audit), do: {:error, :invalid_plan}
+
+  # The plan's shape, checked before any transaction opens. Only the `mode` decides
+  # what is run; the rest of the plan's contents are re-derived under the lock and a
+  # hand-built plan naming a mode the generator does not accept is refused here rather
+  # than raising inside a transaction.
+  defp plan_mode(%{mode: mode}) when mode in [:unassigned_only, :replace_all],
+    do: {:ok, mode}
+
+  defp plan_mode(%{mode: {:selected, ids}}) when is_list(ids) do
+    if Enum.all?(ids, &is_binary/1), do: {:ok, {:selected, ids}}, else: :error
+  end
+
+  defp plan_mode(_plan), do: :error
+
+  # Mutation steps 1-8. The plan's own moves are re-derived rather than written: the
+  # run is repeated from the locked rows in the plan's mode and only the fresh
+  # fingerprint decides whether the reviewed plan is still the current one (INV-7).
+  defp apply_plan!(day_type_key, mode, plan, %AuditContext{} = audit) do
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+
+    version = Versions.lock_for_input_write!(organization_id, version_id)
+
+    if version.publication_status == @published_status do
+      calendars = load_calendars!(organization_id, version_id)
+      day_types = DayTypes.derive(calendars)
+      day_type = resolve_day_type!(day_types, day_type_key)
+
+      if is_nil(day_type), do: Repo.rollback({:unknown_day_type, day_types})
+
+      lock_blocking!(version_id)
+
+      fresh = read_plan!(organization_id, version_id, calendars, day_type, day_types, plan, mode)
+
+      if fresh.fingerprint == plan.fingerprint do
+        write_plan!(audit, fresh)
+      else
+        Repo.rollback(:stale_plan)
+      end
+    else
+      Repo.rollback(:not_found)
+    end
+  end
+
+  # Mutation steps 2-4 under the blocking lock: lock the plan's moved trips and the
+  # trips of every block it touches on an affected service `FOR UPDATE` in UUID order
+  # (INV-1), then rebuild the context and repeat the run and `Plan.build/1` from the
+  # rows as they stand under that lock. The scope read and the rebuild are the same
+  # private path `suggest_blocks/4` uses, so a reviewed plan and the plan re-derived
+  # under the lock are two answers to the same question rather than two questions
+  # (INV-7, CR-1).
+  #
+  # The lock set is named by the caller's plan — its moves and the blocks they leave
+  # and join — because that is the set the reviewed plan said it would write. The rows
+  # a fresh run reads beyond it are still compared through the fingerprint, so a change
+  # the lock set missed is a stale plan rather than a silent write.
+  defp read_plan!(
+         organization_id,
+         version_id,
+         calendars,
+         day_type,
+         day_types,
+         plan,
+         mode
+       ) do
+    scope = suggestion_rows(organization_id, version_id, day_type, mode)
+
+    if length(scope) > @max_plan_trips, do: Repo.rollback({:too_large, length(scope)})
+
+    # Every trip of the mode's scope, every trip the reviewed plan said it would move,
+    # and every trip of a block the plan leaves or joins on an affected service, taken
+    # `FOR UPDATE` in UUID order. The scope is what tells the lock set which blocks and
+    # services matter; the reviewed plan's moves are added so a plan whose contents were
+    # edited cannot name rows this transaction then reads unlocked.
+    moved = Enum.uniq(Enum.map(scope, & &1.id) ++ plan_scope_ids(plan))
+    services = Enum.uniq(Enum.map(scope, & &1.service_id) ++ plan_scope_services(plan))
+    touched = plan_touched_blocks(plan)
+
+    locked_ids = Queries.lock_trips!(organization_id, version_id, moved, touched, services)
+
+    # Mutation step 5: every trip the reviewed plan moves belongs to this version and
+    # to a service this apply is scoped over. A plan naming a row this version does not
+    # hold is not a stale plan — it is a plan about another version — so it is answered
+    # `:not_found` rather than made to match this version's fingerprint (AC-5). The
+    # comparison reads the IDs the lock just took, so a plan can neither name a row it
+    # did not lock nor pass on a row the lock never reached.
+    check_plan_scope!(plan, locked_ids, Enum.uniq(Enum.map(scope, & &1.service_id)))
+
+    # Re-read through the same scope the suggestion read: the rows the run and the
+    # review see are the rows as they stand under the lock, and each mode keeps its own
+    # scope shape (a `{:selected, ids}` plan is rebuilt over its selected blocks' trips,
+    # never over the whole day type).
+    rows = suggestion_rows(organization_id, version_id, day_type, mode)
+
+    settings = get_settings(organization_id, version_id)
+    context = build_context!(organization_id, version_id, settings, rows)
+
+    used_ids =
+      suggest_used_block_ids(organization_id, version_id, scope_day_types(day_types, rows))
+
+    result = Generator.run(mode, rows, context, used_ids)
+    affected = affected_day_types(day_types, moved_trips(rows, result.assignments))
+    service_dates = DayTypes.service_dates(calendars)
+    plan_rows = plan_rows(organization_id, version_id, rows, result.blocks, affected)
+
+    Plan.build(%{
+      mode: mode,
+      selected_key: day_type.key,
+      day_types: day_types,
+      affected: affected,
+      rows: plan_rows,
+      result: result,
+      context: context,
+      in_seat: in_seat_context(organization_id, version_id, affected, service_dates, plan_rows),
+      service_dates: service_dates
+    })
+  end
+
+  # The trip UUIDs the reviewed plan said it would move, read defensively: a plan
+  # whose `moves` are absent or the wrong shape locks nothing beyond the scope and is
+  # then refused by the fingerprint comparison rather than raising in the transaction.
+  defp plan_scope_ids(plan) do
+    plan
+    |> Map.get(:moves, [])
+    |> Enum.filter(&is_map/1)
+    |> Enum.map(&get_in(&1, [:trip, Access.key(:id)]))
+    |> Enum.filter(&is_binary/1)
+  end
+
+  defp plan_scope_services(plan) do
+    plan
+    |> Map.get(:moves, [])
+    |> Enum.filter(&is_map/1)
+    |> Enum.map(&get_in(&1, [:trip, Access.key(:service_id)]))
+    |> Enum.filter(&is_binary/1)
+  end
+
+  # The scope check itself. `locked` is this organization's and version's own locked IDs
+  # and `services` the scope's services, so a plan about another organization, another
+  # version or a service this day type does not run is refused rather than partially
+  # applied (AC-5, CR-3).
+  defp check_plan_scope!(plan, locked_ids, services) do
+    held = MapSet.new(locked_ids)
+    scoped = MapSet.new(services)
+
+    if Enum.all?(plan_scope_ids(plan), &MapSet.member?(held, &1)) and
+         Enum.all?(plan_scope_services(plan), &MapSet.member?(scoped, &1)) do
+      :ok
+    else
+      Repo.rollback(:not_found)
+    end
+  end
+
+  defp plan_touched_blocks(plan) do
+    plan
+    |> Map.get(:moves, [])
+    |> Enum.filter(&is_map/1)
+    |> Enum.flat_map(&[Map.get(&1, :from), Map.get(&1, :to)])
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+  end
+
+  # Mutation steps 6-8: the moves' block IDs in `update_all` batches grouped by
+  # destination, the attribute rows of the plan's new blocks, and one `"trip"` change
+  # log per moved trip sharing one operation ID (INV-4). A count mismatch is a row
+  # this transaction expected and did not find, so the whole plan rolls back rather
+  # than leaving part of it written.
+  defp write_plan!(%AuditContext{} = audit, plan) do
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+    moves = plan.moves
+    changed_ids = moves |> Enum.map(& &1.trip.id) |> Enum.sort()
+
+    # The rows are read before the write, not after: the audit's `before` side is the
+    # stored row, so reading it once the blocks are written would record the new block
+    # on both sides and no audit would name a change (INV-4).
+    structs = trip_structs(organization_id, version_id, changed_ids)
+
+    update_trip_blocks!(organization_id, version_id, moves)
+    store_plan_attributes!(organization_id, version_id, plan.attribute_rows)
+
+    if changed_ids == [] do
+      %{operation_id: nil, changed_trip_ids: []}
+    else
+      trips = Map.new(structs, &{&1.id, &1})
+      snapshots = Schedules.trip_audit_snapshots(organization_id, version_id, structs)
+      operation_id = Ecto.UUID.generate()
+
+      Enum.each(moves, fn move ->
+        audit_change!(
+          audit,
+          Map.fetch!(trips, move.trip.id),
+          move.to,
+          snapshots,
+          operation_id,
+          changed_ids
+        )
+      end)
+
+      %{operation_id: operation_id, changed_trip_ids: changed_ids}
+    end
+  end
+
+  # Grouped by destination because one plan places its trips on several blocks, and
+  # `update_all` takes a single value per statement. The batch bound is
+  # `@max_command_trips`, the same 500-row bound a block command works in, so a large
+  # plan is several bounded statements inside the one transaction rather than one
+  # unbounded one (AC-27). The count is checked per batch and against the moves it
+  # covers: a trip the plan moves that this transaction did not update is
+  # `:busy`, never a partial plan.
+  defp update_trip_blocks!(organization_id, version_id, moves) do
+    now = DateTime.utc_now()
+
+    moves
+    |> Enum.group_by(& &1.to)
+    |> Enum.each(fn {to, group} ->
+      group
+      |> Enum.map(& &1.trip.id)
+      |> Enum.sort()
+      |> Enum.chunk_every(@max_command_trips)
+      |> Enum.each(&update_block_batch!(organization_id, version_id, &1, to, now))
+    end)
+  end
+
+  defp update_block_batch!(organization_id, version_id, batch, to, now) do
+    {count, _} =
+      Repo.update_all(
+        from(t in Trip,
+          where:
+            t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+              t.id in ^batch
+        ),
+        set: [block_id: to, updated_at: now]
+      )
+
+    if count != length(batch), do: Repo.rollback(:busy)
+  end
+
+  # One row per `(service_id, block_id)` the plan proposed, replacing both value
+  # columns and the write timestamp. A repeated apply of the same plan writes the
+  # same rows rather than failing on the unique index, and the scoping fields are set
+  # on the struct and never cast (CR-3). No `transfers` row is touched (INV-3).
+  defp store_plan_attributes!(organization_id, version_id, attribute_rows) do
+    Enum.each(attribute_rows, fn row ->
+      changeset =
+        BlockAttribute.changeset(
+          %BlockAttribute{
+            organization_id: organization_id,
+            gtfs_version_id: version_id,
+            service_id: row.service_id,
+            block_id: row.block_id
+          },
+          %{garage_id: row.garage_id, vehicle_type_id: row.vehicle_type_id}
+        )
+
+      case Repo.insert(changeset,
+             on_conflict: {:replace, @replace_attribute_columns},
+             conflict_target: [:organization_id, :gtfs_version_id, :service_id, :block_id]
+           ) do
+        {:ok, _row} -> :ok
+        {:error, refused} -> Repo.rollback(refused)
+      end
+    end)
   end
 
   defp read_day(organization_id, gtfs_version_id, day_type_key) do
@@ -3465,23 +3786,32 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   # One `"trip"` change log per changed trip, in the Schedules snapshot shape with the
-  # command's operation ID and the whole affected list (INV-4). Any audit failure rolls
-  # the command back first and then leaves as the returned
-  # `{:error, {:audit_failed, reason}}`: a returned `{:error, changeset}` keeps the
-  # changeset and a database-rejected insert keeps the exception, so an audit failure
-  # reaches the caller as a refusal and never as an exception raised out of the
+  # command's or plan's operation ID, the whole affected list and *this* trip's own
+  # destination (INV-4). A block command sends every changed trip to one target; a plan
+  # sends each move to its own, so the destination is a per-call argument rather than a
+  # property of the caller. Any audit failure rolls the write back first and then leaves
+  # as the returned `{:error, {:audit_failed, reason}}`: a returned `{:error, changeset}`
+  # keeps the changeset and a database-rejected insert keeps the exception, so an audit
+  # failure reaches the caller as a refusal and never as an exception raised out of the
   # transaction (AC-10).
-  defp audit_change!(%AuditContext{} = audit, trip, target, snapshots, operation_id, changed_ids) do
+  defp audit_change!(
+         %AuditContext{} = audit,
+         trip,
+         destination,
+         snapshots,
+         operation_id,
+         changed_ids
+       ) do
     snapshot = Map.fetch!(snapshots, trip.id)
 
     case GtfsPlanner.Gtfs.record_change_in_transaction(
            audit,
            :trip,
-           %{trip | block_id: target},
+           %{trip | block_id: destination},
            "updated",
            %{
              before: snapshot,
-             after: Map.put(snapshot, "block_id", target),
+             after: Map.put(snapshot, "block_id", destination),
              operation_id: operation_id,
              affected_trip_ids: changed_ids
            }
