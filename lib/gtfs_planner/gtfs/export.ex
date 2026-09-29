@@ -23,11 +23,14 @@ defmodule GtfsPlanner.Gtfs.Export do
   - `:full` - All GTFS files (agency, stops, routes, trips, etc.)
   - `:pathways` - Pathways subset (stops, levels, pathways only)
   - `:operations` - The full GTFS files plus the TODS `stops_supplement.txt` and
-    `vehicles.txt` files, with omission warnings and a garage/stop ID collision
-    check
+    `vehicles.txt` files and the four movement supplements, with omission
+    warnings and a garage/stop ID collision check
   - `:flex` - The flex zip alone, as `Validator` validates it (step 18)
   """
 
+  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Blocking
+  alias GtfsPlanner.Gtfs.Blocking.TodsExport
   alias GtfsPlanner.Gtfs.Export.{CsvWriter, FileSpec, Snapshot, StreamBuilder}
   alias GtfsPlanner.Gtfs.Extensions
   alias GtfsPlanner.Gtfs.Flex.Export, as: FlexExport
@@ -38,6 +41,7 @@ defmodule GtfsPlanner.Gtfs.Export do
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
 
   require Logger
 
@@ -118,6 +122,13 @@ defmodule GtfsPlanner.Gtfs.Export do
   - `{:error, :no_data}` for a version without GTFS records
   - `{:error, {:garage_stop_id_conflict, conflicts}}` when a garage ID equals an
     emitted `stop_id`; no ZIP is produced
+
+  The operations ZIP carries the movements, but never in a public file (INV-8):
+  the four supplement files are written beside `stops_supplement.txt` and
+  `vehicles.txt` from `Blocking.TodsExport.rows/1`, over the same snapshot the
+  public files were read in. A supplement file with no rows is omitted with a
+  `tods_file_omitted` warning, and a movement left out for want of a driving time
+  is reported as a `tods_movements_omitted` warning rather than dropped silently.
   """
   @spec build_zip(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations) ::
           {:ok, binary(), [warning()]}
@@ -343,10 +354,16 @@ defmodule GtfsPlanner.Gtfs.Export do
            ) do
       conflict_rollback(emitted_conflicts)
 
-      file_paths = file_paths ++ export_tods_files(temp_dir, garages, vehicles)
+      movements = movement_rows(organization_id, gtfs_version_id)
 
-      {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id),
-       tods_omission_warnings(garages, vehicles)}
+      file_paths =
+        file_paths ++
+          export_tods_files(temp_dir, garages, vehicles) ++
+          export_movement_files(temp_dir, movements)
+
+      warnings = movement_warnings(movements) ++ tods_omission_warnings(garages, vehicles)
+
+      {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id), warnings}
     end
   end
 
@@ -604,6 +621,139 @@ defmodule GtfsPlanner.Gtfs.Export do
     after
       File.close(file)
     end
+  end
+
+  # The four movement supplements, built from the same snapshot the public files
+  # were just read in. `Blocking.export_movements/2` runs inside this read rather
+  # than opening a transaction of its own, so the movements, the public IDs they
+  # must not collide with and the files beside them all describe one committed
+  # revision: a supplement identifier can never be handed out against a public
+  # file this ZIP has not actually read.
+  #
+  # A version that is not published has no day types to this application at all —
+  # the Blocks page, the day load and `Calendars.list_calendars/3` all refuse one
+  # — so its movements are left out and the fact is warned about, rather than
+  # rolling the whole export back over a file the caller could always produce
+  # before.
+  defp movement_rows(organization_id, gtfs_version_id) do
+    if Versions.published_gtfs_version_for_org?(organization_id, gtfs_version_id) do
+      movements = Blocking.export_movements(organization_id, gtfs_version_id)
+
+      %{
+        rows:
+          TodsExport.rows(%{
+            day_types: movements.day_types,
+            blocks_by_day_type: movements.blocks_by_day_type,
+            garages_by_id: movements.garages_by_id,
+            public_ids: public_ids(organization_id, gtfs_version_id)
+          }),
+        published?: true
+      }
+    else
+      %{rows: empty_movement_rows(), published?: false}
+    end
+  end
+
+  defp empty_movement_rows do
+    %{calendar_dates: [], routes: [], trips: [], stop_times: [], omitted: 0}
+  end
+
+  # The public trip, route and service IDs of this version, which is the set a
+  # generated supplement identifier is kept clear of (PM-8). A service is public
+  # in either of the two calendar files, so both are read.
+  defp public_ids(organization_id, gtfs_version_id) do
+    %{
+      trip_ids: public_ids(Gtfs.Trip, :trip_id, organization_id, gtfs_version_id),
+      route_ids: public_ids(Gtfs.Route, :route_id, organization_id, gtfs_version_id),
+      service_ids:
+        public_ids(Gtfs.Calendar, :service_id, organization_id, gtfs_version_id) ++
+          public_ids(Gtfs.CalendarDate, :service_id, organization_id, gtfs_version_id)
+    }
+  end
+
+  defp public_ids(schema, field, organization_id, gtfs_version_id) do
+    import Ecto.Query
+
+    schema
+    |> where([s], s.organization_id == ^organization_id)
+    |> where([s], s.gtfs_version_id == ^gtfs_version_id)
+    |> select([s], field(s, ^field))
+    |> Repo.all()
+  end
+
+  # Writes the supplement files that have rows and omits the ones that have none,
+  # exactly as the garage and vehicle files are treated: an empty file tells a
+  # consumer nothing that its absence does not.
+  defp export_movement_files(temp_dir, movements) do
+    rows = movements.rows
+
+    [
+      {Tods.calendar_dates_supplement_spec(), rows.calendar_dates},
+      {Tods.routes_supplement_spec(), rows.routes},
+      {Tods.trips_supplement_spec(), rows.trips},
+      {Tods.stop_times_supplement_spec(), rows.stop_times}
+    ]
+    |> Enum.reject(fn {_spec, rows} -> rows == [] end)
+    |> Enum.map(fn {spec, rows} -> write_tods_file(temp_dir, spec, rows) end)
+  end
+
+  # The movement warnings, in the order a reader meets them: why the files are
+  # missing at all, what was left out of them, then each omitted file. A version
+  # with a driving time a consumer cannot run gets one warning naming the count,
+  # not one per movement.
+  defp movement_warnings(%{rows: rows, published?: published?}) do
+    unpublished =
+      if published? do
+        []
+      else
+        [
+          %{
+            code: "tods_movements_unavailable",
+            detail: "The movement files were left out because this version is not published.",
+            file: "trips_supplement.txt",
+            entity_type: "movement"
+          }
+        ]
+      end
+
+    omitted =
+      if rows.omitted == 0 do
+        []
+      else
+        [
+          %{
+            code: "tods_movements_omitted",
+            detail: "#{rows.omitted} movements have no driving time and were left out.",
+            file: "trips_supplement.txt",
+            entity_type: "movement"
+          }
+        ]
+      end
+
+    unpublished ++
+      omitted ++
+      Enum.flat_map(
+        [
+          {Tods.calendar_dates_supplement_spec().filename, rows.calendar_dates},
+          {Tods.routes_supplement_spec().filename, rows.routes},
+          {Tods.trips_supplement_spec().filename, rows.trips},
+          {Tods.stop_times_supplement_spec().filename, rows.stop_times}
+        ],
+        fn {filename, rows} ->
+          if rows == [] do
+            [
+              %{
+                code: "tods_file_omitted",
+                detail: "#{filename} was not included because this version has no movements.",
+                file: filename,
+                entity_type: "movement"
+              }
+            ]
+          else
+            []
+          end
+        end
+      )
   end
 
   # An empty table omits its file rather than exporting an empty one.
