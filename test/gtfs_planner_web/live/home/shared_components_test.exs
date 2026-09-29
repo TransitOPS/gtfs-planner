@@ -111,6 +111,11 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
     d |> LazyHTML.query(selector) |> LazyHTML.text() |> String.trim()
   end
 
+  # Template whitespace separates a label from its value; compare as one line.
+  defp flat_text(d, selector) do
+    d |> text(selector) |> String.split() |> Enum.join(" ")
+  end
+
   defp attr(d, selector, name) do
     d |> LazyHTML.query(selector) |> LazyHTML.attribute(name) |> List.first()
   end
@@ -394,9 +399,9 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
       d = doc(html)
 
       assert attr(d, "#area-routes", "href") == "/gtfs/#{@version_id}/routes"
-      assert text(d, "#area-routes") =~ "Routes · 14"
-      assert text(d, "#area-calendars") =~ "Calendars · 9"
-      assert text(d, "#area-stops") =~ "Stops & stations · 386"
+      assert flat_text(d, "#area-routes") =~ "Routes · 14"
+      assert flat_text(d, "#area-calendars") =~ "Calendars · 9"
+      assert flat_text(d, "#area-stops") =~ "Stops & stations · 386"
       assert attr(d, "#area-operations", "href") == "/gtfs/#{@version_id}/blocks"
       assert attr(d, "#area-gtfs", "href") == "/gtfs/#{@version_id}/export"
     end
@@ -477,7 +482,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponentsTest do
       assert text(d, "#resume-title") == "Continue where you left off"
       assert attr(d, "#resume-loading", "aria-hidden") == "true"
       assert attr(d, "#resume-loading", "class") =~ "animate-pulse"
-      assert LazyHTML.query(d, "#resume-loading .min-h-16") |> length() == 4
+      assert LazyHTML.query(d, "#resume-loading .min-h-16") |> Enum.count() == 4
       refute LazyHTML.query(d, "#resume-open") |> Enum.any?()
     end
 

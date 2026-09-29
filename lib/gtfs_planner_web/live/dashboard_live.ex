@@ -76,10 +76,17 @@ defmodule GtfsPlannerWeb.DashboardLive do
   @editor_role "pathways_studio_editor"
   @admin_role "pathways_studio_admin"
 
-  # The retry event accepts only these region names; an unknown value is
-  # ignored and never becomes an atom (CR-7).
-  @retry_regions %{
+  # The retry event accepts only these region names, scoped to the regions the
+  # mounted page renders; an unknown value, or another state's region, is
+  # ignored and never becomes an atom (CR-7). The planner page renders no board
+  # region and has no board params to fold a board answer into.
+  @planner_retry_regions %{
     "status" => :status,
+    "resume" => :resume,
+    "check" => :check
+  }
+
+  @pathways_retry_regions %{
     "attention" => :attention,
     "board" => :board,
     "statuses" => :statuses,
@@ -261,18 +268,17 @@ defmodule GtfsPlannerWeb.DashboardLive do
     end)
   end
 
-  # Editing now lists other people; the viewer's own status is the board row's
-  # "editing now" marker, not a rail entry (AC-27).
+  # Every station editing status, viewer's own included: the board rows mark
+  # any station that has one (AC-21) and the rail filters the viewer out of
+  # "Editing now" (AC-27).
   defp load_editors(socket) do
     organization_id = socket.assigns.current_organization.id
     gtfs_version_id = socket.assigns.current_gtfs_version.id
-    user_id = socket.assigns.current_user.id
 
     socket
     |> assign(:editors, AsyncResult.loading())
     |> start_async(:editors, fn ->
       home_source().station_editors(organization_id, gtfs_version_id)
-      |> Enum.reject(&(&1.user_id == user_id))
     end)
   end
 
@@ -356,7 +362,7 @@ defmodule GtfsPlannerWeb.DashboardLive do
 
   @impl true
   def handle_event("retry", %{"region" => region}, socket) do
-    case @retry_regions[region] do
+    case retry_regions(socket.assigns.dashboard_state)[region] do
       :status -> {:noreply, load_status(socket)}
       :attention -> {:noreply, load_attention(socket)}
       :board -> {:noreply, load_board(socket)}
@@ -380,6 +386,9 @@ defmodule GtfsPlannerWeb.DashboardLive do
   def handle_event("search", %{"board" => %{"q" => q}}, socket) do
     push_board_params(socket, socket.assigns.board_params.stage, q)
   end
+
+  defp retry_regions(:pathways), do: @pathways_retry_regions
+  defp retry_regions(_state), do: @planner_retry_regions
 
   @impl true
   def handle_async(:resume, {:ok, %{scope: scope, items: items}}, socket) do
@@ -675,7 +684,7 @@ defmodule GtfsPlannerWeb.DashboardLive do
                   <%!-- loading placeholder would flash for most pages. --%>
                 <% true -> %>
                   <.rail_editing
-                    editors={@editors.result}
+                    editors={Enum.reject(@editors.result, &(&1.user_id == @current_user.id))}
                     version_id={@current_gtfs_version.id}
                   />
               <% end %>

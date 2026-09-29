@@ -35,6 +35,7 @@ defmodule GtfsPlanner.Gtfs.StationReport2.OutcomeTest do
     test "returns the data quality, GPS and naming items in order for a real station snapshot" do
       organization = organization_fixture()
       gtfs_version = gtfs_version_fixture(organization.id)
+      level = level_fixture(organization.id, gtfs_version.id, %{level_id: "L1"})
 
       station =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -49,7 +50,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.OutcomeTest do
           stop_id: "ENT_1",
           stop_name: "Entrance",
           location_type: 2,
-          parent_station: station.stop_id
+          parent_station: station.stop_id,
+          level_id: level.level_id
         })
 
       platform =
@@ -57,7 +59,8 @@ defmodule GtfsPlanner.Gtfs.StationReport2.OutcomeTest do
           stop_id: "PLAT_1",
           stop_name: "Platform",
           location_type: 0,
-          parent_station: station.stop_id
+          parent_station: station.stop_id,
+          level_id: level.level_id
         })
 
       pathway_fixture(organization.id, gtfs_version.id, entrance.stop_id, platform.stop_id, %{

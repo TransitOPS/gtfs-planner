@@ -63,7 +63,7 @@ defmodule GtfsPlannerWeb.DashboardPlannerTest do
 
       today = Date.utc_today()
       weekday_and_saturday_calendars(context, Date.add(today, -30), Date.add(today, 90))
-      schedules_destination(context)
+      schedules_route(context)
       insert_schedule_change(context, user, ~U[2026-09-20 12:00:00.000000Z])
 
       {:ok, view, _html} = live(conn, ~p"/")
@@ -148,9 +148,9 @@ defmodule GtfsPlannerWeb.DashboardPlannerTest do
              )
 
       d = document(render(view))
-      assert text(d, "#area-routes") =~ "Routes · 1"
-      assert text(d, "#area-calendars") =~ "Calendars · 2"
-      assert text(d, "#area-stops") =~ "Stops & stations · 1"
+      assert flat_text(d, "#area-routes") =~ "Routes · 1"
+      assert flat_text(d, "#area-calendars") =~ "Calendars · 2"
+      assert flat_text(d, "#area-stops") =~ "Stops & stations · 1"
     end
 
     test "a dead render shows both region skeletons before the data arrives", context do
@@ -212,6 +212,7 @@ defmodule GtfsPlannerWeb.DashboardPlannerTest do
     test "a version with no changes shows the empty copy", context do
       user = planner_member(context.organization)
       conn = log_in_user(context.conn, user, organization: context.organization)
+      seed_route(context)
 
       {:ok, view, _html} = live(conn, ~p"/")
       render_async(view)
@@ -230,6 +231,7 @@ defmodule GtfsPlannerWeb.DashboardPlannerTest do
       conn = log_in_user(context.conn, user, organization: context.organization)
 
       now = DateTime.utc_now()
+      seed_route(context)
 
       check =
         insert_check(context, %{
@@ -320,11 +322,7 @@ defmodule GtfsPlannerWeb.DashboardPlannerTest do
   # The route and calendar a schedules change points at, so the resume item
   # resolves to a link instead of a gone entity.
   defp schedules_destination(context) do
-    route_fixture(context.organization.id, context.version.id, %{
-      route_id: "12",
-      route_short_name: "12",
-      route_long_name: "Downtown – Riverside"
-    })
+    schedules_route(context)
 
     calendar_fixture(context.organization.id, context.version.id, %{
       service_id: "WKDY",
@@ -338,7 +336,19 @@ defmodule GtfsPlannerWeb.DashboardPlannerTest do
     })
   end
 
+  # Cases that already inserted the weekday calendar (the coverage cases) add
+  # only the route, so the same `WKDY` calendar is not inserted twice.
+  defp schedules_route(context) do
+    route_fixture(context.organization.id, context.version.id, %{
+      route_id: "12",
+      route_short_name: "12",
+      route_long_name: "Downtown – Riverside"
+    })
+  end
+
   defp station_with_platform(context, station_id, platform_id) do
+    level = level_fixture(context.organization.id, context.version.id, %{level_id: "L1"})
+
     stop_fixture(context.organization.id, context.version.id, %{
       stop_id: station_id,
       location_type: 1
@@ -347,8 +357,15 @@ defmodule GtfsPlannerWeb.DashboardPlannerTest do
     stop_fixture(context.organization.id, context.version.id, %{
       stop_id: platform_id,
       location_type: 0,
-      parent_station: station_id
+      parent_station: station_id,
+      level_id: level.level_id
     })
+  end
+
+  # One route, so the version is not a first-use one and the resume and check
+  # regions render instead of the first-use panel.
+  defp seed_route(context) do
+    route_fixture(context.organization.id, context.version.id, %{route_id: "R1"})
   end
 
   defp stop_change(context, actor, stop_id, stop_name, inserted_at) do
@@ -469,13 +486,18 @@ defmodule GtfsPlannerWeb.DashboardPlannerTest do
   defp document(html), do: LazyHTML.from_document(html)
 
   defp text(document, selector) do
-    document |> LazyHTML.query(selector) |> LazyHTML.text()
+    document |> LazyHTML.query(selector) |> LazyHTML.text() |> String.trim()
+  end
+
+  # Template whitespace separates a label from its value; compare as one line.
+  defp flat_text(document, selector) do
+    document |> text(selector) |> String.split() |> Enum.join(" ")
   end
 
   defp primaries(html) do
     html
     |> document()
     |> LazyHTML.query(".bg-action")
-    |> Enum.map(&LazyHTML.text/1)
+    |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
   end
 end

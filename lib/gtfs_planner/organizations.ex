@@ -25,6 +25,18 @@ defmodule GtfsPlanner.Organizations do
   end
 
   @doc """
+  Counts the organizations without loading them.
+
+  ## Examples
+
+      iex> count_organizations()
+      3
+  """
+  def count_organizations do
+    Repo.aggregate(Organization, :count)
+  end
+
+  @doc """
   Gets a single organization.
 
   Returns nil if the Organization does not exist.

@@ -27,6 +27,7 @@ defmodule GtfsPlannerWeb.DashboardPathwaysTest do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Validations.ValidationRun
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.Home.ChangeLinks
 
   @editor_role "pathways_studio_editor"
 
@@ -114,10 +115,10 @@ defmodule GtfsPlannerWeb.DashboardPathwaysTest do
       assert has_element?(view, "#board-row-HBP", "#{issue_count(ctx, "HBP")} issues")
       assert has_element?(view, "#board-row-HBP", "Edited since run")
 
-      # MKT's run is a warning and PNS's failed; RVS is not applicable.
+      # MKT's run is a warning and PNS's failed; RVS, whose run is not
+      # applicable, sits on the second page (asserted in the pager case).
       assert has_element?(view, "#board-row-MKT", "2 of 4 pass")
       assert has_element?(view, "#board-row-PNS", "1 of 4 pass")
-      assert has_element?(view, "#board-row-RVS", "0 of 0 pass")
 
       # A station with no pathways is Not started whatever its status, and a
       # never-edited station shows a dash.
@@ -199,6 +200,7 @@ defmodule GtfsPlannerWeb.DashboardPathwaysTest do
       render_board(view)
 
       assert board_row_ids(view) == ["board-row-RVS", "board-row-WGT"]
+      assert has_element?(view, "#board-row-RVS", "0 of 0 pass")
       assert has_element?(view, "#board-count", "Showing 2 of 14")
       assert has_element?(view, "#board-prev[href='/']")
       refute has_element?(view, "#board-next")
@@ -754,7 +756,7 @@ defmodule GtfsPlannerWeb.DashboardPathwaysTest do
     |> render()
     |> LazyHTML.from_document()
     |> LazyHTML.query("#board-rows tr[id]")
-    |> Enum.map(&LazyHTML.attribute(&1, "id"))
+    |> Enum.map(&(&1 |> LazyHTML.attribute("id") |> List.first()))
   end
 
   defp attention_item_count(view) do
@@ -770,6 +772,6 @@ defmodule GtfsPlannerWeb.DashboardPathwaysTest do
     |> render()
     |> LazyHTML.from_document()
     |> LazyHTML.query(".bg-action")
-    |> Enum.map(&LazyHTML.text/1)
+    |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
   end
 end

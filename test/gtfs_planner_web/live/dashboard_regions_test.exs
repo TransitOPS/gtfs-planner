@@ -109,6 +109,24 @@ defmodule GtfsPlannerWeb.DashboardRegionsTest do
       assert has_element?(view, "#region-error-resume", "Your recent changes could not load.")
       assert has_element?(view, "#region-error-retry-resume", "Try again")
     end
+
+    test "a retry naming the other page state's region is ignored", ctx do
+      %{organization: organization, version: version, user: user} = planner_fixture()
+      insert_check(organization, version, %{errors_count: 0, warnings_count: 12})
+      conn = log_in_user(ctx.conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+      render_async(view)
+
+      # `board` is a Pathways region; accepting it on the planner page would
+      # start a board read whose answer has no board params to fold into.
+      render_click(view, "retry", %{"region" => "board"})
+      render_async(view)
+
+      assert has_element?(view, "#home-planner")
+      assert has_element?(view, "#check-badge", "No errors · 12 warnings")
+      refute has_element?(view, "#board")
+    end
   end
 
   describe "Station board statuses" do
@@ -154,6 +172,14 @@ defmodule GtfsPlannerWeb.DashboardRegionsTest do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)
     user = member(organization, [@editor_role])
+
+    # One stop, so the version is not a first-use one: the planner page renders
+    # the editor-work grid the resume-failure cases inject into.
+    _stop =
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "REGION-STOP",
+        stop_name: "Region Stop"
+      })
 
     %{organization: organization, version: version, user: user}
   end

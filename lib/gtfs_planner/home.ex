@@ -56,7 +56,7 @@ defmodule GtfsPlanner.Home do
   """
   @spec organization_count() :: non_neg_integer()
   def organization_count do
-    length(Organizations.list_organizations())
+    Organizations.count_organizations()
   end
 
   @doc """
