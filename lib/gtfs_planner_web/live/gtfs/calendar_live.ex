@@ -146,7 +146,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   @impl true
   def handle_event("validate", %{"calendar" => submitted}, socket) do
     params = merge_params(socket, submitted)
-    params = suggest_service_id(params)
+    params = suggest_service_id(socket, params)
 
     # A date entered in the specific-dates picker becomes a draft chip as soon as
     # the picker reports a complete date, so the drafted dates are part of the
@@ -651,13 +651,20 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     }
   end
 
-  # The suggested service ID is visible and editable until the user types their own;
-  # it is never derived for an existing calendar, whose service ID cannot change.
-  defp suggest_service_id(%{"service_id" => ""} = params) do
-    Map.put(params, "service_id", service_id_from_name(params["name"]))
+  # The suggested service ID is visible and editable until the user types their own:
+  # it follows the name while it is empty or still the suggestion for the previous
+  # name. It is never derived for an existing calendar, whose service ID cannot change.
+  defp suggest_service_id(%{assigns: %{live_action: :new}} = socket, params) do
+    previous_suggestion = service_id_from_name(socket.assigns.params["name"] || "")
+
+    if params["service_id"] in ["", previous_suggestion] do
+      Map.put(params, "service_id", service_id_from_name(params["name"]))
+    else
+      params
+    end
   end
 
-  defp suggest_service_id(params), do: params
+  defp suggest_service_id(_socket, params), do: params
 
   defp service_id_from_name(name) do
     name

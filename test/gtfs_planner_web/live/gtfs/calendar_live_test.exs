@@ -510,6 +510,99 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
 
       assert input_value(html, "calendar-service-id") == "summer_school_2026"
     end
+
+    test "keeps following the name while each keystroke resubmits the suggested service ID", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, new_path(version))
+
+      for name <- ["D", "DOCQA", "DOCQA Weekday"] do
+        service_id = input_value(render(view), "calendar-service-id")
+
+        view
+        |> form("#calendar-form", %{calendar: %{name: name, service_id: service_id}})
+        |> render_change()
+      end
+
+      assert input_value(render(view), "calendar-service-id") == "docqa_weekday"
+    end
+
+    test "follows the name again after it is cleared and retyped", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, new_path(version))
+
+      for name <- ["Weekday", "", "Saturday"] do
+        service_id = input_value(render(view), "calendar-service-id")
+
+        view
+        |> form("#calendar-form", %{calendar: %{name: name, service_id: service_id}})
+        |> render_change()
+      end
+
+      assert input_value(render(view), "calendar-service-id") == "saturday"
+    end
+
+    test "keeps a service ID the user typed when the name changes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, new_path(version))
+
+      view
+      |> form("#calendar-form", %{calendar: %{name: "Weekday"}})
+      |> render_change()
+
+      view
+      |> form("#calendar-form", %{calendar: %{service_id: "WKDY"}})
+      |> render_change()
+
+      for name <- ["Weekday s", "Weekday sch"] do
+        service_id = input_value(render(view), "calendar-service-id")
+
+        view
+        |> form("#calendar-form", %{calendar: %{name: name, service_id: service_id}})
+        |> render_change()
+      end
+
+      assert input_value(render(view), "calendar-service-id") == "WKDY"
+    end
+
+    test "never re-derives the service ID of an existing calendar when it is renamed", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      context = %{organization: organization, version: version}
+      seeded_weekly(context, "summer", "Summer")
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, detail_path(version, "summer"))
+
+      refute has_element?(view, "#calendar-service-id")
+
+      view
+      |> form("#calendar-form", %{calendar: %{name: "Winter"}})
+      |> render_change()
+
+      view
+      |> form("#calendar-form")
+      |> render_submit()
+
+      assert stored(context, "summer").attributes.service_description == "Winter"
+      assert {:error, :not_found} = Gtfs.fetch_calendar(organization.id, version.id, "winter")
+    end
   end
 
   describe "service ID routing at the real router" do
