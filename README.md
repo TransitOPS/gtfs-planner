@@ -41,6 +41,51 @@ mix gtfs.otp.install --dry-run
 
 Ready to run in production? Please [check our deployment guides](https://hexdocs.pm/phoenix/deployment.html).
 
+## PostGIS
+
+Flex areas, route buffers and Census land boundaries are stored and queried with PostGIS. The
+`enable_postgis` migration creates the `postgis` extension, so the database server must ship the
+extension before migrations run. Development and test run it with `mix ecto.setup` and `mix test`;
+releases run it through `GtfsPlanner.Release.migrate/0`.
+
+### Local development
+
+Homebrew PostgreSQL and PostGIS must come from the same installation; install PostGIS for the
+running `postgresql@18` and keep the two in step:
+
+```bash
+brew list postgresql@18
+brew list postgis
+psql -d gtfs_planner_dev -c 'SELECT postgis_full_version();'
+```
+
+PostGIS requires a superuser to create it. If the check fails, enable the extension once per local
+database with your Homebrew superuser (the default macOS account), and re-check after a
+`postgresql@18` or `postgis` upgrade:
+
+```bash
+psql -d gtfs_planner_dev -c 'CREATE EXTENSION IF NOT EXISTS postgis'
+psql -d gtfs_planner_test -c 'CREATE EXTENSION IF NOT EXISTS postgis'
+```
+
+The `docker-compose.yml` and `docker-compose.mock-production.yml` database services use the
+official `postgis/postgis:18-3.6` image, so containerised databases already ship the extension.
+
+### Fly.io
+
+Fly Managed Postgres enables PostGIS from the cluster's Extensions page. Enable it before deploying
+the release that contains the `enable_postgis` migration:
+
+1. Enable PostGIS for the production database in the Fly dashboard (or create the cluster with
+   `flyctl mpg create --enable-postgis-support`).
+2. Deploy the release; `GtfsPlanner.Release.migrate/0` applies the migration.
+3. Verify the version and record the output for the release notes:
+
+   ```bash
+   flyctl mpg connect
+   SELECT postgis_full_version();
+   ```
+
 ## Docker
 
 Run GTFS Planner in a Docker container while connecting to your local PostgreSQL database.

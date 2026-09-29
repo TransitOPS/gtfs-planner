@@ -88,11 +88,11 @@ jobs:
 
     services:
       postgres:
-        image: kartoza/postgis:17-3.5
+        image: postgis/postgis:17-3.5
         ports:
           - 5432:5432
         env:
-          POSTGRES_PASS: postgres
+          POSTGRES_PASSWORD: postgres
           POSTGRES_USER: postgres
           POSTGRES_DB: pathways_test
         # memory limit is 3GB
@@ -224,11 +224,11 @@ jobs:
 
     services:
       postgres:
-        image: kartoza/postgis:17-3.5
+        image: postgis/postgis:17-3.5
         ports:
           - 5432:5432
         env:
-          POSTGRES_PASS: postgres
+          POSTGRES_PASSWORD: postgres
           POSTGRES_USER: postgres
           POSTGRES_DB: pathways_test
         # memory limit is 3GB
