@@ -26,22 +26,30 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   @doc """
   Renders the day-type scope: the day-type select, the route filter, “Problems
-  only”, the Service dates link and the Block rules button.
+  only”, the Service dates link, the Block rules button and the Driving times
+  button.
 
   The day select posts through its own form (`select_day`) so a day change is
   never mistaken for a route filter; the route and status controls post through
   the `filter` form. The scope describes the whole day type, so neither control
   changes the whole-day counts. The Block rules button prints the stored minimum
-  layover the day load read, so a save shows the new one on the next render.
+  layover the day load read, so a save shows the new one on the next render. The
+  Driving times button counts the day's estimated pairs, which the day load
+  derived from its own movements, so the number is the same one the drawer
+  lists; a day with nothing estimated prints the bare label (AC-3).
   """
   attr :day_types, :list, required: true
   attr :day_type, :map, required: true
   attr :routes, :map, required: true
   attr :state, :map, required: true
   attr :min_layover_minutes, :integer, required: true
+  attr :estimated_pairs, :integer, default: 0
 
   def scope_header(assigns) do
-    assigns = assign(assigns, :route_options, route_options(assigns.routes))
+    assigns =
+      assigns
+      |> assign(:route_options, route_options(assigns.routes))
+      |> assign(:estimated_label, estimated_label(assigns.estimated_pairs))
 
     ~H"""
     <div id="blocks-scope" class="flex flex-wrap items-end gap-x-6 gap-y-3">
@@ -95,6 +103,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           class="btn btn-sm min-h-11"
         >
           Block rules · {@min_layover_minutes} min layover
+        </button>
+        <button
+          id="blocks-driving-times"
+          type="button"
+          phx-click="open_drawer"
+          phx-value-key="driving_times"
+          class="btn btn-sm min-h-11"
+        >
+          Driving times{@estimated_label}
         </button>
       </div>
     </div>
@@ -1010,6 +1027,154 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # with one bad entry is not told about the seven good ones.
   defp error_summary_title(1), do: "1 entry needs fixing."
   defp error_summary_title(count), do: "#{count} entries need fixing."
+
+  @doc """
+  Renders the Driving times drawer: the day's directional pairs, most used
+  first, with each one's minutes, source and a reset for an entered value.
+
+  The rows are the pairs `Gtfs.list_deadhead_pairs/3` read for this day type, in
+  that function's own order (uses descending, then labels and refs), so the
+  drawer and the day's movements can never disagree about a drive (AC-3). Each
+  row's input carries the reference's `minutes[<from>|<to>]` name — the ordered
+  pair `put_deadhead_time/4` takes — and prints the minutes the reader typed so
+  far, so a refused save keeps every entry. A row that cannot be measured
+  (`minutes` is `nil`) shows a blank input and no badge rather than a zero.
+
+  “Estimated only” hides the entered rows without losing what was typed, the
+  count beside it is the drawer's own “N of M estimated”, and the footer keeps
+  the reference's note and its two buttons. `focus_id` is the highlighted row's
+  input, which is what `?pair=…` sets, so the row a link named is both marked
+  and focused on open.
+  """
+  attr :open, :boolean, required: true
+  attr :rows, :list, required: true
+  attr :day_label, :string, required: true
+  attr :circuity, :any, required: true
+  attr :speed, :any, required: true
+  attr :estimated_only?, :boolean, default: false
+  attr :estimated_count, :integer, required: true
+  attr :total_count, :integer, required: true
+  attr :focus_id, :string, default: nil
+  attr :error, :string, default: nil
+
+  def driving_times_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="driving-times-drawer"
+      open={@open}
+      class="max-w-[min(100vw,47.5rem)]"
+      title="Driving times"
+      initial_focus={:first_field}
+      initial_focus_id={@focus_id}
+      return_focus_id="blocks-driving-times"
+    >
+      <div id="driving-times-content" phx-hook="FormErrorFocus" class="flex flex-col gap-4">
+        <p id="driving-times-scope" class="text-sm text-base-content/70">
+          {@day_label} · this version
+        </p>
+
+        <p id="driving-times-intro">
+          Driving without riders between the places this day type’s blocks connect, most used
+          first. Estimates use straight-line distance × {@circuity} ÷ {@speed} km/h. Each
+          direction is separate.
+        </p>
+
+        <p :if={@error} id="driving-times-error" class="text-error text-sm">
+          {@error}
+        </p>
+
+        <form
+          id="driving-times-form"
+          novalidate
+          phx-change="filter_driving_times"
+          phx-submit="save_driving_times"
+        >
+          <%!-- The filter and the rows are one form on purpose: a change event
+          then carries the filter and every value the reader typed, so “Estimated
+          only” cannot hide a row and lose the entry in it. --%>
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <label class="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                id="driving-times-estimated-only"
+                name="estimated_only"
+                checked={@estimated_only?}
+                class="checkbox"
+              />
+              <span class="label-text">Estimated only</span>
+            </label>
+            <p id="driving-times-count" class="text-sm text-base-content/70">
+              {@estimated_count} of {@total_count} estimated
+            </p>
+          </div>
+          <.table
+            id="driving-times"
+            rows={@rows}
+            row_id={& &1.dom_id}
+            row_class={fn row -> if row.highlighted?, do: "bg-base-200", else: nil end}
+          >
+            <:col :let={row} label="From → to">
+              <span class="font-medium">{row.from_label} → {row.to_label}</span>
+            </:col>
+            <:col :let={row} label="Used" align="right">
+              <span class="tabular-nums">{row.uses}</span>
+            </:col>
+            <:col :let={row} label="Minutes">
+              <.input
+                id={row.input_id}
+                type="number"
+                name={"minutes[#{row.key}]"}
+                value={row.value}
+                min={0}
+                max={600}
+                step={1}
+                errors={List.wrap(row.error)}
+                class="input input-sm min-h-11 w-24"
+              />
+            </:col>
+            <:col :let={row} label="Source">
+              <.status_badge :if={row.source == :entered} status="pass" label="Entered" />
+              <.status_badge :if={row.source == :estimated} status="draft" label="Estimated" />
+              <span :if={row.source == :unknown} class="text-sm text-base-content/70">
+                Unknown
+              </span>
+            </:col>
+            <:action :let={row}>
+              <button
+                :if={row.source == :entered}
+                type="button"
+                id={row.dom_id <> "-reset"}
+                phx-click="reset_driving_time"
+                phx-value-pair={row.key}
+                class="link link-primary min-h-11 whitespace-nowrap"
+              >
+                Reset to estimate
+              </button>
+            </:action>
+          </.table>
+
+          <p id="driving-times-note" class="mt-4 text-sm text-base-content/70">
+            Changing a time redraws the blocks that use it.
+          </p>
+
+          <div class="mt-3 flex flex-wrap items-center gap-3">
+            <button type="submit" id="driving-times-submit" class="btn btn-primary min-h-11">
+              Save driving times
+            </button>
+            <button
+              type="button"
+              id="driving-times-cancel"
+              phx-click="close_drawer"
+              class="btn min-h-11"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      </div>
+    </.drawer>
+    """
+  end
 
   @doc """
   Renders the read-only trip drawer: the trip's identity, its stored times and
@@ -4102,6 +4267,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp route_option_label(route_id, route) do
     route.short_name || route.long_name || route_id
   end
+
+  # The reference's own suffix rule: the count is printed only when the day has
+  # an estimate to review, and the label is a leading space so the button reads
+  # as one sentence.
+  defp estimated_label(0), do: ""
+  defp estimated_label(count), do: " · #{count} estimated"
 
   defp day_type_options(day_types) do
     {special, regular} = Enum.split_with(day_types, & &1.special?)
