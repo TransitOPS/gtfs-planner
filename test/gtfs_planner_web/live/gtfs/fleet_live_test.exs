@@ -30,6 +30,15 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
   defp fleet_url(version, query \\ nil),
     do: "/gtfs/#{version.id}#{@fleet_path}#{query_suffix(query)}"
 
+  defp cell_text(view, selector) do
+    view
+    |> element(selector)
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.text()
+    |> String.trim()
+  end
+
   defp query_suffix(nil), do: ""
   defp query_suffix(encoded), do: "?#{encoded}"
 
@@ -51,7 +60,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
       refute has_element?(view, "#vehicles-table")
       refute has_element?(view, "#vehicle-filters")
       refute has_element?(view, "#vehicles-filtered-empty")
-      refute has_element?(view, "#fleet-summary")
+      refute has_element?(view, "#vehicle-types-table")
       refute has_element?(view, "#vehicles-count")
     end
 
@@ -71,9 +80,9 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
       assert has_element?(view, "#vehicles-filtered-empty", "No vehicles match")
       assert has_element?(view, "#clear-filters-empty", "Clear filters")
       assert has_element?(view, "#vehicle-filters")
+      assert has_element?(view, "#vehicles-count", "0 of 1 vehicle")
       refute has_element?(view, "#vehicles-first-use-empty")
       refute has_element?(view, "#vehicles-table")
-      refute has_element?(view, "#vehicles-count")
     end
 
     test "Clear filters patches back to the unfiltered list and restores the table", %{
@@ -93,7 +102,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
       assert_patch(view, fleet_url(version))
 
       assert has_element?(view, "tr#vehicles-#{vehicle.id}", "1201")
-      assert has_element?(view, "#vehicles-count", "1 of 1 vehicles")
+      assert has_element?(view, "#vehicles-count", "1 vehicle")
       refute has_element?(view, "#vehicles-filtered-empty")
     end
   end
@@ -214,7 +223,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
       {:ok, view, _html} = live(conn, fleet_url(version, "type=not-a-uuid&garage=/bad"))
 
       assert has_element?(view, "tr#vehicles-#{vehicle.id}", "1201")
-      assert has_element?(view, "#vehicles-count", "1 of 1 vehicles")
+      assert has_element?(view, "#vehicles-count", "1 vehicle")
       assert has_element?(view, "#vehicle-filters #type option[value='']", "All types")
     end
   end
@@ -278,7 +287,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
   describe "summary and partial state" do
     setup :editor_setup
 
-    test "#fleet-summary counts per garage and type, the total and those needing an assignment",
+    test "the matrix counts vehicles by type and garage, with totals and a row and column for missing values",
          %{
            conn: conn,
            user: user,
@@ -288,7 +297,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       main = garage_fixture(organization.id, %{"name" => "Main garage"})
-      north = garage_fixture(organization.id, %{"name" => "North yard"})
+      garage_fixture(organization.id, %{"name" => "North yard"})
       cutaway = vehicle_type_fixture(organization.id, %{"name" => "Cutaway"})
 
       for vehicle_id <- ["1001", "1002"] do
@@ -305,13 +314,129 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
 
       {:ok, view, _html} = live(conn, fleet_url(version))
 
-      summary = view |> element("#fleet-summary") |> render()
+      typed = "tr#vehicle_types-#{cutaway.id}"
+      assert cell_text(view, "#{typed} td[data-label='Main garage']") == "2"
+      assert cell_text(view, "#{typed} td[data-label='North yard']") == "—"
+      assert cell_text(view, "#{typed} td[data-label='No garage']") == "1"
+      assert cell_text(view, "#{typed} td[data-label='All garages']") == "3"
 
-      assert summary =~ "Main garage"
-      assert summary =~ "2 Cutaway · 1 No type"
-      assert summary =~ "5 vehicles total"
-      assert summary =~ "3 need a garage or type"
-      refute summary =~ north.name
+      untyped = "tr#vehicle_types-none"
+      assert has_element?(view, untyped, "No type")
+      assert cell_text(view, "#{untyped} td[data-label='Main garage']") == "1"
+      assert cell_text(view, "#{untyped} td[data-label='North yard']") == "—"
+      assert cell_text(view, "#{untyped} td[data-label='No garage']") == "1"
+      assert cell_text(view, "#{untyped} td[data-label='All garages']") == "2"
+
+      totals = "#vehicle-types-table tfoot"
+      assert cell_text(view, "#{totals} td[data-label='Main garage']") == "3"
+      assert cell_text(view, "#{totals} td[data-label='North yard']") == "—"
+      assert cell_text(view, "#{totals} td[data-label='No garage']") == "2"
+      assert cell_text(view, "#{totals} td[data-label='All garages']") == "5"
+
+      assert has_element?(view, "#fleet-partial-warning", "3 vehicles need a garage or type")
+    end
+
+    test "the No garage column and No type row appear only while a vehicle needs them", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      garage = garage_fixture(organization.id, %{"name" => "Main garage"})
+      cutaway = vehicle_type_fixture(organization.id, %{"name" => "Cutaway"})
+
+      vehicle_fixture(organization.id, %{
+        "vehicle_id" => "1001",
+        "garage_id" => garage.id,
+        "vehicle_type_id" => cutaway.id
+      })
+
+      {:ok, view, _html} = live(conn, fleet_url(version))
+
+      assert has_element?(view, "#vehicle-types-table td[data-label='Main garage']")
+      refute has_element?(view, "#vehicle-types-table td[data-label='No garage']")
+      refute has_element?(view, "tr#vehicle_types-none")
+    end
+
+    test "a type with no vehicles keeps its row and a garage with none keeps its column", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      main = garage_fixture(organization.id, %{"name" => "Main garage"})
+      garage_fixture(organization.id, %{"name" => "North yard"})
+      cutaway = vehicle_type_fixture(organization.id, %{"name" => "Cutaway"})
+      spare = vehicle_type_fixture(organization.id, %{"name" => "Spare"})
+
+      vehicle_fixture(organization.id, %{
+        "vehicle_id" => "1001",
+        "garage_id" => main.id,
+        "vehicle_type_id" => cutaway.id
+      })
+
+      {:ok, view, _html} = live(conn, fleet_url(version))
+
+      assert cell_text(view, "tr#vehicle_types-#{spare.id} td[data-label='Main garage']") == "—"
+      assert cell_text(view, "tr#vehicle_types-#{spare.id} td[data-label='All garages']") == "—"
+      assert has_element?(view, "#vehicle-types-table td[data-label='North yard']")
+    end
+
+    test "types without vehicles list a zero per type and leave adding to the first-use panel",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           version: version
+         } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      cutaway = vehicle_type_fixture(organization.id, %{"name" => "Cutaway"})
+
+      {:ok, view, _html} = live(conn, fleet_url(version))
+
+      assert cell_text(view, "tr#vehicle_types-#{cutaway.id} td[data-label='Vehicles']") == "0"
+      refute has_element?(view, "#vehicle-types-table tfoot")
+      assert has_element?(view, "#vehicles-first-use-empty")
+      assert has_element?(view, "#add-vehicles")
+      refute has_element?(view, "#add-vehicles-header")
+    end
+
+    test "with vehicles the header carries Add vehicles and Import vehicles", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      vehicle_fixture(organization.id, %{"vehicle_id" => "1201"})
+
+      {:ok, view, _html} = live(conn, fleet_url(version))
+
+      assert has_element?(view, "#add-vehicles-header", "Add vehicles")
+      assert has_element?(view, "#import-tods", "Import vehicles")
+      refute has_element?(view, "#vehicles-first-use-empty")
+    end
+
+    test "a one-hour limit reads in the singular", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      vehicle_type =
+        vehicle_type_fixture(organization.id, %{"name" => "Shuttle", "max_out_hours" => "1"})
+
+      {:ok, view, _html} = live(conn, fleet_url(version))
+
+      assert has_element?(view, "tr#vehicle_types-#{vehicle_type.id}", "Up to 1 hour away")
     end
 
     test "the partial warning appears only when a vehicle lacks a type or garage", %{
@@ -340,10 +465,10 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
       {:ok, partial_view, _html} = live(conn, fleet_url(version))
 
       assert has_element?(partial_view, "#fleet-partial-warning")
-      assert partial_view |> element("#fleet-partial-warning") |> render() =~ "type or garage"
+      assert partial_view |> element("#fleet-partial-warning") |> render() =~ "garage or type"
     end
 
-    test "the summary and the table show a Not assigned badge for missing values", %{
+    test "the table marks a vehicle with no type or garage in words", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -357,14 +482,14 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
 
       assert has_element?(
                view,
-               "tr#vehicles-#{vehicle.id} td[data-label='Type'] .badge",
-               "Not assigned"
+               "tr#vehicles-#{vehicle.id} td[data-label='Type'] [data-unassigned]",
+               "No type"
              )
 
       assert has_element?(
                view,
-               "tr#vehicles-#{vehicle.id} td[data-label='Garage'] .badge",
-               "Not assigned"
+               "tr#vehicles-#{vehicle.id} td[data-label='Garage'] [data-unassigned]",
+               "No garage"
              )
     end
   end
@@ -436,8 +561,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLiveTest do
 
       assert has_element?(view, "tr#vehicles-#{own.id}", "1201")
       refute has_element?(view, "tr#vehicles-#{foreign.id}")
-      assert has_element?(view, "#vehicles-count", "1 of 1 vehicles")
-      assert has_element?(view, "#fleet-summary", "1 vehicles total")
+      assert has_element?(view, "#vehicles-count", "1 vehicle")
     end
   end
 end

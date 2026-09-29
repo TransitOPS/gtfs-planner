@@ -36,63 +36,46 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
   defp submit_type(view, attrs),
     do: render_submit(view, "save_vehicle_type", %{"vehicle_type" => attrs})
 
-  describe "disclosure" do
+  describe "type list" do
     setup :editor_setup
 
-    test "the Vehicle types section renders collapsed on normal entry", %{
+    test "types are listed with their limit and no drawer is open on entry", %{
       conn: conn,
       user: user,
       organization: organization,
       version: version
     } do
       conn = log_in_user(conn, user, organization: organization)
-      vehicle_type_fixture(organization.id, %{"name" => "Cutaway", "max_out_hours" => "10"})
+
+      limited =
+        vehicle_type_fixture(organization.id, %{"name" => "Electric", "max_out_hours" => "10"})
+
+      unlimited = vehicle_type_fixture(organization.id, %{"name" => "Cutaway"})
 
       {:ok, view, _html} = live(conn, fleet_url(version))
 
-      assert has_element?(view, "#vehicle-types")
-      assert has_element?(view, "#vehicle-types-summary", "Vehicle types")
-      assert has_element?(view, "#vehicle-types-summary", "1 types · Manage types and limits")
-      refute has_element?(view, "#vehicle-types[open]")
+      assert has_element?(view, "#vehicle-types-table")
+      assert has_element?(view, "tr#vehicle_types-#{limited.id}", "Electric")
+      assert has_element?(view, "tr#vehicle_types-#{limited.id}", "Up to 10 hours away")
+      assert has_element?(view, "tr#vehicle_types-#{unlimited.id}", "Cutaway")
+      refute has_element?(view, "tr#vehicle_types-#{unlimited.id}", "hours away")
       refute has_element?(view, "#vehicle-type-drawer-overlay[data-open='true']")
     end
 
-    test "expanding the summary opens the disclosure and lists the types table", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      version: version
-    } do
-      conn = log_in_user(conn, user, organization: organization)
-      vehicle_type = vehicle_type_fixture(organization.id, %{"name" => "Cutaway"})
-
-      {:ok, view, _html} = live(conn, fleet_url(version))
-
-      view |> element("#vehicle-types-summary") |> render_click()
-
-      assert has_element?(view, "#vehicle-types[open]")
-
-      assert has_element?(
-               view,
-               "tr#vehicle_types-#{vehicle_type.id} td[data-label='Name']",
-               "Cutaway"
-             )
-    end
-
-    test "an organization without types shows the empty line and the Add type action", %{
-      conn: conn,
-      user: user,
-      organization: organization,
-      version: version
-    } do
+    test "an organization without types shows the empty message and the Add vehicle type action",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           version: version
+         } do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} = live(conn, fleet_url(version))
 
-      assert has_element?(view, "#vehicle-types-summary", "0 types")
       assert has_element?(view, "#vehicle-types-empty", "No vehicle types yet")
       refute has_element?(view, "#vehicle-types-table")
-      assert has_element?(view, "#add-vehicle-type", "Add type")
+      assert has_element?(view, "#add-vehicle-type", "Add vehicle type")
     end
   end
 
@@ -120,8 +103,8 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
 
       assert has_element?(
                view,
-               "tr#vehicle_types-#{vehicle_type.id} td[data-label='Maximum time away from garage']",
-               "10 hours"
+               "tr#vehicle_types-#{vehicle_type.id}",
+               "Up to 10 hours away"
              )
     end
 
@@ -151,17 +134,10 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
       assert Enum.find(types, &(&1.name == "Blank me")).max_out_minutes == nil
       assert Enum.find(types, &(&1.name == "Keep me")).max_out_minutes == 600
 
-      assert has_element?(
-               view,
-               "tr#vehicle_types-#{blanked.id} td[data-label='Maximum time away from garage']",
-               "No limit set"
-             )
+      assert has_element?(view, "tr#vehicle_types-#{blanked.id}", "Blank me")
+      refute has_element?(view, "tr#vehicle_types-#{blanked.id}", "hours away")
 
-      assert has_element?(
-               view,
-               "tr#vehicle_types-#{kept.id} td[data-label='Maximum time away from garage']",
-               "10 hours"
-             )
+      assert has_element?(view, "tr#vehicle_types-#{kept.id}", "Up to 10 hours away")
     end
 
     test "the limit survives a change event that leaves the hours field alone", %{
@@ -212,11 +188,7 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
       assert has_element?(view, "dialog#vehicle-type-drawer-overlay[data-open='false']")
       assert has_element?(view, "#vehicle-type-notice", "Cutaway saved.")
 
-      assert has_element?(
-               view,
-               "tr#vehicle_types-#{type.id} td[data-label='Maximum time away from garage']",
-               "10 hours"
-             )
+      assert has_element?(view, "tr#vehicle_types-#{type.id}", "Up to 10 hours away")
     end
 
     test "25 hours shows a field error and inserts nothing", %{
@@ -233,7 +205,7 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
       submit_type(view, %{"name" => "Too long", "max_out_hours" => "25"})
 
       assert has_element?(view, "#vehicle_type_max_out_hours[aria-invalid='true']")
-      assert has_element?(view, "#vehicle-type-form-error", "Check the highlighted fields")
+      assert has_element?(view, "#vehicle-type-form-error", "Vehicle type not saved")
 
       assert_push_event(view, "focus_form_error", %{
         form_id: "vehicle-type-form",
@@ -283,7 +255,7 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
       open_edit(view, in_use)
       view |> element("#delete-vehicle-type") |> render_click()
 
-      assert has_element?(view, "#vehicle-type-in-use-dialog", "1 vehicles use Cutaway")
+      assert has_element?(view, "#vehicle-type-in-use-dialog", "1 vehicle uses Cutaway")
       refute has_element?(view, "#vehicle-type-delete-confirm")
       assert Enum.count(Operations.list_vehicle_types(organization.id)) == 2
 
@@ -297,7 +269,7 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
       assert has_element?(
                view,
                "#vehicle-type-delete-confirm-body",
-               "This removes the type from this organization."
+               "This removes Spare from #{organization.name}."
              )
 
       # Cancelling keeps the type.
@@ -322,7 +294,7 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
   describe "normal-route persistence" do
     setup :editor_setup
 
-    test "the expanded disclosure saves 600 minutes and redisplays 10 hours on edit", %{
+    test "a saved type stores 600 minutes and redisplays 10 hours on edit", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -332,17 +304,13 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
 
       {:ok, view, _html} = live(conn, fleet_url(version))
 
-      view |> element("#vehicle-types-summary") |> render_click()
-      assert has_element?(view, "#vehicle-types[open]")
-
       view |> element("#add-vehicle-type") |> render_click()
       submit_type(view, %{"name" => "Cutaway", "max_out_hours" => "10"})
 
       assert [type] = Operations.list_vehicle_types(organization.id)
       assert type.max_out_minutes == 600
 
-      # The disclosure stays open across the mutation, so the new row is visible.
-      assert has_element?(view, "#vehicle-types[open]")
+      assert has_element?(view, "tr#vehicle_types-#{type.id}", "Up to 10 hours away")
 
       open_edit(view, type)
 

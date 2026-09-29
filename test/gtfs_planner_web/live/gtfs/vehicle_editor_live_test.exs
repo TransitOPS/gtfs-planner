@@ -32,7 +32,8 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleEditorLiveTest do
   defp stored_ids(organization),
     do: Enum.map(Operations.list_vehicles(organization.id, %{}), & &1.vehicle_id)
 
-  defp open_add_drawer(view, selector \\ "#add-vehicles-header") do
+  # With no vehicles yet the first-use panel carries Add vehicles; otherwise the header does.
+  defp open_add_drawer(view, selector \\ "#add-vehicles-header, #add-vehicles") do
     view |> element(selector) |> render_click()
   end
 
@@ -65,7 +66,13 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleEditorLiveTest do
 
       assert has_element?(view, "#vehicle-drawer-overlay[data-open='true']")
       assert has_element?(view, "#vehicle-drawer-title", "Add vehicles")
-      assert has_element?(view, "#vehicle-drawer-description", "add a numbered group")
+
+      assert has_element?(
+               view,
+               "#vehicle-drawer-description",
+               "Only the vehicle number is required."
+             )
+
       assert has_element?(view, "#vehicle-mode-option-single[checked]")
 
       assert has_element?(
@@ -100,7 +107,7 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleEditorLiveTest do
       # The assignment selects offer the organization's own rows plus the blank prompt.
       assert has_element?(view, "#vehicle_vehicle_type_id option[value='#{vehicle_type.id}']")
       assert has_element?(view, "#vehicle_garage_id option[value='#{garage.id}']")
-      assert has_element?(view, "#vehicle_vehicle_type_id option[value='']", "Not assigned")
+      assert has_element?(view, "#vehicle_vehicle_type_id option[value='']", "No type")
 
       submit_vehicle(view, %{
         "vehicle_id" => "1201",
@@ -120,8 +127,13 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleEditorLiveTest do
       assert has_element?(view, "dialog#vehicle-drawer-overlay[data-open='false']")
       assert has_element?(view, "#vehicle-notice", "1201 added.")
 
-      assert has_element?(view, "tr#vehicles-#{vehicle.id} td[data-label='Vehicle ID']", "1201")
-      assert has_element?(view, "#vehicles-count", "1 of 1 vehicles")
+      assert has_element?(
+               view,
+               "tr#vehicles-#{vehicle.id} td[data-label='Vehicle number']",
+               "1201"
+             )
+
+      assert has_element?(view, "#vehicles-count", "1 vehicle")
       assert has_element?(view, "#add-vehicles-header:not([disabled])")
       assert has_element?(view, "#import-tods:not([disabled])")
     end
@@ -142,7 +154,7 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleEditorLiveTest do
 
       assert has_element?(view, "#vehicle_vehicle_id[aria-invalid='true']")
       assert has_element?(view, "#vehicle_vehicle_id[value='1201']")
-      assert has_element?(view, "#vehicle-form-error", "Check the highlighted fields")
+      assert has_element?(view, "#vehicle-form-error", "Vehicle not saved")
 
       assert_push_event(view, "focus_form_error", %{
         form_id: "vehicle-form",
@@ -323,8 +335,13 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleEditorLiveTest do
       assert Enum.all?(vehicles, &(&1.vehicle_type_id == vehicle_type.id))
       assert Enum.all?(vehicles, &(&1.garage_id == garage.id))
 
-      assert has_element?(view, "#vehicles-count", "15 of 15 vehicles")
-      assert has_element?(view, "#fleet-summary", "15 vehicles total")
+      assert has_element?(view, "#vehicles-count", "15 vehicles")
+
+      assert has_element?(
+               view,
+               "tr#vehicle_types-#{vehicle_type.id} td[data-label='All garages']",
+               "15"
+             )
     end
   end
 
@@ -348,7 +365,13 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleEditorLiveTest do
 
       assert has_element?(view, "#vehicle-drawer-overlay[data-open='true']")
       assert has_element?(view, "#vehicle-drawer-title", "Edit vehicle")
-      assert has_element?(view, "#vehicle-drawer-description", "Update this vehicle")
+
+      assert has_element?(
+               view,
+               "#vehicle-drawer-description",
+               "Only the vehicle number is required."
+             )
+
       assert has_element?(view, "#vehicle_vehicle_id[value='1201']")
       # Editing keeps one vehicle: no mode switch, no numbered group.
       refute has_element?(view, "#vehicle-mode")
@@ -428,7 +451,7 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleEditorLiveTest do
       assert has_element?(
                view,
                "tr#vehicles-#{vehicle.id} td[data-label='Garage']",
-               "Not assigned"
+               "No garage"
              )
 
       assert has_element?(view, "tr#vehicles-#{vehicle.id} td[data-label='Type']", "Cutaway")
@@ -505,8 +528,7 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleEditorLiveTest do
 
       assert stored_ids(organization) == ["0098", "0099", "0100", "0101", "0102"]
 
-      assert has_element?(view, "#vehicles-count", "5 of 5 vehicles")
-      assert has_element?(view, "#fleet-summary", "5 vehicles total")
+      assert has_element?(view, "#vehicles-count", "5 vehicles")
     end
   end
 end

@@ -14,18 +14,6 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
   @garages_path "/settings/garages"
   @fleet_path "/settings/fleet"
 
-  # The Settings bar the two moved pages share, in the sitemap's order.
-  @settings_tabs [
-    "Overview",
-    "Feed details",
-    "Agencies",
-    "Fares",
-    "Export defaults",
-    "Feed URL",
-    "Garages",
-    "Fleet"
-  ]
-
   defp editor_setup(_context) do
     organization = organization_fixture()
     user = user_fixture()
@@ -62,16 +50,6 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
 
   defp main_nav_current(doc) do
     LazyHTML.query(doc, "nav[aria-label='Main navigation'] a[aria-current='page']")
-  end
-
-  defp settings_nav_links(doc) do
-    doc
-    |> LazyHTML.query("#settings-nav a")
-    |> Enum.map(&String.trim(LazyHTML.text(&1)))
-  end
-
-  defp settings_nav_current_href(doc) do
-    LazyHTML.attribute(LazyHTML.query(doc, "#settings-nav a[aria-current='page']"), "href")
   end
 
   describe "access" do
@@ -145,7 +123,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
       assert Enum.empty?(main_nav_current(LazyHTML.from_fragment(render(view))))
     end
 
-    test "the Fleet page renders the Settings bar with Fleet current", %{
+    test "the Fleet page leads back to Settings and says what its vehicles apply to", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -157,16 +135,20 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
 
       assert has_element?(view, "h1", "Fleet")
 
-      assert render(view) =~
-               "All versions · List your vehicles to check that a plan fits your fleet."
+      assert has_element?(
+               view,
+               "a#settings-back[href='/gtfs/#{version.id}/settings']",
+               "Settings"
+             )
 
-      assert render(view) =~ "Shared across all service versions for #{organization.name}."
+      assert has_element?(
+               view,
+               "#fleet-scope",
+               "Applies to every service version at #{organization.name}."
+             )
 
-      doc = LazyHTML.from_fragment(render(view))
-
-      assert Enum.empty?(main_nav_current(doc))
-      assert settings_nav_links(doc) == @settings_tabs
-      assert settings_nav_current_href(doc) == ["/gtfs/#{version.id}#{@fleet_path}"]
+      refute has_element?(view, "#settings-nav")
+      assert Enum.empty?(main_nav_current(LazyHTML.from_fragment(render(view))))
     end
   end
 

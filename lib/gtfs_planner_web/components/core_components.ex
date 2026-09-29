@@ -2623,9 +2623,12 @@ defmodule GtfsPlannerWeb.CoreComponents do
     doc: "md for primary mode switches, sm for compact secondary filters"
 
   attr :emphasis, :atom,
-    values: [:primary, :quiet],
+    values: [:primary, :quiet, :selection],
     default: :primary,
-    doc: "primary fills the selected segment; quiet keeps a neutral selected state"
+    doc:
+      "primary fills the selected segment; quiet keeps a neutral selected state; selection " <>
+        "tints it with the design system's selection ground and action ink, so a mode switch " <>
+        "inside a drawer does not compete with the drawer's primary action (joined only)"
 
   attr :legend_class, :any, default: nil, doc: "optional classes for the legend (e.g. sr-only)"
 
@@ -2671,7 +2674,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
           @appearance == :joined && "flex w-full overflow-hidden rounded-md p-0.5 sm:w-auto",
           @appearance == :joined && @emphasis == :primary &&
             "border border-control-border bg-base-100",
-          @appearance == :joined && @emphasis == :quiet && "bg-base-200"
+          @appearance == :joined && @emphasis == :quiet && "bg-base-200",
+          @appearance == :joined && @emphasis == :selection &&
+            "border border-control bg-white"
         ]}>
           <label
             :for={option <- @normalized_options}
@@ -2699,6 +2704,11 @@ defmodule GtfsPlannerWeb.CoreComponents do
                 "rounded text-base-content hover:bg-base-200",
               @appearance == :joined && @value != option.value && @emphasis == :quiet &&
                 "rounded text-base-content/70 hover:text-base-content",
+              @appearance == :joined && @emphasis == :selection && "rounded",
+              @appearance == :joined && @value == option.value && @emphasis == :selection &&
+                "bg-selection font-semibold text-action",
+              @appearance == :joined && @value != option.value && @emphasis == :selection &&
+                "text-muted hover:text-strong",
               option.disabled && "cursor-not-allowed opacity-60"
             ]}
           >

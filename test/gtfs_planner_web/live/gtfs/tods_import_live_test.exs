@@ -386,7 +386,7 @@ defmodule GtfsPlannerWeb.Gtfs.TodsImportLiveTest do
       view |> element("#apply-tods-import") |> render_click()
 
       assert has_element?(view, "#vehicle-notice", "Vehicles imported: 2 added, 0 updated.")
-      assert has_element?(view, "#vehicles-count", "2 of 2 vehicles")
+      assert has_element?(view, "#vehicles-count", "2 vehicles")
       assert has_element?(view, "#vehicles-table", "bus-1")
       refute has_element?(view, "#vehicles-first-use-empty")
 

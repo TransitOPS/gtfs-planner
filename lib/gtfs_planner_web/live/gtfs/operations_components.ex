@@ -4,8 +4,7 @@ defmodule GtfsPlannerWeb.Gtfs.OperationsComponents do
 
   Garages, vehicle types and vehicles belong to the organization rather than to a
   GTFS version, so both pages import the same TODS files through one drawer whose
-  copy and derived apply state stay in one place, and the Fleet page carries the
-  all-versions scope note next to its introduction.
+  copy and derived apply state stay in one place.
   """
 
   use GtfsPlannerWeb, :html
@@ -19,24 +18,6 @@ defmodule GtfsPlannerWeb.Gtfs.OperationsComponents do
   # The prepared AC-22 message for an apply whose recomputed plan no longer
   # matches the reviewed preview.
   @stale_message "Records changed since the preview. Review the updated counts, then import again."
-
-  @doc """
-  Renders the shared-scope note naming the organization these assets belong to.
-
-  ## Examples
-
-      <.scope_note organization_name={@current_organization.name} class="mt-2" />
-  """
-  attr :organization_name, :string, required: true
-  attr :class, :any, default: nil
-
-  def scope_note(assigns) do
-    ~H"""
-    <p class={["text-sm text-base-content/70", @class]}>
-      <span class="mr-1 text-brand" aria-hidden="true">●</span>Shared across all service versions for {@organization_name}.
-    </p>
-    """
-  end
 
   @doc """
   Whether a held review still describes the file the operator chose.

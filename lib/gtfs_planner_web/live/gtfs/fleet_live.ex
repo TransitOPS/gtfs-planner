@@ -1,7 +1,7 @@
 defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   @moduledoc """
-  LiveView for the organization's fleet: the summary, the URL-backed filters and
-  the bounded vehicle list.
+  LiveView for the organization's fleet: the type-by-garage count matrix, the
+  URL-backed filters and the bounded vehicle list.
 
   Vehicles belong to the organization and ignore GTFS versions: the version in
   the URL is navigation context, and a version switch keeps the active filters in
@@ -15,17 +15,18 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   substring search — `Operations.list_vehicles/2` escapes `%` and `_`, so those
   characters match themselves instead of acting as SQL wildcards.
 
-  The summary counts the whole tenant fleet, not the filtered subset:
+  The matrix and the totals count the whole tenant fleet, not the filtered subset:
   `Operations.fleet_summary/1` buckets by garage × type and the page derives the
-  total and the number of vehicles needing a garage or type from those buckets.
-  Rows stream through `#vehicles-table`, so about two thousand vehicles do not
-  balloon the socket.
+  matrix, the total and the number of vehicles needing a garage or type from those
+  buckets. Rows stream through `#vehicles-table`, so about two thousand vehicles
+  do not balloon the socket.
 
-  A collapsed `#vehicle-types` disclosure holds the types table and its add/edit
-  drawer. A type is organization-wide and ignores versions like a vehicle; its
-  optional limit is edited as hours and stored as minutes by
-  `Operations.VehicleType`, and in-use deletion is refused by the database
-  constraint the delete translates to a message.
+  In `#vehicle-types` vehicle types are the rows and garages the columns, with a
+  "No garage" column and a "No type" row only while a vehicle needs them. Each
+  type name opens the add/edit drawer. A type is organization-wide and ignores
+  versions like a vehicle; its optional limit is edited as hours and stored as
+  minutes by `Operations.VehicleType`, and in-use deletion is refused by the
+  database constraint the delete translates to a message.
 
   `#vehicle-drawer` edits one vehicle and creates a numbered group. Adding uses
   a One vehicle / Numbered group mode switch; the numbered-group `#range-preview`
@@ -38,15 +39,15 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   holds only what the operator or the filtered rows put there: select-all takes
   the ids of the rows currently streamed, and a filter change clears the set. The
   `#bulk-bar` appears while it is non-empty; `#bulk-drawer` writes one assignment
-  through `Operations.update_vehicles/4` (the blank “Not assigned” prompt clears
-  it) and bulk deletion confirms first, naming up to five vehicles.
+  through `Operations.update_vehicles/4` (the blank “No type” or “No garage” prompt
+  clears it) and bulk deletion confirms first, naming up to five vehicles.
 
   Event ids are passed to the context unchanged, so a crafted or stale id is
   accepted into the selection and refused by the context's ownership check
   instead of by a page-side guess: the write changes nothing, the selection is
   cleared and the list reloads with “Some vehicles are no longer available.”
 
-  "Import from TODS file" opens the shared `tods_import_drawer/1`: the chosen
+  "Import vehicles" opens the shared `tods_import_drawer/1`: the chosen
   file is parsed by `Tods` and previewed through `Operations.preview_tods_import/2`,
   and only the reviewed plan may be applied. The review describes exactly one
   upload, so closing the drawer, cancelling the upload or choosing another file
@@ -57,7 +58,17 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.OperationsComponents,
-    only: [scope_note: 1, tods_import_drawer: 1, tods_review_current?: 2]
+    only: [tods_import_drawer: 1, tods_review_current?: 2]
+
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [
+      back_link: 1,
+      drawer_footer: 1,
+      drawer_scroll: 1,
+      first_use: 1,
+      message: 1,
+      scope_line: 1
+    ]
 
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Operations.Tods
@@ -98,11 +109,9 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
      |> assign(:total_count, 0)
      |> assign(:filtered_count, 0)
      |> assign(:needs_assignment_count, 0)
-     |> assign(:summary_garages, [])
+     |> assign(:matrix_columns, [])
      |> assign(:vehicles_empty?, true)
-     |> assign(:vehicle_types_count, 0)
      |> assign(:vehicle_types_empty?, true)
-     |> assign(:vehicle_types_open?, false)
      |> assign(:type_drawer_open, false)
      |> assign(:type_entity, nil)
      |> assign(:type_form, vehicle_type_form(%VehicleType{}, %{}))
@@ -233,15 +242,6 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       # A crafted or stale event finds no reviewed file to apply.
       {:noreply, socket}
     end
-  end
-
-  # The disclosure is a native `<details>`, so the browser owns the toggle and
-  # the summary click only keeps the server's `open` attribute in step. Without
-  # this the rest of the page's patches would strip the attribute and collapse an
-  # expanded list mid-edit.
-  @impl true
-  def handle_event("toggle_vehicle_types", _params, socket) do
-    {:noreply, assign(socket, :vehicle_types_open?, not socket.assigns.vehicle_types_open?)}
   end
 
   # --- vehicle type drawer ---------------------------------------------------
@@ -614,495 +614,721 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <:sub_header>
-        <.settings_nav
-          gtfs_version_id={@current_gtfs_version.id}
-          active_tab={:fleet}
-          organization={@current_organization}
-        />
-      </:sub_header>
+      <div id="fleet-page" class="ds-page">
+        <.back_link id="settings-back" navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings"}>
+          Settings
+        </.back_link>
 
-      <.header>
-        Fleet
-        <:subtitle>All versions · List your vehicles to check that a plan fits your fleet.</:subtitle>
-        <:actions>
-          <.button
-            id="import-tods"
-            variant="secondary"
-            class="min-h-11"
-            phx-click="open_tods_import"
-            phx-value-opener_id="import-tods"
-          >
-            Import from TODS file
-          </.button>
-          <.button
-            id="add-vehicles-header"
-            variant={if(@vehicles_empty?, do: "secondary", else: "primary")}
-            class="min-h-11"
-            phx-click="open_vehicle"
-            phx-value-opener_id="add-vehicles-header"
-          >
-            Add vehicles
-          </.button>
-        </:actions>
-      </.header>
-
-      <.scope_note organization_name={@current_organization.name} class="mt-2" />
-
-      <p :if={@type_notice} id="vehicle-type-notice" role="status" class="mt-3 text-sm text-success">
-        {@type_notice}
-      </p>
-
-      <p :if={@vehicle_notice} id="vehicle-notice" role="status" class="mt-3 text-sm text-success">
-        {@vehicle_notice}
-      </p>
-
-      <div :if={@bulk_error} class="mt-4">
-        <.callout id="bulk-error" kind="warning" title="Selection refreshed">
-          {@bulk_error}
-        </.callout>
-      </div>
-
-      <%!-- `callout/1` spreads global attributes onto its own class, so the margin
-      lives on a wrapper rather than being passed to the component. --%>
-      <div :if={@needs_assignment_count > 0} class="mt-4">
-        <.callout
-          id="fleet-partial-warning"
-          kind="warning"
-          title="Some vehicles need a type or garage"
-        >
-          {needs_assignment_sentence(@needs_assignment_count)} Assign them so fleet checks can count them.
-        </.callout>
-      </div>
-
-      <div
-        :if={!@vehicles_empty?}
-        id="fleet-summary"
-        class="mt-6 grid grid-cols-1 gap-5 border-y border-base-300 py-4 sm:grid-cols-3"
-      >
-        <div
-          :for={entry <- @summary_garages}
-          class="sm:border-r sm:border-base-300 sm:pr-5 sm:last:border-r-0 sm:last:pr-0"
-        >
-          <p class="font-semibold">{entry.garage.name}</p>
-          <p class="mt-1 text-sm text-base-content/70">{entry.types_text}</p>
-        </div>
-        <div class="sm:border-r sm:border-base-300 sm:pr-5 sm:last:border-r-0 sm:last:pr-0">
-          <p class="font-semibold">{@total_count} vehicles total</p>
-          <p class="mt-1 text-sm text-base-content/70">
-            {@needs_assignment_count} need a garage or type
-          </p>
-        </div>
-      </div>
-
-      <%!-- Native disclosure: the reference groups type management behind a
-      collapsed summary so the vehicle list keeps the page. The summary click
-      only mirrors the browser's toggle state to the server, which keeps the
-      attribute from being stripped by an unrelated patch. --%>
-      <details
-        id="vehicle-types"
-        open={@vehicle_types_open?}
-        class="mt-6 border-b border-base-300 pb-3"
-      >
-        <summary
-          id="vehicle-types-summary"
-          phx-click="toggle_vehicle_types"
-          class="min-h-11 cursor-pointer text-base font-semibold"
-        >
-          Vehicle types
-          <span class="text-sm font-normal text-base-content/70">
-            · {@vehicle_types_count} types · Manage types and limits
-          </span>
-        </summary>
-
-        <section aria-labelledby="types-title" class="mt-3">
-          <div class="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <h2 id="types-title" class="text-lg font-semibold">Vehicle types</h2>
-              <p class="text-sm text-base-content/70">
-                Group vehicles with the same operating limits.
-              </p>
-            </div>
+        <.header>
+          Fleet
+          <:subtitle>
+            Your vehicles by type and garage. Block planning uses this list to check that a plan
+            fits your fleet.
+            <.scope_line id="fleet-scope" icon="hero-square-3-stack-3d">
+              Applies to every service version at {@current_organization.name}. Switching versions
+              doesn't change this list.
+            </.scope_line>
+          </:subtitle>
+          <%!-- With no vehicles yet, the first-use panel carries both actions. --%>
+          <:actions :if={!@vehicles_empty?}>
             <.button
-              id="add-vehicle-type"
+              id="import-tods"
               variant="secondary"
               class="min-h-11"
-              phx-click="open_vehicle_type"
-              phx-value-opener_id="add-vehicle-type"
+              phx-click="open_tods_import"
+              phx-value-opener_id="import-tods"
             >
-              Add type
+              <.icon name="hero-arrow-up-tray" class="size-4" /> Import vehicles
             </.button>
+            <.button
+              id="add-vehicles-header"
+              class="min-h-11"
+              phx-click="open_vehicle"
+              phx-value-opener_id="add-vehicles-header"
+            >
+              <.icon name="hero-plus" class="size-4" /> Add vehicles
+            </.button>
+          </:actions>
+        </.header>
+
+        <div :if={@needs_assignment_count > 0} class="mb-6">
+          <.message
+            id="fleet-partial-warning"
+            kind="warning"
+            title={needs_assignment_title(@needs_assignment_count)}
+          >
+            Assign them so fleet checks can count them.
+          </.message>
+        </div>
+
+        <section id="vehicle-types" aria-labelledby="types-title" class="mt-2">
+          <div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-3 pb-4">
+            <div class="min-w-0 max-w-[62ch]">
+              <h2
+                id="types-title"
+                class="font-display text-[24px] font-semibold leading-tight tracking-[-0.025em] text-strong"
+              >
+                {if @vehicles_empty?, do: "Vehicle types", else: "Fleet by type and garage"}
+              </h2>
+              <p id="vehicle-types-help" class="mt-1.5 text-sm text-muted">
+                {types_help(@vehicle_types_empty?, @vehicles_empty?)}
+              </p>
+            </div>
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <.link
+                id="manage-garages"
+                navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings/garages"}
+                class="inline-flex min-h-11 items-center px-1 text-sm font-[650] text-action no-underline hover:text-action-hover hover:underline"
+              >
+                Manage garages
+              </.link>
+              <.button
+                id="add-vehicle-type"
+                variant="secondary"
+                class="min-h-11"
+                phx-click="open_vehicle_type"
+                phx-value-opener_id="add-vehicle-type"
+              >
+                Add vehicle type
+              </.button>
+            </div>
+          </div>
+
+          <div :if={@type_notice} class="mb-4">
+            <.message id="vehicle-type-notice" kind="success" title={@type_notice} />
           </div>
 
           <div
-            :if={!@vehicle_types_empty?}
-            class="mt-3 bg-base-100 border border-base-300 rounded-box overflow-hidden"
+            id="vehicle-types-card"
+            class="overflow-clip rounded-card border border-subtle bg-white"
           >
-            <.table id="vehicle-types-table" rows={@streams.vehicle_types}>
-              <:col :let={{_id, vehicle_type}} label="Name">
-                <button
-                  id={"vehicle-type-name-#{vehicle_type.id}"}
-                  type="button"
-                  phx-click="open_vehicle_type"
-                  phx-value-type_id={vehicle_type.id}
-                  phx-value-opener_id={"vehicle-type-name-#{vehicle_type.id}"}
-                  class="text-left font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-                >
-                  {vehicle_type.name}
-                </button>
-              </:col>
-              <:col :let={{_id, vehicle_type}} label="Maximum time away from garage">
-                {limit_text(vehicle_type.max_out_minutes)}
-              </:col>
-              <:col :let={{_id, vehicle_type}} label="Vehicles" align="right">
-                {vehicle_type.vehicle_count}
-              </:col>
-            </.table>
-          </div>
+            <div :if={@vehicle_types_empty?} id="vehicle-types-empty" class="px-5 py-8 text-center">
+              <h3 class="text-base font-bold text-strong">No vehicle types yet</h3>
+              <p class="mx-auto mt-1.5 max-w-[52ch] text-sm text-muted">
+                Group vehicles that do the same work, such as 35-foot buses and cutaways. Types let
+                fleet checks count what you have.
+              </p>
+            </div>
 
-          <p
-            :if={@vehicle_types_empty?}
-            id="vehicle-types-empty"
-            class="mt-3 text-sm text-base-content/70"
-          >
-            No vehicle types yet. Add a type to group similar vehicles.
-          </p>
+            <.fleet_matrix
+              :if={!@vehicle_types_empty?}
+              rows={@streams.vehicle_types}
+              columns={@matrix_columns}
+              total={@total_count}
+              vehicles_empty?={@vehicles_empty?}
+            />
+          </div>
         </section>
-      </details>
 
-      <section aria-labelledby="vehicles-title" class="mt-6">
-        <h2 id="vehicles-title" class="text-lg font-semibold">
-          Vehicles <span class="text-sm font-normal text-base-content/70">{@total_count}</span>
-        </h2>
-
-        <.empty_state
-          :if={@vehicles_empty?}
-          id="vehicles-first-use-empty"
-          title="Add your first vehicles"
-          class="mt-4"
-        >
-          Enter one vehicle or add a numbered group, such as 1201 through 1215.
-          <:action>
-            <.button
-              id="add-vehicles"
-              class="min-h-11"
-              phx-click="open_vehicle"
-              phx-value-opener_id="add-vehicles"
-            >
-              Add vehicles
-            </.button>
-          </:action>
-        </.empty_state>
-
-        <.form
-          :if={!@vehicles_empty?}
-          for={@filters_form}
-          id="vehicle-filters"
-          phx-change="filter"
-          class="mt-4 flex flex-wrap items-end gap-4"
-        >
-          <.input
-            field={@filters_form[:q]}
-            type="search"
-            label="Find vehicle"
-            placeholder="Number, label or plate"
-            class="input input-bordered min-h-11"
-            phx-debounce="300"
-          />
-          <.input
-            field={@filters_form[:type]}
-            type="select"
-            label="Vehicle type"
-            prompt="All types"
-            options={@vehicle_type_options}
-            class="select select-bordered min-h-11"
-          />
-          <.input
-            field={@filters_form[:garage]}
-            type="select"
-            label="Garage"
-            prompt="All garages"
-            options={@garage_options}
-            class="select select-bordered min-h-11"
-          />
-          <.button
-            :if={@filters_active?}
-            id="clear-filters"
-            type="button"
-            variant="quiet"
-            class="min-h-11"
-            phx-click="clear_filters"
+        <section id="vehicles-section" aria-labelledby="vehicles-title" class="mt-10">
+          <h2
+            id="vehicles-title"
+            tabindex="-1"
+            class={[
+              "pb-4 font-display text-[24px] font-semibold leading-tight tracking-[-0.025em] text-strong",
+              @vehicles_empty? && "sr-only"
+            ]}
           >
-            Clear filters
-          </.button>
-        </.form>
+            Vehicles
+          </h2>
 
-        <%!-- The reference puts the contextual bar between the filters and the
-        table, so it never pushes the filter row out of reach. --%>
-        <div
-          :if={!empty_selection?(@selected_ids)}
-          id="bulk-bar"
-          role="status"
-          class="mt-4 flex flex-wrap items-center justify-between gap-3 border border-primary/30 bg-primary/10 px-4 py-2.5"
-        >
-          <strong id="bulk-bar-count">
-            {vehicle_count_text(MapSet.size(@selected_ids))} selected
-          </strong>
-          <div class="flex flex-wrap items-center gap-2">
-            <.button
-              id="bulk-set-type"
-              variant="secondary"
-              class="min-h-11"
-              phx-click="open_bulk_drawer"
-              phx-value-field="type"
-              phx-value-opener_id="bulk-set-type"
-            >
-              Set type
-            </.button>
-            <.button
-              id="bulk-set-garage"
-              variant="secondary"
-              class="min-h-11"
-              phx-click="open_bulk_drawer"
-              phx-value-field="garage"
-              phx-value-opener_id="bulk-set-garage"
-            >
-              Set garage
-            </.button>
-            <.button
-              id="bulk-delete"
-              variant="danger"
-              class="min-h-11"
-              phx-click="delete_selected_vehicles"
-            >
-              Delete vehicles
-            </.button>
-            <.button
-              id="bulk-clear-selection"
-              variant="quiet"
-              class="min-h-11"
-              phx-click="clear_selection"
-            >
-              Clear selection
-            </.button>
+          <div :if={@vehicle_notice || @bulk_error} class="mb-4 grid gap-3">
+            <.message
+              :if={@vehicle_notice}
+              id="vehicle-notice"
+              kind="success"
+              title={@vehicle_notice}
+            />
+            <.message :if={@bulk_error} id="bulk-error" kind="warning" title="Selection refreshed">
+              {@bulk_error}
+            </.message>
           </div>
-        </div>
 
-        <div :if={!@vehicles_empty? && @filtered_count > 0} class="mt-2">
-          <%!-- `table/1` has no header slot, so the checkbox column the reference
-          puts first — its header cell holding the select-all-filtered control —
-          is rendered here with the same container, stream and `data-label`
-          contract the component provides. --%>
-          <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
-            <div id="vehicles-table-container" class="overflow-x-auto">
-              <table class="table">
-                <thead>
-                  <tr>
-                    <th class="w-12">
-                      <label class="inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center">
-                        <input
-                          id="select-all-vehicles"
-                          type="checkbox"
-                          class="checkbox"
-                          checked={all_filtered_selected?(@selected_ids, @filtered_vehicles)}
-                          aria-label="Select all filtered vehicles"
-                          phx-click="select_all_filtered"
-                        />
-                      </label>
-                    </th>
-                    <th class="text-left">Vehicle ID</th>
-                    <th class="text-left">Label</th>
-                    <th class="text-left">Type</th>
-                    <th class="text-left">Garage</th>
-                    <th class="text-left">License plate</th>
-                  </tr>
-                </thead>
-                <tbody id="vehicles-table" phx-update="stream">
-                  <tr
-                    :for={{dom_id, vehicle} <- @streams.vehicles}
-                    id={dom_id}
-                    class={[
-                      "hover:bg-base-200",
-                      MapSet.member?(@selected_ids, vehicle.id) && "bg-primary/5"
-                    ]}
-                  >
-                    <td data-label="Select" class="w-12">
-                      <label class="inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center">
-                        <input
-                          id={"select-vehicle-#{vehicle.id}"}
-                          type="checkbox"
-                          class="checkbox"
-                          checked={MapSet.member?(@selected_ids, vehicle.id)}
-                          aria-label={"Select vehicle #{vehicle.vehicle_id}"}
-                          phx-click="toggle_vehicle_selection"
-                          phx-value-vehicle_id={vehicle.id}
-                        />
-                      </label>
-                    </td>
-                    <td data-label="Vehicle ID">
-                      <button
-                        id={"vehicle-id-#{vehicle.id}"}
-                        type="button"
-                        phx-click="open_vehicle"
-                        phx-value-vehicle_id={vehicle.id}
-                        phx-value-opener_id={"vehicle-id-#{vehicle.id}"}
-                        class="font-mono text-sm font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-                      >
-                        {vehicle.vehicle_id}
-                      </button>
-                    </td>
-                    <td data-label="Label">
-                      <span :if={blank?(vehicle.vehicle_label)} class="text-base-content/70">—</span>
-                      <span :if={!blank?(vehicle.vehicle_label)}>{vehicle.vehicle_label}</span>
-                    </td>
-                    <td data-label="Type">
-                      <span :if={is_nil(vehicle.vehicle_type)} class="badge badge-warning badge-sm">
-                        Not assigned
-                      </span>
-                      <span :if={vehicle.vehicle_type}>{vehicle.vehicle_type.name}</span>
-                    </td>
-                    <td data-label="Garage">
-                      <span :if={is_nil(vehicle.garage)} class="badge badge-warning badge-sm">
-                        Not assigned
-                      </span>
-                      <span :if={vehicle.garage}>{vehicle.garage.name}</span>
-                    </td>
-                    <td data-label="License plate">
-                      <span :if={blank?(vehicle.license_plate)} class="text-base-content/70">
-                        —
-                      </span>
-                      <span :if={!blank?(vehicle.license_plate)}>{vehicle.license_plate}</span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+          <.first_use
+            :if={@vehicles_empty?}
+            id="vehicles-first-use-empty"
+            title="Add your first vehicles"
+            icon="hero-truck"
+          >
+            Enter one vehicle or add a numbered group, such as 2101 through 2115. Block planning
+            uses them to check that a plan fits your fleet.
+            <:action>
+              <div class="flex flex-wrap justify-center gap-3">
+                <.button
+                  id="add-vehicles"
+                  class="min-h-11"
+                  phx-click="open_vehicle"
+                  phx-value-opener_id="add-vehicles"
+                >
+                  <.icon name="hero-plus" class="size-4" /> Add vehicles
+                </.button>
+                <.button
+                  id="import-tods"
+                  variant="secondary"
+                  class="min-h-11"
+                  phx-click="open_tods_import"
+                  phx-value-opener_id="import-tods"
+                >
+                  <.icon name="hero-arrow-up-tray" class="size-4" /> Import vehicles
+                </.button>
+              </div>
+            </:action>
+          </.first_use>
+
+          <div
+            :if={!@vehicles_empty?}
+            id="vehicles-card"
+            class="overflow-clip rounded-card border border-subtle bg-white"
+          >
+            <.form
+              for={@filters_form}
+              id="vehicle-filters"
+              role="search"
+              phx-change="filter"
+              class="flex flex-wrap items-end gap-3 border-b border-subtle px-4 py-4 md:px-5"
+            >
+              <div class="min-w-0 flex-1 basis-[220px] md:basis-[280px]">
+                <.input
+                  field={@filters_form[:q]}
+                  type="search"
+                  label="Find vehicle"
+                  placeholder="Number, label or plate"
+                  autocomplete="off"
+                  phx-debounce="300"
+                />
+              </div>
+              <div class="min-w-0 flex-1 basis-[150px] md:w-[210px] md:flex-none">
+                <.input
+                  field={@filters_form[:type]}
+                  type="select"
+                  label="Vehicle type"
+                  prompt="All types"
+                  options={@vehicle_type_options}
+                />
+              </div>
+              <div class="min-w-0 flex-1 basis-[150px] md:w-[230px] md:flex-none">
+                <.input
+                  field={@filters_form[:garage]}
+                  type="select"
+                  label="Garage"
+                  prompt="All garages"
+                  options={@garage_options}
+                />
+              </div>
+            </.form>
+
+            <%!-- One row of fixed height: the result count, or the bulk actions once a
+            vehicle is selected. Swapping them in place keeps the table from jumping. --%>
+            <div
+              :if={empty_selection?(@selected_ids)}
+              class="flex min-h-[60px] flex-wrap items-center gap-x-3 gap-y-1 border-b border-subtle px-4 py-1 text-[13px] md:px-5"
+            >
+              <p id="vehicles-count" role="status" class="font-[650] tabular-nums text-strong">
+                {count_summary(@filtered_count, @total_count, @filters_active?)}
+              </p>
+              <.button
+                :if={@filters_active? && @filtered_count > 0}
+                id="clear-filters"
+                type="button"
+                variant="quiet"
+                class="ml-auto min-h-11 text-[13px] text-action hover:underline"
+                phx-click="clear_filters"
+              >
+                Clear filters
+              </.button>
+            </div>
+
+            <div
+              :if={!empty_selection?(@selected_ids)}
+              id="bulk-bar"
+              role="status"
+              class="flex min-h-[60px] flex-wrap items-center gap-x-4 gap-y-2 border-b border-subtle bg-selection px-4 py-2 md:px-5"
+            >
+              <strong id="bulk-bar-count" class="mr-auto text-sm tabular-nums text-strong">
+                {vehicle_count_text(MapSet.size(@selected_ids))} selected
+              </strong>
+              <div class="flex flex-wrap items-center gap-2">
+                <.button
+                  id="bulk-set-type"
+                  variant="secondary"
+                  class="min-h-11"
+                  phx-click="open_bulk_drawer"
+                  phx-value-field="type"
+                  phx-value-opener_id="bulk-set-type"
+                >
+                  Set type
+                </.button>
+                <.button
+                  id="bulk-set-garage"
+                  variant="secondary"
+                  class="min-h-11"
+                  phx-click="open_bulk_drawer"
+                  phx-value-field="garage"
+                  phx-value-opener_id="bulk-set-garage"
+                >
+                  Set garage
+                </.button>
+                <.button
+                  id="bulk-delete"
+                  variant="quiet"
+                  class="min-h-11 border border-control bg-white text-error-fg hover:bg-error-bg"
+                  phx-click="delete_selected_vehicles"
+                >
+                  Delete vehicles
+                </.button>
+                <.button
+                  id="bulk-clear-selection"
+                  variant="quiet"
+                  class="min-h-11 text-action hover:underline"
+                  phx-click="clear_selection"
+                >
+                  Clear selection
+                </.button>
+              </div>
+            </div>
+
+            <.vehicles_table
+              :if={@filtered_count > 0}
+              rows={@streams.vehicles}
+              selected_ids={@selected_ids}
+              all_selected?={all_filtered_selected?(@selected_ids, @filtered_vehicles)}
+              count={@filtered_count}
+            />
+
+            <div
+              :if={@filtered_count == 0}
+              id="vehicles-filtered-empty"
+              class="px-5 py-12 text-center"
+            >
+              <h3 class="text-base font-bold text-strong">No vehicles match</h3>
+              <p class="mx-auto mt-1.5 max-w-[46ch] text-sm text-muted">
+                Check the number, label or plate, or clear the filters to see all {@total_count} vehicles.
+              </p>
+              <.button
+                id="clear-filters-empty"
+                variant="secondary"
+                class="mt-5 min-h-11"
+                phx-click="clear_filters"
+              >
+                Clear filters
+              </.button>
             </div>
           </div>
-          <p id="vehicles-count" class="mt-2 text-sm text-base-content/70">
-            {@filtered_count} of {@total_count} vehicles
-          </p>
-        </div>
+        </section>
 
-        <.empty_state
-          :if={!@vehicles_empty? && @filtered_count == 0}
-          id="vehicles-filtered-empty"
-          title="No vehicles match"
-          class="mt-4"
+        <.tods_import_drawer
+          open={@tods_import_open}
+          kind={:vehicles}
+          upload={@uploads.tods_file}
+          preview={@tods_import_preview}
+          filename={@tods_import_filename}
+          parse_error={@tods_import_parse_error}
+          stale?={@tods_import_stale?}
+          return_focus_id={@tods_import_return_focus_id}
+        />
+
+        <.vehicle_type_drawer
+          open={@type_drawer_open}
+          title={@type_drawer_title}
+          entity={@type_entity}
+          form={@type_form}
+          return_focus_id={@type_drawer_return_focus_id}
+        />
+
+        <.vehicle_drawer
+          open={@vehicle_drawer_open}
+          title={@vehicle_drawer_title}
+          mode={@vehicle_mode}
+          entity={@vehicle_entity}
+          form={@vehicle_form}
+          range_form={@range_form}
+          type_options={@vehicle_type_choices}
+          garage_options={@garage_choices}
+          range_preview={@range_preview}
+          error={@vehicle_error}
+          return_focus_id={@vehicle_drawer_return_focus_id}
+        />
+
+        <.bulk_drawer
+          open={@bulk_drawer_open}
+          field={@bulk_field}
+          form={@bulk_form}
+          type_options={@vehicle_type_choices}
+          garage_options={@garage_choices}
+          count={MapSet.size(@selected_ids)}
+          return_focus_id={@bulk_drawer_return_focus_id}
+        />
+
+        <.confirm_dialog
+          :if={@bulk_delete}
+          id="bulk-delete-confirm"
+          chrome="planner"
+          open={true}
+          title={"Delete #{vehicle_count_text(@bulk_delete.total)}?"}
+          confirm_label={"Delete #{vehicle_count_text(@bulk_delete.total)}"}
+          pending_label="Deleting…"
+          on_confirm="confirm_delete_selected_vehicles"
+          on_cancel="cancel_delete_selected_vehicles"
+          described_by="bulk-delete-confirm-body"
+          return_focus_id="bulk-delete"
         >
-          Try another number or clear the filters.
-          <:action>
-            <.button
-              id="clear-filters-empty"
-              variant="secondary"
-              class="min-h-11"
-              phx-click="clear_filters"
+          <p>
+            This removes them from {@current_organization.name}, with their type and garage. Fleet
+            checks will use the lower count. You can't undo it.
+          </p>
+          <div class="mt-3 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span>Vehicles:</span>
+            <ul
+              id="bulk-delete-ids"
+              class="flex flex-wrap gap-x-1.5 font-semibold tabular-nums text-strong"
             >
-              Clear filters
-            </.button>
-          </:action>
-        </.empty_state>
-      </section>
+              <li
+                :for={vehicle_id <- @bulk_delete.shown}
+                class="after:content-[','] last:after:content-['']"
+              >
+                {vehicle_id}
+              </li>
+            </ul>
+            <span :if={@bulk_delete.remaining > 0} id="bulk-delete-more">
+              and {@bulk_delete.remaining} more
+            </span>
+          </div>
+        </.confirm_dialog>
 
-      <.tods_import_drawer
-        open={@tods_import_open}
-        kind={:vehicles}
-        upload={@uploads.tods_file}
-        preview={@tods_import_preview}
-        filename={@tods_import_filename}
-        parse_error={@tods_import_parse_error}
-        stale?={@tods_import_stale?}
-        return_focus_id={@tods_import_return_focus_id}
-      />
+        <.confirm_dialog
+          :if={@type_delete_target}
+          id="vehicle-type-delete-confirm"
+          chrome="planner"
+          open={true}
+          title={"Delete #{@type_delete_target.name}?"}
+          confirm_label="Delete type"
+          pending_label="Deleting…"
+          on_confirm="confirm_delete_vehicle_type"
+          on_cancel="cancel_delete_vehicle_type"
+          described_by="vehicle-type-delete-confirm-body"
+          return_focus_id="delete-vehicle-type"
+        >
+          <p>
+            This removes {@type_delete_target.name} from {@current_organization.name}. No vehicles
+            use it.
+          </p>
+        </.confirm_dialog>
 
-      <.vehicle_type_drawer
-        open={@type_drawer_open}
-        title={@type_drawer_title}
-        entity={@type_entity}
-        form={@type_form}
-        return_focus_id={@type_drawer_return_focus_id}
-      />
-
-      <.vehicle_drawer
-        open={@vehicle_drawer_open}
-        title={@vehicle_drawer_title}
-        mode={@vehicle_mode}
-        entity={@vehicle_entity}
-        form={@vehicle_form}
-        range_form={@range_form}
-        type_options={@vehicle_type_choices}
-        garage_options={@garage_choices}
-        range_preview={@range_preview}
-        error={@vehicle_error}
-        return_focus_id={@vehicle_drawer_return_focus_id}
-      />
-
-      <.bulk_drawer
-        open={@bulk_drawer_open}
-        field={@bulk_field}
-        form={@bulk_form}
-        type_options={@vehicle_type_choices}
-        garage_options={@garage_choices}
-        count={MapSet.size(@selected_ids)}
-        return_focus_id={@bulk_drawer_return_focus_id}
-      />
-
-      <.confirm_dialog
-        :if={@bulk_delete}
-        id="bulk-delete-confirm"
-        open={true}
-        title={"Delete #{vehicle_count_text(@bulk_delete.total)}?"}
-        confirm_label="Delete vehicles"
-        pending_label="Deleting…"
-        on_confirm="confirm_delete_selected_vehicles"
-        on_cancel="cancel_delete_selected_vehicles"
-        described_by="bulk-delete-confirm-body"
-        return_focus_id="bulk-delete"
-      >
-        <p>
-          The selected vehicles are removed from this organization. Fleet checks will use the lower vehicle count.
-        </p>
-        <ul id="bulk-delete-ids" class="mt-2 font-mono">
-          <li :for={vehicle_id <- @bulk_delete.shown}>{vehicle_id}</li>
-        </ul>
-        <p :if={@bulk_delete.remaining > 0} id="bulk-delete-more" class="mt-1">
-          and {@bulk_delete.remaining} more
-        </p>
-      </.confirm_dialog>
-
-      <.confirm_dialog
-        :if={@type_delete_target}
-        id="vehicle-type-delete-confirm"
-        open={true}
-        title={"Delete #{@type_delete_target.name}?"}
-        confirm_label="Delete type"
-        pending_label="Deleting…"
-        on_confirm="confirm_delete_vehicle_type"
-        on_cancel="cancel_delete_vehicle_type"
-        described_by="vehicle-type-delete-confirm-body"
-        return_focus_id="delete-vehicle-type"
-      >
-        <p>This removes the type from this organization.</p>
-      </.confirm_dialog>
-
-      <.confirm_dialog
-        :if={@type_in_use}
-        id="vehicle-type-in-use-dialog"
-        open={true}
-        title="Vehicle type is in use"
-        confirm_label="Delete type"
-        cancel_label="Close"
-        pending_label="Deleting…"
-        on_confirm="dismiss_vehicle_type_in_use"
-        on_cancel="dismiss_vehicle_type_in_use"
-        single_action={true}
-        described_by="vehicle-type-in-use-dialog-body"
-        return_focus_id="delete-vehicle-type"
-      >
-        <p>
-          {@type_in_use.vehicle_count} vehicles use {@type_in_use.name}. Set a different type for those vehicles before deleting it.
-        </p>
-      </.confirm_dialog>
+        <.confirm_dialog
+          :if={@type_in_use}
+          id="vehicle-type-in-use-dialog"
+          chrome="planner"
+          open={true}
+          title={"Can't delete #{@type_in_use.name}"}
+          confirm_label="Close"
+          cancel_label="Close"
+          pending_label="Closing…"
+          on_confirm="dismiss_vehicle_type_in_use"
+          on_cancel="dismiss_vehicle_type_in_use"
+          single_action={true}
+          described_by="vehicle-type-in-use-dialog-body"
+          return_focus_id="delete-vehicle-type"
+        >
+          <p>
+            {vehicles_use_text(@type_in_use.vehicle_count)} {@type_in_use.name}. Set a different type
+            on those vehicles, then delete it.
+          </p>
+        </.confirm_dialog>
+      </div>
     </Layouts.app>
+    """
+  end
+
+  # Types are the rows and garages the columns, so "how many of what, where" reads
+  # without opening anything, and the rare job of editing a type sits beside the
+  # counts. A vehicle with no garage or no type gets its own column or row, shown
+  # only while one needs it. Below `md` each row is a card with one labelled line
+  # per garage; `data-label` carries the garage name.
+  attr :rows, :any, required: true, doc: "the `:vehicle_types` stream"
+  attr :columns, :list, required: true
+  attr :total, :integer, required: true
+  attr :vehicles_empty?, :boolean, required: true
+
+  defp fleet_matrix(assigns) do
+    assigns =
+      assigns
+      |> assign(:total_label, if(assigns.vehicles_empty?, do: "Vehicles", else: "All garages"))
+      |> assign(:zero, if(assigns.vehicles_empty?, do: "0", else: "—"))
+
+    ~H"""
+    <div
+      role="region"
+      aria-label="Fleet by type and garage"
+      tabindex="0"
+      class="overflow-x-auto focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
+    >
+      <table id="vehicle-types-table" class="w-full border-collapse text-left text-sm max-md:block">
+        <caption class="sr-only">
+          Vehicles by type and garage
+        </caption>
+        <thead class="max-md:hidden">
+          <tr class="bg-canvas">
+            <th scope="col" class={[matrix_head_class(), "pl-5"]}>Vehicle type</th>
+            <th
+              :for={column <- @columns}
+              scope="col"
+              class={[matrix_head_class(), "text-right", column.missing? && "text-warning-fg"]}
+            >
+              <span class="inline-flex items-center justify-end gap-1.5">
+                <.icon :if={column.missing?} name="hero-exclamation-triangle" class="size-3.5" />
+                {column.name}
+              </span>
+            </th>
+            <th scope="col" class={[matrix_head_class(), "pr-5 text-right"]}>{@total_label}</th>
+          </tr>
+        </thead>
+        <tbody id="vehicle-types-rows" phx-update="stream" class="max-md:block">
+          <tr
+            :for={{dom_id, row} <- @rows}
+            id={dom_id}
+            class="border-t border-subtle hover:bg-canvas max-md:block max-md:px-4 max-md:py-3"
+          >
+            <th
+              scope="row"
+              class="py-0.5 pl-5 pr-4 text-left align-middle font-normal max-md:block max-md:p-0"
+            >
+              <button
+                :if={row.type}
+                id={"vehicle-type-name-#{row.type.id}"}
+                type="button"
+                phx-click="open_vehicle_type"
+                phx-value-type_id={row.type.id}
+                phx-value-opener_id={"vehicle-type-name-#{row.type.id}"}
+                class={[
+                  "inline-flex min-h-11 items-center rounded-control text-left text-sm font-[650] text-strong underline-offset-4 hover:underline",
+                  focus_class()
+                ]}
+              >
+                {row.type.name}
+              </button>
+              <span :if={row.type && limit_note(row.type.max_out_minutes)} class={matrix_note_class()}>
+                {limit_note(row.type.max_out_minutes)}
+              </span>
+              <span
+                :if={is_nil(row.type)}
+                class="inline-flex min-h-11 items-center gap-1.5 text-sm font-[650] text-warning-fg"
+              >
+                <.icon name="hero-exclamation-triangle" class="size-3.5" /> No type
+              </span>
+              <span :if={is_nil(row.type)} class={matrix_note_class()}>
+                Assign a type so fleet checks can count these vehicles.
+              </span>
+            </th>
+            <td
+              :for={{count, column} <- Enum.zip(row.cells, @columns)}
+              data-label={column.name}
+              class={[matrix_cell_class(), count == 0 && "text-muted"]}
+            >
+              {if count == 0, do: @zero, else: count}
+            </td>
+            <td
+              data-label={@total_label}
+              class={[
+                matrix_cell_class(),
+                "pr-5",
+                if(row.total == 0, do: "text-muted", else: "font-[650] text-strong")
+              ]}
+            >
+              {if row.total == 0, do: @zero, else: row.total}
+            </td>
+          </tr>
+        </tbody>
+        <tfoot :if={!@vehicles_empty?} class="max-md:block">
+          <tr class="h-12 border-t border-subtle bg-canvas max-md:block max-md:h-auto max-md:px-4 max-md:py-3">
+            <th
+              scope="row"
+              class="py-0.5 pl-5 pr-4 text-left align-middle text-sm font-[650] text-strong max-md:block max-md:min-h-11 max-md:p-0 max-md:pt-2"
+            >
+              All vehicle types
+            </th>
+            <td
+              :for={column <- @columns}
+              data-label={column.name}
+              class={[
+                matrix_cell_class(),
+                if(column.total == 0, do: "text-muted", else: "font-[650] text-strong")
+              ]}
+            >
+              {if column.total == 0, do: @zero, else: column.total}
+            </td>
+            <td data-label={@total_label} class={[matrix_cell_class(), "pr-5 font-[650] text-strong"]}>
+              {@total}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    """
+  end
+
+  defp matrix_head_class, do: "h-11 px-4 py-2.5 text-[13px] font-[650] text-default"
+
+  # The vehicle list's column heads stay at the top of the viewport while a long
+  # list scrolls under them. Below `md` the rows are cards, so the heads drop out.
+  defp vehicle_head_class do
+    [matrix_head_class(), "bg-canvas text-left md:sticky md:top-0 md:z-10 max-md:hidden"]
+  end
+
+  defp matrix_cell_class do
+    [
+      "px-4 text-right tabular-nums align-middle",
+      "max-md:flex max-md:min-h-9 max-md:items-center max-md:justify-between max-md:px-0 max-md:text-left",
+      "max-md:before:font-normal max-md:before:text-muted max-md:before:content-[attr(data-label)]"
+    ]
+  end
+
+  defp matrix_note_class, do: "text-[13px] text-muted max-md:block lg:ml-2.5 lg:inline"
+
+  defp focus_class,
+    do: "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+
+  # A 44px target around the native checkbox. The design-system page scope removes
+  # a checkbox's own outline, so the label draws the focus ring.
+  defp checkbox_label_class do
+    [
+      "inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded-control",
+      "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-[-2px] has-[:focus-visible]:outline-focus"
+    ]
+  end
+
+  # Below `md` a row is a card: the checkbox beside the number and label, then the
+  # type, garage and plate, one to a line. Blank values drop out of the card
+  # (`max-md:hidden` on the dash) instead of leaving an empty line.
+  attr :rows, :any, required: true, doc: "the `:vehicles` stream"
+  attr :selected_ids, :any, required: true
+  attr :all_selected?, :boolean, required: true
+  attr :count, :integer, required: true
+
+  defp vehicles_table(assigns) do
+    ~H"""
+    <div id="vehicles-table-container">
+      <table class="w-full border-collapse text-left text-sm max-md:block">
+        <caption class="sr-only">
+          Vehicles
+        </caption>
+        <thead class="max-md:block">
+          <tr class="max-md:flex max-md:bg-canvas">
+            <th
+              scope="col"
+              class="h-11 w-14 bg-canvas px-1 text-center md:sticky md:top-0 md:z-10 max-md:w-auto max-md:px-2 max-md:text-left"
+            >
+              <label class={[
+                checkbox_label_class(),
+                "max-md:gap-2 max-md:pr-3 max-md:text-[13px] max-md:font-[650] max-md:text-default"
+              ]}>
+                <input
+                  id="select-all-vehicles"
+                  type="checkbox"
+                  class="size-[18px] accent-action"
+                  checked={@all_selected?}
+                  phx-click="select_all_filtered"
+                />
+                <span class="md:sr-only">Select all {vehicle_count_text(@count)}</span>
+              </label>
+            </th>
+            <th scope="col" class={[vehicle_head_class(), "w-[150px]"]}>Vehicle number</th>
+            <th scope="col" class={vehicle_head_class()}>Label</th>
+            <th scope="col" class={vehicle_head_class()}>Type</th>
+            <th scope="col" class={vehicle_head_class()}>Garage</th>
+            <th scope="col" class={[vehicle_head_class(), "md:max-lg:hidden"]}>License plate</th>
+          </tr>
+        </thead>
+        <tbody id="vehicles-table" phx-update="stream" class="max-md:block">
+          <tr
+            :for={{dom_id, vehicle} <- @rows}
+            id={dom_id}
+            class={[
+              "border-t border-subtle hover:bg-canvas",
+              "max-md:grid max-md:grid-cols-[44px_auto_minmax(0,1fr)] max-md:px-2 max-md:py-1",
+              MapSet.member?(@selected_ids, vehicle.id) && "bg-selection"
+            ]}
+          >
+            <td
+              data-label="Select"
+              class="w-14 p-0 text-center max-md:row-span-4 max-md:row-start-1 max-md:w-auto max-md:self-start"
+            >
+              <label class={checkbox_label_class()}>
+                <input
+                  id={"select-vehicle-#{vehicle.id}"}
+                  type="checkbox"
+                  class="size-[18px] accent-action"
+                  checked={MapSet.member?(@selected_ids, vehicle.id)}
+                  aria-label={"Select vehicle #{vehicle.vehicle_id}"}
+                  phx-click="toggle_vehicle_selection"
+                  phx-value-vehicle_id={vehicle.id}
+                />
+              </label>
+            </td>
+            <td
+              data-label="Vehicle number"
+              class="px-4 py-0 max-md:col-start-2 max-md:row-start-1 max-md:px-0"
+            >
+              <button
+                id={"vehicle-id-#{vehicle.id}"}
+                type="button"
+                phx-click="open_vehicle"
+                phx-value-vehicle_id={vehicle.id}
+                phx-value-opener_id={"vehicle-id-#{vehicle.id}"}
+                class={[
+                  "inline-flex min-h-11 min-w-11 items-center rounded-control text-left text-sm font-[650] tabular-nums text-strong underline-offset-4 hover:underline",
+                  focus_class()
+                ]}
+              >
+                {vehicle.vehicle_id}
+              </button>
+            </td>
+            <td
+              data-label="Label"
+              class="px-4 py-2 max-md:col-start-3 max-md:row-start-1 max-md:p-0 max-md:pl-1 max-md:text-[13px] max-md:text-muted"
+            >
+              <span :if={blank?(vehicle.vehicle_label)} class="text-muted max-md:hidden">—</span>
+              <span :if={!blank?(vehicle.vehicle_label)}>{vehicle.vehicle_label}</span>
+            </td>
+            <td
+              data-label="Type"
+              class="px-4 py-2 max-md:col-span-2 max-md:col-start-2 max-md:row-start-2 max-md:p-0 max-md:py-0.5"
+            >
+              <.missing_badge :if={is_nil(vehicle.vehicle_type)} label="No type" />
+              <span :if={vehicle.vehicle_type}>{vehicle.vehicle_type.name}</span>
+            </td>
+            <td
+              data-label="Garage"
+              class="px-4 py-2 max-md:col-span-2 max-md:col-start-2 max-md:row-start-3 max-md:p-0 max-md:py-0.5"
+            >
+              <.missing_badge :if={is_nil(vehicle.garage)} label="No garage" />
+              <span :if={vehicle.garage}>{vehicle.garage.name}</span>
+            </td>
+            <td
+              data-label="License plate"
+              class="px-4 py-2 tabular-nums md:max-lg:hidden max-md:col-span-2 max-md:col-start-2 max-md:row-start-4 max-md:p-0 max-md:pb-1 max-md:text-[13px] max-md:text-muted"
+            >
+              <span :if={blank?(vehicle.license_plate)} class="text-muted max-md:hidden">—</span>
+              <span :if={!blank?(vehicle.license_plate)}>{vehicle.license_plate}</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    """
+  end
+
+  # What a vehicle shows when its type or garage is unset. It carries a word and an
+  # icon as well as the warning colour, and marks the cell for tests and hooks.
+  attr :label, :string, required: true
+
+  defp missing_badge(assigns) do
+    ~H"""
+    <span
+      data-unassigned
+      class="inline-flex items-center gap-1.5 rounded-badge bg-warning-bg px-2 py-0.5 text-[13px] font-[650] text-warning-fg"
+    >
+      <.icon name="hero-exclamation-triangle" class="size-3.5" /> {@label}
+    </span>
     """
   end
 
@@ -1155,83 +1381,99 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     ~H"""
     <.drawer
       id="vehicle-type-drawer"
+      chrome="planner"
       open={@open}
       on_close="close_vehicle_type_drawer"
       title={@title}
       initial_focus={:first_field}
       return_focus_id={@return_focus_id}
+      class="max-w-[560px]"
     >
-      <div id="vehicle-type-drawer-content" phx-hook="FormErrorFocus">
-        <p id="vehicle-type-drawer-description" class="mb-4 text-sm text-base-content/70">
-          Group vehicles that can do the same work.
-        </p>
+      <:lede>
+        <span id="vehicle-type-drawer-scope">{type_drawer_scope(@entity)}</span>
+      </:lede>
 
+      <div
+        id="vehicle-type-drawer-content"
+        phx-hook="FormErrorFocus"
+        class="flex min-h-0 flex-1 flex-col"
+      >
         <.form
           for={@form}
           id={@form_id}
           novalidate
           phx-change="validate_vehicle_type"
           phx-submit="save_vehicle_type"
-          class="space-y-1"
+          class="flex min-h-0 flex-1 flex-col"
         >
-          <div :if={save_failed?(@form)} class="mb-4">
-            <.callout
+          <.drawer_scroll>
+            <.message
+              :if={save_failed?(@form)}
               id={@form_error_id}
               kind="error"
-              title="Check the highlighted fields"
+              title="Vehicle type not saved"
               tabindex="-1"
             >
-              Nothing was saved. Correct the fields marked below, then save again.
-            </.callout>
-          </div>
+              Fix the fields marked below, then save again.
+            </.message>
 
-          <.input field={@form[:name]} type="text" label="Type name" />
+            <p id="vehicle-type-drawer-description" class="text-sm text-muted">
+              Only the type name is required.
+            </p>
 
-          <.input
-            field={@form[:max_out_hours]}
-            type="number"
-            min="1"
-            max="24"
-            step="0.25"
-            label="Maximum time away from garage (optional)"
-            class="input input-bordered min-h-11 max-w-[180px] block"
-            help="Hours, from 1 to 24. Leave blank for no limit. Useful for vehicles that need to recharge or refuel."
-          />
+            <.input
+              field={@form[:name]}
+              type="text"
+              label="Type name"
+              help="Include the size and floor type, such as “35-foot low-floor bus”. Each name can be used once."
+              autocomplete="off"
+            />
 
-          <div :if={@entity} class="mt-4">
-            <.callout
+            <.input
+              field={@form[:max_out_hours]}
+              type="number"
+              min="1"
+              max="24"
+              step="0.25"
+              label="Longest time away from garage, in hours (optional)"
+              class="w-full input input-lg max-w-[140px]"
+              help="From 1 to 24 hours. Leave blank for no limit. Set it for vehicles that must recharge or refuel, such as battery-electric buses."
+            />
+
+            <.message
+              :if={@entity}
               id="vehicle-type-assigned-vehicles"
               kind={if @entity.vehicle_count > 0, do: "warning", else: "info"}
-              title={"#{@entity.vehicle_count} vehicles use this type"}
+              title={vehicles_use_this_type(@entity.vehicle_count)}
             >
               {if @entity.vehicle_count > 0,
-                do: "Assign them to another type before deleting it.",
-                else: "This type has no assigned vehicles."}
-            </.callout>
-          </div>
+                do: "To delete it, set a different type on those vehicles first.",
+                else: "You can delete it without changing any vehicles."}
+            </.message>
+          </.drawer_scroll>
 
-          <div class="flex flex-wrap items-center gap-3 pt-3">
-            <.button type="submit" class="min-h-11" phx-disable-with="Saving…">Save type</.button>
+          <.drawer_footer>
             <.button
+              :if={@entity}
+              id="delete-vehicle-type"
               type="button"
               variant="quiet"
+              class="mr-auto min-h-11 text-error-fg hover:bg-error-bg"
+              phx-click="delete_vehicle_type"
+              phx-value-type_id={@entity.id}
+            >
+              <.icon name="hero-trash" class="size-4" /> Delete type
+            </.button>
+            <.button
+              type="button"
+              variant="secondary"
               class="min-h-11"
               phx-click="close_vehicle_type_drawer"
             >
               Cancel
             </.button>
-            <.button
-              :if={@entity}
-              id="delete-vehicle-type"
-              type="button"
-              variant="danger"
-              class="min-h-11"
-              phx-click="delete_vehicle_type"
-              phx-value-type_id={@entity.id}
-            >
-              Delete type
-            </.button>
-          </div>
+            <.button type="submit" class="min-h-11" phx-disable-with="Saving…">Save type</.button>
+          </.drawer_footer>
         </.form>
       </div>
     </.drawer>
@@ -1246,7 +1488,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   attr :range_form, :any, required: true
   attr :type_options, :list, required: true
   attr :garage_options, :list, required: true
-  attr :range_preview, :string, required: true
+  attr :range_preview, :any, required: true
   attr :error, :string, default: nil
   attr :return_focus_id, :string, default: nil
 
@@ -1260,40 +1502,45 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       # focus on open is fixed. Switching mode keeps focus on the mode control
       # the operator just used; the form's own first field is one Tab away.
       |> assign(:focus_field_id, "vehicle_vehicle_id")
+      |> assign(:type_help, type_select_help(assigns.type_options))
 
     ~H"""
     <.drawer
       id="vehicle-drawer"
+      chrome="planner"
       open={@open}
       on_close="close_vehicle_drawer"
       title={@title}
       initial_focus={:first_field}
       initial_focus_id={@focus_field_id}
       return_focus_id={@return_focus_id}
+      class="max-w-[560px]"
     >
-      <div id="vehicle-drawer-content" phx-hook="FormErrorFocus">
-        <p id="vehicle-drawer-description" class="mb-4 text-sm text-base-content/70">
-          {if @entity,
-            do: "Update this vehicle’s details.",
-            else: "Enter one vehicle or add a numbered group at once."}
-        </p>
+      <:lede>
+        <span id="vehicle-drawer-scope">{vehicle_drawer_scope(@entity)}</span>
+      </:lede>
 
-        <div :if={@error} class="mb-4">
-          <.callout id={@form_error_id} kind="error" title="Nothing was saved" tabindex="-1">
-            {@error}
-          </.callout>
+      <div id="vehicle-drawer-content" phx-hook="FormErrorFocus" class="flex min-h-0 flex-1 flex-col">
+        <%!-- The mode switch is its own form, so it sits above the vehicle form rather
+        than inside it. --%>
+        <div class="grid justify-items-start gap-5 px-5 pt-5 sm:px-6">
+          <p id="vehicle-drawer-description" class="text-sm text-muted">
+            {vehicle_drawer_description(@entity, @mode)}
+          </p>
+
+          <.segmented_control
+            :if={is_nil(@entity)}
+            id="vehicle-mode"
+            name="vehicle_mode"
+            legend="How many vehicles?"
+            legend_class="mb-1.5 text-[13px] font-[650] text-default"
+            options={[{"One vehicle", "single"}, {"Numbered group", "range"}]}
+            value={Atom.to_string(@mode)}
+            event="select_vehicle_mode"
+            appearance={:joined}
+            emphasis={:selection}
+          />
         </div>
-
-        <.segmented_control
-          :if={is_nil(@entity)}
-          id="vehicle-mode"
-          name="vehicle_mode"
-          legend="Number of vehicles"
-          options={[{"One vehicle", "single"}, {"Numbered group", "range"}]}
-          value={Atom.to_string(@mode)}
-          event="select_vehicle_mode"
-          appearance={:joined}
-        />
 
         <.form
           :if={@mode == :single or not is_nil(@entity)}
@@ -1302,61 +1549,76 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
           novalidate
           phx-change="validate_vehicle"
           phx-submit="save_vehicle"
-          class="mt-4 space-y-1"
+          class="flex min-h-0 flex-1 flex-col"
         >
-          <div :if={is_nil(@error) and save_failed?(@form)} class="mb-4">
-            <.callout
+          <.drawer_scroll>
+            <.message
+              :if={is_nil(@error) and save_failed?(@form)}
               id={@form_error_id}
               kind="error"
-              title="Check the highlighted fields"
+              title="Vehicle not saved"
               tabindex="-1"
             >
-              Nothing was saved. Correct the fields marked below, then save again.
-            </.callout>
-          </div>
+              Fix the fields marked below, then save again.
+            </.message>
 
-          <.input
-            field={@form[:vehicle_id]}
-            type="text"
-            label="Vehicle ID"
-            spellcheck="false"
-          />
+            <.input
+              field={@form[:vehicle_id]}
+              type="text"
+              label="Vehicle number"
+              help="The number on the vehicle. Letters are allowed, such as A12."
+              autocomplete="off"
+              spellcheck="false"
+            />
 
-          <.input field={@form[:vehicle_label]} type="text" label="Label (optional)" />
+            <.input
+              field={@form[:vehicle_type_id]}
+              type="select"
+              label="Vehicle type (optional)"
+              prompt="No type"
+              options={@type_options}
+              help={@type_help}
+            />
 
-          <.input
-            field={@form[:vehicle_type_id]}
-            type="select"
-            label="Vehicle type (optional)"
-            prompt="Not assigned"
-            options={@type_options}
-          />
+            <.input
+              field={@form[:garage_id]}
+              type="select"
+              label="Garage (optional)"
+              prompt="No garage"
+              options={@garage_options}
+              help={garage_select_help()}
+            />
 
-          <.input
-            field={@form[:garage_id]}
-            type="select"
-            label="Garage (optional)"
-            prompt="Not assigned"
-            options={@garage_options}
-          />
+            <.input
+              field={@form[:vehicle_label]}
+              type="text"
+              label="Label (optional)"
+              help="A name drivers use, such as “Electric 1”."
+              autocomplete="off"
+            />
 
-          <.input field={@form[:license_plate]} type="text" label="License plate (optional)" />
+            <.input
+              field={@form[:license_plate]}
+              type="text"
+              label="License plate (optional)"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </.drawer_scroll>
 
-          <.vehicle_assignment_hint />
-
-          <div class="flex flex-wrap items-center gap-3 pt-3">
-            <.button type="submit" class="min-h-11" phx-disable-with="Saving…">
-              {if @entity, do: "Save vehicle", else: "Add vehicle"}
-            </.button>
+          <.drawer_footer>
             <.button
               type="button"
-              variant="quiet"
+              variant="secondary"
               class="min-h-11"
               phx-click="close_vehicle_drawer"
             >
               Cancel
             </.button>
-          </div>
+            <.button type="submit" class="min-h-11" phx-disable-with="Saving…">
+              {if @entity, do: "Save vehicle", else: "Add vehicle"}
+            </.button>
+          </.drawer_footer>
         </.form>
 
         <.form
@@ -1366,70 +1628,92 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
           novalidate
           phx-change="validate_vehicle_range"
           phx-submit="save_vehicle"
-          class="mt-4 space-y-1"
+          class="flex min-h-0 flex-1 flex-col"
         >
-          <div class="grid gap-4 sm:grid-cols-2">
+          <.drawer_scroll>
+            <.message
+              :if={@error}
+              id={@form_error_id}
+              kind="error"
+              title="Nothing was saved"
+              tabindex="-1"
+            >
+              {@error}
+            </.message>
+
+            <div class="grid grid-cols-2 items-start gap-3">
+              <.input
+                field={@range_form[:first]}
+                type="text"
+                inputmode="numeric"
+                label="First number"
+                autocomplete="off"
+                spellcheck="false"
+              />
+
+              <.input
+                field={@range_form[:last]}
+                type="text"
+                inputmode="numeric"
+                label="Last number"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </div>
+
+            <%!-- The preview is feedback; the context still decides the save. Leading
+            zeros are kept, so the padded IDs it names are the ones that are added. --%>
+            <div class="grid gap-1.5">
+              <p
+                id="range-preview"
+                aria-live="polite"
+                class={[
+                  "rounded-control bg-canvas px-3 py-2.5 text-sm",
+                  if(@range_preview.ok?, do: "font-[650] text-strong", else: "text-muted")
+                ]}
+              >
+                {@range_preview.text}
+              </p>
+              <p class="text-[13px] text-muted">
+                Leading zeros are kept, so 0098 to 0102 adds five vehicles.
+              </p>
+            </div>
+
             <.input
-              field={@range_form[:first]}
-              type="text"
-              inputmode="numeric"
-              label="First number"
+              field={@range_form[:vehicle_type_id]}
+              type="select"
+              label="Vehicle type (optional)"
+              prompt="No type"
+              options={@type_options}
+              help={@type_help}
             />
 
-            <.input field={@range_form[:last]} type="text" inputmode="numeric" label="Last number" />
-          </div>
+            <.input
+              field={@range_form[:garage_id]}
+              type="select"
+              label="Garage (optional)"
+              prompt="No garage"
+              options={@garage_options}
+              help={garage_select_help()}
+            />
+          </.drawer_scroll>
 
-          <p
-            id="range-preview"
-            aria-live="polite"
-            class="mt-1 rounded-box border border-base-300 bg-base-200 px-3 py-2 text-sm"
-          >
-            {@range_preview}
-          </p>
-
-          <.input
-            field={@range_form[:vehicle_type_id]}
-            type="select"
-            label="Vehicle type (optional)"
-            prompt="Not assigned"
-            options={@type_options}
-          />
-
-          <.input
-            field={@range_form[:garage_id]}
-            type="select"
-            label="Garage (optional)"
-            prompt="Not assigned"
-            options={@garage_options}
-          />
-
-          <.vehicle_assignment_hint />
-
-          <div class="flex flex-wrap items-center gap-3 pt-3">
-            <.button type="submit" class="min-h-11" phx-disable-with="Adding…">
-              Add vehicles
-            </.button>
+          <.drawer_footer>
             <.button
               type="button"
-              variant="quiet"
+              variant="secondary"
               class="min-h-11"
               phx-click="close_vehicle_drawer"
             >
               Cancel
             </.button>
-          </div>
+            <.button type="submit" class="min-h-11" phx-disable-with="Adding…">
+              Add vehicles
+            </.button>
+          </.drawer_footer>
         </.form>
       </div>
     </.drawer>
-    """
-  end
-
-  # One spelling for the copy that sits under both mode's assignment selects.
-  defp vehicle_assignment_hint(assigns) do
-    ~H"""
-    <p class="pt-1 text-sm text-base-content/70">
-      Vehicles without a type or garage are saved, but may be missing from fleet checks.
-    </p>
     """
   end
 
@@ -1446,6 +1730,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       assigns
       |> assign(:form_id, @bulk_form_id)
       |> assign(:title, bulk_drawer_title(assigns.field))
+      |> assign(:noun, bulk_field_noun(assigns.field))
       |> assign(:field_label, bulk_field_label(assigns.field))
       |> assign(
         :options,
@@ -1455,38 +1740,52 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     ~H"""
     <.drawer
       id="bulk-drawer"
+      chrome="planner"
       open={@open}
       on_close="close_bulk_drawer"
       title={@title}
       initial_focus={:first_field}
-      initial_focus_id={"#{@form_id}_value"}
+      initial_focus_id="bulk_value"
       return_focus_id={@return_focus_id}
+      class="max-w-[520px]"
     >
-      <div id="bulk-drawer-content">
-        <p id="bulk-drawer-description" class="mb-4 text-sm text-base-content/70">
-          Update {vehicle_count_text(@count)} at once. Saving replaces the current value on every selected vehicle.
-        </p>
+      <:lede>
+        <span id="bulk-drawer-scope">{vehicle_count_text(@count)} selected</span>
+      </:lede>
 
-        <.form for={@form} id={@form_id} phx-submit="save_bulk_assignment" class="space-y-1">
-          <.input
-            field={@form[:value]}
-            type="select"
-            label={@field_label}
-            prompt="Not assigned"
-            options={@options}
-          />
+      <div id="bulk-drawer-content" class="flex min-h-0 flex-1 flex-col">
+        <.form
+          for={@form}
+          id={@form_id}
+          phx-submit="save_bulk_assignment"
+          class="flex min-h-0 flex-1 flex-col"
+        >
+          <.drawer_scroll>
+            <p id="bulk-drawer-description" class="text-sm text-default">
+              Update {vehicle_count_text(@count)} at once. The {@noun} you choose replaces the current one on every selected vehicle.
+            </p>
 
-          <div class="flex flex-wrap items-center gap-3 pt-3">
-            <.button type="submit" class="min-h-11" phx-disable-with="Saving…">{@title}</.button>
+            <.input
+              field={@form[:value]}
+              type="select"
+              label={@field_label}
+              prompt={"No #{@noun}"}
+              options={@options}
+              help={"Choose No #{@noun} to clear it."}
+            />
+          </.drawer_scroll>
+
+          <.drawer_footer>
             <.button
               type="button"
-              variant="quiet"
+              variant="secondary"
               class="min-h-11"
               phx-click="close_bulk_drawer"
             >
               Cancel
             </.button>
-          </div>
+            <.button type="submit" class="min-h-11" phx-disable-with="Saving…">{@title}</.button>
+          </.drawer_footer>
         </.form>
       </div>
     </.drawer>
@@ -1609,6 +1908,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     vehicle_types = Operations.list_vehicle_types(organization_id)
     garages = Operations.list_garages(organization_id)
     counts = summary_counts(summary)
+    matrix = fleet_matrix_data(summary, vehicle_types, garages)
 
     socket
     |> assign(:vehicle_type_choices, Enum.map(vehicle_types, &{&1.name, &1.id}))
@@ -1619,25 +1919,24 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     |> assign(:filtered_count, length(vehicles))
     |> assign(:filtered_vehicles, vehicles)
     |> assign(:needs_assignment_count, counts.needs_assignment)
-    |> assign(:summary_garages, summary_garages(summary))
+    |> assign(:matrix_columns, matrix.columns)
     |> assign(:vehicles_empty?, counts.total == 0)
-    |> assign(:vehicle_types_count, length(vehicle_types))
     |> assign(:vehicle_types_empty?, vehicle_types == [])
     |> stream(:vehicles, vehicles, reset: true)
-    |> stream(:vehicle_types, vehicle_types, reset: true)
+    |> stream(:vehicle_types, matrix.rows, reset: true)
   end
 
   # The option lists are the organization's own rows, ordered by name, so they
   # are rebuilt from the loaded rows on every refresh rather than cached across
-  # a mutation. The filters append "Not assigned", which is the `none` filter the
-  # context accepts and selects the rows whose garage or type is nil; the drawer
-  # spends only a blank prompt on the same state, which clears the assignment.
+  # a mutation. The filters append "No type" and "No garage", which are the `none`
+  # filter the context accepts and selects the rows whose type or garage is nil; the
+  # drawer spends only a blank prompt on the same state, which clears the assignment.
   defp vehicle_type_options(vehicle_types) do
-    Enum.map(vehicle_types, &{&1.name, &1.id}) ++ [{"Not assigned", "none"}]
+    Enum.map(vehicle_types, &{&1.name, &1.id}) ++ [{"No type", "none"}]
   end
 
   defp garage_options(garages) do
-    Enum.map(garages, &{&1.name, &1.id}) ++ [{"Not assigned", "none"}]
+    Enum.map(garages, &{&1.name, &1.id}) ++ [{"No garage", "none"}]
   end
 
   defp empty_filters, do: %{"q" => "", "type" => "", "garage" => ""}
@@ -1908,10 +2207,13 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   defp range_preview_message(first, last) do
     case range_preview_ids(first, last) do
       {:ok, ids} ->
-        "Adds #{hd(ids)}–#{List.last(ids)} (#{vehicle_count_text(length(ids))})"
+        %{
+          ok?: true,
+          text: "Adds #{hd(ids)}–#{List.last(ids)} (#{vehicle_count_text(length(ids))})"
+        }
 
       :error ->
-        "Choose a numbered group of 1 to 200 vehicles."
+        %{ok?: false, text: "Choose a numbered group of 1 to 200 vehicles."}
     end
   end
 
@@ -2011,10 +2313,12 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
 
   defp load_vehicle_type(_socket, _id), do: nil
 
-  # Stored minutes are whole; a quarter-hour step keeps the hour value short.
-  defp limit_text(nil), do: "No limit set"
+  # Only a set limit is worth a note: "no limit" is the default and would repeat
+  # on every row. Stored minutes are whole; a quarter-hour step keeps the hour
+  # value short.
+  defp limit_note(nil), do: nil
 
-  defp limit_text(minutes) when is_integer(minutes) do
+  defp limit_note(minutes) when is_integer(minutes) do
     hours =
       minutes
       |> Decimal.new()
@@ -2022,7 +2326,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
       |> Decimal.normalize()
       |> Decimal.to_string(:normal)
 
-    "#{hours} hours"
+    "Up to #{hours} #{if hours == "1", do: "hour", else: "hours"} away"
   end
 
   # A failed save is the only state that earns the view-level banner. Validation
@@ -2046,33 +2350,110 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
     }
   end
 
-  # Buckets arrive ordered by garage then type (unassigned last), so consecutive
-  # buckets share a garage. The unassigned-garage buckets have no cell of their
-  # own: those vehicles appear in the total and in the "need a garage or type"
-  # figure instead.
-  defp summary_garages(summary) do
-    summary
-    |> Enum.reject(&is_nil(&1.garage))
-    |> Enum.chunk_by(& &1.garage.id)
-    |> Enum.map(fn [first | _] = buckets ->
-      %{garage: first.garage, types_text: types_text(buckets)}
-    end)
+  # The count matrix: one row per type and one column per garage, from the same
+  # garage x type buckets as the totals. A garage with no vehicles still gets a
+  # column so the matrix shows where the fleet is not. A "No garage" column and a
+  # "No type" row appear only while a vehicle needs them, so no vehicle is left
+  # out of a total. With no vehicles there are no columns: the rows are the types
+  # and one count of zero.
+  defp fleet_matrix_data(summary, vehicle_types, garages) do
+    counts = Map.new(summary, &{{id_of(&1.vehicle_type), id_of(&1.garage)}, &1.count})
+    vehicles? = summary != []
+
+    garage_columns =
+      if vehicles?,
+        do: Enum.map(garages, &%{id: &1.id, name: &1.name, missing?: false}),
+        else: []
+
+    columns =
+      if Enum.any?(summary, &is_nil(&1.garage)),
+        do: garage_columns ++ [%{id: nil, name: "No garage", missing?: true}],
+        else: garage_columns
+
+    columns =
+      Enum.map(columns, fn column ->
+        Map.put(
+          column,
+          :total,
+          sum_counts(counts, fn {_type_id, garage_id} -> garage_id == column.id end)
+        )
+      end)
+
+    type_rows = Enum.map(vehicle_types, &matrix_row(&1.id, &1, columns, counts))
+
+    rows =
+      if Enum.any?(summary, &is_nil(&1.vehicle_type)),
+        do: type_rows ++ [matrix_row("none", nil, columns, counts)],
+        else: type_rows
+
+    %{columns: columns, rows: rows}
   end
 
-  defp types_text(buckets) do
-    case Enum.map_join(buckets, " · ", fn bucket ->
-           "#{bucket.count} #{vehicle_type_name(bucket.vehicle_type)}"
-         end) do
-      "" -> "No vehicles assigned"
-      text -> text
-    end
+  defp matrix_row(id, type, columns, counts) do
+    type_id = id_of(type)
+
+    %{
+      id: id,
+      type: type,
+      cells: Enum.map(columns, &Map.get(counts, {type_id, &1.id}, 0)),
+      total: sum_counts(counts, fn {row_type_id, _garage_id} -> row_type_id == type_id end)
+    }
   end
 
-  defp vehicle_type_name(%VehicleType{name: name}), do: name
-  defp vehicle_type_name(nil), do: "No type"
+  defp sum_counts(counts, keep?) do
+    counts
+    |> Enum.filter(fn {key, _count} -> keep?.(key) end)
+    |> Enum.map(fn {_key, count} -> count end)
+    |> Enum.sum()
+  end
 
-  defp needs_assignment_sentence(1), do: "1 vehicle needs a type or garage."
-  defp needs_assignment_sentence(count), do: "#{count} vehicles need a type or garage."
+  defp id_of(nil), do: nil
+  defp id_of(%{id: id}), do: id
+
+  defp types_help(true, _vehicles_empty?), do: "Types group vehicles that do the same work."
+
+  defp types_help(false, true),
+    do: "Select a type name to edit it. Counts appear once you add vehicles."
+
+  defp types_help(false, false), do: "Select a type name to edit it."
+
+  defp count_summary(_filtered, total, false), do: vehicle_count_text(total)
+  defp count_summary(filtered, total, true), do: "#{filtered} of #{vehicle_count_text(total)}"
+
+  defp needs_assignment_title(1), do: "1 vehicle needs a garage or type"
+  defp needs_assignment_title(count), do: "#{count} vehicles need a garage or type"
+
+  defp vehicles_use_text(1), do: "1 vehicle uses"
+  defp vehicles_use_text(count), do: "#{count} vehicles use"
+
+  defp vehicles_use_this_type(count), do: "#{vehicles_use_text(count)} this type"
+
+  defp vehicle_drawer_scope(nil), do: "Shared across all service versions"
+
+  defp vehicle_drawer_scope(vehicle),
+    do: "Vehicle #{vehicle.vehicle_id} · shared across all service versions"
+
+  defp vehicle_drawer_description(nil, :range),
+    do: "Adds every number from the first to the last, up to 200 at once."
+
+  defp vehicle_drawer_description(_entity, _mode), do: "Only the vehicle number is required."
+
+  defp type_drawer_scope(nil),
+    do: "Group vehicles that do the same work · applies to every service version"
+
+  defp type_drawer_scope(vehicle_type),
+    do: "#{vehicle_type.name} · applies to every service version"
+
+  defp type_select_help([]), do: "No vehicle types yet. You can assign one later."
+  defp type_select_help(_options), do: nil
+
+  # Both drawers' garage selects say what an unassigned vehicle costs: fleet checks
+  # may leave it out.
+  defp garage_select_help,
+    do: "Fleet checks may not count a vehicle until it has a type and a garage."
+
+  defp bulk_field_noun(:garage_id), do: "garage"
+  defp bulk_field_noun(_field), do: "type"
 
   defp blank?(value), do: value in [nil, ""]
 
