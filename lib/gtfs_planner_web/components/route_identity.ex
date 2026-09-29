@@ -11,6 +11,9 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
 
   @hex_regex ~r/\A[0-9A-Fa-f]{6}\z/
 
+  # The prototype's advisory similarity threshold, in CIE76 units.
+  @similar_color_delta 12
+
   @spec normalize_hex(term()) :: {:ok, String.t()} | :error
   def normalize_hex(value) when is_binary(value) do
     stripped = String.trim(value)
@@ -93,6 +96,62 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
       :error ->
         {nil, "bg-base-300 text-base-content"}
     end
+  end
+
+
+  @doc """
+  The saved candidate whose color is nearest to `color` within the prototype's
+  advisory CIE76 delta of 12, as `%{route: candidate, delta: delta}`.
+
+  Only valid non-white colors are compared, so a near-white route color never
+  warns and a white saved route is never named. Returns `nil` when the subject
+  is unusable or white, or when no candidate is within the threshold. This is
+  the same arithmetic `assets/js/route_identity_preview.js` exports as
+  `similarColor`, so the server-rendered advisory and the browser helper can
+  never disagree about what looks alike on a map.
+  """
+  @spec similar_color(term(), [map()]) :: %{route: map(), delta: float()} | nil
+  def similar_color(color, candidates) when is_list(candidates) do
+    with {:ok, subject} <- normalize_hex(color),
+         false <- subject == "FFFFFF" do
+      candidates
+      |> Enum.reduce(nil, fn candidate, nearest ->
+        with {:ok, hex} <- normalize_hex(candidate[:route_color]),
+             false <- hex == "FFFFFF",
+             delta = color_delta(subject, hex),
+             false <- delta >= @similar_color_delta,
+             true <- is_nil(nearest) or delta < nearest.delta do
+          %{route: candidate, delta: delta}
+        else
+          _other -> nearest
+        end
+      end)
+    else
+      _other -> nil
+    end
+  end
+
+  def similar_color(_color, _candidates), do: nil
+
+  # CIE76 distance in CIE Lab. White is excluded from the comparison (above),
+  # so the constant here is the prototype's D65 matrix, not a calibrated Lab
+  # whitepoint — the same conversion `route_identity_preview.js` carries.
+  defp lab(hex) do
+    {r, g, b} = hex_to_rgb(hex)
+    [lr, lg, lb] = Enum.map([r, g, b], &linearize/1)
+    f = fn t -> if t > 0.008856, do: :math.pow(t, 1 / 3), else: 7.787 * t + 16 / 116 end
+
+    x = f.((lr * 0.4124 + lg * 0.3576 + lb * 0.1805) / 0.95047)
+    y = f.(lr * 0.2126 + lg * 0.7152 + lb * 0.0722)
+    z = f.((lr * 0.0193 + lg * 0.1192 + lb * 0.9505) / 1.08883)
+
+    [116 * y - 16, 500 * (x - y), 200 * (y - z)]
+  end
+
+  defp color_delta(a, b) do
+    [p1, p2, p3] = lab(a)
+    [q1, q2, q3] = lab(b)
+    :math.sqrt((p1 - q1) ** 2 + (p2 - q2) ** 2 + (p3 - q3) ** 2)
   end
 
   attr :route, :map, required: true

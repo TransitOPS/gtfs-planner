@@ -691,6 +691,64 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
     end
   end
 
+  describe "advisory warnings on new values" do
+    setup :editor_scope
+
+    # AC-20 at creation: the drawer evaluates its new values against the same
+    # scoped saved routes Details warns with, and every advisory stays
+    # non-blocking — the submit creates the route anyway.
+    test "a duplicate number and a similar color advise against the scoped saved routes and stay saveable",
+         %{conn: conn, organization: organization, version: version} do
+      north_coast(organization, version)
+
+      route_fixture(organization.id, version.id, %{
+        route_id: "E1",
+        route_short_name: "14",
+        route_type: 3,
+        route_color: "2060C2",
+        route_text_color: "FFFFFF",
+        agency_id: "NCT"
+      })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes")
+      open_drawer(view)
+
+      render_change(
+        view,
+        "validate_new_route",
+        %{"route" => draft_params(%{"route_short_name" => " 14 ", "route_color" => "2060c3"})}
+      )
+
+      # Trimmed and case-folded, the number is E1's; the color is one step from
+      # E1's on a map.
+      assert has_element?(view, "#new-route-short-warn", "Route E1")
+      assert has_element?(view, "#new-route-short-warn", "already uses the number “14”")
+      assert has_element?(view, "#new-route-color-warn", "Looks like Route E1 (#2060C2)")
+
+      # Advisory, not a rejection: the same draft creates the route.
+      drawer_submit(view, %{
+        "route_short_name" => "14",
+        "route_long_name" => "Riverside",
+        "route_type" => "3",
+        "route_color" => "2060C3"
+      })
+
+      routes = scoped_routes(organization, version)
+      assert length(routes) == 2
+      created = Enum.find(routes, &(&1.route_id != "E1"))
+      assert created.route_short_name == "14"
+      assert created.route_color == "2060C3"
+
+      # Success opens the saved route's Details, as any clean create does.
+      assert_redirect(view, "/gtfs/#{version.id}/routes/#{created.route_id}?created=1")
+
+      {:ok, details, _html} =
+        live(conn, "/gtfs/#{version.id}/routes/#{created.route_id}?created=1")
+
+      assert has_element?(details, "#route-details-heading", "Riverside")
+    end
+  end
+
   describe "closing and discarding" do
     test "Cancel on a clean draft closes the drawer and leaves the filters intact", %{
       conn: conn,
