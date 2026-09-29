@@ -1,6 +1,7 @@
 defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
   use GtfsPlannerWeb.ConnCase, async: false
 
+  import Ecto.Query, only: [from: 2]
   import Phoenix.LiveViewTest
   import Mox
   import GtfsPlanner.AccountsFixtures
@@ -12,6 +13,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.CatalogReadAdapter
   alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
+  alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Repo
 
   @adapter_key :gtfs_catalog_read_adapter
 
@@ -59,7 +62,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
   describe "route facts rendering" do
     setup :shared_setup
 
-    test "renders facts in dl/dt/dd with one h1, no field-label headings", %{
+    test "renders facts in dl/dt/dd with one h1; only group titles are headings", %{
       conn: conn,
       organization: organization,
       gtfs_version: version
@@ -78,11 +81,55 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       html = render(view)
       doc = LazyHTML.from_fragment(html)
 
+      h3_titles =
+        doc |> LazyHTML.query("h3") |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
+
       assert Enum.count(LazyHTML.query(doc, "h1")) == 1
       refute Enum.empty?(LazyHTML.query(doc, "dl"))
       refute Enum.empty?(LazyHTML.query(doc, "dt"))
       refute Enum.empty?(LazyHTML.query(doc, "dd"))
-      assert Enum.empty?(LazyHTML.query(doc, "h3"))
+      assert h3_titles == ["What riders see", "Agency and boarding", "Availability"]
+    end
+
+    test "the heading is the long name and the badge carries the short name", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "HEAD1",
+          route_short_name: "H1",
+          route_long_name: "Headline Route",
+          route_type: 0
+        })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      assert has_element?(view, "h1#route-title", "Headline Route")
+      refute has_element?(view, "h1#route-title", "H1")
+      assert has_element?(view, "#route-workspace span", "H1")
+      assert has_element?(view, "#route-mode", "Tram or light rail")
+      assert has_element?(view, "#route-identifier", "Route ID HEAD1")
+      assert has_element?(view, "#route-back[href='/gtfs/#{version.id}/routes']", "Routes")
+    end
+
+    test "a route with no long name is titled from its short name", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "NONAME1",
+          route_short_name: "N9",
+          route_long_name: nil
+        })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      assert has_element?(view, "h1#route-title", "Route N9")
+      assert has_element?(view, "#route-fact-name", "Not set")
     end
 
     test "valid https URL renders as link with rel=noopener; malformed URL is plain text", %{
@@ -102,7 +149,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       assert has_element?(view, "a[href='https://example.com/route'][rel='noopener']")
     end
 
-    test "missing URL renders em dash, not a link", %{
+    test "missing URL renders Not set, not a link", %{
       conn: conn,
       organization: organization,
       gtfs_version: version
@@ -116,12 +163,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
 
-      html = render(view)
-      doc = LazyHTML.from_fragment(html)
-      url_dd = LazyHTML.query(doc, "dd")
-      url_texts = Enum.map(url_dd, &LazyHTML.text/1)
-      refute Enum.any?(url_texts, &(&1 =~ "http"))
-      assert Enum.any?(url_texts, &(&1 =~ "—"))
+      refute has_element?(view, "#route-fact-url a")
+      assert has_element?(view, "#route-fact-url", "Not set")
     end
 
     test "malformed URL renders as noninteractive text", %{
@@ -140,6 +183,27 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       html = render(view)
       refute html =~ ~s(href="not-a-url")
+      refute has_element?(view, "#route-fact-url a")
+      assert has_element?(view, "#route-fact-url", "not-a-url")
+      assert has_element?(view, "#route-fact-url", "Not a link")
+    end
+
+    test "a URL that is not plain http(s) text is not a link", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "JSURL1",
+          route_short_name: "JU",
+          route_url: "javascript:alert(1)"
+        })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      refute has_element?(view, "#route-fact-url a")
+      assert has_element?(view, "#route-fact-url", "Not a link")
     end
 
     test "route badge renders via RouteIdentity; raw color metadata shown as mono text", %{
@@ -159,9 +223,139 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       html = render(view)
       assert html =~ "B1"
+      assert has_element?(view, "#route-fact-colors .font-mono", "#00FF00")
+      assert has_element?(view, "#route-fact-colors .font-mono", "#000000")
       assert html =~ "00FF00"
-      assert html =~ "000000"
       assert html =~ "font-mono"
+      refute has_element?(view, "#route-fact-colors", "isn't a six-digit color")
+    end
+
+    test "a stored color that is not six hex digits is shown as stored with the reason it draws gray",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "BADCOL1",
+          route_short_name: "BC"
+        })
+
+      Repo.update_all(from(r in Route, where: r.id == ^route.id), set: [route_color: "1F5FB"])
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      assert has_element?(view, "#route-fact-colors .font-mono", "1F5FB")
+      refute has_element?(view, "#route-fact-colors", "#1F5FB")
+      assert has_element?(view, "#route-fact-colors", "isn't a six-digit color")
+    end
+  end
+
+  describe "route facts in words" do
+    setup :shared_setup
+
+    test "pickup and drop-off that match read as one line", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "BOARD1",
+          route_short_name: "B1",
+          continuous_pickup: 2,
+          continuous_drop_off: 2
+        })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      assert has_element?(
+               view,
+               "#route-fact-boarding p",
+               "Pickup and drop-off: call the agency first"
+             )
+
+      refute has_element?(view, "#route-fact-boarding", "Drop-off:")
+    end
+
+    test "pickup and drop-off that differ read as two lines", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "BOARD2",
+          route_short_name: "B2",
+          continuous_pickup: 0,
+          continuous_drop_off: 3
+        })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      assert has_element?(view, "#route-fact-boarding p", "Pickup: anywhere along the route")
+      assert has_element?(view, "#route-fact-boarding p", "Drop-off: arrange with the driver")
+    end
+
+    test "display order shows its number and what it does; a blank one says Not set", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      ordered =
+        route_fixture(organization.id, version.id, %{
+          route_id: "ORDER1",
+          route_short_name: "O1",
+          route_sort_order: 12
+        })
+
+      blank = route_fixture(organization.id, version.id, %{route_id: "ORDER2"})
+
+      {:ok, ordered_view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{ordered.route_id}")
+      {:ok, blank_view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{blank.route_id}")
+
+      assert has_element?(ordered_view, "#route-fact-order", "12")
+      assert has_element?(ordered_view, "#route-fact-order", "lower numbers list first")
+      assert has_element?(blank_view, "#route-fact-order", "Not set")
+      refute has_element?(blank_view, "#route-fact-order", "lower numbers list first")
+    end
+
+    test "an inactive route says so in the header and in its status", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      active = route_fixture(organization.id, version.id, %{route_id: "ACT1"})
+      inactive = route_fixture(organization.id, version.id, %{route_id: "INACT1", active: false})
+
+      {:ok, active_view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{active.route_id}")
+      {:ok, inactive_view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{inactive.route_id}")
+
+      refute has_element?(active_view, "#route-inactive")
+      assert has_element?(active_view, "#route-fact-status", "Active")
+      assert has_element?(inactive_view, "#route-inactive", "Inactive")
+      assert has_element?(inactive_view, "#route-fact-status", "Inactive")
+    end
+
+    test "the GTFS values disclosure keeps the stored value behind each plain-language one", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "RAW1",
+          route_short_name: "R1",
+          route_desc: nil,
+          continuous_pickup: 1
+        })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      cells = stored_values(view)
+
+      assert cells["route_id"] == "RAW1"
+      assert cells["route_type"] == "3"
+      assert cells["continuous_pickup"] == "1"
+      assert cells["route_desc"] == "empty"
+      assert has_element?(view, "#route-fact-boarding", "only at stops")
     end
   end
 
@@ -191,7 +385,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/UNAVAIL")
 
       assert has_element?(view, "#route-unavailable")
-      assert has_element?(view, "#route-retry")
+      assert has_element?(view, "#route-retry", "Try again")
+      assert has_element?(view, "#route-back[href='/gtfs/#{version.id}/routes']")
+      refute has_element?(view, "#route-workspace")
     end
 
     test "retry restores route after unavailable", %{
@@ -409,7 +605,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/24")
 
-      assert has_element?(view, "#route-transfers-link", "Transfers here (2)")
+      assert has_element?(view, "#route-transfers-summary", "2 transfer rules mention")
+      assert has_element?(view, "#route-transfers-link", "View transfers")
 
       href = link_href(view, "#route-transfers-link")
 
@@ -430,7 +627,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/24")
 
-      assert has_element?(view, "#route-transfers-link", "Transfers here (0)")
+      assert has_element?(view, "#route-transfers-summary", "No transfer rules mention")
 
       {:ok, list, _html} = live(conn, link_href(view, "#route-transfers-link"))
 
@@ -471,8 +668,20 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       view |> element("#route-retry") |> render_click()
 
-      assert has_element?(view, "#route-transfers-link", "Transfers here (1)")
+      assert has_element?(view, "#route-transfers-summary", "1 transfer rule mentions")
     end
+  end
+
+  defp stored_values(view) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("#route-gtfs-values tbody tr")
+    |> Map.new(fn row ->
+      [field] = row |> LazyHTML.query("th") |> Enum.map(&String.trim(LazyHTML.text(&1)))
+      [value] = row |> LazyHTML.query("td") |> Enum.map(&String.trim(LazyHTML.text(&1)))
+      {field, value}
+    end)
   end
 
   defp link_href(view, selector) do

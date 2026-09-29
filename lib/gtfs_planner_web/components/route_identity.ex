@@ -76,6 +76,11 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
   attr :route, :map, required: true
   attr :class, :any, default: nil
 
+  attr :size, :string,
+    values: ~w(default large),
+    default: "default",
+    doc: "`large` is the badge a route's own page leads its heading with"
+
   def route_badge(assigns) do
     {style, badge_class} =
       case resolved_colors(assigns.route) do
@@ -98,8 +103,20 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
 
     label = badge_text(assigns.route)
 
+    # A feed's short name can be a sentence: the large badge is capped at its
+    # container and wraps the name inside it instead of pushing the page sideways.
+    size_class =
+      case assigns.size do
+        "large" ->
+          "min-h-10 min-w-12 max-w-full px-3 py-1 text-center text-xl leading-tight break-words"
+
+        _default ->
+          "px-2 py-0.5 text-xs leading-none"
+      end
+
     assigns =
       assigns
+      |> assign(:size_class, size_class)
       |> assign(:style_attrs, if(style, do: [style: style], else: []))
       |> assign(:badge_class, badge_class)
       |> assign(:label, label)
@@ -107,7 +124,8 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
     ~H"""
     <span
       class={[
-        "inline-flex items-center justify-center rounded-badge px-2 py-0.5 text-xs font-bold leading-none tabular-nums",
+        "inline-flex items-center justify-center rounded-badge font-bold tabular-nums",
+        @size_class,
         @badge_class,
         @class
       ]}

@@ -105,6 +105,23 @@ defmodule GtfsPlannerWeb.Components.RouteIdentityTest do
       assert html =~ "42"
     end
 
+    test "the large size grows the badge without changing its colors" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <RouteIdentity.route_badge
+          size="large"
+          route={%{route_color: "D32F2F", route_text_color: "FFFFFF", route_short_name: "42"}}
+        />
+        """)
+
+      assert html =~ "min-h-10"
+      assert html =~ "text-xl"
+      refute html =~ "text-xs"
+      assert html =~ "background-color: #D32F2F"
+    end
+
     test "corrects low-contrast foreground to higher-contrast choice" do
       assigns = %{}
 
