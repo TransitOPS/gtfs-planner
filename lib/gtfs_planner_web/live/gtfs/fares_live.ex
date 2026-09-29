@@ -1,6 +1,10 @@
 defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   @moduledoc """
-  The Fare zones workspace shell for Settings › This version › Fares.
+  The Fares workspace shell for Settings › This version › Fares, built from the
+  TransitOps application design system. The page leads back to Settings with a
+  link, carries the zone, rule and check tabs, and puts its one primary action
+  where the task is: Create zone or Add fare rule in the header, Assign zone in the
+  selection bar while stops are selected, or the empty state's own action.
 
   One LiveView serves the workspace's three destinations — `/settings/fares`
   (`:zones`), `/settings/fares/rules` (`:rules`) and `/settings/fares/checks`
@@ -72,13 +76,14 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   empty filter renders the list's own empty message.
 
   The delete dialog is the zone drawer's destructive exit. `Delete zone…` in an
-  edit drawer closes it and opens the danger confirm, which captures the zone's
+  edit drawer closes it and opens the confirm, which captures the zone's
   counts as the fence `delete_zone/5` compares against and states what the
   deletion changes before anything is written: the zone's counts, the member
   stop types it also moves, the replacement select with its label, and either
   the warning or the empty zone's own sentence (AC-27). A zone fare rules use
-  can only be deleted through another inventory zone, so a version with no other
-  zone disables the confirm with its reason. A refused write keeps the dialog
+  can only be deleted through another inventory zone, and nothing is chosen for
+  the operator: the confirm stays disabled, with its reason, until a replacement
+  is picked, and a version with no other zone never enables it. A refused write keeps the dialog
   open on freshly read values: a stale result states the counts the zone now has
   and fences the next confirm against them, and a zone another editor removed
   closes the dialog with what happened. Success patches to All stops and reports
@@ -98,16 +103,17 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   fresh reply rather than from deltas it never received (CR-8, AC-29).
 
   The Fare rules tab reads the version's rules with
-  `Gtfs.FareZones.list_rule_groups/2` and streams them as one card per UI rule, so
+  `Gtfs.FareZones.list_rule_groups/2` and streams them as one table row per UI rule, so
   the grouping the domain decided is what the page renders and a reload replaces
   the list rather than the tab. Only that tab renders the list, so only that tab
   reads it, together with the fares and routes its rule drawer offers.
 
   The rule drawer is the tab's create and edit surface. It opens from the
-  header's `Add fare rule` - disabled with its reason when the version has no
-  fares - or from a card's `Edit rule`, which sends the card's own DOM ID so the
-  reviewed group comes from the list this page read rather than from anything the
-  browser said (INV-4). The form is `FareZones.change_rule_group/2`'s changeset,
+  header's `Add fare rule` - disabled with its reason when rules exist but the
+  version has no fares, and replaced by an empty state when it has neither - or
+  from a row's `Edit rule`, which sends the row's own DOM ID so the reviewed group
+  comes from the list this page read rather than from anything the browser said
+  (INV-4). A new rule starts with no fare chosen. The form is `FareZones.change_rule_group/2`'s changeset,
   the write is `save_rule_group/4` with the reviewed group, and removal is
   `delete_rule_group/3` behind a danger confirm. A key another rule holds, a zone
   with no stops, a rule another editor changed and a pair that is no longer a
@@ -121,8 +127,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   The Checks tab renders `FareZones.checks/2` as the setup's issue rows: one
   "Needs repair" row per zone fare rules use that has no boardable stops, one
   "Review" row while boardable stops have no zone, one "Review" row per fare whose
-  rules trip planners combine, one "Note" row per empty declared zone, and the
-  "Source check" row only while fare rules reference zones at all. With no
+  rules trip planners combine, one "Note" row for the empty declared zones, and
+  the "Source check" row only while fare rules reference zones at all. Four counts
+  sit above the rows and the checks that pass fold into one disclosure. With no
   needs-repair and no review row, the tab states that both hold.
   Every row that needs an action links into the Zones tab - the stopless zone's
   own filter, and `?filter=unassigned` for the unassigned stops - and each of
@@ -149,10 +156,13 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
       selection_bar: 1,
       stage_header: 1,
       stop_list: 1,
+      stop_search: 1,
       zone_drawer: 1,
       zone_inventory: 1,
       zone_map: 1
     ]
+
+  import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1, message: 1]
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.FareZone
@@ -201,7 +211,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   def mount(_params, _session, socket) do
     {:ok,
      socket
-     |> assign(:page_title, "Fare zones")
+     |> assign(:page_title, "Fares")
      |> assign(:user_roles, socket.assigns[:user_roles] || [])
      |> assign(:load_state, :loading)
      |> assign(:inventory, nil)
@@ -515,8 +525,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   end
 
   # Opening the drawer is a read of the rule list the page already holds: create
-  # starts from an empty form seeded with the version's first fare, and `Edit
-  # rule` starts from the group whose DOM ID the card rendered, so the reviewed
+  # starts from an empty form with no fare chosen, and `Edit
+  # rule` starts from the group whose DOM ID the row rendered, so the reviewed
   # rows the save will fence against come from this page's own read (INV-4). A
   # rule ID no longer in the list changes nothing: the click raced the change
   # that removed it.
@@ -611,189 +621,236 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <:sub_header>
-        <.settings_nav
-          gtfs_version_id={@current_gtfs_version.id}
-          active_tab={:fares}
-          organization={@current_organization}
-        />
-      </:sub_header>
+      <div id="fares-page" class="ds-page">
+        <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+          Settings
+        </.back_link>
 
-      <.header>
-        Fare zones
-        <:subtitle>Group stops into zones, then define when a fare applies.</:subtitle>
-        <:actions :if={@live_action == :zones}>
-          <.button
-            id="fare-zone-create"
-            variant="primary"
-            class="min-h-11"
-            phx-click="open_zone_drawer"
-            phx-value-opener_id="fare-zone-create"
-            disabled={@load_state != :ready}
-          >
-            Create zone
-          </.button>
-        </:actions>
-
-        <%!-- The rules tab's one primary action. It is disabled while the catalog
-        has no fare to choose - a rule without a fare cannot be written - and the
-        reason it is disabled is visible beside it (AC-30). --%>
-        <:actions :if={@live_action == :rules}>
-          <div class="flex flex-col items-end gap-1">
+        <.header>
+          Fares
+          <:subtitle>
+            Group stops into fare zones, then choose which fare riders pay for each journey.
+          </:subtitle>
+          <%!-- One primary per view, and it follows the task: Create zone while no
+          stop is selected, then Assign zone in the selection bar. A first-use or
+          empty state carries its own single primary, so the header's goes away. --%>
+          <:actions :if={@live_action == :zones and not first_use?(assigns)}>
             <.button
-              id="add-fare-rule"
-              variant="primary"
+              id="fare-zone-create"
+              variant={if MapSet.size(@selection) > 0, do: "secondary", else: "primary"}
               class="min-h-11"
-              phx-click="open_rule_drawer"
-              phx-value-opener_id="add-fare-rule"
-              disabled={@load_state != :ready or @fares == []}
+              phx-click="open_zone_drawer"
+              phx-value-opener_id="fare-zone-create"
+              disabled={@load_state != :ready}
             >
-              Add fare rule
+              <.icon name="hero-plus" class="size-4" /> Create zone
             </.button>
-            <p
-              :if={@load_state == :ready and @fares == []}
-              id="add-fare-rule-reason"
-              class="max-w-xs text-right text-xs text-base-content/70"
+          </:actions>
+
+          <%!-- The rules tab's one primary action. It is disabled while the catalog
+          has no fare to choose - a rule without a fare cannot be written - and the
+          reason it is disabled is visible beside it (AC-30). With no rule at all,
+          the empty state carries the action instead. --%>
+          <:actions :if={@live_action == :rules and not rules_empty?(assigns)}>
+            <div class="flex flex-col items-start gap-1 sm:items-end">
+              <.button
+                id="add-fare-rule"
+                class="min-h-11"
+                phx-click="open_rule_drawer"
+                phx-value-opener_id="add-fare-rule"
+                disabled={@load_state != :ready or @fares == []}
+              >
+                <.icon name="hero-plus" class="size-4" /> Add fare rule
+              </.button>
+              <p
+                :if={@load_state == :ready and @fares == []}
+                id="add-fare-rule-reason"
+                class="max-w-xs text-[13px] text-muted sm:text-right"
+              >
+                This version has no fares. Import fare_attributes.txt to add fares.
+              </p>
+            </div>
+          </:actions>
+        </.header>
+
+        <.fares_tabs
+          gtfs_version_id={@current_gtfs_version.id}
+          active_tab={@live_action}
+          checks_count={if @load_state == :ready, do: checks_count(@checks), else: nil}
+          checks_tone={if @load_state == :ready, do: checks_tone(@checks), else: nil}
+        />
+
+        <%!-- One column that may shrink below its content: a card is `overflow-clip`,
+        so without `minmax(0, 1fr)` a wide table would stretch the page instead. --%>
+        <div class="mt-4 grid grid-cols-1 gap-4">
+          <.loading :if={@load_state == :loading} />
+
+          <.message :if={@notice} id="fare-zone-notice" kind="success" title={@notice} />
+
+          <.load_error :if={@load_state == :unavailable} />
+
+          <%= if @load_state == :ready do %>
+            <.first_use_empty :if={@live_action == :zones and @inventory.zones == []} />
+
+            <.saved_callout
+              :if={@undo && @live_action == :zones && @inventory.zones != []}
+              undo={@undo}
+            />
+
+            <section
+              :if={@live_action == :zones and @inventory.zones != []}
+              id="fare-zones-panel"
+              aria-label="Fare zones and stops"
+              class="overflow-clip rounded-card border border-subtle bg-white"
             >
-              This version has no fares. Import fare_attributes.txt to add fares.
-            </p>
-          </div>
-        </:actions>
-      </.header>
+              <div class="flex flex-wrap items-end gap-x-5 gap-y-3 px-4 py-3 sm:px-5">
+                <.zone_inventory
+                  inventory={@inventory}
+                  filter={@filter}
+                  patch_base={zones_path(@current_gtfs_version.id)}
+                />
+                <.stop_search q={@q} />
+              </div>
 
-      <.fares_tabs
-        gtfs_version_id={@current_gtfs_version.id}
-        active_tab={@live_action}
-        checks_count={if @load_state == :ready, do: checks_count(@checks), else: nil}
-      />
+              <.stage_header
+                title={stage_title(@filter, @inventory)}
+                subtitle={stage_subtitle(@filter, @inventory)}
+                view={@view}
+              >
+                <:actions :if={stage_zone_id(@filter, @inventory)}>
+                  <.button
+                    id="fare-zone-edit"
+                    variant="secondary"
+                    class="min-h-11"
+                    phx-click="open_zone_drawer"
+                    phx-value-zone_id={stage_zone_id(@filter, @inventory)}
+                    phx-value-opener_id="fare-zone-edit"
+                  >
+                    Edit zone
+                  </.button>
+                </:actions>
+              </.stage_header>
 
-      <.loading :if={@load_state == :loading} />
-
-      <p :if={@notice} id="fare-zone-notice" role="status" class="mt-2 text-sm text-success">
-        {@notice}
-      </p>
-
-      <.load_error :if={@load_state == :unavailable} />
-
-      <%= if @load_state == :ready do %>
-        <.first_use_empty :if={@live_action == :zones and @inventory.zones == []} />
-
-        <div
-          :if={@live_action == :zones and @inventory.zones != []}
-          id="fare-zones-panel"
-          class="mt-2 overflow-clip rounded-box border border-base-300 bg-base-100 md:grid md:grid-cols-[240px_minmax(0,1fr)]"
-        >
-          <.zone_inventory
-            inventory={@inventory}
-            filter={@filter}
-            patch_base={zones_path(@current_gtfs_version.id)}
-          />
-
-          <section id="fare-zone-stage" class="min-w-0" aria-label="Stops workspace">
-            <.stage_header
-              title={stage_title(@filter, @inventory)}
-              subtitle={stage_subtitle(@filter, @inventory)}
-              view={@view}
-            >
-              <:actions :if={stage_zone_id(@filter, @inventory)}>
-                <.button
-                  id="fare-zone-edit"
-                  variant="secondary"
-                  size="sm"
-                  class="min-h-11"
-                  phx-click="open_zone_drawer"
-                  phx-value-zone_id={stage_zone_id(@filter, @inventory)}
-                  phx-value-opener_id="fare-zone-edit"
+              <%!-- The workspace is one fixed-height region from 1024px: the map and
+              the list are equal columns and each scrolls on its own, so the map never
+              leaves the screen while the list scrolls. Below that they stack, map
+              first. --%>
+              <div
+                id="fare-zone-stage"
+                class={[
+                  "grid grid-cols-1",
+                  @view == :map && "lg:h-[clamp(420px,calc(100dvh-486px),760px)] lg:grid-cols-2",
+                  @view == :list && "lg:h-[clamp(420px,calc(100dvh-486px),760px)]"
+                ]}
+              >
+                <%!-- The map is the stage's first surface in Map and list view:
+                choosing List removes the root and its hook, and Retry map renders it
+                again, where the new mount hydrates from its own reply. The legend
+                stays under the fallback: the colors it names are the ones the list
+                shows. --%>
+                <div
+                  :if={@view == :map}
+                  id="fare-zone-map-panel"
+                  class="flex min-h-0 min-w-0 flex-col max-lg:border-b max-lg:border-subtle lg:border-r lg:border-subtle"
                 >
-                  Edit zone
-                </.button>
-              </:actions>
-            </.stage_header>
-
-            <.saved_callout :if={@undo} undo={@undo} />
-
-            <.stop_list
-              stops={@streams.stops}
-              stop_page={@stop_page}
-              zones={@inventory.zones}
-              filter={@filter}
-              q={@q}
-              patch_base={zones_path(@current_gtfs_version.id)}
-              selection={@selection}
-              matching_count={MapSet.size(@matching_ids)}
-            >
-              <%!-- The map is the stage's first surface in Map + list view, between
-              the search row and the stops: choosing List removes the root and its
-              hook, and Retry map renders it again, where the new mount hydrates
-              from its own reply. --%>
-              <:before_stops>
-                <div :if={@view == :map}>
                   <.zone_map :if={@map_state == :ready} />
                   <.map_unavailable :if={@map_state == :unavailable} />
-                  <%!-- The legend stays under the fallback, as the reference keeps
-                  it: the colors it names are the ones the list below shows. --%>
                   <.map_legend zones={@inventory.zones} />
                 </div>
-              </:before_stops>
-            </.stop_list>
 
-            <.selection_bar selection={@selection} matching_ids={@matching_ids} />
-          </section>
+                <.stop_list
+                  stops={@streams.stops}
+                  stop_page={@stop_page}
+                  zones={@inventory.zones}
+                  filter={@filter}
+                  q={@q}
+                  view={@view}
+                  patch_base={zones_path(@current_gtfs_version.id)}
+                  selection={@selection}
+                  matching_count={MapSet.size(@matching_ids)}
+                />
+              </div>
+
+              <.selection_bar selection={@selection} matching_ids={@matching_ids} />
+            </section>
+
+            <div :if={@live_action == :rules} id="fare-rules-panel">
+              <.rules_tab
+                rule_groups={@streams.rule_groups}
+                rule_count={length(@rule_groups)}
+                zones={@inventory.zones}
+                fares={@fares}
+                import_path={import_path(@current_gtfs_version.id)}
+              />
+            </div>
+            <div :if={@live_action == :checks} id="fare-checks-panel">
+              <.checks_tab
+                checks={@checks}
+                patch_base={zones_path(@current_gtfs_version.id)}
+                version_name={@current_gtfs_version.name}
+                export_path={export_path(@current_gtfs_version.id)}
+              />
+            </div>
+          <% end %>
         </div>
-        <div :if={@live_action == :rules} id="fare-rules-panel" class="mt-2">
-          <.rules_tab
-            rule_groups={@streams.rule_groups}
-            rule_count={length(@rule_groups)}
-            zones={@inventory.zones}
-          />
-        </div>
-        <div :if={@live_action == :checks} id="fare-checks-panel" class="mt-2">
-          <.checks_tab checks={@checks} patch_base={zones_path(@current_gtfs_version.id)} />
-        </div>
-      <% end %>
 
-      <.assignment_dialog
-        :if={@assignment}
-        assignment={@assignment}
-        zones={inventory_zones(assigns)}
-      />
+        <.assignment_dialog
+          :if={@assignment}
+          assignment={@assignment}
+          zones={inventory_zones(assigns)}
+        />
 
-      <.delete_zone_dialog
-        :if={@zone_delete}
-        zone_delete={@zone_delete}
-        zones={inventory_zones(assigns)}
-        return_focus_id={@zone_delete_return_focus_id}
-      />
+        <.delete_zone_dialog
+          :if={@zone_delete}
+          zone_delete={@zone_delete}
+          zones={inventory_zones(assigns)}
+          return_focus_id={@zone_delete_return_focus_id}
+        />
 
-      <.zone_drawer
-        open={@zone_drawer_open}
-        entity={@zone_drawer_entry}
-        form={@zone_form}
-        error={@zone_error}
-        return_focus_id={@zone_return_focus_id}
-      />
+        <.zone_drawer
+          open={@zone_drawer_open}
+          entity={@zone_drawer_entry}
+          form={@zone_form}
+          version_name={@current_gtfs_version.name}
+          error={@zone_error}
+          return_focus_id={@zone_return_focus_id}
+        />
 
-      <.rule_drawer
-        open={@rule_drawer_open}
-        reviewed={@reviewed_rule}
-        form={@rule_form}
-        fares={@fares}
-        routes={@rule_routes}
-        zones={inventory_zones(assigns)}
-        combined_fare={combined_fare(assigns)}
-        error={@rule_error}
-        stale={@rule_stale}
-        return_focus_id={@rule_return_focus_id}
-      />
+        <.rule_drawer
+          open={@rule_drawer_open}
+          reviewed={@reviewed_rule}
+          form={@rule_form}
+          fares={@fares}
+          routes={@rule_routes}
+          zones={inventory_zones(assigns)}
+          version_name={@current_gtfs_version.name}
+          combined_fare={combined_fare(assigns)}
+          error={@rule_error}
+          stale={@rule_stale}
+          return_focus_id={@rule_return_focus_id}
+        />
 
-      <.remove_rule_dialog
-        :if={@remove_rule}
-        remove={@remove_rule}
-        return_focus_id="fare-rule-remove"
-      />
+        <.remove_rule_dialog
+          :if={@remove_rule}
+          remove={@remove_rule}
+          zones={inventory_zones(assigns)}
+          return_focus_id="fare-rule-remove"
+        />
+      </div>
     </Layouts.app>
     """
   end
+
+  # The Zones tab's first-use state replaces the workspace, so the header's Create
+  # zone goes with it: the empty state carries the one primary. Before the load
+  # resolves there is no inventory to judge, so the header action shows (disabled).
+  defp first_use?(%{load_state: :ready, inventory: %{zones: []}}), do: true
+  defp first_use?(_assigns), do: false
+
+  # The same for the Fare rules tab: with no rule read, the empty state owns the
+  # action.
+  defp rules_empty?(%{load_state: :ready, rule_groups: []}), do: true
+  defp rules_empty?(_assigns), do: false
 
   # The stop page is only meaningful on the Zones tab, where the filter, search
   # and page come from the URL. `filter=unassigned` is its own key so a zone
@@ -912,7 +969,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   defp loaded_rule_catalog(_socket, _reader), do: []
 
   # A rule's DOM ID is its first row's own ID, never a zone ID: the sorted rows
-  # are the group's, and no two groups share a row. A card's inner elements are
+  # are the group's, and no two groups share a row. A table row's cells are
   # named from it, so a rule with an imported ID such as " A" or "A&B 1" still
   # has one stable DOM handle.
   defp rule_dom_id(group), do: "fare-rule-" <> Enum.min(Enum.map(group.rows, & &1.id))
@@ -1263,9 +1320,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   # Opening the delete dialog is a read of the inventory the page already holds:
   # an ID no longer in it changes nothing, because the click raced the change
-  # that removed the zone. The replacement starts at the first other zone when
-  # fare rules use this zone (the select the confirm needs) and at Unassigned
-  # when none do, which is the reference's own default.
+  # that removed the zone. Nothing is chosen for the operator: an unreferenced
+  # zone starts at No zone, which keeps its stops and only drops their zone, and a
+  # zone fare rules use starts with no replacement, so the confirm stays disabled
+  # until the operator names the zone that takes over.
   defp open_delete_zone(socket, %{"zone_id" => zone_id} = params) when is_binary(zone_id) do
     case zone_entry(socket, zone_id) do
       nil ->
@@ -1283,18 +1341,13 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
 
   # The dialog's own state. `expected` is the fence and `zone` what the dialog
   # renders; a replacement is kept only while it is one this zone's write would
-  # accept, so a value another editor invalidated falls back to the default
-  # instead of leaving the select on a zone that no longer exists.
+  # accept, so a value another editor invalidated falls back to no choice instead
+  # of leaving the select on a zone that no longer exists.
   defp delete_state(socket, entry, opts \\ []) do
     zones = inventory_zones(socket.assigns)
     replacement = Keyword.get(opts, :replacement)
 
-    replacement =
-      if valid_delete_replacement?(replacement, entry, zones) do
-        replacement
-      else
-        default_delete_replacement(entry, zones)
-      end
+    replacement = if valid_delete_replacement?(replacement, entry, zones), do: replacement
 
     %{
       zone: entry,
@@ -1305,22 +1358,18 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     }
   end
 
-  # Unassigned is the unreferenced-zone choice only. A zone fare rules use needs
-  # another inventory zone, which is exactly what the domain refuses
-  # `:replacement_required` and `:invalid_replacement` on.
+  # No choice is a valid state of the dialog: for an unreferenced zone it means No
+  # zone, and for a zone fare rules use it is the dialog before the operator has
+  # chosen, whose confirm is disabled. A crafted confirm in that state reaches the
+  # domain, which refuses it as `:replacement_required`. A chosen zone must be
+  # another zone of the inventory, which is exactly what the domain accepts.
   defp valid_delete_replacement?(replacement, entry, zones) do
     cond do
-      is_nil(replacement) -> entry.rule_count == 0
+      is_nil(replacement) -> true
       not is_binary(replacement) -> false
       replacement == entry.zone_id -> false
       true -> Enum.any?(zones, &(&1.zone_id == replacement))
     end
-  end
-
-  defp default_delete_replacement(%{rule_count: 0}, _zones), do: nil
-
-  defp default_delete_replacement(%{zone_id: zone_id}, zones) do
-    Enum.find_value(zones, fn zone -> if zone.zone_id != zone_id, do: zone.zone_id end)
   end
 
   # The select's value arrives from the browser, so it is validated against this
@@ -1428,25 +1477,19 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     |> assign(:notice, notice)
   end
 
-  # The reviewed group of a card's DOM ID, from the list this page read. The DOM
+  # The reviewed group of a rule row's DOM ID, from the list this page read. The DOM
   # ID is the group's own first row ID (`rule_dom_id/1`), never a zone ID, so no
   # zone ID can reach a push as a rule key (CR-3, CR-7, INV-4).
   defp rule_group(socket, rule_id) when is_binary(rule_id) do
     Enum.find(socket.assigns.rule_groups, &(rule_dom_id(&1) == rule_id))
   end
 
-  # A create starts from the version's first fare: the select would otherwise
-  # show that fare while the form held no fare at all, and the summary would
-  # describe a rule nobody can save. An empty catalog keeps an empty form - the
-  # header action that opens the drawer is disabled in that state (AC-30).
-  defp new_rule_form(socket) do
-    attrs =
-      case socket.assigns.fares do
-        [%{fare_id: fare_id} | _rest] -> %{"fare_id" => fare_id}
-        _none -> %{}
-      end
-
-    to_form(FareZones.change_rule_group(nil, attrs), as: :rule)
+  # A create starts with no fare chosen: the select shows its "Choose a fare"
+  # prompt, so the form and the select agree, and a rule can never take the first
+  # fare in the list because nobody looked. The summary says "the selected fare"
+  # until one is chosen, and a save without one is refused with a field error.
+  defp new_rule_form(_socket) do
+    to_form(FareZones.change_rule_group(nil, %{}), as: :rule)
   end
 
   defp open_rule_drawer(socket, %{"rule_id" => rule_id} = params) do
@@ -1957,7 +2000,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
   # The stage names the stops the filter shows. A zone filter is named by the
   # zone's display name, or by its exact ID when the inventory has no record.
   defp stage_title(:all, _inventory), do: "All stops"
-  defp stage_title(:unassigned, _inventory), do: "Unassigned stops"
+  defp stage_title(:unassigned, _inventory), do: "Stops with no zone"
 
   defp stage_title({:zone, zone_id}, inventory) do
     case Enum.find(inventory.zones, &(&1.zone_id == zone_id)) do
@@ -1973,17 +2016,25 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
     do: "#{stops_count(inventory.boardable_count)} in this version"
 
   defp stage_subtitle(:unassigned, inventory),
-    do: "#{stops_count(inventory.unassigned_count)}"
+    do:
+      "#{stops_count(inventory.unassigned_count)} · trip planners can’t price zone-based journeys that use them"
 
   defp stage_subtitle({:zone, zone_id}, inventory) do
-    count =
-      case Enum.find(inventory.zones, &(&1.zone_id == zone_id)) do
-        nil -> 0
-        zone -> zone.stop_count
-      end
+    case Enum.find(inventory.zones, &(&1.zone_id == zone_id)) do
+      nil ->
+        "#{stops_count(0)} · Zone ID #{zone_id}"
 
-    "#{stops_count(count)} · Zone ID #{zone_id}"
+      zone ->
+        "#{stops_count(zone.stop_count)}#{empty_zone_note(zone)} · #{zone_rules_note(zone)} · Zone ID #{zone_id}"
+    end
   end
+
+  defp empty_zone_note(%{stop_count: 0}), do: " · Empty zone"
+  defp empty_zone_note(_zone), do: ""
+
+  defp zone_rules_note(%{rule_count: 0}), do: "no fare rules use it"
+  defp zone_rules_note(%{rule_count: 1}), do: "used by 1 fare rule"
+  defp zone_rules_note(%{rule_count: count}), do: "used by #{count} fare rules"
 
   defp stops_count(1), do: "1 stop"
   defp stops_count(count), do: "#{count} stops"
@@ -1999,6 +2050,16 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLive do
        }) do
     length(stopless) + length(combined) + if unassigned > 0, do: 1, else: 0
   end
+
+  # The tab's mark reads as the worst finding: a zone rules use with no stops is
+  # a repair, stops with no zone a review, and neither is all clear.
+  defp checks_tone(%{stopless_referenced: [_ | _]}), do: :error
+  defp checks_tone(%{unassigned_count: unassigned}) when unassigned > 0, do: :warning
+  defp checks_tone(_checks), do: :ok
+
+  defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
+  defp import_path(version_id), do: "/gtfs/#{version_id}/import"
+  defp export_path(version_id), do: "/gtfs/#{version_id}/export"
 
   defp zones_path(version_id), do: "/gtfs/#{version_id}/settings/fares"
 

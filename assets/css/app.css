@@ -222,24 +222,6 @@
   color: color-mix(in oklab, var(--color-base-content) 70%, transparent);
 }
 
-/* The fare-zone stop list's checked rows carry the reference's selection tint.
-   The shared table component owns a row's own classes, so the state is read from
-   the checkbox the row's first cell holds. The tint is the same 10% primary the
-   inventory uses for its current filter, and the row's own hover keeps it. */
-#fare-zone-stops tr:has(input[type="checkbox"]:checked) {
-  background-color: color-mix(in oklab, var(--color-primary) 10%, transparent);
-}
-
-/* Which of the map's two modes is current belongs to the FareZoneMap hook: the
-   root is phx-update="ignore" and the server never re-renders the buttons, so the
-   pressed state has to be read back off the attribute the hook writes rather than
-   off a server-rendered class. Everything else about the buttons is the shared
-   button component's own. */
-#fare-zone-map [data-map-mode][aria-pressed="true"] {
-  background-color: var(--color-base-300);
-  color: var(--color-base-content);
-}
-
 /* Improve font rendering and ensure full-height background */
 html {
   min-height: 100vh;

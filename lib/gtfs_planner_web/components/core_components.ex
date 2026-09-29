@@ -1279,11 +1279,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
   @doc """
   Renders the Fares area tabs shared by the zone, fare-rule and checks views.
 
-  The tabs reuse `routes_tabs/1`'s underline presentation and switch between the
-  workspace's three live actions with a patch, so a tab change keeps the Zones
-  tab's query state in the URL. The Checks tab carries the workspace's issue
-  count, so a setup problem stays visible from the other two tabs; `nil` means
-  the count is not known yet and no badge is claimed.
+  The tabs are the design system's local tabs: an underline in the action colour
+  and a bold label for the current one. They switch between the workspace's three
+  live actions with a patch, so a tab change keeps the Zones tab's query state in
+  the URL. The Checks tab carries the workspace's result, so a setup problem stays
+  visible from the other two tabs: a count in the error tone while something needs
+  repair, in the warning tone while something needs review, and a check mark when
+  the version is clean. `nil` means the result is not known yet and no mark is
+  claimed.
 
   ## Examples
 
@@ -1291,6 +1294,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
         gtfs_version_id={@current_gtfs_version.id}
         active_tab={@live_action}
         checks_count={2}
+        checks_tone={:warning}
       />
   """
   attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
@@ -1304,49 +1308,69 @@ defmodule GtfsPlannerWeb.CoreComponents do
     default: nil,
     doc: "the setup issues the Checks tab reports, or nil before the workspace loads"
 
+  attr :checks_tone, :atom,
+    values: [nil, :error, :warning, :ok],
+    default: nil,
+    doc: "the worst finding behind the count, which decides the mark's color"
+
   def fares_tabs(assigns) do
     ~H"""
     <nav
       id="fares-tabs"
       aria-label="Fares sections"
-      class="overflow-x-auto border-b border-base-300"
+      class="mt-4 flex gap-1 overflow-x-auto border-b border-subtle"
     >
-      <div class="flex min-w-max items-end gap-1 sm:min-w-0">
-        <.link
-          id="fares-tab-zones"
-          patch={"/gtfs/#{@gtfs_version_id}/settings/fares"}
-          class={sub_nav_link_class(@active_tab == :zones)}
-          aria-current={@active_tab == :zones && "page"}
+      <.link
+        id="fares-tab-zones"
+        patch={"/gtfs/#{@gtfs_version_id}/settings/fares"}
+        class={fares_tab_class()}
+        aria-current={@active_tab == :zones && "page"}
+      >
+        Zones
+      </.link>
+      <.link
+        id="fares-tab-rules"
+        patch={"/gtfs/#{@gtfs_version_id}/settings/fares/rules"}
+        class={fares_tab_class()}
+        aria-current={@active_tab == :rules && "page"}
+      >
+        Fare rules
+      </.link>
+      <.link
+        id="fares-tab-checks"
+        patch={"/gtfs/#{@gtfs_version_id}/settings/fares/checks"}
+        class={fares_tab_class()}
+        aria-current={@active_tab == :checks && "page"}
+      >
+        Checks
+        <%!-- The mark appears only once the workspace load resolved the count: a
+        zero before that would claim a clean version on no data. --%>
+        <span
+          :if={is_integer(@checks_count)}
+          id="fares-checks-count"
+          class={[
+            "inline-flex items-center gap-1 rounded-badge px-1.5 text-[13px] font-bold tabular-nums",
+            @checks_tone == :error && "bg-error-bg text-error-fg",
+            @checks_tone == :warning && "bg-warning-bg text-warning-fg",
+            @checks_tone not in [:error, :warning] && "bg-success-bg text-success-fg"
+          ]}
         >
-          Zones
-        </.link>
-        <.link
-          id="fares-tab-rules"
-          patch={"/gtfs/#{@gtfs_version_id}/settings/fares/rules"}
-          class={sub_nav_link_class(@active_tab == :rules)}
-          aria-current={@active_tab == :rules && "page"}
-        >
-          Fare rules
-        </.link>
-        <.link
-          id="fares-tab-checks"
-          patch={"/gtfs/#{@gtfs_version_id}/settings/fares/checks"}
-          class={[sub_nav_link_class(@active_tab == :checks), "gap-2"]}
-          aria-current={@active_tab == :checks && "page"}
-        >
-          Checks
-          <%!-- The badge appears only once the workspace load resolved the
-          count: a zero before that would claim a clean version on no data. --%>
-          <.status_badge
-            :if={is_integer(@checks_count)}
-            id="fares-checks-count"
-            status={if @checks_count > 0, do: :warning, else: :active}
-            label={Integer.to_string(@checks_count)}
-          />
-        </.link>
-      </div>
+          <.icon
+            :if={@checks_tone not in [:error, :warning]}
+            name="hero-check"
+            class="size-3.5"
+          />{@checks_count}
+        </span>
+      </.link>
     </nav>
     """
+  end
+
+  defp fares_tab_class do
+    [
+      "-mb-px inline-flex min-h-12 shrink-0 items-center gap-2 border-b-[3px] border-transparent px-3 text-sm text-muted no-underline",
+      "hover:text-strong aria-[current=page]:border-action aria-[current=page]:font-bold aria-[current=page]:text-action"
+    ]
   end
 
   @doc """
@@ -1437,137 +1461,6 @@ defmodule GtfsPlannerWeb.CoreComponents do
       </div>
     </nav>
     """
-  end
-
-  @doc """
-  Renders the Settings tabs for the version-scoped, all-version and asset sections.
-
-  Sections hidden for the organization's product
-  (`GtfsPlannerWeb.ProductSurfaces.visible?/2`) are omitted, and the bar renders
-  nothing when only Overview would remain.
-
-  ## Examples
-
-      <.settings_nav
-        gtfs_version_id={@current_gtfs_version.id}
-        active_tab={:index}
-        organization={@current_organization}
-      />
-  """
-  attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
-
-  attr :active_tab, :atom,
-    values: [
-      :index,
-      :feed_details,
-      :agencies,
-      :fares,
-      :export_defaults,
-      :feed_url,
-      :garages,
-      :fleet
-    ],
-    default: :index
-
-  attr :organization, :any,
-    default: nil,
-    doc: "the current organization; hidden sections are omitted"
-
-  def settings_nav(assigns) do
-    ~H"""
-    <nav
-      :if={settings_section_visible?(@organization)}
-      id="settings-nav"
-      aria-label="Settings sections"
-      class="w-full"
-    >
-      <div class="overflow-x-auto">
-        <div class="flex min-w-max items-end gap-1 sm:min-w-0">
-          <.link
-            id="settings-tab-index"
-            navigate={"/gtfs/#{@gtfs_version_id}/settings"}
-            class={sub_nav_link_class(@active_tab == :index)}
-            aria-current={@active_tab == :index && "page"}
-          >
-            Overview
-          </.link>
-          <.link
-            :if={GtfsPlannerWeb.ProductSurfaces.visible?(@organization, :feed_details)}
-            id="settings-tab-feed_details"
-            navigate={"/gtfs/#{@gtfs_version_id}/settings/feed-details"}
-            class={sub_nav_link_class(@active_tab == :feed_details)}
-            aria-current={@active_tab == :feed_details && "page"}
-          >
-            Feed details
-          </.link>
-          <.link
-            :if={GtfsPlannerWeb.ProductSurfaces.visible?(@organization, :agencies)}
-            id="settings-tab-agencies"
-            navigate={"/gtfs/#{@gtfs_version_id}/settings/agencies"}
-            class={sub_nav_link_class(@active_tab == :agencies)}
-            aria-current={@active_tab == :agencies && "page"}
-          >
-            Agencies
-          </.link>
-          <.link
-            :if={GtfsPlannerWeb.ProductSurfaces.visible?(@organization, :fares)}
-            id="settings-tab-fares"
-            navigate={"/gtfs/#{@gtfs_version_id}/settings/fares"}
-            class={sub_nav_link_class(@active_tab == :fares)}
-            aria-current={@active_tab == :fares && "page"}
-          >
-            Fares
-          </.link>
-          <.link
-            :if={GtfsPlannerWeb.ProductSurfaces.visible?(@organization, :export_defaults)}
-            id="settings-tab-export_defaults"
-            navigate={"/gtfs/#{@gtfs_version_id}/settings/export-defaults"}
-            class={sub_nav_link_class(@active_tab == :export_defaults)}
-            aria-current={@active_tab == :export_defaults && "page"}
-          >
-            Export defaults
-          </.link>
-          <.link
-            :if={GtfsPlannerWeb.ProductSurfaces.visible?(@organization, :feed_url)}
-            id="settings-tab-feed_url"
-            navigate={"/gtfs/#{@gtfs_version_id}/settings/feed-url"}
-            class={sub_nav_link_class(@active_tab == :feed_url)}
-            aria-current={@active_tab == :feed_url && "page"}
-          >
-            Feed URL
-          </.link>
-          <.link
-            :if={GtfsPlannerWeb.ProductSurfaces.visible?(@organization, :garages)}
-            id="settings-tab-garages"
-            navigate={"/gtfs/#{@gtfs_version_id}/settings/garages"}
-            class={sub_nav_link_class(@active_tab == :garages)}
-            aria-current={@active_tab == :garages && "page"}
-          >
-            Garages
-          </.link>
-          <.link
-            :if={GtfsPlannerWeb.ProductSurfaces.visible?(@organization, :fleet)}
-            id="settings-tab-fleet"
-            navigate={"/gtfs/#{@gtfs_version_id}/settings/fleet"}
-            class={sub_nav_link_class(@active_tab == :fleet)}
-            aria-current={@active_tab == :fleet && "page"}
-          >
-            Fleet
-          </.link>
-        </div>
-      </div>
-    </nav>
-    """
-  end
-
-  # Only `ProductSurfaces` decides which sections an organization sees (INV-1).
-  # When every section tab is hidden, only Overview would remain, so the whole
-  # bar is omitted instead of rendering a dangling single tab.
-  defp settings_section_visible?(organization) do
-    Enum.any?(
-      [:feed_details, :agencies, :fares, :export_defaults, :feed_url, :garages, :fleet],
-      &GtfsPlannerWeb.ProductSurfaces.visible?(organization, &1)
-    )
   end
 
   @doc """
@@ -2114,7 +2007,10 @@ defmodule GtfsPlannerWeb.CoreComponents do
   a confirm in the action colour instead of `bg-error`. The consequence belongs in
   the body and the confirm label repeats the verb and object, so colour is not what
   tells the person the action is destructive. `confirm_variant` does not apply to
-  this chrome.
+  this chrome. A `confirm_disabled` confirm takes the design system's disabled
+  control instead of the action colour, so it reads as unavailable next to the
+  reason the caller renders for it. `size="lg"` widens the panel to 600px for a review and bounds its
+  body at `max-h-[60vh]`, so the rows scroll and the actions stay in view.
 
   ## Examples
 
@@ -2253,18 +2149,29 @@ defmodule GtfsPlannerWeb.CoreComponents do
   # The class strings for each part of the dialog. The default chrome returns
   # the original strings; the planner chrome is the design system's confirm,
   # whose confirm button is the action colour whatever `confirm_variant` says.
-  defp confirm_dialog_ui(%{chrome: "planner"}) do
+  defp confirm_dialog_ui(%{chrome: "planner", size: size} = assigns) do
     %{
-      panel:
-        "w-[min(440px,calc(100vw-32px))] rounded-card border border-subtle bg-white p-6 text-default shadow-float",
+      panel: [
+        "rounded-card border border-subtle bg-white p-6 text-default shadow-float",
+        planner_confirm_width(size)
+      ],
       title:
         "font-display text-[22px] font-semibold leading-tight tracking-[-0.02em] text-strong [overflow-wrap:anywhere]",
-      body: "mt-3 text-sm text-muted",
+      body: ["mt-3 text-sm text-muted", planner_confirm_body(size)],
       actions: "mt-6 flex flex-wrap justify-end gap-3",
       cancel:
         "inline-flex min-h-11 min-w-11 items-center justify-center rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas disabled:cursor-wait disabled:text-muted",
-      confirm:
-        "inline-flex min-h-11 min-w-11 items-center justify-center rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-action-hover disabled:cursor-wait disabled:bg-action-hover"
+      confirm: [
+        "inline-flex min-h-11 min-w-11 items-center justify-center rounded-control px-4 text-sm font-[650]",
+        # A confirm the page has ruled out reads as unavailable, the design system's
+        # disabled control; a save in flight keeps the action colour, darker, with
+        # a wait cursor.
+        if(assigns.confirm_disabled and assigns.pending != true,
+          do: "cursor-not-allowed border border-subtle bg-canvas text-muted",
+          else:
+            "bg-action text-white hover:bg-action-hover disabled:cursor-wait disabled:bg-action-hover"
+        )
+      ]
     }
   end
 
@@ -2286,6 +2193,15 @@ defmodule GtfsPlannerWeb.CoreComponents do
       ]
     }
   end
+
+  # The planner chrome's two widths: the confirm's own 440px, and a 600px review
+  # whose body scrolls inside the dialog so a long list of rows never pushes the
+  # actions off screen.
+  defp planner_confirm_width("sm"), do: "w-[min(440px,calc(100vw-32px))]"
+  defp planner_confirm_width("lg"), do: "w-[min(600px,calc(100vw-32px))]"
+
+  defp planner_confirm_body("sm"), do: nil
+  defp planner_confirm_body("lg"), do: "max-h-[60vh] overflow-y-auto"
 
   # Closed panel-width map for confirm_dialog. The default "sm" path returns
   # the byte-identical panel string; "lg" widens to the review width.

@@ -740,6 +740,124 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert LazyHTML.attribute(confirm, "phx-disable-with") == ["Deactivating user…"]
     end
 
+    test "planner chrome widens to the 600px review and bounds its body when size is lg" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          chrome="planner"
+          size="lg"
+          open={true}
+          title="Assign 3 stops to a zone"
+          confirm_label="Assign 3 stops"
+          pending_label="Saving…"
+          on_confirm="confirm"
+          on_cancel="cancel"
+        >
+          <p>Rows</p>
+        </.confirm_dialog>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      body_class =
+        doc |> LazyHTML.query("#test-confirm-body") |> LazyHTML.attribute("class") |> hd()
+
+      assert html =~ "w-[min(600px,calc(100vw-32px))]"
+      refute html =~ "w-[min(440px,calc(100vw-32px))]"
+      assert body_class =~ "max-h-[60vh]"
+      assert body_class =~ "overflow-y-auto"
+    end
+
+    test "planner chrome keeps the 440px panel and an unbounded body at the default size" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          chrome="planner"
+          open={true}
+          title="Remove this fare rule?"
+          confirm_label="Remove rule"
+          pending_label="Removing…"
+          on_confirm="confirm"
+          on_cancel="cancel"
+        >
+          <p>Consequence text</p>
+        </.confirm_dialog>
+        """)
+
+      body_class =
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#test-confirm-body")
+        |> LazyHTML.attribute("class")
+        |> hd()
+
+      assert html =~ "w-[min(440px,calc(100vw-32px))]"
+      refute body_class =~ "max-h-[60vh]"
+    end
+
+    test "planner chrome shows a confirm the page ruled out as unavailable, not as pending" do
+      render_confirm = fn confirm_disabled, pending ->
+        assigns = %{confirm_disabled: confirm_disabled, pending: pending}
+
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          chrome="planner"
+          open={true}
+          title="Delete Central?"
+          confirm_label="Delete zone"
+          pending_label="Deleting…"
+          on_confirm="confirm"
+          on_cancel="cancel"
+          confirm_disabled={@confirm_disabled}
+          pending={@pending}
+        >
+          <p>Choose a zone first.</p>
+        </.confirm_dialog>
+        """)
+      end
+
+      confirm_class = fn html ->
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#test-confirm-confirm")
+        |> LazyHTML.attribute("class")
+        |> hd()
+      end
+
+      ruled_out = render_confirm.(true, false)
+      pending = render_confirm.(true, true)
+      ready = render_confirm.(false, false)
+
+      # Ruled out: the design system's disabled control, so it does not look clickable.
+      assert confirm_class.(ruled_out) =~ "cursor-not-allowed"
+      assert confirm_class.(ruled_out) =~ "bg-canvas"
+      refute confirm_class.(ruled_out) =~ "bg-action"
+
+      # A write in flight keeps the action colour and its wait cursor.
+      assert confirm_class.(pending) =~ "bg-action"
+      refute confirm_class.(pending) =~ "cursor-not-allowed"
+
+      # Ready: the action colour, enabled.
+      assert confirm_class.(ready) =~ "bg-action"
+
+      assert ready
+             |> LazyHTML.from_fragment()
+             |> LazyHTML.query("#test-confirm-confirm")
+             |> LazyHTML.attribute("disabled") == []
+
+      assert ruled_out
+             |> LazyHTML.from_fragment()
+             |> LazyHTML.query("#test-confirm-confirm")
+             |> LazyHTML.attribute("disabled") == [""]
+    end
+
     test "lg primary dialog retains alertdialog dismiss and pending semantics" do
       # AC-2 + INV-1: the wide primary presentation is the same alertdialog;
       # cancel-first dismissal and pending lockout survive the new axes.

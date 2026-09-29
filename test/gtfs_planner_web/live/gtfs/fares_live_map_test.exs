@@ -131,7 +131,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveMapTest do
       assert has_element?(view, "#fare-zone-map [data-map-mode='pan']", "Pan map")
       assert has_element?(view, "#fare-zone-map [data-map-zoom='in']")
       assert has_element?(view, "#fare-zone-map [data-map-zoom='out']")
-      assert has_element?(view, "#fare-zone-map [data-map-fit]", "Fit")
+      assert has_element?(view, "#fare-zone-map [data-map-fit][aria-label='Fit all stops']")
       assert has_element?(view, "#fare-zone-map [data-map-hint]")
 
       toggle_stop(view, ctx.stops["CENTRAL_1"])
@@ -344,14 +344,20 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveMapTest do
       ready_reply(view)
       assert has_element?(view, "#fare-zone-map")
 
+      # The rows are a stream and are not re-rendered by a change of view, so the
+      # list carries the view as an attribute and the row's view-dependent parts
+      # follow it in CSS.
+      assert has_element?(view, "#fare-zone-stop-list[data-view='map']")
+
       view |> form("#fare-zone-view-form", %{"view" => "list"}) |> render_change()
 
       refute has_element?(view, "#fare-zone-map")
       refute has_element?(view, "#fare-zone-map-legend")
-      assert has_element?(view, "#fare-zone-stop-list")
+      assert has_element?(view, "#fare-zone-stop-list[data-view='list']")
 
       view |> form("#fare-zone-view-form", %{"view" => "map"}) |> render_change()
 
+      assert has_element?(view, "#fare-zone-stop-list[data-view='map']")
       assert has_element?(view, "#fare-zone-map")
       assert has_element?(view, "#fare-zone-map-legend")
       assert ready_reply(view).points != []
@@ -422,7 +428,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveMapTest do
 
       # The legend names what a marker could carry, and the one zone this version
       # has carries no stop, so only Unassigned is left to explain.
-      assert has_element?(view, "#fare-zone-map-legend", "Unassigned")
+      assert has_element?(view, "#fare-zone-map-legend", "No zone")
       refute has_element?(view, "#fare-zone-map-legend", "Zed")
       assert has_element?(view, "#fare-zone-stops-empty", "No stops yet")
     end
@@ -433,7 +439,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveMapTest do
 
       assert has_element?(view, "#fare-zone-map-legend", "Central")
       assert has_element?(view, "#fare-zone-map-legend", "Eastbank")
-      assert has_element?(view, "#fare-zone-map-legend", "Unassigned")
+      assert has_element?(view, "#fare-zone-map-legend", "No zone")
       # The empty declared zone and the stopless zone a rule references have no
       # marker, so no legend entry.
       refute has_element?(view, "#fare-zone-map-legend", "Airport")

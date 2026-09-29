@@ -158,8 +158,12 @@ test("shell", async ({ page }, testInfo) => {
   await routeBlankTiles(page);
   await openFares(page, "zones");
 
-  await expect(page.locator("h1")).toHaveText("Fare zones");
-  await expect(page.locator("#settings-tab-fares")).toHaveAttribute("aria-current", "page");
+  await expect(page.locator("h1")).toHaveText("Fares");
+  await expect(page.locator("#settings-back")).toHaveAttribute(
+    "href",
+    new RegExp("/gtfs/[^/]+/settings$"),
+  );
+  await expect(page.locator("#settings-nav")).toHaveCount(0);
 
   for (const tab of ["zones", "rules", "checks"]) {
     if (tab !== "zones") await openTab(page, tab);
@@ -212,12 +216,12 @@ test("settings entry", async ({ page }, testInfo) => {
     await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings/fares$`));
     await waitForLiveView(page);
 
-    await expect(page.locator("h1")).toHaveText("Fare zones");
+    await expect(page.locator("h1")).toHaveText("Fares");
     await expect(page.locator("#fare-zones-panel")).toBeAttached();
     await expect(page.locator("#coming-soon")).toHaveCount(0);
-    await expect(page.locator("#settings-tab-fares")).toHaveAttribute(
-      "aria-current",
-      "page",
+    await expect(page.locator("#settings-back")).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/settings`,
     );
 
     await capture(page, testInfo, `settings-entry-${viewport.label}`);
@@ -226,8 +230,8 @@ test("settings entry", async ({ page }, testInfo) => {
 
 // ── zones inventory ───────────────────────────────────────────────────────
 
-// The Zones tab's inventory is the page's navigation: All stops, one row per
-// zone in the version, and Unassigned, each a patch link carrying its own
+// The Zones tab's zone strip is the page's navigation: All stops, one chip per
+// zone in the version, and No zone, each a patch link carrying its own
 // filter. The seeded "Browser Fare Zones Version" carries Central (11 boardable
 // stops), Eastbank (12), a fare-rule-referenced C with no stops and no record,
 // the declared-but-empty Airport, and 4 unassigned stops of 27.
@@ -238,16 +242,10 @@ test("zones inventory", async ({ page }, testInfo) => {
   const inventory = page.locator("#fare-zone-inventory");
 
   await expect(inventory).toBeVisible();
-  await expect(page.locator("#fare-zone-inventory-count")).toHaveText("4");
-  await expect(inventory).toContainText("Each stop belongs to one zone.");
-  await expect(inventory).toContainText(
-    "Zone names help your team. Zone IDs travel with your GTFS feed.",
-  );
 
   const allStops = page.locator("#fare-zone-row-all");
 
   await expect(allStops).toContainText("All stops");
-  await expect(allStops).toContainText("Every zone");
   await expect(page.locator("#fare-zone-row-all-count")).toHaveText("27");
   await expect(allStops).toHaveAttribute("href", `/gtfs/${versionId}/settings/fares`);
   await expect(allStops).toHaveAttribute("aria-current", "page");
@@ -257,17 +255,18 @@ test("zones inventory", async ({ page }, testInfo) => {
   );
 
   const zones = [
-    { index: 1, id: "A", name: "Central", count: "11", subtext: "ID A" },
-    { index: 2, id: "B", name: "Eastbank", count: "12", subtext: "ID B" },
-    { index: 3, id: "C", name: "C", count: "0", subtext: "ID C · Empty zone" },
-    { index: 4, id: "D", name: "Airport", count: "0", subtext: "ID D · Empty zone" },
+    { index: 1, id: "A", name: "Central", count: "11" },
+    { index: 2, id: "B", name: "Eastbank", count: "12" },
+    { index: 3, id: "C", name: "C", count: "0" },
+    { index: 4, id: "D", name: "Airport", count: "0" },
   ];
 
   for (const zone of zones) {
     const row = page.locator(`#fare-zone-row-${zone.index}`);
 
     await expect(row).toContainText(zone.name);
-    await expect(row).toContainText(zone.subtext);
+    // The zone ID is detail for the stage line, not part of the chip.
+    await expect(row).not.toContainText(`ID ${zone.id}`);
     await expect(page.locator(`#fare-zone-row-${zone.index}-count`)).toHaveText(zone.count);
     await expect(row).toHaveAttribute(
       "href",
@@ -278,8 +277,7 @@ test("zones inventory", async ({ page }, testInfo) => {
 
   const unassigned = page.locator("#fare-zone-row-unassigned");
 
-  await expect(unassigned).toContainText("Unassigned");
-  await expect(unassigned).toContainText("Needs assignment");
+  await expect(unassigned).toContainText("No zone");
   await expect(page.locator("#fare-zone-row-unassigned-count")).toHaveText("4");
   await expect(unassigned).toHaveAttribute(
     "href",
@@ -297,7 +295,9 @@ test("zones inventory", async ({ page }, testInfo) => {
   );
   await expect(allStops).not.toHaveAttribute("aria-current", "page");
   await expect(page.locator("#fare-zone-stage-title")).toHaveText("Eastbank");
-  await expect(page.locator("#fare-zone-stage-subtitle")).toHaveText("12 stops · Zone ID B");
+  await expect(page.locator("#fare-zone-stage-subtitle")).toHaveText(
+    "12 stops · used by 2 fare rules · Zone ID B",
+  );
 
   for (const viewport of [DESKTOP, NARROW]) {
     await page.setViewportSize(viewport);
@@ -349,7 +349,7 @@ test("stop list", async ({ page }, testInfo) => {
   // Zone membership is rendered per row, so the count of rows naming a zone is
   // that zone's boardable membership.
   await expect(page.locator("#fare-zone-stops tr", { hasText: "Eastbank" })).toHaveCount(12);
-  await expect(page.locator("#fare-zone-stops tr", { hasText: "Unassigned" })).toHaveCount(4);
+  await expect(page.locator("#fare-zone-stops tr", { hasText: "No zone" })).toHaveCount(4);
 
   const depot = page.locator("#fare-zone-stops tr", { hasText: "Central Depot" });
 
@@ -440,7 +440,9 @@ test("selection bar", async ({ page }, testInfo) => {
   const checkboxes = page.locator('#fare-zone-stops input[type="checkbox"]');
 
   // Nothing selected: the reference's hint sits where the bar will be.
-  await expect(bar).toContainText("Select stops to assign or remove a fare zone.");
+  await expect(bar).toContainText(
+    "Select stops in the list or on the map to assign or remove a zone.",
+  );
   await expect(page.locator("#fare-zone-selection-count")).toHaveCount(0);
 
   // The checkbox column is the table's first one, and every row has a box.
@@ -473,7 +475,7 @@ test("selection bar", async ({ page }, testInfo) => {
   await expect(checkboxes).toHaveCount(12);
   await expect(page.locator("#fare-zone-selection-count")).toHaveText("2 stops selected");
   await expect(page.locator("#fare-zone-selection-outside")).toHaveText(
-    "2 outside current filter",
+    "2 outside this filter",
   );
 
   // The head selects the page or the whole match: this filter matches 12 stops
@@ -487,13 +489,13 @@ test("selection bar", async ({ page }, testInfo) => {
   await page.locator("#fare-zone-select-shown").click();
   await expect(page.locator("#fare-zone-selection-count")).toHaveText("14 stops selected");
   await expect(page.locator("#fare-zone-selection-outside")).toHaveText(
-    "2 outside current filter",
+    "2 outside this filter",
   );
 
   // Clear empties it and the hint returns.
   await page.locator("#fare-zone-clear-selection").click();
   await expect(page.locator("#fare-zone-selection-hint")).toHaveText(
-    "Select stops to assign or remove a fare zone.",
+    "Select stops in the list or on the map to assign or remove a zone.",
   );
   await expect(checkboxes).toHaveCount(12);
   await expect(
@@ -561,10 +563,10 @@ test("assignment review", async ({ page }, testInfo) => {
 
   await expect(dialog).toBeVisible();
   await expect(dialog.locator("#fare-zone-assignment-dialog-title")).toHaveText(
-    "Assign selected stops",
+    "Assign 2 stops to a zone",
   );
   await expect(dialog.locator("#fare-zone-assignment-intro")).toHaveText(
-    "Review 2 selected stops before saving.",
+    "Review what will change before you save.",
   );
   await expect(dialog.locator("#fare-zone-assignment-target")).toHaveValue("A");
   await expect(dialog.locator("#fare-zone-assignment-reason")).toHaveText(
@@ -576,20 +578,24 @@ test("assignment review", async ({ page }, testInfo) => {
   // between zones, and the moved-stop warning appears with the rows.
   await dialog.locator("#fare-zone-assignment-target").selectOption("B");
 
-  await expect(dialog.locator("#fare-zone-assignment-summary")).toContainText(
-    "2 assignments will change",
+  await expect(dialog.locator("#fare-zone-assignment-summary-added")).toHaveText(
+    /0\s*Newly assigned/,
   );
-  await expect(dialog.locator("#fare-zone-assignment-summary-change")).toHaveText(
-    "0 unassigned stops added · 2 moved from another zone",
+  await expect(dialog.locator("#fare-zone-assignment-summary-moved")).toHaveText(
+    /2\s*Moved from another zone/,
   );
   await expect(dialog.locator("#fare-zone-assignment-summary-unchanged")).toHaveText(
-    "0 already in this zone · left unchanged",
+    /0\s*Already in this zone/,
   );
   await expect(dialog.locator("#fare-zone-assignment-moved")).toContainText(
-    "Moving stops can change which fares apply to their journeys.",
+    "Moving stops can change which fares apply to journeys that use them.",
   );
   await expect(dialog.locator("#fare-zone-assignment-row-1")).toContainText("Central West 1");
-  await expect(dialog.locator("#fare-zone-assignment-row-1")).toContainText("A → B");
+  await expect(dialog.locator("#fare-zone-assignment-row-1-from")).toHaveText("Central");
+  await expect(dialog.locator("#fare-zone-assignment-row-1-to")).toHaveText("Eastbank");
+  await expect(dialog.locator("#fare-zone-assignment-dialog-confirm")).toHaveText(
+    "Assign 2 stops",
+  );
   await expect(dialog.locator("#fare-zone-assignment-dialog-confirm")).toBeEnabled();
 
   await capture(page, testInfo, "assignment-1440", { fullPage: false });
@@ -663,14 +669,15 @@ test("zone drawer", async ({ page }, testInfo) => {
 
   await expect(firstUse).toBeVisible();
   await expect(firstUse).toContainText("Start with your first fare zone");
+  await expect(firstUse).toContainText("A fare zone groups stops that share a fare area");
+  await expect(firstUse).toContainText("Zones are optional.");
   await expect(firstUse).toContainText(
-    "A zone groups stops that share a fare area. Give it a name, then select its stops on the map or in a list.",
-  );
-  await expect(firstUse).toContainText(
-    "Already have a feed? Stop zone IDs from an imported feed appear here.",
+    "Already have a feed? Stop zone IDs from an imported feed appear here on their own.",
   );
   await expect(page.locator("#fare-zones-panel")).toHaveCount(0);
-  await expect(page.locator("#fare-zone-create")).toBeVisible();
+  // The state carries the page's one primary, so the header's create action is
+  // gone until the workspace exists.
+  await expect(page.locator("#fare-zone-create")).toHaveCount(0);
 
   await capture(page, testInfo, "zone-first-use-1440", { fullPage: false });
 
@@ -699,22 +706,23 @@ test("zone drawer", async ({ page }, testInfo) => {
   await expect(drawer).toContainText("Zone name");
   await expect(drawer).toContainText("Zone ID");
   await expect(drawer).toContainText(
-    "Unique in this version. Use letters, numbers, hyphens or underscores.",
+    "A short code, unique in this version. It is written to your feed as zone_id.",
   );
   await expect(drawer).toContainText("Map color");
   await expect(drawer).toContainText("Markers also show the zone ID, so color is never the only cue.");
   await expect(page.locator("#fare-zone-name")).toHaveValue("");
   await expect(page.locator("#fare-zone-id")).toHaveValue("");
-  await expect(page.locator("#fare-zone-color")).toHaveValue("ochre");
-  await expect(page.locator("#fare-zone-color option")).toHaveText([
-    "Ocean blue",
-    "Teal",
-    "Plum",
-    "Ochre",
-    "Green",
+  await expect(page.locator("#fare-zone-color input[type='radio']:checked")).toHaveValue("ochre");
+  await expect(page.locator("#fare-zone-color label")).toHaveText([
+    /Ocean blue/,
+    /Teal/,
+    /Plum/,
+    /Ochre/,
+    /Green/,
   ]);
+  await expect(page.locator("#fare-zone-drawer-note")).toContainText("A new zone starts empty.");
   await expect(page.locator("#fare-zone-drawer-note")).toContainText(
-    "Your new zone starts empty. It remains available while you build its stop membership.",
+    "It stays available while you choose its stops.",
   );
   await expect(page.locator("#fare-zone-drawer-summary")).toHaveCount(0);
 
@@ -736,19 +744,19 @@ test("zone drawer", async ({ page }, testInfo) => {
 
   // ── a duplicate ID is rejected beside its field ──
   await page.fill("#fare-zone-name", "Waterfront");
-  await page.selectOption("#fare-zone-color", "teal");
+  await page.locator("#fare-zone-color label", { hasText: "Teal" }).click();
   await page.fill("#fare-zone-id", "A");
   await page.locator('#fare-zone-form button[type="submit"]').click();
 
   await expect(page.locator("#fare-zone-id")).toHaveAttribute("aria-invalid", "true");
   await expect(drawer).toContainText("That zone ID is already in use. Choose another.");
   await expect(page.locator("#fare-zone-name")).toHaveValue("Waterfront");
-  await expect(page.locator("#fare-zone-color")).toHaveValue("teal");
+  await expect(page.locator("#fare-zone-color input[type='radio']:checked")).toHaveValue("teal");
   await expect(drawer).toBeVisible();
 
-  // Nothing was written: the inventory still holds its four zones and no zone
+  // Nothing was written: the strip still holds its four zones and no zone
   // adopted the typed name.
-  await expect(page.locator("#fare-zone-inventory-count")).toHaveText("4");
+  await expect(page.locator("#fare-zone-inventory-filters a")).toHaveCount(6);
   await expect(page.locator("#fare-zone-inventory")).not.toContainText("Waterfront");
 
   await capture(page, testInfo, "zone-drawer-error-1440", { fullPage: false });
@@ -764,7 +772,7 @@ test("zone drawer", async ({ page }, testInfo) => {
   );
   await expect(page.locator("#fare-zone-stage-title")).toHaveText("Waterfront");
   await expect(page.locator("#fare-zone-stops-empty")).toContainText("No stops in this zone yet");
-  await expect(page.locator("#fare-zone-inventory-count")).toHaveText("5");
+  await expect(page.locator("#fare-zone-inventory-filters a")).toHaveCount(7);
   await expect(page.locator("#fare-zone-row-5")).toContainText("Waterfront");
 
   await capture(page, testInfo, "zone-drawer-created-1440", { fullPage: false });
@@ -774,7 +782,7 @@ test("zone drawer", async ({ page }, testInfo) => {
   await expect(page.locator("#fare-zone-drawer-title")).toHaveText("Edit Waterfront");
   await expect(page.locator("#fare-zone-id")).toHaveValue("W");
   await expect(page.locator("#fare-zone-drawer-summary")).toContainText(
-    "0 stops · 0 related fare rules.",
+    "0 stops · 0 fare rules use this zone",
   );
   await page.fill("#fare-zone-id", "WW");
   await page.locator('#fare-zone-form button[type="submit"]').click();
@@ -796,10 +804,10 @@ test("zone drawer", async ({ page }, testInfo) => {
   await expect(page.locator("#fare-zone-drawer-title")).toHaveText("Edit Central");
   await expect(page.locator("#fare-zone-id")).toHaveValue("A");
   await expect(page.locator("#fare-zone-drawer-summary")).toContainText(
-    "11 stops · 4 related fare rules.",
+    "11 stops · 4 fare rules use this zone",
   );
   await expect(page.locator("#fare-zone-drawer-summary-updates")).toHaveText(
-    "Changing this ID updates these references together.",
+    "Changing the zone ID updates these references together.",
   );
   await expect(page.locator("#fare-zone-drawer-summary-others")).toHaveText(
     "Also updates 1 station or entrance with this zone ID.",
@@ -818,7 +826,7 @@ test("zone drawer", async ({ page }, testInfo) => {
 
   await expect(page.locator("#fare-zone-drawer-title")).toHaveText("Edit Eastbank");
   await expect(page.locator("#fare-zone-drawer-summary")).toContainText(
-    "12 stops · 2 related fare rules.",
+    "12 stops · 2 fare rules use this zone",
   );
   await expect(page.locator("#fare-zone-drawer-summary-others")).toHaveCount(0);
 
@@ -868,27 +876,36 @@ test("delete dialog", async ({ page }, testInfo) => {
     "Replace references with",
   );
   // A referenced zone can only move to another inventory zone: every other zone
-  // of the inventory is offered, the zone being deleted is not, and Unassigned
-  // never is. The list is asserted by membership rather than as a literal set
-  // because the drawer case above leaves its own created zone behind.
+  // of the inventory is offered after the "Choose a zone" prompt, the zone being
+  // deleted is not, and No zone never is. The list is asserted by membership
+  // rather than as a literal set because the drawer case above leaves its own
+  // created zone behind.
   const replacements = page.locator("#fare-zone-delete-replacement option");
-  const inventoryCount = Number(
-    await page.locator("#fare-zone-inventory-count").textContent(),
-  );
+  const inventoryCount = (await page.locator("#fare-zone-inventory-filters a").count()) - 2;
 
-  await expect(replacements).toHaveCount(inventoryCount - 1);
+  await expect(replacements).toHaveCount(inventoryCount);
+  await expect(replacements.first()).toHaveText("Choose a zone");
 
   for (const label of ["Eastbank · B", "C · C", "Airport · D"]) {
     await expect(replacements.filter({ hasText: label })).toHaveCount(1);
   }
 
-  await expect(replacements.filter({ hasText: "Unassigned" })).toHaveCount(0);
+  await expect(replacements.filter({ hasText: "No zone" })).toHaveCount(0);
   await expect(replacements.filter({ hasText: "Central · A" })).toHaveCount(0);
   await expect(page.locator("#fare-zone-delete-warning")).toHaveText(
     "Stops and fare rules will move together. This changes which journeys the related fares cover.",
   );
-  await expect(page.locator("#fare-zone-delete-dialog-confirm")).toHaveText("Replace & delete");
+  await expect(page.locator("#fare-zone-delete-dialog-confirm")).toHaveText("Delete zone");
   await expect(page.locator("#fare-zone-delete-dialog-cancel")).toHaveText("Keep zone");
+  // Nothing is chosen for the operator: the confirm stays disabled and says why
+  // until a replacement zone is picked.
+  await expect(page.locator("#fare-zone-delete-dialog-confirm")).toBeDisabled();
+  await expect(page.locator("#fare-zone-delete-reason")).toHaveText(
+    "Choose the zone that takes over this zone’s stops and fare rules.",
+  );
+
+  await page.locator("#fare-zone-delete-replacement").selectOption("B");
+
   await expect(page.locator("#fare-zone-delete-dialog-confirm")).toBeEnabled();
   await expect(page.locator("#fare-zone-delete-reason")).toHaveCount(0);
 
@@ -924,10 +941,10 @@ test("delete dialog", async ({ page }, testInfo) => {
     "0 stops and 0 fare rules use this zone.",
   );
   await expect(page.locator("#fare-zone-delete-empty")).toHaveText(
-    "This empty zone has no references. Deleting it will not change stops or fares.",
+    "This empty zone has no references. Deleting it won’t change stops or fares.",
   );
   await expect(page.locator("#fare-zone-delete-replacement-form")).toHaveCount(0);
-  await expect(page.locator("#fare-zone-delete-dialog-confirm")).toHaveText("Delete empty zone");
+  await expect(page.locator("#fare-zone-delete-dialog-confirm")).toHaveText("Delete zone");
 
   await capture(page, testInfo, "delete-empty-1440", { fullPage: false });
 
@@ -962,7 +979,7 @@ test("zones map", async ({ page, context }, testInfo) => {
   // Map + list is one stage: the map, its legend and the complete list below it.
   await expect(page.locator("#fare-zone-map-legend")).toContainText("Central");
   await expect(page.locator("#fare-zone-map-legend")).toContainText("Eastbank");
-  await expect(page.locator("#fare-zone-map-legend")).toContainText("Unassigned");
+  await expect(page.locator("#fare-zone-map-legend")).toContainText("No zone");
   await expect(page.locator("#fare-zone-stop-list")).toBeVisible();
   await expect(page.locator("#fare-zone-map [data-map-hint]")).toContainText(
     "Click stops or drag a box to select.",
@@ -1056,50 +1073,54 @@ test("rules list", async ({ page }, testInfo) => {
 
   await expect(page.locator("#fares-tab-rules")).toHaveAttribute("aria-current", "page");
   await expect(page.locator("#fare-rules-intro")).toContainText(
-    "Define the journey, then choose the fare.",
+    "Rules choose which fare applies to a journey.",
   );
   await expect(page.locator("#fare-rules-intro")).toContainText(
-    "Use existing fares. Prices and payment settings are managed separately.",
+    "Fares and their prices come from your imported feed and can’t be edited here.",
   );
 
-  const cards = page.locator("#fare-rule-list article");
+  const cards = page.locator("#fare-rule-list tr");
 
-  // Five rows, four rules: the two contains rows never become a card of their own.
+  // Five rows, four rules: the two contains rows never become a row of their own.
   await expect(cards).toHaveCount(4);
+  await expect(page.locator("#fare-rules-count")).toHaveText("4 fare rules");
 
-  const withinZone = cards.filter({ hasText: "From Central → Central" });
+  const withinZone = cards.filter({ hasText: "Within Central" });
 
   await expect(withinZone).toHaveCount(1);
-  await expect(withinZone).toContainText("CITY · $2.50");
-  await expect(withinZone).toContainText("All routes · One direction · within the same zone");
+  await expect(withinZone).toContainText("CITY");
+  await expect(withinZone).toContainText("$2.50");
+  await expect(withinZone).toContainText("All routes");
   await expect(withinZone.locator("[id$='-stopless']")).toHaveCount(0);
 
-  const stopless = cards.filter({ hasText: "From C → Central" });
+  const stopless = cards.filter({ hasText: "C → Central" });
 
   await expect(stopless).toHaveCount(1);
-  await expect(stopless).toContainText("CITY · $2.50");
-  await expect(stopless.locator("[id$='-stopless']")).toHaveText("Zone used without stops");
+  await expect(stopless).toContainText("CITY");
+  await expect(stopless).toContainText("$2.50");
+  await expect(stopless.locator("[id$='-stopless']")).toHaveText("C has no stops");
 
-  const oneWay = cards.filter({ hasText: "From Central → Eastbank" });
+  const oneWay = cards.filter({ hasText: "Central → Eastbank" });
 
   await expect(oneWay).toHaveCount(1);
-  await expect(oneWay).toContainText("CROSS · $3.75");
-  await expect(oneWay).toContainText("All routes · One direction");
+  await expect(oneWay).toContainText("CROSS");
+  await expect(oneWay).toContainText("$3.75");
+  await expect(oneWay).toContainText("All routes");
   await expect(oneWay.locator("[id$='-stopless']")).toHaveCount(0);
 
-  // The through-zone rule names every zone the journey must visit on its own
-  // journey line, and no other card carries the warning badge.
-  const through = cards.filter({ hasText: "Through Central + Eastbank" });
+  // The through-zone rule names every zone the journey must visit under its
+  // journey, and no other row carries the warning.
+  const through = cards.filter({ hasText: "Passing through Central and Eastbank" });
 
   await expect(through).toHaveCount(1);
-  await expect(through).toContainText("CROSS · $3.75");
-  await expect(through).toContainText("Any journey · Through Central + Eastbank");
-  await expect(through).toContainText("All routes · Every listed zone must be visited");
+  await expect(through).toContainText("CROSS");
+  await expect(through).toContainText("$3.75");
+  await expect(through).toContainText("Any journey");
 
   await expect(page.locator("[id$='-stopless']")).toHaveCount(1);
 
   await expect(page.locator("#fare-rules-note")).toContainText(
-    "“Any origin” and “Any destination” leave that end of the journey unrestricted. A reverse journey needs its own rule.",
+    "Each rule applies in one direction, so a return journey needs its own rule.",
   );
 
   await capture(page, testInfo, "rules-1440", { fullPage: false });
@@ -1120,9 +1141,9 @@ test("rules list", async ({ page }, testInfo) => {
 // the rules list case reads, its fields and plain-language summary are checked
 // against the seeded zones and fares, the removal confirm is captured, and a new
 // rule is created and removed again so the seeded version ends where it started.
-// A version with no fare_attributes shows the disabled `Add fare rule` with its
-// reason (AC-30), which is the one state the seeded fare-zones version cannot
-// show.
+// A version with no fare_attributes explains that a rule has nothing to choose
+// from and leads to the import (AC-30), which is the one state the seeded
+// fare-zones version cannot show.
 test("rule drawer", async ({ page }, testInfo) => {
   await routeBlankTiles(page);
   await logIn(page);
@@ -1133,16 +1154,20 @@ test("rule drawer", async ({ page }, testInfo) => {
   await page.goto(`/gtfs/${noFaresVersionId}/settings/fares/rules`);
   await waitForLiveView(page);
 
-  await expect(page.locator("#add-fare-rule")).toBeDisabled();
-  await expect(page.locator("#add-fare-rule-reason")).toHaveText(
-    "This version has no fares. Import fare_attributes.txt to add fares.",
+  await expect(page.locator("#fare-rules-no-fares")).toContainText(
+    "No fares to choose from yet",
+  );
+  await expect(page.locator("#add-fare-rule")).toHaveCount(0);
+  await expect(page.locator("#fare-rules-import")).toHaveAttribute(
+    "href",
+    `/gtfs/${noFaresVersionId}/import`,
   );
 
   // ── edit drawer ──
   await openFares(page, "rules");
 
-  const cards = page.locator("#fare-rule-list article");
-  const oneWay = cards.filter({ hasText: "From Central → Eastbank" });
+  const cards = page.locator("#fare-rule-list tr");
+  const oneWay = cards.filter({ hasText: "Central → Eastbank" });
 
   await expect(oneWay).toHaveCount(1);
   await oneWay.locator("[id$='-edit']").click();
@@ -1164,7 +1189,7 @@ test("rule drawer", async ({ page }, testInfo) => {
   // Every field the reference puts in the dialog, in its own order and words.
   await expect(page.locator("#fare-rule-fare")).toHaveValue("CROSS");
   await expect(page.locator("#fare-rule-fare-help")).toHaveText(
-    "Existing fares in this version. Prices are shown for context.",
+    "Prices come from this version’s fare list.",
   );
   await expect(page.locator("#fare-rule-origin")).toHaveValue("A");
   await expect(page.locator("#fare-rule-destination")).toHaveValue("B");
@@ -1176,13 +1201,13 @@ test("rule drawer", async ({ page }, testInfo) => {
     "Tick every zone the journey touches, including where it starts and ends. Trip planners match only journeys that touch exactly these zones. Leave all unchecked for no zone requirement.",
   );
   await expect(page.locator("#fare-rule-summary")).toHaveText(
-    "Use CROSS · $3.75 for journeys from Central to Eastbank on all routes.",
+    "Riders pay CROSS ($3.75) for journeys from Central to Eastbank on any route.",
   );
   await expect(drawer).toContainText(
-    "Start and end zones are directional. To charge the same fare in reverse, add a second rule with those zones swapped.",
+    "A rule applies in one direction. To charge the same fare on the return journey, add a second rule with the start and end swapped.",
   );
-  await expect(page.locator("#fare-rule-remove")).toHaveText("Remove this rule…");
-  await expect(page.locator("#fare-rule-form button[type='submit']")).toHaveText("Save fare rule");
+  await expect(page.locator("#fare-rule-remove")).toHaveText("Remove rule…");
+  await expect(page.locator("#fare-rule-form button[type='submit']")).toHaveText("Save rule");
 
   // The two journey selects sit side by side at this width, one per column.
   const originBox = await page.locator("#fare-rule-origin").boundingBox();
@@ -1215,7 +1240,7 @@ test("rule drawer", async ({ page }, testInfo) => {
     "Remove this fare rule?",
   );
   await expect(page.locator("#fare-rule-remove-consequence")).toHaveText(
-    "The fare itself will remain. Journeys covered by this rule may no longer receive that fare.",
+    "CROSS will no longer apply to journeys from Central to Eastbank. The fare stays in this version’s fare list.",
   );
   await expect(page.locator("#fare-rule-remove-dialog-confirm")).toHaveText("Remove rule");
   await expect(page.locator("#fare-rule-remove-dialog-cancel")).toHaveText("Keep rule");
@@ -1229,7 +1254,7 @@ test("rule drawer", async ({ page }, testInfo) => {
 
   // ── create and remove, ending where the case started ──
   await page.locator("#add-fare-rule").click();
-  await expect(page.locator("#fare-rule-drawer-title")).toHaveText("Add a fare rule");
+  await expect(page.locator("#fare-rule-drawer-title")).toHaveText("Add fare rule");
 
   // The same 300ms slide as the edit drawer above, so this capture waits for the
   // panel to settle too.
@@ -1237,10 +1262,16 @@ test("rule drawer", async ({ page }, testInfo) => {
     Promise.all(element.getAnimations().map((animation) => animation.finished)),
   );
 
+  // No fare is chosen for the operator, so the summary waits for one.
+  await expect(page.locator("#fare-rule-fare")).toHaveValue("");
   await page.selectOption("#fare-rule-origin", "A");
   await page.selectOption("#fare-rule-destination", "B");
   await expect(page.locator("#fare-rule-summary")).toHaveText(
-    "Use CITY · $2.50 for journeys from Central to Eastbank on all routes.",
+    "Riders pay the selected fare for journeys from Central to Eastbank on any route.",
+  );
+  await page.selectOption("#fare-rule-fare", "CITY");
+  await expect(page.locator("#fare-rule-summary")).toHaveText(
+    "Riders pay CITY ($2.50) for journeys from Central to Eastbank on any route.",
   );
 
   await capture(page, testInfo, "rule-drawer-create", { fullPage: false });
@@ -1251,11 +1282,9 @@ test("rule drawer", async ({ page }, testInfo) => {
   await expect(page.locator("#fare-zone-notice")).toHaveText("Fare rule saved.");
   await expect(cards).toHaveCount(5);
 
-  // The new CITY rule is the only card that is both a CITY fare and the
+  // The new CITY rule is the only row that is both a CITY fare and the
   // Central → Eastbank journey the form chose.
-  const created = cards
-    .filter({ hasText: "CITY · $2.50" })
-    .filter({ hasText: "From Central → Eastbank" });
+  const created = cards.filter({ hasText: "CITY" }).filter({ hasText: "Central → Eastbank" });
 
   await expect(created).toHaveCount(1);
   await created.locator("[id$='-edit']").click();
@@ -1284,18 +1313,18 @@ test("checks", async ({ page }, testInfo) => {
   const versionId = await openFares(page, "checks");
 
   await expect(page.locator("#fares-tab-checks")).toHaveAttribute("aria-current", "page");
-  await expect(page.locator("#fare-checks-heading")).toHaveText("Check your fare-zone setup");
+  await expect(page.locator("#fare-checks-heading")).toHaveText("Setup checks");
   await expect(page.locator("#fare-checks-subtitle")).toHaveText(
-    "Review membership and references before publishing this version.",
+    "Check zones and fare rules before you publish Browser Fare Zones Version.",
   );
   await expect(page.locator("#fare-check-clean")).toHaveCount(0);
 
   const stopless = page.locator("#fare-check-stopless-0");
 
   await expect(stopless).toContainText("Needs repair");
-  await expect(stopless).toContainText("Fare rules use C (C), which has no stops");
+  await expect(stopless).toContainText("Fare rules use C, which has no stops");
   await expect(stopless).toContainText(
-    "Exported fares for this zone won't match any stop. Assign stops to this zone or edit the rules that use it.",
+    "Trip planners can’t match any stop to this zone, so the fares that use it never apply.",
   );
   await expect(page.locator("#fare-check-stopless-0-link")).toHaveText("Show C");
   await expect(page.locator("#fare-check-stopless-0-link")).toHaveAttribute(
@@ -1306,7 +1335,9 @@ test("checks", async ({ page }, testInfo) => {
 
   await expect(page.locator("#fare-check-unassigned")).toContainText("Review");
   await expect(page.locator("#fare-check-unassigned")).toContainText("4 stops have no fare zone");
-  await expect(page.locator("#fare-check-unassigned-link")).toHaveText("Review unassigned stops");
+  await expect(page.locator("#fare-check-unassigned-link")).toHaveText(
+    "Review stops with no zone",
+  );
   await expect(page.locator("#fare-check-unassigned-link")).toHaveAttribute(
     "href",
     `/gtfs/${versionId}/settings/fares?filter=unassigned`,
@@ -1325,14 +1356,14 @@ test("checks", async ({ page }, testInfo) => {
   // Earlier cases in this file create an empty zone of their own, so the note's
   // exact count depends on the run; the note and its body are what the tab owes.
   await expect(page.locator("#fare-check-empty")).toContainText("empty zone");
-  await expect(page.locator("#fare-check-empty-link")).toHaveCount(0);
+  await expect(page.locator("#fare-check-empty-0-link")).toContainText("Show Airport");
 
   await expect(page.locator("#fare-check-source")).toContainText("Source check");
   await expect(page.locator("#fare-check-source")).toContainText(
-    "Verify assignments against your source feed",
+    "Compare zone assignments with your source feed",
   );
   await expect(page.locator("#fare-check-source-detail summary")).toHaveText(
-    "What must be checked?",
+    "What to compare",
   );
 
   // Three rows count: the stopless referenced zone, the unassigned-stops row and
@@ -1346,7 +1377,7 @@ test("checks", async ({ page }, testInfo) => {
   await page.locator("#fare-check-source-detail summary").click();
   await expect(page.locator("#fare-check-source-detail")).toHaveAttribute("open", "");
   await expect(page.locator("#fare-check-source-detail")).toContainText(
-    "Check that each stop has the same zone as in your source feed.",
+    "Check that each stop has the same zone as in your original feed.",
   );
 
   await capture(page, testInfo, "checks-source-1440", { fullPage: false });
@@ -1366,10 +1397,10 @@ test("checks", async ({ page }, testInfo) => {
   await page.goto(`/gtfs/${cleanVersionId}/settings/fares/checks`);
   await waitForLiveView(page);
 
-  await expect(page.locator("#fare-check-clean h3")).toHaveText(
-    "Every zone used by a fare rule has stops, and every stop has a zone.",
+  await expect(page.locator("#fare-check-clean")).toContainText("No problems found");
+  await expect(page.locator("#fare-check-clean")).toContainText(
+    "Every zone used by a fare rule has stops, and every stop has a fare zone.",
   );
-  await expect(page.locator("#fare-check-clean")).toContainText("Ready");
   await expect(page.locator("#fare-check-stopless-0")).toHaveCount(0);
   await expect(page.locator("#fare-check-unassigned")).toHaveCount(0);
   await expect(page.locator("#fare-check-empty")).toHaveCount(0);
@@ -1779,10 +1810,10 @@ test.describe("fare zones journey", () => {
     await page.keyboard.press("e");
 
     await expect(page.locator("#fare-zone-assignment-target")).toHaveValue("B");
-    await expect(page.locator("#fare-zone-assignment-summary")).toContainText(
-      "1 assignment will change",
+    await expect(page.locator("#fare-zone-assignment-summary-added")).toHaveText(
+      /1\s*Newly assigned/,
     );
-    await expect(page.locator("#fare-zone-assignment-row-1")).toContainText("→ B");
+    await expect(page.locator("#fare-zone-assignment-row-1-to")).toHaveText("Eastbank");
 
     await capture(page, testInfo, "journey-zones-assignment-1440", { fullPage: false });
 
@@ -1815,13 +1846,13 @@ test.describe("fare zones journey", () => {
     await page.locator("#fare-zone-undo").click();
 
     await expect(page.locator("#fare-zone-saved")).toContainText("Change undone.");
-    await expect(firstRow).toContainText("Unassigned");
+    await expect(firstRow).toContainText("No zone");
 
     await reloaded.reload();
     await waitForLiveView(reloaded);
     await expect(
       reloaded.locator("#fare-zone-stops tr").filter({ hasText: "Bayline 1" }),
-    ).toContainText("Unassigned");
+    ).toContainText("No zone");
 
     await page.locator("#fare-zone-saved").scrollIntoViewIfNeeded();
 
