@@ -70,6 +70,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
           | :no_relief_opportunity
           | :interlining_not_allowed
           | :block_attributes_conflict
+          # Page-level, not a block's: the day load raises one per short fleet row
+          # with `block_id: nil`, so no block is named and `@status_order` (which
+          # is consulted per block) has no place for it.
+          | :fleet_shortfall
           | :repositions
           | :frequency_trip
           | :unplottable

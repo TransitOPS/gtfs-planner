@@ -90,10 +90,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
   end
 
   # 230 blocks: block 1 holds the day type's most trips, blocks 2 and 3 an overlap
-  # (error), block 4 a short layover (warning) and block 5 an empty move alone (a
-  # notice), which is what `status=problems` must separate. Two unassigned trips
-  # keep the strip's unassigned figure non-zero, and one of them ends after
-  # midnight so the axis spans the next day.
+  # (error), block 4 a short layover (warning) and block 5 an empty move alone
+  # (an error of its own), which is what `status=problems` must separate. Two
+  # unassigned trips keep the strip's unassigned figure non-zero, and one of
+  # them ends after midnight so the axis spans the next day.
   defp seed_paged_day(context) do
     calendar(context, "WK", "Weekday")
 
@@ -112,7 +112,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
     # Block 5's handoff is the empty move the status sort must separate from the
     # other blocks: every other fixture stop shares the default coordinates, so
     # its second trip starts at a stop more than the 200 m proximity bound away
-    # and R5 makes the gap a `{:moves, _}` (a `repositions` notice).
+    # and R5 makes the gap a `{:moves, _}`. The two stops are ninety kilometres
+    # apart, so the ten minutes between the trips cannot hold the drive and R9
+    # reports the gap as `:cannot_reach`.
     far =
       stop_fixture(context.organization.id, context.version.id, %{
         stop_lat: Decimal.new("41.0000"),
@@ -234,7 +236,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
 
       {:ok, view, _html} = live(conn, blocks_path(version.id) <> "?sort=status")
 
-      assert Enum.take(row_blocks(view), 4) == ["2", "3", "4", "5"]
+      # 2, 3 and 5 are errors and 4 a warning, and the ties are natural, so the
+      # warning sorts after the three errors rather than among them.
+      assert Enum.take(row_blocks(view), 4) == ["2", "3", "5", "4"]
     end
   end
 
@@ -287,7 +291,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
 
       {:ok, view, _html} = live(conn, blocks_path(version.id) <> "?status=problems")
 
-      assert row_blocks(view) == ["2", "3", "4"]
+      assert row_blocks(view) == ["2", "3", "4", "5"]
       assert strip_value(view, "blocks") == "230"
     end
 

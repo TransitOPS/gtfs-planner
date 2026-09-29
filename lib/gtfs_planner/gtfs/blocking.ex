@@ -54,8 +54,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     DayTypes,
     DeadheadTimes,
     Distance,
+    Fleet,
     InSeat,
+    LowerBound,
+    Movements,
     Queries,
+    Relief,
     Review,
     Summary
   }
@@ -107,7 +111,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           summary: Summary.block_summary(),
           trips: [Queries.trip_row()],
           gaps: [Checks.gap()],
-          findings: [Checks.finding()]
+          findings: [Checks.finding()],
+          # R4, R2 and R6 for this block, derived once and attached so every
+          # consumer (the page, the export, the plan) reads the same answer.
+          resolution: Context.resolve_result(),
+          movements: Movements.t(),
+          stretches: [Relief.stretch()]
         }
 
   @type in_seat_entry :: %{row: Queries.in_seat_row(), state: InSeat.state()}
@@ -119,6 +128,42 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           date_count: non_neg_integer()
         }
 
+  @typedoc """
+  The plan figures of one day type, as Day loading step 4 defines them.
+
+  `vehicles` counts blocks, `minimum` is `Blocking.LowerBound`'s floor (a bound,
+  never a target), and the four second totals and two kilometre totals are the sums
+  of the blocks' movements. `riders` is the share of platform time the vehicle
+  spent carrying riders, `round(service ÷ platform × 100)`, and `problems` is the
+  day's finding count, so the plan summary and the preview compare like with like.
+  """
+  @type figures :: %{
+          vehicles: non_neg_integer(),
+          minimum: non_neg_integer(),
+          platform_secs: non_neg_integer(),
+          service_secs: non_neg_integer(),
+          layover_secs: non_neg_integer(),
+          drive_secs: non_neg_integer(),
+          service_km: float(),
+          deadhead_km: float(),
+          riders: non_neg_integer(),
+          problems: non_neg_integer()
+        }
+
+  @typedoc """
+  The day's longest unrelieved stretch with the block it belongs to, or `nil`
+  when no block has a stretch at all (a day type with no block, or none with a
+  platform span).
+  """
+  @type longest_stretch ::
+          nil
+          | %{
+              from_secs: integer(),
+              to_secs: integer(),
+              secs: non_neg_integer(),
+              block_id: String.t()
+            }
+
   @type day :: %{
           day_types: [DayTypes.day_type()],
           day_type: DayTypes.day_type() | nil,
@@ -129,6 +174,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           pool: [Queries.trip_row()],
           unplottable: [Queries.trip_row()],
           findings: [Checks.finding()],
+          figures: figures(),
+          fleet: [Fleet.row()],
+          # The day's longest unrelieved stretch and the block it belongs to, so
+          # the plan summary names one place rather than re-deriving the answer.
+          longest_stretch: longest_stretch(),
+          estimated_pairs: non_neg_integer(),
           # by each named trip in the day type
           in_seat: %{Ecto.UUID.t() => [in_seat_entry()]},
           counts: %{
@@ -381,8 +432,13 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   The day also carries the version's `context`: its settings, garages, vehicle
   types, route settings, block attributes, entered driving times, marked relief
   stops, fleet summary and per-trip distances, gathered by `build_context!/4` in
-  a fixed number of reads. Nothing on the day consumes it yet, so it changes no
-  finding, count, peak or bin; step 16 resolves blocks against it.
+  a fixed number of reads. Every block is resolved against it (R4, INV-9) and
+  carries its `resolution`, `movements` (R2, R3) and relief `stretches` (R6); the
+  day's `figures`, `fleet`, `longest_stretch` and `estimated_pairs` are the sums
+  and rows over those (Day loading step 4), and `peak` and `bins` are counted
+  over platform spans rather than trip spans. The context itself is server-side
+  state: the page never reads it, it derives render assigns from the loaded day
+  (CR-5).
   """
   @spec load_day(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
           {:ok, day()} | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]}}
@@ -695,7 +751,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         day_types,
         DayTypes.service_dates(calendars),
         trips,
-        settings.min_layover_minutes
+        context
       )
     )
   end
@@ -1309,8 +1365,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     end
   end
 
-  defp assemble(organization_id, gtfs_version_id, day_types, service_dates, trips, min_layover) do
-    context = Context.layover_only(min_layover)
+  defp assemble(organization_id, gtfs_version_id, day_types, service_dates, trips, context) do
     {pool_trips, blocked_trips} = Enum.split_with(trips, &is_nil(&1.block_id))
 
     in_seat =
@@ -1349,19 +1404,29 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
     pool = order_pool(pool_trips)
 
+    # One span per block, used for both the fleet rows (R7) and the peak, so the
+    # two can never be counted over different intervals.
+    spans = fleet_spans(blocks)
+    fleet_rows = Fleet.rows(spans, context.fleet)
+
     findings =
       (Enum.flat_map(blocks, & &1.findings) ++
          pool_notices(pool_trips, context) ++ in_seat_findings)
       |> Enum.uniq_by(&Checks.finding_key/1)
+      |> Kernel.++(fleet_shortfalls(fleet_rows))
 
     summaries = Enum.map(blocks, & &1.summary)
-    peak = Summary.peak(summaries)
+    peak = Fleet.peak(spans)
 
     %{
       blocks: blocks,
       pool: pool,
       unplottable: Enum.sort_by(Enum.reject(trips, & &1.plottable?), & &1.trip_id),
       findings: findings,
+      figures: figures(blocks, trips, context, findings),
+      fleet: fleet_rows,
+      longest_stretch: longest_stretch(blocks),
+      estimated_pairs: estimated_pairs(blocks),
       in_seat: in_seat_entries(states, trips),
       counts: %{
         blocks: length(blocks),
@@ -1381,17 +1446,173 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     }
   end
 
+  # The day's platform spans, one per block that has one, each carrying the
+  # garage and type the block resolved to (INV-9). A block with no plottable trip
+  # has no platform span at all and is not a vehicle anyone has to account for, so
+  # it is left out rather than counted as a zero-length one.
+  defp fleet_spans(blocks) do
+    for block <- blocks, span = platform_span(block.movements), span != nil do
+      Map.merge(span, %{
+        garage_id: block.resolution.garage_id,
+        vehicle_type_id: block.resolution.vehicle_type_id
+      })
+    end
+  end
+
+  defp platform_span(%{platform_start_secs: start, platform_end_secs: finish})
+       when is_integer(start) and is_integer(finish),
+       do: %{start_secs: start, end_secs: finish}
+
+  defp platform_span(_movements), do: nil
+
+  # A fleet row short of its listing is a page-level error with no block: the
+  # demand is the garage's whole and the listing is the garage's whole, so naming
+  # one block would misattribute it. `trip_ids` is empty for the same reason, and
+  # the finding is unique by its row rather than by `finding_key/1` — two garages
+  # short at once are two different problems with one key between them.
+  defp fleet_shortfalls(fleet_rows) do
+    for %{status: :short} = row <- fleet_rows do
+      %{
+        code: :fleet_shortfall,
+        severity: :error,
+        block_id: nil,
+        trip_ids: [],
+        transfer_id: nil,
+        detail: Map.take(row, [:garage_id, :vehicle_type_id, :needed, :listed, :at_secs])
+      }
+    end
+  end
+
+  # Day loading step 4. The seconds and kilometres are the sums of the blocks'
+  # movements rather than a second derivation, so a figure and the block it came
+  # from can never disagree. `riders` is a share of platform time and is 0 with no
+  # platform time rather than a division by zero.
+  defp figures(blocks, trips, context, findings) do
+    movements = Enum.map(blocks, & &1.movements)
+
+    platform_secs =
+      blocks
+      |> Enum.map(&platform_length(platform_span(&1.movements)))
+      |> Enum.sum()
+
+    service_secs = Enum.sum(Enum.map(movements, & &1.service_secs))
+
+    %{
+      vehicles: length(blocks),
+      minimum: LowerBound.compute(trips, context.min_layover_minutes),
+      platform_secs: platform_secs,
+      service_secs: service_secs,
+      layover_secs: Enum.sum(Enum.map(movements, & &1.layover_secs)),
+      drive_secs: Enum.sum(Enum.map(movements, & &1.drive_secs)),
+      service_km: round_km(Enum.sum(Enum.map(movements, & &1.service_km))),
+      deadhead_km: round_km(Enum.sum(Enum.map(movements, & &1.deadhead_km))),
+      riders: riders(service_secs, platform_secs),
+      problems: Enum.count(findings, &(&1.severity in [:error, :warning]))
+    }
+  end
+
+  defp riders(_service_secs, 0), do: 0
+  defp riders(service_secs, platform_secs), do: round(service_secs / platform_secs * 100)
+
+  # `Enum.sum/1` over a day with no block is the integer `0`, which `Float.round/2`
+  # refuses, so a kilometre figure is a float whatever the day holds.
+  defp round_km(km), do: km |> Kernel.*(1.0) |> Float.round(3)
+
+  # The longest stretch of the day and the block it belongs to. A tie keeps the
+  # first block in the day's own (natural) block order, so two blocks with the
+  # same longest stretch always name the same one.
+  defp longest_stretch(blocks) do
+    blocks
+    |> Enum.flat_map(fn block ->
+      Enum.map(block.stretches, &Map.put(&1, :block_id, block.summary.block_id))
+    end)
+    |> case do
+      [] -> nil
+      stretches -> Enum.max_by(stretches, & &1.secs)
+    end
+  end
+
+  # The distinct directional pairs the day's drives are estimated rather than
+  # entered, which is what the Driving times drawer counts as "N estimated"
+  # (AC-3). A pull names its own refs; a gap names its trips, so the pair is read
+  # off the same `sequence/1` the movements were built from and lines up by
+  # construction. The pair is a `Context.ref/0` tuple, so `A → B` and `B → A` are
+  # two pairs exactly as the `deadhead_times` rows are, and two blocks driving
+  # the same pair are one.
+  defp estimated_pairs(blocks) do
+    blocks
+    |> Enum.flat_map(&estimated_pair_refs/1)
+    |> Enum.uniq()
+    |> length()
+  end
+
+  defp estimated_pair_refs(%{trips: trips, movements: movements}) do
+    by_id = Map.new(trips, &{&1.id, &1})
+
+    pulls =
+      [movements.pull_out, movements.pull_back]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.flat_map(fn
+        %{source: :estimated, from: from, to: to} -> [{from, to}]
+        _entered_or_unknown -> []
+      end)
+
+    gaps =
+      for %{source: :estimated, from_id: from_id, to_id: to_id} <- movements.gaps do
+        case {Map.get(by_id, from_id), Map.get(by_id, to_id)} do
+          {%{last_stop: from_stop}, %{first_stop: to_stop}} -> [stop_pair(from_stop, to_stop)]
+          _a_gap_whose_trip_is_not_here -> []
+        end
+      end
+
+    (pulls ++ gaps) |> Enum.reject(&is_nil/1)
+  end
+
+  defp stop_pair(%{stop_id: from_stop_id}, %{stop_id: to_stop_id}),
+    do: {{:stop, from_stop_id}, {:stop, to_stop_id}}
+
+  defp stop_pair(_from, _to), do: nil
+
+  defp platform_length(%{start_secs: start_secs, end_secs: end_secs}),
+    do: end_secs - start_secs
+
+  defp platform_length(_no_span), do: 0
+
   defp build_block(block_id, trips, context, in_seat_findings) do
+    sequence = Checks.sequence(trips)
+    resolution = Context.resolve_block(context, block_id, trips)
+    movements = Movements.build(sequence, resolution, context)
+    windows = Relief.windows(trips, movements, context)
+
+    # R6's search is over the marked locations, not over the trips, so a block with
+    # no marked point has no windows and one stretch over its whole platform span.
+    # That is still the honest answer for the day's longest stretch, so the limit
+    # is passed whether or not one is set: `nil` means the display schedule, which
+    # raises no `:too_long` finding of its own.
+    limit_secs = if context.max_piece_minutes, do: context.max_piece_minutes * 60
+
     findings =
       (Checks.block_findings(block_id, trips, context) ++ in_seat_findings)
       |> Enum.uniq_by(&Checks.finding_key/1)
 
     %{
-      summary: Summary.block_summary(block_id, trips, findings),
+      summary: Summary.block_summary(block_id, trips, findings, platform_span_tuple(movements)),
       trips: order_block_trips(trips),
-      gaps: Checks.gaps(Checks.sequence(trips)),
-      findings: findings
+      gaps: Checks.gaps(sequence),
+      findings: findings,
+      resolution: resolution,
+      movements: movements,
+      stretches: Relief.stretches(movements, windows, limit_secs)
     }
+  end
+
+  # `Summary.block_summary/4` takes the platform span as a pair so a `nil` span is
+  # the three-arity form's own answer, the block's own trip span.
+  defp platform_span_tuple(movements) do
+    case platform_span(movements) do
+      nil -> nil
+      span -> {span.start_secs, span.end_secs}
+    end
   end
 
   # One entry per named trip the day type holds, under that trip's UUID, in the
