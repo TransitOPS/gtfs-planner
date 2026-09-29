@@ -43,6 +43,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.DiagramPalette
+  alias GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents
   alias GtfsPlannerWeb.Gtfs.StationJournalMarkers
   alias GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents
   alias GtfsPlannerWeb.StationWorkspace
@@ -7477,14 +7478,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   # AC-12: the pathway and child-stop deletion guards return :pathway_in_use
   # instead of deleting a closure-backed pathway. The refusal names the exact
-  # blocked pathways and links each one to its Evolutions filter; the drawer,
+  # blocked pathways and links each one to its closures filter; the drawer,
   # the loaded pathway and the stop's placement are all left untouched.
   defp pathway_in_use_refusal(socket, pathways) do
     paths = Enum.uniq_by(pathways, & &1.pathway_id)
 
     %{
       title: "Pathway not deleted",
-      body: "This pathway has scheduled closures. Delete them on the Evolutions tab first.",
+      body:
+        "This pathway has scheduled closures. Delete them on the station’s Closures tab first.",
       links: refusal_links(socket, paths)
     }
   end
@@ -7500,7 +7502,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       title: child_stop_refusal_title(action),
       body:
         "A pathway connected to this stop has scheduled closures. " <>
-          "Delete them on the Evolutions tab first.",
+          "Delete them on the station’s Closures tab first.",
       links: refusal_links(socket, blocked_pathways)
     }
   end
@@ -7510,7 +7512,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   # The blocked pathways are exactly the station's closure-backed pathways that
   # touch this stop, read from the same scoped station-closure list the
-  # Evolutions page and the calendar guards use. One link per pathway id in a
+  # closures page and the calendar guards use. One link per pathway id in a
   # stable id order; a single blocked pathway keeps the reference's plain label,
   # a stop with several names each exact pathway.
   defp blocked_pathways_for_stop(socket, stop_id) do
@@ -7537,17 +7539,26 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp refusal_links(socket, pathways) do
     single? = length(pathways) == 1
-    Enum.map(pathways, &refusal_link(socket, &1.pathway_id, single?))
+    Enum.map(pathways, &refusal_link(socket, &1, single?))
   end
 
-  defp refusal_link(socket, pathway_id, single?) do
+  # A stop with several blocked pathways names each one the way the interface
+  # does, `Mode · From ↔ To`, with the exact ID after it as secondary text.
+  defp refusal_link(socket, pathway, single?) do
     %{
-      pathway_id: pathway_id,
-      label: if(single?, do: "Open Evolutions", else: "Open Evolutions for #{pathway_id}"),
+      pathway_id: pathway.pathway_id,
+      label:
+        if(single?, do: "Open closures", else: "Open closures for #{refusal_label(pathway)}"),
+      detail: if(single?, do: nil, else: pathway.pathway_id),
       href:
-        ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/stops/#{socket.assigns.station.stop_id}/evolutions?#{%{"pathway" => pathway_id}}"
+        ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/stops/#{socket.assigns.station.stop_id}/evolutions?#{%{"pathway" => pathway.pathway_id}}"
     }
   end
+
+  defp refusal_label(%{from_stop: %Stop{}, to_stop: %Stop{}} = pathway),
+    do: PathwayEvolutionsComponents.pathway_label(pathway)
+
+  defp refusal_label(pathway), do: pathway.pathway_id
 
   defp pathway_for_deletion(socket, pathway_id) do
     organization_id = socket.assigns.current_organization.id

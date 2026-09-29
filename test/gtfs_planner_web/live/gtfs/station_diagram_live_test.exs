@@ -327,7 +327,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
     end
 
-    test "a closure-backed pathway delete is refused inside the drawer and opens its Evolutions filter",
+    test "a closure-backed pathway delete is refused inside the drawer and opens its closures filter",
          %{
            conn: conn,
            user: user,
@@ -374,7 +374,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(
                view,
                "#pathway-in-use-error",
-               "This pathway has scheduled closures. Delete them on the Evolutions tab first."
+               "This pathway has scheduled closures. Delete them on the station’s Closures tab first."
              )
 
       assert has_element?(view, "#station-diagram-confirmation[data-open='false']")
@@ -388,8 +388,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       single_link = render(element(view, "#pathway-in-use-error-0"))
       path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/evolutions"
 
-      assert single_link =~ "Open Evolutions"
-      refute single_link =~ "Open Evolutions for"
+      assert single_link =~ "Open closures"
+      refute single_link =~ "Open closures for"
       assert single_link =~ ~s(data-pathway-id="#{lift.pathway_id}")
       assert single_link =~ ~s(href="#{path}?pathway=REFUSAL%2FPW+LIFT")
 
@@ -398,7 +398,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert Repo.get(GtfsPlanner.Gtfs.PathwayEvolution, lift_closure.id)
       assert has_element?(view, "#pathway-row-#{lift.id}")
 
-      # The fix link opens the station's Evolutions page filtered to exactly
+      # The fix link opens the station's closures page filtered to exactly
       # this pathway: two closures exist at the station, one matches.
       {:ok, evolutions_view, _html} = live(conn, "#{path}?pathway=REFUSAL%2FPW+LIFT")
 
@@ -453,15 +453,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                view,
                "#child-stop-in-use-error",
                "A pathway connected to this stop has scheduled closures. " <>
-                 "Delete them on the Evolutions tab first."
+                 "Delete them on the station’s Closures tab first."
              )
 
       refusal = render(element(view, "#child-stop-in-use-error"))
       path = "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/evolutions"
 
-      for pathway_id <- [lift.pathway_id, stairs.pathway_id] do
-        assert refusal =~ "Open Evolutions for #{pathway_id}"
-        assert refusal =~ ~s(data-pathway-id="#{pathway_id}")
+      # Each link names its pathway as Mode · From ↔ To, with the exact ID after
+      # it as secondary text.
+      for {pathway, label} <- [
+            {lift, "Elevator · Refusal hub ↔ Refusal bay"},
+            {stairs, "Stairs · Refusal mezzanine ↔ Refusal bay"}
+          ] do
+        assert refusal =~ "Open closures for #{label}"
+        assert has_element?(view, "#child-stop-in-use-error a .font-mono", pathway.pathway_id)
+        assert refusal =~ ~s(data-pathway-id="#{pathway.pathway_id}")
       end
 
       assert refusal =~ ~s(href="#{path}?pathway=REFUSAL%2FPW+LIFT")
@@ -529,8 +535,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refusal = render(element(view, "#child-stop-in-use-error"))
 
       assert refusal =~ ~s(data-pathway-id="#{stairs.pathway_id}")
-      assert refusal =~ "Open Evolutions"
-      refute refusal =~ "Open Evolutions for"
+      assert refusal =~ "Open closures"
+      refute refusal =~ "Open closures for"
 
       # Removing is not deleting: the stop stays on its level with its
       # coordinate, its pathway and the closure that blocks the removal.

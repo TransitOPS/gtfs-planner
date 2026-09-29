@@ -108,7 +108,7 @@ defmodule GtfsPlannerWeb.Components.TransitPresentation do
   attr :class, :any, default: nil
   slot :note, doc: "Display-ready lines shown under the record key."
   slot :actions
-  slot :links, doc: "row-level links rendered with the summary, such as Open Evolutions"
+  slot :links, doc: "row-level links rendered with the summary, such as Open closures"
 
   def version_diff_row(assigns) do
     {action_label, action_icon, action_tone} = version_diff_action(assigns.action)

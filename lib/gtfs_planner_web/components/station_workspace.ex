@@ -25,7 +25,7 @@ defmodule GtfsPlannerWeb.StationWorkspace do
     {:diagram, "Floorplans", "/diagram"},
     {:report, "Reports", "/report"},
     {:reachability, "Reachability", "/reachability"},
-    {:evolutions, "Evolutions", "/evolutions"}
+    {:evolutions, "Closures", "/evolutions"}
   ]
 
   @doc """

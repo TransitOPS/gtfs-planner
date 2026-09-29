@@ -95,7 +95,7 @@ Station merge builds its review normally from an upload that contains
 `pathway_evolutions.txt` and does not apply the file. The review shows
 "pathway_evolutions.txt is not applied by station merge. Existing scheduled
 closures are unchanged." Apply a station merge, and scheduled closures are
-untouched. Manage closures through a full import or through the Evolutions tab.
+untouched. Manage closures through a full import or through the Closures tab.
 
 ## Export
 
@@ -123,7 +123,7 @@ supported header first.
 
 ## Analysis limits
 
-The Evolutions tab and the analysis results are bounded by fixed local limits,
+The Closures tab and the analysis results are bounded by fixed local limits,
 not by feed size. A range check covers at most 31 requested service days, at
 most 100,000 candidate service dates, and at most 200,000 service-day closure
 instances. Time-aware evaluation needs exactly one valid agency timezone;

@@ -1643,6 +1643,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
                  "STN_BOTH"
                ]
 
+      # The link names the station's Closures tab, the tab's own name.
+      assert [label] = attribute_values(refused, "#calendar-delete-pathways-0", "aria-label")
+      assert label =~ "on the STN_BOTH Closures tab"
+
       refute dialog_open?(refused, "calendar-review-dialog")
 
       # The loaded form survives the refusal with its stored values.

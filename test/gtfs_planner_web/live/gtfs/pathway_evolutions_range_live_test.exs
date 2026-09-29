@@ -347,8 +347,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsRangeLiveTest do
                "-18000"
              ]
 
-      # The period's own duration is what the reader measures: five minutes.
-      assert has_element?(view, "#range-period-0-when", "9:00 AM – 9:05 AM")
+      # The period's own duration is what the reader measures: five minutes. It
+      # leads in service time, like the closure list and the timeline, with the
+      # clock time as the secondary line.
+      assert has_element?(view, "#range-period-0-when", "09:00–09:05")
+      assert has_element?(view, "#range-period-0-when .text-muted", "9:00 AM – 9:05 AM")
 
       # The platform lost its last step-free route, and the pair report names
       # which entrance and platform lost which direction.
@@ -440,6 +443,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsRangeLiveTest do
 
       # The local window is on the next civil day, and the row says so instead of
       # presenting it as Tuesday's own clock.
+      assert has_element?(view, "#range-period-0-when", "25:00–26:00")
       assert has_element?(view, "#range-period-0-when", "1:00 AM – 2:00 AM on Wed, Jan 20")
       assert row_attributes(html, "#range-show-0", "data-show-time") == ["25:00"]
     end

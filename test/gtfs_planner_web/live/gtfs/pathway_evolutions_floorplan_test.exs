@@ -462,6 +462,50 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsFloorplanTest do
       assert attribute(render(view), "#closure-pathway-list", "class") =~ "md:hidden"
     end
 
+    test "lays the plan out on the card's inset with a Level switch and a titled Key",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station} = station_with_floorplan(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      html = render(view)
+      panel_class = attribute(html, "#closure-floorplan-panel", "class")
+
+      # The level line, the plan, the caption and the Key share the card's
+      # content inset instead of sitting flush against its edge.
+      assert panel_class =~ "px-4"
+      assert panel_class =~ "md:px-5"
+
+      # More than one level: a labelled group with one underlined tab per level.
+      assert has_element?(
+               view,
+               ~s(#closure-floorplan-levels[aria-label="Floorplan level"]),
+               "Level"
+             )
+
+      assert attribute(html, "#closure-floorplan-level-FP_L1", "class") =~ "border-b-2"
+
+      # The plan is drawn at reduced opacity on the canvas so the marks read.
+      assert attribute(html, "#closure-floorplan-image", "class") =~ "opacity-[.62]"
+      assert attribute(html, "#closure-floorplan-frame", "class") =~ "bg-canvas"
+
+      # The Key is titled and names every mark, including the point kinds.
+      assert has_element?(view, "#closure-floorplan-legend-title", "Key")
+
+      for label <- [
+            "Selected pathway",
+            "Continues to another level",
+            "Platform",
+            "Entrance or exit",
+            "Junction",
+            "Boarding spot",
+            "Has closures"
+          ] do
+        assert has_element?(view, "#closure-floorplan-legend li", label)
+      end
+    end
+
     test "switches levels from the station's own snapshot",
          %{conn: conn, user: user, organization: organization, version: version} do
       %{station: station, street_stop: street_stop, lift: lift} =
@@ -644,6 +688,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsFloorplanTest do
              )
 
       assert has_element?(view, "#preview-floorplan-legend", "Closed")
+      assert has_element?(view, "#preview-floorplan-legend-title", "Key")
+
+      # Badges are 4px, never pills, and the counts read in words.
+      assert has_element?(view, "#preview-floorplan-badge[data-tone='error']", "1 pathway closed")
+      refute has_element?(view, "#evolutions .rounded-full")
     end
 
     test "renders the missing note separately when the station has no floorplan image",

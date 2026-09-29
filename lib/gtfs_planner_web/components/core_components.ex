@@ -1129,7 +1129,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             class={sub_nav_link_class(@active_tab == :evolutions)}
             aria-current={@active_tab == :evolutions && "page"}
           >
-            Evolutions
+            Closures
           </.link>
         </div>
       </nav>

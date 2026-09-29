@@ -976,7 +976,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
       assert Enum.count(links) == 5
     end
 
-    test "appends Evolutions after Reachability and keeps the station identity" do
+    test "appends Closures after Reachability and keeps the station identity" do
       html = render_station_sub_nav(%{active_tab: :reachability})
       doc = LazyHTML.from_fragment(html)
       links = LazyHTML.query(doc, "#station-sub-nav nav a")
@@ -986,7 +986,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
                "Floorplans",
                "Reports",
                "Reachability",
-               "Evolutions"
+               "Closures"
              ]
 
       assert sub_nav_attr(links, "href") |> List.last() ==
@@ -1003,7 +1003,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
                "Central Station"
     end
 
-    test "Evolutions tab carries the stable link ID and becomes current" do
+    test "Closures tab carries the stable link ID and becomes current" do
       html = render_station_sub_nav(%{active_tab: :evolutions})
       doc = LazyHTML.from_fragment(html)
       links = LazyHTML.query(doc, "#station-sub-nav nav a")
@@ -1012,7 +1012,7 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
                "/gtfs/42/stops/stop-1/evolutions"
              ]
 
-      assert sub_nav_texts(current_sub_nav_links(links)) == ["Evolutions"]
+      assert sub_nav_texts(current_sub_nav_links(links)) == ["Closures"]
     end
 
     test "Floorplans link points to diagram route" do

@@ -363,7 +363,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsTimelineLiveTest do
              )
 
       assert label(html, "#preview-moment") =~
-               "Tuesday, January 19, 2027 · 22:00 service time (10:00 PM UTC-05:00)"
+               "Tuesday, January 19, 2027 · 22:00 service time (10:00 PM)"
 
       assert attribute(html, closes, "aria-pressed") == ["true"]
 
@@ -385,7 +385,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsTimelineLiveTest do
       assert has_element?(view, "#preview-result-title", "No connection lost at this time")
 
       assert label(html, "#preview-moment") =~
-               "Tuesday, January 19, 2027 · 26:00 service time (2:00 AM Jan 20 UTC-05:00)"
+               "Tuesday, January 19, 2027 · 26:00 service time (2:00 AM Jan 20)"
 
       assert label(html, "#timeline-cursor-label") == "Selected time · 26:00"
       assert attribute(html, reopens, "aria-pressed") == ["true"]
@@ -427,7 +427,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsTimelineLiveTest do
       # before the closure closes, so the lift is still open and the moment
       # line names the earlier date.
       assert label(html, "#preview-moment") =~
-               "Monday, January 18, 2027 · 23:59 service time (11:59 PM UTC-05:00)"
+               "Monday, January 18, 2027 · 23:59 service time (11:59 PM)"
 
       assert has_element?(view, "#preview-result-title", "No connection lost at this time")
       assert label(html, "#timeline-title") == "Closures on Mon, Jan 18"
@@ -466,7 +466,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsTimelineLiveTest do
       # The patched moment is one minute before the closure opens, and its local
       # label is EST on Saturday: the instant 2027-03-14T03:59:00Z.
       assert label(html, "#preview-moment") =~
-               "Saturday, March 13, 2027 · 22:59 service time (10:59 PM UTC-05:00)"
+               "Saturday, March 13, 2027 · 22:59 service time (10:59 PM)"
 
       assert has_element?(view, "#preview-result-title", "No connection lost at this time")
     end

@@ -3756,41 +3756,18 @@ body:has(#home-page) {
 }
 
 /* ── Scheduled pathway closures (#evolutions) ──
-   The v2 Schedule-closures design owns the affected region below the station
-   tabs. Every rule here is scoped to the feature root so the navigation shell,
-   daisyUI defaults and the rest of the page keep their current appearance. The
-   region reuses the design-system tokens declared above (`--color-strong`,
-   `--color-muted`, `--color-subtle`, `--color-control`, `--color-canvas`,
-   `--color-action`, `--color-selection`, `--color-focus`, `--radius-control`,
-   `--radius-card`, `--font-ds`, `--font-display`); only the two tokens the v2
-   regions need and the header theme does not define are added, and both carry a
-   pathway-evolutions prefix so they cannot collide with a future global name. */
-@theme {
-  --color-evo-action-hover: #a50f5b; /* filled action hover; 5.6:1 with white text */
-  --radius-evo-badge: 999px; /* count chip on a pathway option */
-  /* Static floorplan inks, taken from the design system's own navy/cyan/error
-     scale so the overlay's lines, markers and closed marks are the reference's
-     values without introducing a second palette. */
-  --color-evo-pathway: #2a3870; /* open pathway line and marker outline */
-  --color-evo-pathway-hover: #0a1330; /* the same line under the pointer */
-  --color-evo-node: #0f1a3d; /* stops and the continues-to-another-level arrows */
-  --color-evo-entrance: #0a1330; /* entrance squares and their names */
-  --color-evo-dot: #1e6868; /* the has-closures dot */
-  --color-evo-closed: #d33a3a; /* a closed pathway's dashed line and cross */
-  --color-evo-closed-bg: #fbe3e3; /* the closed cross's fill */
-  --color-evo-closed-ink: #9b1c1c; /* the Closed word and its cross */
-}
+   The closures pages are a `.ds-page`, so the field grammar, the buttons, the
+   error ink and the focus outline of the design system come from the shared
+   rules above and the components in `PlannerComponents` and `ResultComponents`.
+   What follows is what those cannot express once: the focus outline for the
+   page's own button rows, the stacked closure table, the timeline's closed bar
+   and the destructive delete confirmation. `#evolutions` also carries the
+   `DiagramPalette` variables inline, which the floorplan marks read. */
 
-#evolutions {
-  font-family: var(--font-ds);
-}
-
-/* The header's focus treatment, scoped to this feature root. Page controls
-   elsewhere keep their own rings; inside the Evolutions region every control is
-   either a card action or a list row, and both need a visible keyboard target.
-   `outline-offset: -2px` keeps the ring inside the row button so a selected
-   row's inset action bar stays visible. */
-#evolutions :is(a, button, input, [tabindex]):focus-visible {
+/* `.ds-page` outlines links, selects and text inputs. The page's own controls
+   are row buttons, tabs and a textarea; a `.btn` keeps its own ring. Inside a
+   row the outline is drawn inset so a selected row's accent bar stays visible. */
+#evolutions :is(button:not(.btn), textarea, [tabindex]):focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
@@ -3799,29 +3776,15 @@ body:has(#home-page) {
   outline-offset: -2px;
 }
 
-/* The editor's field labels come from the shared input component, whose daisyUI
-   label default is 16px and muted to 60% ink. The v2 reference labels a field
-   with the feature's 13px strong line, so the editor restates exactly that
-   inside its own form and nothing outside `#closure-form` changes. */
-#closure-form .fieldset > label > .label {
-  color: var(--color-strong);
-  font-size: 13px;
-  font-weight: 650;
-  margin-bottom: 0.375rem;
+/* The delete confirmation names a destructive action, so its confirm takes the
+   error ink the design system gives a destructive button, in place of the
+   planner dialog's action fill. Scoped to this one dialog. */
+#closure-delete-dialog-confirm {
+  background-color: var(--color-error-fg);
 }
 
-/* The unsaved-edits and delete confirmations keep the shared dialog's
-   structure, focus and dismissal, and dress their own action in this region's
-   action colour: the primitive's primary variant is the navigation shell's
-   indigo, while every filled action of the closures editor (Create, Save, the
-   empty-state actions) is the DS action colour. Scoped to these two dialogs so
-   no other confirmation changes. */
-#evolutions :is(#closure-dirty-dialog-confirm, #closure-delete-dialog-confirm) {
-  background-color: var(--color-action);
-}
-
-#evolutions :is(#closure-dirty-dialog-confirm, #closure-delete-dialog-confirm):hover {
-  background-color: var(--color-evo-action-hover);
+#closure-delete-dialog-confirm:hover:not(:disabled) {
+  background-color: color-mix(in oklab, var(--color-error-fg) 88%, black);
 }
 
 /* Below `md` the closure table becomes one stacked card per row: the pathway
@@ -3849,25 +3812,23 @@ body:has(#home-page) {
   }
 }
 
-/* ── Evolutions timeline: the closed span of a bar and its gridlines ──
-   A closed window on the timeline is the error ink plus a diagonal hatch, the
-   way the v2 reference draws it, so the status never depends on colour alone.
-   Both rules are scoped to the feature root and use the DS error token the rest
-   of the feature already uses. */
+/* ── Closures timeline: the closed span of a bar and its gridlines ──
+   A closed window on the timeline is the error ink plus a diagonal hatch, so the
+   status never depends on colour alone. */
 #evolutions .evo-closed-bar {
   background: repeating-linear-gradient(
     135deg,
-    color-mix(in oklab, var(--color-error) 18%, white) 0 4px,
-    var(--color-error) 4px 6px
+    var(--color-error-bg) 0 4px,
+    var(--color-error-line) 4px 6px
   );
-  border: 1.5px solid var(--color-error);
+  border: 1.5px solid var(--color-error-line);
 }
 
 #evolutions .evo-axis-grid {
   background-color: var(--color-subtle);
 }
 
-/* ── Evolutions floorplan: the access preview's highlighted causes ──
+/* ── Closures floorplan: the access preview's highlighted causes ──
    Activating a pathway on the preview floorplan highlights the closure rows
    the preview already computed for that pathway; it selects nothing and writes
    nothing. The row keeps its text, so the highlight is an addition, never the
@@ -3878,20 +3839,11 @@ body:has(#home-page) {
 }
 
 /* The floorplan's roving tab stop is a real button; the browser's default
-   focus ring is painted on the whole `<g>` bounding box, which the reference
-   replaces with the line/marker's own focus outline. The outline is removed
-   here and the `stroke-focus` class on the focus shape provides it. */
+   focus ring is painted on the whole `<g>` bounding box, which would scale into
+   a giant pill around the pathway. The outline is removed here and the
+   `stroke-focus` class on the focus shape provides the pathway's own. */
 #evolutions .evo-fp-group:focus {
   outline: none;
-}
-
-/* Stop names and the Closed word carry their font size and outline as
-   attributes in user units, computed from the rendered width, because an SVG
-   length is a user unit and the viewBox scales it. Their font family stays the
-   feature's design-system face here. */
-#evolutions .evo-fp-stop-name,
-#evolutions .evo-fp-closed-word {
-  font-family: var(--font-ds);
 }
 
 /* ── Floorplan pathway drawer: the bidirectional checkbox label ──
