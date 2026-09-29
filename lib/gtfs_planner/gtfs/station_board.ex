@@ -8,6 +8,10 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
   children plus `location_type` 4 boarding areas whose parent is a direct child. A
   pathway belongs to a station when either endpoint is one of its child stops.
 
+  `statuses/3` adds each station's report issue count and latest reachability
+  result to those summaries, counting with the station report's own `Outcome`
+  rule so a board row cannot disagree with the report it links to.
+
   Every read is scoped by organization and version; the caller passes both ids
   from the mount context and no request input selects them.
   """
@@ -17,8 +21,10 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Pathway
+  alias GtfsPlanner.Gtfs.StationReport2.Outcome
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
+  alias GtfsPlanner.Reachability
   alias GtfsPlanner.Repo
 
   @type base :: %{
@@ -31,6 +37,17 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
           last_edited_at: DateTime.t() | nil,
           last_edited_by: String.t() | nil
         }
+
+  @type reachability :: %{
+          run_id: Ecto.UUID.t(),
+          outcome: :passed | :warning | :failed | :not_applicable,
+          reachable: non_neg_integer(),
+          pair_count: non_neg_integer(),
+          completed_at: DateTime.t(),
+          stale?: boolean()
+        }
+
+  @type status :: %{issues: non_neg_integer(), reachability: nil | reachability()}
 
   @doc """
   Returns one summary per station of the version, sorted by `stop_id`.
@@ -78,6 +95,55 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
         Enum.flat_map(direct_children, &Map.get(boarding_areas_by_parent, &1, []))
 
       {station_stop_id, MapSet.new(direct_children ++ boarding_areas)}
+    end)
+  end
+
+  @doc """
+  Returns the report issue count and latest reachability result per station.
+
+  The result is keyed by station `stop_id`. One bulk read loads the version's
+  stations and child stops with their levels, and one loads the version's
+  pathways; every station with at least one pathway is summarized with the
+  station report's own items, and a station without pathways is not summarized.
+  Reachability is the newest completed run per station, with `stale?` true when
+  the station's latest change is newer than that run. Snapshots are discarded
+  after counting.
+  """
+  @spec statuses(Ecto.UUID.t(), Ecto.UUID.t(), [base()]) :: %{String.t() => status()}
+  def statuses(_organization_id, _gtfs_version_id, []), do: %{}
+
+  def statuses(organization_id, gtfs_version_id, bases) do
+    stop_rows = list_station_and_child_stops(organization_id, gtfs_version_id)
+    child_rows = Enum.reject(stop_rows, &is_nil(&1.parent_station))
+
+    children =
+      children_by_station(
+        station_entries(bases) ++
+          Enum.map(child_rows, &{&1.stop_id, &1.parent_station, &1.location_type})
+      )
+
+    station_by_child = child_to_station(children)
+    station_child_stops = child_stops_by_station(child_rows, station_by_child)
+
+    station_pathways =
+      pathways_by_station(list_pathway_rows(organization_id, gtfs_version_id), station_by_child)
+
+    stations_by_stop_id =
+      stop_rows
+      |> Enum.filter(&(&1.location_type == 1))
+      |> Map.new(&{&1.stop_id, &1})
+
+    latest =
+      Reachability.latest_by_station(
+        organization_id,
+        gtfs_version_id,
+        Enum.map(bases, & &1.stop_id)
+      )
+
+    Map.new(bases, fn base ->
+      issues = issue_count(base, stations_by_stop_id, station_child_stops, station_pathways)
+
+      {base.stop_id, %{issues: issues, reachability: station_reachability(latest, base)}}
     end)
   end
 
@@ -228,5 +294,77 @@ defmodule GtfsPlanner.Gtfs.StationBoard do
       diagram_filename not in [nil, ""]
     end)
     |> Enum.frequencies_by(&elem(&1, 0))
+  end
+
+  # A station without pathways is not started: the board shows 0 issues and the
+  # report builders are never called for it.
+  defp issue_count(%{pathway_count: 0}, _stations, _child_stops, _pathways), do: 0
+
+  defp issue_count(base, stations, child_stops, pathways) do
+    snapshot = %{
+      station: Map.fetch!(stations, base.stop_id),
+      child_stops: Map.get(child_stops, base.stop_id, []),
+      pathways: Map.get(pathways, base.stop_id, [])
+    }
+
+    Outcome.counts(Outcome.report_items(snapshot)).failed
+  end
+
+  defp station_reachability(latest, base) do
+    case Map.get(latest, base.stop_id) do
+      nil -> nil
+      result -> Map.put(result, :stale?, stale?(base.last_edited_at, result.completed_at))
+    end
+  end
+
+  defp stale?(nil, _completed_at), do: false
+
+  defp stale?(last_edited_at, completed_at),
+    do: DateTime.compare(last_edited_at, completed_at) == :gt
+
+  defp child_stops_by_station(child_rows, station_by_child) do
+    child_rows
+    |> Enum.flat_map(fn stop ->
+      case Map.get(station_by_child, stop.stop_id) do
+        nil -> []
+        station_stop_id -> [{station_stop_id, stop}]
+      end
+    end)
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+  end
+
+  defp pathways_by_station(pathways, station_by_child) do
+    pathways
+    |> Enum.flat_map(fn pathway ->
+      [pathway.from_stop_id, pathway.to_stop_id]
+      |> Enum.map(&Map.get(station_by_child, &1))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Enum.map(&{&1, pathway})
+    end)
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+  end
+
+  defp list_station_and_child_stops(organization_id, gtfs_version_id) do
+    from(s in Stop,
+      left_join: l in Level,
+      on:
+        l.level_id == s.level_id and
+          l.organization_id == ^organization_id and
+          l.gtfs_version_id == ^gtfs_version_id,
+      where:
+        s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+          (not is_nil(s.parent_station) or s.location_type == 1),
+      select: s,
+      select_merge: %{level: l}
+    )
+    |> Repo.all()
+  end
+
+  defp list_pathway_rows(organization_id, gtfs_version_id) do
+    from(p in Pathway,
+      where: p.organization_id == ^organization_id and p.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.all()
   end
 end
