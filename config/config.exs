@@ -57,6 +57,11 @@ config :gtfs_planner, GtfsPlannerWeb.Endpoint,
   live_view: [signing_salt: "mj9kAsLh"],
   secret_key_base: "lP7H3l9d5mK2qR8wT4vZ6yX1nC0jF4sG8hB2kM5qR9wT3vY7zA1cD4eF8gH2jK5lP"
 
+# OpenRouter chat-completions client for the agent helper. The base URL is
+# code configuration; the selected model and the API key are runtime
+# configuration (`config/runtime.exs`), and the model has no default.
+config :gtfs_planner, GtfsPlanner.Agents.Model, base_url: "https://openrouter.ai/api/v1"
+
 # Configure the mailer
 #
 # By default it uses the "Local" adapter which stores the emails

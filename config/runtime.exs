@@ -136,6 +136,47 @@ config :gtfs_planner,
            else: nil
          )
 
+if config_env() != :test do
+  # OpenRouter has no production model default: OPENROUTER_MODEL selects one
+  # explicit non-Sonnet model. Production refuses to boot without a key or with
+  # a missing, Sonnet or automatic model; development keeps missing values so
+  # the helper reports itself unavailable without stopping the app. Test
+  # configuration is never replaced from here, so ordinary tests cannot pick up
+  # live credentials or a live model from `.env`.
+  openrouter_api_key =
+    case System.get_env("OPENROUTER_API_KEY") do
+      nil -> nil
+      key -> String.trim(key)
+    end
+
+  openrouter_model =
+    case System.get_env("OPENROUTER_MODEL") do
+      nil -> nil
+      model -> String.trim(model)
+    end
+
+  if config_env() == :prod and openrouter_api_key in [nil, ""] do
+    raise "environment variable OPENROUTER_API_KEY is missing"
+  end
+
+  if config_env() == :prod do
+    case GtfsPlanner.Agents.Model.validate_model(openrouter_model) do
+      :ok ->
+        :ok
+
+      {:error, :missing_model} ->
+        raise "environment variable OPENROUTER_MODEL is missing"
+
+      {:error, :invalid_model} ->
+        raise "environment variable OPENROUTER_MODEL must name an explicit non-Sonnet OpenRouter model"
+    end
+  end
+
+  config :gtfs_planner, GtfsPlanner.Agents.Model, model: openrouter_model
+
+  config :gtfs_planner, :openrouter_api_key, openrouter_api_key
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
