@@ -141,7 +141,7 @@ test.describe("Route map workload", () => {
     // repaint inside the page from the input event, frame-accurately.
     const feedbackMs = await page.evaluate(() => {
       const input = document.querySelector("#route-details-color");
-      const badge = document.querySelector("#route-details-badge > span");
+      const badge = document.querySelector("#route-badge > span");
       if (!input || !badge) throw new Error("preview controls missing");
 
       const before = getComputedStyle(badge).backgroundColor;

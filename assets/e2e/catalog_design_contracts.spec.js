@@ -62,7 +62,9 @@ async function openRouteDetail(page, routeId = "LONG_ROUTE_1") {
   await logIn(page);
   const versionId = await getVersionId(page);
   await page.goto(`/gtfs/${versionId}/routes/${routeId}`);
-  await page.waitForSelector("dl, #route-unavailable", { timeout: 10000 });
+  await page.waitForSelector("#route-details-form, #route-unavailable", {
+    timeout: 10000,
+  });
   return versionId;
 }
 
@@ -119,7 +121,7 @@ test.describe("Route catalog responsive contracts", () => {
       });
 
       await page.locator("#new-route-trigger").click();
-      await expect(page.getByRole("dialog", { name: "New route" })).toBeVisible();
+      await expect(page.getByRole("dialog", { name: "Create route" })).toBeVisible();
       await page
         .locator("#new-route-drawer")
         .evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
@@ -138,21 +140,21 @@ test.describe("Route catalog responsive contracts", () => {
     });
   }
 
-  test("create route drawer moves focus to Route ID and back to the trigger", async ({
+  test("create route drawer moves focus to the first field and back to the trigger", async ({
     page,
   }) => {
     await openRouteCatalog(page);
     await page.waitForSelector("[data-phx-main].phx-connected");
 
     await page.locator("#new-route-trigger").click();
-    await expect(page.locator("#route_route_id")).toBeFocused();
+    await expect(page.locator("#new-route-short")).toBeFocused();
 
     await page.keyboard.press("Escape");
     await expect(page.locator("#new-route-drawer-overlay")).toBeHidden();
     await expect(page.locator("#new-route-trigger")).toBeFocused();
 
     await page.locator("#new-route-trigger").click();
-    await expect(page.getByRole("dialog", { name: "New route" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Create route" })).toBeVisible();
     await page.getByRole("button", { name: "Cancel" }).click();
     await expect(page.locator("#new-route-trigger")).toBeFocused();
   });
@@ -164,12 +166,12 @@ test.describe("Route catalog responsive contracts", () => {
     await page.waitForSelector("[data-phx-main].phx-connected");
 
     await page.locator("#new-route-trigger").click();
-    await expect(page.getByRole("dialog", { name: "New route" })).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Create route" })).toBeVisible();
 
     await page.locator("#new-route-submit").click();
 
     await expect(page.locator("#new-route-form-error")).toBeVisible();
-    await expect(page.locator("#route_route_id")).toBeFocused();
+    await expect(page.locator("#new-route-short")).toBeFocused();
   });
 
   test("route catalog supports keyboard traversal", async ({ page }) => {
@@ -331,17 +333,28 @@ test.describe("Route detail responsive contracts", () => {
     });
   }
 
-  test("route detail uses semantic dl/dt/dd structure", async ({ page }) => {
+  test("route detail leads with the shared route header and labels every text field", async ({
+    page,
+  }) => {
     await openRouteDetail(page);
 
-    // One list per group of facts: what riders see, agency and boarding, availability.
-    const dl = page.locator("dl").first();
-    await expect(dl).toBeVisible();
+    await expect(page.locator("h1#route-title")).toBeVisible();
+    await expect(
+      page.locator('nav[aria-label="Route navigation"]'),
+    ).toBeVisible();
 
-    const dt = page.locator("dl dt");
-    const dd = page.locator("dl dd");
-    expect(await dt.count()).toBeGreaterThan(0);
-    expect(await dd.count()).toBeGreaterThan(0);
+    const unlabelled = await page
+      .locator(
+        "#route-details-form input[type='text'], #route-details-form textarea",
+      )
+      .evaluateAll(
+        (fields) =>
+          fields.filter(
+            (field) =>
+              !field.id || !document.querySelector(`label[for="${field.id}"]`),
+          ).length,
+      );
+    expect(unlabelled, "text fields without a visible label").toBe(0);
   });
 
   test("route detail long values wrap without overflow", async ({ page }) => {
