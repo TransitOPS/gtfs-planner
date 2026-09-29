@@ -82,6 +82,103 @@ defmodule GtfsPlanner.Reachability do
     |> Repo.all()
   end
 
+  @latest_station_run_ids_sql """
+  SELECT s.id AS station_stop_id, r.id
+  FROM unnest($3::text[]) AS s(id)
+  CROSS JOIN LATERAL (
+    SELECT id
+    FROM gtfs_validation_runs
+    WHERE organization_id = $1
+      AND gtfs_version_id = $2
+      AND run_type = 'station_reachability'
+      AND status = 'completed'
+      AND (result_json -> 'metadata' ->> 'station_stop_id') = s.id
+    ORDER BY inserted_at DESC
+    LIMIT 1
+  ) AS r
+  """
+
+  @run_results_sql """
+  SELECT id, completed_at, result_json ->> 'outcome',
+         (result_json -> 'totals' ->> 'reachable')::int,
+         (result_json -> 'totals' ->> 'pair_count')::int
+  FROM gtfs_validation_runs
+  WHERE id = ANY($1::uuid[])
+  """
+
+  @outcomes %{
+    "passed" => :passed,
+    "warning" => :warning,
+    "failed" => :failed,
+    "not_applicable" => :not_applicable
+  }
+
+  @type latest :: %{
+          run_id: Ecto.UUID.t(),
+          outcome: :passed | :warning | :failed | :not_applicable,
+          reachable: non_neg_integer(),
+          pair_count: non_neg_integer(),
+          completed_at: DateTime.t()
+        }
+
+  @doc """
+  Returns the newest completed reachability result per requested station.
+
+  The map is keyed by station `stop_id`. A station without a completed run and a
+  stored outcome outside the known outcomes are omitted.
+  """
+  @spec latest_by_station(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) ::
+          %{String.t() => latest()}
+  def latest_by_station(_organization_id, _gtfs_version_id, []), do: %{}
+
+  def latest_by_station(organization_id, gtfs_version_id, station_stop_ids) do
+    %{rows: station_run_rows} =
+      Repo.query!(@latest_station_run_ids_sql, [
+        Ecto.UUID.dump!(organization_id),
+        Ecto.UUID.dump!(gtfs_version_id),
+        station_stop_ids
+      ])
+
+    run_ids = Enum.map(station_run_rows, fn [_station_stop_id, run_id] -> run_id end)
+    results_by_run_id = run_results(run_ids)
+
+    Enum.reduce(station_run_rows, %{}, fn [station_stop_id, run_id], latest ->
+      with %{outcome: outcome_string} = result <- Map.get(results_by_run_id, run_id),
+           {:ok, outcome} <- Map.fetch(@outcomes, outcome_string) do
+        Map.put(latest, station_stop_id, %{
+          run_id: Ecto.UUID.load!(run_id),
+          outcome: outcome,
+          reachable: result.reachable,
+          pair_count: result.pair_count,
+          completed_at: DateTime.from_naive!(result.completed_at, "Etc/UTC")
+        })
+      else
+        _ -> latest
+      end
+    end)
+  end
+
+  # The EXPLAIN assertion in latest_by_station_test.exs plans the statement this
+  # module runs, instead of a drifting copy of it.
+  @doc false
+  def latest_station_run_ids_sql, do: @latest_station_run_ids_sql
+
+  defp run_results([]), do: %{}
+
+  defp run_results(run_ids) do
+    %{rows: rows} = Repo.query!(@run_results_sql, [run_ids])
+
+    Map.new(rows, fn [run_id, completed_at, outcome, reachable, pair_count] ->
+      {run_id,
+       %{
+         completed_at: completed_at,
+         outcome: outcome,
+         reachable: reachable,
+         pair_count: pair_count
+       }}
+    end)
+  end
+
   @spec topology_summary(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
           {:ok, map()} | {:error, :station_not_found}
   def topology_summary(organization_id, gtfs_version_id, station_stop_id) do
