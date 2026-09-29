@@ -53,6 +53,18 @@ defmodule GtfsPlanner.HomeSourceStub do
     Home.station_editors(organization_id, gtfs_version_id)
   end
 
+  @doc "See `GtfsPlanner.Home.planner_status/2`."
+  def planner_status(organization_id, gtfs_version_id) do
+    fail_if(:planner_status)
+    Home.planner_status(organization_id, gtfs_version_id)
+  end
+
+  @doc "See `GtfsPlanner.Home.pathways_attention/2`."
+  def pathways_attention(organization_id, gtfs_version_id) do
+    fail_if(:pathways_attention)
+    Home.pathways_attention(organization_id, gtfs_version_id)
+  end
+
   defp fail_if(function_name) do
     if function_name in Application.get_env(:gtfs_planner, :home_failing_functions, []) do
       raise "GtfsPlanner.HomeSourceStub is configured to fail #{function_name}"

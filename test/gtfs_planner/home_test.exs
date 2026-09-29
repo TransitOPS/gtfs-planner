@@ -210,6 +210,12 @@ defmodule GtfsPlanner.HomeTest do
 
     assert HomeSourceStub.station_statuses(organization.id, gtfs_version.id, []) == %{}
     assert HomeSourceStub.station_editors(organization.id, gtfs_version.id) == []
+
+    assert HomeSourceStub.planner_status(organization.id, gtfs_version.id) ==
+             Home.planner_status(organization.id, gtfs_version.id)
+
+    assert HomeSourceStub.pathways_attention(organization.id, gtfs_version.id) ==
+             Home.pathways_attention(organization.id, gtfs_version.id)
   end
 
   test "the home source stub raises only for the functions named in :home_failing_functions" do

@@ -5,15 +5,20 @@ defmodule GtfsPlanner.Home do
   Every function takes the organization and GTFS version ids from the mount
   assigns, so no request parameter selects a tenant or a version, and every read
   is read-only. The module composes the domain reads the page needs — access
-  data, resume items, the station board and its statuses, and station editors —
-  into display-ready maps, which keeps `DashboardLive` free of context aliases
-  and gives the region failure seam one module to substitute.
+  data, resume items, the station board and its statuses, station editors, and
+  the planner status and attention facts — into display-ready maps, which keeps
+  `DashboardLive` free of context aliases and gives the region failure seam one
+  module to substitute.
   """
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Import.Run
+  alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Gtfs.RecentChanges.Describe
   alias GtfsPlanner.Gtfs.StationBoard
+  alias GtfsPlanner.Home.Attention
   alias GtfsPlanner.Organizations
+  alias GtfsPlanner.Validations
 
   @admin_role "pathways_studio_admin"
 
@@ -133,6 +138,121 @@ defmodule GtfsPlanner.Home do
         |> Enum.zip(local_times)
         |> Enum.map(fn {editor, started_at} -> %{editor | started_at: started_at} end)
     end
+  end
+
+  @doc """
+  Returns the GTFS Planner homepage's status facts for one version.
+
+  Coverage comes from the version-wide calendar screen: `{:through, last_date}`
+  when the read is complete and has a horizon, `:none` when the version has no
+  calendars, and `:unknown` when calendars are unreadable or the read fails.
+  `today` is the agency-local date the screen resolved; a failed read falls back
+  to the UTC date because no agency zone was read. Counts are the route count,
+  the calendar-screen row count and the top-level stop count. A version with no
+  routes, no stops and no calendars is a first use.
+
+  Attention comes from the stopped imports — recoverable runs that are not
+  active, so a `cleaning` run is not shown and a `failed` one is — and from the
+  latest feed check when it found errors. A run outlives its version, so a
+  stopped import can name a version other than this one and its item carries
+  that version's name. The calendar, count and check reads are scoped by the
+  supplied organization and version ids; the import scan is scoped by the
+  organization because a stopped import targets a version of its own. Nothing
+  here writes or reconciles an import lease.
+  """
+  @spec planner_status(Ecto.UUID.t(), Ecto.UUID.t()) :: %{
+          coverage: {:through, Date.t()} | :none | :unknown,
+          today: Date.t(),
+          counts: %{
+            routes: non_neg_integer(),
+            calendars: non_neg_integer(),
+            stations: non_neg_integer()
+          },
+          first_use?: boolean(),
+          attention: [Attention.item()]
+        }
+  def planner_status(organization_id, gtfs_version_id) do
+    screen = calendar_screen(organization_id, gtfs_version_id)
+    coverage = coverage(screen)
+    today = screen_today(screen)
+    counts = counts(organization_id, gtfs_version_id, screen_rows(screen))
+
+    %{
+      coverage: coverage,
+      today: today,
+      counts: counts,
+      first_use?: first_use?(counts),
+      attention:
+        Attention.build(
+          %{
+            coverage: coverage,
+            today: today,
+            imports: stopped_imports(organization_id),
+            check: Validations.latest_feed_check(organization_id, gtfs_version_id)
+          },
+          :planner
+        )
+    }
+  end
+
+  @doc """
+  Returns the Pathways homepage's attention items for one version.
+
+  The same stopped-import and check-error facts as `planner_status/2`, without
+  reading calendars: a Pathways homepage never raises a service item.
+  """
+  @spec pathways_attention(Ecto.UUID.t(), Ecto.UUID.t()) :: [Attention.item()]
+  def pathways_attention(organization_id, gtfs_version_id) do
+    Attention.build(
+      %{
+        # Inert for :pathways: the builder never raises a service item, and this
+        # read does not touch calendars.
+        coverage: :unknown,
+        today: Date.utc_today(),
+        imports: stopped_imports(organization_id),
+        check: Validations.latest_feed_check(organization_id, gtfs_version_id)
+      },
+      :pathways
+    )
+  end
+
+  defp calendar_screen(organization_id, gtfs_version_id) do
+    case Gtfs.load_calendar_screen(organization_id, gtfs_version_id) do
+      {:ok, screen} -> screen
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp screen_rows(nil), do: []
+  defp screen_rows(screen), do: screen.rows
+
+  defp screen_today(nil), do: Date.utc_today()
+  defp screen_today(screen), do: screen.today
+
+  defp coverage(nil), do: :unknown
+  defp coverage(%{complete?: false}), do: :unknown
+  defp coverage(%{horizon: nil, rows: []}), do: :none
+  defp coverage(%{horizon: %{last_date: last_date}}), do: {:through, last_date}
+  defp coverage(%{horizon: nil}), do: :unknown
+
+  defp counts(organization_id, gtfs_version_id, rows) do
+    %{
+      routes: Gtfs.count_routes(organization_id, gtfs_version_id),
+      calendars: length(rows),
+      stations: Gtfs.count_stations(organization_id, gtfs_version_id)
+    }
+  end
+
+  defp first_use?(%{routes: routes, calendars: calendars, stations: stations}) do
+    routes == 0 and calendars == 0 and stations == 0
+  end
+
+  defp stopped_imports(organization_id) do
+    stopped_states = Run.recoverable_states() -- Run.active_states()
+
+    organization_id
+    |> ImportRuns.list_recoverable()
+    |> Enum.filter(&(&1.state in stopped_states))
   end
 
   defp active_admin?(%{roles: roles, deactivated_at: deactivated_at}) do
