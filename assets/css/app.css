@@ -2297,3 +2297,16 @@ tbody#calendars-list tr:has(input[data-calendar-selected="true"]) {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
+
+/* The reference sets `bg-canvas` on the document body, so the ground runs under
+   the shell's `main` padding; `#home-page` is the marker the page is present. */
+body:has(#home-page) {
+  background: var(--color-canvas);
+}
+
+/* The shell already pads `main` by 32px, and the reference's `home-head`
+   carries its own `pt-8` above the `h1`. Cancel the shell's top half so the
+   heading sits 32px below the header as drawn, not 64px. */
+#home-page {
+  margin-top: -2rem;
+}

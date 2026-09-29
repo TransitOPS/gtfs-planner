@@ -100,7 +100,8 @@ defmodule GtfsPlannerWeb.UserSettingsLiveTest do
 
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _dash, dash_html} = live(conn, ~p"/")
+      {:ok, dash_view, dash_html} = live(conn, ~p"/")
+      assert has_element?(dash_view, "#home-planner #home-title", "Pub")
       assert dash_html =~ organization.name
 
       {:ok, view, _html} = live(conn, ~p"/users/settings")

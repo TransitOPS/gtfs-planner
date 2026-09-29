@@ -50,9 +50,12 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
 
   @doc """
   The page head: the scope's name and the two facts a small agency checks first.
+
+  A state whose reference draws no lede renders the `h1` alone; the access
+  states do, because the heading is the whole head there.
   """
   attr :title, :string, required: true, doc: "the page's only h1"
-  attr :lede, :string, required: true
+  attr :lede, :string, default: nil, doc: "one line of scope facts; nil renders no lede"
 
   def home_head(assigns) do
     ~H"""
@@ -63,7 +66,7 @@ defmodule GtfsPlannerWeb.Home.SharedComponents do
       >
         {@title}
       </h1>
-      <p id="home-lede" class="mt-2 text-[15px] text-muted">{@lede}</p>
+      <p :if={@lede} id="home-lede" class="mt-2 text-[15px] text-muted">{@lede}</p>
     </header>
     """
   end

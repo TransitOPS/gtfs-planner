@@ -6,6 +6,8 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
   import GtfsPlanner.OrganizationsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Home
+  alias GtfsPlanner.Organizations
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
@@ -14,11 +16,13 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
 
   @state_roots [
     "#dashboard-system-administrator",
-    "#dashboard-organization",
-    "#dashboard-no-version",
     "#dashboard-no-organization",
     "#dashboard-organization-unavailable",
-    "#dashboard-no-task-access"
+    "#dashboard-no-version",
+    "#dashboard-no-task-access",
+    "#home-admin-only",
+    "#home-planner",
+    "#home-pathways"
   ]
 
   describe "Dashboard authentication" do
@@ -28,8 +32,9 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
   end
 
   describe "Dashboard state matrix" do
-    test "system administrator renders system administration root and primary manage organizations",
-         %{conn: conn} do
+    test "a system administrator sees the organizations card and one primary action", %{
+      conn: conn
+    } do
       admin = system_administrator_fixture()
       conn = log_in_user(conn, admin)
 
@@ -37,100 +42,169 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
 
       assert_single_state_root(view, "#dashboard-system-administrator")
       assert_single_h1(html, "System administration")
-      assert html =~ admin.email
+      assert has_element?(view, "#home-lede", organization_count_label())
+      assert has_element?(view, "#system-admin", "Organizations")
 
       assert has_element?(
                view,
-               "#dashboard-system-administrator a.btn-primary[href=\"/admin/organizations\"]",
+               "#dashboard-system-administrator a[href='/admin/organizations'].bg-action",
                "Manage organizations"
              )
 
-      refute has_element?(view, "a.btn-active")
-      refute html =~ "Welcome to Pathways Studio"
-      refute has_element?(view, "a[href^=\"/gtfs/\"]")
+      assert has_element?(
+               view,
+               "#dashboard-system-administrator a[href='/admin/organizations/new']",
+               "Create organization"
+             )
+
+      assert_at_most_one_primary(html)
+      refute has_element?(view, "a[href^='/gtfs/']")
       refute_tenant_disclosure(html)
     end
 
-    test "editor with published version renders organization root and primary view routes", %{
-      conn: conn
-    } do
-      {organization, version} = org_with_published_version("Editor Org")
+    test "a session without an organization sees the no-organization state without tenant data",
+         %{conn: conn} do
+      organization = organization_fixture(%{name: "Secret Tenant Name"})
+      admin = member_fixture(organization, ["pathways_studio_admin"])
+      {:ok, _version} = Versions.create_gtfs_version(organization.id, %{name: "Hidden Version"})
+      user = member_fixture(organization, ["pathways_studio_editor"])
+
+      # Authenticated without organization_id in session → optional :missing.
+      conn = log_in_user(conn, user)
+
+      {:ok, view, html} = live(conn, ~p"/")
+
+      assert_single_state_root(view, "#dashboard-no-organization")
+      assert_single_h1(html, "Home")
+
+      assert has_element?(
+               view,
+               "#dashboard-no-organization",
+               "Your account is not part of an organization yet"
+             )
+
+      assert has_element?(
+               view,
+               "#dashboard-no-organization a[href='/users/log_out']",
+               "Log out"
+             )
+
+      assert has_element?(view, "#user-menu-panel", user.email)
+
+      refute html =~ organization.name
+      refute html =~ admin.email
+      refute html =~ "Hidden Version"
+      refute has_element?(view, "a[href^='/gtfs/']")
+      refute has_element?(view, "a[href='/admin/users']")
+      refute has_element?(view, "a[href='/admin/organizations']")
+      assert_at_most_one_primary(html)
+    end
+
+    test "a session naming an unknown organization sees the unavailable state", %{conn: conn} do
+      own_org = organization_fixture(%{name: "Own Tenant"})
+      admin = member_fixture(own_org, ["pathways_studio_admin"])
+      user = member_fixture(own_org, ["pathways_studio_editor"])
+      {:ok, _version} = Versions.create_gtfs_version(own_org.id, %{name: "Own Version"})
+
+      conn =
+        conn
+        |> log_in_user(user)
+        |> Plug.Conn.put_session(:organization_id, Ecto.UUID.generate())
+
+      {:ok, view, html} = live(conn, ~p"/")
+
+      assert_single_state_root(view, "#dashboard-organization-unavailable")
+      assert_single_h1(html, "Home")
+
+      assert has_element?(
+               view,
+               "#dashboard-organization-unavailable",
+               "Your account is not part of an organization yet"
+             )
+
+      assert has_element?(
+               view,
+               "#dashboard-organization-unavailable a[href='/users/log_out']",
+               "Log out"
+             )
+
+      refute html =~ own_org.name
+      refute html =~ "Own Version"
+      refute html =~ admin.email
+      refute has_element?(view, "a[href^='/gtfs/']")
+      refute has_element?(view, "a[href='/admin/users']")
+      refute has_element?(view, "a[href='/admin/organizations']")
+      assert_at_most_one_primary(html)
+    end
+
+    test "a session naming another organization sees the unavailable state without its data",
+         %{conn: conn} do
+      own_org = organization_fixture(%{name: "Own Tenant"})
+      user = member_fixture(own_org, ["pathways_studio_editor"])
+      other_org = organization_fixture(%{name: "Other Tenant"})
+      other_admin = member_fixture(other_org, ["pathways_studio_admin"])
+      {:ok, _version} = Versions.create_gtfs_version(other_org.id, %{name: "Other Version"})
+
+      conn =
+        conn
+        |> log_in_user(user)
+        |> Plug.Conn.put_session(:organization_id, other_org.id)
+
+      {:ok, view, html} = live(conn, ~p"/")
+
+      assert_single_state_root(view, "#dashboard-organization-unavailable")
+      assert_single_h1(html, "Home")
+      refute html =~ own_org.name
+      refute html =~ other_org.name
+      refute html =~ other_admin.email
+      refute html =~ "Other Version"
+      refute has_element?(view, "a[href^='/gtfs/']")
+      refute has_element?(view, "a[href='/admin/users']")
+      refute has_element?(view, "a[href='/admin/organizations']")
+    end
+
+    test "a member without a published version sees the no-version state with the active administrators",
+         %{conn: conn} do
+      # create_organization seeds a published default; clear all versions so the
+      # published-only latest query returns nil (staging-only is equivalent).
+      organization = organization_fixture(%{name: "No Published Version Org"})
+      Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization.id))
+
+      {:ok, _staging} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Staging Only"})
+
+      admin = member_fixture(organization, ["pathways_studio_admin"])
+
+      deactivated_admin = member_fixture(organization, ["pathways_studio_admin"])
+
+      {:ok, _} =
+        Organizations.deactivate_user_in_organization(deactivated_admin.id, organization.id)
+
       user = member_fixture(organization, ["pathways_studio_editor"])
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, html} = live(conn, ~p"/")
 
-      assert_single_state_root(view, "#dashboard-organization")
+      assert_single_state_root(view, "#dashboard-no-version")
       assert_single_h1(html, organization.name)
 
       assert has_element?(
                view,
-               "#dashboard-organization a.btn-primary[href=\"/gtfs/#{version.id}/routes\"]",
-               "View routes"
+               "#dashboard-no-version",
+               "There is no service data to work on yet"
              )
 
-      refute has_element?(view, "a", "Manage users")
-      refute has_element?(view, "a.btn-active")
-      refute html =~ "Welcome to Pathways Studio"
+      assert has_element?(view, "#org-admins", admin.email)
+      refute has_element?(view, "#org-admins", deactivated_admin.email)
+      refute has_element?(view, "a[href^='/gtfs/']")
+      refute has_element?(view, "a[href='/admin/users']")
+      assert_at_most_one_primary(html)
     end
 
-    test "organization admin with published version renders primary manage users only", %{
+    test "a Pathways organization without a version keeps the shared no-version copy", %{
       conn: conn
     } do
-      {organization, _version} = org_with_published_version("Admin Org")
-      user = member_fixture(organization, ["pathways_studio_admin"])
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, html} = live(conn, ~p"/")
-
-      assert_single_state_root(view, "#dashboard-organization")
-      assert_single_h1(html, organization.name)
-
-      assert has_element?(
-               view,
-               "#dashboard-organization a.btn-primary[href=\"/admin/users\"]",
-               "Manage users"
-             )
-
-      refute has_element?(view, "a", "View routes")
-      refute has_element?(view, "a.btn-active")
-    end
-
-    test "editor plus organization admin renders primary view routes and secondary manage users",
-         %{conn: conn} do
-      {organization, version} = org_with_published_version("Both Roles Org")
-
-      user =
-        member_fixture(organization, ["pathways_studio_editor", "pathways_studio_admin"])
-
-      conn = log_in_user(conn, user, organization: organization)
-
-      {:ok, view, html} = live(conn, ~p"/")
-
-      assert_single_state_root(view, "#dashboard-organization")
-      assert_single_h1(html, organization.name)
-
-      assert has_element?(
-               view,
-               "#dashboard-organization a.btn-primary[href=\"/gtfs/#{version.id}/routes\"]",
-               "View routes"
-             )
-
-      assert has_element?(
-               view,
-               "#dashboard-organization a.btn-outline[href=\"/admin/users\"]",
-               "Manage users"
-             )
-
-      refute has_element?(view, "a.btn-primary", "Manage users")
-      refute has_element?(view, "a.btn-active")
-    end
-
-    test "active membership without published version renders no-version warning without gtfs links",
-         %{conn: conn} do
-      # create_organization seeds a published default; clear all versions so the
-      # published-only latest query returns nil (staging-only is equivalent).
-      organization = organization_fixture(%{name: "No Published Version Org"})
+      organization = organization_fixture(%{name: "Pathways No Version Org", product: :pathways})
       Repo.delete_all(from(v in GtfsVersion, where: v.organization_id == ^organization.id))
 
       {:ok, _staging} =
@@ -143,78 +217,24 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
 
       assert_single_state_root(view, "#dashboard-no-version")
       assert_single_h1(html, organization.name)
-      assert html =~ "No published GTFS version"
-      refute has_element?(view, "a[href^=\"/gtfs/\"]")
-      refute has_element?(view, "a", "View routes")
-      refute has_element?(view, "a.btn-active")
-      refute html =~ "Welcome to Pathways Studio"
+
+      assert has_element?(
+               view,
+               "#dashboard-no-version",
+               "There is no service data to work on yet"
+             )
     end
 
-    test "missing session organization renders no-organization root without tenant metadata", %{
-      conn: conn
-    } do
-      organization = organization_fixture(%{name: "Secret Tenant Name"})
-      user = member_fixture(organization, ["pathways_studio_editor"])
-      {:ok, _version} = Versions.create_gtfs_version(organization.id, %{name: "Hidden Version"})
-
-      # Authenticated without organization_id in session → optional :missing.
-      conn = log_in_user(conn, user)
-
-      {:ok, view, html} = live(conn, ~p"/")
-
-      assert_single_state_root(view, "#dashboard-no-organization")
-      assert_single_h1(html, "Dashboard")
-      refute html =~ organization.name
-      refute html =~ "Hidden Version"
-      refute html =~ "pathways_studio_editor"
-      refute has_element?(view, "a[href^=\"/gtfs/\"]")
-      refute has_element?(view, "a[href=\"/admin/users\"]")
-      refute has_element?(view, "a[href=\"/admin/organizations\"]")
-      assert html =~ "Organization access is required to use this application."
-      assert html =~ "Contact an administrator"
-      refute html =~ "Pathways Studio"
-    end
-
-    test "stale or cross-tenant session organization renders unavailable without existence oracle",
-         %{conn: _conn} do
-      own_org = organization_fixture(%{name: "Own Tenant"})
-      other_org = organization_fixture(%{name: "Other Tenant"})
-      user = member_fixture(own_org, ["pathways_studio_editor"])
-      {:ok, _} = Versions.create_gtfs_version(own_org.id, %{name: "Own Version"})
-      missing_id = Ecto.UUID.generate()
-
-      for {label, org_id, forbidden_name} <- [
-            {"absent", missing_id, nil},
-            {"cross-tenant", other_org.id, other_org.name}
-          ] do
-        conn =
-          build_conn()
-          |> log_in_user(user)
-          |> Plug.Conn.put_session(:organization_id, org_id)
-
-        {:ok, view, html} = live(conn, ~p"/")
-
-        assert has_element?(view, "#dashboard-organization-unavailable"),
-               "#{label} must render unavailable root"
-
-        assert_single_state_root(view, "#dashboard-organization-unavailable")
-        assert_single_h1(html, "Dashboard")
-        refute html =~ own_org.name
-        refute html =~ "Own Version"
-        refute html =~ "pathways_studio_editor"
-
-        if forbidden_name do
-          refute html =~ forbidden_name
-        end
-
-        refute has_element?(view, "a[href^=\"/gtfs/\"]")
-        refute has_element?(view, "a[href=\"/admin/users\"]")
-        refute has_element?(view, "a[href=\"/admin/organizations\"]")
-      end
-    end
-
-    test "active membership with no permitted product task renders no-task root", %{conn: conn} do
+    test "a member with no editing role sees the no-task state with the active administrators",
+         %{conn: conn} do
       {organization, _version} = org_with_published_version("No Task Org")
+      admin = member_fixture(organization, ["pathways_studio_admin"])
+
+      deactivated_admin = member_fixture(organization, ["pathways_studio_admin"])
+
+      {:ok, _} =
+        Organizations.deactivate_user_in_organization(deactivated_admin.id, organization.id)
+
       # Membership exists but neither editor nor organization-admin product role.
       user = member_fixture(organization, [])
       conn = log_in_user(conn, user, organization: organization)
@@ -223,13 +243,141 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
 
       assert_single_state_root(view, "#dashboard-no-task-access")
       assert_single_h1(html, organization.name)
-      refute has_element?(view, "a", "View routes")
-      refute has_element?(view, "a", "Manage users")
-      refute has_element?(view, "a[href^=\"/gtfs/\"]")
-      refute has_element?(view, "a[href=\"/admin/users\"]")
-      refute has_element?(view, "a.btn-active")
+
+      assert has_element?(
+               view,
+               "#dashboard-no-task-access",
+               "Your account is in #{organization.name} but cannot edit yet"
+             )
+
+      assert has_element?(view, "#org-admins", admin.email)
+      refute has_element?(view, "#org-admins", deactivated_admin.email)
+      refute has_element?(view, "a[href^='/gtfs/']")
+      refute has_element?(view, "a[href='/admin/users']")
+      assert_at_most_one_primary(html)
     end
 
+    test "an organization administrator without an editing role sees the admin-only state",
+         %{conn: conn} do
+      {organization, _version} = org_with_published_version("Admin Only Org")
+      admin = member_fixture(organization, ["pathways_studio_admin"])
+      active_member = member_fixture(organization, ["pathways_studio_editor"])
+
+      deactivated = member_fixture(organization, ["pathways_studio_editor"])
+      {:ok, _} = Organizations.deactivate_user_in_organization(deactivated.id, organization.id)
+
+      conn = log_in_user(conn, admin, organization: organization)
+
+      {:ok, view, html} = live(conn, ~p"/")
+
+      assert_single_state_root(view, "#home-admin-only")
+      assert_single_h1(html, organization.name)
+      assert has_element?(view, "#home-admin-only", "People at #{organization.name}")
+
+      # Two active members: the administrator and the editor. The deactivated
+      # member is not counted.
+      assert has_element?(view, "#home-admin-only", "2 people have access today.")
+      refute html =~ active_member.email
+
+      assert has_element?(
+               view,
+               "#home-admin-only a[href='/admin/users'].bg-action",
+               "Manage users"
+             )
+
+      assert has_element?(
+               view,
+               "#home-admin-only a[href='/admin/users/organization-settings']",
+               "Organization settings"
+             )
+
+      assert has_element?(
+               view,
+               "#home-admin-only",
+               "Editing routes, calendars and stops needs the Editor role."
+             )
+
+      assert_at_most_one_primary(html)
+    end
+
+    test "a Pathways organization administrator gets the Pathways wording", %{conn: conn} do
+      organization = organization_fixture(%{name: "Pathways Admin Org", product: :pathways})
+
+      {:ok, _version} =
+        Versions.create_gtfs_version(organization.id, %{name: "Pathways Published"})
+
+      admin = member_fixture(organization, ["pathways_studio_admin"])
+
+      conn = log_in_user(conn, admin, organization: organization)
+
+      {:ok, view, html} = live(conn, ~p"/")
+
+      assert_single_state_root(view, "#home-admin-only")
+      assert_single_h1(html, organization.name)
+      assert has_element?(view, "#home-admin-only", "so they can map stations")
+      assert has_element?(view, "#home-admin-only", "Editing stations needs the Editor role.")
+      assert has_element?(view, "#app-brand-logo[src='/images/pathways-studio-logo.svg']")
+
+      assert has_element?(
+               view,
+               "#home-admin-only a[href='/admin/users'].bg-action",
+               "Manage users"
+             )
+
+      assert_at_most_one_primary(html)
+    end
+
+    test "an editor in a planner organization sees the planner page head", %{conn: conn} do
+      {organization, version} = org_with_published_version("Planner Editor Org")
+      user = member_fixture(organization, ["pathways_studio_editor"])
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, html} = live(conn, ~p"/")
+
+      assert_single_state_root(view, "#home-planner")
+      assert_single_h1(html, version.name)
+      refute has_element?(view, "#users-strip")
+      assert_at_most_one_primary(html)
+    end
+
+    test "an editor in a pathways organization sees the station board head", %{conn: conn} do
+      organization = organization_fixture(%{name: "Pathways Editor Org", product: :pathways})
+
+      {:ok, _version} =
+        Versions.create_gtfs_version(organization.id, %{name: "Pathways Published"})
+
+      user = member_fixture(organization, ["pathways_studio_editor"])
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, html} = live(conn, ~p"/")
+
+      assert_single_state_root(view, "#home-pathways")
+      assert_single_h1(html, "Stations")
+      assert has_element?(view, "#app-brand-logo[src='/images/pathways-studio-logo.svg']")
+      refute has_element?(view, "#users-strip")
+      assert_at_most_one_primary(html)
+    end
+
+    test "an editor who is also an organization administrator sees the People row", %{conn: conn} do
+      {organization, version} = org_with_published_version("Editor Admin Org")
+
+      user =
+        member_fixture(organization, ["pathways_studio_editor", "pathways_studio_admin"])
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, html} = live(conn, ~p"/")
+
+      assert_single_state_root(view, "#home-planner")
+      assert_single_h1(html, version.name)
+      assert has_element?(view, "#users-strip")
+      assert_at_most_one_primary(html)
+    end
+  end
+
+  describe "Dashboard source constraints" do
     test "does not load context aliases or duplicate Accounts Organizations Versions queries in module",
          %{conn: conn} do
       source = File.read!("lib/gtfs_planner_web/live/dashboard_live.ex")
@@ -403,6 +551,24 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
     [[_full, inner]] = h1s
     text = inner |> strip_tags() |> String.trim()
     assert text == expected_text
+  end
+
+  defp assert_at_most_one_primary(html) do
+    primaries =
+      html
+      |> LazyHTML.from_document()
+      |> LazyHTML.query(".bg-action")
+      |> Enum.to_list()
+
+    assert length(primaries) <= 1,
+           "expected at most one primary action, found #{length(primaries)}"
+  end
+
+  defp organization_count_label do
+    case Home.organization_count() do
+      1 -> "1 organization"
+      count -> "#{count} organizations"
+    end
   end
 
   defp strip_tags(html) do
