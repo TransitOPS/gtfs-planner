@@ -65,6 +65,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Shape
+  alias GtfsPlanner.Gtfs.StationBoard
   alias GtfsPlanner.Gtfs.StationEditingStatus
   alias GtfsPlanner.Gtfs.StationJournal
   alias GtfsPlanner.Gtfs.StationJournal.Scope
@@ -4086,6 +4087,18 @@ defmodule GtfsPlanner.Gtfs do
   defdelegate count_changes_since(organization_id, gtfs_version_id, since),
     to: RecentChanges,
     as: :count_since
+
+  # Station board functions
+
+  @doc """
+  Returns one station board summary per station of the version, sorted by `stop_id`.
+
+  See `GtfsPlanner.Gtfs.StationBoard.base/2`.
+  """
+  @spec station_board_base(Ecto.UUID.t(), Ecto.UUID.t()) :: [StationBoard.base()]
+  defdelegate station_board_base(organization_id, gtfs_version_id),
+    to: StationBoard,
+    as: :base
 
   # Area functions
 
