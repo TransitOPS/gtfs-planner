@@ -680,6 +680,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     |> assign(:recovery_count, count)
     |> assign(:recovery_empty, empty?)
     |> assign(:recovery_announce, recovery_announce_text(run))
+    |> fail_started_import(run)
   end
 
   defp reconcile_recovery_run(socket, organization_id, run_id, nil, count, empty?) do
@@ -692,8 +693,39 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     socket = maybe_delete_recovery_run(socket, gone_run)
     socket = assign_recovery_count(socket, count, empty?)
 
-    if gone_run, do: success_for_published_target(socket, run_id), else: socket
+    if started_import_run?(socket, gone_run),
+      do: success_for_published_target(socket, run_id),
+      else: socket
   end
+
+  # The run this page started is the one whose version is bound as `:import_target`.
+  # Broadcasts about any other run in the organization never settle this page's import.
+  defp started_import_run?(socket, %Run{gtfs_version_id: version_id}) do
+    match?(%GtfsVersion{id: ^version_id}, socket.assigns[:import_target])
+  end
+
+  defp started_import_run?(_socket, nil), do: false
+
+  # The import this page started ended in a recoverable state without publishing.
+  # Free the form and show the failure beside it: the recovery card that offers the
+  # next step is further down the page. In-progress runs keep the "Importing…" state.
+  defp fail_started_import(%{assigns: %{importing: true}} = socket, %Run{} = run) do
+    if started_import_run?(socket, run) and discardable?(run) do
+      socket
+      |> assign(:importing, false)
+      |> assign(:import_progress, nil)
+      |> assign(:import_result, {:error, socket.assigns.import_target, failure_reason(run)})
+    else
+      socket
+    end
+  end
+
+  defp fail_started_import(socket, _run), do: socket
+
+  defp failure_reason(%Run{state: "publication_failed", reason_code: reason_code}),
+    do: {:publication_failed, reason_code}
+
+  defp failure_reason(%Run{}), do: :import_not_finished
 
   defp maybe_delete_recovery_run(socket, %Run{} = run) do
     stream_delete(socket, :import_recovery_runs, run)
@@ -980,7 +1012,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
                   />
                 <% {:error, target, {:publication_failed, _reason}} -> %>
                   <.callout kind="error" title="Publication failed">
-                    Version “{target_name(target)}” finished importing but could not be published. It remains unavailable for reconciliation.
+                    Version “{target_name(target)}” finished importing but could not be published. Use Import recovery below to publish it again or discard it.
                   </.callout>
                 <% {:error, nil, :no_files_selected} -> %>
                   <.callout kind="error" title="Import failed">
@@ -1849,6 +1881,9 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   defp format_import_error({:import_not_publishable, _result}),
     do: "The import completed with errors and was not published."
+
+  defp format_import_error(:import_not_finished),
+    do: "The import did not finish. Use Import recovery below to discard it and try again."
 
   defp format_import_error(:invalid_status_transition),
     do: "The version could not be claimed for import."

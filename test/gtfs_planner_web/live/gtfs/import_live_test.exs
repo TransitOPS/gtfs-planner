@@ -10,7 +10,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.Import.{Recovery, Run}
+  alias GtfsPlanner.Gtfs.Import.{Failure, Recovery, Result, Run}
+  alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
@@ -1349,6 +1350,241 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       assert target.publication_status == "published"
       assert render(view) =~ "Import successful"
       assert has_element?(view, "#gtfs-import-view-version[href='/gtfs/#{target.id}/routes']")
+    end
+  end
+
+  describe "a started import that ends without publishing" do
+    setup :editor_context
+
+    setup do
+      previous_worker = Application.get_env(:gtfs_planner, :import_worker_module)
+      previous_owner = Application.get_env(:gtfs_planner, :blocking_import_worker_owner)
+
+      Application.put_env(
+        :gtfs_planner,
+        :import_worker_module,
+        GtfsPlanner.Support.BlockingImportWorker
+      )
+
+      Application.put_env(:gtfs_planner, :blocking_import_worker_owner, self())
+
+      on_exit(fn ->
+        restore_application_env(:import_worker_module, previous_worker)
+        restore_application_env(:blocking_import_worker_owner, previous_owner)
+      end)
+
+      :ok
+    end
+
+    # Starts an import whose worker holds the claimed run in `running`, and
+    # returns the view with the durable run the page is tracking.
+    defp start_held_import(conn, user, organization, route_version, name) do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      upload_gtfs(view, [%{name: "levels.txt", content: @levels_content, type: "text/plain"}])
+      submit_import(view, name)
+      assert_receive {:blocking_import_worker_started, worker_pid}
+      on_exit(fn -> send(worker_pid, :finish) end)
+
+      run =
+        Repo.one!(
+          from(r in Run, where: r.organization_id == ^organization.id and r.version_name == ^name)
+        )
+
+      assert run.state == "running"
+      {view, run}
+    end
+
+    defp close_run_with_failure(organization, run, outcome, opts) do
+      failure =
+        Failure.from_error(
+          :executor_lost,
+          Keyword.merge([phase: :phase_2, outcome: outcome], opts)
+        )
+
+      {:ok, closed, _version} =
+        ImportRuns.fail_import(organization.id, run.id, run.lease_token, failure)
+
+      closed
+    end
+
+    test "a runner failure frees the form and reports the failed import beside it", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      Application.put_env(
+        :gtfs_planner,
+        :import_worker_module,
+        GtfsPlanner.Gtfs.Import.Publication
+      )
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      upload_gtfs(view, [
+        %{
+          name: "levels.txt",
+          content: "level_id,level_index\nL1,0.0\nL1,0.0",
+          type: "text/plain"
+        }
+      ])
+
+      submit_import(view, "Runner Failure")
+      await_import_task(view)
+
+      run =
+        Repo.one!(
+          from(r in Run,
+            where: r.organization_id == ^organization.id and r.version_name == "Runner Failure"
+          )
+        )
+
+      assert run.state == "failed"
+
+      assert has_element?(view, "#gtfs-import-submit", "Import feed")
+      refute has_element?(view, "#gtfs-import-submit", "Importing")
+      assert has_element?(view, "#gtfs-import-result", "Runner Failure")
+      assert has_element?(view, "#gtfs-import-result", "did not finish")
+      assert has_element?(view, "#import-run-#{run.id}")
+    end
+
+    test "a partial import frees the form and reports the failed import beside it", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      {view, run} = start_held_import(conn, user, organization, route_version, "Partial Import")
+
+      closed =
+        close_run_with_failure(organization, run, :partial,
+          committed_counts: %{"levels" => 1},
+          failed_file: "stops.txt"
+        )
+
+      assert closed.state == "partial"
+      send(view.pid, {:import_run_changed, run.id})
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#gtfs-import-submit", "Import feed")
+      refute has_element?(view, "#gtfs-import-submit", "Importing")
+      assert has_element?(view, "#gtfs-import-result", "Partial Import")
+      assert has_element?(view, "#gtfs-import-result", "did not finish")
+      assert has_element?(view, "#import-run-#{run.id}")
+    end
+
+    test "an interrupted import frees the form and reports the failed import beside it", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      {view, run} = start_held_import(conn, user, organization, route_version, "Lost Runner")
+
+      closed =
+        close_run_with_failure(organization, run, :interrupted, counts_complete: false)
+
+      assert closed.state == "interrupted"
+      send(view.pid, {:import_run_changed, run.id})
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#gtfs-import-submit", "Import feed")
+      refute has_element?(view, "#gtfs-import-submit", "Importing")
+      assert has_element?(view, "#gtfs-import-result", "Lost Runner")
+      assert has_element?(view, "#gtfs-import-result", "did not finish")
+      assert has_element?(view, "#import-run-#{run.id}")
+    end
+
+    test "a publication failure frees the form and reports the unpublished version beside it", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      {view, run} = start_held_import(conn, user, organization, route_version, "Publish Failure")
+
+      result = %Result{
+        counts: %{levels: 1},
+        unrecognized_files: [],
+        topic: "import:test",
+        archive_warnings: [],
+        extensions: :not_present
+      }
+
+      {:ok, closed} =
+        ImportRuns.record_publication_failure(
+          organization.id,
+          run.id,
+          run.lease_token,
+          result,
+          :publication_failed
+        )
+
+      assert closed.state == "publication_failed"
+      send(view.pid, {:import_run_changed, run.id})
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#gtfs-import-submit", "Import feed")
+      refute has_element?(view, "#gtfs-import-submit", "Importing")
+      assert has_element?(view, "#gtfs-import-result", "Publish Failure")
+      assert has_element?(view, "#gtfs-import-result", "could not be published")
+      assert has_element?(view, "#publish-version-#{run.id}")
+    end
+
+    test "a change to the run that is still running keeps the Importing state", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      {view, run} = start_held_import(conn, user, organization, route_version, "Still Running")
+
+      send(view.pid, {:import_run_changed, run.id})
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#gtfs-import-submit[disabled]", "Importing")
+      refute has_element?(view, "#gtfs-import-result")
+    end
+
+    test "another run failing keeps the Importing state and shows no failure result", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      {view, _run} = start_held_import(conn, user, organization, route_version, "Mine")
+
+      {:ok, other_v} = Versions.create_staging_gtfs_version(organization.id, %{name: "Theirs"})
+      {:ok, other_v} = Versions.fail_unpublished_gtfs_version(organization.id, other_v.id)
+      other_run = insert_run(organization.id, other_v, "failed")
+
+      send(view.pid, {:import_run_changed, other_run.id})
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#import-run-#{other_run.id}")
+      assert has_element?(view, "#gtfs-import-submit[disabled]", "Importing")
+      refute has_element?(view, "#gtfs-import-result")
+    end
+
+    test "another run publishing keeps the Importing state and shows no result", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      {view, _run} = start_held_import(conn, user, organization, route_version, "Mine")
+
+      {:ok, other_v} = Versions.create_gtfs_version(organization.id, %{name: "Theirs"})
+      other_run = insert_run(organization.id, other_v, "published")
+
+      send(view.pid, {:import_run_changed, other_run.id})
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(view, "#gtfs-import-submit[disabled]", "Importing")
+      refute has_element?(view, "#gtfs-import-result")
     end
   end
 
