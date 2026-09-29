@@ -155,4 +155,382 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ColumnMatcherTest do
       assert ColumnMatcher.match_header("", @stops) == :none
     end
   end
+
+  # Step 4 fixtures: occurrence lists joined with their stop display fields,
+  # the shape `match/4`, `orient/2` and `match_headerless/2` take. Ids are
+  # opaque literals (no UUID validation); only equality matters.
+  @loop_occs [
+    %{id: "occ-a1", stop_id: "STOP_A", position: 1, stop_code: "A1", stop_name: "Alpha"},
+    %{id: "occ-b2", stop_id: "STOP_B", position: 2, stop_code: "B1", stop_name: "Beta"},
+    %{id: "occ-a3", stop_id: "STOP_A", position: 3, stop_code: "A1", stop_name: "Alpha"}
+  ]
+
+  @ab_occs [
+    %{id: "occ-a1", stop_id: "STOP_A", position: 1, stop_code: "A1", stop_name: "Alpha"},
+    %{id: "occ-b2", stop_id: "STOP_B", position: 2, stop_code: "B1", stop_name: "Beta"}
+  ]
+
+  @hosp_occs [
+    %{
+      id: "occ-hosp",
+      stop_id: "STOP_HOSPITAL",
+      position: 1,
+      stop_code: "4521",
+      stop_name: "Hospital"
+    }
+  ]
+
+  @pair_occs [
+    %{
+      id: "occ-central",
+      stop_id: "STOP_CENTRAL",
+      position: 1,
+      stop_code: "1002",
+      stop_name: "Central Station"
+    },
+    %{
+      id: "occ-mill",
+      stop_id: "STOP_MILL",
+      position: 2,
+      stop_code: "1001",
+      stop_name: "Mill Street"
+    }
+  ]
+
+  describe "orient/2" do
+    @describetag :orientation
+
+    test "detects stops down the side" do
+      grid = [
+        ["", "Trip 101", "Trip 102"],
+        ["Hospital", "8:00", "9:00"],
+        ["Central Station", "8:10", "9:10"]
+      ]
+
+      occurrences = @hosp_occs ++ @pair_occs
+
+      assert ColumnMatcher.orient(grid, occurrences) == :stops_in_rows
+    end
+
+    test "keeps trips in rows when the header row matches more stops" do
+      grid = [
+        ["Trip", "Hospital", "Central Station"],
+        ["101", "8:00", "8:10"]
+      ]
+
+      occurrences = @hosp_occs ++ @pair_occs
+
+      assert ColumnMatcher.orient(grid, occurrences) == :trips_in_rows
+    end
+
+    test "ties keep trips in rows" do
+      grid = [
+        ["Hospital", "8:00"],
+        ["8:05", "8:10"]
+      ]
+
+      assert ColumnMatcher.orient(grid, @hosp_occs) == :trips_in_rows
+    end
+  end
+
+  describe "match/4 occurrence assignment (R4)" do
+    @describetag :occurrence_assignment
+
+    test "a loop A-B-A maps the second A column to position 3" do
+      grid = [
+        ["Alpha", "Beta", "Alpha"],
+        ["8:00", "8:10", "8:20"],
+        ["9:00", "9:10", "9:20"]
+      ]
+
+      assert [
+               %{
+                 col: 0,
+                 header: "Alpha",
+                 target: {:occurrence, "occ-a1", :departure},
+                 status: :exact,
+                 by: :stop_name
+               },
+               %{
+                 col: 1,
+                 header: "Beta",
+                 target: {:occurrence, "occ-b2", :departure},
+                 status: :exact,
+                 by: :stop_name
+               },
+               %{
+                 col: 2,
+                 header: "Alpha",
+                 target: {:occurrence, "occ-a3", :departure},
+                 status: :exact,
+                 by: :stop_name
+               }
+             ] = ColumnMatcher.match(grid, @loop_occs, %{}, MapSet.new())
+    end
+
+    test "'Hospital arr' and 'Hospital dep' share one occurrence as arrival then departure" do
+      grid = [
+        ["Hospital arr", "Hospital dep"],
+        ["8:00", "8:01"]
+      ]
+
+      columns = ColumnMatcher.match(grid, @hosp_occs, %{}, MapSet.new())
+
+      assert [
+               %{col: 0, target: {:occurrence, "occ-hosp", :arrival}, status: :exact},
+               %{col: 1, target: {:occurrence, "occ-hosp", :departure}, status: :exact}
+             ] = columns
+
+      assert ColumnMatcher.issues(columns) == []
+    end
+
+    test "a third column for one occurrence is out of order" do
+      grid = [
+        ["Hospital", "Hospital", "Hospital"],
+        ["8:00", "8:01", "8:02"]
+      ]
+
+      columns = ColumnMatcher.match(grid, @hosp_occs, %{}, MapSet.new())
+
+      assert [
+               {:occurrence, "occ-hosp", :arrival},
+               {:occurrence, "occ-hosp", :departure},
+               {:occurrence, "occ-hosp", :departure}
+             ] = Enum.map(columns, & &1.target)
+
+      assert [:exact, :exact, :out_of_order] = Enum.map(columns, & &1.status)
+      assert ColumnMatcher.issues(columns) == [%{col: 2, kind: :out_of_order}]
+    end
+
+    test "a column whose stop has no later occurrence is out of order" do
+      grid = [
+        ["Beta", "Alpha"],
+        ["8:00", "8:05"]
+      ]
+
+      assert [
+               %{status: :exact, target: {:occurrence, "occ-b2", :departure}},
+               %{status: :out_of_order, target: {:occurrence, "occ-a1", :departure}}
+             ] = ColumnMatcher.match(grid, @ab_occs, %{}, MapSet.new())
+    end
+  end
+
+  describe "match/4 overrides and confirmations" do
+    @describetag :column_overrides
+
+    test "an override to an earlier occurrence is out of order" do
+      grid = [
+        ["Alpha", "Beta", "Alpha"],
+        ["8:00", "8:10", "8:20"]
+      ]
+
+      columns = ColumnMatcher.match(grid, @loop_occs, %{2 => "occ:occ-a1"}, MapSet.new())
+
+      assert %{
+               col: 2,
+               target: {:occurrence, "occ-a1", :departure},
+               status: :out_of_order,
+               by: nil
+             } = Enum.at(columns, 2)
+
+      assert %{col: 2, kind: :out_of_order} in ColumnMatcher.issues(columns)
+    end
+
+    test "an override can map a column to a trip field" do
+      grid = [
+        ["Alpha", "Beta", "Block"],
+        ["8:00", "8:10", "B12"]
+      ]
+
+      columns = ColumnMatcher.match(grid, @ab_occs, %{2 => "block_id"}, MapSet.new())
+
+      assert %{col: 2, target: :block_id, status: :chosen, by: nil} = Enum.at(columns, 2)
+      assert ColumnMatcher.issues(columns) == []
+    end
+
+    test "an ignore override marks the column unused and skips order checks" do
+      grid = [
+        ["Beta", "Beta", "Beta"],
+        ["8:00", "8:05", "8:10"]
+      ]
+
+      auto = ColumnMatcher.match(grid, @ab_occs, %{}, MapSet.new())
+      assert :out_of_order in Enum.map(auto, & &1.status)
+
+      columns = ColumnMatcher.match(grid, @ab_occs, %{2 => "ignore"}, MapSet.new())
+
+      assert %{col: 2, target: :ignore, status: :unused, by: nil} = Enum.at(columns, 2)
+      assert ColumnMatcher.issues(columns) == []
+    end
+
+    test "an override to an unknown occurrence stays unmatched" do
+      grid = [
+        ["Alpha", "Beta"],
+        ["8:00", "8:10"]
+      ]
+
+      columns = ColumnMatcher.match(grid, @ab_occs, %{1 => "occ:nope"}, MapSet.new())
+
+      assert %{col: 1, target: nil, status: :unmatched} = Enum.at(columns, 1)
+
+      assert ColumnMatcher.issues(columns) == [
+               %{col: 1, kind: :unmatched},
+               %{col: nil, kind: :too_few}
+             ]
+    end
+  end
+
+  describe "match/4 close matches and keywords (R5)" do
+    @describetag :close_matches
+
+    test "'Centrl Station' blocks until confirmed" do
+      grid = [
+        ["Centrl Station", "Mill Street"],
+        ["8:00", "8:05"]
+      ]
+
+      columns = ColumnMatcher.match(grid, @pair_occs, %{}, MapSet.new())
+
+      assert %{
+               col: 0,
+               target: {:occurrence, "occ-central", :departure},
+               status: :close,
+               by: :similar_name
+             } = Enum.at(columns, 0)
+
+      assert %{col: 0, kind: :close} in ColumnMatcher.issues(columns)
+
+      confirmed = ColumnMatcher.match(grid, @pair_occs, %{}, MapSet.new([0]))
+
+      assert %{col: 0, status: :confirmed, by: :similar_name} = Enum.at(confirmed, 0)
+      refute Enum.any?(ColumnMatcher.issues(confirmed), &(&1.kind == :close))
+    end
+
+    test "'Run' stays unmatched" do
+      grid = [
+        ["Alpha", "Run", "Beta"],
+        ["8:00", "101", "8:10"]
+      ]
+
+      columns = ColumnMatcher.match(grid, @ab_occs, %{}, MapSet.new())
+
+      assert %{col: 1, header: "Run", target: nil, status: :unmatched, by: nil} =
+               Enum.at(columns, 1)
+
+      assert %{col: 1, kind: :unmatched} in ColumnMatcher.issues(columns)
+    end
+
+    test "trip-field keywords map with an exact status" do
+      grid = [
+        ["Trip", "Alpha", "Beta"],
+        ["101", "8:00", "8:10"]
+      ]
+
+      columns = ColumnMatcher.match(grid, @ab_occs, %{}, MapSet.new())
+
+      assert %{col: 0, target: :trip_short_name, status: :exact, by: :keyword} =
+               Enum.at(columns, 0)
+
+      assert ColumnMatcher.issues(columns) == []
+    end
+  end
+
+  describe "match_headerless/2" do
+    @describetag :headerless
+
+    test "assigns columns to occurrences in order when counts are equal" do
+      grid = [
+        ["8:00", "8:10"],
+        ["9:00", "9:10"]
+      ]
+
+      columns = ColumnMatcher.match_headerless(grid, @ab_occs)
+
+      assert [
+               %{
+                 col: 0,
+                 header: "",
+                 target: {:occurrence, "occ-a1", :departure},
+                 status: :chosen,
+                 by: nil
+               },
+               %{
+                 col: 1,
+                 header: "",
+                 target: {:occurrence, "occ-b2", :departure},
+                 status: :chosen,
+                 by: nil
+               }
+             ] = columns
+
+      assert ColumnMatcher.issues(columns) == []
+    end
+
+    test "leaves every column unmatched when counts differ" do
+      grid = [
+        ["8:00", "8:10", "8:20"]
+      ]
+
+      columns = ColumnMatcher.match_headerless(grid, @ab_occs)
+
+      assert [%{status: :unmatched}, %{status: :unmatched}, %{status: :unmatched}] = columns
+
+      assert %{col: nil, kind: :too_few} in ColumnMatcher.issues(columns)
+    end
+  end
+
+  describe "issues/1" do
+    @describetag :column_issues
+
+    test "returns per-column issues in column order without :too_few" do
+      columns = [
+        %{
+          col: 0,
+          header: "A",
+          target: {:occurrence, "x", :departure},
+          status: :exact,
+          by: :stop_name
+        },
+        %{col: 1, header: "Trip", target: :trip_short_name, status: :exact, by: :keyword},
+        %{col: 2, header: "Run", target: nil, status: :unmatched, by: nil},
+        %{
+          col: 3,
+          header: "Centrl",
+          target: {:occurrence, "y", :departure},
+          status: :close,
+          by: :similar_name
+        },
+        %{
+          col: 4,
+          header: "B",
+          target: {:occurrence, "z", :departure},
+          status: :out_of_order,
+          by: :stop_name
+        },
+        %{col: 5, header: "Notes", target: :ignore, status: :unused, by: nil}
+      ]
+
+      assert ColumnMatcher.issues(columns) == [
+               %{col: 2, kind: :unmatched},
+               %{col: 3, kind: :close},
+               %{col: 4, kind: :out_of_order}
+             ]
+    end
+
+    test "reports :too_few when fewer than two stop columns exist" do
+      assert ColumnMatcher.issues([]) == [%{col: nil, kind: :too_few}]
+
+      single = [
+        %{
+          col: 0,
+          header: "A",
+          target: {:occurrence, "x", :departure},
+          status: :exact,
+          by: :stop_name
+        }
+      ]
+
+      assert ColumnMatcher.issues(single) == [%{col: nil, kind: :too_few}]
+    end
+  end
 end
