@@ -1,4 +1,6 @@
 import zlib from "node:zlib";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 
 export const VIEWPORTS = [
   { label: "320px", width: 320, height: 568 },
@@ -44,9 +46,7 @@ export async function readPendingStates(page) {
 }
 
 export async function bodyFitsViewport(page) {
-  return page.evaluate(
-    () => document.body.scrollWidth <= window.innerWidth,
-  );
+  return page.evaluate(() => document.body.scrollWidth <= window.innerWidth);
 }
 
 /**
@@ -55,7 +55,11 @@ export async function bodyFitsViewport(page) {
  * bytes are inflated with Node's zlib when the entry is deflated.
  */
 export function readZipTextMember(buffer, memberName) {
-  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const view = new DataView(
+    buffer.buffer,
+    buffer.byteOffset,
+    buffer.byteLength,
+  );
   const decode = new TextDecoder("utf-8");
 
   let offset = 0;
@@ -88,4 +92,50 @@ export function readZipTextMember(buffer, memberName) {
   }
 
   throw new Error(`${memberName} is not present in the archive`);
+}
+
+/**
+ * Logs one browser session in as the given seeded user through the ordinary
+ * login form (spec 16, step 33). An already authenticated session is
+ * redirected away from the login page, so the form is only filled when it is
+ * actually rendered.
+ */
+export async function logInAs(page, user) {
+  await page.goto("/users/log_in");
+
+  if ((await page.locator('input[name="user[email]"]').count()) === 0) return;
+
+  // The form submits over the LiveView socket: wait for the connection so a
+  // fast click is never dropped before the view is joined.
+  await page.waitForSelector("[data-phx-main].phx-connected");
+
+  await page.fill('input[name="user[email]"]', user.email);
+  await page.fill('input[name="user[password]"]', user.password);
+  await page.locator('button:has-text("Log in")').click();
+  await page.waitForURL((url) => !url.pathname.startsWith("/users/log_in"));
+}
+
+/**
+ * Saves one inspected capture as `step-033-*.png` under the directory named
+ * by ROUTE16_CAPTURE_DIR (spec 16, step 33); with the variable unset it
+ * records nothing. Dialogs live in the top layer, so they are captured
+ * against the viewport with animations disabled; task surfaces use fullPage.
+ */
+export async function captureShot(page, name, { fullPage = true } = {}) {
+  const dir = process.env.ROUTE16_CAPTURE_DIR;
+  if (!dir) return;
+
+  mkdirSync(dir, { recursive: true });
+
+  if (!fullPage) {
+    await page.waitForTimeout(300);
+    await page.screenshot({
+      path: resolve(dir, `${name}.png`),
+      fullPage: false,
+      animations: "disabled",
+    });
+    return;
+  }
+
+  await page.screenshot({ path: resolve(dir, `${name}.png`), fullPage });
 }
