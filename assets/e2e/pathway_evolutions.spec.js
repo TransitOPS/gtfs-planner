@@ -1,11 +1,14 @@
-// Scheduled pathway closures on the Evolutions station route (EV-21, step 15).
+// Scheduled pathway closures on the Evolutions station route (EV-21, step 15)
+// and the station-merge closure-file disclosure (EV-20, step 16).
 //
 // Runs against the reset-and-seeded browser database the repository's Playwright
 // configuration already uses (`mise run prepare:browser`, workers: 1, retries: 0)
 // with `BROWSER_E2E=true`. The `authoring` group exercises the ordinary station
 // navigation into the real closure list, its states, its exact natural IDs and
 // its keyboard operation, and captures the rendered result at the two required
-// viewports. Expected labels, counts and IDs are literal values from the seeded
+// viewports. The `exchange` group reviews a station-merge upload that carries
+// `pathway_evolutions.txt`, which station merge must disclose and never apply.
+// Expected labels, counts and IDs are literal values from the seeded
 // browser fixtures, not values read out of the component under test.
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
@@ -31,6 +34,18 @@ const EMPTY_STATION = "BROWSER_EVO_EMPTY_STATION";
 const NO_PATHWAY_STATION = "BROWSER_EVO_NOPATHWAY_STATION";
 const NO_CALENDAR_STATION = "BROWSER_EVO_NOCAL_STATION";
 const NON_STATION_STOP = "BROWSER_EVO_ENTRANCE";
+
+// Step 16: the closure row this upload proposes is a valid full-import row on a
+// pathway that already carries a saved closure, so a station merge that applied
+// the file would change the lift's rendered window.
+const IGNORED_CLOSURE_FILE =
+  "pathway_id,service_id,start_time,end_time,is_closed\n" +
+  "BROWSER_EVO/PW LIFT 1,CAL_DAILY,09:00:00,10:00:00,1";
+
+const IGNORED_NOTICE =
+  "pathway_evolutions.txt is not applied by station merge. Existing scheduled closures are unchanged.";
+
+const IGNORED_NOTICE_ID = "#diff-evolutions-ignored";
 
 // One pathway ID carries a slash and a space, so `?pathway=` has to be encoded
 // and decoded exactly rather than read as a path segment.
@@ -478,6 +493,109 @@ test.describe("authoring", () => {
           fullPage: true,
         });
       });
+    });
+  });
+});
+
+// Step 16 / EV-20. The station merge review discloses the ignored closure file
+// from the durable run summary, and the upload never becomes closures.
+test.describe("exchange", () => {
+  test("station merge discloses the ignored closure file and leaves closures unchanged", async ({
+    page,
+  }, testInfo) => {
+    const versionId = await seededVersionId(page);
+    const importPath = `/gtfs/${versionId}/import`;
+
+    await page.setViewportSize(DESKTOP);
+    await page.goto(importPath);
+    await waitForLiveView(page);
+    await page.waitForSelector("#diff-upload-input input");
+
+    // An earlier durable review in this version disables the upload step until
+    // Reset returns the form to it; a fresh browser database has no such run.
+    const resetButton = page.locator("#diff-reset-btn").first();
+    if (await resetButton.count()) {
+      await resetButton.click();
+      await page.waitForSelector("#diff-upload-input input");
+    }
+
+    // The new-version scope sentence is Import feed's; Update station data keeps
+    // its own current-version sentence.
+    await expect(page.locator("#gtfs-import-section")).toContainText("new version");
+    await expect(page.locator("#station-data-section")).not.toContainText("new version");
+    await expect(page.locator("#diff-destination")).toContainText(
+      "Reviewed changes apply to version",
+    );
+
+    await page.locator("#diff-upload-input input").setInputFiles([
+      {
+        name: "levels.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from(
+          "level_id,level_index,level_name\nBROWSER_EVO_MERGE,1.0,Closure review",
+        ),
+      },
+      {
+        name: "pathway_evolutions.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from(IGNORED_CLOSURE_FILE),
+      },
+    ]);
+
+    // The click waits for the compute button to leave its disabled state, which
+    // is what the server renders once both upload entries are staged.
+    await page.locator("#diff-compute-btn").click();
+    await page
+      .locator("#diff-decisions [data-version-diff-row]")
+      .first()
+      .waitFor();
+
+    const notice = page.locator(IGNORED_NOTICE_ID);
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText(IGNORED_NOTICE);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-016-production-desktop.png"),
+      fullPage: true,
+    });
+
+    // The review is durable: a reload rebuilds the notice from the run summary.
+    await page.reload();
+    await waitForLiveView(page);
+    await expect(page.locator(IGNORED_NOTICE_ID)).toContainText(IGNORED_NOTICE);
+
+    // The file never reached the Evolutions list: the seeded lift still carries
+    // its saved 09:00–15:00 window, and the station still has exactly two rows.
+    await page.goto(evolutionsPath(versionId, STATION));
+    await waitForLiveView(page);
+    await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(2);
+    await expect(
+      page
+        .locator("#closures-list tr[data-closure-id]")
+        .filter({ hasText: "BROWSER_EVO/PW LIFT 1" }),
+    ).toContainText("09:00–15:00");
+
+    await page.goto(importPath);
+    await waitForLiveView(page);
+    await page.setViewportSize(MOBILE);
+    await page.reload();
+    await waitForLiveView(page);
+    await expect(page.locator(IGNORED_NOTICE_ID)).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-016-production-mobile.png"),
+      fullPage: true,
+    });
+
+    await page.setViewportSize(NARROW);
+    await page.reload();
+    await waitForLiveView(page);
+    await expect(page.locator(IGNORED_NOTICE_ID)).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-016-production-320.png"),
+      fullPage: true,
     });
   });
 });
