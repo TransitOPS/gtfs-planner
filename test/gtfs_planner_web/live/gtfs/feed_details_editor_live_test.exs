@@ -15,7 +15,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsEditorLiveTest do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
 
-  @url_message "must be a full web address starting with https:// or http://"
+  @url_message "Enter a full web address, starting with https:// or http://."
 
   # The nine drawer fields with values a valid save accepts. Every case merges
   # over these so the select values are options the form actually offers.
@@ -117,19 +117,19 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsEditorLiveTest do
   describe "create" do
     setup :editor_setup
 
-    test "Set feed details creates the row, closes the drawer, flashes and shows the summary",
+    test "Set up feed details creates the row, closes the drawer, flashes and shows the summary",
          %{conn: conn, user: user, organization: organization, version: version} do
       {:ok, view, _html} = editor_view(conn, user, organization, version)
 
-      assert has_element?(view, "#feed-details-empty", "Introduce your feed")
-      assert has_element?(view, "#feed-details-set", "Set feed details")
+      assert has_element?(view, "#feed-details-empty", "No feed details yet")
+      assert has_element?(view, "#feed-details-set", "Set up feed details")
       refute has_element?(view, "#feed-details-edit")
       assert has_element?(view, "#feed-details-drawer-overlay[data-open='false']")
 
       open_drawer(view)
 
       assert has_element?(view, "#feed-details-drawer-overlay[data-open='true']")
-      assert has_element?(view, "#feed-details-drawer-title", "Set feed details")
+      assert has_element?(view, "#feed-details-drawer-title", "Set up feed details")
       assert has_element?(view, "#feed-details-form-panel[phx-hook='FormErrorFocus']")
       assert has_element?(view, "#feed-details-form")
 
@@ -272,7 +272,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsEditorLiveTest do
       assert has_element?(
                view,
                "#feed_info_feed_end_date-error",
-               "must be on or after the valid-from date"
+               "Choose a date on or after Sep 1, 2026, the valid-from date."
              )
 
       assert_push_event(view, "focus_form_error", %{
@@ -290,12 +290,45 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsEditorLiveTest do
 
       submit(view, %{"feed_publisher_name" => ""})
 
-      assert has_element?(view, "#feed_info_feed_publisher_name-error", "can't be blank")
+      assert has_element?(
+               view,
+               "#feed_info_feed_publisher_name-error",
+               "Enter the publisher name."
+             )
 
       assert_push_event(view, "focus_form_error", %{
         form_id: "feed-details-form",
         fallback_id: "feed-details-form-error"
       })
+
+      assert feed_info_rows(organization) == 0
+    end
+
+    test "every refused rule says what to enter",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      {:ok, view, _html} = editor_view(conn, user, organization, version)
+      open_drawer(view)
+
+      submit(view, %{
+        "feed_publisher_name" => "",
+        "feed_publisher_url" => "",
+        "feed_lang" => "",
+        "default_lang" => "es",
+        "feed_version" => String.duplicate("v", 256),
+        "feed_contact_email" => "data example",
+        "feed_contact_url" => "example.com"
+      })
+
+      for {field, message} <- [
+            {"feed_publisher_name", "Enter the publisher name."},
+            {"feed_publisher_url", "Enter the publisher website."},
+            {"feed_lang", "Choose the feed language."},
+            {"feed_version", "Use 255 characters or fewer."},
+            {"feed_contact_email", "Enter an email address, such as data@agency.org."},
+            {"feed_contact_url", @url_message}
+          ] do
+        assert has_element?(view, "#feed_info_#{field}-error", message)
+      end
 
       assert feed_info_rows(organization) == 0
     end
@@ -388,7 +421,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsEditorLiveTest do
   describe "use date label" do
     setup :editor_setup
 
-    test "the quiet action fills the version's date and never fills it on its own",
+    test "the date-label action fills the version's date and never fills it on its own",
          %{conn: conn, user: user, organization: organization, version: version} do
       today = Date.to_iso8601(DisplayClock.today(organization.id, version.id).date)
 
@@ -396,7 +429,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsEditorLiveTest do
       open_drawer(view)
 
       # No version carries a zone, so DisplayClock resolves UTC for the label.
-      assert has_element?(view, "#feed-details-drawer", "Suggested label: #{today}.")
+      assert has_element?(view, "#feed_info_feed_version-help", "such as #{today} or")
       refute has_element?(view, "#feed_info_feed_version[value='#{today}']")
 
       view |> element("#feed-details-use-date-label") |> render_click()
@@ -464,6 +497,8 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsEditorLiveTest do
       submit_fields(view, %{"feed_publisher_name" => "Draft Partnership"})
 
       assert has_element?(view, "#feed-details-conflict", "Another editor changed these details")
+      # A refused save is announced; the reloaded notice below is a polite status.
+      assert has_element?(view, "#feed-details-conflict[role='alert']")
 
       assert has_element?(
                view,
@@ -480,6 +515,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsEditorLiveTest do
       view |> element("#feed-details-load-latest") |> render_click()
 
       assert has_element?(view, "#feed-details-conflict", "Save again to replace their changes.")
+      assert has_element?(view, "#feed-details-conflict[role='status']")
       refute has_element?(view, "#feed-details-load-latest")
       assert has_element?(view, "#feed_info_feed_publisher_name[value='Draft Partnership']")
       assert Repo.get!(FeedInfo, row.id).feed_publisher_name == "Other Editor Name"
@@ -537,7 +573,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsEditorLiveTest do
 
       assert has_element?(view, "#feed-details-drawer-overlay[data-open='false']")
       assert feed_info_rows(organization) == 0
-      assert has_element?(view, "#feed-details-set", "Set feed details")
+      assert has_element?(view, "#feed-details-set", "Set up feed details")
     end
 
     test "reopening shows the stored values again",

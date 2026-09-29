@@ -47,6 +47,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedSettingsComponents do
   attr :include_mul, :boolean, default: false
   attr :optional, :boolean, default: false
   attr :help, :string, default: nil
+  attr :errors, :list, default: [], doc: "explicit error text; empty keeps the field's own"
 
   def language_select(assigns) do
     assigns =
@@ -65,6 +66,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedSettingsComponents do
       options={@options}
       prompt="Choose language"
       help={@help}
+      errors={@errors}
     />
     """
   end

@@ -230,9 +230,10 @@ async function setImportFiles(page, files) {
 }
 
 // One definition-list row's label and value, in the order the page renders them.
+// A Feed details row's `dt` also carries a hint, so the label is read on its own.
 async function details(dl) {
-  const labels = await dl.locator("dt").allInnerTexts();
-  const values = await dl.locator("dd").allInnerTexts();
+  const labels = await dl.locator("[data-role='field-label']").allInnerTexts();
+  const values = await dl.locator("[data-role='field-value']").allInnerTexts();
 
   return labels.map((label, index) => [label, values[index]]);
 }
@@ -255,32 +256,35 @@ test.describe("@feed-page", () => {
 
         // The page is the Feed details page, not a placeholder or an error page.
         await expect(page.locator("h1")).toHaveText("Feed details");
-        await expect(page.locator("h1 + p")).toHaveText(
-          "Publisher information for this version—not the contact details riders use.",
+        await expect(page.locator("h1 + p")).toContainText(
+          "Tell trip planners who publishes this schedule, how long it’s valid and who to contact about the data.",
         );
-        await expect(
-          page.locator("#settings-nav a[aria-current='page']"),
-        ).toHaveText("Feed details");
+        await expect(page.locator("#feed-details-scope")).toHaveText(
+          `Applies to ${SUMMARY_VERSION} only. Each version keeps its own feed details.`,
+        );
+        // The page returns to Settings by a link, not the tab bar.
+        await expect(page.locator("#settings-nav")).toHaveCount(0);
+        await expect(page.locator("#settings-back")).toHaveAttribute(
+          "href",
+          `/gtfs/${feedDetailsId}/settings`,
+        );
         await expect(page.locator("#coming-soon-status")).toHaveCount(0);
         await expect(page.locator("#feed-details-empty")).toHaveCount(0);
 
         await expect(
           page.locator("#feed-details-publisher h2"),
         ).toHaveText("Publisher");
-        await expect(page.locator("#feed-details-publisher")).toContainText(
-          "Details set",
-        );
         await expect(page.locator("#feed-details-validity h2")).toHaveText(
-          "Validity and version",
+          "Dates and version",
         );
         await expect(page.locator("#feed-details-contact h2")).toHaveText(
-          "Technical contact",
+          "Data contact",
         );
 
         expect(await details(page.locator("#feed-details-publisher dl"))).toEqual(
           [
-            ["Name", "Browser Regional Partnership"],
-            ["Website", "https://example.test/data"],
+            ["Publisher name", "Browser Regional Partnership"],
+            ["Publisher website", "https://example.test/data"],
             ["Feed language", "English (en)"],
             ["Default language", "English (en)"],
           ],
@@ -296,23 +300,25 @@ test.describe("@feed-page", () => {
 
         expect(await details(page.locator("#feed-details-contact dl"))).toEqual(
           [
-            ["Email", "data@example.test"],
-            ["Website", "https://example.test/data/contact"],
+            ["Contact email", "data@example.test"],
+            ["Contact website", "https://example.test/data/contact"],
           ],
         );
 
-        // The prototype's aside notes, in order.
-        await expect(page.locator("#feed-details-summary aside h2")).toHaveText(
-          ["One feed, one publisher", "For data consumers"],
-        );
-        await expect(
-          page.locator("#feed-details-summary aside"),
-        ).toContainText(
-          "These details are included when this version is exported. Saving does not publish the feed.",
+        // The related notes, in order, each with its way onward.
+        await expect(page.locator("#feed-details-aside h2")).toHaveText([
+          "Rider contact lives on agencies",
+          "Saving doesn’t publish",
+        ]);
+        await expect(page.locator("#feed-details-aside")).toContainText(
+          "These details are included when this version is exported.",
         );
         await expect(
           page.locator("#feed-details-manage-agencies"),
         ).toHaveAttribute("href", `/gtfs/${feedDetailsId}/settings/agencies`);
+        await expect(
+          page.locator("#feed-details-go-to-export"),
+        ).toHaveAttribute("href", `/gtfs/${feedDetailsId}/export`);
 
         expect(await bodyFitsViewport(page)).toBe(true);
 
@@ -331,22 +337,23 @@ test.describe("@feed-page", () => {
         await waitForLiveView(page);
 
         await expect(page.locator("h1")).toHaveText("Feed details");
-        await expect(page.locator("h1 + p")).toHaveText(
-          "Tell journey planners who publishes this dataset and when its information is valid.",
+        await expect(page.locator("h1 + p")).toContainText(
+          "Tell trip planners who publishes this schedule, how long it’s valid and who to contact about the data.",
         );
         await expect(page.locator("#feed-details-empty")).toContainText(
-          "Introduce your feed",
+          "No feed details yet",
         );
         await expect(page.locator("#feed-details-empty")).toContainText(
-          "Add the publisher, website, and language. Dates and technical contacts help others use your data with confidence.",
+          "You can export without them, but data checkers flag the missing file.",
         );
         await expect(page.locator("#feed-details-summary")).toHaveCount(0);
         await expect(page.locator("#coming-soon-status")).toHaveCount(0);
 
         // Step 7's drawer adds the opener to this state.
         await expect(page.locator("#feed-details-set")).toHaveText(
-          "Set feed details",
+          "Set up feed details",
         );
+        await expect(page.locator("#feed-details-aside")).toBeVisible();
 
         expect(await bodyFitsViewport(page)).toBe(true);
 
@@ -406,19 +413,21 @@ test.describe("@feed-editor", () => {
 
     await expect(overlay).toHaveAttribute("data-open", "true");
     await expect(page.locator("#feed-details-drawer-title")).toHaveText(
-      "Set feed details",
+      "Set up feed details",
     );
     await expect(drawer).toContainText(
-      "Describe the publisher and validity of this entire dataset. Optional fields are marked.",
+      "These details describe your whole schedule dataset, not one agency. Fields marked optional can stay blank.",
     );
     await expect(drawer.locator("legend")).toHaveText([
       "Publisher",
-      "Validity and version",
-      "Technical contact",
+      "Dates and version",
+      "Data contact",
     ]);
     await expect(page.locator("#feed-details-use-date-label")).toHaveText(
-      "Use date label",
+      "Use today’s date",
     );
+    // The drawer opens on its first field.
+    await expect(page.locator("#feed_info_feed_publisher_name")).toBeFocused();
 
     expect(await bodyFitsViewport(page)).toBe(true);
     await captureIn(page, testInfo, EDITOR_CAPTURE_DIR, "feed-drawer-1280");
@@ -435,7 +444,7 @@ test.describe("@feed-editor", () => {
     // reports itself: the client marks untouched inputs as unused.
     await page.fill("#feed_info_feed_publisher_url", "www.example.com");
     await expect(page.locator("#feed_info_feed_publisher_url-error")).toContainText(
-      "must be a full web address",
+      "Enter a full web address",
     );
     await expect(page.locator("#feed_info_feed_publisher_name-error")).toHaveCount(0);
     await expect(page.locator("#feed-details-form-error")).toHaveCount(0);
@@ -446,7 +455,7 @@ test.describe("@feed-editor", () => {
 
     // The refused value marks its own field and writes nothing.
     await expect(page.locator("#feed_info_feed_publisher_url-error")).toContainText(
-      "must be a full web address",
+      "Enter a full web address",
     );
     await expect(overlay).toHaveAttribute("data-open", "true");
     await expect(page.locator("#feed-details-form-error")).toContainText(

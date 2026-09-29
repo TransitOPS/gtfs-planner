@@ -36,7 +36,14 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
     only: [assign_invite_form: 2, invitation_detail: 1, normalize_invite_params: 1]
 
   import GtfsPlannerWeb.PlannerComponents,
-    only: [back_link: 1, choice_cards: 1, first_use: 1, form_error_summary: 1, message: 1]
+    only: [
+      back_link: 1,
+      choice_cards: 1,
+      drawer_footer: 1,
+      first_use: 1,
+      form_error_summary: 1,
+      message: 1
+    ]
 
   on_mount {GtfsPlannerWeb.UserAuth, :ensure_authenticated}
   on_mount {GtfsPlannerWeb.EnsureRole, :require_system_administrator}
@@ -788,14 +795,14 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         />
       </div>
 
-      <Components.drawer_footer>
+      <.drawer_footer>
         <.button variant="secondary" class="min-h-11" patch={~p"/admin/organizations"}>
           Cancel
         </.button>
         <.button type="submit" class="min-h-11 min-w-[168px]" phx-disable-with="Saving…">
           {if @live_action == :new, do: "Create organization", else: "Save changes"}
         </.button>
-      </Components.drawer_footer>
+      </.drawer_footer>
     </.form>
     """
   end

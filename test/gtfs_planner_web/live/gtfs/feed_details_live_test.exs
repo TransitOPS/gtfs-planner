@@ -14,7 +14,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLiveTest do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
-  @summary_subtitle "Publisher information for this version—not the contact details riders use."
+  @subtitle "Tell trip planners who publishes this schedule, how long it’s valid and who to contact about the data."
 
   # The publisher name, website and language are required; the rest is optional,
   # so `default_lang` is deliberately absent and reads "Not set" (AC-1).
@@ -59,6 +59,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLiveTest do
   defp feed_details_path(version_id), do: "/gtfs/#{version_id}/settings/feed-details"
   defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
   defp agencies_path(version_id), do: "/gtfs/#{version_id}/settings/agencies"
+  defp export_path(version_id), do: "/gtfs/#{version_id}/export"
 
   # The row is written by the application's own writer, so the case exercises the
   # stored shape a real save produces (INV-5) instead of a private insert.
@@ -86,17 +87,19 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLiveTest do
   end
 
   defp text_of(doc, selector) do
-    doc |> LazyHTML.query(selector) |> LazyHTML.text() |> String.trim()
+    doc |> LazyHTML.query(selector) |> LazyHTML.text() |> squish()
   end
 
   defp texts_of(doc, selector) do
     doc
     |> LazyHTML.query(selector)
-    |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
+    |> Enum.map(&(&1 |> LazyHTML.text() |> squish()))
   end
 
-  defp section_labels(doc, section), do: texts_of(doc, "#{section} dt")
-  defp section_values(doc, section), do: texts_of(doc, "#{section} dd")
+  defp squish(text), do: text |> String.replace(~r/\s+/, " ") |> String.trim()
+
+  defp section_labels(doc, section), do: texts_of(doc, "#{section} [data-role='field-label']")
+  defp section_values(doc, section), do: texts_of(doc, "#{section} [data-role='field-value']")
 
   describe "summary" do
     setup :editor_setup
@@ -115,22 +118,24 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLiveTest do
 
       assert Enum.count(LazyHTML.query(doc, "h1")) == 1
       assert text_of(doc, "h1") == "Feed details"
-      assert text_of(doc, "h1 + p") == @summary_subtitle
+      assert text_of(doc, "h1 + p") =~ @subtitle
 
-      # The prototype's section order: Publisher, Validity and version, Technical
-      # contact.
+      assert text_of(doc, "#feed-details-scope") ==
+               "Applies to #{version.name} only. Each version keeps its own feed details."
+
+      # The sections read in the order: Publisher, Dates and version, Data contact.
       assert LazyHTML.attribute(LazyHTML.query(doc, "#feed-details-summary section"), "id") ==
                ["feed-details-publisher", "feed-details-validity", "feed-details-contact"]
 
       assert texts_of(doc, "#feed-details-summary section h2") == [
                "Publisher",
-               "Validity and version",
-               "Technical contact"
+               "Dates and version",
+               "Data contact"
              ]
 
       assert section_labels(doc, "#feed-details-publisher") == [
-               "Name",
-               "Website",
+               "Publisher name",
+               "Publisher website",
                "Feed language",
                "Default language"
              ]
@@ -154,14 +159,67 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLiveTest do
                "2026-autumn"
              ]
 
-      assert section_labels(doc, "#feed-details-contact") == ["Email", "Website"]
+      assert section_labels(doc, "#feed-details-contact") == ["Contact email", "Contact website"]
 
       assert section_values(doc, "#feed-details-contact") == [
                "data@example.test",
                "https://example.test/data/contact"
              ]
 
-      assert has_element?(view, "#feed-details-publisher", "Details set")
+      # Each row says why apps read the value, so the operator knows what a blank costs.
+      assert has_element?(
+               view,
+               "#feed-details-validity",
+               "Apps stop relying on this schedule after this day."
+             )
+    end
+
+    test "links a web address or email and leaves any other stored text plain",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      save_feed_info(user, organization, version, @feed_info_attrs)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, feed_details_path(version.id))
+      doc = LazyHTML.from_fragment(render(view))
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#feed-details-publisher dd a"), "href") ==
+               ["https://example.test/data"]
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#feed-details-publisher dd a"), "target") ==
+               ["_blank"]
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#feed-details-contact dd a"), "href") ==
+               ["mailto:data@example.test", "https://example.test/data/contact"]
+
+      # An import stores arbitrary text, which must never become an `href`.
+      other_version = gtfs_version_fixture(organization.id)
+
+      import_feed_info(
+        organization,
+        other_version,
+        Map.merge(@feed_info_attrs, %{
+          feed_publisher_url: "javascript:alert(1)",
+          feed_contact_email: "not an email",
+          feed_contact_url: "www.example.test"
+        })
+      )
+
+      {:ok, imported_view, _html} = live(conn, feed_details_path(other_version.id))
+      imported_doc = LazyHTML.from_fragment(render(imported_view))
+
+      assert Enum.empty?(LazyHTML.query(imported_doc, "#feed-details-summary dd a"))
+
+      assert section_values(imported_doc, "#feed-details-publisher") == [
+               "Browser Regional Partnership",
+               "javascript:alert(1)",
+               "English (en)",
+               "Not set"
+             ]
+
+      assert section_values(imported_doc, "#feed-details-contact") == [
+               "not an email",
+               "www.example.test"
+             ]
     end
 
     test "labels a language outside the list as stored and mul as Multilingual",
@@ -180,7 +238,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLiveTest do
       assert has_element?(view, "#feed-details-publisher", "en-US")
     end
 
-    test "renders the aside notes and the Settings bar",
+    test "renders the related notes and a way back to Settings instead of the tab bar",
          %{conn: conn, user: user, organization: organization, version: version} do
       save_feed_info(user, organization, version, @feed_info_attrs)
       conn = log_in_user(conn, user, organization: organization)
@@ -188,16 +246,13 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLiveTest do
       {:ok, view, _html} = live(conn, feed_details_path(version.id))
       doc = LazyHTML.from_fragment(render(view))
 
-      assert texts_of(doc, "#feed-details-summary aside h2") == [
-               "One feed, one publisher",
-               "For data consumers"
+      assert texts_of(doc, "#feed-details-aside h2") == [
+               "Rider contact lives on agencies",
+               "Saving doesn’t publish"
              ]
 
-      assert text_of(doc, "#feed-details-summary aside") =~
-               "A regional partnership can publish a dataset containing several agencies."
-
-      assert text_of(doc, "#feed-details-summary aside") =~
-               "These details are included when this version is exported. Saving does not publish the feed."
+      assert text_of(doc, "#feed-details-aside") =~
+               "These details are included when this version is exported."
 
       assert LazyHTML.attribute(
                LazyHTML.query(doc, "#feed-details-manage-agencies"),
@@ -205,9 +260,15 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLiveTest do
              ) == [agencies_path(version.id)]
 
       assert LazyHTML.attribute(
-               LazyHTML.query(doc, "#settings-nav a[aria-current='page']"),
+               LazyHTML.query(doc, "#feed-details-go-to-export"),
                "href"
-             ) == [feed_details_path(version.id)]
+             ) == [export_path(version.id)]
+
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-back"), "href") ==
+               [settings_path(version.id)]
+
+      assert text_of(doc, "#settings-back") == "Settings"
+      refute has_element?(view, "#settings-nav")
     end
   end
 
@@ -223,20 +284,24 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLiveTest do
 
       {:ok, view, _html} = live(conn, feed_details_path(version.id))
 
-      assert has_element?(view, "#feed-details-empty", "Introduce your feed")
+      assert has_element?(view, "#feed-details-empty", "No feed details yet")
 
       assert has_element?(
                view,
                "#feed-details-empty",
-               "Add the publisher, website, and language."
+               "You can export without them, but data checkers flag the missing file."
              )
 
       refute has_element?(view, "#feed-details-summary")
       refute has_element?(view, "#coming-soon-status")
 
       # The drawer's opener is the only action this state offers (step 7).
-      assert has_element?(view, "#feed-details-set", "Set feed details")
+      assert has_element?(view, "#feed-details-set", "Set up feed details")
       refute has_element?(view, "#feed-details-edit")
+
+      # The notes on rider contact and publishing hold before anything is set.
+      assert has_element?(view, "#feed-details-aside #feed-details-manage-agencies")
+      assert has_element?(view, "#feed-details-aside #feed-details-go-to-export")
 
       assert Repo.aggregate(from(f in FeedInfo, where: f.gtfs_version_id == ^version.id), :count) ==
                0

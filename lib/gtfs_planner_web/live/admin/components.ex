@@ -16,7 +16,7 @@ defmodule GtfsPlannerWeb.Admin.Components do
   use GtfsPlannerWeb, :html
 
   import GtfsPlannerWeb.PlannerComponents,
-    only: [choice_cards: 1, first_use: 1, form_error_summary: 1, message: 1]
+    only: [choice_cards: 1, drawer_footer: 1, first_use: 1, form_error_summary: 1, message: 1]
 
   alias GtfsPlanner.Accounts.InviteForm
   alias GtfsPlanner.Authorization.Roles
@@ -519,20 +519,6 @@ defmodule GtfsPlannerWeb.Admin.Components do
         </.button>
       </.drawer_footer>
     </.form>
-    """
-  end
-
-  @doc """
-  A drawer form's actions, kept in view under the scrolling fields: Cancel, then
-  the one primary at the right.
-  """
-  slot :inner_block, required: true
-
-  def drawer_footer(assigns) do
-    ~H"""
-    <footer class="flex items-center justify-end gap-3 border-t border-subtle bg-white px-5 py-4 sm:px-6">
-      {render_slot(@inner_block)}
-    </footer>
     """
   end
 
