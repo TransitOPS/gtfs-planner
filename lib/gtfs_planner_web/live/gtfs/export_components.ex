@@ -132,6 +132,41 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   end
 
   @doc """
+  Says that a Pathways export leaves out the version's scheduled closures.
+
+  Only the Pathways profile can omit closures, so only that selection carries it.
+  Choose Full export switches the type and moves focus to the Full option.
+  """
+  attr :count, :integer, required: true
+
+  def closures_omitted(assigns) do
+    ~H"""
+    <div class="px-5 pt-4">
+      <.message
+        id="export-pathways-closures-omitted"
+        kind="info"
+        title={"Pathways export leaves out #{@count} #{if @count == 1, do: "scheduled closure", else: "scheduled closures"}"}
+      >
+        Choose Full export to include closures and their calendars.
+        <:action>
+          <.button
+            id="export-choose-full"
+            variant="secondary"
+            class="min-h-11"
+            phx-click={
+              JS.push("select_export_type", value: %{"export" => %{"type" => "full"}})
+              |> JS.focus(to: "#export-type-full")
+            }
+          >
+            Choose Full export
+          </.button>
+        </:action>
+      </.message>
+    </div>
+    """
+  end
+
+  @doc """
   The consequence of exporting, shown before the button: a count for each thing
   trip planners read, then every file with its record count.
 
@@ -229,6 +264,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
                   ]}
                 >
                   {filename}
+                  <span
+                    :if={filename == "pathway_evolutions.txt"}
+                    class="mt-0.5 block font-ds text-[13px] text-muted"
+                  >
+                    Scheduled closures · extension, not core GTFS
+                  </span>
                 </th>
                 <td class={[
                   "px-4 py-2.5 text-right tabular-nums",

@@ -544,6 +544,112 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     end
   end
 
+  describe "closure export coverage" do
+    test "Pathways with closures names the count and Choose Full export restores the closure row",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: version
+         } do
+      pathway_evolution_fixture(organization.id, version.id)
+      pathway_evolution_fixture(organization.id, version.id)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export?type=pathways")
+
+      assert has_element?(view, "#export-type-pathways[checked]")
+
+      assert has_element?(
+               view,
+               "#export-pathways-closures-omitted",
+               "Pathways export leaves out 2 scheduled closures"
+             )
+
+      assert inventory_count(view, "stops.txt") == "4"
+      assert inventory_count(view, "pathways.txt") == "2"
+      refute inventory_count(view, "pathway_evolutions.txt")
+
+      view |> element("#export-choose-full") |> render_click()
+
+      assert_patch(view, "/gtfs/#{version.id}/export?type=full")
+      assert has_element?(view, "#export-type-full[checked]")
+      refute has_element?(view, "#export-pathways-closures-omitted")
+      assert inventory_count(view, "pathway_evolutions.txt") == "2"
+
+      assert has_element?(
+               view,
+               "#export-inventory",
+               "Scheduled closures · extension, not core GTFS"
+             )
+    end
+
+    test "one closure reads as a singular scheduled closure", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      pathway_evolution_fixture(organization.id, version.id)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export?type=pathways")
+
+      assert has_element?(
+               view,
+               "#export-pathways-closures-omitted",
+               "Pathways export leaves out 1 scheduled closure"
+             )
+    end
+
+    test "a version without closures shows no Pathways omission", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, pathways_view, _html} = live(conn, "/gtfs/#{version.id}/export?type=pathways")
+
+      refute has_element?(pathways_view, "#export-pathways-closures-omitted")
+      refute inventory_count(pathways_view, "pathway_evolutions.txt")
+
+      {:ok, full_view, _html} = live(conn, "/gtfs/#{version.id}/export?type=full")
+
+      refute has_element?(full_view, "#export-pathways-closures-omitted")
+      assert inventory_count(full_view, "pathway_evolutions.txt") == "0left out"
+
+      assert has_element?(
+               full_view,
+               "#export-inventory",
+               "Scheduled closures · extension, not core GTFS"
+             )
+    end
+
+    test "operations keeps its TODS warnings and never reports the Pathways omission", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      pathway_evolution_fixture(organization.id, version.id)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export?type=operations")
+
+      assert has_element?(view, "#operations-export-note")
+      refute has_element?(view, "#export-pathways-closures-omitted")
+      assert inventory_count(view, "pathway_evolutions.txt") == "1"
+
+      start_export_and_wait(view)
+
+      assert %Run{state: :ready} = latest_operations_run(organization, version)
+      assert has_element?(view, "#export-warning-panel", "stops_supplement.txt was not included")
+      assert has_element?(view, "#export-warning-panel", "vehicles.txt was not included")
+      refute has_element?(view, "#export-pathways-closures-omitted")
+    end
+  end
+
   describe "GTFS area navigation" do
     test "mounts the GTFS tabs with Export current above the unchanged page", %{
       conn: conn,
@@ -611,6 +717,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     assert_receive {:DOWN, ^ref, :process, ^task_pid, _reason}, 5_000
     _ = :sys.get_state(view.pid)
     render(view)
+  end
+
+  defp inventory_count(view, filename) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("#export-inventory tbody tr")
+    |> Enum.find_value(fn row ->
+      file = row |> LazyHTML.query("th") |> LazyHTML.text() |> String.trim()
+      count = row |> LazyHTML.query("td") |> LazyHTML.text() |> String.trim()
+
+      if String.starts_with?(file, filename), do: count
+    end)
   end
 
   defp start_export_and_wait(view, button_id \\ "#start-export") do
