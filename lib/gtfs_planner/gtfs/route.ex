@@ -13,6 +13,13 @@ defmodule GtfsPlanner.Gtfs.Route do
   @missing_name_message "at least one of route_short_name or route_long_name must be present"
   @hex_message "must be a valid 6-character hex color code"
   @url_message "must be an http(s) URL with a nonempty host"
+
+  @duplicate_id_message "This route ID is already used in this version. Choose another."
+
+  @doc "The message an editor sees when a route ID is already taken in the version."
+  @spec duplicate_id_message() :: String.t()
+  def duplicate_id_message, do: @duplicate_id_message
+
   @editor_fields [
     :route_short_name,
     :route_long_name,
@@ -133,7 +140,7 @@ defmodule GtfsPlanner.Gtfs.Route do
     |> apply_text_mode(text_mode)
     |> validate_route_fields(:editor)
     |> validate_route_url()
-    |> route_constraints()
+    |> route_constraints(@duplicate_id_message)
     |> editor_error_copy()
   end
 
@@ -216,11 +223,12 @@ defmodule GtfsPlanner.Gtfs.Route do
 
   defp editor_error(error), do: error
 
-  defp route_constraints(changeset) do
+  defp route_constraints(changeset, duplicate_message \\ "has already been taken") do
     # routes_organization_id_gtfs_version_id_route_id_index binds to :route_id.
     changeset
     |> unique_constraint([:organization_id, :gtfs_version_id, :route_id],
-      error_key: :route_id
+      error_key: :route_id,
+      message: duplicate_message
     )
     |> foreign_key_constraint(:organization_id)
   end

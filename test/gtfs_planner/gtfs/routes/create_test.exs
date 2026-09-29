@@ -323,7 +323,8 @@ defmodule GtfsPlanner.Gtfs.Routes.CreateTest do
       assert {:error, %Ecto.Changeset{} = changeset} =
                create_route(route_attrs(%{route_id: "R1"}), fixture.attempt, fixture.audit)
 
-      assert {"has already been taken", _} = changeset.errors[:route_id]
+      assert {"This route ID is already used in this version. Choose another.", _} =
+               changeset.errors[:route_id]
 
       assert {:ok, %{route: manual}} =
                create_route(route_attrs(%{route_id: "R9"}), next_attempt(fixture), fixture.audit)
@@ -384,7 +385,8 @@ defmodule GtfsPlanner.Gtfs.Routes.CreateTest do
       assert {:error, %Ecto.Changeset{} = failed} =
                Enum.find(outcomes, &match?({:error, _}, &1))
 
-      assert {"has already been taken", _} = failed.errors[:route_id]
+      assert {"This route ID is already used in this version. Choose another.", _} =
+               failed.errors[:route_id]
 
       assert [%Route{route_id: "M1"}] = scoped_routes(fixture)
       assert [_log] = created_logs(fixture)
