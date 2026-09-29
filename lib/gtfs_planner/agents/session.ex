@@ -10,7 +10,7 @@ defmodule GtfsPlanner.Agents.Session do
   entry as `:forbidden` and end the conversation (AC-12).
 
   A turn is bounded by code constants: at most 20 admitted requests per
-  conversation, 2,000 characters per message, 90 seconds of wall time and 30
+  conversation, 2,000 characters per message, five minutes of wall time and 30
   minutes without activity. The eight-turn limit across conversations belongs to
   `GtfsPlanner.Agents.TurnSupervisor`; a send refused at that capacity changes
   nothing here (AC-30). Only tests may override the two timeouts.
@@ -52,7 +52,7 @@ defmodule GtfsPlanner.Agents.Session do
   # Bounds and terminal copy are code constants, not configuration (AC-16, AC-18, AC-30).
   @max_requests 20
   @max_message_length 2_000
-  @turn_timeout_ms 90_000
+  @turn_timeout_ms 300_000
   @idle_timeout_ms 1_800_000
 
   @stopped_text "Request stopped. No changes were saved."

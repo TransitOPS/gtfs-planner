@@ -24,7 +24,7 @@ defmodule GtfsPlanner.Agents.Model do
   # must fit this ceiling. Bounds are code constants, not configuration.
   @request_envelope_limit 131_072
   @max_tokens 8_192
-  @receive_timeout 60_000
+  @receive_timeout 180_000
 
   # OpenRouter then routes only to providers that do not collect data and that
   # support the declared tools.
