@@ -152,6 +152,24 @@ async function stageDiffFiles(page, files) {
   throw lastError;
 }
 
+// Import shows one workflow at a time and opens on Import feed. A station
+// review that is not finished replaces the source choice with its own result,
+// and an earlier case in this file leaves one behind, so it is started over
+// before the choice is made.
+async function chooseImportSource(page, source) {
+  const startOver = page.locator("#diff-reset-btn, #diff-start-over-btn").first();
+
+  if (await startOver.count()) {
+    await startOver.click();
+    await expect(startOver).toHaveCount(0);
+  }
+
+  await page.locator(`#import-source-${source}`).check();
+  await expect(
+    page.locator(source === "station" ? "#diff-upload-form" : "#gtfs-import-form"),
+  ).toBeVisible();
+}
+
 async function seededVersionId(page, name = VERSION_NAME) {
   // The version menu starts closed, so its options are attached to the document
   // but not visible; read them the way the other browser specs do.
@@ -189,30 +207,14 @@ function exportPath(versionId, query = "") {
   return `/gtfs/${versionId}/export${query}`;
 }
 
-// The calendar page keeps its actions behind a disclosure whose open state is a
-// client-side property the render patch can drop, so a journey opens it the same
-// way the calendar spec does and then asserts the action is reachable.
-async function openCalendarActions(page) {
-  await page.evaluate(() => {
-    const disclosure = Array.from(
-      document.querySelectorAll("#calendar-editor details"),
-    ).find((element) =>
-      (element.querySelector("summary")?.textContent || "").includes(
-        "Calendar actions",
-      ),
-    );
-
-    if (disclosure) disclosure.open = true;
-  });
-  await expect(page.locator("#calendar-delete")).toBeVisible();
-}
-
 // The floorplan's pathways and child stops are lists beside the canvas; opening
 // one of their rows is the ordinary route into the drawer that owns Delete
 // pathway, Delete stop and Remove from diagram.
 async function openPathwayDrawer(page, modeLabel) {
+  await page.locator("#panel-tab-pathways").click();
+  await expect(page.locator("#pathways-table")).toBeVisible();
   await page
-    .locator("#pathways-table tr", { hasText: modeLabel })
+    .locator("#pathways-table li", { hasText: modeLabel })
     .locator("button")
     .first()
     .click();
@@ -224,7 +226,7 @@ async function openPathwayDrawer(page, modeLabel) {
 
 async function openChildStopDrawer(page, stopId) {
   await page
-    .locator("#child-stops-table tr", { hasText: stopId })
+    .locator("#child-stops-table li", { hasText: stopId })
     .locator("button")
     .first()
     .click();
@@ -1507,25 +1509,50 @@ async function stageImportFiles(page, files) {
   throw lastError;
 }
 
+// The stopped run states its three counts as separate figures.
+async function expectRunCounts(page, applied, failed, notTried) {
+  await expect(page.locator("#diff-count-applied")).toHaveText(String(applied));
+  await expect(page.locator("#diff-count-failed")).toHaveText(String(failed));
+  await expect(page.locator("#diff-count-unapplied")).toHaveText(String(notTried));
+}
+
 function rejectionCard(page, code) {
   return page.locator(`[data-evolution-rejection="${code}"]`);
 }
 
-// Step 25 / EV-27. The full inventory streams the version's own closure count in
-// the pathway_evolutions.txt row, above the extension sub-line; the Pathways
-// notice has to quote that same count.
+// The file list is a disclosure that opens closed, so the inventory is opened
+// the way a person opens it before it is read.
+async function openFileList(page) {
+  const files = page.locator("#export-files");
+
+  if (!(await files.evaluate((element) => element.open))) {
+    await files.locator("summary").click();
+  }
+
+  await expect(page.locator("#export-inventory")).toBeVisible();
+}
+
+// Step 25 / EV-27. The full inventory lists the version's own closure count in
+// the pathway_evolutions.txt row, under the extension sub-line; the Pathways
+// notice has to quote that same count. The filename is the row header, so the
+// count is the first cell, and a file with no records adds "left out" after 0.
 async function closureInventoryCount(page) {
+  await openFileList(page);
+
   const row = page
     .locator("#export-inventory tbody tr")
     .filter({ hasText: "pathway_evolutions.txt" });
 
   await expect(row).toHaveCount(1);
-  return Number((await row.locator("td").nth(1).innerText()).trim());
+
+  const cell = (await row.locator("td").nth(0).innerText()).trim();
+  return Number(cell.match(/^[\d,]+/)[0].replaceAll(",", ""));
 }
 
 // Upload a minimal full feed whose closure row fails phase one, submit it, and
 // wait for the durable rejection element the Import page rebuilds from the run.
 async function submitRejectedClosureImport(page, { name, code, file }) {
+  await chooseImportSource(page, "feed");
   await page.fill("#gtfs-import-version-name", name);
   await stageImportFiles(page, [
     {
@@ -1555,11 +1582,15 @@ async function submitRejectedClosureImport(page, { name, code, file }) {
 // Discard one failed import through its own two-step confirmation and wait for
 // its card to leave the stream.
 async function discardRun(page, card) {
-  const runCard = page.locator("#import-recovery-runs > div", { has: card });
+  const runCard = page.locator("#import-recovery-runs > li", { has: card });
   const runId = (await runCard.getAttribute("id")).replace("import-run-", "");
 
   await page.locator(`#discard-${runId}`).click();
-  await page.locator(`#delete-version-${runId}`).click();
+  await expect(page.locator("#import-discard-dialog")).toHaveAttribute(
+    "data-open",
+    "true",
+  );
+  await page.locator("#import-discard-dialog-confirm").click();
   await expect(runCard).toHaveCount(0, { timeout: 60_000 });
 }
 
@@ -1576,22 +1607,24 @@ test.describe("exchange", () => {
     await page.setViewportSize(DESKTOP);
     await page.goto(importPath);
     await waitForLiveView(page);
-    await page.waitForSelector("#diff-upload-input input");
 
-    // An earlier durable review in this version disables the upload step until
-    // Reset returns the form to it; a fresh browser database has no such run.
-    const resetButton = page.locator("#diff-reset-btn").first();
-    if (await resetButton.count()) {
-      await resetButton.click();
-      await page.waitForSelector("#diff-upload-input input");
-    }
+    // The new-version scope sentence is Import feed's, which the page opens on;
+    // station changes keep their own current-version sentence.
+    await expect(page.locator("#import-workspace-title")).toHaveText("Import a feed");
+    await expect(page.locator("#import-workspace")).toContainText(
+      `Creates a new version. ${VERSION_NAME} isn’t changed.`,
+    );
 
-    // The new-version scope sentence is Import feed's; Update station data keeps
-    // its own current-version sentence.
-    await expect(page.locator("#gtfs-import-section")).toContainText("new version");
-    await expect(page.locator("#station-data-section")).not.toContainText("new version");
+    await chooseImportSource(page, "station");
+    await expect(page.locator("#import-workspace-title")).toHaveText(
+      "Update station data",
+    );
+    await expect(page.locator("#import-workspace")).toContainText(
+      `Edits ${VERSION_NAME}, after you approve each change.`,
+    );
+    await expect(page.locator("#diff-upload-form")).not.toContainText("new version");
     await expect(page.locator("#diff-destination")).toContainText(
-      "Reviewed changes apply to version",
+      `Approved changes go into ${VERSION_NAME}.`,
     );
 
     await stageDiffFiles(page, [
@@ -1612,10 +1645,7 @@ test.describe("exchange", () => {
     // The click waits for the compute button to leave its disabled state, which
     // is what the server renders once both upload entries are staged.
     await page.locator("#diff-compute-btn").click();
-    await page
-      .locator("#diff-decisions [data-version-diff-row]")
-      .first()
-      .waitFor();
+    await page.locator("#diff-decisions [data-review-row]").first().waitFor();
 
     const notice = page.locator(IGNORED_NOTICE_ID);
     await expect(notice).toBeVisible();
@@ -1688,7 +1718,7 @@ test.describe("exchange", () => {
 
     // The element names the file, the CSV row and one bounded field/fix sentence.
     await expect(card).toContainText("pathway_evolutions.txt");
-    await expect(card).toContainText("row 2");
+    await expect(card).toContainText("Row 2 ·");
     await expect(card).toContainText(REJECTION_SENTENCES.evolution_pathway_required);
     await expect(card).toHaveAttribute("data-evolution-file", "pathway_evolutions.txt");
     await expect(card).toHaveAttribute("data-evolution-row", "2");
@@ -1699,13 +1729,13 @@ test.describe("exchange", () => {
       "remains unpublished until this failed import is discarded",
     );
 
-    // Recovery precedes Import feed while it holds a run.
+    // Recovery precedes the Import feed form while it holds a run.
     expect(
       await page.evaluate(() =>
         Boolean(
           document
             .querySelector("#import-recovery-section")
-            .compareDocumentPosition(document.querySelector("#gtfs-import-section")) &
+            .compareDocumentPosition(document.querySelector("#import-workspace")) &
             Node.DOCUMENT_POSITION_FOLLOWING,
         ),
       ),
@@ -1724,7 +1754,7 @@ test.describe("exchange", () => {
     // The durable failure survives a reload and both narrower viewports.
     await page.reload();
     await waitForLiveView(page);
-    await expect(rejectionCard(page, "evolution_pathway_required")).toContainText("row 2");
+    await expect(rejectionCard(page, "evolution_pathway_required")).toContainText("Row 2");
 
     await page.setViewportSize(MOBILE);
     await page.reload();
@@ -1834,7 +1864,10 @@ test.describe("exchange", () => {
     const notice = page.locator("#export-pathways-closures-omitted");
     await expect(notice).toBeVisible();
     await expect(notice).toContainText(
-      `This version has ${count} scheduled closures. Pathways export does not include them. Choose Full export to include closures and their calendars.`,
+      `Pathways export leaves out ${count} scheduled closures`,
+    );
+    await expect(notice).toContainText(
+      "Choose Full export to include closures and their calendars.",
     );
 
     expect(await bodyFitsViewport(page)).toBe(true);
@@ -1897,7 +1930,7 @@ test.describe("exchange", () => {
     expect(await bodyFitsViewport(page)).toBe(true);
   });
 
-  test("the Export GTFS action sits above the file list and starts a durable run at 390", async ({
+  test("the Export GTFS action follows a closed file list and starts a durable run at 390", async ({
     page,
   }) => {
     await logIn(page);
@@ -1910,16 +1943,23 @@ test.describe("exchange", () => {
     const action = page.locator("#start-export");
     await expect(action).toBeVisible();
 
-    expect(
-      await page.evaluate(() =>
-        Boolean(
-          document
-            .querySelector("#start-export")
-            .compareDocumentPosition(document.querySelector("#export-inventory")) &
-            Node.DOCUMENT_POSITION_FOLLOWING,
-        ),
-      ),
-    ).toBe(true);
+    // The page lists the files before the action, but as a disclosure that
+    // opens closed, so on a phone the action follows one summary row instead of
+    // the whole inventory. It sits within a screen of that row.
+    await expect(page.locator("#export-files")).not.toHaveAttribute("open", "");
+    await expect(page.locator("#export-inventory")).toBeHidden();
+
+    const gap = await page.evaluate(() => {
+      const summary = document
+        .querySelector("#export-files summary")
+        .getBoundingClientRect();
+      const start = document.querySelector("#start-export").getBoundingClientRect();
+
+      return start.top - summary.bottom;
+    });
+
+    expect(gap).toBeGreaterThan(0);
+    expect(gap).toBeLessThan(MOBILE.height);
 
     expect(await bodyFitsViewport(page)).toBe(true);
 
@@ -1928,7 +1968,7 @@ test.describe("exchange", () => {
     // The durable run reaches its ready artifact through the real runner.
     await expect(page.locator("#export-download-link")).toBeVisible({ timeout: 60_000 });
     await expect(page.locator("#export-run-status")).toContainText("Ready to download");
-    await expect(page.locator("#export-inventory")).toBeVisible();
+    await expect(page.locator("#export-files")).toBeVisible();
     expect(await bodyFitsViewport(page)).toBe(true);
   });
 
@@ -2032,15 +2072,7 @@ test.describe("merge-results", () => {
     await page.setViewportSize(DESKTOP);
     await page.goto(importPath);
     await waitForLiveView(page);
-    await page.waitForSelector("#diff-upload-input input");
-
-    // An earlier durable review in this version disables the upload step until
-    // Reset returns the form to it; a fresh browser database has no such run.
-    const resetButton = page.locator("#diff-reset-btn").first();
-    if (await resetButton.count()) {
-      await resetButton.click();
-      await page.waitForSelector("#diff-upload-input input");
-    }
+    await chooseImportSource(page, "station");
 
     await stageDiffFiles(page, [
       {
@@ -2056,20 +2088,24 @@ test.describe("merge-results", () => {
     ]);
 
     await page.locator("#diff-compute-btn").click();
-    await page.locator("#diff-decisions [data-version-diff-row]").first().waitFor();
+    await page.locator("#diff-decisions [data-review-row]").first().waitFor();
 
     // One removal (the closure-backed lift) and one addition: nothing else in
     // the version is proposed for removal, so the partial apply is exact.
-    await expect(page.locator("#diff-decisions [data-version-diff-row]")).toHaveCount(2);
+    await expect(page.locator("#diff-decisions [data-review-row]")).toHaveCount(2);
     await expect(
-      page.locator("#diff-decisions article[data-version-diff-action='remove']"),
+      page.locator("#diff-decisions [data-review-row][data-action='remove']"),
     ).toHaveCount(1);
     await expect(
-      page.locator("#diff-decisions article[data-version-diff-action='add']"),
+      page.locator("#diff-decisions [data-review-row][data-action='add']"),
     ).toHaveCount(1);
 
+    // Removals are approved one at a time, never from the mixed list's bulk
+    // action; the addition takes the bulk approval.
     await page
-      .locator("button[phx-click='approve-all'][phx-value-action='remove']")
+      .locator(
+        "#diff-decisions [data-review-row][data-action='remove'] button[phx-click='approve-decision']",
+      )
       .click();
     await page
       .locator("button[phx-click='approve-all'][phx-value-action='add']")
@@ -2080,31 +2116,18 @@ test.describe("merge-results", () => {
     await expect(page.locator("#diff-run-state[data-state='partial']")).toBeVisible({
       timeout: 30_000,
     });
-    await expect(page.locator("#diff-run-counts")).toHaveText(
-      "Applied 1 · Failed 1 · Unapplied 0",
-    );
+    await expectRunCounts(page, 1, 1, 0);
 
-    const failedRow = page.locator(
-      "#diff-results article[data-version-diff-status='failed']",
-    );
-    const appliedRow = page.locator(
-      "#diff-results article[data-version-diff-status='applied']",
-    );
+    // The stopped run lists the change that did not apply, with the reason the
+    // closures give; the change that did apply is counted, not listed.
+    const failedRow = page.locator("#diff-failed-decisions li[data-decision-id]");
 
     await expect(failedRow).toHaveCount(1);
-    await expect(appliedRow).toHaveCount(1);
-    await expect(failedRow).toHaveAttribute(
-      "data-apply-failure-code",
-      "pathway_in_use",
-    );
     await expect(failedRow).toContainText(LIFT_CLOSURE_PATHWAY);
-    await expect(
-      failedRow.locator("[data-role='version-diff-summary']"),
-    ).toHaveText(FAILED_REMOVAL);
-    await expect(appliedRow).toContainText("BROWSER_EVO_PW_MERGE_ADDED");
+    await expect(failedRow).toContainText(FAILED_REMOVAL);
 
-    // The terminal row links to the owning station with the exact encoded
-    // natural ID, names that station, and drops the approval controls.
+    // The failed row links to the owning station with the exact encoded
+    // natural ID, names that station, and the run offers no approval controls.
     const encodedQuery = new URLSearchParams({
       pathway: LIFT_CLOSURE_PATHWAY,
     }).toString();
@@ -2119,10 +2142,10 @@ test.describe("merge-results", () => {
     // The link carries the design system's action ink, as the reference does.
     await expect(evolutionsLink).toHaveCSS("color", "rgb(200, 24, 112)");
     await expect(
-      page.locator("#diff-results button[phx-click='approve-decision']"),
+      page.locator("#diff-run-state button[phx-click='approve-decision']"),
     ).toHaveCount(0);
     await expect(
-      page.locator("#diff-results button[phx-click='reject-decision']"),
+      page.locator("#diff-run-state button[phx-click='reject-decision']"),
     ).toHaveCount(0);
 
     // Step 16's omission notice is durable review state, so the apply keeps it.
@@ -2148,6 +2171,16 @@ test.describe("merge-results", () => {
     await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(1);
     await expect(page.locator("#closures-list")).toContainText("09:00–15:00");
 
+    // The applied change is not listed in the run, so it is read where it now
+    // lives: the addition joined the empty station's pathways.
+    await page.goto(evolutionsPath(versionId, EMPTY_STATION));
+    await waitForLiveView(page);
+    await expect(
+      page.locator(
+        '#closure-pathway-list button[data-pathway-id="BROWSER_EVO_PW_MERGE_ADDED"]',
+      ),
+    ).toHaveCount(1);
+
     // The durable run rebuilds the same partial result after any reconnect.
     await page.goto(importPath);
     await waitForLiveView(page);
@@ -2155,14 +2188,9 @@ test.describe("merge-results", () => {
     await waitForLiveView(page);
 
     await expect(page.locator("#diff-run-state[data-state='partial']")).toBeVisible();
-    await expect(page.locator("#diff-run-counts")).toHaveText(
-      "Applied 1 · Failed 1 · Unapplied 0",
-    );
+    await expectRunCounts(page, 1, 1, 0);
     await expect(failedRow).toHaveCount(1);
-    await expect(appliedRow).toHaveCount(1);
-    await expect(
-      failedRow.locator("[data-role='version-diff-summary']"),
-    ).toHaveText(FAILED_REMOVAL);
+    await expect(failedRow).toContainText(FAILED_REMOVAL);
     await expect(evolutionsLink).toHaveAttribute("href", evolutionsHref);
     await expect(page.locator(IGNORED_NOTICE_ID)).toBeVisible();
     await expect(page.locator("#diff-retry-btn")).toBeVisible();
@@ -2171,13 +2199,13 @@ test.describe("merge-results", () => {
     );
 
     // Retry re-runs the real apply worker against the surviving closure. A
-    // client-side marker inside the streamed result makes the re-render
-    // observable even when the apply phase completes between two DOM frames.
-    await page.locator("#diff-results").evaluate((list) => {
-      const marker = document.createElement("li");
+    // client-side marker inside the run card makes the re-render observable
+    // even when the apply phase completes between two DOM frames.
+    await page.locator("#diff-run-state").evaluate((card) => {
+      const marker = document.createElement("div");
       marker.id = "merge-results-retry-marker";
       marker.textContent = "retry marker";
-      list.appendChild(marker);
+      card.appendChild(marker);
     });
 
     await page.locator("#diff-retry-btn").click();
@@ -2188,13 +2216,9 @@ test.describe("merge-results", () => {
     await expect(page.locator("#diff-run-state[data-state='partial']")).toBeVisible({
       timeout: 30_000,
     });
-    await expect(page.locator("#diff-run-counts")).toHaveText(
-      "Applied 1 · Failed 1 · Unapplied 0",
-    );
+    await expectRunCounts(page, 1, 1, 0);
     await expect(failedRow).toHaveCount(1);
     await expect(failedRow).toContainText(LIFT_CLOSURE_PATHWAY);
-    await expect(appliedRow).toHaveCount(1);
-    await expect(appliedRow).toContainText("BROWSER_EVO_PW_MERGE_ADDED");
 
     // Mobile and the narrow overflow check keep the same result hierarchy.
     await page.setViewportSize(MOBILE);
@@ -2314,28 +2338,18 @@ test.describe("calendars", () => {
     expect(previousMonth).not.toBe(month);
 
     // The everyday seeded calendar serves every day, so every cell of the
-    // displayed month is a service day and the legend names all four native
-    // states in words.
+    // displayed month is a service day. Each cell names its state in words.
     const cells = page.locator('#closure-dates-months [id^="month-cell-"]');
     const labels = await cells.evaluateAll((nodes) =>
       nodes.map((node) => node.getAttribute("aria-label")),
     );
 
     expect(labels).toHaveLength(daysInNamedMonth(month));
-    expect(labels.every((label) => label.includes("Regular service"))).toBe(
-      true,
-    );
+    expect(labels.every((label) => label.includes(": Runs"))).toBe(true);
 
-    for (const word of [
-      "Regular service",
-      "Service removed",
-      "Service added",
-      "No service scheduled",
-    ]) {
-      await expect(page.locator("#closure-dates-months-legend")).toContainText(
-        word,
-      );
-    }
+    // The calendar page draws a visible key beside its own preview; this
+    // disclosure reuses only the month table, so the state words live in the
+    // cell labels and the day-off and extra-service cells carry a × or + mark.
 
     // Dates are read-only: no field, no select, no cell event.
     await expect(
@@ -2448,8 +2462,8 @@ test.describe("calendars", () => {
     await page.locator("#closure-dates-toggle").click();
     await expect(page.locator("#closure-dates")).toBeVisible();
 
-    // A dates-only calendar has no weekly row, so only its added day is a
-    // service day in the month the grid opens on.
+    // A dates-only calendar has no weekly row, so its added day is simply a day
+    // it runs (not "Extra service"), and every other day is not a service day.
     const cells = page.locator('#closure-dates-months [id^="month-cell-"]');
     const labels = await cells.evaluateAll((nodes) =>
       nodes.map((node) => node.getAttribute("aria-label")),
@@ -2460,11 +2474,9 @@ test.describe("calendars", () => {
         (await page.locator("#closure-dates-month").textContent()).trim(),
       ),
     );
-    expect(labels.filter((label) => label.includes("Service added"))).toHaveLength(
-      1,
-    );
+    expect(labels.filter((label) => label.includes(": Runs"))).toHaveLength(1);
     expect(
-      labels.filter((label) => label.includes("No service scheduled")),
+      labels.filter((label) => label.includes(": Not a service day")),
     ).toHaveLength(labels.length - 1);
     await expect(page.locator("#closure-dates-none")).toHaveCount(0);
 
@@ -2508,9 +2520,9 @@ test.describe("calendars", () => {
         );
 
     const initial = await labels();
-    expect(initial.some((label) => label.includes("Regular service"))).toBe(true);
+    expect(initial.some((label) => label.includes(": Runs"))).toBe(true);
     expect(
-      initial.some((label) => label.includes("No service scheduled")),
+      initial.some((label) => label.includes(": Not a service day")),
     ).toBe(true);
 
     // The seeded school calendar removes three consecutive days from its
@@ -2528,14 +2540,14 @@ test.describe("calendars", () => {
       month = await page.locator("#closure-dates-month").textContent();
 
       removed += await page
-        .locator('#closure-dates-months [aria-label*="Service removed"]')
+        .locator('#closure-dates-months [aria-label*=": Day off, no service"]')
         .count();
     }
 
     expect(removed).toBe(3);
 
     await page
-      .locator('#closure-dates-months [aria-label*="Service removed"]')
+      .locator('#closure-dates-months [aria-label*=": Day off, no service"]')
       .first()
       .waitFor();
 
@@ -2579,7 +2591,7 @@ test.describe("calendars", () => {
 // Step 22 / EV-24. Calendar reference guards: the calendar page names both the
 // trips and the scheduled closures that keep a service alive, links every known
 // pathway to the station that owns it with its exact encoded address, refuses a
-// closure-only deletion as "Calendar not deleted" instead of blaming trips, and
+// closure-only deletion as a closures refusal instead of blaming trips, and
 // refuses the removal of the last stored date beside the action that tried it
 // without dropping the loaded form.
 test.describe("guards", () => {
@@ -2596,11 +2608,11 @@ test.describe("guards", () => {
     await waitForLiveView(page);
 
     // The seeded calendar serves every trip the version's schedule fixtures and
-    // the calendar fixture route assign to CAL_DAILY (9 + 8 + 6 + 3 = 26) and
-    // already carries two closures on the station's lift and stair pathways, so
-    // the strip shows both counts.
-    await expect(page.locator("#calendar-usage-trips")).toContainText(
-      "26 trips use this calendar",
+    // the calendar fixture route assign to CAL_DAILY (9 + 8 + 6 + 3 = 26, on four
+    // routes) and already carries two closures on the station's lift and stair
+    // pathways, so the page has a card for each kind of reference.
+    await expect(page.locator("#calendar-trips")).toContainText(
+      "26 trips on 4 routes",
     );
     await expect(
       page.locator("#calendar-usage-route-CAL_ROUTE"),
@@ -2628,19 +2640,19 @@ test.describe("guards", () => {
       `/gtfs/${versionId}/stops/BROWSER_EVO_STATION/evolutions?pathway=BROWSER_EVO_PW_STAIR`,
     );
 
-    await openCalendarActions(page);
+    await expect(page.locator("#calendar-delete")).toBeVisible();
     await page.click("#calendar-delete");
 
-    const blocked = page.locator("#calendar-delete-blocked");
+    const blocked = page.locator("#calendar-delete-blocked-message");
     await expect(blocked).toBeVisible();
     await expect(blocked).toHaveAttribute("role", "alert");
     await expect(blocked).toBeFocused();
-    await expect(blocked).toContainText("Calendar not deleted");
-    await expect(blocked).not.toContainText("This calendar is used by trips");
-    await expect(page.locator("#calendar-delete-reasons")).toContainText(
-      "26 trips use this calendar",
+    await expect(blocked).toContainText(
+      "Trips and closures use this calendar, so it can’t be deleted",
     );
-    await expect(page.locator("#calendar-delete-reasons")).toContainText(
+    await expect(blocked).not.toContainText("This calendar is used by trips");
+    await expect(blocked).toContainText("26 trips on");
+    await expect(page.locator("#calendar-delete-closures")).toContainText(
       "2 scheduled closures use this calendar",
     );
     await expect(page.locator("#calendar-review-dialog")).toBeHidden();
@@ -2666,10 +2678,10 @@ test.describe("guards", () => {
       await page.setViewportSize(viewport);
       await page.reload();
       await waitForLiveView(page);
-      await openCalendarActions(page);
+      await expect(page.locator("#calendar-delete")).toBeVisible();
       await page.click("#calendar-delete");
 
-      await expect(page.locator("#calendar-delete-blocked")).toBeVisible();
+      await expect(page.locator("#calendar-delete-blocked-message")).toBeVisible();
       expect(await bodyFitsViewport(page)).toBe(true);
       await page.screenshot({
         path: capturePath(testInfo, `step-022-production-${name}.png`),
@@ -2689,6 +2701,9 @@ test.describe("guards", () => {
     await page.goto(`/gtfs/${versionId}/calendars/new`);
     await waitForLiveView(page);
     await page.fill("#calendar-name", "Guard check service");
+    // The feed ID is made from the name; a new calendar keeps its field behind
+    // a Change ID disclosure.
+    await page.locator("#calendar-service-id-details summary").click();
     await page.fill("#calendar-service-id", "GUARD_ONLY");
     await page.click("#calendar-kind-dates-only");
     await page.fill("#calendar-date-input", "2026-05-01");
@@ -2699,8 +2714,8 @@ test.describe("guards", () => {
 
     await page.click("#calendar-save");
     await expect(page.locator("#calendar-exception-chips-2026-05-01")).toBeVisible();
-    await expect(page.locator("#calendar-usage-trips")).toContainText(
-      "0 trips use this calendar",
+    await expect(page.locator("#calendar-trips")).toContainText(
+      "No trips use this calendar",
     );
 
     // A closure that references only this calendar.
@@ -2735,19 +2750,19 @@ test.describe("guards", () => {
       `/gtfs/${versionId}/stops/BROWSER_EVO_EMPTY_STATION/evolutions?pathway=BROWSER_EVO_EMPTY_PW`,
     );
 
-    await openCalendarActions(page);
+    await expect(page.locator("#calendar-delete")).toBeVisible();
     await page.click("#calendar-delete");
 
-    const blocked = page.locator("#calendar-delete-blocked");
+    const blocked = page.locator("#calendar-delete-blocked-message");
     await expect(blocked).toBeVisible();
     await expect(blocked).toBeFocused();
-    await expect(blocked).toContainText("Calendar not deleted");
-    await expect(page.locator("#calendar-delete-reasons")).toContainText(
+    await expect(blocked).toContainText(
+      "Scheduled closures use this calendar, so it can’t be deleted",
+    );
+    await expect(page.locator("#calendar-delete-closures")).toContainText(
       "1 scheduled closure uses this calendar",
     );
-    await expect(page.locator("#calendar-delete-reasons")).not.toContainText(
-      "trips use this calendar",
-    );
+    await expect(blocked).not.toContainText(/trip/i);
     await expect(page.locator("#calendar-name")).toHaveValue(
       "Guard check service",
     );
@@ -2756,10 +2771,10 @@ test.describe("guards", () => {
     await page.setViewportSize(MOBILE);
     await page.reload();
     await waitForLiveView(page);
-    await openCalendarActions(page);
+    await expect(page.locator("#calendar-delete")).toBeVisible();
     await page.click("#calendar-delete");
 
-    await expect(page.locator("#calendar-delete-blocked")).toBeVisible();
+    await expect(page.locator("#calendar-delete-blocked-message")).toBeVisible();
     expect(await bodyFitsViewport(page)).toBe(true);
     await page.screenshot({
       path: capturePath(testInfo, "step-022-production-closures-only.png"),
@@ -2854,7 +2869,7 @@ test.describe("guards", () => {
       await page.goto(diagramPath(versionId, STATION));
       await waitForLiveView(page);
 
-      await expect(page.locator("#pathways-table tr")).toHaveCount(3);
+      await expect(page.locator("#pathways-table li")).toHaveCount(3);
 
       await openPathwayDrawer(page, "Elevator");
       await expect(
@@ -2904,7 +2919,7 @@ test.describe("guards", () => {
         "data-open",
         "false",
       );
-      await expect(page.locator("#pathways-table tr")).toHaveCount(3);
+      await expect(page.locator("#pathways-table li")).toHaveCount(3);
 
       // The drawer is a native modal dialog in the top layer, so the refusal
       // state is captured from the viewport rather than a full-page composite.
@@ -3009,7 +3024,7 @@ test.describe("guards", () => {
       await expect(page.locator("#child-stop-form input[name='y']")).toHaveValue(
         "30.0",
       );
-      await expect(page.locator("#pathways-table tr")).toHaveCount(3);
+      await expect(page.locator("#pathways-table li")).toHaveCount(3);
       await expect(page.locator("#child-stops-table")).toContainText(
         "BROWSER_EVO_MEZZANINE",
       );
@@ -4780,12 +4795,12 @@ test.describe("journey", () => {
     await expect(page.locator("#calendar-usage-closures")).toContainText(
       "scheduled closures use this calendar",
     );
-    await openCalendarActions(page);
+    await expect(page.locator("#calendar-delete")).toBeVisible();
     await page.click("#calendar-delete");
-    await expect(page.locator("#calendar-delete-blocked")).toContainText(
-      "Calendar not deleted",
+    await expect(page.locator("#calendar-delete-blocked-message")).toContainText(
+      "Trips and closures use this calendar, so it can’t be deleted",
     );
-    await expect(page.locator("#calendar-delete-reasons")).toContainText(
+    await expect(page.locator("#calendar-delete-closures")).toContainText(
       "scheduled closures use this calendar",
     );
 
@@ -4835,14 +4850,15 @@ test.describe("journey", () => {
     const importName = `Browser journey import ${Date.now()}`;
     await page.goto(`/gtfs/${versionId}/import`);
     await waitForLiveView(page);
+    await chooseImportSource(page, "feed");
     await page.fill("#gtfs-import-version-name", importName);
     await stageImportFiles(page, [
       { name: `${importName}.zip`, mimeType: "application/zip", buffer: zip },
     ]);
     await page.locator("#gtfs-import-submit").click();
 
-    await expect(page.locator("#gtfs-import-result")).toContainText(
-      "Import successful",
+    await expect(page.locator("#gtfs-import-result-title")).toHaveText(
+      `Imported “${importName}”`,
       { timeout: 120_000 },
     );
 
