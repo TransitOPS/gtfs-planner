@@ -31,9 +31,10 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   active patterns. Both are recomputed from the version on every call and both
   finish through the same R8 validity and emptiness checks as stored geometry.
 
-  `put_geom/2` and `get_geojson/1` are the storage pair. Both run on the
-  caller's connection, so a context can write geometry inside its own
-  transaction.
+  `put_geom/2` and `get_geojson/1` are the storage pair: `put_geom/2` replaces
+  one area's geometry (a `nil` clears it) and `get_geojson/1` reads the stored
+  geometry of the given areas. Both run on the caller's connection, so a
+  context can write geometry inside its own transaction.
   """
 
   alias GtfsPlanner.Gtfs.FlexService
@@ -448,6 +449,12 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   WHERE id = $2
   """
 
+  @clear_geom_sql """
+  UPDATE flex_areas
+  SET geom = NULL
+  WHERE id = $1
+  """
+
   @get_geojson_sql """
   SELECT id::text,
          ST_AsGeoJSON(ST_ForcePolygonCCW(ST_ReducePrecision(geom, 0.000001)))
@@ -752,12 +759,20 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   defp side_km2(_side), do: 0.0
 
   @doc """
-  Writes one area's geometry, replacing whatever was stored.
+  Writes one area's geometry, replacing whatever was stored; a `nil` geometry
+  clears it, so a `:route_distance` area keeps no polygon.
 
   `{:error, :not_found}` means no area with that id exists; the caller is then
   inside its own transaction and can decide what to do about it.
   """
-  @spec put_geom(Ecto.UUID.t(), map()) :: :ok | {:error, :not_found}
+  @spec put_geom(Ecto.UUID.t(), map() | nil) :: :ok | {:error, :not_found}
+  def put_geom(area_id, nil) do
+    %Postgrex.Result{num_rows: num_rows} =
+      Repo.query!(@clear_geom_sql, [Ecto.UUID.dump!(area_id)])
+
+    if num_rows == 1, do: :ok, else: {:error, :not_found}
+  end
+
   def put_geom(area_id, geojson) do
     %Postgrex.Result{num_rows: num_rows} =
       Repo.query!(@put_geom_sql, [Jason.encode!(geojson), Ecto.UUID.dump!(area_id)])
