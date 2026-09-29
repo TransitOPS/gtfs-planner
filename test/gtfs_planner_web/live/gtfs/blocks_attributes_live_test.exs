@@ -228,6 +228,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
     live(editor_conn(context), path)
   end
 
+  # The save closes the drawer and leaves the page on the day type the drawer
+  # was opened for, so the patch keeps that `day`.
+  defp open_path(context, label) do
+    blocks_path(context.version.id) <> "?day=#{day_key!(context, label)}"
+  end
+
   defp attributes_params(view, params) do
     view |> element("#block-attributes-form") |> render_change(params)
   end
@@ -287,8 +293,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
                "Saturday + Weekday · 3 dates"
              )
 
-      assert has_element?(view, "#block-attributes-note", "Also changes School + Weekday")
+      # The note names every other day type the save reaches, in the order
+      # `Fleet`/the day's own ordering gives them.
+      assert has_element?(view, "#block-attributes-note", "Also changes")
       assert has_element?(view, "#block-attributes-note", "Saturday + Weekday")
+      assert has_element?(view, "#block-attributes-note", "School + Weekday")
     end
 
     test "a save that reaches another day type is confirmed, then the row shows the new garage",
@@ -315,7 +324,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
 
       view |> element("#block-review-confirm") |> render_click()
 
-      assert_patch(view, blocks_path(context.version.id))
+      assert_patch(view, open_path(context, "Weekday"))
       assert has_element?(view, "#flash-info", "Block 101 saved")
 
       # The row reads the row that was written, on every day type the block runs.
@@ -325,11 +334,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
                "North"
              )
 
+      # The day type the reader reaches Saturday on is "Saturday + Weekday":
+      # Saturday only runs in a week that also has a Weekday.
       {:ok, saturday, _html} =
-        live(
-          editor_conn(context),
-          blocks_path(context.version.id) <> "?day=#{day_key!(context, "Saturday")}"
-        )
+        live(editor_conn(context), open_path(context, "Saturday + Weekday"))
 
       assert has_element?(
                saturday,
@@ -349,10 +357,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
       |> render_submit(%{"block_attributes" => %{"garage_id" => context.north.id}})
 
       # One day type and no added problem is the case the context does not ask
-      # to confirm (AC-19), so the save lands and the drawer closes.
-      assert_patch(view, blocks_path(context.version.id))
+      # to confirm (AC-19), so the save lands and the drawer closes, leaving the
+      # page on the day type the drawer was opened for.
+      assert_patch(view, open_path(context, "Saturday + Weekday"))
       assert has_element?(view, "#flash-info", "Block 102 saved")
-      refute has_element?(view, "#block-review")
+
+      # A `<dialog>` stays in the DOM when it closes, and its own `open`
+      # attribute is set by the browser, so what the component publishes is
+      # `data-open`.
+      refute has_element?(view, "#block-review[data-open='true']")
     end
 
     test "a block whose calendars disagree asks for one garage and keeps focus on the picker",
@@ -380,7 +393,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
       # marked invalid, and the form's focus hook is told to land on it.
       assert has_element?(view, "#block-garage[aria-invalid='true']")
       assert has_element?(view, "#block-garage-error", "Choose one garage for this block.")
-      refute has_element?(view, "#block-review")
+      refute has_element?(view, "#block-review[data-open='true']")
 
       # Answering it clears the sentence and previews the reach of the answer.
       attributes_params(view, %{"block_attributes" => %{"garage_id" => context.north.id}})
@@ -404,7 +417,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
       attributes_params(view, %{"block_attributes" => %{"garage_id" => context.north.id}})
       view |> element("#block-attributes-form") |> render_submit()
 
-      assert has_element?(view, "#block-review")
+      assert has_element?(view, "#block-review[data-open='true']")
 
       # A planning input moves under the review — a third vehicle type appears —
       # so the context's recomputed digest no longer matches the fingerprint the
