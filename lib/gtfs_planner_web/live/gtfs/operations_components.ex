@@ -3,12 +3,15 @@ defmodule GtfsPlannerWeb.Gtfs.OperationsComponents do
   Function components shared by the Garages and Fleet pages.
 
   Garages, vehicle types and vehicles belong to the organization rather than to a
-  GTFS version, so both pages carry the same all-versions scope note next to
-  their introduction, and both import the same TODS files through one drawer
-  whose copy and derived apply state stay in one place.
+  GTFS version, so both pages import the same TODS files through one drawer whose
+  copy and derived apply state stay in one place, and the Fleet page carries the
+  all-versions scope note next to its introduction.
   """
 
   use GtfsPlannerWeb, :html
+
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [drawer_footer: 1, drawer_scroll: 1, message: 1]
 
   # AC-22 bounds each listed row group; the remainder is reported as a count.
   @note_limit 100
@@ -98,7 +101,7 @@ defmodule GtfsPlannerWeb.Gtfs.OperationsComponents do
     assigns =
       assigns
       |> assign(review)
-      |> assign(:counts, import_counts(review))
+      |> assign(:counts, import_counts(assigns.kind, review))
       |> assign(:apply_label, import_label(assigns.kind, apply_count))
       |> assign(:importable?, disabled_reason == nil)
       |> assign(:disabled_reason, disabled_reason)
@@ -107,117 +110,160 @@ defmodule GtfsPlannerWeb.Gtfs.OperationsComponents do
     ~H"""
     <.drawer
       id="tods-import-drawer"
+      chrome="planner"
       open={@open}
       on_close={@on_close}
       title={"Import #{kind_label(@kind)}"}
       initial_focus={:first_field}
       return_focus_id={@return_focus_id}
+      class="max-w-[520px]"
     >
-      <div id="tods-import-content" phx-hook="FormErrorFocus">
-        <p id="tods-import-description" class="mb-4 text-sm text-base-content/70">
-          Choose {kind_file(@kind)} from your operations system.
-        </p>
+      <:lede>Shared across all versions</:lede>
 
-        <div :if={@error_message} class="mb-4">
-          <.callout id="tods-import-error" kind="error" title="Import not applied" tabindex="-1">
-            {@error_message}
-          </.callout>
-        </div>
-
+      <div id="tods-import-content" phx-hook="FormErrorFocus" class="flex min-h-0 flex-1 flex-col">
         <%!-- LiveView starts a file upload from the input's change event, which it
         routes through the surrounding form, so the field needs one even though the
         drawer carries no other form state. --%>
-        <form id="tods-import-form" phx-change={@on_validate} phx-submit={@on_apply}>
-          <.upload_field
-            id="tods-file-upload"
-            upload={@upload}
-            label="TODS file"
-            help="One .txt or .csv file, up to 2 MB. Review the changes before importing."
-            cancel_event={@on_cancel_upload}
-          />
+        <form
+          id="tods-import-form"
+          phx-change={@on_validate}
+          phx-submit={@on_apply}
+          class="flex min-h-0 flex-1 flex-col"
+        >
+          <.drawer_scroll>
+            <p id="tods-import-description" class="text-sm text-default">
+              {kind_intro(@kind)}
+            </p>
 
-          <div :if={@preview?} id="tods-import-preview" class="mt-6">
-            <h3 class="font-semibold">Review {@filename}</h3>
+            <.message
+              :if={@error_message}
+              id="tods-import-error"
+              kind="error"
+              title="Import not applied"
+              tabindex="-1"
+            >
+              {@error_message}
+            </.message>
 
-            <div class="mt-3 flex flex-wrap gap-7">
-              <div :for={count <- @counts}>
-                <strong id={count.id} class="block text-2xl font-semibold tabular-nums">
-                  {count.value}
-                </strong>
-                <span class="text-sm text-base-content/70">{count.label}</span>
+            <.upload_field
+              id="tods-file-upload"
+              upload={@upload}
+              label="TODS file"
+              help={kind_file_help(@kind)}
+              cancel_event={@on_cancel_upload}
+            />
+
+            <div :if={@preview?} id="tods-import-preview" class="grid gap-5">
+              <h3 class="text-base font-bold text-strong">Review {@filename}</h3>
+
+              <div class="flex flex-wrap gap-x-9 gap-y-4">
+                <div :for={count <- @counts}>
+                  <strong
+                    id={count.id}
+                    class={[
+                      "block font-display text-[28px] font-semibold leading-none tabular-nums",
+                      count.tone
+                    ]}
+                  >
+                    {count.value}
+                  </strong>
+                  <span class="mt-1 block text-[13px] text-muted">{count.label}</span>
+                </div>
+              </div>
+
+              <%!-- The message spreads global attributes onto its own class list, so a
+              margin would have to sit on a wrapper; the grid gap spaces it. --%>
+              <.message id="tods-import-scope" kind="info" title="What gets imported">
+                {kind_scope(@kind)}
+              </.message>
+
+              <.note_list
+                :if={@error_count > 0}
+                id="tods-import-errors"
+                more_id="tods-import-errors-more"
+                title="Rows to fix"
+                count={@error_count}
+                tone="text-error-fg"
+                notes={@error_rows}
+                more={@error_more}
+              />
+
+              <.note_list
+                :if={@skipped_count > 0}
+                id="tods-import-skipped"
+                more_id="tods-import-skipped-more"
+                title="Skipped rows"
+                count={@skipped_count}
+                tone="text-strong"
+                notes={@skipped_rows}
+                more={@skipped_more}
+              />
+
+              <div :if={@ignored_columns != []}>
+                <h4 class="text-[13px] font-[650] text-default">Columns not used</h4>
+                <ul id="tods-import-ignored" class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[13px]">
+                  <li :for={column <- @ignored_columns} class="font-mono text-muted">{column}</li>
+                </ul>
               </div>
             </div>
+          </.drawer_scroll>
 
-            <%!-- `callout/1` spreads global attributes next to its own class, so the
-          margin lives on a wrapper rather than being passed to the component. --%>
-            <div class="mt-4">
-              <.callout id="tods-import-scope" kind="info" title="What gets imported">
-                {kind_scope(@kind)}
-              </.callout>
-            </div>
+          <.drawer_footer>
+            <%!-- The reason names why the apply action is unavailable, and it sits
+            with the control that cannot be used. --%>
+            <p
+              :if={@disabled_reason}
+              id="tods-import-apply-reason"
+              class="basis-full text-[13px] text-muted"
+            >
+              {@disabled_reason}
+            </p>
 
-            <div :if={@skipped_count > 0} class="mt-4">
-              <h4 class="text-sm font-semibold">Skipped rows</h4>
-              <ul id="tods-import-skipped" class="mt-1 space-y-1 text-sm">
-                <li :for={note <- @skipped_rows}>{note_text(note)}</li>
-              </ul>
-              <p
-                :if={@skipped_more > 0}
-                id="tods-import-skipped-more"
-                class="text-sm text-base-content/70"
-              >
-                {@skipped_more} more
-              </p>
-            </div>
-
-            <div :if={@error_count > 0} class="mt-4">
-              <h4 class="text-sm font-semibold">Rows with errors</h4>
-              <ul id="tods-import-errors" class="mt-1 space-y-1 text-sm">
-                <li :for={note <- @error_rows}>{note_text(note)}</li>
-              </ul>
-              <p
-                :if={@error_more > 0}
-                id="tods-import-errors-more"
-                class="text-sm text-base-content/70"
-              >
-                {@error_more} more
-              </p>
-            </div>
-
-            <div :if={@ignored_columns != []} class="mt-4">
-              <h4 class="text-sm font-semibold">Ignored columns</h4>
-              <ul id="tods-import-ignored" class="mt-1 text-sm text-base-content/70">
-                <li :for={column <- @ignored_columns}>{column}</li>
-              </ul>
-            </div>
-          </div>
-
-          <div class="mt-6 flex flex-wrap items-center gap-3">
+            <.button type="button" variant="secondary" class="min-h-11" phx-click={@on_close}>
+              Cancel
+            </.button>
             <.button
               id="apply-tods-import"
               type="button"
               class="min-h-11"
               disabled={!@importable?}
+              data-unavailable={!@importable?}
               phx-click={@on_apply}
               phx-disable-with="Importing…"
             >
               {@apply_label}
             </.button>
-            <.button type="button" variant="quiet" class="min-h-11" phx-click={@on_close}>
-              Cancel
-            </.button>
-          </div>
-
-          <p
-            :if={@disabled_reason}
-            id="tods-import-apply-reason"
-            class="mt-2 text-sm text-base-content/70"
-          >
-            {@disabled_reason}
-          </p>
+          </.drawer_footer>
         </form>
       </div>
     </.drawer>
+    """
+  end
+
+  # One bounded group of row notes: what the row is and why it is listed. The
+  # note text comes from `Tods.classify/1` and stays one string so a row reads
+  # the same wherever it is quoted.
+  attr :id, :string, required: true
+  attr :more_id, :string, required: true
+  attr :title, :string, required: true
+  attr :count, :integer, required: true
+  attr :tone, :string, required: true
+  attr :notes, :list, required: true
+  attr :more, :integer, required: true
+
+  defp note_list(assigns) do
+    ~H"""
+    <div>
+      <h4 class={["text-sm font-bold", @tone]}>{@title} ({@count})</h4>
+      <ul id={@id} class="mt-2 grid text-sm">
+        <li :for={note <- @notes} class="border-t border-subtle py-2 [overflow-wrap:anywhere]">
+          {note_text(note)}
+        </li>
+      </ul>
+      <p :if={@more > 0} id={@more_id} class="border-t border-subtle pt-2 text-[13px] text-muted">
+        {@more} more
+      </p>
+    </div>
     """
   end
 
@@ -262,29 +308,53 @@ defmodule GtfsPlannerWeb.Gtfs.OperationsComponents do
 
   # The four counts keep the reference's number-over-label shape. The apply label
   # reads them through `import_label/2`, so the count never has to be derived
-  # twice.
-  defp import_counts(%{add_count: add, update_count: update} = review) do
+  # twice. Errors read in the error ink only when there is one to fix.
+  defp import_counts(kind, %{add_count: add, update_count: update} = review) do
     [
-      %{id: "tods-import-count-add", label: "Add", value: add},
-      %{id: "tods-import-count-update", label: "Update", value: update},
-      %{id: "tods-import-count-skipped", label: "Skipped", value: review.skipped_count},
-      %{id: "tods-import-count-error", label: "Error", value: review.error_count}
+      %{id: "tods-import-count-add", label: "New #{kind_label(kind)}", value: add, tone: nil},
+      %{id: "tods-import-count-update", label: "Updated", value: update, tone: nil},
+      %{
+        id: "tods-import-count-skipped",
+        label: "Skipped",
+        value: review.skipped_count,
+        tone: nil
+      },
+      %{
+        id: "tods-import-count-error",
+        label: "Errors",
+        value: review.error_count,
+        tone: if(review.error_count > 0, do: "text-error-fg", else: "text-strong")
+      }
     ]
   end
 
+  # With nothing to apply the label names the action, not a count of zero.
+  defp import_label(:garages, 0), do: "Import garages"
   defp import_label(:garages, 1), do: "Import 1 garage"
   defp import_label(:garages, count), do: "Import #{count} garages"
+  defp import_label(:vehicles, 0), do: "Import vehicles"
   defp import_label(:vehicles, 1), do: "Import 1 vehicle"
   defp import_label(:vehicles, count), do: "Import #{count} vehicles"
 
   defp kind_label(:garages), do: "garages"
   defp kind_label(:vehicles), do: "vehicles"
 
-  defp kind_file(:garages), do: "stops_supplement.txt"
-  defp kind_file(:vehicles), do: "vehicles.txt"
+  defp kind_intro(kind) do
+    "Add or update #{kind_label(kind)} from a TODS file exported by your operations system. Nothing changes until you review the file and import it."
+  end
 
+  defp kind_file_help(:garages),
+    do: "One .txt or .csv file, up to 2 MB. It's usually named stops_supplement.txt."
+
+  defp kind_file_help(:vehicles),
+    do: "One .txt or .csv file, up to 2 MB. It's usually named vehicles.txt."
+
+  # What an import leaves alone, so nobody has to guess what a file can overwrite:
+  # `Operations.apply_tods_import/4` never touches a garage's address or a
+  # vehicle's type and garage, and never deletes a record the file omits.
   defp kind_scope(:garages),
-    do: "Only garage rows are imported. Public stops stay unchanged."
+    do:
+      "Only garage rows. Public stops aren't changed. A garage already here is updated from the file's name and coordinates, and keeps its address and vehicles. Garages the file doesn't list stay as they are."
 
   defp kind_scope(:vehicles),
     do:

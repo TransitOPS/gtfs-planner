@@ -88,10 +88,12 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       aside_link: 1,
       back_link: 1,
       drawer_footer: 1,
+      drawer_scroll: 1,
       first_use: 1,
       form_section: 1,
       message: 1,
       safe_href: 2,
+      scope_line: 1,
       unsaved_badge: 1
     ]
 
@@ -537,10 +539,9 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
           Agencies
           <:subtitle>
             {subtitle(@health.agency_count)}
-            <span id="agencies-scope" class="mt-2 flex items-start gap-1.5">
-              <.icon name="hero-calendar" class="mt-0.5 size-4 shrink-0" />
-              <span>{version_scope(@current_gtfs_version)}</span>
-            </span>
+            <.scope_line id="agencies-scope" icon="hero-calendar">
+              {version_scope(@current_gtfs_version)}
+            </.scope_line>
           </:subtitle>
           <:actions :if={@health.agency_count > 0}>
             <.button
@@ -1370,17 +1371,6 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLive do
       Route and trip clock times are not converted. Check calendars, schedules, and overnight
       service after this change.
     </p>
-    """
-  end
-
-  # The scrolling part of a drawer step, above its persistent footer.
-  slot :inner_block, required: true
-
-  defp drawer_scroll(assigns) do
-    ~H"""
-    <div class="grid flex-1 content-start gap-5 overflow-y-auto px-5 py-5 sm:px-6">
-      {render_slot(@inner_block)}
-    </div>
     """
   end
 

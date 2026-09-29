@@ -2211,7 +2211,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
       data-return-focus-id={@return_focus_id}
       aria-labelledby={"#{@id}-title"}
       {@extra}
-      class="m-0 border-0 w-full h-full bg-transparent p-0"
+      class="m-0 border-0 w-full h-full max-w-none max-h-none bg-transparent p-0"
     >
       <div class="w-full h-full flex items-center justify-center p-4">
         <div class={@ui.panel}>

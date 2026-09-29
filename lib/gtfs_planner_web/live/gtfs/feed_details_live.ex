@@ -51,6 +51,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
       form_section: 1,
       message: 1,
       safe_href: 2,
+      scope_line: 1,
       unsaved_badge: 1
     ]
 
@@ -277,10 +278,9 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsLive do
           <:subtitle>
             Tell trip planners who publishes this schedule, how long it’s valid and who to contact
             about the data.
-            <span id="feed-details-scope" class="mt-2 flex items-start gap-1.5">
-              <.icon name="hero-calendar" class="mt-0.5 size-4 shrink-0" />
-              <span>{version_scope(@current_gtfs_version)}</span>
-            </span>
+            <.scope_line id="feed-details-scope" icon="hero-calendar">
+              {version_scope(@current_gtfs_version)}
+            </.scope_line>
           </:subtitle>
           <:actions :if={@feed_info}>
             <.button

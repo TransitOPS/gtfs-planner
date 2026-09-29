@@ -30,6 +30,37 @@ defmodule GtfsPlannerWeb.Components.PlannerComponentsTest do
     end
   end
 
+  describe "scope_line/1" do
+    test "puts the scope in words next to an icon that names its kind" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.scope_line id="page-scope" icon="hero-calendar">Applies to one version only.</.scope_line>
+        """)
+
+      line = doc(html) |> LazyHTML.query("#page-scope")
+
+      assert LazyHTML.text(line) |> String.trim() == "Applies to one version only."
+      assert Enum.count(LazyHTML.query(line, ".hero-calendar")) == 1
+    end
+  end
+
+  describe "drawer_scroll/1" do
+    test "holds a drawer step's content in a scrolling region" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.drawer_scroll>
+          <p id="step-body">Fields</p>
+        </.drawer_scroll>
+        """)
+
+      assert Enum.count(doc(html) |> LazyHTML.query("div.overflow-y-auto #step-body")) == 1
+    end
+  end
+
   describe "message/1" do
     test "announces an error as an alert with its title and second line" do
       assigns = %{}

@@ -43,6 +43,10 @@ const CONFLICTING_GARAGE_ID = "BROWSER_STATION";
 
 const FILE_INPUT = "#tods-file-upload-input input";
 
+// With no garages the first-use panel carries the create action; otherwise the
+// page header does. Only one of the two is ever on the page.
+const ADD_GARAGE = "#add-garage, #add-garage-empty";
+
 // ── shared helpers ─────────────────────────────────────────────────────────
 
 async function logIn(page) {
@@ -142,7 +146,7 @@ async function setUpload(page, file) {
 
 async function createGarage(page, versionId, { name, garageId, lat, lon }) {
   await page.goto(`/gtfs/${versionId}/settings/garages`);
-  await openDrawer(page, "#add-garage", "garage-drawer");
+  await openDrawer(page, ADD_GARAGE, "garage-drawer");
 
   await page.fill("#garage_name", name);
   // The name field validates on blur, which is also when a new garage derives
@@ -154,7 +158,7 @@ async function createGarage(page, versionId, { name, garageId, lat, lon }) {
 
   await page.fill("#garage_lat", lat ?? ADDRESS_LAT);
   await page.fill("#garage_lon", lon ?? ADDRESS_LON);
-  await page.getByRole("button", { name: "Save garage" }).click();
+  await page.locator("#garage-save").click();
   await expect(page.locator("#garage-notice")).toHaveText(`${name} saved.`);
 }
 
@@ -263,30 +267,27 @@ test.describe("Garages, Fleet and operations export", () => {
     await logIn(page);
     const versionId = await currentVersionId(page);
 
-    // The Settings overview is the in-app entry to the moved page, which now
-    // carries the Settings bar and the All versions scope instead of the
-    // retired Blocks navigation.
+    // The Settings overview is the in-app entry to the moved page, which returns
+    // by the Settings link and says what its garages apply to.
     await page.goto(`/gtfs/${versionId}/settings`);
     await page.locator("#settings-entry-garages a").click();
     await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings/garages$`));
     await expect(page.locator("h1")).toContainText("Garages");
-    await expect(page.locator("body")).toContainText(
-      "All versions · Set where your vehicles start and end the day.",
-    );
-    await expect(page.locator("#settings-nav a[aria-current='page']")).toHaveText("Garages");
+    await expect(page.locator("#settings-nav")).toHaveCount(0);
+    await expect(page.locator("#settings-back")).toHaveText("Settings");
     await expect(
       page.locator('#app-header nav[aria-label="Main navigation"] a[aria-current="page"]'),
     ).toHaveCount(0);
-    await expect(page.locator("body")).toContainText(
-      `Shared across all service versions for ${ORGANIZATION_NAME}.`,
+    await expect(page.locator("#garages-scope")).toContainText(
+      `Applies to every service version at ${ORGANIZATION_NAME}.`,
     );
     await expect(page.locator("#garages-table, #garages-first-use-empty").first()).toBeVisible();
 
     const attempt = Date.now();
     const name = `Depot ${attempt}`;
 
-    await openDrawer(page, "#add-garage", "garage-drawer");
-    await expect(page.locator("#garage-drawer-title")).toHaveText("Add garage");
+    await openDrawer(page, ADD_GARAGE, "garage-drawer");
+    await expect(page.locator("#garage-drawer-title")).toHaveText("Create garage");
 
     await page.fill("#garage_name", name);
     await page.keyboard.press("Tab");
@@ -310,7 +311,7 @@ test.describe("Garages, Fleet and operations export", () => {
     await page.setViewportSize(DESKTOP);
     await page.screenshot({ path: testInfo.outputPath("garage-drawer-1440x1000.png") });
 
-    await page.getByRole("button", { name: "Save garage" }).click();
+    await page.locator("#garage-save").click();
     await expect(page.locator("#garage-notice")).toHaveText(`${name} saved.`);
 
     const row = page.locator("#garages-table tr").filter({ hasText: name });
@@ -506,7 +507,7 @@ test.describe("Garages, Fleet and operations export", () => {
     expect(filteredRows.map((row) => row.garage)).toEqual([garageName, garageName, garageName]);
   });
 
-  test("both pages fit 375x812, scroll their tables locally and keep 44px activation areas", async ({
+  test("both pages fit 375x812, keep 44px activation areas and stack or scroll their tables", async ({
     page,
   }, testInfo) => {
     test.setTimeout(120_000);
@@ -522,22 +523,23 @@ test.describe("Garages, Fleet and operations export", () => {
     await expect(page.locator("h1")).toContainText("Garages");
     await expect(page.locator("#garages-table")).toBeVisible();
     expect(await bodyFitsViewport(page), "Garages overflows at 375px").toBe(true);
-    await expect(page.locator("#garages-table-container")).toHaveCSS("overflow-x", "auto");
 
-    const garagesTable = await page.evaluate(() => {
-      const container = document.getElementById("garages-table-container");
-      return { scrollWidth: container.scrollWidth, clientWidth: container.clientWidth };
-    });
-    expect(
-      garagesTable.scrollWidth,
-      "the garages table must scroll inside its own container",
-    ).toBeGreaterThan(garagesTable.clientWidth);
+    // Below the tablet width each garage is a stacked record, so the table needs
+    // no horizontal scrolling of its own.
+    const stacked = await page.evaluate(() =>
+      [...document.querySelectorAll("#garages-table tbody tr")].map(
+        (row) => getComputedStyle(row).display,
+      ),
+    );
+    expect(stacked.length, "the garages table must have rows").toBeGreaterThan(0);
+    expect(new Set(stacked), "each garage row stacks as a block").toEqual(new Set(["block"]));
 
     await expectActivationTargets(page, [
       "#import-tods",
       "#add-garage",
-      "#settings-nav a",
-      "#garages-table td[data-label='Actions'] a",
+      "#settings-back",
+      "#garages-table td[data-label='Garage'] button",
+      "#garages-table td[data-label='Vehicles'] a",
     ]);
     await page.screenshot({ path: testInfo.outputPath("garages-375x812.png") });
 
@@ -580,7 +582,9 @@ test.describe("Garages, Fleet and operations export", () => {
     await page.goto(`/gtfs/${versionId}/settings/garages`);
     await expect(page.locator("h1")).toContainText("Garages");
 
-    const garageTrigger = "add-garage";
+    const garageTrigger = (await page.locator("#add-garage").count())
+      ? "add-garage"
+      : "add-garage-empty";
     expect(await tabTo(page, garageTrigger), `${garageTrigger} must be keyboard reachable`).not.toBeNull();
     await expect(page.locator(`#${garageTrigger}`)).toBeFocused();
     expect(await focusVisible(page), `${garageTrigger} must show visible focus`).toBe(true);
@@ -662,7 +666,11 @@ test.describe("Garages, Fleet and operations export", () => {
     await page.locator("#export-edit-garages").click();
     await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings/garages$`));
     await expect(page.locator("h1")).toContainText("Garages");
-    await expect(page.locator("#settings-nav a[aria-current='page']")).toHaveText("Garages");
+    await expect(page.locator("#settings-back")).toHaveText("Settings");
+
+    // The list says which garage clashes and with which stop.
+    await expect(page.locator("#garage-conflicts")).toContainText(garageName);
+    await expect(page.locator("#garage-conflicts")).toContainText(CONFLICTING_GARAGE_ID);
 
     // Correcting the garage ID clears the collision.
     await page
@@ -674,8 +682,9 @@ test.describe("Garages, Fleet and operations export", () => {
     await settleDrawer(page, "garage-drawer");
     await expect(page.locator("#garage_garage_id")).toHaveValue(CONFLICTING_GARAGE_ID);
     await page.fill("#garage_garage_id", correctedGarageId);
-    await page.getByRole("button", { name: "Save garage" }).click();
+    await page.locator("#garage-save").click();
     await expect(page.locator("#garage-notice")).toHaveText(`${garageName} saved.`);
+    await expect(page.locator("#garage-conflicts")).toHaveCount(0);
 
     await page.goto(`/gtfs/${versionId}/export?type=operations`);
     await waitForLiveView(page);

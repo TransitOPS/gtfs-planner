@@ -109,7 +109,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
   describe "Settings navigation and scope" do
     setup :editor_setup
 
-    test "the Garages page renders the Settings bar with Garages current", %{
+    test "the Garages page leads back to Settings and says what its garages apply to", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -120,15 +120,29 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}#{@garages_path}")
 
       assert has_element?(view, "h1", "Garages")
-      assert render(view) =~ "All versions · Set where your vehicles start and end the day."
-      assert render(view) =~ "Shared across all service versions for #{organization.name}."
 
-      doc = LazyHTML.from_fragment(render(view))
+      assert has_element?(
+               view,
+               "a#settings-back[href='/gtfs/#{version.id}/settings']",
+               "Settings"
+             )
 
-      # A Settings page carries no current main-navigation task.
-      assert Enum.empty?(main_nav_current(doc))
-      assert settings_nav_links(doc) == @settings_tabs
-      assert settings_nav_current_href(doc) == ["/gtfs/#{version.id}#{@garages_path}"]
+      assert has_element?(
+               view,
+               "#garages-scope",
+               "Applies to every service version at #{organization.name}."
+             )
+
+      assert has_element?(
+               view,
+               "#garages-scope",
+               "only which stops the ID check compares against"
+             )
+
+      # The Settings back link replaces the tab bar, and a Settings page carries no
+      # current main-navigation task.
+      refute has_element?(view, "#settings-nav")
+      assert Enum.empty?(main_nav_current(LazyHTML.from_fragment(render(view))))
     end
 
     test "the Fleet page renders the Settings bar with Fleet current", %{
@@ -274,17 +288,38 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}#{@garages_path}")
 
       assert has_element?(view, "#garages-first-use-empty", "Add your first garage")
-      assert has_element?(view, "#add-garage-empty", "Add garage")
+      assert has_element?(view, "#add-garage-empty", "Create garage")
+      assert has_element?(view, "#garages-first-use-empty #import-tods", "Import garages")
       refute has_element?(view, "#garages-table")
       refute has_element?(view, "#garages-status")
       refute has_element?(view, "#garage-conflicts")
+    end
+
+    test "the header offers create and import only once a garage exists", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, empty_view, _html} = live(conn, "/gtfs/#{version.id}#{@garages_path}")
+      refute has_element?(empty_view, "#add-garage")
+
+      garage_fixture(organization.id)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}#{@garages_path}")
+
+      assert has_element?(view, "#add-garage", "Create garage")
+      assert has_element?(view, "#import-tods", "Import garages")
+      refute has_element?(view, "#garages-first-use-empty")
     end
   end
 
   describe "garage list" do
     setup :editor_setup
 
-    test "#garages-table shows name, ID, location, count and a filtered Fleet link", %{
+    test "#garages-table shows name, ID, location, vehicles and a filtered Fleet link", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -321,20 +356,45 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
       assert has_element?(view, "tr#garages-#{without_address.id}", "East garage")
       refute has_element?(view, "tr#garages-#{without_address.id}", "1 Depot Way")
 
+      # A garage with vehicles links its count to the Fleet list filtered to it.
       assert has_element?(
                view,
-               "a[href='/gtfs/#{version.id}#{@fleet_path}?garage=#{with_address.id}']",
-               "View vehicles"
+               "tr#garages-#{with_address.id} td[data-label='Vehicles'] a[href='/gtfs/#{version.id}#{@fleet_path}?garage=#{with_address.id}']",
+               "2 vehicles"
              )
 
-      doc = LazyHTML.from_fragment(render(view))
-      counts = LazyHTML.query(doc, "#garages-table td[data-label='Vehicles']")
+      # A garage without vehicles says so instead of linking to an empty list.
+      assert has_element?(
+               view,
+               "tr#garages-#{without_address.id} td[data-label='Vehicles']",
+               "None yet"
+             )
 
-      assert Enum.count(counts) == 2
-      assert LazyHTML.attribute(counts, "class") |> Enum.uniq() == ["text-right"]
-      assert Enum.map(counts, &String.trim(LazyHTML.text(&1))) |> Enum.sort() == ["0", "2"]
+      refute has_element?(view, "tr#garages-#{without_address.id} a")
 
       assert has_element?(view, "#garages-status", "2 garages · 2 vehicles assigned")
+    end
+
+    test "a single garage and a single vehicle are counted in the singular", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      garage = garage_fixture(organization.id)
+      vehicle_fixture(organization.id, %{"garage_id" => garage.id})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}#{@garages_path}")
+
+      assert has_element?(view, "#garages-status", "1 garage · 1 vehicle assigned")
+
+      assert has_element?(
+               view,
+               "tr#garages-#{garage.id} td[data-label='Vehicles'] a",
+               "1 vehicle"
+             )
     end
   end
 
@@ -368,6 +428,12 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
 
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}#{@garages_path}")
 
+      assert has_element?(
+               view,
+               "#garage-conflicts",
+               "Operations export is blocked: 1 garage ID matches a stop"
+             )
+
       conflicts_html = view |> element("#garage-conflicts") |> render()
 
       assert conflicts_html =~ conflict.name
@@ -375,6 +441,32 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLiveTest do
       assert conflicts_html =~ "Shared stop"
       refute conflicts_html =~ other_version_garage.garage_id
       refute conflicts_html =~ "Only in V2"
+    end
+
+    test "several matches are counted in the title and each named beside its stop", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      garage_fixture(organization.id, %{"garage_id" => "STOP_A", "name" => "North yard"})
+      garage_fixture(organization.id, %{"garage_id" => "STOP_B", "name" => "South yard"})
+      stop_fixture(organization.id, version.id, %{stop_id: "STOP_A", stop_name: "Alder Street"})
+      stop_fixture(organization.id, version.id, %{stop_id: "STOP_B", stop_name: "Birch Street"})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}#{@garages_path}")
+
+      assert has_element?(
+               view,
+               "#garage-conflicts",
+               "Operations export is blocked: 2 garage IDs match stops"
+             )
+
+      assert has_element?(view, "#garage-conflicts", "Give each garage below a different ID")
+      assert has_element?(view, "#garage-conflicts li", "North yard")
+      assert has_element?(view, "#garage-conflicts li", "Birch Street")
     end
 
     test "no callout renders when no garage ID matches a stop", %{

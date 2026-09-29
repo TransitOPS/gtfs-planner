@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   @moduledoc """
-  LiveView for the organization's garages: the list, the add/edit drawer and
+  LiveView for the organization's garages: the list, the create/edit drawer and
   the guarded delete flow.
 
   Garages belong to the organization and ignore GTFS versions: the version in
@@ -9,16 +9,16 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   `EnsureRole`, following the other GTFS pages — there is no view-only GTFS role,
   and the context enforces tenancy on every call.
 
-  The drawer reuses the shared `drawer/1`, `input/1`, `callout/1` and
-  `confirm_dialog/1` components and the gallery's `LiveSelect` autocomplete
-  pattern. `Garage.changeset/2` owns validation, so a rejected submit returns
+  The drawer reuses the shared `drawer/1`, `input/1` and `confirm_dialog/1`
+  components in the design system's planner chrome, and the gallery's `LiveSelect`
+  autocomplete pattern. `Garage.changeset/2` owns validation, so a rejected submit returns
   focus to the first invalid field through the scoped `FormErrorFocus` hook.
 
   `garage_id` is a correctable external ID: creation derives it from the name
   until the user edits the ID field (tracked from the form event's `_target`),
   and a saved garage's ID is never regenerated from a name change.
 
-  "Import from TODS file" opens the shared `tods_import_drawer/1`: the chosen
+  "Import garages" opens the shared `tods_import_drawer/1`: the chosen
   file is parsed by `Tods` and previewed through `Operations.preview_tods_import/2`,
   and only the reviewed plan may be applied. The review describes exactly one
   upload, so closing the drawer, cancelling the upload or choosing another file
@@ -30,7 +30,18 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.OperationsComponents,
-    only: [scope_note: 1, tods_import_drawer: 1, tods_review_current?: 2]
+    only: [tods_import_drawer: 1, tods_review_current?: 2]
+
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [
+      back_link: 1,
+      drawer_footer: 1,
+      drawer_scroll: 1,
+      first_use: 1,
+      form_section: 1,
+      message: 1,
+      scope_line: 1
+    ]
 
   alias GtfsPlanner.Geocoding
   alias GtfsPlanner.Operations
@@ -65,7 +76,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
      |> assign(:garage_drawer_open, false)
      |> assign(:garage_entity, nil)
      |> assign(:garage_form, garage_form(%Garage{}, %{}))
-     |> assign(:garage_drawer_title, "Add garage")
+     |> assign(:garage_drawer_title, "Create garage")
      |> assign(:garage_drawer_return_focus_id, nil)
      |> assign(:garage_id_touched?, false)
      |> assign(:address_results, [])
@@ -327,11 +338,12 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
          |> refresh_garages()
          |> assign(:garage_notice, "#{deleted.name} deleted.")}
 
-      {:error, {:in_use, vehicles: _count}} ->
+      # The count in the refusal is current; the loaded garage's may be stale.
+      {:error, {:in_use, vehicles: count}} ->
         {:noreply,
          socket
          |> assign(:garage_delete_target, nil)
-         |> assign(:garage_in_use, garage)}
+         |> assign(:garage_in_use, %{garage | vehicle_count: count})}
 
       {:error, :not_found} ->
         {:noreply, socket |> assign(:garage_delete_target, nil) |> refresh_garages()}
@@ -352,183 +364,271 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <:sub_header>
-        <.settings_nav
-          gtfs_version_id={@current_gtfs_version.id}
-          active_tab={:garages}
-          organization={@current_organization}
+      <div id="garages-page" class="ds-page">
+        <.back_link id="settings-back" navigate={settings_path(@current_gtfs_version.id)}>
+          Settings
+        </.back_link>
+
+        <.header>
+          Garages
+          <:subtitle>
+            Set where vehicles start and end the day: depots, yards and operating bases. Blocks use
+            these locations to work out pull-out and pull-in travel.
+            <.scope_line id="garages-scope" icon="hero-square-3-stack-3d">
+              Applies to every service version at {@current_organization.name}. Switching versions
+              doesn't change these garages, only which stops the ID check compares against.
+            </.scope_line>
+          </:subtitle>
+          <%!-- With no garages yet, the first-use panel carries both actions. --%>
+          <:actions :if={!@garages_empty?}>
+            <.button
+              id="import-tods"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="open_tods_import"
+              phx-value-opener_id="import-tods"
+            >
+              <.icon name="hero-arrow-up-tray" class="size-4" /> Import garages
+            </.button>
+            <.button
+              id="add-garage"
+              class="min-h-11"
+              phx-click="open_garage"
+              phx-value-opener_id="add-garage"
+            >
+              <.icon name="hero-plus" class="size-4" /> Create garage
+            </.button>
+          </:actions>
+        </.header>
+
+        <div class="grid gap-4">
+          <.message :if={@garage_notice} id="garage-notice" kind="success" title={@garage_notice} />
+
+          <.garage_conflicts
+            :if={@garage_conflicts != []}
+            conflicts={@garage_conflicts}
+            version={@current_gtfs_version}
+          />
+
+          <.garages_table
+            :if={!@garages_empty?}
+            rows={@streams.garages}
+            garage_count={@garage_count}
+            vehicle_count={@assigned_vehicle_count}
+            version={@current_gtfs_version}
+          />
+
+          <.first_use
+            :if={@garages_empty?}
+            id="garages-first-use-empty"
+            title="Add your first garage"
+            icon="hero-building-office"
+          >
+            A garage is any depot, yard or base where vehicles start and end the day. Add one so
+            blocks can work out pull-out and pull-in travel.
+            <:action>
+              <div class="flex flex-wrap justify-center gap-3">
+                <.button
+                  id="add-garage-empty"
+                  class="min-h-11"
+                  phx-click="open_garage"
+                  phx-value-opener_id="add-garage-empty"
+                >
+                  <.icon name="hero-plus" class="size-4" /> Create garage
+                </.button>
+                <.button
+                  id="import-tods"
+                  variant="secondary"
+                  class="min-h-11"
+                  phx-click="open_tods_import"
+                  phx-value-opener_id="import-tods"
+                >
+                  <.icon name="hero-arrow-up-tray" class="size-4" /> Import garages
+                </.button>
+              </div>
+              <p class="mt-4 text-[13px] text-muted">
+                Already keep garages in your operations system? Import them from a TODS file
+                instead of typing each one.
+              </p>
+            </:action>
+          </.first_use>
+        </div>
+
+        <.tods_import_drawer
+          open={@tods_import_open}
+          kind={:garages}
+          upload={@uploads.tods_file}
+          preview={@tods_import_preview}
+          filename={@tods_import_filename}
+          parse_error={@tods_import_parse_error}
+          stale?={@tods_import_stale?}
+          return_focus_id={@tods_import_return_focus_id}
         />
-      </:sub_header>
 
-      <.header>
-        Garages
-        <:subtitle>All versions · Set where your vehicles start and end the day.</:subtitle>
-        <:actions>
-          <.button
-            id="import-tods"
-            variant="secondary"
-            class="min-h-11"
-            phx-click="open_tods_import"
-            phx-value-opener_id="import-tods"
-          >
-            Import from TODS file
-          </.button>
-          <.button
-            id="add-garage"
-            variant={if(@garages_empty?, do: "secondary", else: "primary")}
-            class="min-h-11"
-            phx-click="open_garage"
-            phx-value-opener_id="add-garage"
-          >
-            Add garage
-          </.button>
-        </:actions>
-      </.header>
+        <.garage_drawer
+          open={@garage_drawer_open}
+          title={@garage_drawer_title}
+          entity={@garage_entity}
+          form={@garage_form}
+          return_focus_id={@garage_drawer_return_focus_id}
+          address_unavailable?={@address_unavailable?}
+        />
 
-      <.scope_note organization_name={@current_organization.name} class="mt-2" />
-
-      <p :if={@garage_notice} id="garage-notice" role="status" class="mt-2 text-sm text-success">
-        {@garage_notice}
-      </p>
-
-      <p :if={!@garages_empty?} id="garages-status" class="mt-3 text-sm text-base-content/70">
-        {@garage_count} garages · {@assigned_vehicle_count} vehicles assigned
-      </p>
-
-      <%!-- `callout/1` spreads global attributes onto its own class, so the margin
-      lives on a wrapper rather than being passed to the component. --%>
-      <div :if={@garage_conflicts != []} class="mt-4">
-        <.callout
-          id="garage-conflicts"
-          kind="warning"
-          title="Garage IDs conflict with public stops"
+        <.confirm_dialog
+          :if={@garage_delete_target}
+          id="garage-delete-confirm"
+          chrome="planner"
+          open={true}
+          title={"Delete #{@garage_delete_target.name}?"}
+          confirm_label="Delete garage"
+          cancel_label="Keep garage"
+          pending_label="Deleting…"
+          on_confirm="confirm_delete_garage"
+          on_cancel="cancel_delete_garage"
+          described_by="garage-delete-confirm-body"
+          return_focus_id="garage-delete"
         >
-          These garage IDs match stop IDs in this version, so an operations export cannot be created.
-          <ul class="mt-2 space-y-1">
-            <li :for={conflict <- @garage_conflicts}>
-              Garage "{conflict.garage_name}" ({conflict.garage_id}) matches the stop "{conflict.stop_name}".
-            </li>
-          </ul>
-        </.callout>
+          <p>This removes the garage from every service version. You can't undo it.</p>
+        </.confirm_dialog>
+
+        <.confirm_dialog
+          :if={@garage_in_use}
+          id="garage-in-use-dialog"
+          chrome="planner"
+          open={true}
+          title={"Can't delete #{@garage_in_use.name}"}
+          confirm_label="Close"
+          cancel_label="Close"
+          pending_label="Closing…"
+          on_confirm="dismiss_garage_in_use"
+          on_cancel="dismiss_garage_in_use"
+          single_action={true}
+          described_by="garage-in-use-dialog-body"
+          return_focus_id="garage-delete"
+        >
+          <p>{in_use_body(@garage_in_use.vehicle_count)}</p>
+        </.confirm_dialog>
+      </div>
+    </Layouts.app>
+    """
+  end
+
+  # A garage ID that equals a stop ID would make the operations export change that
+  # stop, so the export refuses it. The message leads with that consequence, then
+  # names each garage and the stop it clashes with. Fixing one is the same edit as
+  # any other: open the garage from the list and change its ID.
+  attr :conflicts, :list, required: true
+  attr :version, :any, required: true
+
+  defp garage_conflicts(assigns) do
+    ~H"""
+    <.message id="garage-conflicts" kind="warning" title={conflict_title(length(@conflicts))}>
+      <p>
+        Exports list garages next to public stops by ID, so a shared ID would change that stop. Give {conflict_target(
+          length(@conflicts)
+        )} a different ID, then export again.
+      </p>
+      <ul class="mt-3 grid gap-2">
+        <li :for={conflict <- @conflicts} class="rounded-control bg-white px-3 py-2 text-default">
+          <strong class="font-[650] text-strong">{conflict.garage_name}</strong>
+          uses ID <code class="font-mono text-[13px]">{conflict.garage_id}</code>,
+          the same as the stop <strong class="font-[650] text-strong">{conflict.stop_name}</strong>.
+        </li>
+      </ul>
+      <p class="mt-3 text-[13px]">
+        Checked against stops in {@version.name}. Switch versions to check another.
+      </p>
+    </.message>
+    """
+  end
+
+  # Garages are few and read by name, so the list is one table: the garage and its
+  # ID, where it is, and the vehicles assigned. Each name opens the row's editor.
+  # Below `md` a row is a stacked record rather than a horizontally scrolling table.
+  attr :rows, :any, required: true, doc: "the `:garages` stream"
+  attr :garage_count, :integer, required: true
+  attr :vehicle_count, :integer, required: true
+  attr :version, :any, required: true
+
+  defp garages_table(assigns) do
+    ~H"""
+    <section
+      id="garages-list"
+      aria-label="Garages"
+      class="overflow-clip rounded-card border border-subtle bg-white"
+    >
+      <div class="flex min-h-[52px] items-center border-b border-subtle px-4 py-1 md:px-5">
+        <p id="garages-status" class="text-[13px] font-[650] tabular-nums text-strong">
+          {count_label(@garage_count, "garage")} · {count_label(@vehicle_count, "vehicle")} assigned
+        </p>
       </div>
 
-      <div :if={!@garages_empty?} class="mt-6">
-        <div class="bg-base-100 border border-base-300 rounded-box overflow-hidden">
-          <.table id="garages-table" rows={@streams.garages}>
-            <:col :let={{_id, garage}} label="Name">
+      <table id="garages-table" class="w-full border-collapse text-left text-sm">
+        <caption class="sr-only">
+          Garages
+        </caption>
+        <thead class="max-md:hidden">
+          <tr class="bg-canvas">
+            <th scope="col" class={[head_class(), "w-[34%] pl-5"]}>Garage</th>
+            <th scope="col" class={head_class()}>Location</th>
+            <th scope="col" class={[head_class(), "w-[200px] pr-5 text-right"]}>Vehicles</th>
+          </tr>
+        </thead>
+        <tbody id="garages" phx-update="stream">
+          <tr
+            :for={{id, garage} <- @rows}
+            id={id}
+            class="border-t border-subtle align-top hover:bg-canvas max-md:block max-md:px-4 max-md:py-3"
+          >
+            <td data-label="Garage" class="py-2 pl-5 pr-4 max-md:block max-md:p-0">
               <button
                 id={"garage-name-#{garage.id}"}
                 type="button"
                 phx-click="open_garage"
                 phx-value-garage_id={garage.id}
                 phx-value-opener_id={"garage-name-#{garage.id}"}
-                class="text-left font-semibold text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+                class={[
+                  "grid min-h-11 min-w-0 content-center rounded-control text-left [overflow-wrap:anywhere]",
+                  "group",
+                  focus_class()
+                ]}
               >
-                {garage.name}
+                <span class="text-[15px] font-[650] text-action underline-offset-4 group-hover:text-action-hover group-hover:underline">
+                  {garage.name}
+                </span>
+                <span class="font-mono text-[13px] text-muted">{garage.garage_id}</span>
               </button>
-            </:col>
-            <:col :let={{_id, garage}} label="Garage ID">
-              <span class="font-mono text-sm">{garage.garage_id}</span>
-            </:col>
-            <:col :let={{_id, garage}} label="Location">
-              <div>{garage_location(garage)}</div>
-              <div :if={garage_has_address?(garage)} class="text-xs text-base-content/70">
+            </td>
+            <td data-label="Location" class="px-4 py-3 max-md:mt-1 max-md:block max-md:p-0">
+              <p class="text-default [overflow-wrap:anywhere]">{garage_location(garage)}</p>
+              <p :if={garage_has_address?(garage)} class="text-[13px] tabular-nums text-muted">
                 {garage_coordinates(garage)}
-              </div>
-            </:col>
-            <:col :let={{_id, garage}} label="Vehicles" align="right">
-              {garage.vehicle_count}
-            </:col>
-            <:action :let={{_id, garage}}>
+              </p>
+            </td>
+            <td
+              data-label="Vehicles"
+              class="py-2 pl-4 pr-5 text-right max-md:mt-1 max-md:block max-md:p-0 max-md:text-left"
+            >
               <.link
-                navigate={~p"/gtfs/#{@current_gtfs_version.id}/settings/fleet?garage=#{garage.id}"}
-                class="inline-flex min-h-11 items-center whitespace-nowrap text-sm font-medium text-primary underline"
+                :if={garage.vehicle_count > 0}
+                navigate={~p"/gtfs/#{@version.id}/settings/fleet?garage=#{garage.id}"}
+                class="inline-flex min-h-11 items-center text-sm font-[650] tabular-nums text-action underline-offset-4 hover:text-action-hover hover:underline"
               >
-                View vehicles
+                {count_label(garage.vehicle_count, "vehicle")}
               </.link>
-            </:action>
-          </.table>
-        </div>
-        <p class="mt-2 text-sm text-base-content/70">
-          Garage locations help calculate travel to the first trip and back from the last trip.
-        </p>
-      </div>
-
-      <.empty_state
-        :if={@garages_empty?}
-        id="garages-first-use-empty"
-        title="Add your first garage"
-        class="mt-6"
-      >
-        Add where your vehicles start and end the day. Garages are needed to plan travel to and from service.
-        <:action>
-          <.button
-            id="add-garage-empty"
-            class="min-h-11"
-            phx-click="open_garage"
-            phx-value-opener_id="add-garage-empty"
-          >
-            Add garage
-          </.button>
-        </:action>
-      </.empty_state>
-
-      <.tods_import_drawer
-        open={@tods_import_open}
-        kind={:garages}
-        upload={@uploads.tods_file}
-        preview={@tods_import_preview}
-        filename={@tods_import_filename}
-        parse_error={@tods_import_parse_error}
-        stale?={@tods_import_stale?}
-        return_focus_id={@tods_import_return_focus_id}
-      />
-
-      <.garage_drawer
-        open={@garage_drawer_open}
-        title={@garage_drawer_title}
-        entity={@garage_entity}
-        form={@garage_form}
-        return_focus_id={@garage_drawer_return_focus_id}
-        address_unavailable?={@address_unavailable?}
-      />
-
-      <.confirm_dialog
-        :if={@garage_delete_target}
-        id="garage-delete-confirm"
-        open={true}
-        title={"Delete #{@garage_delete_target.name}?"}
-        confirm_label="Delete garage"
-        pending_label="Deleting…"
-        on_confirm="confirm_delete_garage"
-        on_cancel="cancel_delete_garage"
-        described_by="garage-delete-confirm-body"
-        return_focus_id="garage-delete"
-      >
-        <p>This removes the garage from all service versions.</p>
-      </.confirm_dialog>
-
-      <.confirm_dialog
-        :if={@garage_in_use}
-        id="garage-in-use-dialog"
-        open={true}
-        title="Garage is in use"
-        confirm_label="Delete garage"
-        cancel_label="Close"
-        pending_label="Deleting…"
-        on_confirm="dismiss_garage_in_use"
-        on_cancel="dismiss_garage_in_use"
-        single_action={true}
-        described_by="garage-in-use-dialog-body"
-        return_focus_id="garage-delete"
-      >
-        <p>
-          {@garage_in_use.name} has {@garage_in_use.vehicle_count} vehicles. Set a different garage for those vehicles before deleting it.
-        </p>
-      </.confirm_dialog>
-    </Layouts.app>
+              <p :if={garage.vehicle_count == 0} class="py-3 text-muted">None yet</p>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
     """
   end
+
+  defp head_class, do: "px-4 py-2.5 text-left text-[13px] font-[650] text-default"
+
+  defp focus_class,
+    do: "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
 
   attr :open, :boolean, required: true
   attr :title, :string, required: true
@@ -546,148 +646,195 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
     ~H"""
     <.drawer
       id="garage-drawer"
+      chrome="planner"
       open={@open}
       on_close="close_garage_drawer"
       title={@title}
       initial_focus={:first_field}
       return_focus_id={@return_focus_id}
+      class="max-w-[520px]"
     >
-      <div id="garage-drawer-content" phx-hook="FormErrorFocus">
-        <p id="garage-drawer-description" class="mb-4 text-sm text-base-content/70">
-          Choose a location for the start and end of the vehicle’s day.
-        </p>
+      <:lede>
+        <span id="garage-drawer-scope">{drawer_scope(@entity)}</span>
+      </:lede>
 
+      <div id="garage-drawer-content" phx-hook="FormErrorFocus" class="flex min-h-0 flex-1 flex-col">
         <.form
           for={@form}
           id={@form_id}
           novalidate
           phx-change="validate_garage"
           phx-submit="save_garage"
-          class="space-y-1"
+          class="flex min-h-0 flex-1 flex-col"
         >
-          <div :if={save_failed?(@form)} class="mb-4">
-            <.callout
+          <.drawer_scroll>
+            <.message
+              :if={save_failed?(@form)}
               id={@form_error_id}
               kind="error"
-              title="Check the highlighted fields"
+              title="Garage not saved"
               tabindex="-1"
             >
-              Nothing was saved. Correct the fields marked below, then save again.
-            </.callout>
-          </div>
+              Fix the fields marked below, then save again.
+            </.message>
 
-          <.input
-            field={@form[:name]}
-            type="text"
-            label="Garage name"
-            phx-debounce="blur"
-            phx-blur="validate_garage"
-          />
-
-          <%!-- LiveView skips the `value` of a form input that already holds
-          focus, so the derived ID would stay invisible for an operator who tabs
-          out of the name field. This ignored host carries the hook that writes
-          the pushed value into the ID field. --%>
-          <span id="garage-id-default" phx-hook=".GarageIdDefault" phx-update="ignore" hidden></span>
-
-          <.input
-            field={@form[:garage_id]}
-            type="text"
-            label="Garage ID"
-            help="Used when sharing operations data. This ID must not match a public stop."
-            phx-debounce="blur"
-            phx-blur="validate_garage"
-          />
-
-          <p :if={@entity} id="garage-id-change-hint" class="mb-2 text-sm text-base-content/70">
-            Changing the ID keeps vehicle assignments. Systems that already imported the old ID will see a new garage.
-          </p>
-
-          <div class="fieldset mb-2">
-            <label for="garage-address" class="label mb-1 text-base">
-              Address search (optional)
-            </label>
-            <.live_component
-              module={LiveSelectComponent}
-              id="garage-address"
-              field={@form[:address]}
-              options={[]}
-              debounce={300}
-              update_min_len={3}
-              placeholder="Search for an address"
-              dropdown_class="bg-base-100 border border-base-300 shadow-lg mt-1 text-base-content"
-              option_class="px-4 py-2.5 border-b border-base-300 last:border-b-0"
-              active_option_class="bg-primary text-primary-content"
-              available_option_class="hover:bg-base-200 cursor-pointer"
-              text_input_class="input input-bordered w-full min-h-11"
-            >
-              <:option :let={option}>
-                <span class="font-medium">{option.label}</span>
-              </:option>
-            </.live_component>
+            <%!-- Having vehicles is normal, so this is a fact, not a warning. The
+            delete rule it states is enforced when Delete garage is pressed. --%>
             <p
-              :if={@address_unavailable?}
-              id="garage-address-unavailable"
-              class="mt-1.5 text-sm text-error"
-            >
-              Address search is unavailable. Enter coordinates.
-            </p>
-          </div>
-
-          <div class="grid gap-4 sm:grid-cols-2">
-            <.input
-              field={@form[:lat]}
-              type="number"
-              step="any"
-              inputmode="decimal"
-              label="Latitude"
-              phx-debounce="blur"
-              phx-blur="validate_garage"
-            />
-            <.input
-              field={@form[:lon]}
-              type="number"
-              step="any"
-              inputmode="decimal"
-              label="Longitude"
-              phx-debounce="blur"
-              phx-blur="validate_garage"
-            />
-          </div>
-
-          <p class="mt-1 text-sm text-base-content/70">
-            Choose an address result or enter coordinates.
-          </p>
-
-          <div :if={@entity} class="mt-4">
-            <.callout
+              :if={@entity}
               id="garage-assigned-vehicles"
-              kind={if @entity.vehicle_count > 0, do: "warning", else: "info"}
-              title={"#{@entity.vehicle_count} vehicles assigned"}
+              class="flex items-start gap-3 rounded-control bg-canvas px-4 py-3 text-sm text-default"
             >
-              {if @entity.vehicle_count > 0,
-                do: "Move these vehicles to another garage before deleting this garage.",
-                else: "This garage has no assigned vehicles."}
-            </.callout>
-          </div>
+              <.icon name="hero-truck" class="mt-0.5 size-5 shrink-0 text-muted" />
+              <span class="min-w-0">
+                <strong class="font-[650] text-strong">
+                  {vehicles_use_title(@entity.vehicle_count)}
+                </strong>
+                {vehicles_use_body(@entity.vehicle_count)}
+              </span>
+            </p>
 
-          <div class="flex flex-wrap items-center gap-3 pt-3">
-            <.button type="submit" class="min-h-11" phx-disable-with="Saving…">Save garage</.button>
-            <.button type="button" variant="quiet" class="min-h-11" phx-click="close_garage_drawer">
-              Cancel
-            </.button>
+            <.input
+              field={@form[:name]}
+              type="text"
+              label="Garage name"
+              help="The name your team uses, like Newport Operations Base."
+              autocomplete="off"
+              phx-debounce="blur"
+              phx-blur="validate_garage"
+            />
+
+            <div class="grid gap-1.5">
+              <%!-- LiveView skips the `value` of a form input that already holds
+              focus, so the derived ID would stay invisible for an operator who tabs
+              out of the name field. This ignored host carries the hook that writes
+              the pushed value into the ID field. --%>
+              <span id="garage-id-default" phx-hook=".GarageIdDefault" phx-update="ignore" hidden>
+              </span>
+
+              <.input
+                field={@form[:garage_id]}
+                type="text"
+                class="w-full input input-lg font-mono"
+                label="Garage ID"
+                help={garage_id_help(@entity)}
+                autocomplete="off"
+                spellcheck="false"
+                phx-debounce="blur"
+                phx-blur="validate_garage"
+              />
+
+              <p
+                :if={@entity}
+                id="garage-id-change-hint"
+                class="flex items-start gap-1.5 text-[13px] text-muted"
+              >
+                <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0" />
+                <span>
+                  Changing the ID keeps vehicle assignments. Systems that already imported the old ID will see a new garage.
+                </span>
+              </p>
+            </div>
+
+            <.form_section title="Location">
+              <div class="fieldset">
+                <label for="garage_address_text_input">
+                  <span class="label">
+                    Find an address <span class="font-normal text-muted">(optional)</span>
+                  </span>
+                </label>
+                <div class="relative">
+                  <.icon
+                    name="hero-magnifying-glass"
+                    class="pointer-events-none absolute left-3 top-1/2 z-10 size-4 -translate-y-1/2 text-muted"
+                  />
+                  <.live_component
+                    module={LiveSelectComponent}
+                    id="garage-address"
+                    field={@form[:address]}
+                    options={[]}
+                    debounce={300}
+                    update_min_len={3}
+                    placeholder="Start typing a street address"
+                    dropdown_class="absolute inset-x-0 top-full z-50 mt-1 max-h-60 overflow-auto rounded-card border border-subtle bg-white p-1 text-strong shadow-float"
+                    option_class="flex min-h-11 items-center gap-2 rounded-control px-3 py-1.5 text-sm"
+                    active_option_class="bg-selection"
+                    available_option_class="cursor-pointer hover:bg-canvas"
+                    text_input_class="input w-full pl-9 pr-6"
+                    text_input_selected_class="text-strong"
+                  >
+                    <:option :let={option}>
+                      <.icon name="hero-map-pin" class="size-4 shrink-0 text-muted" />
+                      <span class="min-w-0">{option.label}</span>
+                    </:option>
+                  </.live_component>
+                </div>
+                <p>Choose a result to fill in the coordinates below.</p>
+                <%!-- A message under a field is styled by the field's own muted
+                paragraph rule, so the notice sits in a wrapper of its own. --%>
+                <div
+                  :if={@address_unavailable?}
+                  class="flex items-start gap-1.5 text-[13px] font-semibold text-warning-fg"
+                >
+                  <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4 shrink-0" />
+                  <p id="garage-address-unavailable" role="status">
+                    Address search isn't available right now. Enter the coordinates instead.
+                  </p>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-2 items-start gap-3">
+                <.input
+                  field={@form[:lat]}
+                  type="number"
+                  step="any"
+                  inputmode="decimal"
+                  label="Latitude"
+                  help="Decimal degrees, like 44.6114."
+                  autocomplete="off"
+                  phx-debounce="blur"
+                  phx-blur="validate_garage"
+                />
+                <.input
+                  field={@form[:lon]}
+                  type="number"
+                  step="any"
+                  inputmode="decimal"
+                  label="Longitude"
+                  help="Negative in the western hemisphere, like -124.0489."
+                  autocomplete="off"
+                  phx-debounce="blur"
+                  phx-blur="validate_garage"
+                />
+              </div>
+            </.form_section>
+          </.drawer_scroll>
+
+          <.drawer_footer>
             <.button
               :if={@entity}
               id="garage-delete"
               type="button"
-              variant="danger"
-              class="min-h-11"
+              variant="quiet"
+              class="mr-auto min-h-11 text-error-fg hover:bg-error-bg"
               phx-click="delete_garage"
               phx-value-garage_id={@entity.id}
             >
-              Delete garage
+              <.icon name="hero-trash" class="size-4" /> Delete garage
             </.button>
-          </div>
+            <.button
+              id="garage-cancel"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="close_garage_drawer"
+            >
+              Cancel
+            </.button>
+            <.button id="garage-save" type="submit" class="min-h-11" phx-disable-with="Saving…">
+              {if @entity, do: "Save changes", else: "Create garage"}
+            </.button>
+          </.drawer_footer>
         </.form>
       </div>
     </.drawer>
@@ -724,7 +871,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
     socket
     |> assign(:garage_entity, nil)
     |> assign(:garage_form, garage_form(%Garage{}, %{}))
-    |> assign(:garage_drawer_title, "Add garage")
+    |> assign(:garage_drawer_title, "Create garage")
     |> assign(:garage_id_touched?, false)
     |> assign(:address_results, [])
     |> assign(:address_unavailable?, false)
@@ -956,5 +1103,43 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
 
   defp garage_coordinates(garage) do
     "#{Decimal.to_string(garage.lat)}, #{Decimal.to_string(garage.lon)}"
+  end
+
+  defp settings_path(version_id), do: "/gtfs/#{version_id}/settings"
+
+  defp count_label(1, noun), do: "1 #{noun}"
+  defp count_label(count, noun), do: "#{count} #{noun}s"
+
+  defp conflict_title(1), do: "Operations export is blocked: 1 garage ID matches a stop"
+  defp conflict_title(count), do: "Operations export is blocked: #{count} garage IDs match stops"
+
+  defp conflict_target(1), do: "this garage"
+  defp conflict_target(_count), do: "each garage below"
+
+  defp drawer_scope(nil), do: "Shared across all versions"
+  defp drawer_scope(garage), do: "#{garage.name} · shared across all versions"
+
+  # A saved garage's ID is never regenerated, so only the create form says it was
+  # filled in from the name.
+  defp garage_id_help(nil) do
+    "Filled in from the name. Exports and imports use it to recognize this garage. It can't match a stop ID."
+  end
+
+  defp garage_id_help(_garage) do
+    "Exports and imports use it to recognize this garage. It can't match a stop ID."
+  end
+
+  defp vehicles_use_title(0), do: "No vehicles use this garage,"
+  defp vehicles_use_title(1), do: "1 vehicle uses this garage."
+  defp vehicles_use_title(count), do: "#{count} vehicles use this garage."
+
+  defp vehicles_use_body(0), do: "so you can delete it without moving anything."
+
+  defp vehicles_use_body(count) do
+    "To delete it, first move #{if count == 1, do: "that vehicle", else: "them"} to another garage in Fleet."
+  end
+
+  defp in_use_body(count) do
+    "#{vehicles_use_title(count)} Move #{if count == 1, do: "it", else: "them"} to another garage in Fleet, then delete this garage."
   end
 end
