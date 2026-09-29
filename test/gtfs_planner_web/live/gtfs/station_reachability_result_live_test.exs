@@ -438,6 +438,95 @@ defmodule GtfsPlannerWeb.Gtfs.StationReachabilityResultLiveTest do
     end
   end
 
+  # Mirrors the run test/support/browser_seed.exs stores for reachability_results.spec.js:
+  # one entrance, two platforms, and one elevator between the entrance and the first
+  # platform. The spec asserts the same ids and counts.
+  describe "completed router run for the seeded station shape" do
+    setup do
+      organization = organization_fixture()
+      user = user_fixture()
+
+      Accounts.create_user_org_membership(%{
+        user_id: user.id,
+        organization_id: organization.id,
+        roles: ["pathways_studio_editor"]
+      })
+
+      version = gtfs_version_fixture(organization.id)
+
+      station =
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "BROWSER_STATION",
+          stop_name: "Browser Test Station",
+          location_type: 1,
+          parent_station: nil
+        })
+
+      level_fixture(organization.id, version.id, %{level_id: "BROWSER_L1", level_index: 0.0})
+
+      for {stop_id, name, location_type} <- [
+            {"BROWSER_STOP_A", "Platform A North", 0},
+            {"BROWSER_STOP_B", "Platform B South", 0},
+            {"BROWSER_STOP_C", "Entrance C", 2}
+          ] do
+        stop_fixture(organization.id, version.id, %{
+          stop_id: stop_id,
+          stop_name: name,
+          location_type: location_type,
+          parent_station: station.stop_id,
+          level_id: "BROWSER_L1"
+        })
+      end
+
+      pathway_fixture(organization.id, version.id, "BROWSER_STOP_C", "BROWSER_STOP_A", %{
+        pathway_id: "BROWSER_PW_ELEVATOR",
+        pathway_mode: 5,
+        is_bidirectional: true,
+        traversal_time: 45,
+        length: Decimal.new("12.5")
+      })
+
+      run = run_battery(organization, version, station)
+
+      %{user: user, organization: organization, gtfs_version: version, run: run}
+    end
+
+    test "shows the entry section and a row for the reachable entrance-to-platform pair", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version,
+      run: run
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/station-reachability/#{run.id}")
+
+      assert has_element?(view, "#station-reachability-results")
+      assert has_element?(view, "#reachability-section-entry")
+      assert has_element?(view, "#pair-BROWSER_STOP_C-BROWSER_STOP_A")
+      refute has_element?(view, "#reachability-no-pairs")
+    end
+
+    test "summarizes the entry section and the whole run with real counts", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version,
+      run: run
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/station-reachability/#{run.id}")
+
+      assert has_element?(
+               view,
+               "#reachability-section-entry-stats",
+               "1/2 on foot · 1/2 step-free"
+             )
+
+      assert has_element?(view, "#station-reachability-results", "4 reachable / 12 pairs")
+    end
+  end
+
   # A one-way walkway from the platform to the entrance: riders can leave, but
   # the entrance cannot reach the platform.
   defp one_way_run(organization, version) do

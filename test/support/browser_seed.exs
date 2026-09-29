@@ -50,6 +50,7 @@ alias GtfsPlanner.Gtfs.Import.Run, as: ImportRun
 alias GtfsPlanner.Gtfs.Stop
 alias GtfsPlanner.Gtfs.Transfer
 alias GtfsPlanner.Organizations
+alias GtfsPlanner.Reachability.Runner
 alias GtfsPlanner.Repo
 alias GtfsPlanner.Validations.{ValidationRun, WalkabilityTest, WalkabilityTestRunResult}
 alias GtfsPlanner.Versions
@@ -382,6 +383,20 @@ case Accounts.register_first_admin(%{
     # tests to race background work.
     reachability_started_at = ~U[2026-07-28 12:00:00Z]
 
+    # The router run stores the envelope the production runner produces for
+    # this station's current stops and pathway, so the results page renders
+    # real sections, pair rows and totals rather than a hand-written shape.
+    {:ok, reachability_envelope} =
+      Runner.run(
+        %{
+          station: station,
+          child_stops: Gtfs.list_child_stops_for_parent(org.id, diagram_version.id, station.id),
+          pathways: Gtfs.list_pathways_for_station(org.id, diagram_version.id, station.id),
+          levels: Gtfs.list_levels_for_station(org.id, diagram_version.id, station.id)
+        },
+        DateTime.utc_now()
+      )
+
     _new_reachability_run =
       %ValidationRun{
         id: "00000000-0000-4000-8000-000000000901",
@@ -395,30 +410,8 @@ case Accounts.register_first_admin(%{
         result_schema_version: 1,
         started_at: reachability_started_at,
         completed_at: reachability_started_at,
-        result_json: %{
-          "report_version" => 1,
-          "outcome" => "passed",
-          "metadata" => %{"station_stop_id" => station.stop_id},
-          "topology" => %{
-            "entrance_count" => 1,
-            "platform_count" => 2,
-            "pathway_count" => 1,
-            "level_count" => 1
-          },
-          "pairs" => [
-            %{
-              "index" => 0,
-              "mode" => "walking",
-              "outcome" => "reachable",
-              "from_stop_id" => browser_child_c.stop_id,
-              "to_stop_id" => browser_child_a.stop_id,
-              "duration_seconds" => 45.0,
-              "distance_meters" => 12.5,
-              "step_count" => 1
-            }
-          ],
-          "diagnostics" => []
-        }
+        duration_ms: reachability_envelope["duration_ms"],
+        result_json: reachability_envelope
       })
       |> Repo.insert!()
 
