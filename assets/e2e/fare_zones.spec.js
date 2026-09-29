@@ -176,8 +176,8 @@ test("shell", async ({ page }, testInfo) => {
 
 // ── settings entry ────────────────────────────────────────────────────────
 
-// Ordinary entry through Settings: the overview lists Fares as an Available
-// page linking to the workspace, and that entry opens it. Fares stopped being a
+// Ordinary entry through Settings: the overview lists Fares as a working page
+// linking to the workspace, and that entry opens it. Fares stopped being a
 // Coming soon destination in step 15, so the placeholder body must be gone.
 test("settings entry", async ({ page }, testInfo) => {
   await routeBlankTiles(page);
@@ -193,12 +193,11 @@ test("settings entry", async ({ page }, testInfo) => {
     const entry = page.locator("#settings-entry-fares");
     const entryLink = entry.locator("a");
 
-    await expect(entryLink).toHaveText("Fares");
+    await expect(entry.locator("#settings-entry-fares-title")).toHaveText("Fares");
     await expect(entryLink).toHaveAttribute(
       "href",
       `/gtfs/${versionId}/settings/fares`,
     );
-    await expect(entry).toContainText("Available");
     await expect(entry).not.toContainText("Coming soon");
     await expect(entry.locator("#coming-soon-status")).toHaveCount(0);
     await expect(entryLink).toBeVisible();
@@ -1546,7 +1545,7 @@ test.describe("fare zones journey", () => {
 
     await expect(async () => {
       if (!/\/settings\/fares$/.test(new URL(page.url()).pathname)) {
-        await page.locator("#settings-tab-fares").click();
+        await page.locator("#settings-entry-fares a").click();
       }
 
       await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/settings/fares$`), {

@@ -1086,8 +1086,10 @@ body {
   color: var(--color-warning-fg);
 }
 
-/* ── Administration page theme ──
-   /admin/users and /admin/organizations adopt the application design system's
+/* ── Administration and Settings page theme ──
+   /admin/users, /admin/organizations and the Settings overview
+   (`#settings-page`, which takes only the font, heading, subtitle and button
+   rules below) adopt the application design system's
    fonts, ink and action colour on the terms `#account-page` does: scoped to
    their own ids so the header and every other page keep the daisyUI palette, and
    `--color-primary` mapped to the action colour so a filled `<.button>` inside
@@ -1097,20 +1099,20 @@ body {
 
    The field grammar (`.fieldset`, help text, the 2px invalid border) and the
    `.form-error-summary` are shared with `#account-page` above. */
-:is(#admin-users-page, #admin-organizations-page) {
+:is(#admin-users-page, #admin-organizations-page, #settings-page) {
   --color-primary: var(--color-action);
   font-family: var(--font-ds);
   color: var(--color-strong);
 }
 
-:is(#admin-users-page, #admin-organizations-page) h1 {
+:is(#admin-users-page, #admin-organizations-page, #settings-page) h1 {
   font-family: var(--font-display);
   font-size: 28px;
   font-weight: 600;
   letter-spacing: -0.025em;
 }
 
-:is(#admin-users-page, #admin-organizations-page) header p {
+:is(#admin-users-page, #admin-organizations-page, #settings-page) header p {
   margin-top: 3px;
   color: var(--color-muted);
   font-size: 13px;
@@ -1158,7 +1160,7 @@ body {
 /* Buttons on this page follow the design system's 650 weight, and its
    secondary control: a hairline `--color-control` boundary on white with ink
    text, instead of daisyUI's outline in the text colour. */
-:is(#admin-users-page, #admin-organizations-page) .btn {
+:is(#admin-users-page, #admin-organizations-page, #settings-page) .btn {
   font-weight: 650;
 }
 

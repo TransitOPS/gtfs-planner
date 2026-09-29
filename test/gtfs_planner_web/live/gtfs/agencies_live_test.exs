@@ -546,7 +546,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
   describe "the Settings overview" do
     setup :editor_setup
 
-    test "lists Agencies as an available page", %{
+    test "lists Agencies as a working page, without the Coming soon badge", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -557,8 +557,7 @@ defmodule GtfsPlannerWeb.Gtfs.AgenciesLiveTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings")
       doc = LazyHTML.from_fragment(render(view))
 
-      assert has_element?(view, "#settings-entry-agencies a", "Agencies")
-      assert text_of(doc, "#settings-entry-agencies") =~ "Available"
+      assert has_element?(view, "#settings-entry-agencies-title", "Agencies")
       refute text_of(doc, "#settings-entry-agencies") =~ "Coming soon"
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-entry-agencies a"), "href") ==

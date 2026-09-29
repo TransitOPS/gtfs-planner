@@ -355,7 +355,7 @@ test.describe("@feed-page", () => {
     });
   }
 
-  test("the Settings overview lists Feed details as Available", async ({
+  test("the Settings overview lists Feed details as a working page", async ({
     page,
   }) => {
     await logIn(page);
@@ -367,12 +367,13 @@ test.describe("@feed-page", () => {
 
     const entry = page.locator("#settings-entry-feed_details");
 
-    await expect(entry.locator("a")).toHaveText("Feed details");
+    await expect(entry.locator("#settings-entry-feed_details-title")).toHaveText(
+      "Feed details",
+    );
     await expect(entry.locator("a")).toHaveAttribute(
       "href",
       `/gtfs/${feedDetailsId}/settings/feed-details`,
     );
-    await expect(entry).toContainText("Available");
     await expect(entry).not.toContainText("Coming soon");
   });
 });

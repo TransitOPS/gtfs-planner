@@ -46,12 +46,12 @@ const TASKS = [
   ["nav-gtfs", "GTFS", "export"],
 ];
 
-// The two remaining allowlisted placeholder sections: tab id, page title, URL
-// slug. Feed details, Agencies and Fares left this list when their pages were
-// built; the journey asserts each of them separately below.
+// The two remaining allowlisted placeholder sections: overview entry id, page
+// title, URL slug. Feed details, Agencies and Fares left this list when their
+// pages were built; the journey asserts each of them separately below.
 const SETTINGS_SECTIONS = [
-  ["settings-tab-export_defaults", "Export defaults", "export-defaults"],
-  ["settings-tab-feed_url", "Published feed URL", "feed-url"],
+  ["settings-entry-export_defaults", "Export defaults", "export-defaults"],
+  ["settings-entry-feed_url", "Published feed URL", "feed-url"],
 ];
 
 async function logIn(page, account = EDITOR) {
@@ -301,15 +301,14 @@ for (const { width, height, label } of VIEWPORTS) {
       await expect(
         page.locator("#main-navigation a[aria-current='page']"),
       ).toHaveCount(0);
-      await expect(
-        page.locator("#settings-nav a[aria-current='page']"),
-      ).toHaveCount(1);
+      // The directory is the navigation: the overview carries no tab bar.
+      await expect(page.locator("#settings-nav")).toHaveCount(0);
       await expect(page.locator("h1")).toHaveText("Settings");
       await capture(page, testInfo, `settings-${label}`);
       await expectNoPageOverflow(page);
 
       // ── Feed details is a built page, not a placeholder ──
-      await page.locator("#settings-tab-feed_details").click();
+      await page.locator("#settings-entry-feed_details a").click();
       await page.waitForURL(new RegExp(`/settings/feed-details$`));
       await waitForLiveView(page);
 
@@ -333,8 +332,12 @@ for (const { width, height, label } of VIEWPORTS) {
       await expectNoPageOverflow(page);
 
       // ── The two remaining allowlisted sections render their shared body ──
-      for (const [tab, title, slug] of SETTINGS_SECTIONS) {
-        await page.locator(`#${tab}`).click();
+      // Each opens from its overview row and returns by the Settings link that
+      // replaces the tab bar on a section page.
+      for (const [entry, title, slug] of SETTINGS_SECTIONS) {
+        await page.goto(`/gtfs/${versionId}/settings`);
+        await waitForLiveView(page);
+        await page.locator(`#${entry} a`).click();
         await page.waitForURL(new RegExp(`/settings/${slug}$`));
         await waitForLiveView(page);
 
@@ -345,15 +348,19 @@ for (const { width, height, label } of VIEWPORTS) {
         await expect(
           page.locator("#coming-soon form, #coming-soon button"),
         ).toHaveCount(0);
-        await expect(
-          page.locator("#settings-nav a[aria-current='page']"),
-        ).toHaveCount(1);
+        await expect(page.locator("#settings-nav")).toHaveCount(0);
+        await expect(page.locator("#settings-back")).toHaveText("Settings");
       }
 
       await capture(page, testInfo, `settings-section-${label}`);
 
-      // ── Fares is an Available page: its Settings tab opens the workspace ──
-      await page.locator("#settings-tab-fares").click();
+      await page.locator("#settings-back").click();
+      await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings$`));
+      await waitForLiveView(page);
+      await expect(page.locator("#settings-overview")).toBeVisible();
+
+      // ── Fares is a working page: its overview row opens the workspace ──
+      await page.locator("#settings-entry-fares a").click();
       await page.waitForURL(/\/settings\/fares$/);
       await waitForLiveView(page);
       await expect(page.locator("h1")).toHaveText("Fare zones");
@@ -571,6 +578,11 @@ test.describe("header presentation", () => {
     await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings$`));
     await waitForLiveView(page);
     await expect(page.locator("#settings-overview")).toBeVisible();
+
+    // The overview has no tab bar; the pages that still carry one do.
+    await page.locator("#settings-entry-feed_details a").click();
+    await page.waitForURL(new RegExp(`/settings/feed-details$`));
+    await waitForLiveView(page);
 
     // The Settings bar scrolls locally: the last tab must be reachable and
     // visible inside the bar without overflowing the document.

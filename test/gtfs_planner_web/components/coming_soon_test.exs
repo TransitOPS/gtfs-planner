@@ -97,7 +97,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
     test "no longer answers for Fares, whose workspace shipped" do
       # The retired placeholder key must not resolve to plausible placeholder
-      # copy: the Setting overview lists Fares as an Available page instead.
+      # copy: the Setting overview lists Fares as a working page instead.
       assert_raise FunctionClauseError, fn ->
         ComingSoon.feature(Function.identity(:fares))
       end

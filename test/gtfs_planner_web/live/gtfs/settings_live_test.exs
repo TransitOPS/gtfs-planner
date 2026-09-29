@@ -19,17 +19,20 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
     %{slug: "feed-url", key: :feed_url, scope: :all_versions}
   ]
 
+  @unknown_section_message "That settings section doesn’t exist. Choose one from the list below."
+
   @version_entry_keys [
     :feed_details,
     :agencies,
     :fares
   ]
 
+  # Working pages first; the two placeholders sit last, under the Coming soon band.
   @all_version_entry_keys [
-    :export_defaults,
-    :feed_url,
     :garages,
-    :fleet
+    :fleet,
+    :export_defaults,
+    :feed_url
   ]
 
   defp editor_setup(_context) do
@@ -68,15 +71,25 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
     doc |> LazyHTML.query(selector) |> LazyHTML.text() |> String.trim()
   end
 
-  # One overview entry: its link text and destination, its summary text and its
-  # status word. Expected copy comes from the sitemap and the shared catalog.
-  defp assert_entry(doc, key, title, href, status) do
+  # Text with the template's line breaks collapsed the way a browser renders them.
+  defp words_of(doc, selector) do
+    doc |> text_of(selector) |> String.split() |> Enum.join(" ")
+  end
+
+  # One overview entry: the title and destination of its row link, and whether it
+  # carries the Coming soon badge. A working entry shows no status word at all.
+  # Expected copy comes from the sitemap and the shared catalog.
+  defp assert_entry(doc, key, title, href, availability) do
     entry = entry_doc(doc, key)
 
-    refute Enum.empty?(LazyHTML.query(entry, "a"))
-    assert LazyHTML.text(LazyHTML.query(entry, "a")) |> String.trim() == title
+    assert Enum.count(LazyHTML.query(entry, "a")) == 1
+    assert text_of(entry, "#settings-entry-#{key}-title") == title
     assert LazyHTML.attribute(LazyHTML.query(entry, "a"), "href") == [href]
-    assert LazyHTML.text(entry) =~ status
+
+    case availability do
+      :working -> refute LazyHTML.text(entry) =~ "Coming soon"
+      :coming_soon -> assert LazyHTML.text(entry) =~ "Coming soon"
+    end
   end
 
   describe "overview" do
@@ -89,20 +102,19 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       {:ok, view, _html} = live(conn, settings_path(version.id))
       doc = LazyHTML.from_fragment(render(view))
 
-      # One h1 on the page, and the Settings bar with Overview current.
+      # One h1 on the page. The directory is the navigation, so there is no tab bar.
       assert Enum.count(LazyHTML.query(doc, "h1")) == 1
       assert text_of(doc, "h1") == "Settings"
+      refute has_element?(view, "#settings-nav")
 
-      assert LazyHTML.attribute(
-               LazyHTML.query(doc, "#settings-nav a[aria-current='page']"),
-               "href"
-             ) == [settings_path(version.id)]
-
-      assert Enum.count(LazyHTML.query(doc, "#settings-nav a[aria-current='page']")) == 1
-
-      # The two scope groups, in the sitemap's order, and no admin group.
+      # The two scope groups, in the sitemap's order, and no admin group. The
+      # version group says which version a change applies to.
       assert Enum.count(LazyHTML.query(doc, "#settings-overview section")) == 2
-      assert text_of(doc, "#settings-version h2") == "This version: #{version.name}"
+      assert text_of(doc, "#settings-version h2") == "This version"
+
+      assert words_of(doc, "#settings-version-summary") ==
+               "Changes apply to #{version.name} only. Other versions keep their own."
+
       assert text_of(doc, "#settings-all-versions h2") == "All versions"
       refute has_element?(view, "#settings-organization")
 
@@ -117,7 +129,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         :feed_details,
         "Feed details",
         section_path(version.id, "feed-details"),
-        "Available"
+        :working
       )
 
       assert_entry(
@@ -125,22 +137,20 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         :agencies,
         "Agencies",
         section_path(version.id, "agencies"),
-        "Available"
+        :working
       )
 
-      assert text_of(doc, "#settings-entry-agencies p") ==
-               "Manage the agencies that operate this version’s routes."
+      assert text_of(doc, "#settings-entry-agencies-summary") ==
+               "The agencies that operate your routes: names, websites and the timezone your schedules run in."
 
-      refute text_of(doc, "#settings-entry-agencies") =~ "Coming soon"
-
-      assert_entry(doc, :fares, "Fares", section_path(version.id, "fares"), "Available")
+      assert_entry(doc, :fares, "Fares", section_path(version.id, "fares"), :working)
 
       assert_entry(
         doc,
         :export_defaults,
         "Export defaults",
         section_path(version.id, "export-defaults"),
-        "Coming soon"
+        :coming_soon
       )
 
       assert_entry(
@@ -148,11 +158,41 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         :feed_url,
         "Published feed URL",
         section_path(version.id, "feed-url"),
-        "Coming soon"
+        :coming_soon
       )
 
-      assert_entry(doc, :garages, "Garages", section_path(version.id, "garages"), "Available")
-      assert_entry(doc, :fleet, "Fleet", section_path(version.id, "fleet"), "Available")
+      assert_entry(doc, :garages, "Garages", section_path(version.id, "garages"), :working)
+      assert_entry(doc, :fleet, "Fleet", section_path(version.id, "fleet"), :working)
+    end
+
+    test "placeholder rows sit under a Coming soon band, after the working rows",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, settings_path(version.id))
+      doc = LazyHTML.from_fragment(render(view))
+
+      # The version group has only working pages, so it needs no band.
+      assert Enum.empty?(LazyHTML.query(doc, "#settings-version h3"))
+
+      assert text_of(doc, "#settings-all-versions h3") == "Coming soon"
+
+      assert LazyHTML.attribute(
+               LazyHTML.query(doc, "#settings-all-versions ul:last-of-type li"),
+               "id"
+             ) == ["settings-entry-export_defaults", "settings-entry-feed_url"]
+    end
+
+    test "each row is one link, so no control competes inside it",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, settings_path(version.id))
+      doc = LazyHTML.from_fragment(render(view))
+
+      assert Enum.count(LazyHTML.query(doc, "#settings-overview li")) == 7
+      assert Enum.count(LazyHTML.query(doc, "#settings-overview li > a")) == 7
+      assert Enum.empty?(LazyHTML.query(doc, "#settings-overview li button"))
     end
 
     test "placeholder entries read their title and summary from the shared catalog",
@@ -165,8 +205,8 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       for %{key: key} <- @placeholder_sections do
         feature = ComingSoon.feature(key)
 
-        assert text_of(doc, "#settings-entry-#{key} a") == feature.title
-        assert text_of(doc, "#settings-entry-#{key} p") == feature.summary
+        assert text_of(doc, "#settings-entry-#{key}-title") == feature.title
+        assert text_of(doc, "#settings-entry-#{key}-summary") == feature.summary
       end
     end
 
@@ -179,8 +219,8 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
 
       # The reference copy the Coming soon entry used to carry, now owned by the
       # overview entry, and the slug destination `/settings/fares` unchanged.
-      assert text_of(doc, "#settings-entry-fares p") ==
-               "Set up fare zones and the fare rules that use them."
+      assert text_of(doc, "#settings-entry-fares-summary") ==
+               "Group stops into fare zones, then set the fare rules that use them."
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-entry-fares a"), "href") ==
                [section_path(version.id, "fares")]
@@ -211,10 +251,10 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         :organization_name,
         "Organization name",
         "/admin/users/organization-settings",
-        "Available"
+        :working
       )
 
-      assert_entry(doc, :users, "Users", "/admin/users", "Available")
+      assert_entry(doc, :users, "Users", "/admin/users", :working)
 
       # The group is additive: the version and all-version entries are unchanged.
       assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-all-versions li"), "id") ==
@@ -253,12 +293,12 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
 
         assert has_element?(view, "#coming-soon-status", "Coming soon")
 
-        assert LazyHTML.attribute(
-                 LazyHTML.query(doc, "#settings-nav a[aria-current='page']"),
-                 "href"
-               ) == [section_path(version.id, unquote(section.slug))]
+        # The way back is a "Settings" link above the heading, not a tab bar.
+        refute has_element?(view, "#settings-nav")
+        assert text_of(doc, "#settings-back") == "Settings"
 
-        assert Enum.count(LazyHTML.query(doc, "#settings-nav a[aria-current='page']")) == 1
+        assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-back"), "href") ==
+                 [settings_path(version.id)]
       end
     end
 
@@ -268,7 +308,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
 
       for slug <- ["unknown", "garages-extra", "feed_details", "Garages"] do
         assert {:error,
-                {:live_redirect, %{to: to, flash: %{"error" => "Settings section not found"}}}} =
+                {:live_redirect, %{to: to, flash: %{"error" => @unknown_section_message}}}} =
                  live(conn, section_path(version.id, slug))
 
         assert to == settings_path(version.id)
@@ -452,7 +492,7 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       %{organization: organization, member: member, version: version}
     end
 
-    test "a Pathways editor+admin sees only the Organization group and no tab bar",
+    test "a Pathways editor+admin sees only the Organization group",
          %{conn: conn} do
       %{organization: organization, member: admin, version: version} =
         product_org_with_version(:pathways, [
@@ -468,7 +508,6 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         refute has_element?(view, "#settings-entry-#{key}")
       end
 
-      refute has_element?(view, "#settings-nav")
       refute has_element?(view, "#settings-empty")
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-overview section"), "id") ==
@@ -481,10 +520,10 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
         :organization_name,
         "Organization name",
         "/admin/users/organization-settings",
-        "Available"
+        :working
       )
 
-      assert_entry(doc, :users, "Users", "/admin/users", "Available")
+      assert_entry(doc, :users, "Users", "/admin/users", :working)
     end
 
     test "a Pathways editor without admin sees the empty state and no groups",
@@ -497,15 +536,16 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       doc = LazyHTML.from_fragment(render(view))
 
       assert has_element?(view, "#settings-empty")
+      assert text_of(doc, "#settings-empty h2") == "No settings are available for your role"
 
-      assert text_of(doc, "#settings-empty") ==
-               "No settings are available for this organization."
+      # One next step, into a page a Pathways editor can use.
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-empty-action"), "href") ==
+               ["/gtfs/#{version.id}/stops"]
 
-      refute has_element?(view, "#settings-overview section")
-      refute has_element?(view, "#settings-nav")
+      refute has_element?(view, "#settings-overview")
     end
 
-    test "a Planner editor+admin sees every entry and tab", %{conn: conn} do
+    test "a Planner editor+admin sees every entry", %{conn: conn} do
       %{organization: organization, member: admin, version: version} =
         product_org_with_version(:planner, [
           "pathways_studio_editor",
@@ -518,19 +558,6 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
 
       for key <- pathways_hidden_keys() do
         assert has_element?(view, "#settings-entry-#{key}")
-      end
-
-      for id <- [
-            "settings-tab-index",
-            "settings-tab-feed_details",
-            "settings-tab-agencies",
-            "settings-tab-fares",
-            "settings-tab-export_defaults",
-            "settings-tab-feed_url",
-            "settings-tab-garages",
-            "settings-tab-fleet"
-          ] do
-        assert has_element?(view, "##{id}")
       end
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-overview section"), "id") ==

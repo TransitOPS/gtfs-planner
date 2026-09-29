@@ -13,6 +13,23 @@ defmodule GtfsPlannerWeb.Components.PlannerComponentsTest do
 
   defp doc(html), do: LazyHTML.from_fragment(html)
 
+  describe "back_link/1" do
+    test "names the parent page and links to it" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.back_link id="back-to-parent" navigate="/parent">Parent</.back_link>
+        """)
+
+      link = doc(html) |> LazyHTML.query("#back-to-parent")
+
+      assert LazyHTML.attribute(link, "href") == ["/parent"]
+      assert LazyHTML.text(link) |> String.trim() == "Parent"
+      assert Enum.count(LazyHTML.query(link, ".hero-chevron-left")) == 1
+    end
+  end
+
   describe "message/1" do
     test "announces an error as an alert with its title and second line" do
       assigns = %{}
