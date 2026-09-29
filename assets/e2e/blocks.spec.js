@@ -16,7 +16,7 @@
 // the block whose school-day trip it overlaps only on the larger day type.
 //
 // Layout is measured with bounding boxes, not with pixels read from the design.
-// One caveat from step 21 is load-bearing: `.blocks-bar` has `min-width: 26px`,
+// One caveat from step 21 is load-bearing: `.blocks-bar` has `min-width: 24px`,
 // so a five-minute bar (`BB_SHORT_HOP`) does not double under Zoom and is
 // asserted at that floor instead; `BB_LONG` is three hours of a 21-hour axis and
 // doubles exactly.
@@ -70,8 +70,8 @@ const POOL_PAGE_1 = 100;
 const POOL_PAGE_2 = POOL_TRIPS - POOL_PAGE_1;
 
 // The seeded records each assertion names.
-const LONG_TRIP = "BB_LONG"; // 05:15–08:15, well above the 26px bar floor
-const SHORT_TRIP = "BB_SHORT_HOP"; // 06:00–06:05, clamped at the 26px floor
+const LONG_TRIP = "BB_LONG"; // 05:15–08:15, well above the 24px bar floor
+const SHORT_TRIP = "BB_SHORT_HOP"; // 06:00–06:05, clamped at the 24px floor
 const BUSIEST_BLOCK = "BB-BUSIEST"; // six trips: the day's most
 const CROSS_DAY_BLOCK = "BB-XOVER"; // one overlap on the largest day type only
 const TARGET_BLOCK = "BB-TARGET"; // the assignment's destination
@@ -134,7 +134,7 @@ function copyIntoEvidence(name, contents) {
   return target;
 }
 
-// Selects one day type by its option label prefix ("Weekday service · 16 dates").
+// Selects one day type by its option label prefix ("Weekday service · 16 days").
 async function selectDayType(page, label) {
   const value = await page.evaluate((prefix) => {
     const option = [...document.querySelectorAll("#blocks-day option")].find(
@@ -148,7 +148,7 @@ async function selectDayType(page, label) {
   return value;
 }
 
-// The timeline's own geometry: how many whole 36px rows the scroll container
+// The timeline's own geometry: how many whole 44px rows the scroll container
 // shows, its width, and whether its table overflows it.
 async function timelineGeometry(page) {
   return page.evaluate(() => {
@@ -283,7 +283,7 @@ test.describe("Blocks workspace 1440x1000", () => {
     const selectedDay = await page
       .locator("#blocks-day")
       .evaluate((el) => el.selectedOptions[0].textContent.trim());
-    expect(selectedDay).toBe(`${DAY_TYPE_LARGEST} · 24 dates`);
+    expect(selectedDay).toBe(`${DAY_TYPE_LARGEST} · 24 days`);
     await expect(page.locator("#blocks-pager")).toContainText(
       `Showing 1–${BLOCKS} of ${BLOCKS} blocks`,
     );
@@ -292,13 +292,14 @@ test.describe("Blocks workspace 1440x1000", () => {
     const geometry = await timelineGeometry(page);
     expect(geometry.completeRows).toBeGreaterThanOrEqual(12);
     expect(geometry.totalRows).toBe(BLOCKS);
-    expect(geometry.rowHeight).toBe(36);
+    expect(geometry.rowHeight).toBe(44);
     expect(geometry.containerWidth).toBe(geometry.tableWidth);
     expect(geometry.overflowInside).toBe(false);
     expect(await bodyFitsViewport(page)).toBe(true);
 
-    // The theme is scoped to `#blocks-page` (AC-30): the display font on the
-    // heading and the design system's action colour on a primary control.
+    // The page carries the design system's scope (`.ds-page` on `#blocks-page`):
+    // the display font on the heading and the action colour on the page's one
+    // primary control, the header's Review action.
     const heading = await page.locator("#blocks-page h1").evaluate((el) => {
       const style = getComputedStyle(el);
       return {
@@ -312,7 +313,7 @@ test.describe("Blocks workspace 1440x1000", () => {
     expect(heading.weight).toBe("600");
 
     const primary = await page
-      .locator("#panel-blocks")
+      .locator("#blocks-review-checks")
       .evaluate((el) => getComputedStyle(el).backgroundColor);
     expect(primary).toBe("rgb(200, 24, 112)");
 
@@ -399,8 +400,8 @@ test.describe("Blocks workspace 1440x1000", () => {
     );
     await expect(longBar).toHaveCount(1);
     const dayWidth = (await longBar.boundingBox()).width;
-    // Three hours of the day's 21-hour axis is far above the bar's 26px floor.
-    expect(dayWidth).toBeGreaterThan(26);
+    // Three hours of the day's 21-hour axis is far above the bar's 24px floor.
+    expect(dayWidth).toBeGreaterThan(24);
 
     await page.locator('label[for="blocks-scale-option-zoom"]').click();
     await expect(page.locator("#blocks-timeline")).toHaveAttribute(
@@ -411,16 +412,16 @@ test.describe("Blocks workspace 1440x1000", () => {
     const zoomWidth = (await longBar.boundingBox()).width;
     expect(Math.abs(zoomWidth - dayWidth * 2)).toBeLessThanOrEqual(2);
 
-    // The five-minute bar is at the 26px floor at both scales, so no assertion
-    // reads doubling off it (step 21's `min-width: 26px`): its Zoom width is the
-    // same 26px, never twice the whole-day one.
+    // The five-minute bar is at the 24px floor at both scales, so no assertion
+    // reads doubling off it (`min-width: 24px`): its Zoom width is the same
+    // 24px, never twice the whole-day one.
     const shortBar = page.locator(
       `[data-role="trip-bar"][data-trip="${SHORT_TRIP}"]`,
     );
     const shortZoomWidth = (await shortBar.boundingBox()).width;
-    expect(shortZoomWidth).toBe(26);
-    expect(dayWidth).toBeGreaterThan(26);
-    expect(shortZoomWidth).not.toBe(26 * 2);
+    expect(shortZoomWidth).toBe(24);
+    expect(dayWidth).toBeGreaterThan(24);
+    expect(shortZoomWidth).not.toBe(24 * 2);
 
     // Zoom's overflow stays inside `#blocks-timeline-scroll`, and the block
     // columns stay pinned while the track scrolls under them (FH-17).
@@ -516,7 +517,7 @@ test.describe("Blocks workspace 1440x1000", () => {
     await page.goto(blocksPath(versionId));
 
     await expect(page.locator("#panel-pool")).toContainText(
-      `Unassigned · ${POOL_TRIPS}`,
+      new RegExp(`Unassigned trips\\s*${POOL_TRIPS}`),
     );
     await page.locator("#panel-pool").click();
 
@@ -621,10 +622,10 @@ test.describe("Blocks workspace 1440x1000", () => {
     const effects = page.locator('[data-role="review-effect"]');
     await expect(effects).toHaveCount(2);
     await expect(effects.first()).toHaveAttribute("data-selected", "true");
-    await expect(effects.first()).toContainText("Current view");
+    await expect(effects.first()).toContainText("This service day");
     await expect(effects.first()).toContainText(DAY_TYPE_WEEKDAY);
     await expect(effects.first()).toContainText(
-      "No new timing or transfer problems on these dates.",
+      "No new timing or transfer problems on these days.",
     );
     await expect(effects.nth(1)).toHaveAttribute("data-selected", "false");
     await expect(effects.nth(1)).toContainText("Also changes");
@@ -648,7 +649,7 @@ test.describe("Blocks workspace 1440x1000", () => {
     // The applied trip is in the destination block, off the pool, and the page
     // shows the row that now holds it.
     await expect(page.locator("#panel-pool")).toContainText(
-      `Unassigned · ${POOL_TRIPS - 1}`,
+      new RegExp(`Unassigned trips\\s*${POOL_TRIPS - 1}`),
     );
     await page.locator("#panel-blocks").click();
     await awaitTimeline(page);
@@ -710,7 +711,7 @@ test.describe("theme scope against a Routes page", () => {
       return { family: style.fontFamily, size: style.fontSize };
     });
     const blocksPrimary = await page
-      .locator("#panel-blocks")
+      .locator("#blocks-review-checks")
       .evaluate((el) => getComputedStyle(el).backgroundColor);
 
     expect(blocksHeading.family).toContain("Gabarito");
@@ -807,7 +808,7 @@ test.describe("qa tour", () => {
       "",
       "| Scenario | Expected outcome | Measured |",
       "|---|---|---|",
-      "| Desktop workspace at 1440x1000 | \u2265 12 complete 36px rows, no page-level horizontal overflow, a quiet URL | " +
+      "| Desktop workspace at 1440x1000 | \u2265 12 complete 44px rows, no page-level horizontal overflow, a quiet URL | " +
         value("desktop"),
       " |",
       "| Rows scrolled inside `#blocks-timeline-scroll` | The header row (sort cells and axis cell) stays at the scrollport top | " +

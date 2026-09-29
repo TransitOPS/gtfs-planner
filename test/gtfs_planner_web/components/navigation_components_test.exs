@@ -1379,6 +1379,68 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     end
   end
 
+  describe "app layout width" do
+    defp page_columns(html) do
+      doc = LazyHTML.from_fragment(html)
+
+      %{
+        header: LazyHTML.query(doc, "#app-header > div > div") |> LazyHTML.attribute("class"),
+        main: LazyHTML.query(doc, "#main-content > div") |> LazyHTML.attribute("class")
+      }
+    end
+
+    test "caps the header and page column at 1280px by default" do
+      assigns = %{current_user: editor_user()}
+
+      html =
+        rendered_to_string(~H"""
+        <Layouts.app flash={%{}} current_user={@current_user}>
+          <p>Page content</p>
+        </Layouts.app>
+        """)
+
+      columns = page_columns(html)
+
+      assert [header] = columns.header
+      assert [main] = columns.main
+      assert header =~ "max-w-7xl"
+      assert main =~ "max-w-7xl"
+      refute header =~ "max-w-[1600px]"
+      refute main =~ "max-w-[1600px]"
+    end
+
+    test "a wide workspace lifts the cap on the header, sub-header and page column" do
+      assigns = %{current_user: editor_user()}
+
+      html =
+        rendered_to_string(~H"""
+        <Layouts.app flash={%{}} current_user={@current_user} width="wide">
+          <:sub_header>
+            <p>Sections</p>
+          </:sub_header>
+          <p>Page content</p>
+        </Layouts.app>
+        """)
+
+      columns = page_columns(html)
+
+      assert [header] = columns.header
+      assert [main] = columns.main
+      assert header =~ "max-w-[1600px]"
+      assert main =~ "max-w-[1600px]"
+      refute main =~ "max-w-7xl"
+
+      doc = LazyHTML.from_fragment(html)
+
+      assert [sub_header] =
+               doc
+               |> LazyHTML.query("#sub-header-wrapper > div > div")
+               |> LazyHTML.attribute("class")
+
+      assert sub_header =~ "max-w-[1600px]"
+    end
+  end
+
   describe "segmented_control/1 experimental contract" do
     test "an option's icon renders before its label and keeps the radio input" do
       assigns = %{}
@@ -1560,6 +1622,45 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
 
       assert LazyHTML.text(LazyHTML.query(doc, "#workspace-mode-option-map-reason")) =~
                "Upload a diagram first"
+    end
+
+    test "the strong emphasis fills the selected segment with the darkest ink on a white track" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.segmented_control
+          id="plan-view"
+          name="view"
+          legend="Plan view"
+          options={[{"Timeline", "timeline"}, {"List", "list"}]}
+          value="timeline"
+          event="set_view"
+          appearance={:joined}
+          emphasis={:strong}
+        />
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      [selected] =
+        LazyHTML.attribute(
+          LazyHTML.query(doc, ~s(label[for="plan-view-option-timeline"])),
+          "class"
+        )
+
+      [other] =
+        LazyHTML.attribute(LazyHTML.query(doc, ~s(label[for="plan-view-option-list"])), "class")
+
+      assert selected =~ "bg-navy-800"
+      assert selected =~ "text-white"
+      refute other =~ "bg-navy-800"
+      assert other =~ "text-strong"
+
+      [track] = LazyHTML.attribute(LazyHTML.query(doc, "#plan-view > div"), "class")
+      assert track =~ "border-control"
+      assert track =~ "bg-white"
+      refute track =~ "p-0.5"
     end
 
     test "uses native radio behavior without focus-push markup" do

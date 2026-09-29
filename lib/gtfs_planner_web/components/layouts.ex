@@ -65,6 +65,13 @@ defmodule GtfsPlannerWeb.Layouts do
     default: [],
     doc: "list of {id, name} tuples for GTFS version dropdown"
 
+  attr :width, :string,
+    values: ~w(default wide),
+    default: "default",
+    doc:
+      "\"wide\" lifts the 1280px cap on the header, sub-header and page column to 1600px, " <>
+        "for workspaces such as timelines that need the room"
+
   slot :inner_block, required: true
   slot :sub_header, doc: "optional full-width sub-header rendered between header and main content"
 
@@ -81,7 +88,7 @@ defmodule GtfsPlannerWeb.Layouts do
       class="relative z-30 border-b border-subtle bg-white font-ds text-strong"
     >
       <div class="px-4 sm:px-6 lg:px-8">
-        <div class="mx-auto flex max-w-7xl flex-wrap items-center gap-x-8">
+        <div class={["mx-auto flex flex-wrap items-center gap-x-8", page_width(@width)]}>
           <.link
             id="app-brand"
             href={~p"/"}
@@ -140,7 +147,7 @@ defmodule GtfsPlannerWeb.Layouts do
     <%= if @sub_header != [] do %>
       <div id="sub-header-wrapper" class="bg-base-100 border-b border-base-300">
         <div class="px-4 sm:px-6 lg:px-8">
-          <div class="mx-auto w-full max-w-7xl">
+          <div class={["mx-auto w-full", page_width(@width)]}>
             {render_slot(@sub_header)}
           </div>
         </div>
@@ -149,7 +156,7 @@ defmodule GtfsPlannerWeb.Layouts do
 
     <%= if @current_user do %>
       <main id="main-content" class="px-4 py-8 sm:px-6 lg:px-8">
-        <div class="mx-auto max-w-7xl space-y-4">
+        <div class={["mx-auto space-y-4", page_width(@width)]}>
           {render_slot(@inner_block)}
         </div>
       </main>
@@ -164,6 +171,9 @@ defmodule GtfsPlannerWeb.Layouts do
     <.flash_group flash={@flash} />
     """
   end
+
+  defp page_width("wide"), do: "max-w-[1600px]"
+  defp page_width(_default), do: "max-w-7xl"
 
   @doc """
   Shows the flash group with standard titles and content.

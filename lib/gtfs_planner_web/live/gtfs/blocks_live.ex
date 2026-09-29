@@ -50,6 +50,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
 
+  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
+
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @drawers %{
@@ -91,6 +93,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   @destination_limit 25
 
   @permission_message "You don't have permission to change blocks in this version."
+
+  @subtitle "A block is one vehicle's trips for a service day, in order. Check that they fit, and give every trip a vehicle."
 
   @impl true
   def mount(_params, _session, socket) do
@@ -860,6 +864,29 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     |> Enum.sum()
   end
 
+  # The page has one primary action. A selection hands it to the selection bar's
+  # Assign; a service day with trips but no blocks hands it to the first-use
+  # panel's “Choose trips for a block” while that panel is on screen; otherwise
+  # the header's Review action holds it.
+  defp primary_owner(assigns, bulk) do
+    cond do
+      assigns.load_state != :loaded -> :head
+      bulk.count > 0 -> :bulk
+      first_use_panel?(assigns) -> :empty
+      true -> :head
+    end
+  end
+
+  defp first_use_panel?(assigns) do
+    assigns.state.panel == :blocks and assigns.counts.blocks == 0 and
+      assigns.counts.unassigned > 0
+  end
+
+  # The header action counts the work: it names the problems while there are any.
+  defp review_label(0), do: "Review checks"
+  defp review_label(1), do: "Review 1 problem"
+  defp review_label(count), do: "Review #{count} problems"
+
   # The trips of the selection that still have a block on this day type: the bulk
   # bar's “Remove from block” command names exactly those (AC-24).
   defp blocked_selected_ids(socket) do
@@ -1227,9 +1254,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
-  defp command_error(:busy, _state), do: "Another change is being saved. Try again."
-  defp command_error(:not_found, _state), do: "That trip isn't in this version."
-  defp command_error(:unknown_day_type, _state), do: "This day type isn't in this version."
+  defp command_error(:busy, _state), do: "Another change is being saved. Try again in a moment."
+
+  defp command_error(:not_found, _state),
+    do: "That trip isn't in this version anymore. Reload blocks."
+
+  defp command_error(:unknown_day_type, _state), do: "This service day isn't in this version."
 
   # A rename onto the block's own ID is the one `:invalid_command` the drawer can
   # cause, and it gets its own sentence (AC-27).
@@ -1253,7 +1283,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp command_error(:block_id_taken, _state),
     do: "That block ID already runs on these dates. Choose another ID or merge."
 
-  defp command_error(:too_many_trips, _state), do: "This change touches too many trips."
+  defp command_error(:too_many_trips, _state),
+    do: "This change touches more than 500 trips. Select fewer trips."
 
   defp command_error({:audit_failed, _reason}, _state),
     do: "The change couldn't be saved. Nothing was written."
@@ -1673,6 +1704,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       )
 
     {merge_options, merge_total} = merge_destinations(assigns)
+    bulk = bulk_summary(assigns)
 
     assigns =
       assigns
@@ -1683,8 +1715,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       |> assign(:destination_total, total)
       |> assign(:merge_options, merge_options)
       |> assign(:merge_total, merge_total)
-      |> assign(:bulk, bulk_summary(assigns))
+      |> assign(:bulk, bulk)
       |> assign(:selection_dates, selection_dates(assigns))
+      |> assign(:primary, primary_owner(assigns, bulk))
+      |> assign(:subtitle, @subtitle)
 
     ~H"""
     <Layouts.app
@@ -1695,59 +1729,73 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       current_path={@current_path}
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
+      width="wide"
     >
       <:sub_header>
         <.operations_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:blocks} />
       </:sub_header>
 
-      <div id="blocks-page">
-        <section class="min-h-screen bg-base-100">
-          <div class="mx-auto w-full max-w-7xl space-y-4">
-            <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <.header>
-                Blocks
-                <:subtitle>A block is one vehicle's sequence of trips.</:subtitle>
-              </.header>
-
-              <button
-                :if={@load_state == :loaded}
-                id="blocks-review-checks"
-                type="button"
-                phx-click="open_drawer"
-                phx-value-key="checks"
-                class="btn btn-sm min-h-11"
-              >
-                Review checks
-              </button>
-            </div>
-
-            <.callout
-              :if={@load_state == :unavailable}
-              id="blocks-unavailable"
-              kind="error"
-              title="We couldn't load blocks."
+      <div id="blocks-page" class="ds-page">
+        <.header>
+          Blocks
+          <:subtitle>{@subtitle}</:subtitle>
+          <%!-- The header's Review action is the page's primary until the selection
+          bar or the first-use panel takes it. --%>
+          <:actions :if={@load_state == :loaded}>
+            <.button
+              id="blocks-review-checks"
+              type="button"
+              variant={if @primary == :head, do: "primary", else: "secondary"}
+              class="min-h-11"
+              phx-click="open_drawer"
+              phx-value-key="checks"
             >
-              Your saved assignments haven't changed.
-              <button
+              {review_label(@counts.problems)}
+            </.button>
+          </:actions>
+        </.header>
+
+        <div class="space-y-4">
+          <.message
+            :if={@load_state == :unavailable}
+            id="blocks-unavailable"
+            kind="error"
+            title="We couldn't load blocks."
+          >
+            Your saved assignments haven't changed. Reload to try again.
+            <:action>
+              <.button
                 id="blocks-retry"
                 type="button"
+                variant="secondary"
+                class="min-h-11"
                 phx-click="retry"
-                class="link link-primary min-h-11"
               >
-                Retry loading
-              </button>
-            </.callout>
+                <.icon name="hero-arrow-path" class="size-4" /> Reload blocks
+              </.button>
+            </:action>
+          </.message>
 
-            <%= cond do %>
-              <% @load_state == :loading -> %>
-                <BlocksComponents.page_state kind={:loading} />
-              <% @load_state == :no_dates -> %>
-                <BlocksComponents.page_state kind={:no_dates} version_id={@state.version_id} />
-              <% @load_state == :empty -> %>
-                <BlocksComponents.page_state kind={:empty} version_id={@state.version_id} />
-              <% @load_state == :unknown -> %>
-                <BlocksComponents.page_state kind={:unknown} day_types={@day_types} />
-              <% @day_type -> %>
+          <%= cond do %>
+            <% @load_state == :loading -> %>
+              <BlocksComponents.page_state kind={:loading} />
+            <% @load_state == :no_dates -> %>
+              <BlocksComponents.page_state kind={:no_dates} version_id={@state.version_id} />
+            <% @load_state == :empty -> %>
+              <BlocksComponents.page_state kind={:empty} version_id={@state.version_id} />
+            <% @load_state == :unknown -> %>
+              <BlocksComponents.page_state kind={:unknown} day_types={@day_types} />
+            <% @day_type -> %>
+              <.message
+                :if={@mixed_timezones?}
+                id="blocks-mixed-timezones"
+                kind="warning"
+                title="Agencies in this version use different time zones."
+              >
+                Times are shown as stored, so trips from different agencies may not line up.
+              </.message>
+
+              <div class="rounded-card border border-subtle bg-white">
                 <BlocksComponents.scope_header
                   day_types={@day_types}
                   day_type={@day_type}
@@ -1755,144 +1803,136 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   state={@state}
                   min_layover_minutes={@min_layover_minutes}
                 />
-
-                <.callout
-                  :if={@mixed_timezones?}
-                  id="blocks-mixed-timezones"
-                  kind="warning"
-                  title="Agencies in this version use different timezones."
-                >
-                  Times are shown as stored.
-                </.callout>
-
                 <BlocksComponents.summary_strip
                   day_type={@day_type}
                   counts={@counts}
                   peak={@peak}
                   open_drawer={@open_drawer}
                 />
+              </div>
 
-                <BlocksComponents.workspace
-                  state={@state}
-                  counts={@counts}
-                  visible_count={@visible_count}
-                  pool_visible_count={@pool_visible_count}
-                  page_size={@page_size}
-                  block_rows={@streams.block_rows}
-                  list_rows={@streams.list_rows}
-                  pool_rows={@streams.pool_rows}
-                  untimed_trips={@untimed_trips}
-                  findings_by_trip={@findings_by_trip}
-                  axis={@axis}
-                  routes={@routes}
-                  selected_ids={@selection}
-                  bulk={@bulk}
-                />
+              <BlocksComponents.workspace
+                state={@state}
+                counts={@counts}
+                visible_count={@visible_count}
+                pool_visible_count={@pool_visible_count}
+                page_size={@page_size}
+                block_rows={@streams.block_rows}
+                list_rows={@streams.list_rows}
+                pool_rows={@streams.pool_rows}
+                untimed_trips={@untimed_trips}
+                findings_by_trip={@findings_by_trip}
+                axis={@axis}
+                routes={@routes}
+                selected_ids={@selection}
+                bulk={@bulk}
+                primary={@primary}
+              />
 
-                <BlocksComponents.service_dates_drawer
-                  open={@open_drawer == :service_dates}
-                  day_type={@day_type}
-                />
-                <BlocksComponents.checks_drawer
-                  open={@open_drawer == :checks}
-                  findings={@findings}
-                  trip_labels={@trip_labels}
-                />
-                <BlocksComponents.peak_drawer
-                  open={@open_drawer == :peak}
-                  peak={@peak}
-                  bins={@bins}
-                  axis={@axis}
-                />
-                <BlocksComponents.layover_drawer
-                  open={@open_drawer == :layover}
-                  form={@layover_form}
-                  error={@layover.error}
-                />
+              <BlocksComponents.service_dates_drawer
+                open={@open_drawer == :service_dates}
+                day_type={@day_type}
+              />
+              <BlocksComponents.checks_drawer
+                open={@open_drawer == :checks}
+                day_type={@day_type}
+                findings={@findings}
+                trip_labels={@trip_labels}
+              />
+              <BlocksComponents.peak_drawer
+                open={@open_drawer == :peak}
+                peak={@peak}
+                bins={@bins}
+                axis={@axis}
+              />
+              <BlocksComponents.layover_drawer
+                open={@open_drawer == :layover}
+                form={@layover_form}
+                error={@layover.error}
+              />
 
-                <%= case @trip_view do %>
-                  <% {:trip, trip, day_types} -> %>
-                    <BlocksComponents.trip_drawer
-                      open={true}
-                      trip={trip}
-                      routes={@routes}
-                      version_id={@state.version_id}
-                      calendar_label={calendar_label(day_types, trip)}
-                      day_types={day_types}
-                      findings={Map.get(@findings_by_trip, trip.id, [])}
-                      in_seat={Map.get(@in_seat, trip.id, [])}
-                      back_block={@back_block}
-                      assign={@assign}
-                      assign_form={@assign_form}
-                      destination_options={@destination_options}
-                      destination_total={@destination_total}
-                    />
-                  <% {:elsewhere, trip_id, day_types} -> %>
-                    <BlocksComponents.trip_elsewhere
-                      open={true}
-                      trip_id={trip_id}
-                      day_types={day_types}
-                      version_id={@state.version_id}
-                    />
-                  <% {:unknown, trip_id} -> %>
-                    <BlocksComponents.trip_elsewhere
-                      open={true}
-                      trip_id={trip_id}
-                      version_id={@state.version_id}
-                    />
-                  <% _other -> %>
-                <% end %>
-
-                <%= if gap = @gap_view do %>
-                  <BlocksComponents.gap_drawer
+              <%= case @trip_view do %>
+                <% {:trip, trip, day_types} -> %>
+                  <BlocksComponents.trip_drawer
                     open={true}
-                    from={gap.from}
-                    to={gap.to}
-                    gap={gap.gap}
-                    block_id={gap.block_id}
-                    records={gap.records}
-                    short?={gap.short?}
-                    back_block={@back_block}
-                  />
-                <% end %>
-
-                <%= if block = @block_view do %>
-                  <BlocksComponents.block_drawer
-                    open={true}
-                    block={block}
+                    trip={trip}
                     routes={@routes}
-                    findings_by_trip={@findings_by_trip}
-                    action={@block_action}
-                    form={@block_action_form}
-                    merge_options={@merge_options}
-                    merge_total={@merge_total}
+                    version_id={@state.version_id}
+                    calendar_label={calendar_label(day_types, trip)}
+                    day_types={day_types}
+                    findings={Map.get(@findings_by_trip, trip.id, [])}
+                    in_seat={Map.get(@in_seat, trip.id, [])}
+                    back_block={@back_block}
+                    assign={@assign}
+                    assign_form={@assign_form}
+                    destination_options={@destination_options}
+                    destination_total={@destination_total}
                   />
-                <% end %>
+                <% {:elsewhere, trip_id, day_types} -> %>
+                  <BlocksComponents.trip_elsewhere
+                    open={true}
+                    trip_id={trip_id}
+                    day_types={day_types}
+                    version_id={@state.version_id}
+                  />
+                <% {:unknown, trip_id} -> %>
+                  <BlocksComponents.trip_elsewhere
+                    open={true}
+                    trip_id={trip_id}
+                    version_id={@state.version_id}
+                  />
+                <% _other -> %>
+              <% end %>
 
-                <%!-- The selection-scoped form sits in its own dialog (the trip
-                drawer holds the single-trip one); the review renders after it, so
-                a confirmation is the top of the stack. --%>
-                <BlocksComponents.assign_dialog
-                  :if={@assign && @assign.scope == :selection}
-                  assign={@assign}
-                  form={@assign_form}
-                  options={@destination_options}
-                  total={@destination_total}
-                  total_dates={@selection_dates}
+              <%= if gap = @gap_view do %>
+                <BlocksComponents.gap_drawer
+                  open={true}
+                  from={gap.from}
+                  to={gap.to}
+                  gap={gap.gap}
+                  block_id={gap.block_id}
+                  records={gap.records}
+                  short?={gap.short?}
+                  back_block={@back_block}
                 />
+              <% end %>
 
-                <BlocksComponents.review_dialog
-                  review={@review}
-                  stale?={@review_stale?}
-                  error={pending_error(assigns)}
-                  day_type={@day_type}
-                  version_name={@current_gtfs_version.name}
-                  return_focus_id={review_focus(assigns)}
+              <%= if block = @block_view do %>
+                <BlocksComponents.block_drawer
+                  open={true}
+                  block={block}
+                  routes={@routes}
+                  findings_by_trip={@findings_by_trip}
+                  action={@block_action}
+                  form={@block_action_form}
+                  merge_options={@merge_options}
+                  merge_total={@merge_total}
                 />
-              <% true -> %>
-            <% end %>
-          </div>
-        </section>
+              <% end %>
+
+              <%!-- The selection-scoped form sits in its own dialog (the trip
+              drawer holds the single-trip one); the review renders after it, so
+              a confirmation is the top of the stack. --%>
+              <BlocksComponents.assign_dialog
+                :if={@assign && @assign.scope == :selection}
+                assign={@assign}
+                form={@assign_form}
+                options={@destination_options}
+                total={@destination_total}
+                total_dates={@selection_dates}
+              />
+
+              <BlocksComponents.review_dialog
+                review={@review}
+                stale?={@review_stale?}
+                error={pending_error(assigns)}
+                day_type={@day_type}
+                version_name={@current_gtfs_version.name}
+                return_focus_id={review_focus(assigns)}
+              />
+            <% true -> %>
+          <% end %>
+        </div>
       </div>
     </Layouts.app>
     """

@@ -198,7 +198,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBlockActionsLiveTest do
 
       # The drawer's three actions are the reference's; the rename field starts on
       # the block's own ID.
-      assert has_element?(view, "#block-drawer", "Block actions")
+      assert has_element?(view, "#block-drawer", "Change this block")
       assert has_element?(view, "#block-rename-form")
       assert has_element?(view, "#block-rename-id[value='101']")
       assert has_element?(view, "#block-rename-submit", "Rename block")
@@ -211,7 +211,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBlockActionsLiveTest do
       # A rename always needs the review, and the review writes nothing.
       assert has_element?(view, "#block-review[data-open='true']")
       assert has_element?(view, "#block-review-confirm", "Rename block")
-      assert has_element?(view, "#block-review-cancel", "Change selection")
+      assert has_element?(view, "#block-review-cancel", "Change name")
       assert has_element?(view, "#block-review-changes-table", "wk1")
       assert has_element?(view, "#block-review-changes-table", "wk2")
       refute has_element?(view, "#block-review-changes-table", "z1")

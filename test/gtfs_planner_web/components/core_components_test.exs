@@ -890,6 +890,58 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert Enum.count(LazyHTML.query(doc, "#test-confirm-confirm")) == 1
     end
 
+    test "a confirm form makes the confirm button submit that form instead of pushing an event" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          chrome="planner"
+          open={true}
+          title="Assign selected trips"
+          confirm_label="Save assignment"
+          pending_label="Saving…"
+          on_confirm="submit_assign"
+          on_cancel="cancel"
+          confirm_form="assign-form"
+        >
+          <form id="assign-form"></form>
+        </.confirm_dialog>
+        """)
+
+      confirm = html |> LazyHTML.from_fragment() |> LazyHTML.query("#test-confirm-confirm")
+
+      assert LazyHTML.attribute(confirm, "type") == ["submit"]
+      assert LazyHTML.attribute(confirm, "form") == ["assign-form"]
+      assert LazyHTML.attribute(confirm, "phx-click") == []
+    end
+
+    test "without a confirm form the confirm button still pushes its event" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          open={true}
+          title="Delete route?"
+          confirm_label="Delete route"
+          pending_label="Deleting…"
+          on_confirm="delete"
+          on_cancel="cancel"
+        >
+          <p>Consequence</p>
+        </.confirm_dialog>
+        """)
+
+      confirm = html |> LazyHTML.from_fragment() |> LazyHTML.query("#test-confirm-confirm")
+
+      assert LazyHTML.attribute(confirm, "type") == ["button"]
+      assert LazyHTML.attribute(confirm, "form") == []
+      assert LazyHTML.attribute(confirm, "phx-click") == ["delete"]
+    end
+
     test "lg primary dialog retains alertdialog dismiss and pending semantics" do
       # AC-2 + INV-1: the wide primary presentation is the same alertdialog;
       # cancel-first dismissal and pending lockout survive the new axes.
