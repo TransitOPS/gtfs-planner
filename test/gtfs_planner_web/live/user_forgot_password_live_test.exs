@@ -18,7 +18,7 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLiveTest do
       {:ok, view, _html} = live(conn, ~p"/users/reset_password")
 
       assert page_title(view) == "Reset password · GTFS Planner · Pathways Studio"
-      assert has_element?(view, "h1", "Reset password")
+      assert has_element?(view, "h1", "Reset your password")
 
       h1s =
         view
@@ -39,6 +39,10 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLiveTest do
 
       assert has_element?(view, ~s(#reset_password_form[class~="phx-submit-loading:opacity-60"]))
 
+      # Server validation is the one validation surface: the browser's own
+      # bubble would replace the inline message and skip the focus event.
+      assert has_element?(view, "#reset_password_form[novalidate]")
+
       assert has_element?(
                view,
                ~s(#reset-password-email[name="user[email]"][type="email"][required][phx-debounce="blur"][phx-blur="validate"])
@@ -58,7 +62,7 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLiveTest do
 
       assert has_element?(
                view,
-               ~s(#reset_password_form a[href="/users/log_in"]),
+               ~s(#reset-password-request-page a[href="/users/log_in"]),
                "Back to log in"
              )
 
@@ -110,7 +114,7 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLiveTest do
       assert has_element?(
                view,
                "#reset-password-email-error",
-               "must have the @ sign and no spaces"
+               "Include an @ and no spaces, like name@agency.example."
              )
 
       refute_push_event(view, "focus_form_error", @focus_payload)
@@ -166,7 +170,7 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLiveTest do
       assert has_element?(
                view,
                "#reset-password-email-error",
-               "must have the @ sign and no spaces"
+               "Include an @ and no spaces, like name@agency.example."
              )
 
       assert_push_event(view, "focus_form_error", @focus_payload)
@@ -183,16 +187,33 @@ defmodule GtfsPlannerWeb.UserForgotPasswordLiveTest do
       |> element("#reset_password_form")
       |> render_submit(%{"user" => %{"email" => "  "}})
 
-      assert has_element?(view, "#reset-password-email-error", "can't be blank")
-
-      refute has_element?(
+      assert has_element?(
                view,
                "#reset-password-email-error",
-               "must have the @ sign and no spaces"
+               "Enter the email you log in with."
              )
+
+      refute has_element?(view, "#reset-password-email-error", "Include an @")
 
       assert_push_event(view, "focus_form_error", @focus_payload)
       refute_push_event(view, "focus_form_error", @focus_payload)
+    end
+
+    test "an address over 160 characters explains the limit", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/users/reset_password")
+      address = String.duplicate("a", 150) <> "@example.com"
+
+      view
+      |> element("#reset_password_form")
+      |> render_submit(%{"user" => %{"email" => address}})
+
+      assert has_element?(
+               view,
+               "#reset-password-email-error",
+               "Use an address of 160 characters or fewer."
+             )
+
+      assert_push_event(view, "focus_form_error", @focus_payload)
     end
 
     test "correcting the address after a failed submit clears the error", %{conn: conn} do

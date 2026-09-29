@@ -190,7 +190,7 @@ test.describe("Public auth flows (serial)", () => {
     await expect(page.locator("#reset_password_form")).toBeVisible();
     await expect(page.locator("#reset-password-submit")).toHaveAttribute(
       "phx-disable-with",
-      "Resetting password…",
+      "Saving password…",
     );
     await page.fill("#reset-password-new-password", "NewResetPass123!");
     await page.fill("#reset-password-confirmation", "NewResetPass123!");

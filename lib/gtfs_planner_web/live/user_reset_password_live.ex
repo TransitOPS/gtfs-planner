@@ -1,6 +1,8 @@
 defmodule GtfsPlannerWeb.UserResetPasswordLive do
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.AuthComponents
+
   alias GtfsPlanner.Accounts
 
   # Failed submits must not return secrets to the browser: both password keys
@@ -12,62 +14,78 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
     ~H"""
     <Layouts.auth flash={@flash}>
       <div id="reset-password-page" phx-hook="FormErrorFocus">
-        <.header class="text-center">
-          Set new password
-          <:subtitle>Enter your new password below</:subtitle>
-        </.header>
+        <.auth_title id="reset-password-title">Choose a new password</.auth_title>
 
-        <.simple_form
+        <%!-- A rejected save clears both fields, because the server never sends a
+              password back to the browser. The banner says so; the fields say
+              what to fix, and FormErrorFocus moves focus to the first one. --%>
+        <div
+          :if={@submit_failed}
+          id="reset-password-banner"
+          role="alert"
+          class="mt-5 flex items-start gap-3 rounded-card border border-error-line bg-error-bg px-4 py-3.5 text-sm text-error-fg"
+        >
+          <.icon name="hero-exclamation-circle" class="mt-px size-5 shrink-0" />
+          <div class="min-w-0">
+            <p class="font-semibold">We couldn't save your new password</p>
+            <p class="text-pretty">
+              Fix the highlighted fields, then type the new password again. We clear both fields after an error to keep them private.
+            </p>
+          </div>
+        </div>
+
+        <.form
           for={@form}
           id="reset_password_form"
           phx-change="validate"
           phx-submit="reset_password"
-          class="phx-submit-loading:opacity-60"
+          novalidate
+          class="auth-form mt-6 phx-submit-loading:opacity-60"
         >
-          <.input
-            field={@form[:password]}
-            id="reset-password-new-password"
-            type="password"
-            label="New password"
-            help="Use 12–72 characters."
-            errors={@password_errors}
-            phx-debounce="blur"
-            phx-blur="validate"
-            required
-          />
+          <div class="grid gap-5">
+            <.input
+              field={@form[:password]}
+              id="reset-password-new-password"
+              type="password"
+              label="New password"
+              help="At least 12 characters. A short phrase of a few words works well."
+              errors={@password_errors}
+              autocomplete="new-password"
+              phx-debounce="blur"
+              phx-blur="validate"
+              required
+            />
 
-          <.input
-            field={@form[:password_confirmation]}
-            id="reset-password-confirmation"
-            type="password"
-            label="Confirm new password"
-            help="Must match the password above."
-            errors={@password_confirmation_errors}
-            phx-debounce="blur"
-            phx-blur="validate"
-            required
-          />
+            <.input
+              field={@form[:password_confirmation]}
+              id="reset-password-confirmation"
+              type="password"
+              label="Confirm new password"
+              errors={@password_confirmation_errors}
+              autocomplete="new-password"
+              phx-debounce="blur"
+              phx-blur="validate"
+              required
+            />
+          </div>
 
-          <:actions>
-            <.link
-              navigate={~p"/users/log_in"}
-              class="text-sm font-semibold link link-hover text-base-content/70"
-            >
-              Back to log in
-            </.link>
-          </:actions>
+          <%!-- reset_user_password/2 deletes every token for the account, so every
+                logged-in device loses its session and nobody is logged in here. --%>
+          <p class="mt-5 flex items-start gap-2 text-[13px] leading-relaxed text-muted">
+            <.icon name="hero-information-circle" class="mt-px size-4 shrink-0" />
+            <span>
+              Saving signs this account out on every device. You'll log in again with the new password.
+            </span>
+          </p>
 
-          <:actions>
-            <.button
-              id="reset-password-submit"
-              type="submit"
-              phx-disable-with="Resetting password…"
-              variant="primary"
-            >
-              Reset password
-            </.button>
-          </:actions>
-        </.simple_form>
+          <.auth_submit id="reset-password-submit" phx-disable-with="Saving password…">
+            Save new password
+          </.auth_submit>
+        </.form>
+
+        <p class="-mb-2.5 mt-3">
+          <.auth_link navigate={~p"/users/log_in"}>Back to log in</.auth_link>
+        </p>
       </div>
     </Layouts.auth>
     """
@@ -78,8 +96,8 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
       %GtfsPlanner.Accounts.User{} = user ->
         {:ok,
          socket
-         |> assign(page_title: "Set new password")
-         |> assign(user: user)
+         |> assign(page_title: "Choose a new password")
+         |> assign(user: user, submit_failed: false)
          |> assign_form(Accounts.change_user_password(user))}
 
       nil ->
@@ -121,20 +139,58 @@ defmodule GtfsPlannerWeb.UserResetPasswordLive do
         {:noreply,
          socket
          |> assign(form: to_form(changeset, as: "user"))
-         |> assign(password_errors: translate_errors(changeset.errors, :password))
+         |> assign(submit_failed: true)
+         |> assign(
+           password_errors: for({:password, error} <- changeset.errors, do: password_error(error))
+         )
          |> assign(
            password_confirmation_errors:
-             translate_errors(changeset.errors, :password_confirmation)
+             for(
+               {:password_confirmation, error} <- changeset.errors,
+               do: confirmation_error(error)
+             )
          )
          |> push_event("focus_form_error", %{form_id: "reset_password_form", fallback_id: nil})}
     end
   end
 
   defp assign_form(socket, changeset) do
+    form = to_form(changeset, as: "user")
+
     socket
-    |> assign(form: to_form(changeset, as: "user"))
-    |> assign(password_errors: [])
-    |> assign(password_confirmation_errors: [])
+    |> assign(form: form)
+    |> assign(password_errors: used_errors(form[:password], &password_error/1))
+    |> assign(
+      password_confirmation_errors:
+        used_errors(form[:password_confirmation], &confirmation_error/1)
+    )
+  end
+
+  # Errors show only once the field has been used, as `<.input>` does by
+  # default; a failed submit drops the params, so it reads the changeset directly.
+  defp used_errors(field, to_message) do
+    if Phoenix.Component.used_input?(field), do: Enum.map(field.errors, to_message), else: []
+  end
+
+  # Plain-language versions of the password changeset's messages, chosen by the
+  # rule that failed rather than by its text. The length limits come from the
+  # changeset, so the copy cannot drift from the rule.
+  defp password_error({_message, opts} = error) do
+    case {opts[:validation], opts[:kind]} do
+      {:required, _kind} -> "Enter a new password."
+      {:length, :min} -> "Use at least #{opts[:count]} characters."
+      {:length, :max} -> "Use #{opts[:count]} characters or fewer."
+      _other -> translate_error(error)
+    end
+  end
+
+  # A blank confirmation reaches here as a mismatch: the form always submits
+  # both keys, and Ecto only reports `:required` when the key is absent.
+  defp confirmation_error({_message, opts} = error) do
+    case opts[:validation] do
+      :confirmation -> "The two passwords don't match. Type the same one in both fields."
+      _other -> translate_error(error)
+    end
   end
 
   # Drops the secret keys from a failed-submit changeset while retaining the

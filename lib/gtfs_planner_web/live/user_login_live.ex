@@ -1,6 +1,8 @@
 defmodule GtfsPlannerWeb.UserLoginLive do
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.AuthComponents
+
   # Fixed presentation for the bounded recovery codes issued by
   # UserSessionController. Each code maps to a tone plus a fixed title and
   # body. Unknown or missing codes render no callout; the controller never
@@ -19,12 +21,7 @@ defmodule GtfsPlannerWeb.UserLoginLive do
     ~H"""
     <Layouts.auth flash={@flash}>
       <div id="login-page" phx-hook="FormErrorFocus" data-focus-on-mount="login-recovery">
-        <h1
-          id="login-title"
-          class="text-[28px] font-semibold leading-[1.08] tracking-[-0.035em] text-strong"
-        >
-          Log in
-        </h1>
+        <.auth_title id="login-title">Log in</.auth_title>
 
         <div
           :if={@recovery}
@@ -86,23 +83,11 @@ defmodule GtfsPlannerWeb.UserLoginLive do
             /> Keep me logged in for 60 days
           </label>
 
-          <button
-            id="login-submit"
-            type="submit"
-            phx-disable-with="Logging in…"
-            class="mt-4 min-h-11 w-full rounded-control bg-action text-sm font-semibold text-white hover:bg-action-hover"
-          >
-            Log in
-          </button>
+          <.auth_submit id="login-submit" phx-disable-with="Logging in…">Log in</.auth_submit>
         </.form>
 
         <p class="-mb-2.5 mt-3">
-          <.link
-            navigate={~p"/users/reset_password"}
-            class="inline-flex min-h-11 items-center text-sm font-semibold text-action"
-          >
-            Forgot your password?
-          </.link>
+          <.auth_link navigate={~p"/users/reset_password"}>Forgot your password?</.auth_link>
         </p>
       </div>
 
