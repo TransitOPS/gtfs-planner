@@ -151,11 +151,20 @@ defmodule GtfsPlanner.Gtfs.Export.Preflight do
 
   # Anti-joins each trip's service against calendar and calendar_dates. DISTINCT ON
   # makes the sample the missing service IDs while the window count stays the
-  # number of trips, because the window is evaluated before DISTINCT.
+  # number of trips, because the window is evaluated before DISTINCT. Trips of an
+  # explicitly inactive route are skipped because the export leaves them out.
   defp check(:trip_missing_service, organization_id, gtfs_version_id) do
     from(t in Trip,
       as: :trip,
       where: t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id,
+      where:
+        not exists(
+          from(r in Route,
+            where:
+              r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id and
+                r.route_id == parent_as(:trip).route_id and r.active == false
+          )
+        ),
       where:
         not exists(
           from(c in Calendar,
