@@ -2881,16 +2881,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     patch(socket, %{trip: nil, gap: nil, block: nil, drawer: nil, pair: nil})
   end
 
+  # These three answer the callback rather than an event handler, so each returns
+  # `{:noreply, socket}`. The success clause above already does, through `patch/2`.
   defp apply_suggestion(socket, {:error, {:too_large, trips}}) do
-    put_suggest(socket, %{socket.assigns.suggest | busy: false, too_large: trips})
+    {:noreply, put_suggest(socket, %{socket.assigns.suggest | busy: false, too_large: trips})}
   end
 
   defp apply_suggestion(socket, {:error, :no_selection}) do
-    put_suggest(socket, %{socket.assigns.suggest | busy: false, error: @suggest_no_selection})
+    {:noreply,
+     put_suggest(socket, %{socket.assigns.suggest | busy: false, error: @suggest_no_selection})}
   end
 
   defp apply_suggestion(socket, {:error, _reason}) do
-    put_suggest(socket, %{socket.assigns.suggest | busy: false, error: @suggest_unavailable})
+    {:noreply,
+     put_suggest(socket, %{socket.assigns.suggest | busy: false, error: @suggest_unavailable})}
   end
 
   # The dialog names the trips the rebuild would move and the day types it would
@@ -3682,6 +3686,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   @impl true
   def handle_async(@suggest_preview_key, {:ok, {request, result}}, socket) do
     if request == suggest_request(socket) do
+      # `apply_suggestion/2` answers the callback's own `{:noreply, socket}`
+      # where the preview lands, so its result is returned as it stands.
       apply_suggestion(socket, result)
     else
       # A day type, version or scope changed while the suggestion was being
