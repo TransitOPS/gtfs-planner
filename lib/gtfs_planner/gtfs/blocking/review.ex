@@ -28,6 +28,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
   sorted changes, the sorted locked rows (block ID, service ID, the four times and
   the ISO 8601 `updated_at`) and the sorted added finding keys, so a confirmation
   whose inputs changed no longer matches (Mutation steps 8 and 9).
+
+  The planning context is passed through, not unpacked: `Context.layover_only/1`
+  reproduces spec 05's review and fingerprint exactly (CR-2), and a context with
+  planning inputs produces the same added keys in the same order.
   """
 
   alias GtfsPlanner.Gtfs.Blocking
@@ -73,7 +77,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
   - `:changes` — `%{trip: trip_row, from: block_id | nil, to: block_id | nil}`;
   - `:in_seat` — `%{rows: [in_seat_row()], context: InSeat.context()}`;
   - `:service_dates` — the canonical `%{service_id => MapSet.t(Date.t())}`;
-  - `:min_layover_minutes` — the version's stored minimum layover.
+  - `:context` — the version's `%Blocking.Context{}` planning inputs.
   """
   @spec build(map()) :: review()
   def build(input) do
@@ -83,13 +87,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
     affected = Map.fetch!(input, :affected)
     rows = Map.fetch!(input, :rows)
     changes = input |> Map.fetch!(:changes) |> sort_changes()
-    min_layover_minutes = Map.fetch!(input, :min_layover_minutes)
+    context = Map.fetch!(input, :context)
 
-    context = %{
+    build_context = %{
       rows: rows,
       changes: changes,
       target: target,
-      min_layover_minutes: min_layover_minutes,
+      context: context,
       in_seat: Map.fetch!(input, :in_seat),
       service_dates: Map.fetch!(input, :service_dates)
     }
@@ -97,7 +101,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
     effects =
       affected
       |> selected_first(selected_key)
-      |> Enum.map(&build_effect(&1, selected_key, context))
+      |> Enum.map(&build_effect(&1, selected_key, build_context))
 
     added_problem_count =
       effects
@@ -139,8 +143,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
     from_blocks = active |> Enum.map(& &1.from) |> Enum.reject(&is_nil/1) |> Enum.uniq()
     touched = Enum.uniq(from_blocks ++ List.wrap(context.target))
 
-    before_findings = findings_by_block(touched, before_rows, context.min_layover_minutes)
-    after_findings = findings_by_block(touched, after_rows, context.min_layover_minutes)
+    before_findings = findings_by_block(touched, before_rows, context.context)
+    after_findings = findings_by_block(touched, after_rows, context.context)
     {added_checks, existing_checks} = diff_checks(touched, before_findings, after_findings)
     {added_in_seat, existing_in_seat} = diff_in_seat(day_type, context)
 
@@ -163,10 +167,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
     if MapSet.member?(active_ids, row.id), do: %{row | block_id: target}, else: row
   end
 
-  defp findings_by_block(block_ids, rows, min_layover_minutes) do
+  defp findings_by_block(block_ids, rows, context) do
     Map.new(block_ids, fn block_id ->
-      {block_id,
-       Checks.block_findings(block_id, block_trips(rows, block_id), min_layover_minutes)}
+      {block_id, Checks.block_findings(block_id, block_trips(rows, block_id), context)}
     end)
   end
 

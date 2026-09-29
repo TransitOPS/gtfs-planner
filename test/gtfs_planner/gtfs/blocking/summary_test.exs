@@ -25,7 +25,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
   """
   use ExUnit.Case, async: true
 
-  alias GtfsPlanner.Gtfs.Blocking.Checks
+  alias GtfsPlanner.Gtfs.Blocking.{Checks, Context}
   alias GtfsPlanner.Gtfs.Blocking.Summary
 
   describe "block_summary/3" do
@@ -37,9 +37,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
 
       # A two-minute gap against the five-minute minimum, with a handoff at one
       # stop, is a short layover and nothing else.
-      assert [%{code: :short_layover, severity: :warning}] = Checks.block_findings("7", trips, 5)
+      assert [%{code: :short_layover, severity: :warning}] =
+               Checks.block_findings("7", trips, Context.layover_only(5))
 
-      assert Summary.block_summary("7", trips, Checks.block_findings("7", trips, 5)) == %{
+      assert Summary.block_summary(
+               "7",
+               trips,
+               Checks.block_findings("7", trips, Context.layover_only(5))
+             ) == %{
                block_id: "7",
                trip_count: 2,
                start_secs: 21_600,
@@ -78,7 +83,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
       frequency = trip("f", at(8, 30), at(9, 30), frequency?: true, headway_secs: 1200)
 
       summary =
-        Summary.block_summary("7", [frequency], Checks.block_findings("7", [frequency], 5))
+        Summary.block_summary(
+          "7",
+          [frequency],
+          Checks.block_findings("7", [frequency], Context.layover_only(5))
+        )
 
       assert summary == %{
                block_id: "7",
@@ -96,7 +105,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
       unplottable = trip("u", nil, nil)
 
       summary =
-        Summary.block_summary("7", [unplottable], Checks.block_findings("7", [unplottable], 5))
+        Summary.block_summary(
+          "7",
+          [unplottable],
+          Checks.block_findings("7", [unplottable], Context.layover_only(5))
+        )
 
       assert summary == %{
                block_id: "7",
@@ -116,7 +129,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
         trip("b", at(8, 10), at(10, 0), first_stop: stop("S1"))
       ]
 
-      assert Checks.block_findings("7", trips, 5) == []
+      assert Checks.block_findings("7", trips, Context.layover_only(5)) == []
 
       summary = Summary.block_summary("7", trips, [])
 

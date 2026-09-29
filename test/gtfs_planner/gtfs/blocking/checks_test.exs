@@ -29,7 +29,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksTest do
   """
   use ExUnit.Case, async: true
 
-  alias GtfsPlanner.Gtfs.Blocking.Checks
+  alias GtfsPlanner.Gtfs.Blocking.{Checks, Context}
 
   # One origin point and two points north of it. The great-circle formula with a
   # 6,371,000 m earth radius gives 120.0905 m and 340.034 m, so `handoff/2` reports
@@ -175,7 +175,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksTest do
       a = trip("a", at(8, 0), at(10, 0))
       b = trip("b", at(8, 10), at(9, 50))
 
-      assert Checks.block_findings("101", [a, b], 5) == [
+      assert Checks.block_findings("101", [a, b], Context.layover_only(5)) == [
                %{
                  code: :overlap,
                  severity: :error,
@@ -192,7 +192,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksTest do
       a = trip("a", at(7, 0), at(8, 0), last_stop: main)
       b = trip("b", at(8, 4), at(9, 0), first_arrival: at(8, 0), first_stop: main)
 
-      assert Checks.block_findings("101", [a, b], 5) == [
+      assert Checks.block_findings("101", [a, b], Context.layover_only(5)) == [
                %{
                  code: :short_layover,
                  severity: :warning,
@@ -210,7 +210,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksTest do
       b = trip("b", at(8, 0), at(9, 0), first_stop: main)
 
       assert [%{code: :short_layover, severity: :warning, detail: %{gap_secs: 0}}] =
-               Checks.block_findings("101", [a, b], 5)
+               Checks.block_findings("101", [a, b], Context.layover_only(5))
     end
 
     test "does not warn at exactly the minimum layover" do
@@ -218,7 +218,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksTest do
       a = trip("a", at(7, 0), at(8, 0), last_stop: main)
       b = trip("b", at(8, 5), at(9, 5), first_arrival: at(8, 0), first_stop: main)
 
-      assert Checks.block_findings("101", [a, b], 5) == []
+      assert Checks.block_findings("101", [a, b], Context.layover_only(5)) == []
     end
 
     test "reports no layover or move for a negative gap" do
@@ -232,7 +232,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksTest do
           first_stop: stop("B", lat: @far_lat, lon: @origin_lon)
         )
 
-      assert Enum.map(Checks.block_findings("101", [a, b], 5), & &1.code) == [:overlap]
+      assert Enum.map(Checks.block_findings("101", [a, b], Context.layover_only(5)), & &1.code) ==
+               [:overlap]
     end
 
     test "reports an empty move as a notice with the gap and the distance" do
@@ -245,7 +246,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksTest do
           first_stop: stop("B", lat: @far_lat, lon: @origin_lon)
         )
 
-      assert Checks.block_findings("101", [a, b], 5) == [
+      assert Checks.block_findings("101", [a, b], Context.layover_only(5)) == [
                %{
                  code: :repositions,
                  severity: :notice,
@@ -267,7 +268,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksTest do
           first_stop: stop("B", lat: @near_lat, lon: @origin_lon)
         )
 
-      assert Checks.block_findings("101", [a, b], 5) == []
+      assert Checks.block_findings("101", [a, b], Context.layover_only(5)) == []
     end
 
     test "reports missing coordinates as an empty move with no distance" do
@@ -277,14 +278,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksTest do
       b = trip("b", at(8, 12), at(9, 12), first_arrival: at(8, 0), first_stop: stop("B"))
 
       assert [%{code: :repositions, severity: :notice, detail: %{gap_secs: 720, meters: nil}}] =
-               Checks.block_findings("101", [a, b], 5)
+               Checks.block_findings("101", [a, b], Context.layover_only(5))
     end
 
     test "reports a frequency-based trip once and no overlap" do
       scheduled = trip("s", at(8, 0), at(10, 0))
       frequency = trip("f", at(8, 30), at(9, 30), frequency?: true, headway_secs: 1200)
 
-      assert Checks.block_findings("101", [scheduled, frequency], 5) == [
+      assert Checks.block_findings("101", [scheduled, frequency], Context.layover_only(5)) == [
                %{
                  code: :frequency_trip,
                  severity: :notice,
@@ -300,7 +301,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksTest do
       scheduled = trip("s", at(8, 0), at(10, 0))
       unplottable = trip("u", nil, nil)
 
-      assert Checks.block_findings("101", [scheduled, unplottable], 5) == [
+      assert Checks.block_findings("101", [scheduled, unplottable], Context.layover_only(5)) == [
                %{
                  code: :unplottable,
                  severity: :notice,
@@ -318,7 +319,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksTest do
       a = trip("a", at(8, 0), at(10, 0))
       b = trip("b", at(8, 10), at(9, 50))
 
-      [overlap] = Checks.block_findings("101", [a, b], 5)
+      [overlap] = Checks.block_findings("101", [a, b], Context.layover_only(5))
 
       assert Checks.finding_key(overlap) == {:overlap, ["a", "b"], nil}
 
