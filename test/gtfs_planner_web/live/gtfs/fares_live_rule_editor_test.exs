@@ -204,8 +204,17 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
       assert node_attribute(view, "#fare-rule-contains input[type=checkbox]", "value") ==
                [" A", "A", "B", "D"]
 
-      assert text_exact(view, "#fare-rule-contains-help") ==
-               "The journey must visit every checked zone. Leave all unchecked for no through-zone requirement."
+      # A trip planner matches the checked set against every zone the journey
+      # touches, so the copy names the whole set rather than a "via" list.
+      assert has_element?(view, "#fare-rule-contains legend", "Zones the journey touches")
+
+      assert has_element?(
+               view,
+               "#fare-rule-contains-help",
+               "touch exactly these zones"
+             )
+
+      refute has_element?(view, "#fare-rule-contains-help", "must visit")
 
       assert text_exact(view, "#fare-rule-fare-help") ==
                "Existing fares in this version. Prices are shown for context."
@@ -667,6 +676,187 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
       assert length(rules(organization, version, "CROSS", nil, nil, nil)) == 2
 
       set_status(organization, version, "published")
+    end
+  end
+
+  describe "a fare whose rules trip planners combine" do
+    test "warns once a route-specific rule joins a fare with an all-routes rule, and still saves",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           version: version
+         } do
+      insert_fares(organization, version, [%{fare_id: "LOCAL", price: "1.00"}])
+      insert_rules(organization, version, [{:local, {"LOCAL", nil, "A", "A", nil}}])
+
+      {:ok, view, _html} = mount_rules(conn, user, organization, version)
+
+      view |> element("#add-fare-rule") |> render_click()
+
+      # An all-routes rule beside an all-routes rule is read the way it looks.
+      change_rule(view, %{
+        @form
+        | "fare_id" => "LOCAL",
+          "origin_id" => "B",
+          "destination_id" => "A"
+      })
+
+      refute has_element?(view, "#fare-rule-combine-warning")
+
+      change_rule(view, %{
+        @form
+        | "fare_id" => "LOCAL",
+          "origin_id" => "B",
+          "destination_id" => "A",
+          "route_id" => "ROUTE_10"
+      })
+
+      assert has_element?(
+               view,
+               "#fare-rule-combine-warning",
+               "Rules for fare LOCAL combine in trip planners"
+             )
+
+      assert has_element?(
+               view,
+               "#fare-rule-combine-warning",
+               "This fare names route ROUTE_10 on some rules, so every rule of the fare applies only on that route."
+             )
+
+      refute has_element?(view, "#fare-rule-combine-warning", "pass-through")
+
+      submit_rule(view, %{
+        @form
+        | "fare_id" => "LOCAL",
+          "origin_id" => "B",
+          "destination_id" => "A",
+          "route_id" => "ROUTE_10"
+      })
+
+      refute drawer_open?(view)
+      assert text_exact(view, "#fare-zone-notice") == "Fare rule saved."
+
+      assert [%{route_id: "ROUTE_10"}] =
+               rules(organization, version, "LOCAL", "ROUTE_10", "B", "A")
+    end
+
+    test "updates as the through zones change and counts the edited rule once", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version,
+      cards: cards
+    } do
+      {:ok, view, _html} = mount_rules(conn, user, organization, version)
+
+      # CROSS has one rule, so opening it names nothing to combine.
+      view |> element("##{cards.through}-edit") |> render_click()
+
+      refute has_element?(view, "#fare-rule-combine-warning")
+
+      # Editing that one rule replaces it rather than joining it, so a different
+      # zone set is still a fare of one rule.
+      change_rule(view, %{@form | "fare_id" => "CROSS", "contains" => ["A"]})
+
+      refute has_element?(view, "#fare-rule-combine-warning")
+
+      view |> element("#fare-rule-drawer button", "Cancel") |> render_click()
+      view |> element("#add-fare-rule") |> render_click()
+
+      # A new rule with the same zones as the existing one agrees with it.
+      change_rule(view, %{
+        @form
+        | "fare_id" => "CROSS",
+          "origin_id" => "B",
+          "destination_id" => "A",
+          "contains" => ["A", "B"]
+      })
+
+      refute has_element?(view, "#fare-rule-combine-warning")
+
+      change_rule(view, %{
+        @form
+        | "fare_id" => "CROSS",
+          "origin_id" => "B",
+          "destination_id" => "A",
+          "contains" => ["A"]
+      })
+
+      assert has_element?(
+               view,
+               "#fare-rule-combine-warning",
+               "This fare lists pass-through zones A, B across its rules, so every rule of the fare requires a journey that touches exactly those zones."
+             )
+
+      refute has_element?(view, "#fare-rule-combine-warning", "names route")
+
+      change_rule(view, %{
+        @form
+        | "fare_id" => "CROSS",
+          "origin_id" => "B",
+          "destination_id" => "A",
+          "contains" => ["A", "B"]
+      })
+
+      refute has_element?(view, "#fare-rule-combine-warning")
+    end
+
+    test "shows on open when the edited rule's fare already disagrees", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version,
+      cards: cards
+    } do
+      {:ok, view, _html} = mount_rules(conn, user, organization, version)
+
+      # CITY names ROUTE_10 on one rule and ROUTE_MISSING on another.
+      view |> element("##{cards.collision}-edit") |> render_click()
+
+      assert has_element?(
+               view,
+               "#fare-rule-combine-warning",
+               "This fare names routes ROUTE_10, ROUTE_MISSING on some rules"
+             )
+    end
+
+    test "is absent while the drawer is closed", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      {:ok, view, _html} = mount_rules(conn, user, organization, version)
+
+      # Closing resets the form to the first fare, CITY, whose rules disagree; the
+      # inert drawer must not keep announcing that.
+      view |> element("#add-fare-rule") |> render_click()
+      assert has_element?(view, "#fare-rule-combine-warning")
+
+      view |> element("#fare-rule-drawer button", "Cancel") |> render_click()
+
+      refute drawer_open?(view)
+      refute has_element?(view, "#fare-rule-combine-warning")
+    end
+
+    test "teaches that rules of one fare are read together", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      {:ok, view, _html} = mount_rules(conn, user, organization, version)
+
+      assert has_element?(view, "#fare-rules-note", "Rules that share a fare are read together")
+
+      view |> element("#add-fare-rule") |> render_click()
+
+      assert has_element?(
+               view,
+               "#fare-rule-shared-fare-note",
+               "Rules that share a fare are read together"
+             )
     end
   end
 

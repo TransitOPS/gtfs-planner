@@ -39,7 +39,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
   # Every DOM ID the Checks tab may render: the tab and its heading, one row per
   # index, and one link or disclosure inside a row. Nothing here is derived from
   # a zone ID.
-  @panel_id_pattern ~r/\Afare-check(s-(tab|heading|subtitle)|-(clean|unassigned|empty|source|stopless-\d+)(-link|-detail)?)?\z/
+  @panel_id_pattern ~r/\Afare-check(s-(tab|heading|subtitle)|-(clean|unassigned|empty|source|stopless-\d+|combine-\d+)(-link|-detail)?)?\z/
 
   setup do
     organization = organization_fixture()
@@ -277,6 +277,101 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
       {:ok, empty_view, _html} = mount_checks(conn, user, organization, empty_version)
 
       refute has_element?(empty_view, "#fare-check-source")
+    end
+  end
+
+  describe "fares whose rules trip planners combine" do
+    setup %{organization: organization} do
+      combine_version = gtfs_version_fixture(organization.id, %{name: "Combined rules version"})
+
+      # Two zones with stops and no unassigned stop, so the only issues are the
+      # fares below. CITY names a route on one of its rules, CROSS lists through
+      # zones on one of its rules, and LOCAL's rules agree.
+      insert_zone(organization, combine_version, "A", "Central", "ocean")
+      insert_zone(organization, combine_version, "B", "Uplands", "teal")
+
+      insert_stops(organization, combine_version, [
+        {"STOP_CENTRAL_1", 0, "A"},
+        {"STOP_UPLANDS_1", 0, "B"}
+      ])
+
+      insert_rules(organization, combine_version, [
+        {"CITY", nil, "A", "A", nil},
+        {"CITY", "R1", "B", "A", nil},
+        {"CROSS", nil, "A", "B", nil},
+        {"CROSS", nil, "B", "A", "A"},
+        {"CROSS", nil, "B", "A", "B"},
+        {"LOCAL", "R1", "A", "A", nil},
+        {"LOCAL", "R1", "A", "B", nil}
+      ])
+
+      %{combine_version: combine_version}
+    end
+
+    test "lists one Review row per disagreeing fare and names only what disagrees", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      combine_version: combine_version
+    } do
+      {:ok, view, _html} = mount_checks(conn, user, organization, combine_version)
+
+      assert has_element?(
+               view,
+               "#fare-check-combine-0",
+               "Rules for fare CITY combine in trip planners"
+             )
+
+      assert has_element?(view, "#fare-check-combine-0", "Review")
+
+      assert has_element?(
+               view,
+               "#fare-check-combine-0",
+               "This fare names route R1 on some rules, so every rule of the fare applies only on that route."
+             )
+
+      refute has_element?(view, "#fare-check-combine-0", "pass-through")
+
+      assert has_element?(
+               view,
+               "#fare-check-combine-1",
+               "Rules for fare CROSS combine in trip planners"
+             )
+
+      assert has_element?(
+               view,
+               "#fare-check-combine-1",
+               "This fare lists pass-through zones A, B across its rules, so every rule of the fare requires a journey that touches exactly those zones."
+             )
+
+      refute has_element?(view, "#fare-check-combine-1", "names route")
+
+      # LOCAL's rules share one route, so it has no row.
+      refute has_element?(view, "#fare-check-combine-2")
+      refute has_element?(view, "#fare-checks-tab", "fare LOCAL")
+    end
+
+    test "counts the rows in the tab badge and replaces the all-clear line", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      combine_version: combine_version
+    } do
+      {:ok, view, _html} = mount_checks(conn, user, organization, combine_version)
+
+      refute has_element?(view, "#fare-check-clean")
+      assert badge_count(view) == 2
+    end
+
+    test "adds no row to a version whose fares agree", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      {:ok, view, _html} = mount_checks(conn, user, organization, version)
+
+      refute has_element?(view, "#fare-check-combine-0")
     end
   end
 

@@ -10,6 +10,9 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleProjectionTest do
   - A missing fare and a missing non-nil route are flagged; a nil route is not.
   - A second version and a second organization with identical IDs contribute
     nothing, including their fare and route rows.
+  - A fare whose groups differ in route or through zones is reported as combined
+    (trip planners read one rule set per fare); agreeing fares and other
+    versions' fares are not.
   """
   use GtfsPlanner.DataCase, async: true
 
@@ -194,6 +197,163 @@ defmodule GtfsPlanner.Gtfs.FareZones.RuleProjectionTest do
     assert group.route == %{short_name: "1", long_name: "Local"}
 
     assert FareZones.list_rule_groups(other_organization.id, version.id) == []
+  end
+
+  describe "list_combined_fares/2" do
+    test "reports nothing for a fare with one rule group", %{
+      organization: organization,
+      version: version
+    } do
+      insert_rules(organization, version, [{"CITY", "R1", "A", "B", nil}])
+
+      assert FareZones.list_combined_fares(organization.id, version.id) == []
+    end
+
+    test "reports nothing for groups that share a route and have no through zones", %{
+      organization: organization,
+      version: version
+    } do
+      insert_rules(organization, version, [
+        {"CITY", "R1", "A", "B", nil},
+        {"CITY", "R1", "B", "A", nil},
+        {"ALL", nil, "A", "A", nil},
+        {"ALL", nil, "B", "B", nil}
+      ])
+
+      assert FareZones.list_combined_fares(organization.id, version.id) == []
+    end
+
+    test "reports nothing for groups that share the same through zones", %{
+      organization: organization,
+      version: version
+    } do
+      insert_rules(organization, version, [
+        {"CROSS", nil, "A", "B", "X"},
+        {"CROSS", nil, "A", "B", "Y"},
+        {"CROSS", nil, "B", "A", "Y"},
+        {"CROSS", nil, "B", "A", "X"}
+      ])
+
+      assert FareZones.list_combined_fares(organization.id, version.id) == []
+    end
+
+    test "reports the route of a route-specific group beside an all-routes group", %{
+      organization: organization,
+      version: version
+    } do
+      insert_rules(organization, version, [
+        {"CITY", nil, "A", "A", nil},
+        {"CITY", "R1", "DQ", "A", nil}
+      ])
+
+      assert FareZones.list_combined_fares(organization.id, version.id) == [
+               %{
+                 fare_id: "CITY",
+                 route_ids: [nil, "R1"],
+                 contains: [],
+                 routes_differ?: true,
+                 contains_differ?: false
+               }
+             ]
+    end
+
+    test "reports the routes of groups that name different routes", %{
+      organization: organization,
+      version: version
+    } do
+      insert_rules(organization, version, [
+        {"CITY", "R2", "A", "B", nil},
+        {"CITY", "R1", "B", "A", nil}
+      ])
+
+      assert [%{route_ids: ["R1", "R2"], routes_differ?: true}] =
+               FareZones.list_combined_fares(organization.id, version.id)
+    end
+
+    test "reports the union of through zones when groups list different ones", %{
+      organization: organization,
+      version: version
+    } do
+      insert_rules(organization, version, [
+        {"CROSS", nil, "A", "B", "DQ"},
+        {"CROSS", nil, "A", "B", "A"},
+        {"CROSS", nil, "DQ", "B", "B"}
+      ])
+
+      assert FareZones.list_combined_fares(organization.id, version.id) == [
+               %{
+                 fare_id: "CROSS",
+                 route_ids: [nil],
+                 contains: ["A", "B", "DQ"],
+                 routes_differ?: false,
+                 contains_differ?: true
+               }
+             ]
+    end
+
+    test "reports a fare whose only through zones sit on one of its groups", %{
+      organization: organization,
+      version: version
+    } do
+      insert_rules(organization, version, [
+        {"CROSS", nil, "A", "B", nil},
+        {"CROSS", nil, "DQ", "B", "DQ"}
+      ])
+
+      assert [%{fare_id: "CROSS", contains: ["DQ"], contains_differ?: true}] =
+               FareZones.list_combined_fares(organization.id, version.id)
+    end
+
+    test "reports each disagreeing fare once, ordered by fare, and skips agreeing fares", %{
+      organization: organization,
+      version: version
+    } do
+      insert_rules(organization, version, [
+        {"ZED", nil, "A", "B", nil},
+        {"ZED", "R1", "B", "A", nil},
+        {"MID", "R1", "A", "B", nil},
+        {"MID", "R1", "B", "A", nil},
+        {"ABC", nil, "A", "B", nil},
+        {"ABC", nil, "B", "A", "X"}
+      ])
+
+      assert Enum.map(FareZones.list_combined_fares(organization.id, version.id), & &1.fare_id) ==
+               ["ABC", "ZED"]
+    end
+
+    test "ignores a disagreeing fare in another version or organization", %{
+      organization: organization,
+      version: version
+    } do
+      other_version = VersionsFixtures.gtfs_version_fixture(organization.id)
+      other_organization = OrganizationsFixtures.organization_fixture()
+      other_organization_version = VersionsFixtures.gtfs_version_fixture(other_organization.id)
+
+      insert_rules(organization, version, [{"CITY", nil, "A", "B", nil}])
+
+      disagreeing = [{"CITY", nil, "A", "B", nil}, {"CITY", "R1", "B", "A", nil}]
+      insert_rules(organization, other_version, disagreeing)
+      insert_rules(other_organization, other_organization_version, disagreeing)
+
+      assert FareZones.list_combined_fares(organization.id, version.id) == []
+
+      assert [%{fare_id: "CITY"}] =
+               FareZones.list_combined_fares(organization.id, other_version.id)
+
+      assert FareZones.list_combined_fares(other_organization.id, version.id) == []
+    end
+
+    test "is part of the checks the Checks tab renders", %{
+      organization: organization,
+      version: version
+    } do
+      insert_rules(organization, version, [
+        {"CITY", nil, "A", "A", nil},
+        {"CITY", "R1", "DQ", "A", nil}
+      ])
+
+      assert [%{fare_id: "CITY"}] = FareZones.checks(organization.id, version.id).combined_fares
+    end
   end
 
   defp insert_rules(organization, version, attrs_list) do
