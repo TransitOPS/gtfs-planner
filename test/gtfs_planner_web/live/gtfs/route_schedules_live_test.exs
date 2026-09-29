@@ -306,7 +306,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       assert_patched(view, all_stops)
       refute_received {_ref, {:patch, _topic, _opts}}
 
-      assert has_element?(view, "#schedules-stops-legend", "All stops shown")
+      assert has_element?(
+               view,
+               "#section-#{rich.downtown.pattern.route_pattern_id}-stops-legend",
+               "All stops shown"
+             )
+
       refute has_element?(view, "#section-#{rich.downtown.pattern.route_pattern_id}-omitted")
     end
 
@@ -319,19 +324,19 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       assert has_element?(
                view,
                "#calendar-filter option[value='#{rich.weekday}']",
-               "Weekday · SCH_WKD · 8 trips"
+               "Weekday · 8 trips"
              )
 
       assert has_element?(
                view,
                "#calendar-filter option[value='#{rich.holiday}']",
-               "Holiday · SCH_HOL · 0 trips"
+               "Holiday · 0 trips"
              )
 
       assert has_element?(
                view,
                "#calendar-filter option[value='#{rich.dates_only}']",
-               "Special dates · SCH_DATES · 0 trips · Dates only"
+               "Special dates · 0 trips · Specific dates"
              )
     end
 
@@ -380,7 +385,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       {:ok, view, _html} = live(conn, schedules_path(version, rich.route))
 
       assert has_element?(view, "#planning-vehicles-item-vehicles", "Vehicles needed")
-      assert has_element?(view, "#vehicles-needed-line", "At least 3 vehicles for route S1 alone")
+      assert has_element?(view, "#vehicles-needed-count", "3")
+      assert has_element?(view, "#vehicles-needed-line", "at least, for route S1 alone")
 
       assert has_element?(view, "#vehicles-needed-context", "Weekday")
       assert has_element?(view, "#vehicles-needed-context", "both directions")
@@ -408,7 +414,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       refute has_element?(view, "#trips-per-hour-count-12")
 
       zero_hour = render(element(view, "#trips-per-hour-count-8"))
-      assert zero_hour =~ "text-base-content/70"
+      assert zero_hour =~ "text-muted"
     end
 
     test "incomplete trips are counted in the note", %{conn: conn, version: version} = context do
@@ -432,7 +438,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
 
       assert has_element?(view, "#section-#{section_id}-heading", "Downtown")
       assert has_element?(view, "#section-#{section_id}-heading", "Typical")
-      assert has_element?(view, "#section-#{section_id}-facts", "6 trips · 5 stops")
+      assert has_element?(view, "#section-#{section_id}-facts", "6 trips · showing 3 of 5 stops")
 
       assert has_element?(
                view,
@@ -443,12 +449,23 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       assert has_element?(
                view,
                "#section-#{section_id}-timing-#{rich.downtown.timing.id}",
-               "Standard: 5 · 19 min · 25 min total · 5 trips"
+               "Standard 25 min · 5 trips"
              )
 
-      assert has_element?(view, "#section-#{section_id}-custom-trips", "1 custom-time trip")
+      assert has_element?(
+               view,
+               "#section-#{section_id}-timing-#{rich.downtown.timing.id}-segments",
+               "Standard · 5 · 19 min · 25 min total"
+             )
+
+      assert has_element?(view, "#section-#{section_id}-custom-trips", "Custom times · 1 trip")
       assert has_element?(view, "#section-#{section_id}-omitted", "2 stops not shown")
-      assert has_element?(view, "#schedules-stops-legend", "Timepoints are the key stops")
+
+      assert has_element?(
+               view,
+               "#section-#{section_id}-stops-legend",
+               "Timepoints are the key stops"
+             )
     end
 
     test "the All stops view shows every occurrence and recomputes the segments",
@@ -461,14 +478,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
 
       {:ok, view, _html} = live(conn, all_stops)
 
-      assert has_element?(view, "#schedules-stops-legend", "All stops shown")
+      assert has_element?(view, "#section-#{section_id}-stops-legend", "All stops shown")
       assert has_element?(view, "#section-#{section_id}-facts", "6 trips · 5 stops")
       refute has_element?(view, "#section-#{section_id}-omitted")
 
       assert has_element?(
                view,
-               "#section-#{section_id}-timing-#{rich.downtown.timing.id}",
-               "Standard: 5 · 5 · 5 · 7 min · 25 min total · 5 trips"
+               "#section-#{section_id}-timing-#{rich.downtown.timing.id}-segments",
+               "Standard · 5 · 5 · 5 · 7 min · 25 min total"
              )
 
       assert has_element?(view, "#section-#{section_id}-table", "Schedules Stop 5")
@@ -515,7 +532,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       doc = LazyHTML.from_fragment("<table>#{html}</table>")
       cells = LazyHTML.query(doc, "td")
 
-      assert Enum.count(cells, &(String.trim(LazyHTML.text(&1)) == "—")) == 4
+      # The first stop is the pinned Departs column, so two stop cells and the
+      # empty Block cell read as a dash.
+      assert Enum.count(cells, &(String.trim(LazyHTML.text(&1)) == "—")) == 3
     end
   end
 
@@ -536,18 +555,20 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
 
       {:ok, view, _html} = live(conn, schedules_path(version, route))
 
-      assert has_element?(view, "#schedules-no-patterns", "This route has no patterns yet")
+      assert has_element?(view, "#schedules-no-patterns", "Route NP has no patterns yet")
 
       assert has_element?(
                view,
-               "#schedules-no-patterns a[href='/gtfs/#{version.id}/routes/#{route.route_id}/patterns']",
-               "Go to patterns"
+               "#schedules-no-patterns a[href='/gtfs/#{version.id}/routes/#{route.route_id}/patterns/new']",
+               "Create pattern"
              )
+
+      refute has_element?(view, "#schedules-controls")
 
       refute has_element?(view, "#planning-summary")
     end
 
-    test "a version with no calendars shows the manage-calendars empty state",
+    test "a version with no calendars shows the create-calendar empty state",
          %{conn: conn, organization: organization} do
       version = gtfs_version_fixture(organization.id)
 
@@ -563,8 +584,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
 
       assert has_element?(
                view,
-               "#schedules-no-calendars a[href='/gtfs/#{version.id}/calendars']",
-               "Manage calendars"
+               "#schedules-no-calendars a[href='/gtfs/#{version.id}/calendars/new']",
+               "Create calendar"
              )
 
       refute has_element?(view, "#schedules-view-counts")
@@ -577,7 +598,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       {:ok, view, _html} =
         live(conn, schedules_path(version, rich.route, %{"direction" => "1"}))
 
-      assert has_element?(view, "#schedules-no-trips", "No trips on Weekday going Direction 1")
+      assert has_element?(view, "#schedules-no-trips", "No Weekday trips going Direction 1")
       refute has_element?(view, "#planning-summary")
     end
 
@@ -588,7 +609,20 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       {:ok, view, _html} =
         live(conn, schedules_path(version, rich.route, %{"pattern" => rich.unused.pattern.id}))
 
-      assert has_element?(view, "#schedules-no-trips", "No trips on this pattern for Weekday")
+      assert has_element?(view, "#schedules-no-trips", "No Weekday trips on this pattern")
+      assert has_element?(view, "#schedule-pattern-form")
+    end
+
+    test "Show all patterns leaves the empty pattern",
+         %{conn: conn, version: version} = context do
+      rich = rich_route(context)
+
+      {:ok, view, _html} =
+        live(conn, schedules_path(version, rich.route, %{"pattern" => rich.unused.pattern.id}))
+
+      render_click(element(view, "#schedules-show-all-patterns"))
+
+      assert_patch(view, schedules_path(version, rich.route, %{"service_id" => rich.weekday}))
     end
 
     test "unlinked trips show the warning callout with a link to Patterns",
@@ -678,10 +712,285 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
 
       follow(view, all_stops)
 
-      assert has_element?(view, "#schedules-unavailable")
+      assert has_element?(view, "#schedules-unavailable", "Schedules couldn't be refreshed")
+      assert has_element?(view, "#schedules-retry", "Retry loading")
       assert has_element?(view, "#trip-SCH1_T0600")
       assert has_element?(view, "#planning-summary")
       refute has_element?(view, "#schedules-no-trips")
+    end
+  end
+
+  # A route whose only pattern has a timing but which has no trips at all, so the
+  # first-use empty state is the whole view.
+  defp untripped_route(%{organization: organization, version: version}) do
+    weekly_calendar(organization, version, "SCH_EMPTY_WKD", "Weekday")
+
+    route =
+      route_fixture(organization.id, version.id, %{
+        route_id: "SCH_EMPTY",
+        route_short_name: "SE"
+      })
+
+    Enum.each(1..2, fn index ->
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "SCH_EMPTY_S#{index}",
+        stop_name: "Empty Stop #{index}"
+      })
+    end)
+
+    schedule_pattern_fixture(organization.id, version.id, %{
+      route_id: route.route_id,
+      direction_id: 0,
+      route_pattern_id: "SCH_EMPTY-P1",
+      route_pattern_name: "Only pattern",
+      route_pattern_typicality: 1,
+      timing_name: "Standard",
+      stops: [{"SCH_EMPTY_S1", 0, 0, 1}, {"SCH_EMPTY_S2", 600, 600, 1}]
+    })
+
+    route
+  end
+
+  # One weekday trip that departs at 25:10, past midnight, and reads no missing
+  # time.
+  defp late_route(%{organization: organization, version: version}) do
+    weekday = weekly_calendar(organization, version, "SCH_LATE_WKD", "Weekday")
+
+    route =
+      route_fixture(organization.id, version.id, %{route_id: "SCH_LATE", route_short_name: "SL"})
+
+    Enum.each(1..2, fn index ->
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "SCH_LATE_S#{index}",
+        stop_name: "Late Stop #{index}"
+      })
+    end)
+
+    bundle =
+      schedule_pattern_fixture(organization.id, version.id, %{
+        route_id: route.route_id,
+        direction_id: 0,
+        route_pattern_id: "SCH_LATE-P1",
+        route_pattern_name: "Late pattern",
+        route_pattern_typicality: 1,
+        timing_name: "Standard",
+        stops: [{"SCH_LATE_S1", 0, 0, 1}, {"SCH_LATE_S2", 600, 600, 1}]
+      })
+
+    schedule_trip_fixture(organization.id, version.id, route.route_id, bundle, %{
+      service_id: weekday,
+      trip_id: "SCH_LATE_T1",
+      stop_times: [
+        {"SCH_LATE_S1", "25:10:00", "25:10:00"},
+        {"SCH_LATE_S2", "25:20:00", "25:20:00"}
+      ]
+    })
+
+    %{route: route, bundle: bundle}
+  end
+
+  describe "route header" do
+    setup :editor_scope
+
+    test "the workspace names the route, its origin and the current tab",
+         %{conn: conn, version: version} = context do
+      rich = rich_route(context)
+
+      {:ok, view, _html} = live(conn, schedules_path(version, rich.route))
+
+      assert has_element?(view, "#route-title", "Schedules One")
+      assert has_element?(view, "#route-workspace header", "S1")
+      assert has_element?(view, "#route-mode", "Bus")
+      assert has_element?(view, "#route-identifier", "Route ID SCH1")
+
+      assert has_element?(
+               view,
+               "#route-back[href='/gtfs/#{version.id}/routes']",
+               "Routes"
+             )
+
+      base = "/gtfs/#{version.id}/routes/SCH1"
+      assert has_element?(view, "#route-tab-details[href='#{base}']", "Details")
+      assert has_element?(view, "#route-tab-patterns[href='#{base}/patterns']", "Patterns")
+      assert has_element?(view, "#route-tab-patterns-count", "3")
+      assert has_element?(view, "#route-tab-schedules[aria-current='page']", "Schedules")
+      refute has_element?(view, "#route-tab-details[aria-current]")
+    end
+
+    test "the first paint draws the header skeleton before the route loads",
+         %{conn: conn, version: version} = context do
+      rich = rich_route(context)
+
+      html = conn |> get(schedules_path(version, rich.route)) |> html_response(200)
+
+      assert html =~ "route-workspace-loading"
+      refute html =~ "route-title"
+    end
+  end
+
+  describe "scope bar" do
+    setup :editor_scope
+
+    test "service days are a toggle that shows each day's trip count",
+         %{conn: conn, version: version} = context do
+      rich = rich_route(context)
+
+      {:ok, view, _html} = live(conn, schedules_path(version, rich.route))
+
+      assert has_element?(view, "#calendar-toggle")
+      assert has_element?(view, "#calendar-toggle-option-SCH_WKD[checked]")
+      assert has_element?(view, "label[for='calendar-toggle-option-SCH_WKD']", "Weekday")
+      assert has_element?(view, "label[for='calendar-toggle-option-SCH_WKD']", "8")
+      assert has_element?(view, "label[for='calendar-toggle-option-SCH_HOL']", "0")
+
+      assert has_element?(
+               view,
+               "#schedules-manage-calendars[href='/gtfs/#{version.id}/calendars']",
+               "Manage calendars"
+             )
+    end
+
+    test "choosing a service day patches the URL to it",
+         %{conn: conn, version: version} = context do
+      rich = rich_route(context)
+
+      {:ok, view, _html} = live(conn, schedules_path(version, rich.route))
+
+      view |> form("#calendar-toggle-form", %{"service_id" => rich.holiday}) |> render_change()
+
+      assert_patched(
+        view,
+        schedules_path(version, rich.route, %{"service_id" => rich.holiday})
+      )
+    end
+
+    test "more than five service days are only a select",
+         %{conn: conn, version: version, organization: organization} = context do
+      rich = rich_route(context)
+
+      for index <- 1..3 do
+        weekly_calendar(organization, version, "SCH_EXTRA_#{index}", "Extra #{index}")
+      end
+
+      {:ok, view, _html} = live(conn, schedules_path(version, rich.route))
+
+      refute has_element?(view, "#calendar-toggle")
+
+      assert has_element?(
+               view,
+               "#calendar-filter option[value='SCH_EXTRA_3']",
+               "Extra 3 · 0 trips"
+             )
+    end
+
+    test "Add trips is the primary while the view has trips",
+         %{conn: conn, version: version} = context do
+      rich = rich_route(context)
+
+      {:ok, view, _html} = live(conn, schedules_path(version, rich.route))
+
+      assert has_element?(view, "#schedules-add-trips.btn-primary")
+      refute has_element?(view, "#schedules-empty-add-trips")
+    end
+  end
+
+  describe "empty states carry one next step" do
+    setup :editor_scope
+
+    test "a route with no trips offers Add trips in the card and steps the toolbar back",
+         %{conn: conn, version: version} = context do
+      route = untripped_route(context)
+
+      {:ok, view, _html} = live(conn, schedules_path(version, route))
+
+      assert has_element?(view, "#schedules-no-trips", "Route SE has no trips yet")
+      assert has_element?(view, "#schedules-empty-add-trips", "Add trips")
+      assert has_element?(view, "#schedules-add-trips.btn-outline")
+      refute has_element?(view, "#schedules-add-trips.btn-primary")
+
+      render_click(element(view, "#schedules-empty-add-trips"))
+
+      assert has_element?(view, "#trip-drawer-overlay[data-open='true']")
+    end
+
+    test "a pattern with no timing disables Add trips with the reason and links to it",
+         %{conn: conn, version: version, organization: organization} do
+      weekly_calendar(organization, version, "SCH_NOTIME_WKD", "Weekday")
+
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "SCH_NOTIME",
+          route_short_name: "NT"
+        })
+
+      route_pattern_fixture(organization.id, version.id, %{
+        route_id: route.route_id,
+        direction_id: 0,
+        route_pattern_id: "SCH_NOTIME-P1",
+        route_pattern_name: "Untimed"
+      })
+
+      {:ok, view, _html} = live(conn, schedules_path(version, route))
+
+      assert has_element?(view, "#schedules-add-trips[disabled]")
+
+      assert has_element?(
+               view,
+               "#schedules-add-blocked",
+               "Add a timing to a pattern before adding trips."
+             )
+
+      assert has_element?(view, "#schedules-no-trips", "Add a timing before adding trips")
+
+      assert has_element?(
+               view,
+               "#schedules-no-trips a[href='/gtfs/#{version.id}/routes/SCH_NOTIME/patterns/SCH_NOTIME-P1']",
+               "Add timing"
+             )
+
+      refute has_element?(view, "#schedules-empty-add-trips")
+    end
+  end
+
+  describe "footnotes and the trips per hour disclosure" do
+    setup :editor_scope
+
+    test "the after-midnight note and day marker appear only with a time past midnight",
+         %{conn: conn, version: version} = context do
+      late = late_route(context)
+      section_id = late.bundle.pattern.route_pattern_id
+
+      {:ok, view, _html} = live(conn, schedules_path(version, late.route))
+
+      assert has_element?(view, "#trip-SCH_LATE_T1-start", "25:10")
+      assert has_element?(view, "#trip-SCH_LATE_T1-marker", "+1 day")
+      assert has_element?(view, "#section-#{section_id}-after-midnight", "1:10 AM the next day")
+      refute has_element?(view, "#section-#{section_id}-missing-times")
+    end
+
+    test "the missing-time note appears only with a stop that has no time",
+         %{conn: conn, version: version} = context do
+      rich = rich_route(context)
+      section_id = rich.downtown.pattern.route_pattern_id
+
+      {:ok, view, _html} = live(conn, schedules_path(version, rich.route))
+
+      assert has_element?(view, "#section-#{section_id}-missing-times", "no time is recorded")
+      refute has_element?(view, "#section-#{section_id}-after-midnight")
+    end
+
+    test "trips per hour starts closed behind a disclosure that controls the panel",
+         %{conn: conn, version: version} = context do
+      rich = rich_route(context)
+
+      {:ok, view, _html} = live(conn, schedules_path(version, rich.route))
+
+      assert has_element?(
+               view,
+               "#hours-toggle[aria-expanded='false'][aria-controls='hours-panel']"
+             )
+
+      assert has_element?(view, "#hours-panel[hidden] #trips-per-hour")
     end
   end
 
@@ -768,7 +1077,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
 
       {:ok, view, _html} = live(conn, schedules_path(version, rich.route))
 
-      assert has_element?(view, "#vehicles-needed-line", "At least 3 vehicles for route S1 alone")
+      assert has_element?(view, "#vehicles-needed-count", "3")
+      assert has_element?(view, "#vehicles-needed-line", "at least, for route S1 alone")
       assert has_element?(view, "#trip-SCH1_T0600-start", "06:00")
     end
   end

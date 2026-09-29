@@ -24,6 +24,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   """
   use GtfsPlannerWeb, :live_view
 
+  import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1]
+
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
@@ -63,6 +65,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
      |> assign(:rows_in_view, 0)
      |> assign(:can_add?, false)
      |> assign(:add_reason, nil)
+     |> assign(:any_trips?, false)
      |> assign(:selected_ids, MapSet.new())
      |> assign(:selected_count, 0)
      |> assign(:vehicle_change, nil)
@@ -352,7 +355,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
         ids: Enum.map(selected, & &1.id),
         title: "Delete #{length(selected)} trips from #{label}?",
         confirm_label: "Delete #{length(selected)} trips",
-        detail: nil,
+        detail: departures_detail(selected),
         frequency?: Enum.any?(selected, & &1.frequency?),
         service_id: service_id,
         return_focus_id: "schedules-delete-selected",
@@ -469,6 +472,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     |> assign(:rows_in_view, Enum.sum(Enum.map(sections, &length(&1.rows))))
     |> assign(:can_add?, can_add?(payload))
     |> assign(:add_reason, add_reason(payload))
+    |> assign(:any_trips?, Enum.any?(payload.calendars, &(&1.route_trip_count > 0)))
     |> assign(:section_index, Map.new(sections, &{"section-#{&1.pattern.route_pattern_id}", &1}))
     |> assign(:calendar_form, to_form(%{"service_id" => payload.filters.service_id}))
     |> assign(:pattern_form, to_form(%{"pattern" => pattern_param(payload.filters.pattern)}))
@@ -890,7 +894,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp dialog_problem(socket, dialog, reason) do
-    assign(socket, :delete_dialog, %{dialog | error: ScheduleComponents.error_message(reason)})
+    assign(socket, :delete_dialog, %{
+      dialog
+      | error: ScheduleComponents.delete_error_message(reason)
+    })
   end
 
   defp drawer_field_error(socket, drawer, field, message) do
@@ -1529,12 +1536,58 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp add_reason(payload) do
     cond do
-      payload.calendars == [] -> "Add a calendar before adding trips."
-      payload.patterns == [] -> "Add a pattern before adding trips."
-      not Enum.any?(payload.patterns, &(&1.timings != [])) -> "Add a timing before adding trips."
-      true -> nil
+      payload.calendars == [] ->
+        "Create a calendar before adding trips."
+
+      payload.patterns == [] ->
+        "Create a pattern before adding trips."
+
+      not Enum.any?(payload.patterns, &(&1.timings != [])) ->
+        "Add a timing to a pattern before adding trips."
+
+      true ->
+        nil
     end
   end
+
+  # The confirmation lists what the delete removes: the first departures of the
+  # selection in clock order, and how many more there are. A selected trip with no
+  # readable time has no departure to list.
+  @listed_departures 6
+
+  defp departures_detail(selected) do
+    times =
+      selected
+      |> Enum.map(& &1.start_secs)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.sort()
+      |> Enum.map(&clock/1)
+
+    case {Enum.take(times, @listed_departures), length(times) - @listed_departures} do
+      {[], _more} -> nil
+      {shown, more} when more > 0 -> "Departures #{Enum.join(shown, ", ")} and #{more} more"
+      {shown, _more} -> "Departures #{Enum.join(shown, ", ")}"
+    end
+  end
+
+  # Adding a timing happens on the pattern that lacks one; with none to name, the
+  # patterns list is the way in.
+  defp timing_path(patterns, version_id, route_id) do
+    base = "/gtfs/#{version_id}/routes/#{route_id}/patterns"
+
+    case Enum.find(patterns, &(&1.timings == [])) do
+      nil -> base
+      pattern -> base <> "/" <> URI.encode(pattern.route_pattern_id, &URI.char_unreserved?/1)
+    end
+  end
+
+  # An empty state below the toolbar carries the page's primary action when it
+  # offers to add the first trip, so the toolbar's own Add trips steps back.
+  defp add_primary?(can_add?, sections_empty?, filters),
+    do: not (can_add? and sections_empty? and filters.pattern == :all)
+
+  defp scope_visible?(%{calendars: calendars, patterns: patterns}),
+    do: calendars != [] and patterns != []
 
   # --- render ----------------------------------------------------------------
 
@@ -1550,95 +1603,81 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <:sub_header :if={@route}>
-        <.route_sub_nav
+      <div id="route-schedules" phx-hook="FormErrorFocus" class="ds-page">
+        <.route_header
           route={@route}
           gtfs_version_id={@current_gtfs_version.id}
           active_tab={:schedules}
+          pattern_count={@payload && length(@payload.patterns)}
+          loading={@load_state == :loading}
         />
-      </:sub_header>
 
-      <div id="route-schedules" phx-hook="FormErrorFocus" class="mt-8 space-y-6">
-        <p id="schedules-live-region" role="status" aria-live="polite" class="text-sm">
+        <p id="schedules-live-region" role="status" aria-live="polite" class="sr-only">
           <%= if @vehicle_change do %>
-            changed from {@vehicle_change.from} to {@vehicle_change.to}
+            Vehicles needed changed from {@vehicle_change.from} to {@vehicle_change.to}
           <% end %>
         </p>
 
         <%= cond do %>
           <% @load_state == :loading and is_nil(@payload) -> %>
-            <.skeleton id="schedules-loading" label="Loading schedules">
-              <div class="space-y-3">
-                <div :for={_row <- 1..4} class="flex items-center gap-4">
-                  <div class="size-4 shrink-0 bg-base-300"></div>
-                  <div class="h-4 w-16 shrink-0 bg-base-300"></div>
-                  <div class="h-4 flex-1 bg-base-300"></div>
-                  <div class="h-4 flex-1 bg-base-300"></div>
-                  <div class="h-4 flex-1 bg-base-300"></div>
-                  <div class="h-4 w-24 shrink-0 bg-base-300"></div>
-                  <div class="h-4 w-16 shrink-0 bg-base-300"></div>
-                  <div class="h-4 w-12 shrink-0 bg-base-300"></div>
-                </div>
-              </div>
-            </.skeleton>
+            <ScheduleComponents.loading_skeleton />
           <% true -> %>
+            <ScheduleComponents.scope_bar
+              :if={@payload && scope_visible?(@payload)}
+              calendar_form={@calendar_form}
+              calendars={@payload.calendars}
+              filters={@filters}
+              direction_labels={@payload.direction_labels}
+              calendars_path={"/gtfs/#{@current_gtfs_version.id}/calendars"}
+              can_add?={@can_add?}
+              add_reason={@add_reason}
+              add_primary?={add_primary?(@can_add?, @sections_empty?, @filters)}
+            />
+
             <ScheduleComponents.connectivity_notice />
 
-            <div :if={@load_state == :unavailable} id="schedules-unavailable">
-              <.callout kind="error" title="Schedules couldn't be loaded">
-                Your trips haven't changed. Try loading them again.
-                <button
-                  id="schedules-retry"
-                  type="button"
-                  phx-click="retry"
-                  class="btn btn-sm btn-outline mt-2 min-h-11"
-                >
-                  Retry
-                </button>
-              </.callout>
-            </div>
+            <ScheduleComponents.unavailable_notice
+              :if={@load_state == :unavailable}
+              stale?={@payload != nil}
+            />
 
-            <div :if={@payload} class="space-y-6">
-              <ScheduleComponents.controls
-                calendar_form={@calendar_form}
-                pattern_form={@pattern_form}
-                calendars={@payload.calendars}
-                patterns={@payload.patterns}
-                filters={@filters}
-                direction_labels={@payload.direction_labels}
-                calendars_path={"/gtfs/#{@current_gtfs_version.id}/calendars"}
-                can_add?={@can_add?}
-                add_reason={@add_reason}
-              />
-
+            <div :if={@payload}>
               <ScheduleComponents.unlinked_trips
                 :if={@payload.unlinked_trip_count > 0}
                 count={@payload.unlinked_trip_count}
                 patterns_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"}
               />
 
-              <ScheduleComponents.sections_meta
-                :if={@payload.calendars != []}
-                row_count={@rows_in_view}
-                calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
-                direction_label={direction_label(@payload)}
-                stops={@filters.stops}
-              />
-
               <ScheduleComponents.block_notice :if={@block_notice} notice={@block_notice} />
 
               <%= cond do %>
                 <% @payload.calendars == [] -> %>
-                  <ScheduleComponents.no_calendars calendars_path={"/gtfs/#{@current_gtfs_version.id}/calendars"} />
+                  <ScheduleComponents.no_calendars new_calendar_path={"/gtfs/#{@current_gtfs_version.id}/calendars/new"} />
                 <% @payload.patterns == [] -> %>
-                  <ScheduleComponents.no_patterns patterns_path={
-                    ~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"
-                  } />
+                  <ScheduleComponents.no_patterns
+                    route={@payload.route}
+                    new_pattern_path={
+                      ~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/new"
+                    }
+                  />
                 <% @sections_empty? -> %>
+                  <ScheduleComponents.filter_bar
+                    :if={@filters.pattern != :all}
+                    pattern_form={@pattern_form}
+                    patterns={@payload.patterns}
+                    filters={@filters}
+                    row_count={@rows_in_view}
+                    calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
+                    direction_label={direction_label(@payload)}
+                  />
                   <ScheduleComponents.no_trips
+                    route={@payload.route}
                     calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
                     direction_label={direction_label(@payload)}
                     pattern_name={pattern_name(@payload)}
+                    any_trips?={@any_trips?}
+                    can_add?={@can_add?}
+                    timing_path={timing_path(@payload.patterns, @current_gtfs_version.id, @route_id)}
                   />
                 <% true -> %>
                   <ScheduleComponents.planning_summary
@@ -1649,16 +1688,26 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                     vehicle_change={@vehicle_change}
                   />
 
-                  <ScheduleComponents.bulk_toolbar selected_count={@selected_count} />
+                  <ScheduleComponents.filter_bar
+                    pattern_form={@pattern_form}
+                    patterns={@payload.patterns}
+                    filters={@filters}
+                    row_count={@rows_in_view}
+                    calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
+                    direction_label={direction_label(@payload)}
+                  />
 
-                  <div id="schedules-sections" phx-update="stream" class="space-y-8">
+                  <div id="schedules-sections" phx-update="stream" class="mt-3 space-y-6">
                     <div :for={{dom_id, section} <- @streams.sections} id={dom_id}>
                       <ScheduleComponents.section
                         section={section}
                         selected_ids={@selected_ids}
+                        calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
                       />
                     </div>
                   </div>
+
+                  <ScheduleComponents.bulk_toolbar selected_count={@selected_count} />
               <% end %>
 
               <ScheduleComponents.trip_drawer
@@ -1667,9 +1716,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                 calendars={@payload.calendars}
                 blocks_path={"/gtfs/#{@current_gtfs_version.id}/blocks"}
                 patterns_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"}
+                version_name={@current_gtfs_version.name}
               />
 
-              <ScheduleComponents.delete_dialog dialog={@delete_dialog} />
+              <ScheduleComponents.delete_dialog
+                dialog={@delete_dialog}
+                version_name={@current_gtfs_version.name}
+              />
             </div>
         <% end %>
       </div>

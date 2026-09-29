@@ -117,6 +117,44 @@ defmodule GtfsPlannerWeb.RouteWorkspaceTest do
              ]
     end
 
+    test "shows a pattern count on the Patterns tab only when given one" do
+      assigns = %{route: route(%{})}
+
+      counted =
+        rendered_to_string(~H"""
+        <.route_header route={@route} gtfs_version_id="v1" active_tab={:schedules} pattern_count={3} />
+        """)
+
+      assert doc(counted) |> LazyHTML.query("#route-tab-patterns-count") |> LazyHTML.text() =~ "3"
+
+      assert doc(render_header(route(%{})))
+             |> LazyHTML.query("#route-tab-patterns-count")
+             |> Enum.empty?()
+    end
+
+    test "draws only the way back while the route has not loaded" do
+      assigns = %{}
+
+      idle =
+        rendered_to_string(~H"""
+        <.route_header route={nil} gtfs_version_id="v1" />
+        """)
+
+      loading =
+        rendered_to_string(~H"""
+        <.route_header route={nil} gtfs_version_id="v1" loading />
+        """)
+
+      assert doc(idle) |> LazyHTML.query("#route-back") |> Enum.count() == 1
+
+      assert doc(idle)
+             |> LazyHTML.query("h1, #route-tabs, #route-workspace-loading")
+             |> Enum.empty?()
+
+      assert doc(loading) |> LazyHTML.query("#route-workspace-loading") |> Enum.count() == 1
+      assert doc(loading) |> LazyHTML.query("h1, #route-tabs") |> Enum.empty?()
+    end
+
     test "shows an Inactive chip only for an inactive route" do
       active = render_header(route(%{}))
       inactive = render_header(route(%{active: false}))
