@@ -125,3 +125,80 @@ test.describe("drawer review", () => {
     await expect(page.locator('[id^="agent-prepared-"]').last()).toBeFocused();
   });
 });
+
+test.describe("helper journey", () => {
+  test("prepares a change, applies it through the drawer and declines out-of-scope asks", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await openCalendars(page);
+
+    await page.locator("#agent-helper-open").click();
+
+    await expect(page.locator("#agent-panel")).toBeVisible();
+    await expect(page.locator("#agent-composer-input")).toBeFocused();
+
+    // Helper sessions live in the server process and persist between tests
+    // for this user and version, so every journey starts a new conversation.
+    await page.locator("#agent-new-conversation").click();
+
+    await page
+      .locator("#agent-composer-input")
+      .fill("No school service next Monday and Tuesday");
+    await page.locator("#agent-composer-input").press("Control+Enter");
+
+    const preparedCard = page.locator('[id^="agent-prepared-"]').last();
+    await expect(preparedCard).toContainText("Stop · School express", {
+      timeout: 30_000,
+    });
+    await expect(preparedCard).toContainText("Stop · School weekdays");
+
+    await page.locator('[id^="agent-review-prepared-"]').last().click();
+
+    const reviewPanel = page.locator("#calendar-date-change-review-panel");
+    await expect(reviewPanel).toBeVisible();
+    await expect(reviewPanel).toContainText("School weekdays");
+    await expect(reviewPanel).toContainText("School express");
+
+    await page.locator("#calendar-date-change-apply").click();
+
+    await expect(reviewPanel).toHaveCount(0);
+    await expect(preparedCard).toContainText("Applied");
+
+    await page.locator("#agent-composer-input").fill("Delete route 12");
+    await page.locator("#agent-composer-input").press("Control+Enter");
+
+    await expect(page.locator("#agent-entries")).toContainText(
+      "That isn't available in Calendars",
+      { timeout: 30_000 },
+    );
+
+    await page.locator("#agent-panel-close").click();
+
+    await expect(page.locator("#agent-panel")).toHaveCount(0);
+    await expect(page.locator("#agent-helper-open")).toBeFocused();
+  });
+
+  test("keeps the helper usable at phone width", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openCalendars(page);
+
+    await page.locator("#agent-helper-open").click();
+    await expect(page.locator("#agent-panel")).toBeVisible();
+
+    // Helper sessions live in the server process and persist between tests
+    // for this user and version, so every journey starts a new conversation.
+    await page.locator("#agent-new-conversation").click();
+    await expect(page.locator("#agent-composer-input")).toBeVisible();
+
+    const fitsViewport = await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    );
+    expect(fitsViewport).toBe(true);
+
+    await page.locator("#agent-panel-close").click();
+
+    await expect(page.locator("#agent-panel")).toHaveCount(0);
+    await expect(page.locator("#agent-helper-open")).toBeFocused();
+  });
+});
