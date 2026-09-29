@@ -126,8 +126,8 @@ defmodule GtfsPlanner.Agents.DispatchTest do
   alias GtfsPlanner.Agents.EchoPack
   alias GtfsPlanner.Agents.Scope
 
-  # Step 9 extends this list with every value of `GtfsPlanner.Agents.packs/0`.
-  @packs [EchoPack]
+  # EchoPack plus every pack the application ships, so the fence covers the registry.
+  @packs [EchoPack | Map.values(GtfsPlanner.Agents.packs())]
 
   @arguments_cap 32_768
   @result_cap 32_768

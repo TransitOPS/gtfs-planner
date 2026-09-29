@@ -152,6 +152,11 @@ defmodule GtfsPlanner.Agents.Session do
 
   @impl true
   def init(opts) do
+    # A supervisor shutdown otherwise kills this process before `terminate/2`
+    # runs, leaving its turn task alive in `Agents.TurnSupervisor`; trapping
+    # exits is what makes the session's death release its capacity (AC-30).
+    Process.flag(:trap_exit, true)
+
     state = %{
       scope: Keyword.fetch!(opts, :scope),
       pack: Keyword.fetch!(opts, :pack),
