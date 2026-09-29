@@ -55,12 +55,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   @drawers %{
     "service_dates" => :service_dates,
     "checks" => :checks,
-    "peak" => :peak,
     "problems" => :checks,
-    # The plan figures send `plan_summary` (AC-34). Step 36 replaces the Peak
-    # drawer with that drawer, so the key resolves to the Peak drawer until
-    # then and the old `peak` key keeps opening it for older links.
-    "plan_summary" => :peak
+    # The plan figures send `plan_summary` (AC-34, AC-35). The old `peak` key
+    # maps to the same drawer so an older link still opens the page's plan
+    # summary rather than a drawer that no longer exists.
+    "plan_summary" => :plan_summary,
+    "peak" => :plan_summary
   }
 
   # The settings save keeps the reader's value when the save is refused, so the
@@ -89,6 +89,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   @empty_counts %{blocks: 0, trips: 0, unassigned: 0, problems: 0, notices: 0}
   @empty_peak %{count: 0, at_secs: nil, excluded_unassigned: 0, excluded_frequency: 0}
   @empty_figures %{vehicles: 0, minimum: 0, riders: 0}
+
+  # The Plan summary's chart counts the same 15-minute bins as the day load's own
+  # `bins`, so the width is one constant rather than two that could drift.
+  @bin_secs 900
 
   # The destination picker offers at most this many matches, so a day type with
   # thousands of blocks still narrows by search rather than by scrolling (AC-26).
@@ -1611,12 +1615,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       day_type: day.day_type,
       counts: day.counts,
       figures: day.figures,
-      fleet: day.fleet,
+      fleet: fleet_table_rows(day),
       fleet_shortfalls: fleet_shortfall_rows(day),
+      plan_chart: plan_chart(day),
+      longest_stretch: day.longest_stretch,
+      relief_stop_count: MapSet.size(day.context.relief_stop_ids),
+      estimated?: day.estimated_pairs > 0,
+      repeating?: day.peak.excluded_frequency > 0,
+      errors?: Enum.any?(day.findings, &(&1.severity == :error)),
       garages?: map_size(day.context.garages) > 0,
       vehicles?: day.context.fleet != [],
       peak: day.peak,
-      bins: day.bins,
       axis: timeline_axis(day),
       max_piece_minutes: day.settings.max_piece_minutes,
       routes: day.routes,
@@ -1671,10 +1680,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       figures: @empty_figures,
       fleet: [],
       fleet_shortfalls: [],
+      plan_chart: nil,
+      longest_stretch: nil,
+      relief_stop_count: 0,
+      estimated?: false,
+      repeating?: false,
+      errors?: false,
       garages?: false,
       vehicles?: false,
       peak: @empty_peak,
-      bins: [],
       axis: nil,
       max_piece_minutes: nil,
       routes: %{},
@@ -1704,6 +1718,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     |> stream(:pool_rows, [], reset: true)
   end
 
+  # The count strip and the Plan summary chart use the same 15-minute bins, so
+  # the bin width is one constant rather than two that could drift apart.
+  @bin_secs 900
+
+  # The count strip and the Plan summary chart use the same 15-minute bins, so
+  # the bin width is one constant rather than two that could drift apart.
+  @bin_secs 900
+
   # The plan figures of one day type, as Day loading step 4 derived them, and the
   # short fleet rows with the garage and type names the day resolved, so
   # `render/1` prints numbers and words rather than re-deriving either (CR-6).
@@ -1720,9 +1742,83 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
-  # A garage or type the context no longer carries cannot reach a short row — a
-  # block resolves both through the same context — so the fallbacks here are for
-  # a deleted name, never for a planned one.
+  # Every fleet row of the Plan summary's table, in `Fleet.rows/2`'s own order
+  # (typed rows then the garage total, garages in order), with the garage and
+  # type names the day resolved (INV-9). The `:all` row is the garage's total,
+  # which the table prints muted and never charts, because a bar above a total
+  # is checked twice over. Each row carries its own index rather than the
+  # row's UUIDs, so the table's DOM ids stay short and stable.
+  defp fleet_table_rows(day) do
+    day.fleet
+    |> Enum.with_index()
+    |> Enum.map(fn {row, index} ->
+      %{
+        index: index,
+        garage: garage_name(day.context.garages, row.garage_id),
+        type: vehicle_type_name(day.context.vehicle_types, row.vehicle_type_id),
+        garage_id: row.garage_id,
+        vehicle_type_id: row.vehicle_type_id,
+        needed: row.needed,
+        listed: row.listed,
+        at_secs: row.at_secs,
+        total?: row.vehicle_type_id == :all,
+        short?: row.status == :short
+      }
+    end)
+  end
+
+  # The Plan summary's chart for the day's fleet rows: one garage · type's
+  # vehicles out per 15-minute bin against that row's own listing. The focused
+  # row is the first short row, else the first typed row — never a garage total,
+  # which is the sum of the typed rows and would chart the same demand twice. A
+  # day with no typed row at all has no focus and prints the table without a
+  # chart.
+  #
+  # The bars are counted by `Blocking.Summary.bins/2` over the focused row's own
+  # blocks, which is the same count `Fleet.rows/2` peaks for that row, so the
+  # chart's tallest bar and the table's `needed` can never disagree. The scale
+  # is the taller of the peak and the listing, so a listing above every bar
+  # draws its line above them all instead of off the top.
+  defp plan_chart(day) do
+    rows = fleet_table_rows(day)
+
+    with row when not is_nil(row) <-
+           Enum.find(rows, &(&1.short? and not &1.total?)) || Enum.find(rows, &(not &1.total?)),
+         bins when bins != [] <- row_bins(day, row) do
+      top = Enum.max([row.needed, row.listed, 1])
+
+      %{
+        row: row,
+        bins: bins,
+        listed_height: BlocksComponents.bar_height(row.listed, top),
+        bars:
+          Enum.map(bins, fn bin ->
+            bin
+            |> Map.put(:height, BlocksComponents.bar_height(bin.count, top))
+            |> Map.put(:over_listed?, bin.count > row.listed)
+          end)
+      }
+    else
+      _no_focus -> nil
+    end
+  end
+
+  # The blocks a row counts: a typed row is its garage's blocks of that type, a
+  # garage total is every block of that garage. `Fleet.rows/2` peaks over
+  # exactly these spans, so the bins and the row's `needed` are one count.
+  defp row_bins(day, row) do
+    day.blocks
+    |> Enum.filter(fn block ->
+      block.resolution.garage_id == row.garage_id and
+        (row.total? or block.resolution.vehicle_type_id == row.vehicle_type_id)
+    end)
+    |> Enum.map(& &1.summary)
+    |> Summary.bins(@bin_secs)
+  end
+
+  # A garage or type the context no longer carries cannot reach a short row —
+  # a block resolves both through the same context — so the fallbacks here are
+  # for a deleted name, never for a planned one.
   defp garage_name(garages, garage_id) do
     case Map.fetch(garages, garage_id) do
       {:ok, %{name: name}} -> name
@@ -1890,11 +1986,22 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   findings={@findings}
                   trip_labels={@trip_labels}
                 />
-                <BlocksComponents.peak_drawer
-                  open={@open_drawer == :peak}
-                  peak={@peak}
-                  bins={@bins}
-                  axis={@axis}
+                <BlocksComponents.plan_summary_drawer
+                  open={@open_drawer == :plan_summary}
+                  figures={@figures}
+                  fleet_rows={@fleet}
+                  chart={@plan_chart}
+                  day_type={@day_type}
+                  min_layover_minutes={@min_layover_minutes}
+                  longest_stretch={@longest_stretch}
+                  max_piece_minutes={@max_piece_minutes}
+                  relief_stop_count={@relief_stop_count}
+                  estimated?={@estimated?}
+                  repeating?={@repeating?}
+                  errors?={@errors?}
+                  garages?={@garages?}
+                  vehicles?={@vehicles?}
+                  version_id={@state.version_id}
                 />
                 <BlocksComponents.layover_drawer
                   open={@open_drawer == :layover}

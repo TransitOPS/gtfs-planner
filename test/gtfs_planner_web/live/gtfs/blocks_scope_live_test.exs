@@ -526,7 +526,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
              )
     end
 
-    test "the peak drawer shows the definition and one row per 15-minute bin",
+    test "the Peak figure opens the Plan summary, which reports the day type",
          %{version: version} = context do
       seed_overlapping_day(context)
       conn = editor_conn(context)
@@ -535,25 +535,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
 
       view |> element("#blocks-summary-figures-item-peak") |> render_click()
 
-      assert has_element?(view, "#peak-drawer-overlay[data-open='true']")
+      assert has_element?(view, "#plan-summary-drawer-overlay[data-open='true']")
 
-      assert has_element?(
-               view,
-               "#peak-drawer",
-               "Blocks in progress, including time between trips. Excludes unassigned and frequency trips."
-             )
+      # Three blocks and the unassigned trip are left out of the plan's own
+      # figures, and the minimum is the day's lower bound.
+      assert has_element?(view, "#plan-summary-vehicles", "3 vehicles used")
+      assert has_element?(view, "#plan-summary-minimum", "2")
 
-      # Blocks span 08:00–11:00, which is twelve 15-minute bins.
-      assert element_count(view, "#peak-bins tbody tr[data-role='peak-bin']") == 12
-
-      assert has_element?(view, "#peak-bin-28800", "08:00")
-      assert has_element?(view, "#peak-bin-38700", "10:45")
-
-      assert has_element?(
-               view,
-               "#peak-exclusions",
-               "Excludes 1 unassigned trip and 0 frequency trips"
-             )
+      # The plan summary's chart is one garage · type's demand against that
+      # row's own listing, and this version has no garage at all, so the table
+      # is replaced by the sentence that says what is missing. The bins this
+      # file used to count belong to the removed Peak chart.
+      assert has_element?(view, "#plan-summary-fleet-no-garage")
+      refute has_element?(view, "#plan-summary-chart")
     end
 
     test "the service dates drawer lists the dates by month",
@@ -601,8 +595,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       view |> render_hook("open_drawer", %{"drawer" => "checks"})
       assert has_element?(view, "#checks-drawer-overlay[data-open='true']")
 
+      # The old `peak` key is the same drawer under its old name, so an older
+      # link still opens the plan summary rather than nothing.
       view |> render_hook("open_drawer", %{"drawer" => "peak"})
-      assert has_element?(view, "#peak-drawer-overlay[data-open='true']")
+      assert has_element?(view, "#plan-summary-drawer-overlay[data-open='true']")
     end
   end
 

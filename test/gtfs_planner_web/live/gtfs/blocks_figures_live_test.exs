@@ -111,7 +111,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksFiguresLiveTest do
       assert item_text(view, "blocks-summary-figures", "peak") == "Peak out 4 at 06:05"
     end
 
-    test "each figure opens the Plan summary, which is the Peak drawer until step 36",
+    test "each figure opens the Plan summary",
          %{version: version} = context do
       seed_plan!(context, vehicles: 4)
 
@@ -127,7 +127,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksFiguresLiveTest do
 
       view |> element("#blocks-summary-figures-item-vehicles") |> render_click()
 
-      assert has_element?(view, "#peak-drawer-overlay[data-open='true']")
+      assert has_element?(view, "#plan-summary-drawer-overlay[data-open='true']")
     end
 
     test "the figures are the whole day type's whatever the workspace is showing",
