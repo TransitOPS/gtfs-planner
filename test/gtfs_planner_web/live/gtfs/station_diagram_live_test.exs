@@ -9358,6 +9358,137 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#flash-error", "Invalid drag position")
     end
 
+    test "drag_end persists a y above 100 on a portrait floorplan", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DRAG_CHILD_PORTRAIT",
+          stop_name: "Drag Child Portrait",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 20.0, "y" => 25.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => to_string(child_stop.id)})
+
+      render_hook(view, "drag_end", %{
+        "id" => to_string(child_stop.id),
+        "x" => "44.2",
+        "y" => "103"
+      })
+
+      assert Gtfs.get_stop!(child_stop.id).diagram_coordinate == %{"x" => 44.2, "y" => 103.0}
+    end
+
+    test "drag_end rejects a y above the diagram ceiling", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DRAG_CHILD_TALL",
+          stop_name: "Drag Child Tall",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 40.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => to_string(child_stop.id)})
+
+      render_hook(view, "drag_end", %{"id" => to_string(child_stop.id), "x" => "55", "y" => "401"})
+
+      assert Gtfs.get_stop!(child_stop.id).diagram_coordinate == %{"x" => 40.0, "y" => 40.0}
+      assert has_element?(view, "#flash-error", "Invalid drag position")
+    end
+
+    test "drag_end rejects a negative y", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DRAG_CHILD_NEG",
+          stop_name: "Drag Child Negative",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 40.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => to_string(child_stop.id)})
+
+      render_hook(view, "drag_end", %{"id" => to_string(child_stop.id), "x" => "55", "y" => "-1"})
+
+      assert Gtfs.get_stop!(child_stop.id).diagram_coordinate == %{"x" => 40.0, "y" => 40.0}
+      assert has_element?(view, "#flash-error", "Invalid drag position")
+    end
+
+    test "drag_end rejects an x above 100 even when y is within the portrait range", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      child_stop =
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: "DRAG_CHILD_WIDE",
+          stop_name: "Drag Child Wide",
+          location_type: 0,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 40.0, "y" => 40.0}
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "drag_start", %{"id" => to_string(child_stop.id)})
+
+      render_hook(view, "drag_end", %{
+        "id" => to_string(child_stop.id),
+        "x" => "101",
+        "y" => "103"
+      })
+
+      assert Gtfs.get_stop!(child_stop.id).diagram_coordinate == %{"x" => 40.0, "y" => 40.0}
+      assert has_element?(view, "#flash-error", "Invalid drag position")
+    end
+
     test "drag_cancel resets state", %{
       conn: conn,
       user: user,

@@ -3492,6 +3492,37 @@ defmodule GtfsPlanner.GtfsTest do
       assert Decimal.equal?(updated.scale_meters_per_unit, Decimal.new("2.5"))
     end
 
+    test "update_stop_level_scale/2 saves a scale point past y = 100 on a portrait floorplan", %{
+      stop_level: stop_level
+    } do
+      attrs = %{
+        scale_point_a: %{"x" => 10.0, "y" => 103.0},
+        scale_point_b: %{"x" => 20.0, "y" => 103.0},
+        scale_distance_meters: Decimal.new("25.0"),
+        scale_meters_per_unit: Decimal.new("2.5")
+      }
+
+      assert {:ok, updated} = Gtfs.update_stop_level_scale(stop_level, attrs)
+      assert updated.scale_point_a == attrs.scale_point_a
+      assert updated.scale_point_b == attrs.scale_point_b
+    end
+
+    test "update_stop_level_scale/2 rejects a scale point above the y ceiling with a changeset error",
+         %{stop_level: stop_level} do
+      attrs = %{
+        scale_point_a: %{"x" => 10.0, "y" => 401.0},
+        scale_point_b: %{"x" => 20.0, "y" => 12.0},
+        scale_distance_meters: Decimal.new("25.0"),
+        scale_meters_per_unit: Decimal.new("2.5")
+      }
+
+      assert {:error, changeset} = Gtfs.update_stop_level_scale(stop_level, attrs)
+
+      assert "must include numeric x between 0 and 100 and y between 0 and 400" in errors_on(
+               changeset
+             ).scale_point_a
+    end
+
     test "all-or-none validation fails partial payloads", %{stop_level: stop_level} do
       assert {:error, changeset} =
                Gtfs.update_stop_level_scale(stop_level, %{

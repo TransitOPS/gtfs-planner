@@ -141,6 +141,48 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalMarkersTest do
 
       assert StationJournalMarkers.project(index, geometry) == []
     end
+
+    test "projects a pin past y = 100 on a portrait floorplan and omits one above the y ceiling" do
+      now = DateTime.utc_now()
+      level_id = Ecto.UUID.generate()
+
+      bottom_strip_pin = %JournalEntry{
+        id: Ecto.UUID.generate(),
+        target_type: "pin",
+        stop_level_id: level_id,
+        diagram_x: 50.0,
+        diagram_y: 103.0,
+        captured_at: now,
+        inserted_at: now
+      }
+
+      beyond_ceiling_pin = %JournalEntry{
+        id: Ecto.UUID.generate(),
+        target_type: "pin",
+        stop_level_id: level_id,
+        diagram_x: 50.0,
+        diagram_y: 401.0,
+        captured_at: now,
+        inserted_at: now
+      }
+
+      index =
+        StationJournalMarkers.build_index(
+          [bottom_strip_pin, beyond_ceiling_pin],
+          %{presentations: %{}, nodes: %{}, pathways: %{}, stop_levels: %{}}
+        )
+
+      geometry = %{
+        active_level_id: level_id,
+        child_stops: [],
+        pathways: [],
+        focused_marker_id: nil
+      }
+
+      assert [marker] = StationJournalMarkers.project(index, geometry)
+      assert marker.id == "journal-marker-pin-#{bottom_strip_pin.id}"
+      assert marker.y == 103.0
+    end
   end
 
   describe "build_index/2 and project/2 for nodes" do

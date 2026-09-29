@@ -189,8 +189,8 @@ const DiagramCanvasHook = {
     return pt.matrixTransform(ctm.inverse());
   },
 
-  clampSvg(value) {
-    return Math.max(0, Math.min(100, value));
+  clampSvg(value, max) {
+    return Math.max(0, Math.min(max, value));
   },
 
   debugDrag(message, extra = {}) {
@@ -506,8 +506,12 @@ const DiagramCanvasHook = {
 
       const dx = point.x - this.dragging.startSvgX;
       const dy = point.y - this.dragging.startSvgY;
-      const offsetX = this.clampSvg(this.dragging.centerX + dx) - this.dragging.centerX;
-      const offsetY = this.clampSvg(this.dragging.centerY + dy) - this.dragging.centerY;
+      // Diagram space is width-normalized: x spans 0..baseW (100) and y spans
+      // 0..baseH (100 * h / w), which exceeds 100 for a portrait image. A
+      // landscape image keeps the 0..100 limit on y.
+      const maxY = Math.max(this.baseH, 100);
+      const offsetX = this.clampSvg(this.dragging.centerX + dx, this.baseW) - this.dragging.centerX;
+      const offsetY = this.clampSvg(this.dragging.centerY + dy, maxY) - this.dragging.centerY;
 
       this.dragging.currentX = this.dragging.centerX + offsetX;
       this.dragging.currentY = this.dragging.centerY + offsetY;

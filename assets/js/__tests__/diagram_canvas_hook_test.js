@@ -725,3 +725,69 @@ describe("DiagramCanvasHook — Escape/cancel keyboard placement", () => {
     });
   });
 });
+
+describe("DiagramCanvasHook — dragging a stop stays within the floorplan coordinate range", () => {
+  let hook;
+  let overlay;
+
+  function dragTo(x, y) {
+    const { group } = makeStopGroup(overlay);
+    hook.dragging = {
+      stopId: "STOP_1",
+      groupEl: group,
+      centerX: 50,
+      centerY: 50,
+      startSvgX: 50,
+      startSvgY: 50,
+      currentX: 50,
+      currentY: 50,
+      pathwayElements: []
+    };
+    hook.clientPointToSvg = () => ({ x, y });
+    hook.handleMouseMove({ clientX: 0, clientY: 0 });
+    return { x: hook.dragging.currentX, y: hook.dragging.currentY };
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    const canvas = makeCanvas();
+    overlay = canvas.overlay;
+    hook = makeHook(canvas.svg);
+    hook.mounted();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("allows y above 100 on a portrait floorplan", () => {
+    hook.baseH = 104.2;
+
+    expect(dragTo(50, 103)).toEqual({ x: 50, y: 103 });
+  });
+
+  it("clamps y to the bottom of a portrait floorplan", () => {
+    hook.baseH = 104.2;
+
+    expect(dragTo(50, 110)).toEqual({ x: 50, y: 104.2 });
+  });
+
+  it("clamps x to 100 on a portrait floorplan", () => {
+    hook.baseH = 104.2;
+
+    expect(dragTo(120, 50)).toEqual({ x: 100, y: 50 });
+  });
+
+  it("clamps negative x and y to 0", () => {
+    hook.baseH = 104.2;
+
+    expect(dragTo(-5, -5)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("keeps the 0..100 limit on y for a landscape floorplan", () => {
+    hook.baseH = 60;
+
+    expect(dragTo(50, 80)).toEqual({ x: 50, y: 80 });
+    expect(dragTo(50, 120)).toEqual({ x: 50, y: 100 });
+  });
+});

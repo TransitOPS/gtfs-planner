@@ -1974,8 +1974,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     with dragging_stop_id when not is_nil(dragging_stop_id) <- socket.assigns.dragging_stop_id,
          true <- to_string(dragging_stop_id) == to_string(id),
-         {:ok, parsed_x} <- parse_svg_coordinate(x),
-         {:ok, parsed_y} <- parse_svg_coordinate(y),
+         {:ok, parsed_x} <- parse_svg_coordinate(x, :x),
+         {:ok, parsed_y} <- parse_svg_coordinate(y, :y),
          %Stop{} = stop <- Gtfs.get_stop(id),
          true <- stop.organization_id == socket.assigns.current_organization.id,
          true <- stop.gtfs_version_id == socket.assigns.current_gtfs_version.id,
@@ -6376,9 +6376,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     end
   end
 
-  defp parse_svg_coordinate(value) do
+  defp parse_svg_coordinate(value, axis) do
     with {:ok, parsed} <- parse_float(value),
-         true <- parsed >= 0.0 and parsed <= 100.0 do
+         true <- parsed >= 0.0 and parsed <= Coordinates.max_diagram_coordinate(axis) do
       {:ok, Float.round(parsed, 2)}
     else
       _ -> :error
