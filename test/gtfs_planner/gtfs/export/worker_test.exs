@@ -34,15 +34,15 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
     end
   end
 
-  # Builds the real ZIP and replaces its warnings with one the `Run` schema
+  # Builds the real ZIPs and replaces their warnings with one the `Run` schema
   # rejects, which is one way the fenced warning write fails while the lease is
   # still current. The composition cases above use the concrete adapter as-is.
   defmodule UnsupportedWarningExport do
-    def build_zip(organization_id, gtfs_version_id, export_type) do
-      {:ok, zip_bytes, _warnings} =
-        Export.build_zip(organization_id, gtfs_version_id, export_type)
+    def build_zips(organization_id, gtfs_version_id, export_type, opts) do
+      {:ok, zips, _warnings} =
+        Export.build_zips(organization_id, gtfs_version_id, export_type, opts)
 
-      {:ok, zip_bytes,
+      {:ok, zips,
        [%{code: "unsupported", detail: "unsupported warning", extra_key: "unsupported"}]}
     end
   end
@@ -144,7 +144,7 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
     assert ready.artifact_key
     assert ready.warnings == [tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")]
 
-    entries = published_zip_entries(root)
+    entries = published_zip_entries(root, ready)
 
     assert Map.has_key?(entries, "stops.txt")
     assert entries["stops_supplement.txt"] =~ "garage_main,Main garage"
@@ -325,8 +325,18 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
     |> Enum.filter(&File.regular?/1)
   end
 
-  defp published_zip_entries(root) do
-    [path] = published_files(root)
+  # The published file is named by its stored key inside the run's directory.
+  defp published_zip_entries(root, run) do
+    path =
+      Path.join([
+        root,
+        "export-runs",
+        run.organization_id,
+        run.gtfs_version_id,
+        run.id,
+        run.artifact_key
+      ])
+
     {:ok, entries} = path |> File.read!() |> :zip.unzip([:memory])
     Map.new(entries, fn {name, content} -> {to_string(name), content} end)
   end

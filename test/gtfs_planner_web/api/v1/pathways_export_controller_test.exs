@@ -942,7 +942,12 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportControllerTest do
     {:ok, artifact} =
       ArtifactStorage.publish(organization_id, version_id, run.id, "network.zip", bytes)
 
-    {:ok, ready} = ExportRuns.mark_ready(organization_id, run.id, generation, token, artifact)
+    {:ok, ready} =
+      ExportRuns.mark_ready(organization_id, run.id, generation, token, %{
+        main: artifact,
+        flex: nil
+      })
+
     ready
   end
 

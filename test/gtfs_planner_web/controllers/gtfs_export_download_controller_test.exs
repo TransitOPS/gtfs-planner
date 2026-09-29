@@ -58,6 +58,68 @@ defmodule GtfsPlannerWeb.GtfsExportDownloadControllerTest do
     assert downloaded_at
   end
 
+  test "serves the flex artifact for ?file=flex and the main artifact otherwise", %{conn: conn} do
+    %{organization: organization, version: version, user: user} = editor_context()
+    run = flex_ready_run!(organization.id, version.id, "main zip bytes", "flex zip bytes")
+
+    main_conn =
+      conn
+      |> log_in_user(user, organization: organization)
+      |> get(download_path(version.id, run.id))
+
+    assert main_conn.status == 200
+    assert main_conn.resp_body == "main zip bytes"
+    assert [main_disposition] = get_resp_header(main_conn, "content-disposition")
+    assert main_disposition =~ "gtfs-#{run.id}.zip"
+
+    flex_conn =
+      conn
+      |> log_in_user(user, organization: organization)
+      |> get(download_path(version.id, run.id) <> "?file=flex")
+
+    assert flex_conn.status == 200
+    assert flex_conn.resp_body == "flex zip bytes"
+    assert get_resp_header(flex_conn, "content-length") == ["14"]
+    assert [flex_disposition] = get_resp_header(flex_conn, "content-disposition")
+    assert flex_disposition =~ "gtfs-flex-#{run.id}.zip"
+
+    assert %Run{download_count: 2} =
+             ExportRuns.get_for_version(organization.id, version.id, run.id)
+  end
+
+  test "returns 404 for ?file=flex when the run has no flex artifact and keeps the run ready", %{
+    conn: conn
+  } do
+    %{organization: organization, version: version, user: user} = editor_context()
+    run = ready_run!(organization.id, version.id, "main only bytes")
+
+    conn =
+      conn
+      |> log_in_user(user, organization: organization)
+      |> get(download_path(version.id, run.id) <> "?file=flex")
+
+    assert conn.status == 404
+    assert conn.resp_body == "Not Found"
+
+    assert %Run{state: :ready, download_count: 0, flex_artifact_key: nil} =
+             ExportRuns.get_for_version(organization.id, version.id, run.id)
+  end
+
+  test "returns 404 for another organization's ?file=flex request", %{conn: conn} do
+    %{organization: organization, version: version} = editor_context()
+    run = flex_ready_run!(organization.id, version.id, "main bytes", "flex bytes")
+
+    %{organization: other_organization, user: other_user} = editor_context()
+
+    conn =
+      conn
+      |> log_in_user(other_user, organization: other_organization)
+      |> get(download_path(version.id, run.id) <> "?file=flex")
+
+    assert conn.status == 404
+    assert conn.resp_body == "Not Found"
+  end
+
   test "redirects logged-out requests before artifact lookup", %{conn: conn} do
     conn = get(conn, download_path(Ecto.UUID.generate(), Ecto.UUID.generate()))
 
@@ -179,7 +241,43 @@ defmodule GtfsPlannerWeb.GtfsExportDownloadControllerTest do
     {:ok, artifact} =
       ArtifactStorage.publish(organization_id, version_id, run.id, "network.zip", bytes)
 
-    {:ok, ready} = ExportRuns.mark_ready(organization_id, run.id, generation, token, artifact)
+    {:ok, ready} =
+      ExportRuns.mark_ready(organization_id, run.id, generation, token, %{
+        main: artifact,
+        flex: nil
+      })
+
+    ready
+  end
+
+  defp flex_ready_run!(organization_id, version_id, main_bytes, flex_bytes) do
+    {:ok, run} = ExportRuns.create_pending(organization_id, version_id, @actor, :full)
+    {:ok, _building, generation, token} = ExportRuns.claim(organization_id, run.id, :build)
+
+    {:ok, main} =
+      ArtifactStorage.publish(
+        organization_id,
+        version_id,
+        run.id,
+        "gtfs-#{run.id}.zip",
+        main_bytes
+      )
+
+    {:ok, flex} =
+      ArtifactStorage.publish(
+        organization_id,
+        version_id,
+        run.id,
+        "gtfs-flex-#{run.id}.zip",
+        flex_bytes
+      )
+
+    {:ok, ready} =
+      ExportRuns.mark_ready(organization_id, run.id, generation, token, %{
+        main: main,
+        flex: flex
+      })
+
     ready
   end
 

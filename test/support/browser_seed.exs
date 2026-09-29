@@ -201,7 +201,7 @@ case Accounts.register_first_admin(%{
         browser_export_run.id,
         export_generation,
         export_token,
-        browser_export_artifact
+        %{main: browser_export_artifact, flex: nil}
       )
 
     IO.puts("Browser seed: ready export artifact for scoped download")
@@ -2290,7 +2290,7 @@ case Accounts.register_first_admin(%{
         current_export_run.id,
         current_export_generation,
         current_export_token,
-        current_export_artifact
+        %{main: current_export_artifact, flex: nil}
       )
 
     IO.puts("Browser seed: routes-only version #{routes_only_version.id} with ready export")

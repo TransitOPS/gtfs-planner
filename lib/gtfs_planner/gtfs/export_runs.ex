@@ -3,7 +3,10 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   Durable, tenant-scoped export transitions and download claims.
 
   Workers own only a fenced generation/token. Artifact files remain private until
-  `mark_ready/5` commits verified metadata to the matching run row.
+  `mark_ready/5` commits verified metadata for the run's artifacts to the matching
+  run row. A run holds at most one main artifact and one flex artifact, both
+  published from one export snapshot and both removed by one expiry or corruption
+  transition.
   """
 
   import Ecto.Query, warn: false
@@ -113,16 +116,41 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
     end)
   end
 
-  @spec mark_ready(Ecto.UUID.t(), Ecto.UUID.t(), pos_integer(), Ecto.UUID.t(), map()) ::
+  @typedoc """
+  The verified artifacts of one build: `:main` is required and `:flex` is the
+  RUN15-only extra feed, absent or nil when the build produced no flex zip.
+  """
+  @type artifacts :: %{required(:main) => map(), optional(:flex) => map() | nil}
+
+  @spec mark_ready(Ecto.UUID.t(), Ecto.UUID.t(), pos_integer(), Ecto.UUID.t(), artifacts()) ::
           {:ok, Run.t()} | {:error, :lease_lost | term()}
-  def mark_ready(organization_id, run_id, generation, token, artifact) when is_map(artifact) do
-    with :ok <- requested_artifact?(organization_id, run_id, artifact),
-         {:ok, _path} <- artifact_storage_module().verify(artifact) do
-      commit_ready(organization_id, run_id, generation, token, artifact)
+  def mark_ready(organization_id, run_id, generation, token, %{main: main} = artifacts)
+      when is_map(main) do
+    flex = Map.get(artifacts, :flex)
+
+    with :ok <- requested_artifacts?(organization_id, run_id, main, flex),
+         :ok <- verified_artifacts(main, flex) do
+      commit_ready(organization_id, run_id, generation, token, %{main: main, flex: flex})
     end
   end
 
   def mark_ready(_, _, _, _, _), do: {:error, :invalid_artifact}
+
+  defp requested_artifacts?(organization_id, run_id, main, flex) do
+    with :ok <- requested_artifact?(organization_id, run_id, main) do
+      if is_nil(flex), do: :ok, else: requested_artifact?(organization_id, run_id, flex)
+    end
+  end
+
+  defp verified_artifacts(main, flex) do
+    with {:ok, _main_path} <- artifact_storage_module().verify(main),
+         {:ok, _flex_path} <- verify_flex_artifact(flex) do
+      :ok
+    end
+  end
+
+  defp verify_flex_artifact(nil), do: {:ok, nil}
+  defp verify_flex_artifact(flex), do: artifact_storage_module().verify(flex)
 
   @spec persist_warnings(Ecto.UUID.t(), Ecto.UUID.t(), pos_integer(), Ecto.UUID.t(), [map()]) ::
           {:ok, Run.t()} | {:error, :lease_lost | term()}
@@ -210,17 +238,26 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
           {:ok,
            %{path: String.t(), filename: String.t(), size: non_neg_integer(), sha256: String.t()}}
           | {:error, :not_found}
-  def claim_download(organization_id, version_id, run_id) do
+  def claim_download(organization_id, version_id, run_id),
+    do: claim_download(organization_id, version_id, run_id, :main)
+
+  @spec claim_download(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), :main | :flex) ::
+          {:ok,
+           %{path: String.t(), filename: String.t(), size: non_neg_integer(), sha256: String.t()}}
+          | {:error, :not_found}
+  def claim_download(organization_id, version_id, run_id, file) when file in [:main, :flex] do
     transaction_with_broadcast(fn ->
       case lock_scoped_run(organization_id, version_id, run_id) do
         %Run{state: :ready} = run ->
-          claim_ready_download(run)
+          claim_ready_download(run, file)
 
         _ ->
           {{:error, :not_found}, []}
       end
     end)
   end
+
+  def claim_download(_, _, _, _), do: {:error, :not_found}
 
   @spec complete_download(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), DateTime.t()) :: :ok
   def complete_download(organization_id, version_id, run_id, claim_id) do
@@ -445,23 +482,31 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
     end
   end
 
-  defp ready_run(run, generation, token, artifact) do
+  # Both artifact sets land in the same fenced `update_all`, so a lease loss
+  # leaves the row without either set and the files unreferenced.
+  defp ready_run(run, generation, token, %{main: main, flex: flex}) do
     database_now = database_now()
     expires_at = DateTime.add(database_now, artifact_ttl_seconds())
+    flex_fields = flex_artifact_fields(flex)
 
-    changeset =
-      Run.system_changeset(run, %{
-        state: :ready,
-        phase: :cleanup,
-        lease_token: nil,
-        lease_expires_at: nil,
-        artifact_key: artifact.key,
-        artifact_filename: artifact.filename,
-        artifact_sha256: artifact.sha256,
-        artifact_size_bytes: artifact.size,
-        artifact_expires_at: expires_at,
-        finished_at: database_now
-      })
+    attrs =
+      Map.merge(
+        %{
+          state: :ready,
+          phase: :cleanup,
+          lease_token: nil,
+          lease_expires_at: nil,
+          artifact_key: main.key,
+          artifact_filename: main.filename,
+          artifact_sha256: main.sha256,
+          artifact_size_bytes: main.size,
+          artifact_expires_at: expires_at,
+          finished_at: database_now
+        },
+        flex_fields
+      )
+
+    changeset = Run.system_changeset(run, attrs)
 
     if changeset.valid? do
       {updated, _} =
@@ -477,11 +522,15 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
               phase: :cleanup,
               lease_token: nil,
               lease_expires_at: nil,
-              artifact_key: ^artifact.key,
-              artifact_filename: ^artifact.filename,
-              artifact_sha256: ^artifact.sha256,
-              artifact_size_bytes: ^artifact.size,
+              artifact_key: ^main.key,
+              artifact_filename: ^main.filename,
+              artifact_sha256: ^main.sha256,
+              artifact_size_bytes: ^main.size,
               artifact_expires_at: ^expires_at,
+              flex_artifact_key: ^flex_fields.flex_artifact_key,
+              flex_artifact_filename: ^flex_fields.flex_artifact_filename,
+              flex_artifact_sha256: ^flex_fields.flex_artifact_sha256,
+              flex_artifact_size_bytes: ^flex_fields.flex_artifact_size_bytes,
               finished_at: ^database_now,
               updated_at: fragment("CURRENT_TIMESTAMP")
             ]
@@ -495,10 +544,30 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
     end
   end
 
-  defp claim_ready_download(run) do
-    if artifact_current?(run) and download_claim_available?(run.id) do
-      artifact = artifact_from_run(run)
+  defp flex_artifact_fields(nil) do
+    %{
+      flex_artifact_key: nil,
+      flex_artifact_filename: nil,
+      flex_artifact_sha256: nil,
+      flex_artifact_size_bytes: nil
+    }
+  end
 
+  defp flex_artifact_fields(artifact) do
+    %{
+      flex_artifact_key: artifact.key,
+      flex_artifact_filename: artifact.filename,
+      flex_artifact_sha256: artifact.sha256,
+      flex_artifact_size_bytes: artifact.size
+    }
+  end
+
+  # A run without the requested file is a plain 404: only a file that exists but
+  # no longer verifies fails the run and removes both artifacts.
+  defp claim_ready_download(run, file) do
+    artifact = artifact_from_run(run, file)
+
+    if is_binary(artifact.key) and artifact_current?(run) and download_claim_available?(run.id) do
       case ArtifactStorage.verify(artifact) do
         {:ok, path} ->
           {1, _} =
@@ -526,9 +595,9 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
           {{:ok,
             %{
               path: path,
-              filename: run.artifact_filename,
-              size: run.artifact_size_bytes,
-              sha256: run.artifact_sha256,
+              filename: artifact.filename,
+              size: artifact.size,
+              sha256: artifact.sha256,
               claim_id: claimed_run.download_claimed_until
             }}, [run.id]}
 
@@ -542,42 +611,65 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   end
 
   defp expire_artifact(run) do
-    artifact = artifact_from_run(run)
-    _ = ArtifactStorage.remove(artifact)
+    _ = remove_artifacts(run)
 
     Repo.update(
-      Run.system_changeset(run, %{
-        state: :expired,
-        phase: :cleanup,
-        artifact_key: nil,
-        artifact_filename: nil,
-        artifact_sha256: nil,
-        artifact_size_bytes: nil,
-        artifact_expires_at: nil,
-        download_claimed_until: nil,
-        failure_code: "artifact_expired",
-        finished_at: DateTime.utc_now()
-      })
+      Run.system_changeset(
+        run,
+        Map.merge(
+          %{
+            state: :expired,
+            phase: :cleanup,
+            artifact_key: nil,
+            artifact_filename: nil,
+            artifact_sha256: nil,
+            artifact_size_bytes: nil,
+            artifact_expires_at: nil,
+            download_claimed_until: nil,
+            failure_code: "artifact_expired",
+            finished_at: DateTime.utc_now()
+          },
+          flex_artifact_fields(nil)
+        )
+      )
     )
   end
 
   defp close_corrupt_artifact(run) do
-    _ = ArtifactStorage.remove(artifact_from_run(run))
+    _ = remove_artifacts(run)
 
     Repo.update(
-      Run.system_changeset(run, %{
-        state: :failed,
-        phase: :cleanup,
-        artifact_key: nil,
-        artifact_filename: nil,
-        artifact_sha256: nil,
-        artifact_size_bytes: nil,
-        artifact_expires_at: nil,
-        download_claimed_until: nil,
-        failure_code: "missing_or_corrupt_artifact",
-        finished_at: DateTime.utc_now()
-      })
+      Run.system_changeset(
+        run,
+        Map.merge(
+          %{
+            state: :failed,
+            phase: :cleanup,
+            artifact_key: nil,
+            artifact_filename: nil,
+            artifact_sha256: nil,
+            artifact_size_bytes: nil,
+            artifact_expires_at: nil,
+            download_claimed_until: nil,
+            failure_code: "missing_or_corrupt_artifact",
+            finished_at: DateTime.utc_now()
+          },
+          flex_artifact_fields(nil)
+        )
+      )
     )
+  end
+
+  # Both files of a run live in its directory, so one removal covers either
+  # transition; a run with no flex artifact removes only the main file.
+  defp remove_artifacts(run) do
+    _ = ArtifactStorage.remove(artifact_from_run(run, :main))
+
+    if is_binary(run.flex_artifact_key) do
+      _ = ArtifactStorage.remove(artifact_from_run(run, :flex))
+    end
+
+    :ok
   end
 
   defp close_build(run, state, code) do
@@ -593,11 +685,15 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
     )
   end
 
-  defp matching_artifact?(run, artifact) do
-    if artifact.organization_id == run.organization_id and
-         artifact.gtfs_version_id == run.gtfs_version_id and artifact.run_id == run.id,
-       do: :ok,
-       else: {:error, :invalid_artifact}
+  defp matching_artifact?(run, %{main: main, flex: flex}) do
+    if artifact_in_scope?(run, main) and (is_nil(flex) or artifact_in_scope?(run, flex)),
+      do: :ok,
+      else: {:error, :invalid_artifact}
+  end
+
+  defp artifact_in_scope?(run, artifact) do
+    artifact.organization_id == run.organization_id and
+      artifact.gtfs_version_id == run.gtfs_version_id and artifact.run_id == run.id
   end
 
   defp requested_artifact?(organization_id, run_id, artifact) do
@@ -626,7 +722,7 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
     |> Repo.exists?()
   end
 
-  defp artifact_from_run(run) do
+  defp artifact_from_run(run, :main) do
     %{
       organization_id: run.organization_id,
       gtfs_version_id: run.gtfs_version_id,
@@ -635,6 +731,18 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
       filename: run.artifact_filename,
       sha256: run.artifact_sha256,
       size: run.artifact_size_bytes
+    }
+  end
+
+  defp artifact_from_run(run, :flex) do
+    %{
+      organization_id: run.organization_id,
+      gtfs_version_id: run.gtfs_version_id,
+      run_id: run.id,
+      key: run.flex_artifact_key,
+      filename: run.flex_artifact_filename,
+      sha256: run.flex_artifact_sha256,
+      size: run.flex_artifact_size_bytes
     }
   end
 
