@@ -11,9 +11,15 @@
 // desktop and narrow views for comparison with the prototypes in
 // `.specs/22-gtfs-flex/references/`.
 import { test, expect } from "@playwright/test";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  bodyFitsViewport,
+  readPendingStates,
+  readZipTextMember,
+  watchPendingState,
+} from "./browser_helpers";
 
 // The Playwright runner starts in `assets/`, so repository-relative inputs are
 // resolved from the checkout root the way `playwright.config.js` does.
@@ -25,6 +31,14 @@ const EDITOR = {
 };
 
 const VERSION_NAME = "Browser Flex Version";
+
+// The service the journey creates, the phone the seed's agency row carries
+// ("North Coast Transit", `browser_seed.exs`), and the Census place the browser
+// boundary fake answers (`BrowserBoundaries`): the journey books a ride with the
+// agency's own number and takes the town limits the fixture holds.
+const JOURNEY_SERVICE = "Test Shopper";
+const AGENCY_PHONE = "(541) 555-0142";
+const NEWPORT_GEOID = "4152450";
 
 const DESKTOP = { width: 1440, height: 900, label: "desktop" };
 const NARROW = { width: 320, height: 800, label: "narrow" };
@@ -174,6 +188,53 @@ async function captureReference(page, file, state, name) {
   await page.screenshot({ path, fullPage: false });
 
   return path;
+}
+
+// Every page the journey visits must fit the window it is shown in: the shared
+// `bodyFitsViewport` check the design-contract specs use, with the viewport that
+// failed named in the message.
+async function expectFits(page) {
+  const { width } = page.viewportSize();
+
+  expect(await bodyFitsViewport(page), `the page scrolls horizontally at ${width} px`).toBe(
+    true,
+  );
+}
+
+// One journey state in both viewports: the desktop view for the comparison with
+// the reference, and 320 px for the stacked layout and the no-overflow gate. A
+// state with a map waits for its tiles to settle first, the way the per-step
+// cases do.
+async function captureBoth(page, name, mapSelector = null) {
+  if (mapSelector) await waitForTiles(page, mapSelector);
+  await expectFits(page);
+  await capture(page, name);
+
+  await page.setViewportSize(NARROW);
+  if (mapSelector) await waitForTiles(page, mapSelector);
+  await expectFits(page);
+  await capture(page, name);
+
+  await page.setViewportSize(DESKTOP);
+}
+
+// The boundary the point editor holds, as the polygon Leaflet draws for it: the
+// path's `d` is the ring itself, so a moved vertex changes the string.
+function draftRing(page) {
+  return page.locator("#flex-area-map path.flex-map-area--draft").first().getAttribute("d");
+}
+
+// The server's own vertex count from the toolbar, so a case can compare the
+// handles the browser draws with the ring the editor measured.
+async function vertexCount(page) {
+  const text = await page.locator("#area-vertices").textContent();
+  const count = Number((text || "").match(/\d+/)?.[0]);
+
+  if (!Number.isFinite(count) || count < 1) {
+    throw new Error(`The toolbar does not report a vertex count: ${JSON.stringify(text)}`);
+  }
+
+  return count;
 }
 
 // ── placeholder ───────────────────────────────────────────────────────────
@@ -600,6 +661,89 @@ test("area-editor", async ({ page }) => {
   await captureReference(page, "flex-service-area-prototype.html", "town", "area-town");
 });
 
+// ── area point editing ────────────────────────────────────────────────────
+
+// The point tools of AC-12: Edit points hands the boundary's ring to the hook,
+// whose square handles are the vertices. The case picks the recorded Census
+// boundary the way staff would, keeps one point focused, moves it with the
+// arrow keys, and captures the editing state the reference's own "edit" state
+// shows — the toolbar with its walk and history controls, the handles, the
+// server's vertex count and the comparison with the saved area.
+test("area-edit-points", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  const versionId = await openFlex(page);
+
+  await page.getByRole("link", { name: "Newport Dial-a-Ride", exact: true }).click();
+  await waitForLiveView(page);
+
+  await page.locator("#edit-area-a1").click();
+  await waitForLiveView(page);
+
+  await expect(page).toHaveURL(
+    new RegExp(`/gtfs/${versionId}/flex/[0-9a-f-]+/area\\?area=a1$`),
+  );
+  await expect(page.locator("#area-title")).toHaveText("Edit area");
+
+  // The stored area is the comparison's baseline, so the picked boundary shows
+  // what changes before anything is saved.
+  await page.locator("#area-mode-town").click();
+  await page.locator(`#census-place-${NEWPORT_GEOID} input`).check();
+
+  await expect(page.locator("#area-stats")).toContainText("25.8 km²");
+  await expect(page.locator("#area-compare")).toContainText("Compared with the saved area");
+  await expect(page.locator("#use-area")).toBeEnabled();
+
+  // Edit points: the toolbar offers the modes, the history, Simplify and the
+  // point walk, and the map draws one focusable handle per vertex.
+  await page.locator("#area-mode-edit").click();
+  await expect(page.locator("#area-mode-edit")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#flex-area-map")).toHaveAttribute("data-mode", "edit");
+
+  for (const id of [
+    "#area-undo",
+    "#area-redo",
+    "#area-simplify",
+    "#area-prev-point",
+    "#area-next-point",
+  ]) {
+    await expect(page.locator(id)).toBeVisible();
+  }
+
+  const handles = page.locator("#flex-area-map .flex-area-handle");
+  const vertices = await vertexCount(page);
+  await expect(handles).toHaveCount(vertices);
+
+  // The keyboard path: the focused handle owns the arrow keys, and moves its
+  // own vertex 20 m (100 m with Shift).
+  const before = await draftRing(page);
+  await handles.first().focus();
+  await expect(handles.first()).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+
+  await expect.poll(() => draftRing(page)).not.toBe(before);
+  await expect(page.locator("#flex-area-map .flex-map-hint")).toContainText(
+    `Point 1 of ${vertices} selected`,
+  );
+
+  // The server measured the ring the browser pushed: it still has no crossing,
+  // so the editor keeps offering its way out.
+  await expect(page.locator("#area-crossing")).toHaveCount(0);
+  await expect(page.locator("#use-area")).toBeEnabled();
+  await expect(page.locator("#area-vertices")).toHaveText(`${vertices} points`);
+
+  // The panel scrolls on its own, so the capture moves the comparison with the
+  // saved area into view beside the handles and the toolbar.
+  await page.locator("#area-compare").scrollIntoViewIfNeeded();
+
+  await captureBoth(page, "area-edit-points", "#flex-area-map");
+
+  await captureReference(page, "flex-service-area-prototype.html", "edit", "area-edit-points");
+});
+
 // ── settings ────────────────────────────────────────────────────────────────
 
 // The Settings › Export defaults page holds the two settings a full export
@@ -701,4 +845,260 @@ test("export-defaults", async ({ page }) => {
     "Export defaults saved.",
   );
   await expect(page.locator("#flex-switch")).toBeChecked();
+});
+
+// ── the journey ─────────────────────────────────────────────────────────────
+
+// CL-18: the whole flex workflow in one browser run, on the seeded Browser Flex
+// Version. The journey creates a service, gives it the hours and the booking
+// rule riders read, sets its area from the browser boundary fake, moves one
+// boundary point with the keyboard, saves, checks the unsaved guard on the way
+// out, reads the organization's export switch, and finishes with the version's
+// export and the flex zip its download link serves.
+//
+// It runs last: it adds a third service to the version the cases above read, so
+// the suite expects the reset `mise run prepare:browser` performs before it.
+test("flex journey", async ({ page }) => {
+  test.setTimeout(600_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  const versionId = await openFlex(page);
+
+  // 1. The list: the version's two services and the way to create another.
+  await expect(page.locator("#flex-services-count")).toHaveText("2 flex services");
+  await expect(page.locator("#flex-services tr")).toHaveCount(2);
+  await expect(page.locator("#flex-exports")).toContainText("Exports also write a flex file");
+
+  // 2. Create an area service called "Test Shopper", which the drawer's own
+  //    question about area names does not need answered.
+  await page.click("#create-service");
+  await expect(page.locator("#create-drawer")).toBeVisible();
+  await page.click("#create-pattern-area");
+  await page.fill("#create_name", JOURNEY_SERVICE);
+
+  await captureBoth(page, "journey-create");
+
+  await page.click("#create-submit");
+  await waitForLiveView(page);
+
+  await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/flex/[0-9a-f-]+$`));
+  await expect(page.locator("#svc-title")).toHaveText(JOURNEY_SERVICE);
+  await expect(page.locator("#flex-service-page")).toHaveAttribute("data-dirty", "false");
+
+  // 3. The hours: a new service starts with none, so the editor's own Add hours
+  //    answers the weekday calendar with 9 am–3 pm.
+  await page.click("#add-hours");
+  await expect(page.locator("#f-hours-row-0")).toBeVisible();
+  await page.selectOption("#service_hours_0_service_id", "weekday");
+  await page.fill("#service_hours_0_start", "09:00");
+  await page.fill("#service_hours_0_end", "15:00");
+
+  // 4. Booking: riders book at least 60 minutes before pickup and call the
+  //    agency's own phone number.
+  await page.click("#booking-when-0-same_day");
+  await page.fill("#service_booking_rules_0_minutes", "60");
+  await page.fill("#service_phone", AGENCY_PHONE);
+  await page.locator("#service_phone").blur();
+
+  await expect(page.locator("#rider-preview")).toContainText("Weekdays 9:00 am–3:00 pm");
+  await expect(page.locator("#rider-preview")).toContainText(
+    "Book at least 1 hour before pickup",
+  );
+  await expect(page.locator("#rider-preview")).toContainText(AGENCY_PHONE);
+  await expect(page.locator("#save-bar")).toContainText(
+    `unsaved changes to ${JOURNEY_SERVICE}`,
+  );
+
+  await captureBoth(page, "journey-service", "#flex-service-map");
+
+  // 5. The page's one Save. The control disables itself and says what it is
+  //    doing while the write is in flight.
+  await expect(page.locator("#flex-service-page")).toHaveAttribute("data-dirty", "true");
+  await watchPendingState(page, "#save-btn");
+  await page.click("#save-btn");
+
+  await expect(page.locator("#flash-group")).toContainText(`Saved ${JOURNEY_SERVICE}.`);
+
+  const pending = await readPendingStates(page);
+  expect(pending, `the Save button's states: ${JSON.stringify(pending)}`).toContainEqual({
+    disabled: true,
+    text: "Saving…",
+  });
+
+  await expect(page.locator("#save-bar")).toHaveCount(0);
+  await expect(page.locator("#flex-service-page")).toHaveAttribute("data-dirty", "false");
+
+  // 6. What the service is still missing is the area, and the list now holds it.
+  await expect(page.locator("#sec-where")).toContainText("Add the area riders can travel in.");
+
+  await page.click("#flex-service-back-link");
+  await waitForLiveView(page);
+  await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/flex$`));
+  await expect(page.locator("#flex-services-count")).toHaveText("3 flex services");
+  await expect(page.locator("#flex-services")).toContainText(JOURNEY_SERVICE);
+
+  await expectFits(page);
+  await capture(page, "journey-list");
+
+  // 7. The area editor: town limits, the recorded Newport boundary, and one
+  //    boundary point moved with the arrow keys.
+  await page.getByRole("link", { name: JOURNEY_SERVICE, exact: true }).click();
+  await waitForLiveView(page);
+
+  await page.click("#add-area");
+  await waitForLiveView(page);
+
+  await expect(page).toHaveURL(
+    new RegExp(`/gtfs/${versionId}/flex/[0-9a-f-]+/area\\?area=new$`),
+  );
+  await expect(page.locator("#area-title")).toHaveText("Add area");
+  await expect(page.locator("#use-area")).toBeDisabled();
+
+  await page.click("#area-mode-town");
+  await expect(page.locator(`#census-place-${NEWPORT_GEOID}`)).toContainText("Newport city");
+  await page.locator(`#census-place-${NEWPORT_GEOID} input`).check();
+
+  await expect(page.locator("#area-stats")).toContainText("25.8 km²");
+  await expect(page.locator("#area-source")).toContainText(
+    `U.S. Census Bureau 2026 boundaries (GEOID ${NEWPORT_GEOID})`,
+  );
+  await expect(page.locator("#use-area")).toBeEnabled();
+
+  await page.click("#area-mode-edit");
+  const handles = page.locator("#flex-area-map .flex-area-handle");
+  const vertices = await vertexCount(page);
+  await expect(handles).toHaveCount(vertices);
+
+  const before = await draftRing(page);
+  await handles.first().focus();
+  await expect(handles.first()).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+
+  await expect.poll(() => draftRing(page)).not.toBe(before);
+  await expect(page.locator("#flex-area-map .flex-map-hint")).toContainText(
+    `Point 1 of ${vertices} selected`,
+  );
+
+  // The server measured the ring the browser pushed and found no crossing, so
+  // the edited boundary is what "Use this area" offers.
+  await expect(page.locator("#area-crossing")).toHaveCount(0);
+  await expect(page.locator("#use-area")).toBeEnabled();
+
+  await captureBoth(page, "journey-area", "#flex-area-map");
+
+  // 8. Use this area puts it in the draft, and the same Save stores it.
+  await page.click("#use-area");
+  await waitForLiveView(page);
+
+  await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/flex/[0-9a-f-]+$`));
+  await expect(page.locator("#f-area-a1")).toContainText("U.S. Census Bureau 2026");
+  await expect(page.locator("#save-bar")).toBeVisible();
+
+  await page.click("#save-btn");
+  await expect(page.locator("#flash-group")).toContainText(`Saved ${JOURNEY_SERVICE}.`);
+
+  // The area the journey chose is in service, so the readiness list drops it.
+  await expect(page.locator("#sec-where")).not.toContainText(
+    "Add the area riders can travel in.",
+  );
+  await expect(page.locator("#sec-where")).toContainText("U.S. Census Bureau 2026");
+
+  await captureBoth(page, "journey-saved", "#flex-service-map");
+
+  // 9. Leaving with unsaved changes asks first (AC-5): the dialog keeps the
+  //    draft when the editor stays, and drops it on the way out.
+  await page.fill("#service_hours_0_end", "16:00");
+  await page.locator("#service_hours_0_end").blur();
+  await expect(page.locator("#flex-service-page")).toHaveAttribute("data-dirty", "true");
+
+  const leaveDialog = page.locator("#flex-service-leave-dialog");
+
+  await page.click("#flex-service-back-link");
+  await expect(leaveDialog).toHaveAttribute("data-open", "true");
+  await expect(leaveDialog).toContainText("Leave with unsaved changes?");
+  await expect(leaveDialog).toContainText("Your changes to this service will be lost.");
+
+  await captureBoth(page, "journey-leave");
+
+  await page.click("#flex-service-leave-dialog-cancel");
+  await expect(leaveDialog).toHaveAttribute("data-open", "false");
+  await expect(page.locator("#flex-service-page")).toHaveAttribute("data-dirty", "true");
+  await expect(page.locator("#save-bar")).toBeVisible();
+
+  await page.click("#flex-service-back-link");
+  await expect(leaveDialog).toHaveAttribute("data-open", "true");
+  await page.click("#flex-service-leave-dialog-confirm");
+
+  await waitForLiveView(page);
+  await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/flex$`));
+  await expect(page.locator("#flex-services")).toContainText(JOURNEY_SERVICE);
+
+  // 10. Settings › Export defaults: the organization's flex switch is on, which
+  //     is what a full export reads.
+  await page.locator("#flex-exports a").click();
+  await waitForLiveView(page);
+
+  await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/settings/export-defaults$`));
+  await expect(page.locator("#flex-switch")).toBeChecked();
+  await expect(page.locator("#flex-switch-consequence")).toContainText(
+    "Exports also write a flex file",
+  );
+
+  await captureBoth(page, "journey-export-defaults");
+
+  // 11. A full export of this version, and the flex file it publishes. A run
+  //     that is already ready holds the version's artifact, which is the link
+  //     this journey follows; an empty history starts one through the page's own
+  //     button, and the link appears when the worker publishes the flex bytes.
+  await page.goto(`/gtfs/${versionId}/export`);
+  await waitForLiveView(page);
+
+  const flexLink = page.locator("#export-flex-download-link");
+
+  if ((await flexLink.count()) === 0) {
+    await page.click("#start-export");
+    await flexLink.waitFor({ state: "visible", timeout: 150_000 });
+  }
+
+  await expect(flexLink).toHaveAttribute(
+    "href",
+    new RegExp(`^/gtfs/${versionId}/export-runs/[0-9a-f-]+/download\\?file=flex$`),
+  );
+
+  await expectFits(page);
+  await capture(page, "journey-export");
+
+  await page.setViewportSize(NARROW);
+  await expectFits(page);
+  await capture(page, "journey-export");
+
+  await page.setViewportSize(DESKTOP);
+
+  // The link downloads the flex zip itself, whose locations.geojson carries the
+  // services' areas with the `stop_name` riders read and whose routes.txt
+  // carries the generated flex route: the bytes are checked, not just the link.
+  const downloadPromise = page.waitForEvent("download");
+  await flexLink.click();
+  const download = await downloadPromise;
+  const zip = readFileSync(await download.path());
+
+  expect(download.suggestedFilename()).toMatch(/\.zip$/);
+
+  const locations = JSON.parse(readZipTextMember(zip, "locations.geojson"));
+  expect(locations.type).toBe("FeatureCollection");
+  expect(locations.features.length).toBeGreaterThan(0);
+  expect(
+    locations.features.every((feature) => typeof feature.properties.stop_name === "string"),
+  ).toBe(true);
+  expect(readZipTextMember(zip, "routes.txt")).toContain("Newport Dial-a-Ride");
+
+  // The reference for the state the journey edited: the service page mid-edit.
+  await captureReference(
+    page,
+    "flex-services-prototype.html",
+    "service-editing",
+    "journey-service",
+  );
 });
