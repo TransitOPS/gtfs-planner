@@ -233,6 +233,36 @@ describe("JournalPanelHook", () => {
       expect(document.activeElement).toBe(undo);
     });
 
+    it("waits for a focus target that the patch renders after the event", () => {
+      const hook = makeHook();
+      hook.mounted();
+      hook.handlers.get("journal-focus")({
+        selector: "#journal-photo-viewer-close",
+      });
+
+      vi.runOnlyPendingTimers();
+      expect(document.activeElement).toBe(document.body);
+
+      hook.el.innerHTML =
+        '<button id="journal-photo-viewer-close" type="button">Close</button>';
+      vi.runOnlyPendingTimers();
+
+      expect(document.activeElement).toBe(
+        hook.el.querySelector("#journal-photo-viewer-close"),
+      );
+    });
+
+    it("stops waiting for a focus target that never renders", () => {
+      const hook = makeHook();
+      hook.mounted();
+      hook.handlers.get("journal-focus")({ selector: "#never-rendered" });
+
+      vi.runAllTimers();
+
+      expect(vi.getTimerCount()).toBe(0);
+      expect(document.activeElement).toBe(document.body);
+    });
+
     it("removes registered server handlers and pending focus work on destroy", () => {
       const hook = makeHook();
       hook.mounted();

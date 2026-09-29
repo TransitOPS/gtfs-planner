@@ -1,5 +1,9 @@
 const TOP_THRESHOLD_PX = 8;
 const SCROLL_DEBOUNCE_MS = 50;
+// A focus target the patch renders can arrive after the event that names it, so
+// the lookup retries for about half a second before giving up.
+const FOCUS_RETRY_MS = 16;
+const FOCUS_MAX_ATTEMPTS = 30;
 
 /**
  * Browser-only adapter for the station journal panel.
@@ -108,7 +112,9 @@ const JournalPanelHook = {
 
   scheduleFocus(selector) {
     this.clearFocusTimer();
-    this.focusTimer = setTimeout(() => {
+    let attempts = 0;
+
+    const attempt = () => {
       this.focusTimer = null;
       let target = null;
 
@@ -118,8 +124,18 @@ const JournalPanelHook = {
         return;
       }
 
-      if (typeof target?.focus === "function") target.focus();
-    }, 0);
+      if (typeof target?.focus === "function") {
+        target.focus();
+        return;
+      }
+
+      attempts += 1;
+      if (attempts < FOCUS_MAX_ATTEMPTS) {
+        this.focusTimer = setTimeout(attempt, FOCUS_RETRY_MS);
+      }
+    };
+
+    this.focusTimer = setTimeout(attempt, 0);
   },
 
   clearFocusTimer() {
