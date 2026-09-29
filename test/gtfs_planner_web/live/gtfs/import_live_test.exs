@@ -1222,6 +1222,261 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
     end
   end
 
+  # Step 24 / EV-26. A scheduled-closure row outside the supported subset stops
+  # the import in phase one: the Import page names the file, the CSV row and one
+  # bounded field/fix sentence, ahead of Import feed, releases the upload action
+  # for that run, and keeps the failure durable until the version is discarded.
+  describe "closure rejection recovery" do
+    setup :editor_context
+
+    @evolution_codes ~w(
+      evolution_pathway_required evolution_service_required
+      evolution_opening_unsupported evolution_direction_unsupported
+      evolution_time_invalid evolution_pathway_missing evolution_service_missing
+      evolution_duplicate
+    )
+
+    test "each bounded code renders its own file, row and field/fix sentence with a unique element",
+         %{conn: conn, user: user, organization: organization, gtfs_version: route_version} do
+      conn = log_in_user(conn, user, organization: organization)
+
+      sentences = %{
+        "evolution_pathway_required" => "Name the pathway, using the exact pathway_id",
+        "evolution_service_required" => "Name the calendar, using the exact service_id",
+        "evolution_opening_unsupported" => "Remove the opening row",
+        "evolution_direction_unsupported" => "Leave direction blank or remove the column",
+        "evolution_time_invalid" => "Use H:MM:SS with the end above the start",
+        "evolution_pathway_missing" => "Import pathways.txt in the same feed",
+        "evolution_service_missing" => "Import the calendar file in the same feed",
+        "evolution_duplicate" => "Remove the repeated row"
+      }
+
+      runs =
+        @evolution_codes
+        |> Enum.with_index(2)
+        |> Enum.map(fn {code, row} ->
+          {:ok, version} =
+            Versions.create_staging_gtfs_version(organization.id, %{name: "Rejected #{code}"})
+
+          {:ok, version} = Versions.fail_unpublished_gtfs_version(organization.id, version.id)
+
+          insert_run(organization.id, version, "failed",
+            failed_file: "pathway_evolutions.txt",
+            failed_row: row,
+            reason_code: code
+          )
+        end)
+
+      {:ok, view, html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      # Recovery precedes Import feed while it holds runs, and the empty state is
+      # gone (AC-42).
+      recovery_at = :binary.match(html, ~s(id="import-recovery-section")) |> elem(0)
+      feed_at = :binary.match(html, ~s(id="import-workspace")) |> elem(0)
+      assert recovery_at < feed_at
+      refute has_element?(view, "#import-recovery-empty")
+
+      for {code, run} <- Enum.zip(@evolution_codes, runs) do
+        assert has_element?(view, "#import-evolution-rejection-#{run.id}")
+        assert html =~ ~s(data-evolution-rejection="#{code}")
+
+        # The element names the file, the CSV row and the code's own sentence;
+        # the text filter reads the rendered text, not the markup.
+        assert has_element?(view, "#import-evolution-rejection-#{run.id}", "Row #{run.failed_row}")
+
+        assert has_element?(
+                 view,
+                 "#import-evolution-rejection-#{run.id}",
+                 "pathway_evolutions.txt"
+               )
+
+        assert has_element?(
+                 view,
+                 "#import-evolution-rejection-#{run.id}",
+                 Map.fetch!(sentences, code)
+               )
+      end
+
+      ids =
+        Regex.scan(~r/id="import-evolution-rejection-([^"]+)"/, html, capture: :all_but_first)
+        |> List.flatten()
+
+      assert length(ids) == length(@evolution_codes)
+      assert ids |> Enum.uniq() |> length() == length(@evolution_codes)
+    end
+
+    test "a real rejected closure import names the reason, releases the form and stays durable",
+         %{conn: conn, user: user, organization: organization, gtfs_version: route_version} do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      # The rejected row carries a marker in its direction column. The run stores
+      # the bounded code, file and row, never the value, so the marker must not
+      # reach the page either.
+      closure_file =
+        "pathway_id,service_id,start_time,end_time,is_closed,direction\n" <>
+          "PW1,CAL_DAILY,09:00:00,15:00:00,1,rejected-marker-9a"
+
+      upload_gtfs(view, [
+        gtfs_zip([
+          {"levels.txt", @levels_content},
+          {"stops.txt", @stops_content},
+          {"pathway_evolutions.txt", closure_file}
+        ])
+      ])
+
+      submit_import(view, "Rejected closure feed")
+      html = await_import_task(view)
+
+      run = Repo.get_by!(Run, version_name: "Rejected closure feed")
+      target = Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
+
+      # Phase one failed: the version stays unpublished and no closure persisted.
+      assert target.publication_status == "failed"
+
+      assert Repo.all(
+               from(e in GtfsPlanner.Gtfs.PathwayEvolution,
+                 where: e.gtfs_version_id == ^target.id
+               )
+             ) == []
+
+      assert has_element?(view, "#import-evolution-rejection-#{run.id}", "Row 2")
+
+      assert has_element?(
+               view,
+               "#import-evolution-rejection-#{run.id}",
+               "Leave direction blank or remove the column"
+             )
+
+      assert html =~ ~s(data-evolution-rejection="evolution_direction_unsupported")
+      assert html =~ ~s(data-evolution-file="pathway_evolutions.txt")
+      assert html =~ "remains unpublished until this failed import is discarded"
+      refute html =~ "rejected-marker-9a"
+
+      recovery_at = :binary.match(html, ~s(id="import-recovery-section")) |> elem(0)
+      feed_at = :binary.match(html, ~s(id="import-workspace")) |> elem(0)
+      assert recovery_at < feed_at
+
+      # The terminal failure releases this run's import action: the form returns
+      # from its pending state (the consumed entries mean the button's own
+      # disabled state now reflects the empty upload field, and the browser case
+      # proves the next submission works).
+      submit = view |> element("#gtfs-import-submit") |> render()
+      assert submit =~ "Import feed"
+      refute submit =~ "Importing"
+      refute html =~ "Importing…"
+
+      # The published route version stays untouched.
+      route_after = Versions.get_gtfs_version_for_lifecycle(organization.id, route_version.id)
+      assert route_after.publication_status == "published"
+
+      # A reconnect rebuilds the same durable failure.
+      {:ok, reloaded, reload_html} = live(conn, "/gtfs/#{route_version.id}/import")
+      assert has_element?(reloaded, "#import-evolution-rejection-#{run.id}")
+      assert reload_html =~ "Rejected closure feed"
+      assert reload_html =~ "Leave direction blank or remove the column"
+      refute reload_html =~ "rejected-marker-9a"
+
+      # Discarding removes only the failed version.
+      reloaded |> element("#discard-#{run.id}") |> render_click()
+      reloaded |> element("#import-discard-dialog-confirm") |> render_click()
+      await_cleanup_task(reloaded)
+
+      refute has_element?(reloaded, "#import-run-#{run.id}")
+      assert has_element?(reloaded, "#import-recovery-empty")
+      assert has_element?(reloaded, "#gtfs-import-discarded", "Rejected closure feed")
+      refute Versions.get_gtfs_version_for_lifecycle(organization.id, run.gtfs_version_id)
+      assert Versions.get_gtfs_version_for_lifecycle(organization.id, route_version.id)
+    end
+
+    test "durable counts name committed closures and read correctly at one and at many", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, many} = Versions.create_staging_gtfs_version(organization.id, %{name: "Counted Many"})
+      {:ok, many} = Versions.fail_unpublished_gtfs_version(organization.id, many.id)
+
+      many_run =
+        insert_run(organization.id, many, "partial",
+          committed_counts: %{levels: 1, stops: 12, pathways: 3, pathway_evolutions: 2},
+          failed_file: "stop_times.txt",
+          failed_row: 4
+        )
+
+      {:ok, one} = Versions.create_staging_gtfs_version(organization.id, %{name: "Counted One"})
+      {:ok, one} = Versions.fail_unpublished_gtfs_version(organization.id, one.id)
+
+      one_run =
+        insert_run(organization.id, one, "partial",
+          committed_counts: %{pathway_evolutions: 1},
+          failed_file: "stop_times.txt",
+          failed_row: 3
+        )
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      many_card = view |> element("#import-run-#{many_run.id}") |> render()
+      assert many_card =~ "1 level,"
+      assert many_card =~ "12 stops,"
+      assert many_card =~ "3 pathways,"
+      assert many_card =~ "2 pathway closures"
+      refute many_card =~ "2 level"
+
+      one_card = view |> element("#import-run-#{one_run.id}") |> render()
+      assert one_card =~ "1 pathway closure"
+      refute one_card =~ "1 pathway closures"
+    end
+
+    test "a terminal transition for another target keeps this page's import in flight", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+
+      upload_gtfs(view, [%{name: "levels.txt", content: @levels_content, type: "text/plain"}])
+
+      {:ok, own_version} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Own target"})
+
+      {:ok, own_version} =
+        Versions.fail_unpublished_gtfs_version(organization.id, own_version.id)
+
+      own_run = insert_run(organization.id, own_version, "failed", reason_code: "row_invalid")
+
+      {:ok, other_version} =
+        Versions.create_staging_gtfs_version(organization.id, %{name: "Other target"})
+
+      {:ok, other_version} =
+        Versions.fail_unpublished_gtfs_version(organization.id, other_version.id)
+
+      other_run = insert_run(organization.id, other_version, "failed", reason_code: "row_invalid")
+
+      put_socket_assigns(view, importing: true, import_target: own_version)
+
+      # Another run reaching terminal state leaves this page's import alone.
+      send(view.pid, {:import_run_changed, other_run.id})
+      render(view)
+      assert :sys.get_state(view.pid).socket.assigns.importing
+
+      # This page's own run releases it, restoring the upload action.
+      send(view.pid, {:import_run_changed, own_run.id})
+      render(view)
+      refute :sys.get_state(view.pid).socket.assigns.importing
+      assert :sys.get_state(view.pid).socket.assigns.import_progress == nil
+
+      submit = view |> element("#gtfs-import-submit") |> render()
+      assert submit =~ "Import feed"
+      refute submit =~ "disabled"
+    end
+  end
+
   describe "end-to-end recovery boundary integration (AC-4/6/7/13/14)" do
     setup :editor_context
 

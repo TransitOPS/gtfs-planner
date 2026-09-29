@@ -1327,12 +1327,117 @@ test.describe("delete", () => {
   });
 });
 
+// Step 24 / EV-26. A full import whose `pathway_evolutions.txt` row is outside
+// the supported subset fails phase one. The Import page then shows the durable
+// recovery card ahead of Import feed with the file, the CSV row and one bounded
+// field/fix sentence, returns the upload form to its idle action, and keeps the
+// failure until the failed version is discarded.
+const REJECTION_LEVELS_FILE =
+  "level_id,level_index,level_name\nBROWSER_EVO_REJECTION,1.0,Closure rejection";
+
+const REJECTION_STOPS_FILE =
+  "stop_id,stop_name,stop_lat,stop_lon,level_id\n" +
+  "BROWSER_EVO_REJECTION_STOP,Rejection probe,1.0,1.0,BROWSER_EVO_REJECTION";
+
+// Blank pathway_id: the first rejected row fails the import in phase one.
+const REJECTED_PATHWAY_FILE =
+  "pathway_id,service_id,start_time,end_time,is_closed\n" +
+  ",CAL_DAILY,09:00:00,15:00:00,1";
+
+// A direction column with a value is outside the supported subset.
+const REJECTED_DIRECTION_FILE =
+  "pathway_id,service_id,start_time,end_time,is_closed,direction\n" +
+  "BROWSER_EVO/PW LIFT 1,CAL_DAILY,09:00:00,15:00:00,1,0";
+
+// Blank service_id: the same phase-one failure on a different field.
+const REJECTED_SERVICE_FILE =
+  "pathway_id,service_id,start_time,end_time,is_closed\n" +
+  "BROWSER_EVO/PW LIFT 1,,09:00:00,15:00:00,1";
+
+const REJECTION_SENTENCES = {
+  evolution_pathway_required: "Name the pathway, using the exact pathway_id",
+  evolution_direction_unsupported: "Leave direction blank or remove the column",
+  evolution_service_required: "Name the calendar, using the exact service_id",
+};
+
+const EXCHANGE_REFERENCE_PATH = path.join(FEATURE_DIR, "references/exchange.html");
+
+// The same race stageDiffFiles handles applies to the full import's file input:
+// LiveView only accepts the change once the input owns its upload ref.
+async function stageImportFiles(page, files) {
+  const input = page.locator("#gtfs-import-upload-input input");
+  const entries = page.locator("#gtfs-import-upload-entries");
+  let lastError;
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await waitForLiveView(page);
+    await expect(input).toHaveAttribute("data-phx-upload-ref", /.+/);
+    await input.setInputFiles(files);
+
+    try {
+      for (const file of files) {
+        await expect(entries).toContainText(file.name, { timeout: 5_000 });
+      }
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError;
+}
+
+function rejectionCard(page, code) {
+  return page.locator(`[data-evolution-rejection="${code}"]`);
+}
+
+// Upload a minimal full feed whose closure row fails phase one, submit it, and
+// wait for the durable rejection element the Import page rebuilds from the run.
+async function submitRejectedClosureImport(page, { name, code, file }) {
+  await page.fill("#gtfs-import-version-name", name);
+  await stageImportFiles(page, [
+    {
+      name: "levels.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from(REJECTION_LEVELS_FILE),
+    },
+    {
+      name: "stops.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from(REJECTION_STOPS_FILE),
+    },
+    {
+      name: "pathway_evolutions.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from(file),
+    },
+  ]);
+
+  await page.locator("#gtfs-import-submit").click();
+
+  const card = rejectionCard(page, code);
+  await expect(card).toBeVisible({ timeout: 60_000 });
+  return card;
+}
+
+// Discard one failed import through its own two-step confirmation and wait for
+// its card to leave the stream.
+async function discardRun(page, card) {
+  const runCard = page.locator("#import-recovery-runs > div", { has: card });
+  const runId = (await runCard.getAttribute("id")).replace("import-run-", "");
+
+  await page.locator(`#discard-${runId}`).click();
+  await page.locator(`#delete-version-${runId}`).click();
+  await expect(runCard).toHaveCount(0, { timeout: 60_000 });
+}
+
 // Step 16 / EV-20. The station merge review discloses the ignored closure file
 // from the durable run summary, and the upload never becomes closures.
 test.describe("exchange", () => {
   test("station merge discloses the ignored closure file and leaves closures unchanged", async ({
     page,
   }, testInfo) => {
+    await logIn(page);
     const versionId = await seededVersionId(page);
     const importPath = `/gtfs/${versionId}/import`;
 
@@ -1426,6 +1531,176 @@ test.describe("exchange", () => {
     await page.screenshot({
       path: capturePath(testInfo, "step-016-production-320.png"),
       fullPage: true,
+    });
+  });
+
+  // Step 24 / EV-26. The rejected row's file, CSV row and bounded sentence, the
+  // recovery placement ahead of Import feed, the returned upload form and the
+  // durable reload, then discard of only the failed version.
+  test("a rejected closure row explains the field and its fix and stays until discarded", async ({
+    page,
+  }, testInfo) => {
+    const versionId = await seededVersionId(page);
+    const importPath = `/gtfs/${versionId}/import`;
+
+    await page.setViewportSize(DESKTOP);
+    await page.goto(importPath);
+    await waitForLiveView(page);
+
+    const card = await submitRejectedClosureImport(page, {
+      name: "Browser rejected closure",
+      code: "evolution_pathway_required",
+      file: REJECTED_PATHWAY_FILE,
+    });
+
+    // The element names the file, the CSV row and one bounded field/fix sentence.
+    await expect(card).toContainText("pathway_evolutions.txt");
+    await expect(card).toContainText("row 2");
+    await expect(card).toContainText(REJECTION_SENTENCES.evolution_pathway_required);
+    await expect(card).toHaveAttribute("data-evolution-file", "pathway_evolutions.txt");
+    await expect(card).toHaveAttribute("data-evolution-row", "2");
+
+    // The card says the version stays unpublished; it never claims no version
+    // was created.
+    await expect(page.locator("#import-recovery-section")).toContainText(
+      "remains unpublished until this failed import is discarded",
+    );
+
+    // Recovery precedes Import feed while it holds a run.
+    expect(
+      await page.evaluate(() =>
+        Boolean(
+          document
+            .querySelector("#import-recovery-section")
+            .compareDocumentPosition(document.querySelector("#gtfs-import-section")) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+      ),
+    ).toBe(true);
+
+    // The upload action returns: the form is idle and its file input is usable.
+    await expect(page.locator("#gtfs-import-submit")).toHaveText(/Import feed/);
+    await expect(page.locator("#gtfs-import-upload-input input")).toBeEnabled();
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-024-production-desktop.png"),
+      fullPage: true,
+    });
+
+    // The durable failure survives a reload and both narrower viewports.
+    await page.reload();
+    await waitForLiveView(page);
+    await expect(rejectionCard(page, "evolution_pathway_required")).toContainText("row 2");
+
+    await page.setViewportSize(MOBILE);
+    await page.reload();
+    await waitForLiveView(page);
+    await expect(rejectionCard(page, "evolution_pathway_required")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-024-production-mobile.png"),
+      fullPage: true,
+    });
+
+    await page.setViewportSize(NARROW);
+    await page.reload();
+    await waitForLiveView(page);
+    await expect(rejectionCard(page, "evolution_pathway_required")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-024-production-320.png"),
+      fullPage: true,
+    });
+
+    // Discarding removes the failed version only; the published route version
+    // is still the one this page is on. The assertions are scoped to this run so
+    // the case does not depend on no other recoverable run existing.
+    await page.setViewportSize(DESKTOP);
+    await page.reload();
+    await waitForLiveView(page);
+    await discardRun(page, rejectionCard(page, "evolution_pathway_required"));
+    await expect(page.locator("#import-recovery-runs")).not.toContainText(
+      "Browser rejected closure",
+    );
+    expect(await seededVersionId(page)).toBe(versionId);
+  });
+
+  test("two failed imports keep their own recovery element and sentence", async ({ page }) => {
+    const versionId = await seededVersionId(page);
+    await page.setViewportSize(DESKTOP);
+    await page.goto(`/gtfs/${versionId}/import`);
+    await waitForLiveView(page);
+
+    const directionCard = await submitRejectedClosureImport(page, {
+      name: "Browser rejected direction",
+      code: "evolution_direction_unsupported",
+      file: REJECTED_DIRECTION_FILE,
+    });
+
+    const serviceCard = await submitRejectedClosureImport(page, {
+      name: "Browser rejected service",
+      code: "evolution_service_required",
+      file: REJECTED_SERVICE_FILE,
+    });
+
+    await expect(directionCard).toContainText(
+      REJECTION_SENTENCES.evolution_direction_unsupported,
+    );
+    await expect(serviceCard).toContainText(REJECTION_SENTENCES.evolution_service_required);
+
+    const ids = await page
+      .locator("[data-evolution-rejection]")
+      .evaluateAll((elements) => elements.map((element) => element.id));
+
+    expect(ids.length).toBe(2);
+    expect(new Set(ids).size).toBe(2);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+
+    await discardRun(page, directionCard);
+    await discardRun(page, serviceCard);
+    await expect(page.locator("#import-recovery-runs")).not.toContainText(
+      "Browser rejected direction",
+    );
+    await expect(page.locator("#import-recovery-runs")).not.toContainText(
+      "Browser rejected service",
+    );
+  });
+
+  test.describe("rejection reference capture", () => {
+    test.skip(
+      () => !fs.existsSync(EXCHANGE_REFERENCE_PATH),
+      "reference file not present",
+    );
+
+    test("captures the reference rejection states at both viewports", async ({
+      page,
+    }, testInfo) => {
+      const states = [
+        { state: "failed-direction-unsupported", suffix: "" },
+        { state: "failed-service-missing", suffix: "-service" },
+      ];
+
+      for (const { state, suffix } of states) {
+        for (const [viewport, label] of [
+          [DESKTOP, "desktop"],
+          [MOBILE, "mobile"],
+        ]) {
+          await page.setViewportSize(viewport);
+          await page.goto(`${pathToFileURL(EXCHANGE_REFERENCE_PATH).href}?state=${state}`);
+          await page.waitForSelector("#import-recovery-section", { state: "visible" });
+          await page.waitForFunction(() =>
+            (document.querySelector("#import-evolution-rejection")?.textContent || "").includes(
+              "row",
+            ),
+          );
+          await page.screenshot({
+            path: capturePath(testInfo, `step-024-reference${suffix}-${label}.png`),
+            fullPage: true,
+          });
+        }
+      }
     });
   });
 });
