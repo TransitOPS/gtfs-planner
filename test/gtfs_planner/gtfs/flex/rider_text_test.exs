@@ -507,12 +507,14 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderTextTest do
     |> Enum.map(fn {app, line, _note} -> {app, line} end)
   end
 
+  # The areas are loaded: `changes/3` and `hours_lines/3` read the service's
+  # areas for the words that name them, as every production caller has them.
   defp area_service(attrs \\ []) do
-    struct!(FlexService, Enum.into(attrs, %{kind: :area}))
+    struct!(FlexService, Enum.into(attrs, %{kind: :area, areas: []}))
   end
 
   defp detour(attrs) do
-    struct!(FlexService, Enum.into(attrs, %{kind: :detour, route_id: "20"}))
+    struct!(FlexService, Enum.into(attrs, %{kind: :detour, route_id: "20", areas: []}))
   end
 
   defp hours(area_key, service_id, start, finish) do

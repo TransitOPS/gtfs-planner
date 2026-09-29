@@ -447,7 +447,9 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveTest do
       end
     end
 
-    test "unauthenticated visits follow the existing login redirect", %{version: version} do
+    test "unauthenticated visits follow the existing login redirect", %{conn: _conn} do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
       conn = build_conn() |> init_test_session(%{})
 
       assert redirected_to(get(conn, flex_path(version))) == "/users/log_in"

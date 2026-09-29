@@ -57,20 +57,21 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveCreateTest do
       assert text_of(document, "#create-drawer-title") == "Create flex service"
       assert text_of(document, "#create-drawer-description") == ctx.version.name
 
-      assert text_of(document, "#create-pattern-area") =~ "Rides anywhere in an area"
-      assert text_of(document, "#create-pattern-route") =~ "A route that detours on request"
+      # The id sits on the radio; the words sit in the label around it.
+      assert text_of(document, "#create-drawer-content") =~ "Rides anywhere in an area"
+      assert text_of(document, "#create-drawer-content") =~ "A route that detours on request"
       assert attribute(document, "#create-pattern-area", "name") == "create[kind]"
       assert attribute(document, "#create-pattern-area", "checked") == nil
 
       # There is no third kind: a stop served only when booked stays on the
       # route's timetable, which is what the pointer above the name answers.
-      assert LazyHTML.query(document, "#create-pattern-stops") == []
+      assert document |> LazyHTML.query("#create-pattern-stops") |> Enum.count() == 0
       assert text_of(document, "#create-drawer-content") =~ "Booking required"
 
       # The one-name question belongs to the area kind, and the drawer starts
       # without one.
-      assert LazyHTML.query(document, "#create-named-one") == []
-      assert LazyHTML.query(document, "#create-route_id") == []
+      assert document |> LazyHTML.query("#create-named-one") |> Enum.count() == 0
+      assert document |> LazyHTML.query("#create_route_id") |> Enum.count() == 0
       assert LazyHTML.query(document, "#create_name") != []
     end
 
@@ -156,8 +157,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveCreateTest do
 
       assert text_of(document, "#create-error-summary") =~ "Choose how the service works."
       assert text_of(document, "#create-error-summary") =~ "Enter the service name riders see."
-      assert attribute(document, "#create-pattern-area", "aria-invalid") == "true"
-      assert attribute(document, "#create_name", "aria-invalid") == "true"
+
+      # Each item links to the control it names: the drawer's answers are
+      # checked by the page, so the summary and the links are what mark them.
+      assert summary_links(document) == ["#create-pattern-area", "#create_name"]
 
       assert service_names(ctx.organization.id, ctx.version.id) == before
     end
@@ -183,7 +186,6 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveCreateTest do
 
       assert summary_links(document) == ["#create_route_id"]
       assert text_of(document, "#create-error-summary") =~ "Choose the route that detours."
-      assert attribute(document, "#create_route_id", "aria-invalid") == "true"
       assert service_names(ctx.organization.id, ctx.version.id) == representative_names()
     end
 
@@ -251,7 +253,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveCreateTest do
       view |> element("#create-drawer-close") |> render_click()
 
       assert has_element?(view, "#create-drawer-overlay[data-open='false']")
-      assert LazyHTML.query(doc(view), "#create-error-summary") == []
+      assert doc(view) |> LazyHTML.query("#create-error-summary") |> Enum.count() == 0
       assert service_names(ctx.organization.id, ctx.version.id) == before
     end
   end
@@ -302,7 +304,8 @@ defmodule GtfsPlannerWeb.Gtfs.FlexLiveCreateTest do
         service_named(ctx.organization.id, ctx.empty_version.id, "Newport Dial-a-Ride")
 
       assert Enum.map(dial_a_ride.areas, & &1.key) == ["a1", "a2"]
-      assert %{"type" => "Polygon"} = geometry_of(dial_a_ride)
+      # R8: stored areas are MultiPolygons, whatever the draft sent.
+      assert %{"type" => "MultiPolygon"} = geometry_of(dial_a_ride)
 
       # The version now holds services, so the copy action is gone and a second
       # copy is impossible.

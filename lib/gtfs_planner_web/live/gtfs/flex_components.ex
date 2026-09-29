@@ -565,7 +565,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexComponents do
         described_by="copy-confirm-body"
         return_focus_id="copy-services"
       >
-        <p :if={@target} id="copy-confirm-body">
+        <p :if={@target}>
           Every flex service in {@target.name}, and its areas, is copied into this version. This version has no services yet, so nothing is replaced.
         </p>
       </.confirm_dialog>
