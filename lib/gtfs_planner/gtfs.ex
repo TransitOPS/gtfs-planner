@@ -735,6 +735,40 @@ defmodule GtfsPlanner.Gtfs do
   defp blank_paste_text?(_input), do: true
 
   @doc """
+  Applies a pasted timetable review through `Schedules.apply_paste/5`.
+
+  The route, calendar, direction and pattern the write may touch come from
+  `scope_params`; `input` is the reviewed paste (as returned by
+  `prepare_timetable_paste/5`), and `fingerprint` is the review fingerprint
+  that prepare produced. The write runs serializably under the version,
+  route, direction patterns and trips it may touch, and any mid-write failure
+  rolls everything back (AC-19). `{:error, :stale_plan}` means the schedule
+  changed after prepare and the caller should review again.
+  """
+  @spec apply_timetable_paste(
+          String.t(),
+          map(),
+          map(),
+          String.t(),
+          AuditContext.t()
+        ) ::
+          {:ok, Schedules.paste_apply_result()} | {:error, Schedules.paste_apply_error()}
+  def apply_timetable_paste(
+        route_id,
+        scope_params,
+        input,
+        fingerprint,
+        %AuditContext{} = audit_context
+      )
+      when is_binary(route_id) and is_map(scope_params) and is_map(input) and
+             is_binary(fingerprint) do
+    Schedules.apply_paste(route_id, scope_params, input, fingerprint, audit_context)
+  end
+
+  def apply_timetable_paste(_route_id, _scope_params, _input, _fingerprint, _audit_context),
+    do: {:error, :not_found}
+
+  @doc """
   Expands a departure series for the Add trips preview through `Schedules`.
 
   Without a repeat this is the single departure `[start_secs]`; with an interval it
