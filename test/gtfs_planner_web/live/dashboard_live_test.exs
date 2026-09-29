@@ -97,6 +97,7 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       refute has_element?(view, "a[href^='/gtfs/']")
       refute has_element?(view, "a[href='/admin/users']")
       refute has_element?(view, "a[href='/admin/organizations']")
+      refute_tenant_disclosure(html)
       assert_at_most_one_primary(html)
     end
 
@@ -134,6 +135,7 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       refute has_element?(view, "a[href^='/gtfs/']")
       refute has_element?(view, "a[href='/admin/users']")
       refute has_element?(view, "a[href='/admin/organizations']")
+      refute_tenant_disclosure(html)
       assert_at_most_one_primary(html)
     end
 
@@ -161,6 +163,7 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       refute has_element?(view, "a[href^='/gtfs/']")
       refute has_element?(view, "a[href='/admin/users']")
       refute has_element?(view, "a[href='/admin/organizations']")
+      refute_tenant_disclosure(html)
     end
 
     test "a member without a published version sees the no-version state with the active administrators",
@@ -303,6 +306,7 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
                "Editing routes, calendars and stops needs the Editor role."
              )
 
+      refute has_element?(view, "#home-admin-only a[href^='/gtfs/']")
       assert_at_most_one_primary(html)
     end
 
@@ -344,7 +348,7 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       assert_single_state_root(view, "#home-planner")
       assert_single_h1(html, version.name)
       refute has_element?(view, "#users-strip")
-      assert_at_most_one_primary(html)
+      assert_one_primary_after_regions_load(view)
     end
 
     test "an editor in a pathways organization sees the station board head", %{conn: conn} do
@@ -363,7 +367,7 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       assert_single_h1(html, "Stations")
       assert has_element?(view, "#app-brand-logo[src='/images/pathways-studio-logo.svg']")
       refute has_element?(view, "#users-strip")
-      assert_at_most_one_primary(html)
+      assert_one_primary_after_regions_load(view)
     end
 
     test "an editor who is also an organization administrator sees the People row", %{conn: conn} do
@@ -379,7 +383,7 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       assert_single_state_root(view, "#home-planner")
       assert_single_h1(html, version.name)
       assert has_element?(view, "#users-strip")
-      assert_at_most_one_primary(html)
+      assert_one_primary_after_regions_load(view)
     end
   end
 
@@ -568,6 +572,21 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
 
     assert length(primaries) <= 1,
            "expected at most one primary action, found #{length(primaries)}"
+  end
+
+  # A working page's primary action lives in its async regions, so the count is
+  # only meaningful once they have loaded. The wait allows for the full suite's
+  # database load.
+  defp assert_one_primary_after_regions_load(view) do
+    primaries =
+      view
+      |> render_async(2_000)
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query(".bg-action")
+      |> Enum.to_list()
+
+    assert length(primaries) == 1,
+           "expected exactly one primary action, found #{length(primaries)}"
   end
 
   defp organization_count_label do

@@ -745,10 +745,12 @@ defmodule GtfsPlannerWeb.DashboardPathwaysTest do
   end
 
   # `:statuses` starts only once `:board` answers, so the first wait cannot see
-  # it; the second is a no-op when everything already settled.
+  # it; the second is a no-op when everything already settled. Under the full
+  # suite's database load the board's reads can outlast `render_async/1`'s
+  # default 100 ms wait.
   defp render_board(view) do
-    render_async(view)
-    render_async(view)
+    render_async(view, 2_000)
+    render_async(view, 2_000)
   end
 
   defp board_row_ids(view) do

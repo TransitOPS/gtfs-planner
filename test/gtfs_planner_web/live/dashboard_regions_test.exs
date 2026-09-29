@@ -91,6 +91,38 @@ defmodule GtfsPlannerWeb.DashboardRegionsTest do
       assert has_element?(view, "#check-badge", "No errors · 12 warnings")
     end
 
+    test "a failed check read renders its error, and Try again reloads only the check", ctx do
+      %{organization: organization, version: version, user: user} = planner_fixture()
+      insert_check(organization, version, %{errors_count: 0, warnings_count: 12})
+      stop_change(organization, version, user, "MKT", "Market Street 3rd")
+      conn = log_in_user(ctx.conn, user, organization: organization)
+
+      install_stub([:check_and_share])
+
+      {:ok, view, _html} = live(conn, ~p"/")
+      render_async(view)
+
+      assert has_element?(
+               view,
+               "#region-error-check",
+               "The check and export details could not load."
+             )
+
+      assert has_element?(view, "#resume-latest", "Market Street 3rd")
+
+      # The check failure is cleared and the resume read is armed to fail: a
+      # retry that reloaded the resume too would render its error block.
+      Application.put_env(:gtfs_planner, :home_failing_functions, [:resume])
+
+      view |> element("#region-error-retry-check") |> render_click()
+      render_async(view)
+
+      refute has_element?(view, "#region-error-check")
+      assert has_element?(view, "#check-badge", "No errors · 12 warnings")
+      refute has_element?(view, "#region-error-resume")
+      assert has_element?(view, "#resume-latest", "Market Street 3rd")
+    end
+
     test "an unknown region value is ignored", ctx do
       %{organization: organization, user: user} = planner_fixture()
       conn = log_in_user(ctx.conn, user, organization: organization)
@@ -163,6 +195,35 @@ defmodule GtfsPlannerWeb.DashboardRegionsTest do
       assert has_element?(view, "#board-filter-not_started span", "0")
       assert has_element?(view, "#board-filter-in_progress span", "–")
       assert has_element?(view, "#board-filter-clean span", "–")
+    end
+  end
+
+  describe "Station board" do
+    test "a failed board read renders its error, and Try again loads the board and statuses",
+         ctx do
+      %{organization: organization, user: user} = pathways_fixture()
+      conn = log_in_user(ctx.conn, user, organization: organization)
+
+      install_stub([:station_board])
+
+      {:ok, view, _html} = live(conn, ~p"/")
+      render_board(view)
+
+      assert has_element?(view, "#region-error-board", "The station list could not load.")
+      refute has_element?(view, "#board-rows")
+      # The rail's share card is its own region and still renders.
+      assert has_element?(view, "#share #export-link")
+      refute has_element?(view, "#region-error-check")
+
+      Application.put_env(:gtfs_planner, :home_failing_functions, [])
+
+      view |> element("#region-error-retry-board") |> render_click()
+      render_board(view)
+
+      refute has_element?(view, "#region-error-board")
+      assert has_element?(view, "#board-row-UNS", "Union Station")
+      # The statuses read follows the retried board, so its counts are known.
+      assert has_element?(view, "#board-filter-in_progress span", "1")
     end
   end
 
@@ -312,10 +373,12 @@ defmodule GtfsPlannerWeb.DashboardRegionsTest do
   # -- Observation helpers --
 
   # `:statuses` starts only once `:board` answers, so the first wait cannot see
-  # it; the second is a no-op when everything already settled.
+  # it; the second is a no-op when everything already settled. Under the full
+  # suite's database load the board's reads can outlast `render_async/1`'s
+  # default 100 ms wait.
   defp render_board(view) do
-    render_async(view)
-    render_async(view)
+    render_async(view, 2_000)
+    render_async(view, 2_000)
   end
 
   defp row_cells(view, stop_id) do
