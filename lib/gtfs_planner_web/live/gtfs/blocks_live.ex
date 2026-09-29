@@ -2060,7 +2060,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                     open={true}
                     block={block}
                     routes={@routes}
-                    findings_by_trip={@findings_by_trip}
+                    movements={block.movements}
+                    max_piece_minutes={@max_piece_minutes}
                     action={@block_action}
                     form={@block_action_form}
                     merge_options={@merge_options}

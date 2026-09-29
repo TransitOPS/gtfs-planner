@@ -529,7 +529,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
   describe "the block drawer" do
     setup :editor_scope
 
-    test "lists the block's trips in sequence with gap text and findings",
+    test "lists the block's trips in the vehicle's day with their gaps and notes",
          %{version: version} = context do
       calendar(context, "WK", "Weekday")
       main = stop(context, %{stop_id: "MAIN", stop_name: "Main St"})
@@ -573,11 +573,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       assert attribute_values(view, "#block-drawer [data-role='block-inspect']", "phx-value-trip") ==
                ["a", "b", "u"]
 
-      assert has_element?(
-               view,
-               "#block-drawer [data-role='block-gap']",
-               "12 min layover at Main St"
-             )
+      # The layover is a wait row of the vehicle's day, and the row's own button
+      # is what opens that gap's drawer.
+      assert has_element?(view, "#block-drawer tr[data-kind='wait']", "Wait at Main St")
+      assert has_element?(view, "#block-drawer tr[data-kind='wait']", "12 min")
 
       assert element_count(view, "#block-drawer [data-role='block-gap']") == 1
 
@@ -587,7 +586,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
                "Inspect"
              )
 
-      assert has_element?(view, "#block-drawer [data-role='trip-issues']", "Time missing")
+      # The trip the sequence cannot plot is still in the drawer, with the reason
+      # it is out of the vehicle's timed day on its own row.
+      assert has_element?(
+               view,
+               "#block-drawer tr[data-kind='trip']",
+               "Time missing"
+             )
+
       assert has_element?(view, "#block-drawer", "Main St → Main St")
     end
 
