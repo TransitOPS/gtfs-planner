@@ -161,8 +161,7 @@ defmodule GtfsPlanner.Agents.Model do
         auth: {:bearer, key},
         json: body,
         receive_timeout: @receive_timeout,
-        retry: false,
-        max_retries: 2
+        retry: false
       ] ++ Application.get_env(@config_app, @req_options_key, [])
 
     case Req.post(options) do
