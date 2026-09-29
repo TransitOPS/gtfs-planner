@@ -2458,19 +2458,26 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   # but empties active dates is disclosed through the existing warnings instead.
   defp validate_plan_references(plans, audit_context) do
     Enum.reduce_while(plans, :ok, fn {service_id, plan}, :ok ->
-      if is_nil(plan.projected_calendar) and plan.projected_exceptions == [] do
-        usage =
-          one_usage(audit_context.organization_id, audit_context.gtfs_version_id, service_id)
-
-        if usage.closure_count > 0 do
-          {:halt, {:error, {:closure_reference_lost, usage}}}
-        else
-          {:cont, :ok}
-        end
-      else
+      if native_rows_retained?(plan) do
         {:cont, :ok}
+      else
+        validate_projected_reference(service_id, audit_context)
       end
     end)
+  end
+
+  defp native_rows_retained?(%{projected_calendar: nil, projected_exceptions: []}), do: false
+  defp native_rows_retained?(_plan), do: true
+
+  defp validate_projected_reference(service_id, audit_context) do
+    usage =
+      one_usage(audit_context.organization_id, audit_context.gtfs_version_id, service_id)
+
+    if usage.closure_count > 0 do
+      {:halt, {:error, {:closure_reference_lost, usage}}}
+    else
+      {:cont, :ok}
+    end
   end
 
   defp loaded_sources!(targets, source_fingerprints, audit_context) do

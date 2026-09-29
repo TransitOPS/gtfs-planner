@@ -491,7 +491,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   @impl true
   def handle_event("reset-diff", _params, socket) do
-    {:noreply, socket |> reset_diff() |> push_event("focus_diff_files", %{})}
+    {:noreply,
+     socket
+     |> discard_change_run()
+     |> reset_diff()
+     |> push_event("focus_diff_files", %{})}
   end
 
   # Return the station workflow to choosing files. The durable run is left as it
@@ -515,6 +519,21 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     |> assign(:evolution_targets, %{})
     |> stream(:diff_decisions, [], reset: true)
     |> stream(:diff_preview_decisions, [], reset: true)
+  end
+
+  # Reset discards the durable review, not only its client copy. A run left
+  # active in the scope is the run the next compute adopts, and its staged
+  # files would then surface as decisions for files this reader never staged.
+  defp discard_change_run(socket) do
+    case socket.assigns[:change_run] do
+      %ChangeRun{} = run ->
+        Phoenix.PubSub.unsubscribe(GtfsPlanner.PubSub, ChangeRuns.topic(run))
+        _ = ChangeRuns.request_cancel(socket.assigns.current_organization.id, run.id)
+        socket
+
+      _ ->
+        socket
+    end
   end
 
   @impl true

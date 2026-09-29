@@ -61,6 +61,10 @@ function groupFor(container, uuid) {
 function buildIsland({ selectedId = "", closedIds = [], selectEvent = "select_pathway" } = {}) {
   const island = document.createElement("div");
   island.id = "closure-floorplan";
+  // The production island is a LiveView-owned region: the hook renders its
+  // children and the server merges only data attributes onto it.
+  island.setAttribute("phx-update", "ignore");
+  island.setAttribute("phx-hook", "PathwayEvolutionsFloorplan");
   island.dataset.imageUrl = "/uploads/diagrams/plan.png";
   island.dataset.imageAlt = "Floorplan of the test station";
   island.dataset.stops = JSON.stringify(STOPS);
@@ -71,6 +75,7 @@ function buildIsland({ selectedId = "", closedIds = [], selectEvent = "select_pa
   island.dataset.showStopNames = "false";
   island.dataset.noteId = "closure-floorplan-missing";
   island.dataset.listId = "closure-pathway-list";
+  island.dataset.toggleId = "locator-toggle";
   island.innerHTML = `
     <div data-floorplan-frame>
       <img data-floorplan-image src="/uploads/diagrams/plan.png" alt="Floorplan of the test station" />
@@ -91,7 +96,10 @@ function buildIsland({ selectedId = "", closedIds = [], selectEvent = "select_pa
   list.id = "closure-pathway-list";
   list.classList.add("md:hidden");
 
-  document.body.append(panel, missing, list);
+  const toggle = document.createElement("div");
+  toggle.id = "locator-toggle";
+
+  document.body.append(panel, missing, list, toggle);
   return island;
 }
 
@@ -353,6 +361,36 @@ describe("PathwayEvolutionsFloorplan", () => {
     expect(hook.pushEvent).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps the reader's place when a keyboard selection opens the editor", async () => {
+    const island = buildIsland();
+    imageFor(island);
+    const hook = mountHook(island);
+
+    const svg = island.querySelector("[data-floorplan-svg]");
+    const walk = svg.querySelector(`[data-pathway-uuid="${WALK_ID}"]`);
+    const calendar = document.createElement("select");
+    calendar.id = "closure-calendar";
+    document.body.append(calendar);
+
+    walk.focus();
+    keydown(walk, "Enter");
+
+    // The selection's own update renders first; the server's focus move into
+    // the form is dispatched after it and re-asserts itself on the next frame,
+    // exactly as LiveView orders a patch and its pushed events.
+    island.dataset.selectedId = WALK_ID;
+    hook.updated();
+    calendar.focus();
+
+    await Promise.resolve();
+
+    if (typeof requestAnimationFrame === "function") {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+
+    expect(document.activeElement.getAttribute("data-pathway-uuid")).toBe(WALK_ID);
+  });
+
   it("redraws the selection and the closed set from the island's data attributes", () => {
     const island = buildIsland();
     imageFor(island);
@@ -403,6 +441,7 @@ describe("PathwayEvolutionsFloorplan", () => {
     expect(document.getElementById("closure-pathway-list").classList.contains("md:hidden")).toBe(
       false,
     );
+    expect(document.getElementById("locator-toggle").hidden).toBe(true);
   });
 
   it("highlights the existing causes instead of writing when the island is the preview", () => {
@@ -476,16 +515,20 @@ describe("PathwayEvolutionsFloorplan", () => {
     const svg = island.querySelector("[data-floorplan-svg]");
 
     expect(svg.getAttribute("phx-hook")).toBeNull();
-    expect(island.getAttribute("phx-update")).not.toBeNull();
+    expect(island.getAttribute("phx-update")).toBe("ignore");
 
     const dragEvents = ["dragstart", "mousedown", "pointerdown", "wheel"];
     for (const name of dragEvents) {
       expect(hook[`_${name}`]).toBeUndefined();
     }
 
-    // A selection leaves every stored coordinate exactly as the server sent it.
+    // A selection leaves every stored coordinate exactly as the server sent it:
+    // the redraw never moves a line the first render drew.
+    const lift = () => svg.querySelector(`[data-pathway-uuid="${LIFT_ID}"]`);
+    const drawn = lift().querySelector("line.evo-fp-line").getAttribute("y2");
+
     keydown(svg.querySelector(`[data-pathway-uuid="${WALK_ID}"]`), "Enter");
-    const lift = svg.querySelector(`[data-pathway-uuid="${LIFT_ID}"]`);
-    expect(lift.querySelector("line.evo-fp-line").getAttribute("y2")).toBe("55");
+
+    expect(lift().querySelector("line.evo-fp-line").getAttribute("y2")).toBe(drawn);
   });
 });

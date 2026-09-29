@@ -3648,29 +3648,30 @@ defmodule GtfsPlanner.Gtfs do
       stop ->
         with :ok <-
                check_pathways_closure_free(organization_id, gtfs_version_id, stop.stop_id) do
-          try do
-            Ecto.Multi.new()
-            |> lock_input_write_multi(organization_id, gtfs_version_id)
-            |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
-            |> Ecto.Multi.delete(:stop, stop)
-            |> Repo.transaction()
-            |> case do
-              {:ok, %{stop: deleted_stop}} ->
-                broadcast({:ok, deleted_stop}, [:stops, :deleted])
-
-              {:error, _step, reason, _changes} ->
-                {:error, reason}
-            end
-          rescue
-            e in [Ecto.ConstraintError, Postgrex.Error] ->
-              if closure_reference_violation?(e) do
-                {:error, :pathway_in_use}
-              else
-                reraise(e, __STACKTRACE__)
-              end
-          end
+          delete_child_stop_transaction(organization_id, gtfs_version_id, stop)
         end
     end
+  end
+
+  # The delete and the pathway cleanup commit together under the published
+  # version's write lock; the composite-reference refusal becomes
+  # `:pathway_in_use` and any other constraint failure is re-raised.
+  defp delete_child_stop_transaction(organization_id, gtfs_version_id, stop) do
+    Ecto.Multi.new()
+    |> lock_input_write_multi(organization_id, gtfs_version_id)
+    |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
+    |> Ecto.Multi.delete(:stop, stop)
+    |> Repo.transaction()
+    |> case do
+      {:ok, %{stop: deleted_stop}} ->
+        broadcast({:ok, deleted_stop}, [:stops, :deleted])
+
+      {:error, _step, reason, _changes} ->
+        {:error, reason}
+    end
+  rescue
+    e in [Ecto.ConstraintError, Postgrex.Error] ->
+      pathway_in_use_or_reraise(e, __STACKTRACE__)
   end
 
   @doc """
@@ -3715,39 +3716,48 @@ defmodule GtfsPlanner.Gtfs do
         {:error, :not_found}
 
       stop ->
-        update_query =
-          from(s in Stop, where: s.id == ^stop_id)
-
         with :ok <-
                check_pathways_closure_free(organization_id, gtfs_version_id, stop.stop_id) do
-          try do
-            Ecto.Multi.new()
-            |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
-            |> Ecto.Multi.update_all(:stop, update_query,
-              set: [diagram_coordinate: nil, level_id: nil, updated_at: now]
-            )
-            |> Ecto.Multi.run(:audit, fn _repo, %{pathways: {_count, deleted_pathways}} ->
-              record_diagram_removal(audit_ctx, stop, deleted_pathways)
-            end)
-            |> Repo.transaction()
-            |> case do
-              {:ok, _} ->
-                Repo.get!(Stop, stop_id)
-                |> then(&{:ok, &1})
-                |> broadcast([:stops, :updated])
-
-              {:error, _step, reason, _changes} ->
-                {:error, reason}
-            end
-          rescue
-            e in [Ecto.ConstraintError, Postgrex.Error] ->
-              if closure_reference_violation?(e) do
-                {:error, :pathway_in_use}
-              else
-                reraise(e, __STACKTRACE__)
-              end
-          end
+          remove_child_stop_transaction(organization_id, gtfs_version_id, stop, now, audit_ctx)
         end
+    end
+  end
+
+  # The diagram clearing and the pathway cleanup commit together, under the
+  # same composite-reference guard as the delete.
+  defp remove_child_stop_transaction(organization_id, gtfs_version_id, stop, now, audit_ctx) do
+    update_query = from(s in Stop, where: s.id == ^stop.id)
+
+    Ecto.Multi.new()
+    |> delete_pathways_for_stop_multi(organization_id, gtfs_version_id, stop.stop_id)
+    |> Ecto.Multi.update_all(:stop, update_query,
+      set: [diagram_coordinate: nil, level_id: nil, updated_at: now]
+    )
+    |> Ecto.Multi.run(:audit, fn _repo, %{pathways: {_count, deleted_pathways}} ->
+      record_diagram_removal(audit_ctx, stop, deleted_pathways)
+    end)
+    |> Repo.transaction()
+    |> case do
+      {:ok, _} ->
+        Repo.get!(Stop, stop.id)
+        |> then(&{:ok, &1})
+        |> broadcast([:stops, :updated])
+
+      {:error, _step, reason, _changes} ->
+        {:error, reason}
+    end
+  rescue
+    e in [Ecto.ConstraintError, Postgrex.Error] ->
+      pathway_in_use_or_reraise(e, __STACKTRACE__)
+  end
+
+  # A composite pathway reference refused the mutation while a closure still
+  # names the pathway; every other constraint failure keeps its own error.
+  defp pathway_in_use_or_reraise(exception, stacktrace) do
+    if closure_reference_violation?(exception) do
+      {:error, :pathway_in_use}
+    else
+      reraise(exception, stacktrace)
     end
   end
 
@@ -4463,17 +4473,17 @@ defmodule GtfsPlanner.Gtfs do
         name: :pathway_evolutions_pathway_fkey
       )
       |> Repo.delete()
-      |> case do
-        {:ok, _deleted} = ok ->
-          ok
+      |> pathway_delete_result()
+    end
+  end
 
-        {:error, %Ecto.Changeset{} = changeset} ->
-          if closure_constraint_error?(changeset) do
-            {:error, :pathway_in_use}
-          else
-            {:error, changeset}
-          end
-      end
+  defp pathway_delete_result({:ok, _deleted} = ok), do: ok
+
+  defp pathway_delete_result({:error, %Ecto.Changeset{} = changeset}) do
+    if closure_constraint_error?(changeset) do
+      {:error, :pathway_in_use}
+    else
+      {:error, changeset}
     end
   end
 

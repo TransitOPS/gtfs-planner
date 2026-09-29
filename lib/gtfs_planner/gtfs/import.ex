@@ -41,12 +41,12 @@ defmodule GtfsPlanner.Gtfs.Import do
   alias GtfsPlanner.{Repo, Gtfs}
 
   alias GtfsPlanner.Gtfs.Import.{
-    Result,
-    Failure,
     BatchProcessor,
+    CsvParser,
+    Failure,
     ParseError,
-    RowParser,
-    CsvParser
+    Result,
+    RowParser
   }
 
   alias GtfsPlanner.Gtfs.Extensions
