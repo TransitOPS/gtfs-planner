@@ -804,7 +804,7 @@ defmodule GtfsPlanner.Gtfs.Routes.MapTest do
       route_pattern_stop_fixture(many_pattern, "a", 1)
       route_pattern_stop_fixture(many_pattern, "b", 2)
 
-      for index <- 1..3 do
+      for _index <- 1..3 do
         trip_for_pattern(org, version, "many_trips", "many_p", "sh_many")
       end
 
