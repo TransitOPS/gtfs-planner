@@ -40,7 +40,6 @@ defmodule GtfsPlanner.Agents.Packs.CalendarsReadTest do
     test "declares exactly the three calendar tools with their activity labels" do
       assert Calendars.id() == "calendars"
       assert Calendars.title() == "Calendar helper"
-      assert Calendars.skill() == ""
 
       assert Calendars.intro() ==
                "I can answer questions about calendars in this service version and prepare service date changes for you to review. I can't change routes, trips or stops."

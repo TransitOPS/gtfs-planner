@@ -37,6 +37,19 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
 
   @changed_catalog "Calendars changed. Start the search again."
 
+  @skill_path Path.expand("../../../../priv/agents/packs/calendars/SKILL.md", __DIR__)
+  @external_resource @skill_path
+
+  @skill @skill_path
+         |> File.read!()
+         |> String.split("\n")
+         |> Enum.drop_while(&(&1 != "---"))
+         |> Enum.drop(1)
+         |> Enum.drop_while(&(&1 != "---"))
+         |> Enum.drop(1)
+         |> Enum.join("\n")
+         |> String.trim()
+
   @impl true
   def id, do: "calendars"
 
@@ -52,7 +65,7 @@ defmodule GtfsPlanner.Agents.Packs.Calendars do
   def examples, do: ["Which calendars run next Monday?", "Run Sunday service on a holiday"]
 
   @impl true
-  def skill, do: ""
+  def skill, do: @skill
 
   @impl true
   def tools do
