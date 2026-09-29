@@ -35,6 +35,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.Gtfs.CalendarComponents
   alias GtfsPlannerWeb.Gtfs.CalendarEditorComponents, as: Editor
 
   import GtfsPlannerWeb.PlannerComponents,
@@ -89,7 +90,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
      |> assign(:source, nil)
      |> assign(:service_id, nil)
      |> assign(:fingerprint, nil)
-     |> assign(:usage, %{trip_count: 0, route_ids: [], routes: []})
+     |> assign(:usage, empty_usage())
      |> assign(:kind, :weekly)
      |> assign(:periods, empty_periods())
      |> assign(:preview_month, nil)
@@ -113,6 +114,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
      |> assign(:pending_navigation, nil)
      |> assign(:pending_action, nil)
      |> assign(:delete_block, nil)
+     |> assign(:date_block, nil)
      |> assign(:pending?, false)
      |> assign(:status_message, nil)
      |> assign(:error_message, nil)
@@ -425,7 +427,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     |> assign(:service_id, nil)
     |> assign(:source, nil)
     |> assign(:fingerprint, nil)
-    |> assign(:usage, %{trip_count: 0, route_ids: [], routes: []})
+    |> assign(:usage, empty_usage())
     |> assign(:kind, :weekly)
     |> assign(:periods, empty_periods())
     |> assign(:warnings, [])
@@ -487,6 +489,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     |> put_params(params, baseline: params, errors: [])
     |> refresh_derived(source, source.today)
     |> assign(:delete_block, nil)
+    |> assign(:date_block, nil)
   end
 
   # A post-write refresh is a fresh source snapshot, so the retained fingerprint
@@ -965,6 +968,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     socket
     |> put_error(area_for(command), write_error_message(reason, command))
     |> assign_delete_block(reason, command)
+    |> assign_date_block(reason, command)
     |> focus_message()
   end
 
@@ -994,9 +998,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp focus_message(socket) do
     fallback =
-      if socket.assigns.delete_block,
-        do: "calendar-delete-blocked-message",
-        else: "calendar-error"
+      cond do
+        socket.assigns.delete_block -> "calendar-delete-blocked-message"
+        socket.assigns.date_block -> "calendar-date-error"
+        true -> "calendar-error"
+      end
 
     push_event(socket, "focus_form_error", %{form_id: "none", fallback_id: fallback})
   end
@@ -1265,20 +1271,74 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       |> put_params(params, errors: [], clear_messages: false)
       |> put_error(area_for(command), write_error_message(reason, command))
       |> assign_delete_block(reason, command)
+      |> assign_date_block(reason, command)
       |> focus_message()
     end
   end
 
   # Only a refused delete is "blocked": a refused conversion says so in its own words.
   # The callout says what the refusal would, so the plain error line is dropped.
+  # The callout names both reference kinds whenever both exist: the delete guard
+  # returns only the trip tuple, while the page already loaded the same scoped
+  # usage read that counts the closures and resolves their pathways.
   defp assign_delete_block(socket, {:in_use, trip_count, route_ids}, {:delete, _service_id}) do
     assign(socket,
-      delete_block: %{trip_count: trip_count, route_ids: route_ids},
+      delete_block: %{
+        trip_count: trip_count,
+        route_ids: route_ids,
+        closure_count: usage_field(socket, :closure_count),
+        closure_paths: usage_field(socket, :closure_paths)
+      },
+      error_message: nil
+    )
+  end
+
+  defp assign_delete_block(socket, {:closures_in_use, usage}, {:delete, _service_id}) do
+    assign(socket,
+      delete_block: %{
+        trip_count: usage.trip_count,
+        route_ids: usage.route_ids,
+        closure_count: usage.closure_count,
+        closure_paths: usage.closure_paths
+      },
       error_message: nil
     )
   end
 
   defp assign_delete_block(socket, _reason, _command), do: socket
+
+  # The last-native-row refusal belongs beside the date action that tried it, so
+  # it is held separately from the deletion block. A conversion that would empty
+  # the calendar reaches the same reason from the kind fields, where the date
+  # callout would be wrong; that one keeps the plain error line.
+  defp assign_date_block(socket, {:closure_reference_lost, usage}, command) do
+    if date_change_command?(command) do
+      assign(socket, date_block: %{command: command, usage: usage}, error_message: nil)
+    else
+      socket
+    end
+  end
+
+  defp assign_date_block(socket, _reason, _command), do: socket
+
+  defp date_change_command?({:remove_exceptions, _service_id, _dates}), do: true
+  defp date_change_command?({:put_exceptions, _service_id, _dates, _type}), do: true
+  defp date_change_command?(_command), do: false
+
+  defp usage_field(socket, field) do
+    Map.get(socket.assigns.usage, field, Map.get(empty_usage(), field))
+  end
+
+  defp empty_usage do
+    %{
+      trip_count: 0,
+      route_ids: [],
+      routes: [],
+      closure_count: 0,
+      pathway_ids: [],
+      closure_paths: []
+    }
+  end
 
   # Each message says what happened and what to do next. Edits stay on the page for
   # every failure that keeps the draft, and the copy says so.
@@ -1317,6 +1377,15 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp write_error_message({:in_use, trips, _routes}, _command) do
     {"#{Editor.plural(trips, "trip")} #{if trips == 1, do: "uses", else: "use"} this calendar, so it can’t switch to a weekly schedule.",
      "Move its trips to another calendar first."}
+  end
+
+  defp write_error_message({:closures_in_use, _usage}, _command) do
+    "Scheduled closures use this calendar, so it can’t be deleted."
+  end
+
+  defp write_error_message({:closure_reference_lost, _usage}, _command) do
+    {"This change would remove the last date that defines this calendar.",
+     "Scheduled closures use it. Change or delete them first."}
   end
 
   defp write_error_message(_reason, command), do: failed_title(command)
@@ -1599,10 +1668,27 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
               id="calendar-delete-blocked-message"
               tabindex="-1"
               kind="error"
-              title="This calendar is used by trips, so it can’t be deleted"
+              title={delete_block_title(@delete_block)}
             >
-              <p phx-no-format>{Editor.plural(@delete_block.trip_count, "trip")}<span :if={@delete_block.route_ids != []}> on <span :for={{route_id, index} <- Enum.with_index(@delete_block.route_ids)}><.link id={"calendar-delete-blocked-route-#{route_id}"} navigate={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{route_id}"} class="font-semibold underline underline-offset-2">{route_id}</.link><span :if={index < length(@delete_block.route_ids) - 1}>, </span></span></span> still {if @delete_block.trip_count == 1, do: "runs", else: "run"} on it. Move them to another calendar first: <strong>Combine calendars</strong> on the Calendars page moves every trip at once, or you can change the calendar on each route’s schedule. Then delete this one.</p>
-              <p class="mt-2 flex flex-wrap gap-x-5">
+              <p :if={@delete_block.trip_count > 0} phx-no-format>{Editor.plural(@delete_block.trip_count, "trip")}<span :if={@delete_block.route_ids != []}> on <span :for={{route_id, index} <- Enum.with_index(@delete_block.route_ids)}><.link id={"calendar-delete-blocked-route-#{route_id}"} navigate={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{route_id}"} class="font-semibold underline underline-offset-2">{route_id}</.link><span :if={index < length(@delete_block.route_ids) - 1}>, </span></span></span> still {if @delete_block.trip_count == 1, do: "runs", else: "run"} on it. Move them to another calendar first: <strong>Combine calendars</strong> on the Calendars page moves every trip at once, or you can change the calendar on each route’s schedule. Then delete this one.</p>
+              <p
+                :if={@delete_block.closure_count > 0}
+                id="calendar-delete-closures"
+                class={[@delete_block.trip_count > 0 && "mt-2"]}
+              >
+                {@delete_block.closure_count} {closure_usage_phrase(@delete_block.closure_count)} this calendar on {pathway_phrase(
+                  length(@delete_block.closure_paths)
+                )}
+                <CalendarComponents.pathway_links
+                  id="calendar-delete-pathways"
+                  paths={@delete_block.closure_paths}
+                  version_id={@current_gtfs_version.id}
+                  link_class="font-mono text-[13px] font-semibold underline underline-offset-2"
+                  text_class="font-mono text-[13px] font-semibold"
+                  suffix="."
+                /> Delete {closure_phrase(@delete_block.closure_count)} on the station’s Closures tab first.
+              </p>
+              <p :if={@delete_block.trip_count > 0} class="mt-2 flex flex-wrap gap-x-5">
                 <a
                   href="#calendar-trips-title"
                   class="inline-flex min-h-11 items-center font-[650] underline underline-offset-2"
@@ -2046,6 +2132,27 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 </.form>
               </div>
 
+              <div :if={@date_block} class="mt-4">
+                <.message
+                  id="calendar-date-error"
+                  tabindex="-1"
+                  kind="error"
+                  title={date_block_title(@date_block)}
+                >
+                  <p id="calendar-date-error-body">{date_block_body(@date_block)}</p>
+                  <p id="calendar-date-error-next" class="mt-1">
+                    Change or delete {closure_phrase(@date_block.usage.closure_count)} on
+                    <CalendarComponents.pathway_links
+                      id="calendar-date-error-pathways"
+                      paths={@date_block.usage.closure_paths}
+                      version_id={@current_gtfs_version.id}
+                      link_class="font-mono text-[13px] font-semibold underline underline-offset-2"
+                      text_class="font-mono text-[13px] font-semibold"
+                    /> first.
+                  </p>
+                </.message>
+              </div>
+
               <div
                 :if={@message_area == :changes and (@status_message || @error_message)}
                 class="mt-4"
@@ -2068,6 +2175,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
           </section>
 
           <Editor.trips_card :if={@show?} usage={@usage} version_id={@current_gtfs_version.id} />
+          <CalendarComponents.closures_card
+            :if={@show? and @usage.closure_count > 0}
+            usage={@usage}
+            version_id={@current_gtfs_version.id}
+          />
         </div>
 
         <.confirm_dialog
@@ -2099,6 +2211,21 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 <ul class="mt-1 grid gap-1">
                   <li :for={line <- @review.warnings}>{line}</li>
                 </ul>
+              </.message>
+            </div>
+            <div :if={no_service_with_closures?(@review_dialog, @usage)} class="mt-3">
+              <.message
+                id="calendar-review-closures"
+                kind="info"
+                title={closure_consequence_title(@usage.closure_count)}
+              >
+                On {pathway_phrase(length(@usage.closure_paths))}
+                <CalendarComponents.pathway_links
+                  id="calendar-review-closures-pathways"
+                  paths={@usage.closure_paths}
+                  version_id={@current_gtfs_version.id}
+                  suffix="."
+                /> {closure_consequence(@usage.closure_count)}
               </.message>
             </div>
             <p class="mt-3 font-semibold text-strong">
@@ -2246,6 +2373,66 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp save_note(%{usage: %{trip_count: trips, routes: routes}} = assigns),
     do:
       "Saving updates #{Editor.plural(trips, "trip")} on #{Editor.plural(length(routes), "route")} in #{assigns.current_gtfs_version.name}, a published version."
+
+  ## Guard copy
+
+  # The reasons the blocked-deletion callout lists and the refusals' count
+  # phrases live here, so every sentence that names a reference count pluralizes
+  # it in one place instead of leaving a hard-coded plural in the template.
+  defp delete_block_title(%{trip_count: trips, closure_count: closures})
+       when trips > 0 and closures > 0,
+       do: "Trips and closures use this calendar, so it can’t be deleted"
+
+  defp delete_block_title(%{closure_count: closures}) when closures > 0,
+    do: "Scheduled closures use this calendar, so it can’t be deleted"
+
+  defp delete_block_title(_block), do: "This calendar is used by trips, so it can’t be deleted"
+
+  defp pathway_phrase(1), do: "pathway"
+  defp pathway_phrase(_count), do: "pathways"
+
+  defp closure_usage_phrase(1), do: "scheduled closure uses"
+  defp closure_usage_phrase(_count), do: "scheduled closures use"
+
+  defp closure_phrase(1), do: "that closure"
+  defp closure_phrase(_count), do: "those closures"
+
+  defp closure_consequence_title(count) do
+    "#{count} #{CalendarComponents.closure_usage_label(count)}"
+  end
+
+  defp closure_consequence(1),
+    do: "With no service days, it will not close the pathway on any date."
+
+  defp closure_consequence(_count),
+    do: "With no service days, they will not close their pathways on any date."
+
+  # An allowed change that leaves no active dates keeps the native rows closures
+  # reference, so it stays allowed with its existing warning. The loaded usage
+  # says what that state means for the closures that use the calendar.
+  defp no_service_with_closures?(nil, _usage), do: false
+
+  defp no_service_with_closures?(%{warnings: warnings}, usage) do
+    usage.closure_count > 0 and Enum.any?(warnings, &match?(%{reason: :no_service}, &1))
+  end
+
+  defp date_block_title(%{command: {:remove_exceptions, _service_id, [date]}}) do
+    "#{Editor.format_date(date)} was not removed"
+  end
+
+  defp date_block_title(%{command: {:remove_exceptions, _service_id, dates}}) do
+    "#{length(dates)} date changes were not removed"
+  end
+
+  defp date_block_title(_date_block), do: "The date changes were not removed"
+
+  defp date_block_body(%{usage: %{closure_count: 1}}) do
+    "This change would remove the last date that defines this calendar, and 1 scheduled closure uses it."
+  end
+
+  defp date_block_body(%{usage: usage}) do
+    "This change would remove the last date that defines this calendar, and #{usage.closure_count} scheduled closures use it."
+  end
 
   defp date_from_iso(iso) do
     {:ok, date} = Date.from_iso8601(iso)

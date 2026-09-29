@@ -1,6 +1,7 @@
 // Scheduled pathway closures on the Evolutions station route (EV-21, step 15),
-// the station-merge closure-file disclosure (EV-20, step 16), and the
-// fingerprinted delete confirmation (EV-31, step 20).
+// the station-merge closure-file disclosure (EV-20, step 16), the fingerprinted
+// delete confirmation (EV-31, step 20), and the calendar reference refusals
+// (EV-24, step 22).
 //
 // Runs against the reset-and-seeded browser database the repository's Playwright
 // configuration already uses (`mise run prepare:browser`, workers: 1, retries: 0)
@@ -63,6 +64,7 @@ const NARROW = { width: 320, height: 844 };
 const FEATURE_DIR = path.resolve(__dirname, "../../.specs/pathway-evolutions");
 const EVIDENCE_DIR = path.join(FEATURE_DIR, "evidence/browser");
 const REFERENCE_PATH = path.join(FEATURE_DIR, "references/closures.html");
+const GUARDS_REFERENCE_PATH = path.join(FEATURE_DIR, "references/guards.html");
 
 function capturePath(testInfo, name) {
   return fs.existsSync(EVIDENCE_DIR)
@@ -143,6 +145,28 @@ async function seededVersionId(page, name = VERSION_NAME) {
 
 function evolutionsPath(versionId, stopId, query = "") {
   return `/gtfs/${versionId}/stops/${stopId}/evolutions${query}`;
+}
+
+function calendarPath(versionId, serviceId) {
+  return `/gtfs/${versionId}/calendars/show?service_id=${encodeURIComponent(serviceId)}`;
+}
+
+// The calendar page keeps its actions behind a disclosure whose open state is a
+// client-side property the render patch can drop, so a journey opens it the same
+// way the calendar spec does and then asserts the action is reachable.
+async function openCalendarActions(page) {
+  await page.evaluate(() => {
+    const disclosure = Array.from(
+      document.querySelectorAll("#calendar-editor details"),
+    ).find((element) =>
+      (element.querySelector("summary")?.textContent || "").includes(
+        "Calendar actions",
+      ),
+    );
+
+    if (disclosure) disclosure.open = true;
+  });
+  await expect(page.locator("#calendar-delete")).toBeVisible();
 }
 
 const MONTH_NAMES = [
@@ -1810,9 +1834,10 @@ test.describe("calendars", () => {
     await page.goto(evolutionsPath(versionId, EMPTY_STATION));
     await waitForLiveView(page);
 
-    // The station has no closures, so this form stays a draft and the seeded
-    // closures the other groups read are untouched.
-    await page.locator("#closures-empty #new-closure").click();
+    // This form stays a draft, so the closures the other groups read are
+    // untouched. The station may already carry authoring-group closures later in
+    // the file, so the control is addressed without its first-use parent.
+    await page.locator("#new-closure").click();
     await page.selectOption("#closure-pathway", "BROWSER_EVO_EMPTY_PW");
     await page.selectOption("#closure-calendar", "svc/odd name");
 
@@ -1870,7 +1895,7 @@ test.describe("calendars", () => {
     await page.goto(evolutionsPath(versionId, EMPTY_STATION));
     await waitForLiveView(page);
 
-    await page.locator("#closures-empty #new-closure").click();
+    await page.locator("#new-closure").click();
     await page.selectOption("#closure-pathway", "BROWSER_EVO_EMPTY_PW");
     await page.selectOption("#closure-calendar", "CAL_SCHOOL");
     await page.locator("#closure-dates-toggle").click();
@@ -1941,6 +1966,270 @@ test.describe("calendars", () => {
       await expect(page.locator("#closure-dates")).toBeVisible();
       await page.screenshot({
         path: capturePath(testInfo, "step-021-reference-mobile.png"),
+        fullPage: true,
+      });
+    });
+  });
+});
+
+// Step 22 / EV-24. Calendar reference guards: the calendar page names both the
+// trips and the scheduled closures that keep a service alive, links every known
+// pathway to the station that owns it with its exact encoded address, refuses a
+// closure-only deletion as "Calendar not deleted" instead of blaming trips, and
+// refuses the removal of the last stored date beside the action that tried it
+// without dropping the loaded form.
+test.describe("guards", () => {
+  test.beforeEach(async ({ page }) => {
+    await logIn(page);
+  });
+
+  test("names both references and keeps the loaded form when a deletion is refused", async ({
+    page,
+  }, testInfo) => {
+    const versionId = await seededVersionId(page);
+    await page.setViewportSize(DESKTOP);
+    await page.goto(calendarPath(versionId, "CAL_DAILY"));
+    await waitForLiveView(page);
+
+    // The seeded calendar serves every trip the version's schedule fixtures and
+    // the calendar fixture route assign to CAL_DAILY (9 + 8 + 6 + 3 = 26) and
+    // already carries two closures on the station's lift and stair pathways, so
+    // the strip shows both counts.
+    await expect(page.locator("#calendar-usage-trips")).toContainText(
+      "26 trips use this calendar",
+    );
+    await expect(
+      page.locator("#calendar-usage-route-CAL_ROUTE"),
+    ).toHaveAttribute("href", `/gtfs/${versionId}/routes/CAL_ROUTE`);
+    await expect(page.locator("#calendar-usage-closures")).toContainText(
+      "2 scheduled closures use this calendar",
+    );
+
+    // A slash and spaces in the natural ID survive into the exact address of the
+    // station that owns the pathway, and the link says which station it opens.
+    await expect(
+      page.locator(
+        '#calendar-usage-pathways a[data-pathway-id="BROWSER_EVO/PW LIFT 1"]',
+      ),
+    ).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/stops/BROWSER_EVO_STATION/evolutions?pathway=BROWSER_EVO%2FPW+LIFT+1`,
+    );
+    await expect(
+      page.locator(
+        '#calendar-usage-pathways a[data-pathway-id="BROWSER_EVO_PW_STAIR"]',
+      ),
+    ).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/stops/BROWSER_EVO_STATION/evolutions?pathway=BROWSER_EVO_PW_STAIR`,
+    );
+
+    await openCalendarActions(page);
+    await page.click("#calendar-delete");
+
+    const blocked = page.locator("#calendar-delete-blocked");
+    await expect(blocked).toBeVisible();
+    await expect(blocked).toHaveAttribute("role", "alert");
+    await expect(blocked).toBeFocused();
+    await expect(blocked).toContainText("Calendar not deleted");
+    await expect(blocked).not.toContainText("This calendar is used by trips");
+    await expect(page.locator("#calendar-delete-reasons")).toContainText(
+      "26 trips use this calendar",
+    );
+    await expect(page.locator("#calendar-delete-reasons")).toContainText(
+      "2 scheduled closures use this calendar",
+    );
+    await expect(page.locator("#calendar-review-dialog")).toBeHidden();
+
+    // The loaded form survives the refusal with its stored values.
+    await expect(page.locator("#calendar-name")).toHaveValue(
+      "Every day service",
+    );
+    await expect(page.locator("#calendar-weekdays-monday")).toBeChecked();
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-022-production-desktop.png"),
+      fullPage: true,
+    });
+
+    // The same refusal at the phone and the narrow width, with no horizontal
+    // page overflow at either.
+    for (const [viewport, name] of [
+      [MOBILE, "mobile"],
+      [NARROW, "320"],
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.reload();
+      await waitForLiveView(page);
+      await openCalendarActions(page);
+      await page.click("#calendar-delete");
+
+      await expect(page.locator("#calendar-delete-blocked")).toBeVisible();
+      expect(await bodyFitsViewport(page)).toBe(true);
+      await page.screenshot({
+        path: capturePath(testInfo, `step-022-production-${name}.png`),
+        fullPage: true,
+      });
+    }
+  });
+
+  test("refuses a closure-only calendar and its last stored date", async ({
+    page,
+  }, testInfo) => {
+    const versionId = await seededVersionId(page);
+    await page.setViewportSize(DESKTOP);
+
+    // A dates-only calendar created through the real editor, whose only native
+    // row is the added service date.
+    await page.goto(`/gtfs/${versionId}/calendars/new`);
+    await waitForLiveView(page);
+    await page.fill("#calendar-name", "Guard check service");
+    await page.fill("#calendar-service-id", "GUARD_ONLY");
+    await page.click("#calendar-kind-dates-only");
+    await page.fill("#calendar-date-input", "2026-05-01");
+
+    await expect(
+      page.locator("#calendar-draft-date-2026-05-01"),
+    ).toBeVisible();
+
+    await page.click("#calendar-save");
+    await expect(page.locator("#calendar-exception-chips-2026-05-01")).toBeVisible();
+    await expect(page.locator("#calendar-usage-trips")).toContainText(
+      "0 trips use this calendar",
+    );
+
+    // A closure that references only this calendar.
+    await page.goto(evolutionsPath(versionId, EMPTY_STATION));
+    await waitForLiveView(page);
+    await page.locator("#new-closure").click();
+    await page.selectOption("#closure-pathway", "BROWSER_EVO_EMPTY_PW");
+    await page.selectOption("#closure-calendar", "GUARD_ONLY");
+    await page.fill("#closure-start", "06:00");
+    await page.fill("#closure-end", "06:30");
+    await page.locator("#save-closure").click();
+    await expect(page.locator("#evolutions-status")).toContainText(
+      "Closure saved.",
+    );
+
+    // The closure editor's own calendar address opens the guarded calendar.
+    await page.locator("#closure-calendar-link").click();
+    // The freshly mounted calendar view sends its own join patch after the
+    // navigation, which would drop a disclosure opened against the dead render.
+    await waitForLiveView(page);
+
+    await expect(page.locator("#calendar-usage-closures")).toContainText(
+      "1 scheduled closure uses this calendar",
+    );
+    await expect(
+      page.locator(
+        '#calendar-usage-pathways a[data-pathway-id="BROWSER_EVO_EMPTY_PW"]',
+      ),
+    ).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/stops/BROWSER_EVO_EMPTY_STATION/evolutions?pathway=BROWSER_EVO_EMPTY_PW`,
+    );
+
+    await openCalendarActions(page);
+    await page.click("#calendar-delete");
+
+    const blocked = page.locator("#calendar-delete-blocked");
+    await expect(blocked).toBeVisible();
+    await expect(blocked).toBeFocused();
+    await expect(blocked).toContainText("Calendar not deleted");
+    await expect(page.locator("#calendar-delete-reasons")).toContainText(
+      "1 scheduled closure uses this calendar",
+    );
+    await expect(page.locator("#calendar-delete-reasons")).not.toContainText(
+      "trips use this calendar",
+    );
+    await expect(page.locator("#calendar-name")).toHaveValue(
+      "Guard check service",
+    );
+
+    // The same refusal at the phone width.
+    await page.setViewportSize(MOBILE);
+    await page.reload();
+    await waitForLiveView(page);
+    await openCalendarActions(page);
+    await page.click("#calendar-delete");
+
+    await expect(page.locator("#calendar-delete-blocked")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-022-production-closures-only.png"),
+      fullPage: true,
+    });
+
+    // Removing the only stored date is refused beside the attempted action, and
+    // the stored change stays.
+    await page.setViewportSize(DESKTOP);
+    await page.reload();
+    await waitForLiveView(page);
+    await page.click("#calendar-exception-chips-remove-2026-05-01");
+
+    const dateError = page.locator("#calendar-date-error");
+    await expect(dateError).toBeVisible();
+    await expect(dateError).toBeFocused();
+    await expect(dateError).toContainText("May 1, 2026 was not removed");
+    await expect(page.locator("#calendar-date-error-body")).toContainText(
+      "1 scheduled closure uses it",
+    );
+    await expect(page.locator("#calendar-date-error-next")).toContainText(
+      "Change or delete that closure on",
+    );
+    await expect(
+      page.locator(
+        '#calendar-date-error-pathways a[data-pathway-id="BROWSER_EVO_EMPTY_PW"]',
+      ),
+    ).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/stops/BROWSER_EVO_EMPTY_STATION/evolutions?pathway=BROWSER_EVO_EMPTY_PW`,
+    );
+    await expect(page.locator("#calendar-exception-chips-2026-05-01")).toBeVisible();
+
+    // The narrow width keeps the refusal and adds no horizontal overflow.
+    await page.setViewportSize(NARROW);
+    await page.reload();
+    await waitForLiveView(page);
+    await page.click("#calendar-exception-chips-remove-2026-05-01");
+
+    await expect(page.locator("#calendar-date-error")).toBeVisible();
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-022-production-date-refused.png"),
+      fullPage: true,
+    });
+  });
+
+  // The reference is a self-contained file in the gitignored `.specs/`
+  // workspace, so this case skips (rather than fails) in a checkout without it.
+  test.describe("reference capture", () => {
+    test.skip(
+      () => !fs.existsSync(GUARDS_REFERENCE_PATH),
+      "reference file not present",
+    );
+
+    test("captures the calendar guard states at both viewports", async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize(DESKTOP);
+      await page.goto(
+        `${pathToFileURL(GUARDS_REFERENCE_PATH).href}?state=calendar-delete`,
+      );
+      await expect(page.locator("#calendar-delete-blocked")).toBeVisible();
+      await page.screenshot({
+        path: capturePath(testInfo, "step-022-reference-desktop.png"),
+        fullPage: true,
+      });
+
+      await page.setViewportSize(MOBILE);
+      await page.goto(
+        `${pathToFileURL(GUARDS_REFERENCE_PATH).href}?state=calendar-date-refused`,
+      );
+      await expect(page.locator("#calendar-date-error")).toBeVisible();
+      await page.screenshot({
+        path: capturePath(testInfo, "step-022-reference-mobile.png"),
         fullPage: true,
       });
     });

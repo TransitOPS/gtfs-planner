@@ -13,6 +13,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
   alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.Calendars
+  alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Repo
 
   defp editor_context(_context) do
@@ -113,6 +114,45 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
 
   defp dialog_open?(html, id) do
     html |> attribute_values("##{id}", "data-open") |> Enum.member?("true")
+  end
+
+  # One station with an entrance and a platform, joined by the named pathway, so
+  # a closure on that pathway resolves to a station the usage links can open.
+  defp station_with_pathway(context, station_id, pathway_id) do
+    stop_fixture(context.organization.id, context.version.id, %{
+      stop_id: station_id,
+      location_type: 1
+    })
+
+    stop_fixture(context.organization.id, context.version.id, %{
+      stop_id: station_id <> "_ENT",
+      location_type: 2,
+      parent_station: station_id
+    })
+
+    stop_fixture(context.organization.id, context.version.id, %{
+      stop_id: station_id <> "_PLAT",
+      location_type: 0,
+      parent_station: station_id
+    })
+
+    pathway_fixture(
+      context.organization.id,
+      context.version.id,
+      station_id <> "_ENT",
+      station_id <> "_PLAT",
+      %{pathway_id: pathway_id}
+    )
+  end
+
+  defp closure_rows(context, service_id) do
+    Repo.all(
+      from(e in PathwayEvolution,
+        where:
+          e.organization_id == ^context.organization.id and
+            e.gtfs_version_id == ^context.version.id and e.service_id == ^service_id
+      )
+    )
   end
 
   defp cell_aria_label(html, date) do
@@ -1493,6 +1533,207 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
 
       assert {:error, :not_found} =
                Gtfs.fetch_calendar(organization.id, version.id, "UNUSED_DELETE")
+    end
+  end
+
+  describe "reference guards" do
+    test "a closure-only calendar refuses deletion and names the closures", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      context = %{organization: organization, version: version}
+      seeded_weekly(context, "CLOSURE_ONLY", "Closure only service")
+      station_with_pathway(context, "STN_CLOSURE", "PW/CLOSURE ONE")
+
+      pathway_evolution_fixture(organization.id, version.id, %{
+        pathway_id: "PW/CLOSURE ONE",
+        service_id: "CLOSURE_ONLY"
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, detail_path(version, "CLOSURE_ONLY"))
+
+      refused = render_click(view, "delete")
+
+      assert has_element?(
+               view,
+               "#calendar-delete-blocked",
+               "Scheduled closures use this calendar, so it can’t be deleted"
+             )
+
+      assert refused =~ "1 scheduled closure uses this calendar on pathway"
+      refute refused =~ "This calendar is used by trips"
+      refute refused =~ "trips use this calendar"
+
+      # The refusal names the exact pathway and links it to the station that owns
+      # it, with the natural ID encoded rather than interpolated.
+      assert attribute_values(refused, "#calendar-usage-pathways-0", "href") == [
+               "/gtfs/#{version.id}/stops/STN_CLOSURE/evolutions?pathway=PW%2FCLOSURE+ONE"
+             ]
+
+      assert attribute_values(refused, "#calendar-delete-pathways-0", "data-pathway-id") == [
+               "PW/CLOSURE ONE"
+             ]
+
+      # A refusal writes nothing and opens no review.
+      refute dialog_open?(refused, "calendar-review-dialog")
+      assert has_element?(view, "#calendar-form")
+      assert weekly_row(context, "CLOSURE_ONLY") != nil
+      assert length(closure_rows(context, "CLOSURE_ONLY")) == 1
+    end
+
+    test "a calendar used by trips and closures names both and keeps the loaded form", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      context = %{organization: organization, version: version}
+      seeded_weekly(context, "BOTH_USES", "Both uses")
+      station_with_pathway(context, "STN_BOTH", "PW/BOTH ONE")
+
+      pathway_evolution_fixture(organization.id, version.id, %{
+        pathway_id: "PW/BOTH ONE",
+        service_id: "BOTH_USES"
+      })
+
+      route = route_fixture(organization.id, version.id, %{route_id: "R_BOTH"})
+
+      for index <- 1..3 do
+        trip_fixture(organization.id, version.id, route.route_id, %{
+          trip_id: "BOTH_#{index}",
+          service_id: "BOTH_USES"
+        })
+      end
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, html} = live(conn, detail_path(version, "BOTH_USES"))
+
+      # The usage strip keeps the trip count and adds the closure count with the
+      # exact addresses of both references.
+      assert has_element?(view, "#calendar-trips", "3 trips on 1 route")
+      assert has_element?(view, "#calendar-usage-closures", "1 scheduled closure uses this calendar")
+
+      assert attribute_values(html, "#calendar-usage-route-R_BOTH", "href") == [
+               "/gtfs/#{version.id}/routes/R_BOTH"
+             ]
+
+      assert attribute_values(html, "#calendar-usage-pathways-0", "data-pathway-id") == [
+               "PW/BOTH ONE"
+             ]
+
+      refused = render_click(view, "delete")
+
+      assert has_element?(
+               view,
+               "#calendar-delete-blocked",
+               "Trips and closures use this calendar, so it can’t be deleted"
+             )
+
+      assert has_element?(view, "#calendar-delete-blocked", "3 trips on R_BOTH still run on it")
+      assert refused =~ "1 scheduled closure uses this calendar"
+
+      assert attribute_values(refused, "#calendar-delete-pathways-0", "data-station-stop-id") ==
+               [
+                 "STN_BOTH"
+               ]
+
+      refute dialog_open?(refused, "calendar-review-dialog")
+
+      # The loaded form survives the refusal with its stored values.
+      assert input_value(refused, "calendar-name") == "Both uses"
+      assert input_value(refused, "calendar-start-date") == "2026-03-02"
+      assert input_value(refused, "calendar-end-date") == "2026-03-31"
+      assert weekly_row(context, "BOTH_USES") != nil
+    end
+
+    test "the last stored date is refused and an emptied referenced week is warned", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      context = %{organization: organization, version: version}
+
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "GUARD_DATE",
+        date: ~D[2026-05-01],
+        exception_type: 1
+      })
+
+      calendar_attribute_fixture(
+        organization.id,
+        version.id,
+        attribute_attrs("GUARD_DATE", "Guard date service")
+      )
+
+      station_with_pathway(context, "STN_DATE", "PW/DATE ONE")
+
+      pathway_evolution_fixture(organization.id, version.id, %{
+        pathway_id: "PW/DATE ONE",
+        service_id: "GUARD_DATE"
+      })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, detail_path(version, "GUARD_DATE"))
+
+      refused = render_click(view, "remove_date", %{"date" => "2026-05-01"})
+
+      # The refusal sits beside the attempted date change, names the date and
+      # the closure, and is not the deletion callout.
+      assert has_element?(view, "#calendar-date-error")
+      refute has_element?(view, "#calendar-delete-blocked")
+      assert refused =~ "May 1, 2026 was not removed"
+      assert refused =~ "1 scheduled closure uses it"
+
+      assert attribute_values(refused, "#calendar-date-error-pathways-0", "href") == [
+               "/gtfs/#{version.id}/stops/STN_DATE/evolutions?pathway=PW%2FDATE+ONE"
+             ]
+
+      refute dialog_open?(refused, "calendar-review-dialog")
+      assert has_element?(view, "#calendar-exception-chips-2026-05-01")
+
+      assert Enum.map(exception_rows(context, "GUARD_DATE"), &{&1.date, &1.exception_type}) == [
+               {~D[2026-05-01], 1}
+             ]
+
+      # A weekly calendar that keeps its native row is warned and allowed, and
+      # the review states what the empty dates mean for its closure.
+      seeded_weekly(context, "GUARD_WEEK", "Guard week", %{
+        start_date: ~D[2026-05-01],
+        end_date: ~D[2026-05-01]
+      })
+
+      pathway_evolution_fixture(organization.id, version.id, %{
+        pathway_id: "PW/DATE ONE",
+        service_id: "GUARD_WEEK"
+      })
+
+      {:ok, week_view, _html} = live(conn, detail_path(version, "GUARD_WEEK"))
+
+      review =
+        render_click(week_view, "add_break", %{
+          "break" => %{"first_date" => "2026-05-01", "last_date" => "2026-05-01"}
+        })
+
+      assert dialog_open?(review, "calendar-review-dialog")
+      assert has_element?(week_view, "#calendar-review-closures")
+      assert review =~ "1 scheduled closure uses this calendar"
+
+      assert attribute_values(review, "#calendar-review-closures-pathways-0", "href") == [
+               "/gtfs/#{version.id}/stops/STN_DATE/evolutions?pathway=PW%2FDATE+ONE"
+             ]
+
+      applied = render_click(week_view, "apply_review")
+
+      refute dialog_open?(applied, "calendar-review-dialog")
+      assert weekly_row(context, "GUARD_WEEK") != nil
+
+      assert Enum.map(exception_rows(context, "GUARD_WEEK"), &{&1.date, &1.exception_type}) == [
+               {~D[2026-05-01], 2}
+             ]
     end
   end
 

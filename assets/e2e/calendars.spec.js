@@ -913,6 +913,14 @@ test.describe("calendar editor", () => {
 
     await expect(page.locator("#calendar-delete-blocked")).toBeVisible();
     await expect(page.locator("#calendar-delete-blocked")).toContainText(
+    // School days is used only on CAL_ROUTE; the Schedules scenario also runs
+    // trips on CAL_DAILY, so that calendar's usage spans several routes.
+    await openEditorFor(page, versionId, "CAL_SCHOOL");
+    await openCalendarActions(page);
+    await page.click("#calendar-delete");
+
+    await expect(page.locator("#calendar-delete-blocked")).toBeVisible();
+    await expect(page.locator("#calendar-delete-blocked")).toContainText(
       "2 trips",
     );
     await expect(
