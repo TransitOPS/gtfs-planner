@@ -3,6 +3,10 @@ defmodule GtfsPlanner.Gtfs.Flex do
   Authored flex services and their areas, scoped to one organization and one
   published version (R10, CR-6).
 
+  `copy_from_version/4` carries every service of another published version of
+  the same organization, with its areas and their geometry, into a version that
+  has none (R14).
+
   A service is created with a stable R11 key derived from its name and is
   renamed without changing that key. `save_service/5` is the service page's one
   Save: it applies the service changeset with its `lock_version` and replaces
@@ -230,6 +234,126 @@ defmodule GtfsPlanner.Gtfs.Flex do
       service ->
         %FlexService{} = Repo.delete!(service)
         :ok
+    end
+  end
+
+  # --- copying ----------------------------------------------------------------
+
+  @doc """
+  Copies every service and its areas, geometry included, into an empty version.
+
+  The source must be this organization's published version (R14, CR-6) and the
+  target must be this organization's published version with no services yet.
+  Each copied service keeps its key, name, hours, booking rules and detour or
+  area fields, and starts a fresh row with a new id and `lock_version` 1. The
+  areas are copied per service through `Flex.Geometry.copy_areas/4`, so their
+  stored polygons are copied in SQL and a drawn area keeps the same shape under
+  `ST_Equals` while a `:route_distance` area stays without geometry.
+
+  Answers `{:ok, count}` with the number of services copied — `{:ok, 0}` when
+  the source has none — `{:error, :target_not_empty}` when the target already
+  has a service (active or inactive), and `{:error, :not_found}` when either
+  version does not belong to the organization, is not published, or the source
+  id is malformed. The whole copy is one transaction: a failure leaves the
+  target as it was.
+
+  References that the target version cannot resolve — a route, stop or calendar
+  that exists only in the source version — are copied as they are; readiness
+  reports them in the target as ordinary errors (R14).
+
+  `actor` is the §4 contract's actor argument; flex authoring records no audit
+  actor, so it is accepted and not persisted.
+  """
+  @spec copy_from_version(Ecto.UUID.t(), Ecto.UUID.t(), Ecto.UUID.t(), map() | nil) ::
+          {:ok, non_neg_integer()} | {:error, :target_not_empty | :not_found}
+  def copy_from_version(organization_id, target_version_id, source_version_id, _actor) do
+    result =
+      Repo.transaction(fn ->
+        case Versions.lock_for_input_write!(organization_id, target_version_id) do
+          %GtfsVersion{publication_status: @published_status} ->
+            copy_version_services!(organization_id, target_version_id, source_version_id)
+
+          # A version that is not published cannot be authored (R10), so it is
+          # as unavailable to the copy as a version the organization does not
+          # own, which the lock already rolls back as `:not_found`.
+          %GtfsVersion{} ->
+            Repo.rollback(:not_found)
+        end
+      end)
+
+    case result do
+      {:ok, count} -> {:ok, count}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # R14: every service and its areas into the empty target. The source version
+  # is resolved first, services are inserted one by one so each area copy can be
+  # fenced to the source version, and the areas themselves never enter Elixir
+  # (CR-1).
+  defp copy_version_services!(organization_id, target_version_id, source_version_id) do
+    case published_version(organization_id, source_version_id) do
+      nil ->
+        Repo.rollback(:not_found)
+
+      %GtfsVersion{} = source_version ->
+        if version_has_services?(organization_id, target_version_id) do
+          Repo.rollback(:target_not_empty)
+        end
+
+        organization_id
+        |> published_services(source_version.id)
+        |> Repo.all()
+        |> Enum.map(&copy_service!(&1, organization_id, target_version_id, source_version.id))
+        |> length()
+    end
+  end
+
+  defp copy_service!(source, organization_id, target_version_id, source_version_id) do
+    copied = insert_copied_service!(source, organization_id, target_version_id)
+    :ok = Geometry.copy_areas(source.id, copied.id, organization_id, source_version_id)
+    copied
+  end
+
+  # The service row is copied field for field, hours and booking rules
+  # included, with the target's scope, a new id and a fresh lock_version; the
+  # row is new, so it also gets its own timestamps.
+  defp insert_copied_service!(source, organization_id, target_version_id) do
+    %{
+      source
+      | id: nil,
+        organization_id: organization_id,
+        gtfs_version_id: target_version_id,
+        lock_version: 1,
+        inserted_at: nil,
+        updated_at: nil
+    }
+    |> Repo.insert!()
+  end
+
+  defp version_has_services?(organization_id, version_id) do
+    from(s in FlexService,
+      where: s.organization_id == ^organization_id and s.gtfs_version_id == ^version_id,
+      select: true,
+      limit: 1
+    )
+    |> Repo.exists?()
+  end
+
+  # The source version must be this organization's and published; a missing,
+  # foreign, staging or malformed id is absent, so the copy reads no source row.
+  defp published_version(organization_id, version_id) do
+    case Ecto.UUID.cast(version_id) do
+      {:ok, source_version_id} ->
+        from(v in GtfsVersion,
+          where:
+            v.id == ^source_version_id and v.organization_id == ^organization_id and
+              v.publication_status == ^@published_status
+        )
+        |> Repo.one()
+
+      :error ->
+        nil
     end
   end
 
