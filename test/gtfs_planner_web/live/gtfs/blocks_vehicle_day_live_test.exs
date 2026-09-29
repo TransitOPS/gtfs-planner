@@ -333,7 +333,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
           "?gap=#{trips.first.id}|#{trips.second.id}&block=101"
       )
 
-      assert has_element?(view, "#gap-drawer", "Back to block 101")
+      assert has_element?(view, "#gap-drawer", "Open block 101")
     end
 
     test "a trip row keeps Inspect and a drive row opens the gap, both with the block kept",
