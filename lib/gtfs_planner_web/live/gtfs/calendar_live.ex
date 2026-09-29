@@ -66,6 +66,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     {"Every day", @weekday_fields}
   ]
   @params_as :calendar
+  # The fields inside the "More details" disclosure. An error on one of them
+  # opens the disclosure so it is not hidden inside a collapsed section.
+  @details_fields ~w(service_schedule_name service_schedule_type service_schedule_typicality
+    rating_start_date rating_end_date rating_description)a
 
   @impl true
   def mount(_params, _session, socket) do
@@ -87,6 +91,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
      |> assign(:params, %{})
      |> assign(:baseline, nil)
      |> assign(:field_errors, %{})
+     |> assign(:details_open?, false)
      |> assign(:form, to_form(%{}, as: @params_as))
      |> assign(:break_params, %{"first_date" => "", "last_date" => ""})
      |> assign(:break_form, to_form(%{"first_date" => "", "last_date" => ""}, as: :break))
@@ -160,6 +165,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   def handle_event("validate", _params, socket), do: {:noreply, socket}
+
+  # The disclosure is a native `<details>`, so the browser owns the toggle and the
+  # summary click only keeps the server's `open` attribute in step. Without this
+  # every re-render strips the attribute and closes the section mid-edit.
+  @impl true
+  def handle_event("toggle_details", _params, socket) do
+    {:noreply, assign(socket, :details_open?, not socket.assigns.details_open?)}
+  end
 
   @impl true
   def handle_event("set_kind", %{"kind" => kind}, socket) when kind in ["weekly", "dates_only"] do
@@ -694,6 +707,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       Map.new(errors, fn {field, messages} -> {field, List.wrap(messages)} end)
     )
     |> assign(:form, to_form(params, as: @params_as, errors: errors))
+    |> assign(
+      :details_open?,
+      socket.assigns.details_open? or
+        Enum.any?(errors, fn {field, _} -> field in @details_fields end)
+    )
     |> assign(:dirty?, baseline != nil and params != baseline)
     |> maybe_clear_messages(opts)
     |> assign_preview(socket.assigns.preview_month || socket.assigns.today || Date.utc_today())
@@ -1539,8 +1557,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                 />
               </div>
 
-              <details class="mt-4">
-                <summary class="cursor-pointer text-sm font-medium">
+              <details id="calendar-more-details" open={@details_open?} class="mt-4">
+                <summary
+                  id="calendar-more-details-summary"
+                  phx-click="toggle_details"
+                  class="cursor-pointer text-sm font-medium"
+                >
                   More details <span class="text-base-content/70">· optional</span>
                 </summary>
                 <div class="mt-4 space-y-4">

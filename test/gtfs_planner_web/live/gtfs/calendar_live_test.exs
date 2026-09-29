@@ -605,6 +605,89 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
     end
   end
 
+  defp submit_reversed_rating(view) do
+    view
+    |> form("#calendar-form", %{
+      calendar: %{
+        name: "Rated",
+        service_id: "RATED",
+        kind: "weekly",
+        weekdays: ["monday"],
+        start_date: "2026-03-02",
+        end_date: "2026-03-31",
+        rating_start_date: "2026-06-30",
+        rating_end_date: "2026-06-01"
+      }
+    })
+    |> render_submit()
+  end
+
+  describe "the More details disclosure on the create form" do
+    setup %{conn: conn, user: user, organization: organization, version: version} do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, new_path(version))
+
+      %{view: view}
+    end
+
+    test "starts closed", %{view: view} do
+      assert has_element?(view, "#calendar-more-details")
+      refute has_element?(view, "#calendar-more-details[open]")
+    end
+
+    test "stays open while a field inside it changes", %{view: view} do
+      view |> element("#calendar-more-details-summary") |> render_click()
+      assert has_element?(view, "#calendar-more-details[open]")
+
+      view
+      |> form("#calendar-form", %{calendar: %{service_schedule_name: "W"}})
+      |> render_change()
+
+      assert has_element?(view, "#calendar-more-details[open]")
+    end
+
+    test "returns to closed when the summary is toggled twice", %{view: view} do
+      view |> element("#calendar-more-details-summary") |> render_click()
+      view |> element("#calendar-more-details-summary") |> render_click()
+
+      refute has_element?(view, "#calendar-more-details[open]")
+    end
+
+    test "opens to show an error on a field inside it after a save", %{view: view} do
+      submit_reversed_rating(view)
+
+      assert has_element?(view, "#calendar-more-details[open]")
+
+      assert has_element?(
+               view,
+               "#calendar-more-details #calendar-rating-end-error",
+               "must be on or after the rating start date"
+             )
+
+      assert has_element?(view, "#calendar-rating-end[aria-invalid='true']")
+    end
+
+    test "stays open once an error opened it and the next change validates", %{view: view} do
+      submit_reversed_rating(view)
+
+      view
+      |> form("#calendar-form", %{calendar: %{rating_end_date: "2026-07-31"}})
+      |> render_change()
+
+      assert has_element?(view, "#calendar-more-details[open]")
+      refute has_element?(view, "#calendar-rating-end-error")
+    end
+
+    test "stays closed when only a field outside it fails", %{view: view} do
+      view
+      |> form("#calendar-form", %{calendar: %{name: "", service_id: "NONAME"}})
+      |> render_submit()
+
+      assert has_element?(view, "#calendar-name-error")
+      refute has_element?(view, "#calendar-more-details[open]")
+    end
+  end
+
   describe "service ID routing at the real router" do
     test "encoded, reserved and unknown service IDs load or report not found", %{
       conn: conn,
