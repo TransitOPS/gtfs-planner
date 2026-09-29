@@ -57,6 +57,20 @@ defmodule GtfsPlannerWeb.Components.PlannerComponentsTest do
       assert doc(html) |> LazyHTML.query("#outcome") |> LazyHTML.attribute("role") == ["status"]
     end
 
+    test "reports info as a polite status with an information mark" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.message id="outcome" kind="info" title="Latest details loaded.">Save again.</.message>
+        """)
+
+      message = doc(html) |> LazyHTML.query("#outcome")
+
+      assert LazyHTML.attribute(message, "role") == ["status"]
+      assert Enum.count(LazyHTML.query(message, ".hero-information-circle")) == 1
+    end
+
     test "renders a warning as an alert" do
       assigns = %{}
 
@@ -77,6 +91,25 @@ defmodule GtfsPlannerWeb.Components.PlannerComponentsTest do
         """)
 
       assert doc(html) |> LazyHTML.query("#outcome p + div") |> Enum.empty?()
+    end
+  end
+
+  describe "drawer_footer/1" do
+    test "holds a drawer form's actions in one footer" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.drawer_footer>
+          <button type="button">Cancel</button>
+          <button type="submit">Save changes</button>
+        </.drawer_footer>
+        """)
+
+      footer = doc(html) |> LazyHTML.query("footer")
+
+      assert Enum.count(footer) == 1
+      assert Enum.count(LazyHTML.query(footer, "button")) == 2
     end
   end
 

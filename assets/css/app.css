@@ -853,7 +853,7 @@ body {
    app's own component is restyled here instead of being replaced, and every
    other form in the app keeps working. `.label` is an inline element by default
    and `input-lg` is 48px; both are reset to the design system's measurements. */
-:is(#account-page, #admin-users-page, #admin-organizations-page) .fieldset {
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .fieldset {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -861,14 +861,14 @@ body {
   padding: 0;
 }
 
-:is(#account-page, #admin-users-page, #admin-organizations-page) .fieldset > label {
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .fieldset > label {
   display: flex;
   flex-direction: column;
   gap: 6px;
   min-width: 0;
 }
 
-:is(#account-page, #admin-users-page, #admin-organizations-page) .fieldset .label {
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .fieldset .label {
   min-height: 0;
   height: auto;
   padding: 0;
@@ -877,12 +877,12 @@ body {
   color: var(--color-strong);
 }
 
-:is(#account-page, #admin-users-page, #admin-organizations-page) .fieldset .input {
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .fieldset :is(.input, .select) {
   height: 44px;
   min-height: 44px;
   border: 1px solid var(--color-control);
   border-radius: var(--radius-control);
-  background: var(--color-base-100);
+  background-color: var(--color-base-100);
   color: var(--color-strong);
   font-size: 14px;
   font-weight: 400;
@@ -892,9 +892,13 @@ body {
    than a colour change alone, so the state survives greyscale and the 3:1
    component-boundary floor in WCAG 1.4.11. The selector is a descendant of
    `#account-page` so it outranks daisyUI's single-class `.input-error`. */
-:is(#account-page, #admin-users-page, #admin-organizations-page) .fieldset input[aria-invalid="true"] {
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .fieldset input[aria-invalid="true"] {
   border: 2px solid var(--color-error-line);
   padding: 9px 11px;
+}
+
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .fieldset select[aria-invalid="true"] {
+  border: 2px solid var(--color-error-line);
 }
 
 /* Card. A white raised surface with a visible hairline, matching the design
@@ -954,7 +958,7 @@ body {
 
 /* The help text `<.input>` renders below its control is muted at 13px, the
    design system's help weight. daisyUI ships it at 14px/70% base-content. */
-:is(#account-page, #admin-users-page, #admin-organizations-page) .fieldset > p {
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .fieldset > p {
   margin: 0;
   font-size: 13px;
   font-weight: 400;
@@ -976,7 +980,7 @@ body {
    after a rejected submit, which is why it is focusable at all — hence the
    `:focus` ring, not `:focus-visible`: a programmatic focus must still show
    where the reader landed. */
-:is(#account-page, #admin-users-page, #admin-organizations-page) .form-error-summary {
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .form-error-summary {
   border: 1px solid var(--color-error-line);
   border-radius: var(--radius-control);
   background: var(--color-error-bg);
@@ -984,15 +988,15 @@ body {
   padding: 12px 14px;
 }
 
-:is(#account-page, #admin-users-page, #admin-organizations-page) .form-error-summary strong,
-:is(#account-page, #admin-users-page, #admin-organizations-page) .form-error-summary a {
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .form-error-summary strong,
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .form-error-summary a {
   display: flex;
   min-height: 44px;
   align-items: center;
   font-size: 14px;
 }
 
-:is(#account-page, #admin-users-page, #admin-organizations-page) .form-error-summary strong {
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .form-error-summary strong {
   min-height: 0;
   align-items: flex-start;
   line-height: 1.45;
@@ -1001,18 +1005,18 @@ body {
 /* The summary's links are the reader's route to the broken field, so they are
    targets, not prose: at 44px they can be hit and followed by touch, and
    focusing one scrolls the field it names into view. */
-:is(#account-page, #admin-users-page, #admin-organizations-page) .form-error-summary a {
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .form-error-summary a {
   color: inherit;
   text-decoration: underline;
   text-underline-offset: 2px;
   transition: background-color 120ms ease-out;
 }
 
-:is(#account-page, #admin-users-page, #admin-organizations-page) .form-error-summary a:hover {
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .form-error-summary a:hover {
   background: color-mix(in oklab, var(--color-error-fg) 8%, transparent);
 }
 
-:is(#account-page, #admin-users-page, #admin-organizations-page) .form-error-summary:focus {
+:is(#account-page, #admin-users-page, #admin-organizations-page, .ds-page) .form-error-summary:focus {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
@@ -1086,33 +1090,36 @@ body {
   color: var(--color-warning-fg);
 }
 
-/* ── Administration and Settings page theme ──
+/* ── Administration, Settings and design-system page theme ──
    /admin/users, /admin/organizations and the Settings overview
    (`#settings-page`, which takes only the font, heading, subtitle and button
    rules below) adopt the application design system's
    fonts, ink and action colour on the terms `#account-page` does: scoped to
    their own ids so the header and every other page keep the daisyUI palette, and
    `--color-primary` mapped to the action colour so a filled `<.button>` inside
-   the page, its drawers and its confirmation paints #C81870. Only `h1` takes the display face here: the page's
+   the page, its drawers and its confirmation paints #C81870. `.ds-page` is the
+   same scope as a class: a page moved to the design system after these carries
+   it instead of adding its id to every list below (Feed details is the first).
+   Only `h1` takes the display face here: the page's
    `h2`s are card and dialog titles that set their own size, and an unlayered
    heading rule would override the utilities that size them.
 
    The field grammar (`.fieldset`, help text, the 2px invalid border) and the
    `.form-error-summary` are shared with `#account-page` above. */
-:is(#admin-users-page, #admin-organizations-page, #settings-page) {
+:is(#admin-users-page, #admin-organizations-page, #settings-page, .ds-page) {
   --color-primary: var(--color-action);
   font-family: var(--font-ds);
   color: var(--color-strong);
 }
 
-:is(#admin-users-page, #admin-organizations-page, #settings-page) h1 {
+:is(#admin-users-page, #admin-organizations-page, #settings-page, .ds-page) h1 {
   font-family: var(--font-display);
   font-size: 28px;
   font-weight: 600;
   letter-spacing: -0.025em;
 }
 
-:is(#admin-users-page, #admin-organizations-page, #settings-page) header p {
+:is(#admin-users-page, #admin-organizations-page, #settings-page, .ds-page) header p {
   margin-top: 3px;
   color: var(--color-muted);
   font-size: 13px;
@@ -1121,12 +1128,12 @@ body {
 /* Buttons keep their own ring; links and text fields take the design system's
    focus outline. A checkbox or radio inside a choice card shows the ring on the
    card. */
-:is(#admin-users-page, #admin-organizations-page) :is(a:not(.btn), summary, input:not([type="checkbox"], [type="radio"])):focus-visible {
+:is(#admin-users-page, #admin-organizations-page, .ds-page) :is(a:not(.btn), summary, select, input:not([type="checkbox"], [type="radio"])):focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
 
-:is(#admin-users-page, #admin-organizations-page) input:is([type="checkbox"], [type="radio"]):focus-visible {
+:is(#admin-users-page, #admin-organizations-page, .ds-page) input:is([type="checkbox"], [type="radio"]):focus-visible {
   outline: 0;
 }
 
@@ -1138,19 +1145,19 @@ body {
 
 /* A form-level message takes focus when a rejected submit has no invalid field
    to land on, so a programmatic focus must show where the reader landed. */
-:is(#admin-users-page, #admin-organizations-page) [role="alert"][tabindex="-1"]:focus {
+:is(#admin-users-page, #admin-organizations-page, .ds-page) [role="alert"][tabindex="-1"]:focus {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
 
 /* A field error reads in the error ink: the shared `.fieldset > p` rule mutes
    every paragraph under a field, help and error alike. */
-:is(#admin-users-page, #admin-organizations-page) .fieldset > p[id$="-error"] {
+:is(#admin-users-page, #admin-organizations-page, .ds-page) .fieldset > p[id$="-error"] {
   color: var(--color-error-fg);
   font-weight: 600;
 }
 
-:is(#admin-users-page, #admin-organizations-page) .fieldset > p[id$="-error"] [class*="hero-"] {
+:is(#admin-users-page, #admin-organizations-page, .ds-page) .fieldset > p[id$="-error"] [class*="hero-"] {
   flex-shrink: 0;
   width: 16px;
   height: 16px;
@@ -1160,17 +1167,17 @@ body {
 /* Buttons on this page follow the design system's 650 weight, and its
    secondary control: a hairline `--color-control` boundary on white with ink
    text, instead of daisyUI's outline in the text colour. */
-:is(#admin-users-page, #admin-organizations-page, #settings-page) .btn {
+:is(#admin-users-page, #admin-organizations-page, #settings-page, .ds-page) .btn {
   font-weight: 650;
 }
 
-:is(#admin-users-page, #admin-organizations-page) .btn-outline {
+:is(#admin-users-page, #admin-organizations-page, .ds-page) .btn-outline {
   border-color: var(--color-control);
   background: var(--color-base-100);
   color: var(--color-strong);
 }
 
-:is(#admin-users-page, #admin-organizations-page) .btn-outline:hover {
+:is(#admin-users-page, #admin-organizations-page, .ds-page) .btn-outline:hover {
   border-color: var(--color-control);
   background: var(--color-canvas);
   color: var(--color-strong);
@@ -1179,7 +1186,7 @@ body {
 /* While a primary action is in flight `phx-disable-with` disables it: keep the
    label legible, with a darker fill and a wait cursor, instead of daisyUI's
    washed-out disabled button. */
-:is(#admin-users-page, #admin-organizations-page) .btn-primary:disabled {
+:is(#admin-users-page, #admin-organizations-page, .ds-page) .btn-primary:disabled {
   background: var(--color-action-hover);
   color: var(--color-primary-content);
   cursor: wait;

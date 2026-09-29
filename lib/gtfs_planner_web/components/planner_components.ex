@@ -3,13 +3,14 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   Components from the TransitOps application design system that pages migrated
   to it share: the in-place outcome message, the form error summary, the
   choice cards used for options that carry consequences, the first-use
-  panel, and the back link a child page carries above its heading.
+  panel, the back link a child page carries above its heading, and the
+  footer that keeps a drawer form's actions in view.
 
   They read the design-system tokens declared in `assets/css/app.css`
   (`text-strong`, `bg-soft`, `border-control`, `rounded-control`, and so on) and
   need no page scope. The form error summary is styled by the `.form-error-summary`
   rules, which a page opts into with its own id (`#account-page`,
-  `#admin-users-page`, `#admin-organizations-page`).
+  `#admin-users-page`, `#admin-organizations-page`) or the `ds-page` class.
 
   Called through an explicit import in each consumer; not part of the global
   `GtfsPlannerWeb.html_helpers/0` import set.
@@ -19,6 +20,7 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
 
   @message_tones %{
+    "info" => {"bg-soft text-cyan-800", "text-cyan-700", "hero-information-circle", "status"},
     "success" => {"bg-soft text-cyan-800", "text-cyan-700", "hero-check-circle", "status"},
     "warning" => {"bg-warning-bg text-warning-fg", nil, "hero-exclamation-triangle", "alert"},
     "error" => {"bg-error-bg text-error-fg", nil, "hero-exclamation-triangle", "alert"}
@@ -63,9 +65,10 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   Reports an outcome in place, next to the thing that changed.
 
   The title says what happened, in one sentence. The body, when given, says what
-  happens next or what to do. Success uses the design system's default cyan
-  message so it matches the rest of the application; green stays reserved for the
-  Active status. Warnings and errors are announced (`role="alert"`), success is a
+  happens next or what to do. Success and info use the design system's default
+  cyan message so they match the rest of the application (success with a check,
+  info with an information mark); green stays reserved for the Active status.
+  Warnings and errors are announced (`role="alert"`), success and info are a
   polite status.
 
   ## Examples
@@ -76,7 +79,7 @@ defmodule GtfsPlannerWeb.PlannerComponents do
 
       <.message id="save-error" kind="error" title="Nothing was saved." />
   """
-  attr :kind, :string, required: true, values: ~w(success warning error)
+  attr :kind, :string, required: true, values: ~w(info success warning error)
   attr :title, :string, required: true
   attr :rest, :global
   slot :inner_block
@@ -259,6 +262,20 @@ defmodule GtfsPlannerWeb.PlannerComponents do
         <span>{@error}</span>
       </p>
     </fieldset>
+    """
+  end
+
+  @doc """
+  A drawer form's actions, kept in view under the scrolling fields: Cancel, then
+  the one primary at the right.
+  """
+  slot :inner_block, required: true
+
+  def drawer_footer(assigns) do
+    ~H"""
+    <footer class="flex items-center justify-end gap-3 border-t border-subtle bg-white px-5 py-4 sm:px-6">
+      {render_slot(@inner_block)}
+    </footer>
     """
   end
 end

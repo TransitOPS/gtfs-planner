@@ -14,7 +14,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsDraftsLiveTest do
   alias GtfsPlanner.Gtfs.FeedSettings
   alias GtfsPlanner.Repo
 
-  @url_message "must be a full web address starting with https:// or http://"
+  @url_message "Enter a full web address, starting with https:// or http://."
 
   @stored_attrs %{
     feed_publisher_name: "Metro Transit",
@@ -376,7 +376,7 @@ defmodule GtfsPlannerWeb.Gtfs.FeedDetailsDraftsLiveTest do
 
       assert has_element?(view, "#feed-details-drawer-overlay[data-open='false']")
       assert feed_info_rows(organization) == 0
-      assert has_element?(view, "#feed-details-set", "Set feed details")
+      assert has_element?(view, "#feed-details-set", "Set up feed details")
     end
   end
 

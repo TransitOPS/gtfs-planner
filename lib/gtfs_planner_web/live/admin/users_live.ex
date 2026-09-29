@@ -26,7 +26,8 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
   import GtfsPlannerWeb.Admin.InviteFormState,
     only: [assign_invite_form: 2, invitation_detail: 1, normalize_invite_params: 1]
 
-  import GtfsPlannerWeb.PlannerComponents, only: [form_error_summary: 1, message: 1]
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [drawer_footer: 1, form_error_summary: 1, message: 1]
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_pathways_studio_admin}
 
@@ -523,12 +524,12 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
         />
       </div>
 
-      <Components.drawer_footer>
+      <.drawer_footer>
         <.button variant="secondary" class="min-h-11" patch={~p"/admin/users"}>Cancel</.button>
         <.button type="submit" class="min-h-11 min-w-[132px]" phx-disable-with="Saving…">
           Save changes
         </.button>
-      </Components.drawer_footer>
+      </.drawer_footer>
     </.form>
     """
   end
