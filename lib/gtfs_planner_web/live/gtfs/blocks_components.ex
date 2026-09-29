@@ -2630,10 +2630,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp severity_status(:notice), do: "info"
 
   defp code_label(:overlap), do: "Overlap"
+  defp code_label(:cannot_reach), do: "Can't reach"
+  defp code_label(:type_mismatch), do: "Wrong type"
   defp code_label(:short_layover), do: "Short layover"
   defp code_label(:in_seat_stale), do: "In-seat row"
   defp code_label(:in_seat_unconfirmed), do: "Can't confirm"
   defp code_label(:repositions), do: "Empty move"
+  defp code_label(:too_long), do: "Too long"
+  defp code_label(:no_relief_opportunity), do: "No operator change"
+  defp code_label(:interlining_not_allowed), do: "Route switch"
+  defp code_label(:block_attributes_conflict), do: "Garage differs"
+  defp code_label(:fleet_shortfall), do: "Not enough vehicles"
   defp code_label(:frequency_trip), do: "Frequency"
   defp code_label(:unplottable), do: "Time missing"
 
@@ -2874,8 +2881,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   # Copy: error, warning, empty move, other notices, none.
   defp code_icon(:overlap), do: "hero-x-circle-mini"
+  defp code_icon(:cannot_reach), do: "hero-x-circle-mini"
+  defp code_icon(:type_mismatch), do: "hero-x-circle-mini"
+  defp code_icon(:fleet_shortfall), do: "hero-x-circle-mini"
   defp code_icon(:short_layover), do: "hero-exclamation-triangle-mini"
   defp code_icon(:in_seat_stale), do: "hero-exclamation-triangle-mini"
+  defp code_icon(:too_long), do: "hero-exclamation-triangle-mini"
+  defp code_icon(:no_relief_opportunity), do: "hero-exclamation-triangle-mini"
+  defp code_icon(:interlining_not_allowed), do: "hero-exclamation-triangle-mini"
+  defp code_icon(:block_attributes_conflict), do: "hero-exclamation-triangle-mini"
   defp code_icon(:repositions), do: "hero-arrow-up-right-mini"
   defp code_icon(_code), do: "hero-information-circle-mini"
 
