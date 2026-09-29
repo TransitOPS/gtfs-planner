@@ -69,10 +69,8 @@ test.describe("Public auth flows (serial)", () => {
     await submitLogin(page, ADMIN_USER.email, "wrong-password-123");
     const recovery = page.locator("#login-recovery");
     await expect(recovery).toBeVisible();
-    await expect(recovery).toContainText("Log in failed");
-    await expect(recovery).toContainText(
-      "Check your email and password, then try again.",
-    );
+    await expect(recovery).toContainText("Email or password is incorrect");
+    await expect(recovery).toContainText("Check both and try again.");
     // The submitted email is preserved; the password is not returned.
     await expect(page.locator("#login-email")).toHaveValue(ADMIN_USER.email);
     await expect(page.locator("#login-password")).toHaveValue("");
@@ -84,10 +82,8 @@ test.describe("Public auth flows (serial)", () => {
     await submitLogin(page, "no-such-account@gtfs-planner.test", "whatever-123");
     const recovery = page.locator("#login-recovery");
     await expect(recovery).toBeVisible();
-    await expect(recovery).toContainText("Log in failed");
-    await expect(recovery).toContainText(
-      "Check your email and password, then try again.",
-    );
+    await expect(recovery).toContainText("Email or password is incorrect");
+    await expect(recovery).toContainText("Check both and try again.");
   });
 
   test("login recovery: deactivated account renders the deactivated callout", async ({
