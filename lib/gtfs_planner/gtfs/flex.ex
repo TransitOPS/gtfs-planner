@@ -569,7 +569,16 @@ defmodule GtfsPlanner.Gtfs.Flex do
     |> MapSet.new()
   end
 
-  defp slugify(name) when is_binary(name) do
+  @doc """
+  R11's slug: trimmed, lowercased, every run of other characters replaced by
+  one `-` and the result trimmed of dashes.
+
+  A service's `key` is derived from its name with this slug, and a generated
+  `service_id` slug (`flex-<key>-book-<slug>`, `flex-<key>-<slug>-<hhmm>`) uses
+  the same one, so export and readiness checks build the same IDs.
+  """
+  @spec slugify(String.t() | nil) :: String.t()
+  def slugify(name) when is_binary(name) do
     name
     |> String.trim()
     |> String.downcase()
@@ -577,7 +586,7 @@ defmodule GtfsPlanner.Gtfs.Flex do
     |> String.trim("-")
   end
 
-  defp slugify(_name), do: ""
+  def slugify(_name), do: ""
 
   # The derived key wins over any key the request carried; a form must not be
   # able to pick or move a service's stable identifier. The key is written in
