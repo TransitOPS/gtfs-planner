@@ -14,13 +14,16 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
   `kind: :none` with no params, so a deleted entity is shown without a link
   (AC-16). Alignment destinations have no editor surface and are always `:none`.
   Calendars are named the way the calendars screen names them: the stored
-  `service_description`, else the service ID. Every lookup is scoped by the
-  caller's organization and version ids, and nothing is written.
+  `service_description`, else the service ID. A calendar exists while it has a
+  `calendar` or `calendar_dates` row or an attribute anchor, because an imported
+  calendar gets an anchor only when it is first edited. Every lookup is scoped
+  by the caller's organization and version ids, and nothing is written.
   """
 
   import Ecto.Query
 
   alias GtfsPlanner.Gtfs.CalendarAttribute
+  alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.Level
@@ -99,6 +102,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     %{
       routes: routes(organization_id, version_id, route_ids),
       calendars: calendars(organization_id, version_id, service_ids),
+      services: services(organization_id, version_id, service_ids),
       patterns: Map.new(patterns, &{&1.route_pattern_id, &1}),
       pattern_uuids: Map.new(patterns, &{&1.id, &1}),
       stops: stops(organization_id, version_id, stop_ids),
@@ -162,6 +166,25 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     |> select([c], %{service_id: c.service_id, service_description: c.service_description})
     |> Repo.all()
     |> Map.new(&{&1.service_id, &1})
+  end
+
+  defp services(_organization_id, _version_id, []), do: MapSet.new()
+
+  defp services(organization_id, version_id, service_ids) do
+    calendar_dates =
+      CalendarDate
+      |> where([d], d.organization_id == ^organization_id and d.gtfs_version_id == ^version_id)
+      |> where([d], d.service_id in ^service_ids)
+      |> select([d], d.service_id)
+
+    # Fully qualified: an alias would shadow Elixir's `Calendar.strftime/2` below.
+    GtfsPlanner.Gtfs.Calendar
+    |> where([c], c.organization_id == ^organization_id and c.gtfs_version_id == ^version_id)
+    |> where([c], c.service_id in ^service_ids)
+    |> select([c], c.service_id)
+    |> union(^calendar_dates)
+    |> Repo.all()
+    |> MapSet.new()
   end
 
   defp route_patterns(_organization_id, _version_id, [], []), do: []
@@ -239,7 +262,10 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
 
   defp resolve(%{destination: {:schedules, route_id, service_id}} = group, lookups) do
     route = Map.get(lookups.routes, route_id)
-    detail = "#{trip_count(group)} trips changed on #{calendar_name(lookups, service_id)}"
+    trips = trip_count(group)
+
+    detail =
+      "#{trips} #{pluralize(trips, "trip")} changed on #{calendar_name(lookups, service_id)}"
 
     base_item(:schedules, "Schedules", route_title(route, route_id), detail,
       exists?: not is_nil(route),
@@ -250,7 +276,9 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
 
   defp resolve(%{destination: {:calendar, service_id}} = group, lookups) do
     base_item(:calendar, "Calendar", calendar_name(lookups, service_id), calendar_detail(group),
-      exists?: Map.has_key?(lookups.calendars, service_id),
+      exists?:
+        Map.has_key?(lookups.calendars, service_id) or
+          MapSet.member?(lookups.services, service_id),
       params: %{service_id: service_id}
     )
   end
@@ -322,7 +350,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     base_item(:transfers, "Transfers", "Transfers", transfer_detail(group), params: %{})
   end
 
-  defp resolve(%{destination: {:alignment, _external_id}} = group, _lookups) do
+  defp resolve(%{destination: :alignment} = group, _lookups) do
     base_item(:none, "Shape", "Shape", alignment_detail(group), exists?: false)
   end
 
@@ -407,8 +435,14 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     |> length()
   end
 
-  defp calendar_detail(group) do
-    row = newest_calendar_row(group) || newest_row(group)
+  # The newest operation describes the item. A combination's envelope sits on
+  # the destination calendar's row, or on one trip row when the destination's
+  # dates did not change.
+  defp calendar_detail(%{operations: [operation | _]}) do
+    row =
+      Enum.find(operation, &match?(%{"combination" => %{}}, changed_fields(&1))) ||
+        Enum.find(operation, &(&1.entity_type == "calendar")) || hd(operation)
+
     fields = changed_fields(row)
 
     case fields["combination"] do
@@ -529,12 +563,6 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
   end
 
   defp newest_row(%{operations: [operation | _]}), do: hd(operation)
-
-  defp newest_calendar_row(group) do
-    group.operations
-    |> List.flatten()
-    |> Enum.find(&(&1.entity_type == "calendar"))
-  end
 
   defp changed_fields(%ChangeLog{changed_fields: %{} = fields}), do: fields
   defp changed_fields(%ChangeLog{}), do: %{}

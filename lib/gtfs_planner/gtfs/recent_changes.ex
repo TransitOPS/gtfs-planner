@@ -7,7 +7,10 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
   operation and then groups operations by the destination they touched, newest
   first. An operation's destination is its highest-precedence row: calendar,
   route-pattern build, route pattern, pattern shape, timed pattern, trip, level,
-  stop, pathway, alignment segment, transfer.
+  stop, pathway, alignment segment, transfer. A trip row carrying a calendar
+  combination's envelope ranks as the destination calendar, because a
+  combination that leaves the destination's dates unchanged writes no calendar
+  row.
 
   The scan is bounded: it reads 200-row keyset pages newest first, up to 2,000
   rows, and stops early once five destinations are known and it has passed the
@@ -49,7 +52,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
           | {:schedules, route_id :: String.t(), service_id :: String.t()}
           | {:station, station_stop_id :: String.t(), level_id :: String.t() | nil}
           | {:stop, stop_id :: String.t()}
-          | {:alignment, external_id :: String.t()}
+          | :alignment
           | :transfers
 
   @type group :: %{
@@ -248,7 +251,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
 
     key = operation_key(log)
     destination = destination(log)
-    rank = Map.get(@destination_precedence, log.entity_type, @unknown_rank)
+    rank = rank(log)
 
     case Map.get(state.operations, key) do
       nil ->
@@ -301,7 +304,22 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
     end
   end
 
+  defp rank(%ChangeLog{} = log) do
+    if combination_destination_id(log) do
+      Map.fetch!(@destination_precedence, "calendar")
+    else
+      Map.get(@destination_precedence, log.entity_type, @unknown_rank)
+    end
+  end
+
   defp destination(%ChangeLog{} = log) do
+    case combination_destination_id(log) do
+      nil -> entity_destination(log)
+      service_id -> {:calendar, service_id}
+    end
+  end
+
+  defp entity_destination(%ChangeLog{} = log) do
     cond do
       log.entity_type == "calendar" ->
         {:calendar, log.entity_external_id}
@@ -309,8 +327,11 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
       log.entity_type == "route_pattern_build" ->
         {:route_patterns, log.entity_external_id}
 
+      # A pattern-shape snapshot carries no route_id, so both types key by the
+      # pattern alone and one pattern's edits share one destination; Describe
+      # resolves the route from the pattern.
       log.entity_type in ["route_pattern", "pattern_shape"] ->
-        {:route_pattern, snapshot_field(log, "route_id"), snapshot_field(log, "route_pattern_id")}
+        {:route_pattern, nil, snapshot_field(log, "route_pattern_id")}
 
       log.entity_type == "timed_pattern" ->
         {:timed_pattern, snapshot_field(log, "route_pattern_id")}
@@ -328,9 +349,10 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
 
   # The types the cond above does not name: a shape edit has no editor surface,
   # a transfer rule has its own screen, and every other type reads through the
-  # stop vocabulary.
-  defp default_destination(%ChangeLog{entity_type: "alignment_segment"} = log),
-    do: {:alignment, log.entity_external_id}
+  # stop vocabulary. One alignment save writes a row per section without an
+  # operation id, so all alignment rows share one destination instead of one
+  # per stop pair.
+  defp default_destination(%ChangeLog{entity_type: "alignment_segment"}), do: :alignment
 
   defp default_destination(%ChangeLog{entity_type: "transfer"}), do: :transfers
   defp default_destination(%ChangeLog{} = log), do: {:stop, log.entity_external_id}
@@ -339,6 +361,16 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
   defp level_id(%ChangeLog{entity_type: "level", entity_external_id: level_id}), do: level_id
   defp level_id(%ChangeLog{snapshot: %{} = snapshot}), do: Map.get(snapshot, "level_id")
   defp level_id(%ChangeLog{}), do: nil
+
+  defp combination_destination_id(%ChangeLog{} = log) do
+    case changed_fields(log) do
+      %{"combination" => %{"destination_id" => service_id}} when is_binary(service_id) ->
+        service_id
+
+      _ ->
+        nil
+    end
+  end
 
   defp snapshot_field(%ChangeLog{snapshot: %{} = snapshot}, field), do: Map.get(snapshot, field)
   defp snapshot_field(%ChangeLog{}, _field), do: nil

@@ -85,6 +85,45 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.DescribeTest do
     assert item.params == %{service_id: "CAL_END"}
   end
 
+  test "a trip-only combination reads as combined and links a calendar without an anchor",
+       context do
+    # An imported calendar gets its attribute anchor only on its first edit, and
+    # a combination that leaves the destination's dates unchanged never edits it.
+    calendar_fixture(context.organization.id, context.gtfs_version.id, %{service_id: "WKND"})
+
+    operation_id = Ecto.UUID.generate()
+    plain = trip_log(operation_id, 1)
+
+    envelope =
+      trip_log(operation_id, 2)
+      |> Map.update!(:changed_fields, fn fields ->
+        Map.put(fields, "combination", %{
+          "destination_id" => "WKND",
+          "selected_service_ids" => ["SAT", "WKND"]
+        })
+      end)
+
+    assert [item] =
+             describe_groups(context, [group({:calendar, "WKND"}, [[plain, envelope]])])
+
+    assert item.kind == :calendar
+    assert item.title == "WKND"
+    assert item.detail == "combined with 1 calendar"
+    assert item.params == %{service_id: "WKND"}
+  end
+
+  test "a single trip edit reads in the singular", context do
+    create_calendar(context, "WKDY", "Weekday")
+    route_fixture(context.organization.id, context.gtfs_version.id, %{route_id: "12"})
+
+    assert [item] =
+             describe_groups(context, [
+               group({:schedules, "12", "WKDY"}, [[trip_log(Ecto.UUID.generate(), 1)]])
+             ])
+
+    assert item.detail == "1 trip changed on Weekday"
+  end
+
   test "a station group keys the GTFS level and names it in the context", context do
     stop_fixture(context.organization.id, context.gtfs_version.id, %{
       stop_id: "STA",
@@ -174,7 +213,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.DescribeTest do
         action: "updated"
       })
 
-    assert [item] = describe_groups(context, [group({:alignment, "STA>STB"}, [[row]])])
+    assert [item] = describe_groups(context, [group(:alignment, [[row]])])
 
     assert item.kind == :none
     assert item.detail == "shape redrawn"

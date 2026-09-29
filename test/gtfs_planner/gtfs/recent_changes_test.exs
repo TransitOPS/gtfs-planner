@@ -91,7 +91,7 @@ defmodule GtfsPlanner.Gtfs.RecentChangesTest do
     assert schedules.newest_at == ~U[2026-09-20 12:00:00.000000Z]
 
     assert calendar.destination == {:calendar, "WEEKDAY"}
-    assert route_pattern.destination == {:route_pattern, "R2", "RP-1"}
+    assert route_pattern.destination == {:route_pattern, nil, "RP-1"}
     assert station.destination == {:station, "STA", "L1"}
     assert transfers.destination == :transfers
   end
@@ -140,6 +140,110 @@ defmodule GtfsPlanner.Gtfs.RecentChangesTest do
     assert group.destination == {:calendar, "COMBINED"}
     assert length(group.operations) == 1
     assert length(hd(group.operations)) == 3
+  end
+
+  test "a trip-only calendar combination is one calendar group, not one route's schedules",
+       context do
+    operation_id = Ecto.UUID.generate()
+    at = ~U[2026-09-21 12:00:00.000000Z]
+
+    # A combination that leaves the destination's dates unchanged writes no
+    # calendar row; its envelope rides on one of the moved trips' rows.
+    envelope = %{
+      "destination_id" => "WKND",
+      "selected_service_ids" => ["SAT", "WKND"],
+      "changed_trip_ids" => [],
+      "decisions" => %{}
+    }
+
+    insert_logs(context.organization, context.gtfs_version, [
+      %{
+        entity_external_id: "TRIP-R1",
+        changed_fields:
+          "R1"
+          |> trip_changed_fields("WKND", operation_id)
+          |> Map.put("combination", envelope),
+        inserted_at: at
+      },
+      %{
+        entity_external_id: "TRIP-R2",
+        changed_fields: trip_changed_fields("R2", "WKND", operation_id),
+        inserted_at: at
+      }
+    ])
+
+    assert [group] =
+             RecentChanges.recent(
+               context.organization.id,
+               context.gtfs_version.id,
+               :everyone,
+               context.zone
+             )
+
+    assert group.destination == {:calendar, "WKND"}
+    assert length(hd(group.operations)) == 2
+  end
+
+  test "one alignment save of several sections is one group and older edits still appear",
+       context do
+    at = ~U[2026-09-21 12:00:00.000000Z]
+
+    # An alignment save writes one row per changed section, without an
+    # operation id.
+    sections =
+      for index <- 1..6 do
+        %{
+          entity_type: "alignment_segment",
+          entity_external_id: "A#{index}>B#{index}",
+          inserted_at: at
+        }
+      end
+
+    transfer = %{
+      entity_type: "transfer",
+      entity_external_id: "TRANSFER-1",
+      inserted_at: ~U[2026-09-20 12:00:00.000000Z]
+    }
+
+    insert_logs(context.organization, context.gtfs_version, sections ++ [transfer])
+
+    groups =
+      RecentChanges.recent(
+        context.organization.id,
+        context.gtfs_version.id,
+        :everyone,
+        context.zone
+      )
+
+    assert Enum.map(groups, & &1.destination) == [:alignment, :transfers]
+  end
+
+  test "a pattern edit and a shape redraw on one pattern are one group", context do
+    insert_logs(context.organization, context.gtfs_version, [
+      %{
+        entity_type: "pattern_shape",
+        entity_external_id: "RP-1",
+        snapshot: %{"route_pattern_id" => "RP-1", "shape_id" => "SH-1"},
+        inserted_at: ~U[2026-09-21 12:00:00.000000Z]
+      },
+      %{
+        entity_type: "route_pattern",
+        entity_external_id: "RP-1",
+        snapshot: %{"route_id" => "R1", "route_pattern_id" => "RP-1"},
+        inserted_at: ~U[2026-09-20 12:00:00.000000Z]
+      }
+    ])
+
+    assert [group] =
+             RecentChanges.recent(
+               context.organization.id,
+               context.gtfs_version.id,
+               :everyone,
+               context.zone
+             )
+
+    assert group.destination == {:route_pattern, nil, "RP-1"}
+    assert length(group.operations) == 2
   end
 
   test "a stop edit keys its station and GTFS level; a pathway keys its station with no level",
