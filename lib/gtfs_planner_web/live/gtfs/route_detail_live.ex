@@ -1282,7 +1282,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                     phx-submit="save_route_details"
                     data-recovery="true"
                     data-recovery-event="recover_route_details"
-                    class="mt-5 grid gap-8"
+                    class="mt-5 grid grid-cols-1 gap-8"
                   >
                     <%!-- Connectivity state the client hook owns: hidden while
                            connected, filled locally while offline and with the
