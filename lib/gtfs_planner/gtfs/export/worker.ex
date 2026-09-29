@@ -4,10 +4,13 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
 
   Preflight warnings become durable before the exporter creates bytes.  Export
   warnings lead a non-empty operations export's durable warnings inside the
-  100-entry limit.  The generated ZIP is then published through the private
-  artifact store and only becomes ready when `ExportRuns` verifies and commits
-  its metadata.  A garage/stop ID collision is durable as one warning per
-  conflicting garage and closes the run with its own failure code.
+  100-entry limit.  The generated ZIPs are then published through the private
+  artifact store and only become ready when `ExportRuns` verifies and commits
+  their metadata: the main zip and, when the run includes flex, the flex zip
+  published beside it.  A pair whose bytes exceed the configured run budget
+  closes the run before either file is written.  A garage/stop ID collision is
+  durable as one warning per conflicting garage and closes the run with its own
+  failure code.
   """
 
   alias GtfsPlanner.Gtfs.Export
@@ -18,6 +21,9 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
   @conflict_code "garage_stop_id_conflict"
   @conflict_file "stops_supplement.txt"
   @max_detail 4_096
+  # The per-run artifact budget `ArtifactStorage.publish/6` enforces per file;
+  # the same default is applied here to the run's combined bytes.
+  @default_max_run_bytes 150 * 1024 * 1024
 
   @spec build(struct(), pos_integer(), Ecto.UUID.t(), String.t()) :: :ok
   def build(run, generation, token, _topic) do
@@ -44,8 +50,8 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
   # Builds from the warnings the export module returns.  The preflight warnings
   # stay in scope here so a collision can persist its own details ahead of them.
   defp build_artifact(run, generation, token, preflight_warnings) do
-    case export_module().build_zip(run.organization_id, run.gtfs_version_id, run.export_type) do
-      {:ok, zip_bytes, export_warnings} ->
+    case build_export(run) do
+      {:ok, zips, export_warnings} ->
         with {:ok, _run} <-
                persist_export_warnings(
                  run,
@@ -55,9 +61,16 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
                  preflight_warnings
                ),
              :ok <- renew(run, generation, token),
-             {:ok, artifact} <- publish(run, zip_bytes),
+             :ok <- within_run_capacity(zips),
+             {:ok, artifacts} <- publish_artifacts(run, zips),
              {:ok, _ready} <-
-               ExportRuns.mark_ready(run.organization_id, run.id, generation, token, artifact) do
+               ExportRuns.mark_ready(
+                 run.organization_id,
+                 run.id,
+                 generation,
+                 token,
+                 artifacts
+               ) do
           :ok
         else
           {:error, :lease_lost} -> close(run, generation, token, "cancelled")
@@ -70,6 +83,22 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
       {:error, reason} ->
         close(run, generation, token, failure_code(reason))
     end
+  end
+
+  # `:full` and `:operations` build both zips from one snapshot, with the flex
+  # zip only when the run recorded the switch; `:pathways` never carries flex
+  # and keeps its single-zip path.
+  defp build_export(%{export_type: :pathways} = run) do
+    case export_module().build_zip(run.organization_id, run.gtfs_version_id, :pathways) do
+      {:ok, zip_bytes, export_warnings} -> {:ok, %{main: zip_bytes, flex: nil}, export_warnings}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp build_export(run) do
+    export_module().build_zips(run.organization_id, run.gtfs_version_id, run.export_type,
+      include_flex: run.include_flex
+    )
   end
 
   # Export warnings lead the persisted list inside the 100-entry limit.  An
@@ -175,12 +204,50 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
     ExportRuns.renew_lease(run.organization_id, run.id, generation, token)
   end
 
-  defp publish(run, zip_bytes) do
+  # The published pair shares one run budget: a main zip and a flex zip that
+  # each fit can still exceed the configured per-run limit together.
+  defp within_run_capacity(%{main: main, flex: flex}) do
+    total_bytes = byte_size(main || <<>>) + byte_size(flex || <<>>)
+
+    if total_bytes <= configured_max_run_bytes(),
+      do: :ok,
+      else: {:error, :artifact_capacity_exceeded}
+  end
+
+  defp configured_max_run_bytes do
+    Application.get_env(:gtfs_planner, :gtfs_task_artifacts_max_run_bytes, @default_max_run_bytes)
+  end
+
+  # A version without fixed routes answers the flex zip as the whole feed (R15),
+  # so those bytes take the primary artifact slot under the flex file's name.
+  defp publish_artifacts(run, %{main: nil, flex: flex}) when is_binary(flex) do
+    with {:ok, artifact} <- publish(run, flex_filename(run), flex) do
+      {:ok, %{main: artifact, flex: nil}}
+    end
+  end
+
+  defp publish_artifacts(run, %{main: main} = zips) when is_binary(main) do
+    with {:ok, main_artifact} <- publish(run, "gtfs-#{run.id}.zip", main),
+         {:ok, flex_artifact} <- publish_flex(run, Map.get(zips, :flex)) do
+      {:ok, %{main: main_artifact, flex: flex_artifact}}
+    end
+  end
+
+  defp publish_artifacts(_run, _zips), do: {:error, :no_data}
+
+  defp publish_flex(_run, nil), do: {:ok, nil}
+
+  defp publish_flex(run, flex_bytes) when is_binary(flex_bytes),
+    do: publish(run, flex_filename(run), flex_bytes)
+
+  defp flex_filename(run), do: "gtfs-flex-#{run.id}.zip"
+
+  defp publish(run, filename, zip_bytes) do
     ArtifactStorage.publish(
       run.organization_id,
       run.gtfs_version_id,
       run.id,
-      "gtfs-#{run.id}.zip",
+      filename,
       zip_bytes,
       storage_options()
     )

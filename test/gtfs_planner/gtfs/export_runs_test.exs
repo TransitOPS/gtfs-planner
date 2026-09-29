@@ -67,7 +67,10 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
     artifact = publish!(organization.id, version.id, run.id)
 
     assert {:ok, ready} =
-             ExportRuns.mark_ready(organization.id, run.id, generation, token, artifact)
+             ExportRuns.mark_ready(organization.id, run.id, generation, token, %{
+               main: artifact,
+               flex: nil
+             })
 
     assert ready.state == :ready
 
@@ -77,7 +80,10 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
     assert_receive {:export_run_changed, ^run_id}
 
     assert {:error, :lease_lost} =
-             ExportRuns.mark_ready(organization.id, run.id, generation, token, artifact)
+             ExportRuns.mark_ready(organization.id, run.id, generation, token, %{
+               main: artifact,
+               flex: nil
+             })
   end
 
   test "registers the operations export type, reuses its active run, and rejects unknown types" do
@@ -131,7 +137,10 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
     artifact = publish!(organization.id, version.id, run.id)
 
     assert {:ok, _ready} =
-             ExportRuns.mark_ready(organization.id, run.id, generation, token, artifact)
+             ExportRuns.mark_ready(organization.id, run.id, generation, token, %{
+               main: artifact,
+               flex: nil
+             })
 
     assert {:error, :not_found} =
              ExportRuns.claim_download(other_organization.id, version.id, run.id)
@@ -203,7 +212,12 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
     {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, :pathways)
     {:ok, _building, generation, token} = ExportRuns.claim(organization.id, run.id, :build)
     artifact = publish!(organization.id, version.id, run.id)
-    {:ok, _ready} = ExportRuns.mark_ready(organization.id, run.id, generation, token, artifact)
+
+    {:ok, _ready} =
+      ExportRuns.mark_ready(organization.id, run.id, generation, token, %{
+        main: artifact,
+        flex: nil
+      })
 
     File.write!(artifact.path, "corrupt")
 
@@ -237,7 +251,11 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
     task =
       Task.async(fn ->
         Sandbox.allow(Repo, parent, self())
-        ExportRuns.mark_ready(organization.id, run.id, generation, token, artifact)
+
+        ExportRuns.mark_ready(organization.id, run.id, generation, token, %{
+          main: artifact,
+          flex: nil
+        })
       end)
 
     assert_receive {:artifact_verify_started, verifier_pid}
@@ -267,7 +285,12 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
     {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
     {:ok, _building, generation, token} = ExportRuns.claim(organization.id, run.id, :build)
     artifact = publish!(organization.id, version.id, run.id)
-    {:ok, _ready} = ExportRuns.mark_ready(organization.id, run.id, generation, token, artifact)
+
+    {:ok, _ready} =
+      ExportRuns.mark_ready(organization.id, run.id, generation, token, %{
+        main: artifact,
+        flex: nil
+      })
 
     assert {:ok, first} = ExportRuns.claim_download(organization.id, version.id, run.id)
 
