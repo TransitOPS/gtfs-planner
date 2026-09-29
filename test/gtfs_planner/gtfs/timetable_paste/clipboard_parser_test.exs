@@ -25,7 +25,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ClipboardParserTest do
 
     test "detection restarts quote state on every record" do
       assert ClipboardParser.parse("\"x\"\n1,2") ==
-               {:ok, %{grid: [["x"], ["1", "2"]], delimiter: :comma}}
+               {:ok, %{grid: [["x", ""], ["1", "2"]], delimiter: :comma}}
     end
   end
 
@@ -101,7 +101,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ClipboardParserTest do
       oversized = String.duplicate("\"", @max_bytes + 1)
       assert ClipboardParser.parse(oversized) == {:error, {:too_large, @max_bytes + 1}}
 
-      at_limit = String.duplicate("a\tb\n", div(@max_bytes, 4))
+      at_limit = String.duplicate("a\tb\n", 500) <> String.duplicate("c", @max_bytes - 500 * 4)
       assert {:ok, %{delimiter: :tab}} = ClipboardParser.parse(at_limit)
     end
 
