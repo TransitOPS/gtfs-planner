@@ -283,7 +283,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.Context do
   defp route_garage(context, first) do
     case Map.get(context.route_settings, first.route_id) do
       %{garage_id: garage_id} -> known_garage(context, garage_id)
-      nil -> nil
+      # A route row that names only a required type says nothing about a garage,
+      # and the context's own type marks both keys optional. The garage answers
+      # `nil` and R4's fall-through continues, exactly as it does for a row that
+      # names a garage nobody here runs.
+      _no_garage -> nil
     end
   end
 
@@ -292,7 +296,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Context do
   defp route_vehicle_type(context, first) do
     case Map.get(context.route_settings, first.route_id) do
       %{required_vehicle_type_id: type_id} -> known_vehicle_type(context, type_id)
-      nil -> nil
+      _no_type -> nil
     end
   end
 
