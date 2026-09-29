@@ -425,6 +425,25 @@ defmodule GtfsPlannerWeb.Gtfs.ImportComponents do
             Last file: {@run.failed_file}{if @run.failed_row,
               do: " (row #{format_count(@run.failed_row)})"}
           </p>
+          <div :if={closure_rejection?(@run)} class="mt-3 grid max-w-[760px] gap-2">
+            <p class="m-0 text-sm text-default">
+              “{@run.version_name}” remains unpublished until this failed import is discarded.
+            </p>
+            <p
+              id={"import-evolution-rejection-#{@run.id}"}
+              data-evolution-rejection={@run.reason_code}
+              data-evolution-file={@run.failed_file}
+              data-evolution-row={@run.failed_row}
+              class="m-0 border-l-2 border-error-line py-1 pl-3 text-sm text-default"
+            >
+              <span class="tabular-nums text-muted">Row {@run.failed_row}</span>
+              · {evolution_rejection_sentence(@run.reason_code)}
+              <span class="mt-0.5 block font-mono text-[12px] text-muted">{@run.failed_file}</span>
+            </p>
+            <p class="m-0 text-[13px] text-muted">
+              Correct the row in your file, discard this import, then import the corrected feed.
+            </p>
+          </div>
         </div>
         <div class="flex shrink-0 flex-wrap gap-2">
           <button
@@ -511,11 +530,63 @@ defmodule GtfsPlannerWeb.Gtfs.ImportComponents do
 
   defp run_sentence(%Run{}), do: "This import didn’t finish."
 
-  @count_order ~w(routes stops trips stop_times shapes calendars levels pathways patterns_created
+  # The bounded codes for a scheduled-closure row outside the supported
+  # interchange subset. Each sentence names the field and the fix, and none of
+  # them can quote a value from the rejected row, which the run never stores.
+  @evolution_rejection_codes ~w(
+    evolution_pathway_required evolution_service_required
+    evolution_opening_unsupported evolution_direction_unsupported
+    evolution_time_invalid evolution_pathway_missing evolution_service_missing
+    evolution_duplicate
+  )
+
+  # A run that stores one of the bounded closure-rejection codes also stores the
+  # file it came from, so the row can name all three without touching the
+  # rejected row.
+  defp closure_rejection?(%Run{reason_code: code, failed_file: "pathway_evolutions.txt"})
+       when code in @evolution_rejection_codes,
+       do: true
+
+  defp closure_rejection?(%Run{}), do: false
+
+  defp evolution_rejection_sentence("evolution_pathway_required"),
+    do: "pathway_id is blank. Name the pathway, using the exact pathway_id from pathways.txt."
+
+  defp evolution_rejection_sentence("evolution_service_required"),
+    do:
+      "service_id is blank. Name the calendar, using the exact service_id from calendar.txt or calendar_dates.txt."
+
+  defp evolution_rejection_sentence("evolution_opening_unsupported"),
+    do: "is_closed is not 1. Remove the opening row: this file cannot reopen a pathway."
+
+  defp evolution_rejection_sentence("evolution_direction_unsupported"),
+    do:
+      "direction has a value. Leave direction blank or remove the column: a closure closes the pathway both ways."
+
+  defp evolution_rejection_sentence("evolution_time_invalid"),
+    do:
+      "A time is unreadable, blank, or the end is not later than the start. Use H:MM:SS with the end above the start, and a value above 24:00:00 for a window that continues past midnight."
+
+  defp evolution_rejection_sentence("evolution_pathway_missing"),
+    do:
+      "No pathway with that pathway_id exists in this version. Import pathways.txt in the same feed, or correct the pathway_id."
+
+  defp evolution_rejection_sentence("evolution_service_missing"),
+    do:
+      "The service has no calendar.txt or calendar_dates.txt row in this version. Import the calendar file in the same feed, or correct the service_id."
+
+  defp evolution_rejection_sentence("evolution_duplicate"),
+    do:
+      "The same pathway, service and window already appears in this import or in the version. Remove the repeated row, or give the two closures different windows."
+
+  defp evolution_rejection_sentence(_code), do: "This row is not in the supported closure subset."
+
+  @count_order ~w(routes stops trips stop_times shapes calendars levels pathways pathway_evolutions patterns_created
                   timings_created trips_linked trips_custom extensions_stop_coordinates
                   extensions_stop_levels extensions_route_flags extensions_images)
 
   @count_labels %{
+    "pathway_evolutions" => "pathway closures",
     "patterns_created" => "patterns created",
     "timings_created" => "timings created",
     "trips_linked" => "trips linked",
@@ -537,14 +608,29 @@ defmodule GtfsPlannerWeb.Gtfs.ImportComponents do
       |> Enum.sort_by(fn {key, _value} ->
         {Enum.find_index(@count_order, &(&1 == key)) || length(@count_order), key}
       end)
-      |> Enum.map(fn {key, value} ->
-        "#{format_count(value)} #{Map.get(@count_labels, key, String.replace(key, "_", " "))}"
-      end)
+      |> Enum.map(fn {key, value} -> "#{format_count(value)} #{count_label(key, value)}" end)
 
     if parts != [], do: "Saved before it stopped: #{Enum.join(parts, ", ")}."
   end
 
   defp saved_counts(_run), do: nil
+
+  # Each counted file reads correctly at one and at many: "1 level", "2 pathway
+  # closures". Every known label is a plural that ends in "s" on its noun.
+  defp count_label(key, value) do
+    plural = Map.get(@count_labels, key, String.replace(key, "_", " "))
+    if value == 1, do: singular(plural), else: plural
+  end
+
+  defp singular(label) do
+    case String.split(label, " ") do
+      [noun] -> String.replace_suffix(noun, "s", "")
+      [first, "created"] -> String.replace_suffix(first, "s", "") <> " created"
+      [first, "linked"] -> String.replace_suffix(first, "s", "") <> " linked"
+      [first, "kept", rest] -> String.replace_suffix(first, "s", "") <> " kept " <> rest
+      words -> words |> List.update_at(-1, &String.replace_suffix(&1, "s", "")) |> Enum.join(" ")
+    end
+  end
 
   # ── Station review ────────────────────────────────────────────────────────
 
