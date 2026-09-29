@@ -4482,6 +4482,225 @@ case Accounts.register_first_admin(%{
         "(62-occurrence pattern, linked series, frequency, custom and after-midnight trips)"
     )
 
+    # ── Timetable paste fixture (step 20) ──
+    #
+    # One isolated route on the shared Browser E2E Version carries the paste
+    # journeys' schedule, mirroring the prototype's route 12 Downtown –
+    # Riverside: nine BPS stops, four patterns (main with Typical and Peak
+    # timings, short, school, inbound), seven Weekday trips per direction on
+    # blocks 101–103, and two timed transfers at Riverside Terminal naming
+    # trip 1209.
+    for {stop_id, stop_name} <- [
+          {"BPS_CEN", "Central Station"},
+          {"BPS_MKT", "Market Street"},
+          {"BPS_OAK", "Oak & 3rd"},
+          {"BPS_MILL", "Mill Street"},
+          {"BPS_NSCH", "Northside School"},
+          {"BPS_LIB", "Library"},
+          {"BPS_HOSP", "Hospital"},
+          {"BPS_RPK", "River Park"},
+          {"BPS_RIV", "Riverside Terminal"}
+        ] do
+      {:ok, _stop} =
+        Gtfs.create_stop(%{
+          stop_id: stop_id,
+          stop_name: stop_name,
+          location_type: 0,
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id
+        })
+    end
+
+    {:ok, paste_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "BROWSER_PASTE",
+        route_short_name: "12",
+        route_long_name: "Downtown – Riverside",
+        route_type: 3
+      })
+
+    paste_calendar =
+      GtfsPlanner.BlockingFixtures.calendar_service_fixture(org.id, diagram_version.id, %{
+        service_id: "BPS_WKDY",
+        name: "Weekday",
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 0,
+        sunday: 0,
+        start_date: ~D[2026-09-08],
+        end_date: ~D[2027-06-25]
+      })
+
+    paste_main =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: paste_route.route_id,
+        direction_id: 0,
+        route_pattern_id: "BPS-MAIN",
+        route_pattern_name: "Central Station → Riverside Terminal",
+        route_pattern_typicality: 1,
+        headsign: "Riverside Terminal",
+        timing_name: "Typical",
+        timing_headsign: "Riverside Terminal",
+        stops: [
+          {"BPS_CEN", 0, 0, 1},
+          {"BPS_MKT", 180, 180, 0},
+          {"BPS_OAK", 360, 360, 0},
+          {"BPS_MILL", 600, 600, 1},
+          {"BPS_LIB", 840, 840, 0},
+          {"BPS_HOSP", 1080, 1080, 1},
+          {"BPS_RPK", 1440, 1440, 0},
+          {"BPS_RIV", 1680, 1680, 1}
+        ]
+      })
+
+    paste_peak =
+      GtfsPlanner.GtfsFixtures.timed_pattern_fixture(paste_main.pattern, %{name: "Peak"})
+
+    [0, 4, 8, 13, 18, 23, 30, 35]
+    |> Enum.map(&(&1 * 60))
+    |> Enum.zip(paste_main.occurrences)
+    |> Enum.zip([1, 0, 0, 1, 0, 1, 0, 1])
+    |> Enum.each(fn {{offset, occurrence}, timepoint} ->
+      GtfsPlanner.GtfsFixtures.timed_pattern_stop_fixture(paste_peak, occurrence, %{
+        arrival_offset: offset,
+        departure_offset: offset,
+        timepoint: timepoint
+      })
+    end)
+
+    GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
+      route_id: paste_route.route_id,
+      direction_id: 0,
+      route_pattern_id: "BPS-SHORT",
+      route_pattern_name: "Central Station → Hospital",
+      route_pattern_sort_order: 1,
+      headsign: "Hospital",
+      timing_name: "Typical",
+      timing_headsign: "Hospital",
+      stops: [
+        {"BPS_CEN", 0, 0, 1},
+        {"BPS_MKT", 180, 180, 0},
+        {"BPS_OAK", 360, 360, 0},
+        {"BPS_MILL", 600, 600, 1},
+        {"BPS_LIB", 840, 840, 0},
+        {"BPS_HOSP", 1080, 1080, 1}
+      ]
+    })
+
+    GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
+      route_id: paste_route.route_id,
+      direction_id: 0,
+      route_pattern_id: "BPS-SCHOOL",
+      route_pattern_name: "Central Station → Hospital via Northside School",
+      route_pattern_sort_order: 2,
+      headsign: "Hospital",
+      timing_name: "School days",
+      timing_headsign: "Hospital",
+      stops: [
+        {"BPS_CEN", 0, 0, 1},
+        {"BPS_MKT", 180, 180, 0},
+        {"BPS_OAK", 360, 360, 0},
+        {"BPS_MILL", 600, 600, 1},
+        {"BPS_NSCH", 900, 900, 1},
+        {"BPS_LIB", 1140, 1140, 0},
+        {"BPS_HOSP", 1380, 1380, 1}
+      ]
+    })
+
+    paste_inbound =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: paste_route.route_id,
+        direction_id: 1,
+        route_pattern_id: "BPS-INBOUND",
+        route_pattern_name: "Riverside Terminal → Central Station",
+        route_pattern_typicality: 1,
+        headsign: "Central Station",
+        timing_name: "Typical",
+        timing_headsign: "Central Station",
+        stops: [
+          {"BPS_RIV", 0, 0, 1},
+          {"BPS_RPK", 240, 240, 0},
+          {"BPS_HOSP", 600, 600, 1},
+          {"BPS_LIB", 840, 840, 0},
+          {"BPS_MILL", 1080, 1080, 1},
+          {"BPS_OAK", 1320, 1320, 0},
+          {"BPS_MKT", 1500, 1500, 0},
+          {"BPS_CEN", 1680, 1680, 1}
+        ]
+      })
+
+    [
+      {paste_main, "Riverside Terminal", 1201,
+       ["06:00:00", "06:30:00", "07:00:00", "07:30:00", "08:00:00", "08:30:00", "09:00:00"]},
+      {paste_inbound, "Central Station", 1202,
+       ["06:35:00", "07:05:00", "07:35:00", "08:05:00", "08:35:00", "09:05:00", "09:35:00"]}
+    ]
+    |> Enum.each(fn {bundle, headsign, first_short, start_times} ->
+      start_times
+      |> Enum.with_index()
+      |> Enum.each(fn {start_time, index} ->
+        short = Integer.to_string(first_short + index * 2)
+
+        GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+          org.id,
+          diagram_version.id,
+          paste_route.route_id,
+          bundle,
+          %{
+            service_id: paste_calendar.service_id,
+            trip_id: "BPS_#{short}",
+            trip_short_name: short,
+            start_time: start_time,
+            trip_headsign: headsign,
+            block_id: Integer.to_string(101 + rem(index, 3))
+          }
+        )
+      end)
+    end)
+
+    # Trip 1209 (08:00 outbound) feeds timed transfers at Riverside Terminal:
+    # it receives from 1207 and continues onto 1210.
+    for {from_trip_id, to_trip_id} <- [{"BPS_1207", "BPS_1209"}, {"BPS_1209", "BPS_1210"}] do
+      GtfsPlanner.GtfsFixtures.transfer_fixture(org.id, diagram_version.id, %{
+        from_stop_id: "BPS_RIV",
+        to_stop_id: "BPS_RIV",
+        from_trip_id: from_trip_id,
+        to_trip_id: to_trip_id,
+        transfer_type: 2,
+        min_transfer_time: 180
+      })
+    end
+
+    paste_trip_count =
+      Repo.aggregate(
+        from(t in Gtfs.Trip,
+          where:
+            t.organization_id == ^org.id and t.gtfs_version_id == ^diagram_version.id and
+              t.route_id == ^paste_route.route_id
+        ),
+        :count
+      )
+
+    paste_transfer_count =
+      Repo.aggregate(
+        from(tr in Transfer,
+          where:
+            tr.organization_id == ^org.id and tr.gtfs_version_id == ^diagram_version.id and
+              (tr.from_trip_id == "BPS_1209" or tr.to_trip_id == "BPS_1209")
+        ),
+        :count
+      )
+
+    IO.puts(
+      "Browser seed: paste route BROWSER_PASTE (4 patterns, Typical and Peak timings, " <>
+        "#{paste_trip_count} Weekday trips, #{paste_transfer_count} transfers naming trip 1209)"
+    )
+
     # ── Blocks browser journey (EV-28, step 29) ──
     #
     # A published "Browser Blocks Version" carries the Blocks page's own day types
