@@ -554,6 +554,16 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
               </li>
             </ul>
             <p :if={@row.routes == []} class="text-muted">No routes yet</p>
+            <p :if={Map.get(@row, :closure_count, 0) > 0} id="calendar-coverage-details-closures">
+              <strong class="font-bold text-strong">{@row.closure_count}</strong>
+              {closure_usage_label(@row.closure_count)} on
+              <.pathway_links
+                id="calendar-coverage-details-pathways"
+                paths={@row.closure_paths}
+                version_id={@version_id}
+                suffix="."
+              />
+            </p>
           </div>
         </.details_section>
 
