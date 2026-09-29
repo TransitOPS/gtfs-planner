@@ -473,6 +473,68 @@ defmodule GtfsPlanner.Gtfs.Flex.RiderTextTest do
 
       assert RiderText.changes(saved, saved, calendars()) == []
     end
+
+    test "words the where, riders and detour answers in the editor's terms" do
+      saved =
+        area_service(
+          areas: [%FlexArea{key: "a1", name: "Newport"}],
+          riders: :anyone,
+          wording: "up to ¾ mile from the route",
+          dropoffs: :tell_driver
+        )
+
+      draft = %{
+        saved
+        | areas: [
+            %FlexArea{key: "a1", name: "Toledo"},
+            %FlexArea{key: "a2", name: "Newport"}
+          ],
+          riders: :registered,
+          include_registered: true,
+          wording: "up to ½ mile from the route",
+          dropoffs: :book
+      }
+
+      assert RiderText.changes(saved, draft, calendars()) == [
+               "Where: Anywhere in Toledo or Newport",
+               "Registered riders only, shown in trip planners",
+               "Detour wording changed",
+               "Drop-offs: book ahead"
+             ]
+    end
+
+    test "reports a registered service left out of planners and an area that appeared" do
+      saved =
+        area_service(
+          riders: :registered,
+          include_registered: true,
+          areas: [%FlexArea{key: "a1", name: "Newport"}]
+        )
+
+      assert RiderText.changes(saved, %{saved | include_registered: false}, calendars()) == [
+               "Registered riders only, left out of trip planners"
+             ]
+
+      empty = area_service(areas: [])
+
+      assert RiderText.changes(
+               empty,
+               %{empty | areas: [%FlexArea{key: "a1", name: "Newport"}]},
+               calendars()
+             ) == [
+               "Where: Anywhere in Newport"
+             ]
+    end
+
+    test "words a detour's distance and drop-off policy" do
+      saved = detour(distance_m: nil, dropoffs: :tell_driver)
+      draft = %{saved | distance_m: 1_200, dropoffs: :dropoff_only}
+
+      assert RiderText.changes(saved, draft, calendars()) == [
+               "Where: Detours up to ¾ mile from Route 20",
+               "Drop-offs: tell the driver, no pickups away from the route"
+             ]
+    end
   end
 
   describe "range_text/2 and window/1" do

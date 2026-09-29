@@ -390,6 +390,70 @@ test("service", async ({ page }) => {
   await captureReference(page, "flex-services-prototype.html", "service", "service");
 });
 
+// ── service sections ────────────────────────────────────────────────────
+
+// The service page's second half: where the bus can detour with its published
+// distance, stretch and derived-zone summary, who can ride, in exports with the
+// organization's realtime answer, and status and removal. The case opens the
+// seeded Valley Line detours, captures the detour state, then answers the
+// realtime question with "Its own schedule file" — which saves at once, outside
+// the service's draft — and captures the warning beside it.
+test("service-sections", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize(DESKTOP);
+  await routeBlankTiles(page);
+
+  const versionId = await openFlex(page);
+
+  await page.getByRole("link", { name: "Valley Line detours", exact: true }).click();
+  await waitForLiveView(page);
+
+  await expect(page).toHaveURL(new RegExp(`/gtfs/${versionId}/flex/[0-9a-f-]+$`));
+  await expect(page.locator("#svc-title")).toHaveText("Valley Line detours");
+
+  // Where the bus can detour: the published distance, the stretch, the three
+  // ways riders use detours and the derived zones the export will write.
+  await expect(page.locator("#sec-where")).toBeVisible();
+  await expect(page.locator("#f-distance")).toHaveValue("1200");
+  await expect(page.locator("#dropoffs-tell-driver")).toBeChecked();
+  await expect(page.locator("#where-summary")).toContainText("detour areas");
+  await expect(page.locator("#where-summary")).toContainText("km² in all");
+
+  // The rest of the page is the second half's sections.
+  await expect(page.locator("#sec-riders")).toBeVisible();
+  await expect(page.locator("#sec-export")).toContainText("Changes");
+  await expect(page.locator("#export-r3-note")).toContainText("stop_sequence doubles");
+  await expect(page.locator("#sec-status")).toBeVisible();
+
+  await waitForTiles(page, "#flex-service-map");
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "detour");
+
+  await page.setViewportSize(NARROW);
+  await expect(page.locator("#f-distance")).toBeVisible();
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "detour");
+
+  // The realtime answer belongs to the organization, not the service: it saves
+  // without a Save and shows its warning for the vendor's own schedule file.
+  await page.setViewportSize(DESKTOP);
+  await page.selectOption("#f-realtime", "own");
+
+  await expect(page.locator("#realtime-note")).toContainText("own trip IDs");
+  await expect(page.locator("#save-bar")).toHaveCount(0);
+
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "detour-realtime-own");
+
+  await page.setViewportSize(NARROW);
+  await expect(page.locator("#realtime-note")).toContainText("own trip IDs");
+  await expectNoHorizontalPageScroll(page);
+  await capture(page, "detour-realtime-own");
+
+  await page.setViewportSize(DESKTOP);
+  await captureReference(page, "flex-services-prototype.html", "detour", "detour");
+});
+
 // ── export ────────────────────────────────────────────────────────────────
 
 // The Export page carries no flex route, so this case logs in and resolves the

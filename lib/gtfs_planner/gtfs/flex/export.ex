@@ -173,6 +173,315 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
      }, warnings}
   end
 
+  # --- the service page's plan ------------------------------------------------
+
+  @typedoc """
+  One planned export row as the service page's export-details drawer lists it:
+  the flex file it goes to, its R11 ID and a sentence about what it holds.
+  """
+  @type plan_row :: %{file: String.t(), id: String.t(), summary: String.t()}
+
+  @typedoc """
+  The next export's rows for one service, as the service page shows them: the
+  headline the In exports section states, one count per file, the planned rows
+  with their R11 IDs, the detour rows' own warnings, and the derived detour
+  zones with the area each covers.
+  """
+  @type plan :: %{
+          headline: String.t(),
+          counts: [{String.t(), non_neg_integer(), String.t()}],
+          rows: [plan_row()],
+          warnings: [Export.warning()],
+          zones: [%{zone_id: String.t(), stop_a: String.t(), stop_b: String.t(), km2: float()}]
+        }
+
+  @doc """
+  Previews the rows the next export writes for one service (AC-29).
+
+  The plan is the export's own builders over the service on screen: for an area
+  service `Areas.rows/4`, and for a detour service `Geometry.detour_zones/3`,
+  the route's trip times and `Detours.rows/4`. `areas` are the service's areas
+  as `Areas.rows/4` reads them (`%{area: FlexArea.t(), geojson: map()}`), each
+  optionally carrying the `:km2` the caller measured for its summary.
+
+  Nothing here runs readiness or writes: a service whose geometry cannot be
+  derived yet plans no zones, and the page decides what its own readiness
+  findings mean. The reads are scoped to the organization and version (R10).
+  """
+  @spec plan(Ecto.UUID.t(), Ecto.UUID.t(), FlexService.t(), [map()]) :: plan()
+  def plan(organization_id, version_id, %FlexService{} = service, areas) when is_list(areas) do
+    calendars = Flex.calendars_map(organization_id, version_id)
+
+    case service.kind do
+      :area -> area_plan(service, areas, calendars, agency_id(organization_id, version_id))
+      :detour -> detour_plan(service, organization_id, version_id, calendars)
+    end
+  end
+
+  defp area_plan(service, areas, calendars, agency_id) do
+    rows = Areas.rows(service, areas, calendars, agency_id)
+
+    km2 =
+      Map.new(areas, fn input ->
+        {Areas.location_id(service, input.area), Map.get(input, :km2)}
+      end)
+
+    planned =
+      Enum.map(rows.locations, &area_location_row(&1, km2)) ++
+        Enum.map(rows.location_groups, &area_group_row(&1, rows.location_group_stops)) ++
+        Enum.map(rows.booking_rules, &booking_rule_plan_row/1) ++
+        Enum.map(rows.routes, &area_route_row/1) ++
+        Enum.map(rows.trips, &area_trip_row(&1, rows.stop_times, calendars))
+
+    %{
+      headline: area_headline(rows),
+      counts: [
+        {"Areas", length(rows.locations), "locations.geojson"},
+        {"Stop groups", length(rows.location_groups), "location_groups.txt"},
+        {"Booking rules", length(rows.booking_rules), "booking_rules.txt"},
+        {"Routes", length(rows.routes), "routes.txt"},
+        {"Trips", length(rows.trips), "trips.txt"},
+        {"Stop times", length(rows.stop_times), "stop_times.txt"}
+      ],
+      rows: planned,
+      warnings: [],
+      zones: []
+    }
+  end
+
+  defp detour_plan(service, organization_id, version_id, calendars) do
+    rules = detour_booking_rules(service, calendars)
+    zones = detour_zones_with_area(organization_id, version_id, service)
+    {rows, warnings} = detour_rows(service, zones, organization_id, version_id, rules)
+    trips = rows.stop_times |> Enum.map(& &1.trip_id) |> Enum.uniq()
+
+    planned =
+      Enum.map(zones, &detour_location_row(&1, service)) ++
+        Enum.map(rows.booking_rules, &booking_rule_plan_row/1) ++
+        Enum.map(rows.stop_times, &detour_stop_time_row/1) ++
+        [detour_route_row(service)]
+
+    %{
+      headline: detour_headline(service, zones, trips),
+      counts: [
+        {"Detour areas", length(zones), "locations.geojson"},
+        {"Booking rules", length(rows.booking_rules), "booking_rules.txt"},
+        {"Route trips changed", length(trips), "trips.txt"},
+        {"Stop times added", length(rows.stop_times), "stop_times.txt"}
+      ],
+      rows: planned,
+      warnings: warnings,
+      zones: Enum.map(zones, &Map.take(&1, [:zone_id, :stop_a, :stop_b, :km2]))
+    }
+  end
+
+  # The derived zones with the area each covers, measured through the same
+  # `Geometry.stats/3` the editor's own summary uses; a service whose geometry
+  # cannot be derived yet has none.
+  defp detour_zones_with_area(organization_id, version_id, service) do
+    case Geometry.detour_zones(organization_id, version_id, service) do
+      {:ok, zones} ->
+        Enum.map(zones, fn zone ->
+          Map.put(zone, :km2, Geometry.stats(organization_id, version_id, zone.geojson).km2)
+        end)
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp detour_rows(_service, [], _organization_id, _version_id, rules),
+    do: {%{@empty_rows | booking_rules: rules}, []}
+
+  defp detour_rows(service, zones, organization_id, version_id, rules) do
+    {rows, warnings} =
+      Detours.rows(
+        service,
+        zones,
+        detour_trip_times(organization_id, version_id, service.route_id),
+        rule_id(rules, service)
+      )
+
+    {%{
+       @empty_rows
+       | stop_times: rows.stop_times,
+         locations: rows.locations,
+         booking_rules: rules
+     }, warnings}
+  end
+
+  # --- the plan's sentences ---------------------------------------------------
+
+  defp area_headline(rows) do
+    "Adds #{length(rows.locations)} #{plural(length(rows.locations), "area")}, " <>
+      "#{length(rows.trips)} flex #{plural(length(rows.trips), "trip")} and " <>
+      "#{length(rows.booking_rules)} #{plural(length(rows.booking_rules), "booking rule")}"
+  end
+
+  defp detour_headline(service, zones, trips) do
+    "Changes #{length(trips)} Route #{service.route_id} #{plural(length(trips), "trip")}: " <>
+      "adds #{length(zones)} detour #{plural(length(zones), "area")}#{measure_phrase(service)}"
+  end
+
+  defp measure_phrase(%FlexService{measure: :stops}), do: ", one around each stop"
+  defp measure_phrase(%FlexService{}), do: ", one for each stretch between stops"
+
+  defp area_location_row(location, km2) do
+    %{
+      file: "locations.geojson",
+      id: location.id,
+      summary:
+        join_parts([
+          "“#{location.stop_name}”",
+          area_text(Map.get(km2, location.id)),
+          "the name goes in stop_name, which riders see"
+        ])
+    }
+  end
+
+  defp area_group_row(group, group_stops) do
+    %{
+      file: "location_groups.txt",
+      id: group.location_group_id,
+      summary:
+        "#{group.location_group_name} · #{length(group_stops)} connecting #{plural(length(group_stops), "stop")}"
+    }
+  end
+
+  defp area_route_row(route) do
+    %{
+      file: "routes.txt",
+      id: route.route_id,
+      summary: "“#{route.route_long_name}” · route type Bus (3)"
+    }
+  end
+
+  defp area_trip_row(trip, stop_times, calendars) do
+    %{
+      file: "trips.txt",
+      id: trip.trip_id,
+      summary:
+        join_parts([
+          "#{calendar_label(calendars, trip.service_id)} calendar",
+          window_text(Enum.filter(stop_times, &(&1.trip_id == trip.trip_id))),
+          "two rows per area: pickups, then drop-offs"
+        ])
+    }
+  end
+
+  defp detour_location_row(zone, service) do
+    %{
+      file: "locations.geojson",
+      id: zone.zone_id,
+      summary:
+        join_parts([
+          "Stretch between stops #{zone.stop_a} and #{zone.stop_b}",
+          area_text(zone.km2),
+          "stop_name “Route #{service.route_id} detour area”"
+        ])
+    }
+  end
+
+  defp detour_stop_time_row(%{trip_id: trip_id} = stop_time) do
+    %{
+      file: "stop_times.txt",
+      id: trip_id,
+      summary:
+        join_parts([
+          "Detour row between the stretch's stops",
+          window_text([stop_time]),
+          "pickup_type #{stop_time.pickup_type} · drop_off_type #{stop_time.drop_off_type}"
+        ])
+    }
+  end
+
+  defp detour_route_row(service) do
+    %{
+      file: "routes.txt",
+      id: "route #{service.route_id}",
+      summary:
+        "Written once. The fixed stops keep their times; the timed stop_sequence doubles so the zone rows sit between them (R3)."
+    }
+  end
+
+  defp booking_rule_plan_row(row) do
+    %{
+      file: "booking_rules.txt",
+      id: row.booking_rule_id,
+      summary:
+        join_parts([
+          "booking_type #{row.booking_type} #{booking_type_word(row.booking_type)}",
+          prior_notice_text(row),
+          contact_text(row),
+          message_text(row.message)
+        ])
+    }
+  end
+
+  defp booking_type_word(0), do: "real time"
+  defp booking_type_word(1), do: "same day"
+  defp booking_type_word(2), do: "earlier day"
+  defp booking_type_word(_type), do: "unspecified"
+
+  defp prior_notice_text(row) do
+    join_parts(
+      [
+        field_text("prior_notice_duration_min", row.prior_notice_duration_min),
+        field_text("prior_notice_duration_max", row.prior_notice_duration_max),
+        field_text("prior_notice_last_day", row.prior_notice_last_day),
+        field_text("prior_notice_last_time", row.prior_notice_last_time),
+        field_text("prior_notice_start_day", row.prior_notice_start_day),
+        field_text("prior_notice_service_id", row.prior_notice_service_id)
+      ],
+      " · "
+    )
+  end
+
+  defp contact_text(row) do
+    [
+      {"phone_number", row.phone_number},
+      {"booking_url", row.booking_url},
+      {"info_url", row.info_url}
+    ]
+    |> Enum.filter(fn {_column, value} -> present?(value) end)
+    |> Enum.map_join(" · ", &elem(&1, 0))
+  end
+
+  defp message_text(message) when is_binary(message) and message != "",
+    do: "message “#{message}”"
+
+  defp message_text(_message), do: nil
+
+  defp field_text(_name, nil), do: nil
+  defp field_text(name, value), do: "#{name} #{value}"
+
+  defp present?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present?(_value), do: false
+
+  defp area_text(km2) when is_number(km2), do: "#{Float.round(km2 * 1.0, 1)} km²"
+  defp area_text(_km2), do: nil
+
+  # The window one trip's flex rows carry: the first row's start and the last
+  # row's end, which R12 and R2 derive from the stored times.
+  defp window_text([]), do: nil
+
+  defp window_text(rows) do
+    first = hd(rows)
+    last = List.last(rows)
+    "window #{first.start_pickup_drop_off_window}–#{last.end_pickup_drop_off_window}"
+  end
+
+  defp calendar_label(calendars, service_id) do
+    get_in(calendars, [service_id, :name]) || service_id
+  end
+
+  defp join_parts(parts, separator \\ " · ") do
+    parts |> Enum.reject(&(&1 in [nil, ""])) |> Enum.join(separator)
+  end
+
+  defp plural(1, word), do: word
+  defp plural(_count, word), do: word <> "s"
+
   # --- one service ------------------------------------------------------------
 
   defp prepare_service(

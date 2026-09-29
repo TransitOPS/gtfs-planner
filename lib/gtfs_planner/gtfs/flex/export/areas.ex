@@ -408,10 +408,16 @@ defmodule GtfsPlanner.Gtfs.Flex.Export.Areas do
 
   # --- identifiers ------------------------------------------------------------
 
-  defp route_id(service), do: "flex-#{service.key}"
+  @doc """
+  R11's location ID for one area: `flex-<key>-a<position>`.
 
-  # R11 names an area location by its position, not its hours key.
-  defp location_id(service, area), do: "flex-#{service.key}-a#{area.position}"
+  `rows/4` uses it for the GeoJSON feature's own ID and the service page's
+  export-details plan uses it to name the planned row before the row exists.
+  """
+  @spec location_id(FlexService.t(), FlexArea.t()) :: String.t()
+  def location_id(service, area), do: "flex-#{service.key}-a#{area.position}"
+
+  defp route_id(service), do: "flex-#{service.key}"
 
   defp group_id(service), do: "flex-#{service.key}-stops"
 
