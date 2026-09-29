@@ -230,7 +230,10 @@ test.describe("Stop catalog responsive contracts", () => {
         height: viewport.height,
       });
 
-      const links = page.locator("table#stops a[href]");
+      // Below md the table gives way to a list whose whole item is the link.
+      const links = page.locator(
+        viewport.width >= 768 ? "#stops th a[href]" : "#stops-list a[href]",
+      );
       const count = await links.count();
       if (count === 0) return;
 
@@ -253,7 +256,7 @@ test.describe("Stop catalog responsive contracts", () => {
     await openStopCatalog(page);
 
     const accessible = page
-      .locator("table#stops tr")
+      .locator("#stops tr")
       .filter({ hasText: "Direct Accessible Stop" })
       .locator('[data-accessibility="accessible"]');
     if ((await accessible.count()) > 0) {
@@ -261,7 +264,7 @@ test.describe("Stop catalog responsive contracts", () => {
     }
 
     const notAccessible = page
-      .locator("table#stops tr")
+      .locator("#stops tr")
       .filter({ hasText: "Direct Not Accessible Stop" })
       .locator('[data-accessibility="not_accessible"]');
     if ((await notAccessible.count()) > 0) {
@@ -269,11 +272,11 @@ test.describe("Stop catalog responsive contracts", () => {
     }
 
     const noData = page
-      .locator("table#stops tr")
+      .locator("#stops tr")
       .filter({ hasText: "No Data Stop" })
       .locator('[data-accessibility="unknown"]');
     if ((await noData.count()) > 0) {
-      await expect(noData).toContainText("No data");
+      await expect(noData).toContainText("Not recorded");
     }
   });
 
@@ -283,8 +286,9 @@ test.describe("Stop catalog responsive contracts", () => {
 
     expect(await bodyFitsViewport(page)).toBe(true);
 
+    // At 320px the table is hidden and the phone list carries the stop.
     const longStop = page
-      .locator("table#stops tr")
+      .locator("#stops-list li")
       .filter({ hasText: "VERY_LONG_STOP_ID_FOR_OVERFLOW_TESTING_12345" });
 
     if ((await longStop.count()) > 0) {
@@ -297,7 +301,7 @@ test.describe("Stop catalog responsive contracts", () => {
   test("stop catalog supports keyboard traversal", async ({ page }) => {
     await openStopCatalog(page);
 
-    const firstLink = page.locator("table#stops a[href]").first();
+    const firstLink = page.locator("#stops th a[href]").first();
     if ((await firstLink.count()) === 0) return;
 
     await firstLink.focus();

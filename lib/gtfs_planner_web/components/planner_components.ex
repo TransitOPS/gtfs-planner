@@ -6,8 +6,9 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   panel, the back link a child page carries above its heading, the scope line
   under its title, the scrolling body and footer that keep a drawer form's
   actions in view, a drawer's titled form section and unsaved-changes badge, the
-  link an aside leads on with, and the check that keeps an imported address from
-  becoming a link.
+  link an aside leads on with, the removable constraint chip and sortable column
+  header a list workbench carries, and the check that keeps an imported address
+  from becoming a link.
 
   They read the design-system tokens declared in `assets/css/app.css`
   (`text-strong`, `bg-soft`, `border-control`, `rounded-control`, and so on) and
@@ -410,6 +411,96 @@ defmodule GtfsPlannerWeb.PlannerComponents do
     </span>
     """
   end
+
+  @doc """
+  A removable chip for one active list constraint (a search term or a filter).
+
+  The chip shows what the person chose, not the query param, and its
+  `aria-label` spells out the action. `kind` names the constraint ("Route") in
+  front of its value when the value alone would be ambiguous. Clicking sends
+  `remove_filter` with the chip's `key`.
+  """
+  attr :id, :string, required: true
+  attr :key, :string, required: true, doc: "the query param this chip dismisses"
+  attr :label, :string, required: true, doc: "the value the person chose"
+  attr :kind, :string, default: nil
+  attr :disabled, :boolean, default: false
+
+  def constraint_chip(assigns) do
+    ~H"""
+    <button
+      id={@id}
+      type="button"
+      phx-click="remove_filter"
+      phx-value-key={@key}
+      disabled={@disabled}
+      class="inline-flex min-h-11 items-center gap-1.5 rounded-badge border border-subtle bg-white pl-2.5 pr-2 text-[13px] text-strong hover:bg-canvas disabled:cursor-not-allowed disabled:hover:bg-white"
+      aria-label={"Remove filter " <> Enum.join(Enum.reject([@kind, @label], &is_nil/1), " ")}
+    >
+      <span :if={@kind} class="text-muted">{@kind}</span>
+      <span class="font-[650]">{@label}</span>
+      <.icon name="hero-x-mark" class="size-3.5 text-muted" />
+    </button>
+    """
+  end
+
+  @doc """
+  A sortable column header for a workbench table (sticky canvas header, 44px
+  target), without the shared `<.table>` component's daisyUI chrome.
+
+  Clicking sends `sort` with the column's `sort_key`. `sort_key` must be an
+  existing atom name; `sort_by` and `sort_dir` are the table's current sort.
+  """
+  attr :label, :string, required: true
+  attr :sort_key, :string, required: true
+  attr :sort_by, :atom, required: true
+  attr :sort_dir, :atom, required: true
+  attr :disabled, :boolean, default: false
+  attr :class, :string, default: ""
+
+  def sort_header(assigns) do
+    state = column_sort_state(assigns.sort_by, assigns.sort_dir, assigns.sort_key)
+
+    assigns =
+      assigns
+      |> assign(:aria_sort, aria_sort_value(state))
+      |> assign(:indicator, sort_indicator(state))
+
+    ~H"""
+    <th
+      scope="col"
+      aria-sort={@aria_sort}
+      class={[
+        "sticky top-0 z-10 border-b border-subtle bg-canvas text-[13px] font-[650] text-default",
+        @class
+      ]}
+    >
+      <button
+        type="button"
+        phx-click="sort"
+        phx-value-key={@sort_key}
+        disabled={@disabled}
+        class="inline-flex min-h-11 items-center gap-1.5 hover:text-strong hover:underline disabled:cursor-not-allowed disabled:hover:no-underline"
+      >
+        {@label}<span aria-hidden="true">{@indicator}</span>
+      </button>
+    </th>
+    """
+  end
+
+  defp column_sort_state(sort_by, sort_dir, sort_key) do
+    if String.to_existing_atom(sort_key) == sort_by, do: Atom.to_string(sort_dir), else: "none"
+  end
+
+  defp aria_sort_value("asc"), do: "ascending"
+  defp aria_sort_value("desc"), do: "descending"
+  defp aria_sort_value(_other), do: "none"
+
+  # An unsorted column gets the neutral double arrow, because a single arrow
+  # would imply a sort that is not there.
+  defp sort_indicator("asc"), do: "▲"
+  defp sort_indicator("desc"), do: "▼"
+  defp sort_indicator(_other), do: "↕"
 
   @doc """
   The address a stored web or email value may open, or `nil`.

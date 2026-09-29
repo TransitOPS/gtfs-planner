@@ -31,7 +31,12 @@ async function loginAndGoToDetails(page) {
   await page.goto(`/gtfs/${versionId}/stops`);
   await page.waitForURL("**/stops");
 
-  const stationRow = page.locator("tr:has-text('BROWSER_STATION')");
+  // Below md the stops table gives way to a list whose items are the links.
+  const stationRow = page
+    .locator(
+      "tr:has-text('BROWSER_STATION'), #stops-list li:has-text('BROWSER_STATION')",
+    )
+    .filter({ visible: true });
   await expect(stationRow).toBeVisible();
   await stationRow.getByRole("link").first().click();
   await page.waitForURL("**/stops/**");
