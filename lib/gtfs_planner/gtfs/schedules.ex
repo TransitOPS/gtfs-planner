@@ -54,6 +54,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Schedules.Summary
   alias GtfsPlanner.Gtfs.Schedules.Timetable
+  alias GtfsPlanner.Gtfs.TimetablePaste
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
@@ -529,6 +530,25 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           other_calendars?: boolean()
         }
 
+  @type paste_apply_result :: %{
+          added: non_neg_integer(),
+          changed: non_neg_integer(),
+          removed: non_neg_integer(),
+          transfers_removed: non_neg_integer(),
+          new_timings: [String.t()],
+          vehicles_before: non_neg_integer(),
+          vehicles_after: non_neg_integer(),
+          trip_ids: [String.t()]
+        }
+
+  @type paste_apply_error ::
+          :stale_plan
+          | :blocking_issues
+          | :refused
+          | :not_found
+          | :busy
+          | Ecto.Changeset.t()
+
   @doc """
   Loads the paste scope for one route, calendar and direction.
 
@@ -617,6 +637,241 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       )
     end
   end
+
+  @doc """
+  Applies a reviewed pasted timetable to one route, calendar and direction.
+
+  `scope_params` carries the prepared `%{service_id:, direction_id:, pattern_id:}`
+  (all concrete at apply time; string keys accepted). `input` is the
+  `TimetablePaste.review/2` input the fingerprint was prepared from, and
+  `fingerprint` is that review's fingerprint.
+
+  Runs through `run_write/2` (SERIALIZABLE, 3 attempts; retries exhausted →
+  `:busy`). Inside, in the Schedules lock order:
+  `Calendars.lock_service_for_reference!/3` → `lock_published_route!/2` →
+  `lock_pattern!/2` for every pattern of the route in the direction, ascending
+  UUID → `Blocking.lock_blocking!/1` when the input maps a Block column →
+  trips of the route, calendar and direction `FOR UPDATE` ascending UUID.
+  The scope then reloads from locked state (`read_paste_scope/4`) and the
+  review rebuilds from it (`TimetablePaste.review/2`): a fingerprint mismatch
+  — including an unused-timing edit, a pattern change, an opposite-direction
+  trip edit or a new transfer naming a removed trip — rolls back `:stale_plan`
+  with nothing written. A `plan.refusal` rolls back `:refused`; any
+  `:needs_decision` change (or a review with column issues and no plan) rolls
+  back `:blocking_issues`.
+
+  Writes share one `operation_id`. This step writes the `:remove` changes via
+  `remove_locked_trips!/3` with one `'deleted'` audit per removed trip;
+  steps 17 (changed trips and new timings) and 18 (added trips) extend the
+  write sequence at the marked points, so `added`/`changed` are 0,
+  `new_timings` is `[]` and `trip_ids` is `[]` here. `vehicles_before/after`
+  come from the locked plan.
+
+  A foreign, invalid or unpublished organization, version, route or calendar,
+  and a pattern outside the direction, roll back to `{:error, :not_found}`;
+  the apply never escapes the organization/version/route/direction (AC-23).
+  An audit failure rolls back every row (AC-19).
+  """
+  @spec apply_paste(String.t(), map(), map(), String.t(), AuditContext.t()) ::
+          {:ok, paste_apply_result()} | {:error, paste_apply_error()}
+  def apply_paste(route_id, scope_params, input, fingerprint, %AuditContext{} = audit_context)
+      when is_binary(route_id) and is_map(scope_params) and is_map(input) and
+             is_binary(fingerprint) do
+    case run_write(fn ->
+           apply_paste_transaction(route_id, scope_params, input, fingerprint, audit_context)
+         end) do
+      # A forged or foreign calendar is a scope failure for this writer.
+      {:error, :calendar_not_found} -> {:error, :not_found}
+      result -> result
+    end
+  end
+
+  def apply_paste(_route_id, _scope_params, _input, _fingerprint, _audit_context),
+    do: {:error, :not_found}
+
+  # -- Paste apply (step 16: locks, freshness and removals) --------------------
+
+  # Any rollback below leaves nothing written (AC-19): the freshness, refusal
+  # and blocking checks all run before the first removal, and the removals
+  # share the transaction with their audits.
+  defp apply_paste_transaction(route_id, scope_params, input, fingerprint, audit_context) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+
+    service_id = filter_value(scope_params, :service_id)
+    direction = apply_direction!(scope_params)
+
+    unless is_binary(service_id) and service_id != "", do: Repo.rollback(:not_found)
+
+    :ok = Calendars.lock_service_for_reference!(organization_id, version_id, service_id)
+    route = RoutePatterns.lock_published_route!(audit_context, route_id)
+
+    lock_direction_patterns!(route, direction)
+
+    if paste_maps_block_column?(input), do: Blocking.lock_blocking!(version_id)
+
+    locked_trips =
+      lock_direction_trips!(organization_id, version_id, route.route_id, service_id, direction)
+
+    scope = read_paste_scope(organization_id, version_id, route.route_id, scope_params)
+
+    review =
+      case TimetablePaste.review(scope, input) do
+        {:ok, review} -> review
+        {:error, _reason} -> Repo.rollback(:stale_plan)
+      end
+
+    if review.fingerprint != fingerprint, do: Repo.rollback(:stale_plan)
+    if is_nil(review.plan), do: Repo.rollback(:blocking_issues)
+    if not is_nil(review.plan.refusal), do: Repo.rollback(:refused)
+    if review.plan.counts.needs_decision > 0, do: Repo.rollback(:blocking_issues)
+
+    operation_id = Ecto.UUID.generate()
+
+    remove_trips = apply_removal_trips!(review.plan, locked_trips)
+    snapshots = trip_audit_snapshots(organization_id, version_id, remove_trips)
+    result = remove_locked_trips!(organization_id, version_id, remove_trips)
+    audit_removed_trips!(audit_context, remove_trips, snapshots, operation_id)
+
+    # Step 17 extension point: create each pending timing via
+    # RoutePatterns.create_pasted_timing!/5 (mapping name → id) and
+    # rematerialize the :change trips here, with 'updated' audits under the
+    # same operation_id.
+    # Step 18 extension point: insert the :add trips via allocate_trip_ids/5,
+    # insert_trip!/1, stop_time_rows/3 and insert_stop_times!/1 here, with
+    # 'created' audits under the same operation_id, and report the full
+    # summary (added/changed counts, new timing names, added/changed IDs).
+    %{
+      added: 0,
+      changed: 0,
+      removed: result.trips,
+      transfers_removed: result.transfers,
+      new_timings: [],
+      vehicles_before: review.plan.vehicles.before,
+      vehicles_after: review.plan.vehicles.after,
+      trip_ids: []
+    }
+  end
+
+  # scope_params carries the prepared calendar and direction; at apply time both
+  # are concrete. Anything else cannot be locked safely, so it is a foreign
+  # scope (AC-23), not a default resolution.
+  defp apply_direction!(params) do
+    case filter_value(params, :direction_id) || filter_value(params, :direction) do
+      0 -> 0
+      1 -> 1
+      "0" -> 0
+      "1" -> 1
+      _direction -> Repo.rollback(:not_found)
+    end
+  end
+
+  # Every pattern of the route in the direction, locked FOR UPDATE in ascending
+  # UUID so opposing schedule/lifecycle writers take them in the same order.
+  defp lock_direction_patterns!(route, direction) do
+    from(p in RoutePattern,
+      where:
+        p.organization_id == ^route.organization_id and
+          p.gtfs_version_id == ^route.gtfs_version_id and
+          p.route_id == ^route.route_id and p.direction_id == ^direction,
+      order_by: [asc: p.id],
+      select: p.id
+    )
+    |> Repo.all()
+    |> Enum.each(&RoutePatterns.lock_pattern!(route, &1))
+  end
+
+  # Every trip of the route on the calendar in the direction, FOR UPDATE in
+  # ascending UUID — the same stable order delete_trips/4 uses.
+  defp lock_direction_trips!(organization_id, version_id, route_id, service_id, direction) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+          t.route_id == ^route_id and t.service_id == ^service_id and
+          t.direction_id == ^direction,
+      order_by: [asc: t.id],
+      lock: "FOR UPDATE"
+    )
+    |> Repo.all()
+  end
+
+  # The :remove changes name locked scope trips by UUID. Filtering the locked
+  # direction trips preserves ascending UUID order for remove_locked_trips!/3.
+  # A removal naming no locked trip means the scope moved under the locks, so
+  # the plan is stale rather than partially applied.
+  defp apply_removal_trips!(plan, locked_trips) do
+    removal_ids =
+      plan.changes
+      |> Enum.filter(&(&1.op == :remove))
+      |> Enum.map(& &1.trip.id)
+      |> MapSet.new()
+
+    remove_trips = Enum.filter(locked_trips, &MapSet.member?(removal_ids, &1.id))
+
+    if length(remove_trips) != MapSet.size(removal_ids), do: Repo.rollback(:stale_plan)
+
+    remove_trips
+  end
+
+  defp audit_removed_trips!(_audit_context, [], _snapshots, _operation_id), do: :ok
+
+  defp audit_removed_trips!(audit_context, remove_trips, snapshots, operation_id) do
+    affected_trip_ids = Enum.map(remove_trips, & &1.id)
+
+    Enum.each(remove_trips, fn trip ->
+      audit_trip!(
+        audit_context,
+        trip,
+        "deleted",
+        Map.get(snapshots, trip.id),
+        nil,
+        operation_id,
+        affected_trip_ids
+      )
+    end)
+  end
+
+  # The blocking advisory lock joins spec 05's block guarantee (R16): any paste
+  # whose input maps a Block column — an explicit "block_id" override, carried
+  # block rows from prepare, or a Block header cell in either orientation —
+  # takes Blocking.lock_blocking!/1 before the trip row locks. Conservative
+  # over-locking only contends briefly with a concurrent Blocks writer.
+  defp paste_maps_block_column?(input) when is_map(input) do
+    overrides = attr(input, :overrides)
+    block_rows = attr(input, :block_rows)
+
+    override? =
+      is_map(overrides) and
+        Enum.any?(Map.values(overrides), &(&1 == :block_id or &1 == "block_id"))
+
+    rows? = is_list(block_rows) and block_rows != []
+
+    override? or rows? or paste_block_header?(attr(input, :text))
+  end
+
+  defp paste_maps_block_column?(_input), do: false
+
+  defp paste_block_header?(text) when is_binary(text) do
+    lines = text |> String.split(~r/\r\n|\n|\r/, trim: true) |> Enum.take(51)
+
+    first_row = lines |> List.first("") |> split_paste_cells()
+    first_column = Enum.map(lines, &(split_paste_cells(&1) |> List.first("")))
+
+    Enum.any?(first_row ++ first_column, &paste_block_keyword?/1)
+  end
+
+  defp paste_block_header?(_text), do: false
+
+  defp split_paste_cells(line) do
+    if String.contains?(line, "\t"), do: String.split(line, "\t"), else: String.split(line, ",")
+  end
+
+  defp paste_block_keyword?(cell) when is_binary(cell) do
+    normalized = cell |> String.trim() |> String.trim("\"") |> String.downcase()
+    normalized in ["block", "block #", "block id"]
+  end
+
+  defp paste_block_keyword?(_cell), do: false
 
   defp read_route_schedule(organization_id, version_id, route_id, filters) do
     route = published_route!(organization_id, version_id, route_id)
