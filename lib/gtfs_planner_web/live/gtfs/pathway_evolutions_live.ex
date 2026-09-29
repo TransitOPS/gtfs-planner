@@ -89,6 +89,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
      |> assign(:stale?, false)
      |> assign(:notices, [])
      |> assign(:dirty?, false)
+     |> assign(:pending_action, nil)
      |> assign(:preview_href, nil)
      |> assign(:preview_reason, nil)
      |> stream_configure(:closures, dom_id: &"closure-#{&1.id}")
@@ -162,22 +163,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
           socket.assigns.editor_id == row.evolution.id ->
             {:noreply, focus_scoped(socket, "closure-editor-title")}
 
+          # Switching rows with unsaved input is an explicit choice, not a
+          # silent replacement: the guard keeps the entries and asks.
           socket.assigns.dirty? ->
-            {:noreply,
-             assign(
-               socket,
-               :status_message,
-               "Your unsaved changes are still here. Save or discard them before switching closures."
-             )}
+            {:noreply, assign(socket, :pending_action, {:closure, row.evolution.id})}
 
           true ->
-            {:noreply,
-             socket
-             |> put_editor(edit_editor(row))
-             |> assign(:selected_closure_id, row.evolution.id)
-             |> assign(:status_message, "Selected closure on #{pathway_label(row.pathway)}.")
-             |> refresh_rows()
-             |> focus_scoped("closure-editor-title")}
+            {:noreply, select_closure_row(socket, row)}
         end
     end
   end
@@ -263,13 +255,98 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
          |> assign(:status_message, "That closure is no longer scheduled at this station.")}
 
       row ->
+        {:noreply, select_closure_row(socket, row)}
+    end
+  end
+
+  # A link of this app was clicked while the form held unsaved input: the client
+  # hook stopped the navigation and pushed the address it was about to open.
+  # Only a same-app path is ever kept, so the dialog the guard opens can only
+  # ever continue to a page of this application.
+  def handle_event("calendar_depart", %{"path" => path}, socket) do
+    case same_app_path(path) do
+      {:ok, path} ->
+        if socket.assigns.dirty? do
+          {:noreply, assign(socket, :pending_action, {:link, path})}
+        else
+          {:noreply, push_navigate(socket, to: path)}
+        end
+
+      :error ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("calendar_depart", _params, socket), do: {:noreply, socket}
+
+  # Keeping the edits leaves every entered string alone and returns focus to the
+  # editor the reader was working in.
+  def handle_event("keep_editing", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:pending_action, nil)
+     |> assign(
+       :status_message,
+       "Your unsaved changes are still here. Save or discard them before leaving this closure."
+     )
+     |> focus_scoped("closure-editor-title")}
+  end
+
+  # The dialog's own confirmation: the interrupted action runs with the unsaved
+  # input dropped.
+  def handle_event("discard_edits", _params, socket) do
+    case socket.assigns.pending_action do
+      nil ->
+        {:noreply, socket}
+
+      {:link, path} ->
+        {:noreply, push_navigate(assign(socket, :pending_action, nil), to: path)}
+
+      {:closure, id} ->
+        case find_closure_row(socket, id) do
+          nil ->
+            {:noreply,
+             socket
+             |> assign(:pending_action, nil)
+             |> assign(:status_message, "That closure is no longer scheduled at this station.")
+             |> focus_scoped("closure-editor-title")}
+
+          row ->
+            {:noreply,
+             select_closure_row(
+               socket,
+               row,
+               "Closure edits discarded. Selected closure on #{pathway_label(row.pathway)}."
+             )}
+        end
+
+      {:new, pathway_id} ->
+        pathway = Enum.find(socket.assigns.station_data.pathways, &(&1.pathway_id == pathway_id))
+        {:noreply, open_new_closure(socket, pathway)}
+    end
+  end
+
+  # The footer's second action reads "Close" for a clean inspector and "Discard
+  # edits" while something is unsaved. An existing row is restored to its
+  # persisted values in place; a new form is abandoned, because there is no
+  # saved closure to restore it to; a clean inspector closes.
+  def handle_event("discard_closure", _params, %{assigns: %{editor_mode: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("discard_closure", _params, %{assigns: %{dirty?: false}} = socket),
+    do: {:noreply, close_editor(socket, "Closure closed.")}
+
+  def handle_event("discard_closure", _params, %{assigns: %{editor_mode: :new}} = socket),
+    do: {:noreply, close_editor(socket, "New closure discarded.")}
+
+  def handle_event("discard_closure", _params, socket) do
+    case find_closure_row(socket, socket.assigns.editor_id) do
+      nil ->
+        {:noreply, close_editor(socket, "This closure is no longer scheduled at this station.")}
+
+      row ->
         {:noreply,
-         socket
-         |> put_editor(edit_editor(row))
-         |> assign(:selected_closure_id, row.evolution.id)
-         |> assign(:status_message, "Selected closure on #{pathway_label(row.pathway)}.")
-         |> refresh_rows()
-         |> focus_scoped("closure-editor-title")}
+         select_closure_row(socket, row, "Closure edits discarded. The saved closure is shown.")}
     end
   end
 
@@ -410,7 +487,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   # Choosing a pathway opens the new-closure form on it, or re-points the one
   # already open. Switching away from typed values is never silent: while any
-  # unsaved input exists the form is kept and the status says why.
+  # unsaved input exists the form is kept and the guard asks first.
   defp choose_pathway(socket, pathway) do
     cond do
       socket.assigns.editor_mode == :new ->
@@ -423,22 +500,46 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
         |> focus_scoped("closure-calendar")
 
       socket.assigns.dirty? ->
-        assign(
-          socket,
-          :status_message,
-          "Your unsaved changes are still here. Save or discard them before starting another closure."
-        )
+        assign(socket, :pending_action, {:new, pathway && pathway.id})
 
       true ->
-        socket
-        |> put_editor(new_editor(pathway_id(pathway)))
-        |> assign(:selected_pathway_id, pathway && pathway.id)
-        |> assign(:selected_closure_id, nil)
-        |> assign(:search, "")
-        |> assign(:status_message, "Scheduling a new closure.")
-        |> render_closures()
-        |> focus_new_closure(pathway)
+        open_new_closure(socket, pathway)
     end
+  end
+
+  # The new-closure form, used when nothing unsaved has to be kept: the pathway
+  # list, the header's action, and the dirty dialog's own confirmation.
+  defp open_new_closure(socket, pathway) do
+    socket
+    |> put_editor(new_editor(pathway_id(pathway)))
+    |> assign(:selected_pathway_id, pathway && pathway.id)
+    |> assign(:selected_closure_id, nil)
+    |> assign(:search, "")
+    |> assign(:status_message, "Scheduling a new closure.")
+    |> render_closures()
+    |> focus_new_closure(pathway)
+  end
+
+  # Opening a row: the editor, the selected row styling and the announcement
+  # travel together, so a switch, a duplicate link, a reload and a discarded
+  # draft all land on the same shape.
+  defp select_closure_row(socket, row, message \\ nil) do
+    socket
+    |> put_editor(edit_editor(row))
+    |> assign(:selected_closure_id, row.evolution.id)
+    |> assign(:status_message, message || "Selected closure on #{pathway_label(row.pathway)}.")
+    |> refresh_rows()
+    |> focus_scoped("closure-editor-title")
+  end
+
+  defp close_editor(socket, message) do
+    socket
+    |> put_editor(nil)
+    |> assign(:selected_closure_id, nil)
+    |> assign(:selected_pathway_id, nil)
+    |> assign(:status_message, message)
+    |> refresh_rows()
+    |> focus_scoped("closure-idle-title")
   end
 
   # With a pathway already chosen the calendar is the next field to fill in;
@@ -449,18 +550,14 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   defp pathway_id(nil), do: ""
   defp pathway_id(pathway), do: pathway.pathway_id
 
-  # The editor's two shapes: a new closure with nothing saved to compare against
-  # and an existing row carrying the fingerprint a save must present.
+  # The editor's two shapes: a new closure and an existing row carrying the
+  # fingerprint a save must present. A new closure's saved baseline is the
+  # pathway it was opened on, so opening a form from the pathway list is not
+  # itself an unsaved change.
   defp new_editor(pathway_id) do
-    values = %{
-      "pathway_id" => pathway_id || "",
-      "service_id" => "",
-      "start_time" => "",
-      "end_time" => "",
-      "note" => ""
-    }
+    values = new_values(pathway_id)
 
-    %{mode: :new, id: nil, fingerprint: nil, saved: empty_values(), values: values}
+    %{mode: :new, id: nil, fingerprint: nil, saved: values, values: values}
   end
 
   defp edit_editor(row) do
@@ -475,8 +572,14 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     }
   end
 
-  defp empty_values do
-    %{"pathway_id" => "", "service_id" => "", "start_time" => "", "end_time" => "", "note" => ""}
+  defp new_values(pathway_id) do
+    %{
+      "pathway_id" => pathway_id || "",
+      "service_id" => "",
+      "start_time" => "",
+      "end_time" => "",
+      "note" => ""
+    }
   end
 
   defp saved_values(%PathwayEvolution{} = evolution) do
@@ -493,12 +596,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   defp format_service_time(_seconds), do: ""
 
   # Opening the idle editor, a new form or an existing row resets every outcome
-  # from the previous one, so a stale flag, a duplicate panel or a notice can
-  # never outlive the row it described.
+  # from the previous one, so a stale flag, a duplicate panel, a notice or a
+  # pending guarded action can never outlive the row it described.
   defp put_editor(socket, editor) do
     {preview_href, preview_reason} = preview_state(socket, editor)
 
     socket
+    |> assign(:pending_action, nil)
     |> assign(:editor_mode, editor && editor.mode)
     |> assign(:editor_id, editor && editor.id)
     |> assign(:editor_fingerprint, editor && editor.fingerprint)
@@ -589,6 +693,50 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   defp dirty?(params, saved) do
     comparable_values(params) != comparable_values(saved)
   end
+
+  # The client's guard compares the rendered form to the values this page last
+  # rendered as saved — the same tuple the server-side check compares, keyed by
+  # the field names the browser submits. That is what lets a click swallowed in
+  # the same moment as a field's blur still be refused. It is omitted while no
+  # editor is open, which leaves other users of the hook untouched.
+  defp dirty_baseline(nil), do: nil
+
+  defp dirty_baseline(values) do
+    Jason.encode!(Map.new(values, fn {key, value} -> {"closure[#{key}]", value} end))
+  end
+
+  # What the dialog says it would drop: a new closure that was never saved, or
+  # the changes to the closure that is open.
+  defp dirty_dialog_body(%{editor_mode: :new}),
+    do: "This new closure is not saved. Discarding removes it."
+
+  defp dirty_dialog_body(assigns) do
+    case editor_pathway(assigns) do
+      nil ->
+        "Your changes are not saved. Discarding restores the saved closure."
+
+      pathway ->
+        "Your changes to #{pathway_full_label(pathway)} are not saved. " <>
+          "Discarding restores the saved closure."
+    end
+  end
+
+  # A departure address is accepted only as a same-app absolute path: it starts
+  # with one slash, and it carries neither a scheme nor a host. An absolute URL,
+  # a protocol-relative address and a script URL are all refused, so a path the
+  # guard kept can never become navigation to another origin.
+  defp same_app_path(path) when is_binary(path) do
+    uri = URI.parse(path)
+
+    if String.starts_with?(path, "/") and not String.starts_with?(path, "//") and
+         is_nil(uri.scheme) and is_nil(uri.host) do
+      {:ok, path}
+    else
+      :error
+    end
+  end
+
+  defp same_app_path(_path), do: :error
 
   defp comparable_values(nil), do: comparable_values(%{})
 
@@ -934,6 +1082,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
         :preview_href,
         if(preview_unavailable(assigns), do: nil, else: assigns.preview_href)
       )
+      |> assign(:dirty_baseline, dirty_baseline(assigns.saved_values))
+      |> assign(:dirty_dialog_body, dirty_dialog_body(assigns))
 
     ~H"""
     <Layouts.app
@@ -1151,8 +1301,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
           <aside
             :if={is_nil(@blocked)}
             id="closure-editor"
-            phx-hook="FormErrorFocus"
+            phx-hook="CalendarEditor"
             data-dirty={to_string(@dirty?)}
+            data-dirty-baseline={@dirty_baseline}
             data-closure-id={@editor_id}
             aria-labelledby={if @editor_mode, do: "closure-editor-title", else: "closure-idle-title"}
             class="flex min-w-0 flex-col overflow-clip rounded-card border border-subtle bg-white lg:sticky lg:top-4 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:max-h-[calc(100dvh-2rem)]"
@@ -1196,13 +1347,22 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
               class="flex min-h-0 flex-1 flex-col"
             >
               <header class="border-b border-subtle px-5 py-4">
-                <h2
-                  id="closure-editor-title"
-                  tabindex="-1"
-                  class="font-sans text-[20px] font-[650] leading-tight tracking-normal"
-                >
-                  {if @editor_mode == :new, do: "New closure", else: "Edit closure"}
-                </h2>
+                <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                  <h2
+                    id="closure-editor-title"
+                    tabindex="-1"
+                    class="font-sans text-[20px] font-[650] leading-tight tracking-normal"
+                  >
+                    {if @editor_mode == :new, do: "New closure", else: "Edit closure"}
+                  </h2>
+                  <span
+                    :if={@dirty?}
+                    id="closure-dirty-chip"
+                    class="inline-flex items-center gap-1.5 rounded-evo-badge bg-warning/15 px-2 py-0.5 text-[13px] font-[650] text-warning"
+                  >
+                    <.icon name="hero-exclamation-triangle" class="size-3.5" /> Unsaved changes
+                  </span>
+                </div>
                 <p id="closure-editor-context" class="mt-1 text-[13px] text-muted">
                   <span :if={@editor_pathway}>
                     {pathway_full_label(@editor_pathway)} ·
@@ -1380,6 +1540,15 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 class="sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 border-t border-subtle bg-white px-5 py-4"
               >
                 <.button
+                  id="discard-closure"
+                  type="button"
+                  phx-click="discard_closure"
+                  variant="secondary"
+                  class="min-h-11 rounded-control border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
+                >
+                  {if @dirty?, do: "Discard edits", else: "Close"}
+                </.button>
+                <.button
                   id="save-closure"
                   type="submit"
                   disabled={@stale?}
@@ -1391,6 +1560,27 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 </.button>
               </footer>
             </.form>
+
+            <%!--
+            The unsaved-edits guard: one explicit choice for every departure that
+            would drop typed values — an in-app link, another row, or the start of
+            a new closure.
+            --%>
+            <.confirm_dialog
+              id="closure-dirty-dialog"
+              open={@pending_action != nil}
+              title="Discard closure edits?"
+              confirm_label="Discard edits"
+              cancel_label="Keep editing"
+              pending_label="Discarding…"
+              on_confirm="discard_edits"
+              on_cancel="keep_editing"
+              described_by="closure-dirty-body"
+              confirm_variant="primary"
+              return_focus_id="closure-editor-title"
+            >
+              <p id="closure-dirty-body">{@dirty_dialog_body}</p>
+            </.confirm_dialog>
           </aside>
 
           <section
