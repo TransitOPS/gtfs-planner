@@ -956,7 +956,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
   defp gap_days(band), do: Date.diff(band.last_date, band.first_date) + 1
 
   @doc """
-  Renders closure-referencing pathways as links to their station's Evolutions list.
+  Renders closure-referencing pathways as links to their station's closures list.
 
   `paths` is one `%{pathway_id, station_stop_ids}` entry per pathway, with the
   station IDs resolved from scoped endpoint ancestry, so each link opens the
@@ -994,8 +994,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarComponents do
           href={evolutions_href(@version_id, entry.station_stop_id, entry.pathway_id)}
           data-pathway-id={entry.pathway_id}
           data-station-stop-id={entry.station_stop_id}
-          title={"#{entry.label} on the #{entry.station_stop_id} Evolutions tab"}
-          aria-label={"#{entry.label} on the #{entry.station_stop_id} Evolutions tab"}
+          title={"#{entry.label} on the #{entry.station_stop_id} Closures tab"}
+          aria-label={"#{entry.label} on the #{entry.station_stop_id} Closures tab"}
           class={@link_class}
         >{entry.label}</a>{if is_binary(entry.station_stop_id),
           do: entry_trailer(@entries, index, @suffix)}<span

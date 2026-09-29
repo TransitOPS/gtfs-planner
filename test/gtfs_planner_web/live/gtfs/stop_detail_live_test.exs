@@ -1397,7 +1397,7 @@ defmodule GtfsPlannerWeb.Gtfs.StopDetailLiveTest do
       assert has_element?(view, "#station-tab-diagram", "Floorplans")
       assert has_element?(view, "#station-tab-report", "Reports")
       assert has_element?(view, "#station-tab-reachability", "Reachability")
-      assert has_element?(view, "#station-tab-evolutions", "Evolutions")
+      assert has_element?(view, "#station-tab-evolutions", "Closures")
 
       assert link_href(view, "#open-floorplans") ==
                "/gtfs/#{ctx.version.id}/stops/WS_STATION/diagram"

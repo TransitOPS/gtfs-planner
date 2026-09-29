@@ -25,6 +25,16 @@ const STOP_NAME_FONT_PX = 13;
 const CLOSED_WORD_WIDTH_PX = 42;
 const CLOSED_WORD_HEIGHT_PX = 16;
 
+// The marks use the diagram palette the page emits on `#evolutions`
+// (`DiagramPalette`): the pathway ink with a halo casing, the point ink with a
+// halo, action ink for the selection, and the status tokens for a closure. The
+// Key in `pathway_evolutions_components.ex` draws the same marks at real size.
+const PATHWAY_INK = "stroke-(--diagram-pathway-forward)";
+const POINT_FILL = "fill-(--diagram-active-stop)";
+const POINT_STROKE = "stroke-(--diagram-active-stop)";
+const HALO_FILL = "fill-(--diagram-label-halo)";
+const HALO_STROKE = "stroke-(--diagram-label-halo)";
+
 /**
  * Returns the SVG viewBox for an image's natural pixel dimensions.
  *
@@ -107,7 +117,7 @@ export function closedLabelPosition(x, y, boxes, unitPx = 10) {
 function closedWord(x, y, boxes, unitPx) {
   const { x: cx, y: cy, anchor } = closedLabelPosition(x, y, boxes, unitPx);
 
-  return `<text x="${cx}" y="${cy}" text-anchor="${anchor}" class="evo-fp-closed-word fill-evo-closed-ink" ${textScale(unitPx)} font-weight="700">Closed</text>`;
+  return `<text x="${cx}" y="${cy}" text-anchor="${anchor}" class="evo-fp-closed-word fill-error-fg" ${textScale(unitPx)} font-weight="700">Closed</text>`;
 }
 
 // SVG font sizes and strokes are user units, and one user unit is `unitPx`
@@ -156,7 +166,7 @@ function groupAttributes(pathway, state) {
 }
 
 function closuresDot(x, y) {
-  return `<circle cx="${x}" cy="${y}" r="0.75" class="evo-fp-dot fill-evo-dot stroke-white" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`;
+  return `<circle cx="${x}" cy="${y}" r="0.75" class="evo-fp-dot ${POINT_FILL} ${HALO_STROKE}" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`;
 }
 
 function lineMarkup(pathway, geo, state, markerStops, boxes, unitPx) {
@@ -181,8 +191,8 @@ function lineMarkup(pathway, geo, state, markerStops, boxes, unitPx) {
   const main = state.selected
     ? "evo-fp-line stroke-action"
     : closed
-      ? "evo-fp-line stroke-evo-closed"
-      : "evo-fp-line stroke-evo-pathway group-hover:stroke-evo-pathway-hover";
+      ? "evo-fp-line stroke-error-line"
+      : `evo-fp-line ${PATHWAY_INK} group-hover:stroke-(--diagram-active-stop)`;
   const mainWidth = state.selected ? 5.5 : 3;
   const dash = closed ? ' stroke-dasharray="7 5"' : "";
   const midX = (from.x + to.x) / 2;
@@ -190,14 +200,15 @@ function lineMarkup(pathway, geo, state, markerStops, boxes, unitPx) {
 
   return `<g ${groupAttributes(pathway, state)}>
     <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="evo-fp-hit" stroke="transparent" stroke-width="22" pointer-events="stroke" vector-effect="non-scaling-stroke"/>
-    ${line("evo-fp-focus stroke-transparent group-focus-visible:stroke-focus group-data-[highlighted=true]:stroke-focus", state.selected ? 15 : 12)}
-    ${line("evo-fp-casing stroke-white", state.selected ? 10 : 7)}
+    ${line("evo-fp-focus stroke-transparent group-focus-visible:stroke-focus group-data-[highlighted=true]:stroke-focus", state.selected ? 16 : 12)}
+    ${state.selected ? line("evo-fp-ring stroke-action", 13) : ""}
+    ${line(`evo-fp-casing ${HALO_STROKE}`, state.selected ? 9 : 7)}
     <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="${main}" stroke-width="${mainWidth}"${dash} stroke-linecap="round" vector-effect="non-scaling-stroke"/>
     ${state.hasClosures && !closed ? closuresDot(midX, midY) : ""}
     ${
       closed
-        ? `<circle cx="${midX}" cy="${midY}" r="2.3" class="evo-fp-closed-marker fill-evo-closed-bg stroke-evo-closed" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
-           <path d="M${midX - 1} ${midY - 1}L${midX + 1} ${midY + 1}M${midX + 1} ${midY - 1}L${midX - 1} ${midY + 1}" class="evo-fp-closed-cross stroke-evo-closed-ink" stroke-width="1.8" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+        ? `<circle cx="${midX}" cy="${midY}" r="2.3" class="evo-fp-closed-marker fill-error-bg stroke-error-line" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
+           <path d="M${midX - 1} ${midY - 1}L${midX + 1} ${midY + 1}M${midX + 1} ${midY - 1}L${midX - 1} ${midY + 1}" class="evo-fp-closed-cross stroke-error-fg" stroke-width="1.8" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
            ${closedWord(midX, midY, boxes, unitPx)}`
         : ""
     }
@@ -208,18 +219,19 @@ function markerMarkup(pathway, geo, state) {
   const { x, y } = geo.at;
   const bodyClass = state.selected
     ? "evo-fp-marker-body fill-action stroke-action"
-    : "evo-fp-marker-body fill-white stroke-evo-pathway group-hover:stroke-evo-pathway-hover";
+    : `evo-fp-marker-body ${HALO_FILL} ${PATHWAY_INK} group-hover:stroke-(--diagram-active-stop)`;
   const iconClass = state.selected
-    ? "evo-fp-marker-icon fill-none stroke-white"
-    : "evo-fp-marker-icon fill-none stroke-evo-node";
+    ? `evo-fp-marker-icon fill-none ${HALO_STROKE}`
+    : `evo-fp-marker-icon fill-none ${POINT_STROKE}`;
 
   return `<g ${groupAttributes(pathway, state)} transform="translate(${x} ${y})">
     <circle r="0.01" class="evo-fp-marker-hit" fill="transparent" stroke="transparent" stroke-width="44" vector-effect="non-scaling-stroke"/>
-    <circle r="${MARKER_RADIUS + 0.9}" class="evo-fp-focus stroke-transparent group-focus-visible:stroke-focus group-data-[highlighted=true]:stroke-focus" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
+    ${state.selected ? `<circle r="${MARKER_RADIUS + 0.9}" class="evo-fp-ring fill-none stroke-action" stroke-width="2.5" vector-effect="non-scaling-stroke"/>` : ""}
+    <circle r="${MARKER_RADIUS + 0.9}" class="evo-fp-focus fill-none stroke-transparent group-focus-visible:stroke-focus group-data-[highlighted=true]:stroke-focus" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
     ${
       state.closed
-        ? `<circle r="2.6" class="evo-fp-marker-body fill-evo-closed-bg stroke-evo-closed" stroke-width="2" stroke-dasharray="3 2" vector-effect="non-scaling-stroke"/>
-           <path d="M-1.1 -1.1L1.1 1.1M1.1 -1.1L-1.1 1.1" class="evo-fp-marker-cross stroke-evo-closed-ink" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`
+        ? `<circle r="2.6" class="evo-fp-marker-body fill-error-bg stroke-error-line" stroke-width="2" stroke-dasharray="3 2" vector-effect="non-scaling-stroke"/>
+           <path d="M-1.1 -1.1L1.1 1.1M1.1 -1.1L-1.1 1.1" class="evo-fp-marker-cross stroke-error-fg" stroke-width="2" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`
         : `<circle r="${MARKER_RADIUS}" class="${bodyClass}" stroke-width="${state.selected ? 2.5 : 2}" vector-effect="non-scaling-stroke"/>
            <path d="M0 -1.35V1.35M-0.8 -0.55 0 -1.35 0.8 -0.55M-0.8 0.55 0 1.35 0.8 0.55" class="${iconClass}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`
     }
@@ -227,6 +239,10 @@ function markerMarkup(pathway, geo, state) {
   </g>`;
 }
 
+// A stop is drawn by what it is: an entrance or exit is a halo-filled square
+// with the point outline, a platform an upright rounded rectangle, a boarding
+// spot a square, and anything else a junction circle. The point ink and the halo
+// around it keep every mark readable over the plan at 62% opacity.
 function stopMarkup(stop, markerStops, showStopNames, unitPx) {
   const point = normalizeDiagramPoint(stop);
   if (!point) return "";
@@ -236,15 +252,23 @@ function stopMarkup(stop, markerStops, showStopNames, unitPx) {
 
   if (stop.type === 2) {
     const name = showStopNames
-      ? `<text x="${x + 2.8}" y="${y + (y > 50 ? 5.2 : 1.1)}" class="evo-fp-stop-name fill-evo-entrance" ${textScale(unitPx)} font-weight="650">${escapeMarkup(stop.name)}</text>`
+      ? `<text x="${x + 2.8}" y="${y + (y > 50 ? 5.2 : 1.1)}" class="evo-fp-stop-name ${POINT_FILL}" ${textScale(unitPx)} font-weight="650">${escapeMarkup(stop.name)}</text>`
       : "";
 
-    return `<rect x="${x - 1.5}" y="${y - 1.5}" width="3" height="3" rx="0.4" class="evo-fp-entrance fill-evo-entrance stroke-white" stroke-width="1.5" vector-effect="non-scaling-stroke">${title}</rect>${name}`;
+    return `<rect x="${x - 1.4}" y="${y - 1.4}" width="2.8" height="2.8" rx="0.4" class="evo-fp-entrance ${HALO_FILL} ${POINT_STROKE}" stroke-width="2" vector-effect="non-scaling-stroke">${title}</rect>${name}`;
   }
 
   if (markerStops.has(stop.stop_id)) return "";
 
-  return `<circle cx="${x}" cy="${y}" r="0.9" class="evo-fp-node fill-evo-node stroke-white" stroke-width="1.2" vector-effect="non-scaling-stroke">${title}</circle>`;
+  if (stop.type === 0) {
+    return `<rect x="${x - 1}" y="${y - 1.6}" width="2" height="3.2" rx="0.7" class="evo-fp-platform ${POINT_FILL} ${HALO_STROKE}" stroke-width="1.5" vector-effect="non-scaling-stroke">${title}</rect>`;
+  }
+
+  if (stop.type === 4) {
+    return `<rect x="${x - 1.1}" y="${y - 1.1}" width="2.2" height="2.2" class="evo-fp-boarding ${POINT_FILL} ${HALO_STROKE}" stroke-width="1.5" vector-effect="non-scaling-stroke">${title}</rect>`;
+  }
+
+  return `<circle cx="${x}" cy="${y}" r="0.9" class="evo-fp-node ${POINT_FILL} ${HALO_STROKE}" stroke-width="1.2" vector-effect="non-scaling-stroke">${title}</circle>`;
 }
 
 /**
@@ -254,7 +278,8 @@ function stopMarkup(stop, markerStops, showStopNames, unitPx) {
  * cross-level (or partly unplaced) pathways are a marker at their one plotted
  * endpoint. Every pathway is one labelled button, exactly one of them holds the
  * roving tab stop, and a closed pathway keeps the dashed error line, the
- * cross and the word `Closed` in addition to its colour.
+ * cross and the word `Closed` in addition to its colour, and the selected
+ * pathway keeps a thicker line and a ring in addition to the action ink.
  */
 export function buildFloorplanSvg({
   stops = [],

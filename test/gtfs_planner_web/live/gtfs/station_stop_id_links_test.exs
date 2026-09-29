@@ -72,7 +72,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationStopIdLinksTest do
       assert has_element?(view, "#{@tabs} a[href='#{base}/diagram']", "Floorplans")
       assert has_element?(view, "#{@tabs} a[href='#{base}/report']", "Reports")
       assert has_element?(view, "#{@tabs} a[href='#{base}/reachability']", "Reachability")
-      assert has_element?(view, "#{@tabs} a[href='#{base}/evolutions']", "Evolutions")
+      assert has_element?(view, "#{@tabs} a[href='#{base}/evolutions']", "Closures")
     end
 
     test "open the Floorplans page from its tab link", %{conn: conn, base: base} do
@@ -115,7 +115,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationStopIdLinksTest do
              )
     end
 
-    test "open the Evolutions page from its tab link", %{conn: conn, base: base} do
+    test "open the Closures page from its tab link", %{conn: conn, base: base} do
       {:ok, details_view, _html} = live(conn, base)
       href = tab_href(details_view, "/evolutions")
 
@@ -124,7 +124,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationStopIdLinksTest do
       assert has_element?(
                evolutions_view,
                "#{@tabs} a[href='#{base}/evolutions'][aria-current='page']",
-               "Evolutions"
+               "Closures"
              )
     end
   end

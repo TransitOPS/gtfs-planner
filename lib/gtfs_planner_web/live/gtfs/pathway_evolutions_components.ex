@@ -32,6 +32,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
   use GtfsPlannerWeb, :html
 
+  import GtfsPlannerWeb.ResultComponents, only: [result_summary: 1, tone_badge: 1]
+
   alias GtfsPlanner.Gtfs.Coordinates
   alias GtfsPlanner.Gtfs.DiagramStorage
   alias GtfsPlanner.Gtfs.DisplayClock
@@ -232,9 +234,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
         phx-value-id={@row.id}
         aria-current={to_string(@selected)}
         aria-label={"Select the closure on " <> @row.pathway_label <> ", " <> @row.pathway_id}
-        class="flex min-h-11 w-full flex-col items-start px-4 pt-3 pb-1.5 text-left hover:underline md:px-5 md:pb-3"
+        class="group/open flex min-h-11 w-full flex-col items-start px-4 pt-3 pb-1.5 text-left md:px-5 md:pb-3"
       >
-        <span class="text-sm font-[650] leading-snug text-strong">{@row.pathway_label}</span>
+        <span class="text-sm font-[650] leading-snug text-strong group-hover/open:underline">
+          {@row.pathway_label}
+        </span>
         <span class="mt-0.5 font-mono text-[12px] text-muted">{@row.pathway_id}</span>
       </button>
     </th>
@@ -309,7 +313,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
               phx-value-id={pathway.id}
               aria-current={to_string(@selected_id == pathway.id)}
               aria-label={pathway_label(pathway) <> ", " <> pathway.pathway_id}
-              class="flex min-h-14 w-full items-center justify-between gap-3 rounded-control border border-subtle bg-white px-3 py-2 text-left hover:border-control hover:bg-canvas aria-[current=true]:border-action aria-[current=true]:bg-selection"
+              class="flex min-h-14 w-full items-center justify-between gap-3 rounded-control border border-control bg-white px-3 py-2 text-left hover:bg-canvas aria-[current=true]:border-action aria-[current=true]:bg-selection"
             >
               <span class="min-w-0">
                 <span class="block text-sm font-[650] leading-snug text-strong">
@@ -319,7 +323,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
               </span>
               <span
                 :if={count > 0}
-                class="shrink-0 rounded-evo-badge bg-canvas px-2 py-0.5 text-[13px] font-[650] tabular-nums text-muted"
+                class="shrink-0 rounded-badge bg-canvas px-2 py-0.5 text-[13px] font-[650] tabular-nums text-muted"
               >
                 {pluralize_closures(count)}
               </span>
@@ -518,13 +522,19 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   end
 
   @doc """
-  Renders the authoring floorplan, its one caption and its legend.
+  Renders the authoring floorplan, its one caption and its Key.
 
   The image and the SVG overlay are one island the client hook owns: the island
   keeps a stable id, carries the exact stored coordinates and the current
   closed/selected state as data attributes, and is never patched by the server,
-  so an overlay redraw cannot move stored geometry. The legend spells out every
-  mark in words, and the caption names the selected or focused pathway.
+  so an overlay redraw cannot move stored geometry. The Key draws every mark at
+  the size it has on the plan, and the caption names the selected or focused
+  pathway.
+
+  A station with more than one floorplan level gets one underlined tab per
+  level, in the design system's level-switch form. The panel sits on the card's
+  own content inset, so the level line, the plan, the caption and the Key share
+  one left edge.
   """
   attr :id, :string, required: true
   attr :levels, :list, required: true
@@ -542,14 +552,15 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
   def closure_floorplan(assigns) do
     ~H"""
-    <div id={@id <> "-panel"} data-floorplan-panel class="max-md:hidden">
+    <div id={@id <> "-panel"} data-floorplan-panel class="px-4 pb-5 max-md:hidden md:px-5">
       <div
         :if={length(@levels) > 1}
         id={@id <> "-levels"}
         role="group"
         aria-label="Floorplan level"
-        class="inline-flex h-11 max-w-full overflow-hidden rounded-control border border-control bg-white"
+        class="flex flex-wrap items-end gap-x-1 border-b border-subtle"
       >
+        <span class="mr-2 self-center text-[13px] text-muted">Level</span>
         <button
           :for={level <- @levels}
           id={@id <> "-level-" <> level.level_id}
@@ -557,7 +568,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
           phx-click="select_floorplan_level"
           phx-value-level={level.level_id}
           aria-pressed={to_string(level.level_id == @selected_level_id)}
-          class="max-w-[14rem] truncate px-3.5 text-sm font-[650] text-base-content hover:bg-canvas aria-pressed:bg-strong aria-pressed:text-white"
+          class="-mb-px inline-flex min-h-11 max-w-[14rem] items-center truncate border-b-2 border-transparent px-3 text-sm font-[650] text-muted hover:border-subtle hover:text-strong aria-pressed:border-action aria-pressed:text-action"
         >
           {level.label}
         </button>
@@ -582,66 +593,21 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
         select_event={@select_event}
       />
 
-      <ul
-        id={@id <> "-legend"}
-        aria-label="Floorplan legend"
-        class="mt-3 flex flex-wrap gap-x-5 gap-y-1.5 border-t border-subtle pt-3 text-[13px] text-muted"
-      >
-        <.floorplan_legend_item label="Selected">
-          <svg width="22" height="8" aria-hidden="true">
-            <line
-              x1="1"
-              y1="4"
-              x2="21"
-              y2="4"
-              class="stroke-action"
-              stroke-width="5"
-              stroke-linecap="round"
-            />
-          </svg>
+      <.floorplan_key id={@id <> "-legend"}>
+        <.floorplan_legend_item label="Selected pathway">
+          <.floorplan_mark kind={:selected} />
         </.floorplan_legend_item>
-        <.floorplan_legend_item label="Other pathways">
-          <svg width="22" height="8" aria-hidden="true">
-            <line
-              x1="1"
-              y1="4"
-              x2="21"
-              y2="4"
-              class="stroke-evo-pathway"
-              stroke-width="3"
-              stroke-linecap="round"
-            />
-          </svg>
+        <.floorplan_legend_item label="Pathway">
+          <.floorplan_mark kind={:pathway} />
         </.floorplan_legend_item>
         <.floorplan_legend_item label="Continues to another level">
-          <svg width="20" height="20" viewBox="-10 -10 20 20" aria-hidden="true">
-            <circle r="8.5" class="fill-white stroke-evo-pathway" stroke-width="1.5" />
-            <path
-              d="M0 -5V5M-3 -2 0 -5 3 -2M-3 2 0 5 3 2"
-              class="fill-none stroke-evo-node"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-        </.floorplan_legend_item>
-        <.floorplan_legend_item label="Entrance">
-          <svg width="14" height="14" aria-hidden="true">
-            <rect x="2" y="2" width="10" height="10" rx="1.5" class="fill-evo-entrance" />
-          </svg>
+          <.floorplan_mark kind={:cross_level} />
         </.floorplan_legend_item>
         <.floorplan_legend_item label="Has closures">
-          <svg width="12" height="12" aria-hidden="true">
-            <circle
-              cx="6"
-              cy="6"
-              r="4.5"
-              class="fill-evo-dot stroke-white"
-              stroke-width="1.5"
-            />
-          </svg>
+          <.floorplan_mark kind={:closures} />
         </.floorplan_legend_item>
-      </ul>
+        <.floorplan_point_items />
+      </.floorplan_key>
     </div>
     """
   end
@@ -693,21 +659,12 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
           >
             Station at {@moment}
           </h2>
-          <span
-            :if={@closed_count > 0}
-            id="preview-floorplan-badge"
-            class="inline-flex items-center gap-1.5 rounded-evo-badge bg-error/10 px-2 py-0.5 text-[13px] font-[650] text-error"
-          >
-            <.icon name="hero-x-circle" class="size-3.5" />
+          <.tone_badge :if={@closed_count > 0} tone="error" id="preview-floorplan-badge">
             {pluralize_pathways(@closed_count)} closed
-          </span>
-          <span
-            :if={@closed_count == 0}
-            id="preview-floorplan-badge"
-            class="inline-flex items-center gap-1.5 rounded-evo-badge bg-success/10 px-2 py-0.5 text-[13px] font-[650] text-success"
-          >
-            <.icon name="hero-check-circle" class="size-3.5" />No pathway closed
-          </span>
+          </.tone_badge>
+          <.tone_badge :if={@closed_count == 0} tone="success" id="preview-floorplan-badge">
+            No pathway closed
+          </.tone_badge>
         </div>
         <p class="mt-0.5 text-[13px] text-muted">
           {@display.selected_level_label}{floorplan_without_image_suffix(
@@ -716,7 +673,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
         </p>
       </header>
 
-      <div class="p-4">
+      <div class="p-4 md:px-5">
         <.floorplan_island
           id="preview-floorplan-canvas"
           mode={:preview}
@@ -734,7 +691,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
             Every pathway on this floorplan is open at this time.
           </span>
           <span :for={line <- @closed_lines} class="block">
-            <span class="font-[650] text-error">
+            <span class="font-[650] text-error-fg">
               <.icon name="hero-x-mark" class="inline size-3.5" />Closed:
             </span>
             {line.label}
@@ -743,68 +700,18 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
           </span>
         </p>
 
-        <ul
-          id="preview-floorplan-legend"
-          aria-label="Floorplan legend"
-          class="mt-3 flex flex-wrap gap-x-3.5 gap-y-1.5 text-[13px] text-muted"
-        >
+        <.floorplan_key id="preview-floorplan-legend">
           <.floorplan_legend_item label="Open pathway">
-            <svg width="22" height="10" aria-hidden="true">
-              <line
-                x1="1"
-                y1="5"
-                x2="21"
-                y2="5"
-                class="stroke-evo-pathway"
-                stroke-width="2.5"
-                stroke-linecap="round"
-              />
-            </svg>
+            <.floorplan_mark kind={:pathway} />
           </.floorplan_legend_item>
           <.floorplan_legend_item label="Closed">
-            <svg width="36" height="10" aria-hidden="true">
-              <line
-                x1="1"
-                y1="5"
-                x2="21"
-                y2="5"
-                class="stroke-evo-closed"
-                stroke-width="3"
-                stroke-dasharray="5 3"
-              />
-              <circle
-                cx="13"
-                cy="5"
-                r="4"
-                class="fill-evo-closed-bg stroke-evo-closed"
-                stroke-width="1.2"
-              />
-              <path
-                d="M11.2 3.2L14.8 6.8M14.8 3.2L11.2 6.8"
-                class="stroke-evo-closed-ink"
-                stroke-width="1.2"
-                stroke-linecap="round"
-              />
-            </svg>
+            <.floorplan_mark kind={:closed} />
           </.floorplan_legend_item>
           <.floorplan_legend_item label="To another level">
-            <svg width="20" height="20" viewBox="-10 -10 20 20" aria-hidden="true">
-              <circle r="8.5" class="fill-white stroke-evo-pathway" stroke-width="1.5" />
-              <path
-                d="M0 -5V5M-3 -2 0 -5 3 -2M-3 2 0 5 3 2"
-                class="fill-none stroke-evo-node"
-                stroke-width="1.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <.floorplan_mark kind={:cross_level} />
           </.floorplan_legend_item>
-          <.floorplan_legend_item label="Entrance">
-            <svg width="14" height="14" aria-hidden="true">
-              <rect x="2" y="2" width="10" height="10" rx="1.5" class="fill-evo-entrance" />
-            </svg>
-          </.floorplan_legend_item>
-        </ul>
+          <.floorplan_point_items />
+        </.floorplan_key>
       </div>
     </section>
     """
@@ -879,7 +786,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
         id={@id <> "-frame"}
         data-floorplan-frame
         class={[
-          "relative overflow-hidden rounded-control border border-subtle bg-white",
+          "relative overflow-hidden rounded-control border border-subtle bg-canvas",
           @frame_class
         ]}
       >
@@ -888,7 +795,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
           data-floorplan-image
           src={@image_url}
           alt={@image_alt}
-          class="block w-full"
+          class="block w-full opacity-[.62]"
         />
         <svg
           id={@id <> "-svg"}
@@ -913,12 +820,246 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     """
   end
 
+  # The Key under a plan. It is titled, and every mark in it is drawn by
+  # `floorplan_mark/1` at the size the overlay gives it.
+  attr :id, :string, required: true
+  slot :inner_block, required: true
+
+  defp floorplan_key(assigns) do
+    ~H"""
+    <div
+      id={@id}
+      role="group"
+      aria-labelledby={@id <> "-title"}
+      class="mt-4 border-t border-subtle pt-3"
+    >
+      <p id={@id <> "-title"} class="text-[13px] font-[650] text-strong">Key</p>
+      <ul class="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-[13px] text-muted">
+        {render_slot(@inner_block)}
+      </ul>
+    </div>
+    """
+  end
+
   attr :label, :string, required: true
   slot :inner_block, required: true
 
   defp floorplan_legend_item(assigns) do
     ~H"""
     <li class="inline-flex items-center gap-2">{render_slot(@inner_block)} {@label}</li>
+    """
+  end
+
+  # The four kinds of point a plan can carry, named as the design system names
+  # them. The station snapshot's child stops are platforms, entrances or exits,
+  # junctions and boarding spots.
+  defp floorplan_point_items(assigns) do
+    ~H"""
+    <.floorplan_legend_item label="Platform">
+      <.floorplan_mark kind={:platform} />
+    </.floorplan_legend_item>
+    <.floorplan_legend_item label="Entrance or exit">
+      <.floorplan_mark kind={:entrance} />
+    </.floorplan_legend_item>
+    <.floorplan_legend_item label="Junction">
+      <.floorplan_mark kind={:junction} />
+    </.floorplan_legend_item>
+    <.floorplan_legend_item label="Boarding spot">
+      <.floorplan_mark kind={:boarding} />
+    </.floorplan_legend_item>
+    """
+  end
+
+  # One mark of the Key at real size. The overlay sizes its marks in diagram
+  # units (one unit is 1% of the plan's width), so a plan about 700px wide
+  # renders 7px per unit; the geometry here is the overlay's own
+  # (`assets/js/pathway_evolutions_floorplan.js`) at that scale, in the same
+  # inks: the pathway ink for lines, the point ink for points, the halo around
+  # both, action ink for the selection and the status tokens for a closure.
+  attr :kind, :atom,
+    required: true,
+    values: [
+      :selected,
+      :pathway,
+      :closed,
+      :cross_level,
+      :closures,
+      :platform,
+      :entrance,
+      :junction,
+      :boarding
+    ]
+
+  defp floorplan_mark(%{kind: kind} = assigns) when kind in [:selected, :pathway, :closed] do
+    ~H"""
+    <svg width="36" height="20" viewBox="0 0 36 20" aria-hidden="true">
+      <%= case @kind do %>
+        <% :selected -> %>
+          <line
+            x1="3"
+            y1="10"
+            x2="33"
+            y2="10"
+            class="stroke-action"
+            stroke-width="13"
+            stroke-linecap="round"
+          />
+          <line
+            x1="3"
+            y1="10"
+            x2="33"
+            y2="10"
+            class="stroke-(--diagram-label-halo)"
+            stroke-width="9"
+            stroke-linecap="round"
+          />
+          <line
+            x1="3"
+            y1="10"
+            x2="33"
+            y2="10"
+            class="stroke-action"
+            stroke-width="5.5"
+            stroke-linecap="round"
+          />
+        <% :pathway -> %>
+          <line
+            x1="3"
+            y1="10"
+            x2="33"
+            y2="10"
+            class="stroke-(--diagram-label-halo)"
+            stroke-width="7"
+            stroke-linecap="round"
+          />
+          <line
+            x1="3"
+            y1="10"
+            x2="33"
+            y2="10"
+            class="stroke-(--diagram-pathway-forward)"
+            stroke-width="3"
+            stroke-linecap="round"
+          />
+        <% :closed -> %>
+          <line
+            x1="3"
+            y1="10"
+            x2="33"
+            y2="10"
+            class="stroke-(--diagram-label-halo)"
+            stroke-width="7"
+            stroke-linecap="round"
+          />
+          <line
+            x1="3"
+            y1="10"
+            x2="33"
+            y2="10"
+            class="stroke-error-line"
+            stroke-width="3"
+            stroke-dasharray="7 5"
+            stroke-linecap="round"
+          />
+          <circle cx="18" cy="10" r="8" class="fill-error-bg stroke-error-line" stroke-width="1.6" />
+          <path
+            d="M14.5 6.5L21.5 13.5M21.5 6.5L14.5 13.5"
+            class="stroke-error-fg"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          />
+      <% end %>
+    </svg>
+    """
+  end
+
+  defp floorplan_mark(%{kind: :cross_level} = assigns) do
+    ~H"""
+    <svg width="22" height="22" viewBox="-11 -11 22 22" aria-hidden="true">
+      <circle
+        r="9"
+        class="fill-(--diagram-label-halo) stroke-(--diagram-pathway-forward)"
+        stroke-width="1.5"
+      />
+      <path
+        d="M0 -5V5M-3 -2 0 -5 3 -2M-3 2 0 5 3 2"
+        class="fill-none stroke-(--diagram-active-stop)"
+        stroke-width="1.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+    </svg>
+    """
+  end
+
+  defp floorplan_mark(%{kind: :closures} = assigns) do
+    ~H"""
+    <svg width="16" height="16" viewBox="-8 -8 16 16" aria-hidden="true">
+      <circle
+        r="5.25"
+        class="fill-(--diagram-active-stop) stroke-(--diagram-label-halo)"
+        stroke-width="1.5"
+      />
+    </svg>
+    """
+  end
+
+  defp floorplan_mark(%{kind: :platform} = assigns) do
+    ~H"""
+    <svg width="20" height="28" viewBox="-10 -14 20 28" aria-hidden="true">
+      <rect
+        x="-7"
+        y="-11"
+        width="14"
+        height="22"
+        rx="4.2"
+        class="fill-(--diagram-active-stop) stroke-(--diagram-label-halo)"
+        stroke-width="1.5"
+      />
+    </svg>
+    """
+  end
+
+  defp floorplan_mark(%{kind: :entrance} = assigns) do
+    ~H"""
+    <svg width="24" height="24" viewBox="-12 -12 24 24" aria-hidden="true">
+      <rect
+        x="-9.8"
+        y="-9.8"
+        width="19.6"
+        height="19.6"
+        rx="2.8"
+        class="fill-(--diagram-label-halo) stroke-(--diagram-active-stop)"
+        stroke-width="2"
+      />
+    </svg>
+    """
+  end
+
+  defp floorplan_mark(%{kind: :junction} = assigns) do
+    ~H"""
+    <svg width="16" height="16" viewBox="-8 -8 16 16" aria-hidden="true">
+      <circle
+        r="6.3"
+        class="fill-(--diagram-active-stop) stroke-(--diagram-label-halo)"
+        stroke-width="1.5"
+      />
+    </svg>
+    """
+  end
+
+  defp floorplan_mark(%{kind: :boarding} = assigns) do
+    ~H"""
+    <svg width="20" height="20" viewBox="-10 -10 20 20" aria-hidden="true">
+      <rect
+        x="-7.7"
+        y="-7.7"
+        width="15.4"
+        height="15.4"
+        class="fill-(--diagram-active-stop) stroke-(--diagram-label-halo)"
+        stroke-width="1.5"
+      />
+    </svg>
     """
   end
 
@@ -990,9 +1131,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   @doc """
   Builds the pathway `select` options, grouped by mode.
 
-  The option label is the endpoint line plus the exact `pathway_id`, so the
-  chosen option names the same natural ID the row and the locator show, and the
-  group order is the locator's own order.
+  The option label is the pathway's `Mode · From ↔ To` label plus the exact
+  `pathway_id`, so the chosen option names the same natural ID the row and the
+  locator show, and the group order is the locator's own order.
   """
   @spec pathway_options([map()]) :: [{String.t(), [{String.t(), String.t()}]}]
   def pathway_options(pathways) do
@@ -1003,7 +1144,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     end)
   end
 
-  defp pathway_option_label(pathway), do: "#{ends_label(pathway)} · #{pathway.pathway_id}"
+  defp pathway_option_label(pathway), do: "#{pathway_label(pathway)} · #{pathway.pathway_id}"
 
   @doc """
   Builds the calendar `select` options: named calendars by name, then unnamed
@@ -1025,14 +1166,14 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   @doc """
   Returns the select's help sentence for the chosen pathway.
 
-  The sentence states which travel the closure removes: every direction of a
-  bidirectional pathway, or the recorded direction of a one-way one. With no
+  The sentence states which travel the closure removes: both ways of a
+  two-way pathway, or the recorded direction of a one-way one. With no
   pathway chosen it says what the picker accepts.
   """
   @spec pathway_help(map() | nil) :: String.t()
   def pathway_help(nil), do: "Any pathway at this station, including walkways and stairs."
 
-  def pathway_help(%{is_bidirectional: true}), do: "Closes travel in both directions."
+  def pathway_help(%{is_bidirectional: true}), do: "Closes it both ways."
 
   def pathway_help(pathway) do
     mode = pathway.pathway_mode |> Pathway.mode_label() |> String.downcase()
@@ -1112,7 +1253,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     do: window_label(%{start_time: start_time, end_time: end_time})
 
   defp reopen_sentence(%{is_bidirectional: true}, _start_time, end_time),
-    do: "Both directions reopen #{reopen_at(end_time)}."
+    do: "Reopens both ways #{reopen_at(end_time)}."
 
   defp reopen_sentence(pathway, _start_time, end_time),
     do:
@@ -1195,13 +1336,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   # -- access preview --------------------------------------------------------
 
   @doc """
-  Renders the Evolutions view switch: the closure list and the moment access
+  Renders the closures view switch: the closure list and the moment access
   preview as two routes of one LiveView.
 
   This is navigation, not a client-side toggle, so both destinations are
   `patch` links of the mounted view and the current one carries
-  `aria-current="page"`. The active segment is the design system's strong ink
-  with white text, which is the value the v2 reference uses for it.
+  `aria-current="page"`. The active segment is the design system's scope
+  toggle: the inverse surface with bold white text.
   """
   attr :current, :atom, required: true, doc: "`:index` for the list, `:access` for the preview"
   attr :closures_href, :string, required: true
@@ -1211,7 +1352,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     ~H"""
     <nav
       id="evolutions-view-nav"
-      aria-label="Evolutions views"
+      aria-label="Closure views"
       class="inline-flex h-11 overflow-hidden rounded-control border border-control bg-white"
     >
       <.link
@@ -1236,10 +1377,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
   defp view_tab_class(current?, extra) do
     [
-      "flex min-h-11 items-center px-4 text-sm font-[650] no-underline",
+      "flex min-h-11 items-center px-4 text-sm no-underline",
       extra,
-      current? && "bg-strong text-white",
-      !current? && "text-base-content hover:bg-canvas"
+      current? && "bg-strong font-bold text-white",
+      !current? && "font-[650] text-strong hover:bg-canvas"
     ]
   end
 
@@ -1331,11 +1472,24 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
   defp level_label(_platform, _levels), do: nil
 
   @doc """
-  Renders one connection state as a badge: an icon plus the state word, so no
-  status depends on color alone.
+  Renders one connection state: an icon plus the state word, so no status
+  depends on color alone.
+
+  A table stays quiet in its common case, so `Available` is coloured text and an
+  icon on the row and `No route` is muted: that pair is unreachable even
+  without closures, a consequence and not a second problem. Only `Lost`, the
+  exception, takes a tinted badge.
   """
   attr :state, :atom, required: true, values: [:available, :lost, :gap]
   attr :id, :string, default: nil
+
+  def connection_badge(%{state: :lost} = assigns) do
+    ~H"""
+    <.tone_badge tone="error" id={@id} data-connection-state="lost" class="whitespace-nowrap">
+      Lost
+    </.tone_badge>
+    """
+  end
 
   def connection_badge(assigns) do
     ~H"""
@@ -1343,26 +1497,23 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
       id={@id}
       data-connection-state={@state}
       class={[
-        "inline-flex items-center gap-1.5 whitespace-nowrap rounded-evo-badge px-2 py-0.5 text-[13px] font-[650]",
-        badge_class(@state)
+        "inline-flex items-center gap-1.5 whitespace-nowrap text-[13px] font-[650]",
+        quiet_class(@state)
       ]}
     >
-      <.icon name={badge_icon(@state)} class="size-3.5" />{badge_label(@state)}
+      <.icon name={quiet_icon(@state)} class="size-4" />{quiet_label(@state)}
     </span>
     """
   end
 
-  defp badge_class(:available), do: "bg-success/10 text-success"
-  defp badge_class(:lost), do: "bg-error/10 text-error"
-  defp badge_class(:gap), do: "bg-canvas text-muted ring-1 ring-inset ring-subtle"
+  defp quiet_class(:available), do: "text-success-fg"
+  defp quiet_class(:gap), do: "text-muted"
 
-  defp badge_icon(:available), do: "hero-check-circle"
-  defp badge_icon(:lost), do: "hero-x-circle"
-  defp badge_icon(:gap), do: "hero-no-symbol"
+  defp quiet_icon(:available), do: "hero-check-circle"
+  defp quiet_icon(:gap), do: "hero-no-symbol"
 
-  defp badge_label(:available), do: "Available"
-  defp badge_label(:lost), do: "Lost"
-  defp badge_label(:gap), do: "No route"
+  defp quiet_label(:available), do: "Available"
+  defp quiet_label(:gap), do: "No route"
 
   @doc """
   Renders the moment preview's findings: the per-platform connection table, its
@@ -1408,13 +1559,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
             Compared with this station without scheduled closures.
           </p>
         </div>
-        <span
-          :if={@incomplete?}
-          id="findings-incomplete-badge"
-          class="inline-flex items-center gap-1.5 rounded-evo-badge bg-warning/10 px-2 py-0.5 text-[13px] font-[650] text-warning"
-        >
-          <.icon name="hero-exclamation-triangle" class="size-3.5" />Incomplete
-        </span>
+        <.tone_badge :if={@incomplete?} tone="warning" id="findings-incomplete-badge">
+          Incomplete
+        </.tone_badge>
         <p
           id="preview-floorplan-missing"
           hidden={not @floorplan_missing?}
@@ -1491,7 +1638,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
               scope="row"
               class={[
                 "h-12 px-4 py-2 pr-4 pl-5 text-left align-middle font-normal text-strong",
-                row_index < length(group.rows) - 1 && "border-b border-subtle/60"
+                row_index < length(group.rows) - 1 && "border-b border-subtle"
               ]}
             >
               {row.entrance_label}
@@ -1502,7 +1649,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
               data-state={cell.state}
               class={[
                 "px-4 py-2",
-                row_index < length(group.rows) - 1 && "border-b border-subtle/60",
+                row_index < length(group.rows) - 1 && "border-b border-subtle",
                 cell.key == :walking_to_platform && "border-l border-subtle"
               ]}
             >
@@ -1523,7 +1670,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
             <span :if={group.level_label} class="font-normal text-muted">· {group.level_label}</span>
           </h3>
           <ul>
-            <li :for={row <- group.rows} class="border-t border-subtle/60 py-3 first:border-t-0">
+            <li :for={row <- group.rows} class="border-t border-subtle py-3 first:border-t-0">
               <p class="text-sm font-[650] text-strong">{row.entrance_label}</p>
               <div class="mt-1.5 grid grid-cols-[minmax(4.25rem,auto)_minmax(0,1fr)_minmax(0,1fr)] items-center gap-x-2 gap-y-1.5 text-[13px]">
                 <span></span>
@@ -1568,7 +1715,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
             :for={cause <- @causes}
             id={"preview-cause-" <> cause.id}
             data-cause-pathway={cause.pathway_id}
-            class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-subtle/60 py-2 first:border-t-0"
+            class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-subtle py-2 first:border-t-0"
           >
             <div class="min-w-0">
               <p class="text-sm text-strong">
@@ -1590,7 +1737,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
       <p
         id="preview-coverage"
-        class="flex items-start gap-2 border-t border-subtle bg-canvas/60 px-5 py-3 text-[13px] text-muted"
+        class="flex items-start gap-2 border-t border-subtle bg-canvas px-5 py-3 text-[13px] text-muted"
       >
         <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0" />
         <span>
@@ -1660,7 +1807,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
           <li class="flex items-center gap-1.5">
             <span
               aria-hidden="true"
-              class="evo-closed-bar inline-block h-3.5 w-6 rounded-[3px]"
+              class="evo-closed-bar inline-block h-3.5 w-6 rounded-badge"
             ></span>Closed
           </li>
           <li class="flex items-center gap-1.5">
@@ -1712,7 +1859,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
                 <span
                   :if={row.elsewhere?}
                   data-spill={row.service_date}
-                  class="inline-flex items-center gap-0.5 rounded-evo-badge bg-info/10 px-1.5 text-[12px] font-[650] text-info"
+                  class="inline-flex items-center gap-0.5 rounded-badge bg-info-bg px-1.5 text-[13px] font-[650] text-info-fg"
                 >
                   <.icon name="hero-chevron-double-left" class="size-3" />From {row.service_label} service
                 </span>
@@ -1723,7 +1870,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
               id={row.bar_id}
               data-timeline-bar={row.service_date}
               title={row.title}
-              class="relative h-8 min-w-0 rounded-[4px] bg-canvas"
+              class="relative h-8 min-w-0 rounded-badge bg-canvas"
             >
               <span
                 :for={tick <- @timeline.ticks}
@@ -1745,7 +1892,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
               <span
                 data-timeline-closed={row.service_date}
                 class={[
-                  "evo-closed-bar absolute inset-y-1 min-w-[3px] rounded-[3px]",
+                  "evo-closed-bar absolute inset-y-1 min-w-[3px] rounded-badge",
                   row.clipped_left? && "rounded-l-none border-l-0"
                 ]}
                 style={"left: #{row.left}%; width: #{row.width}%"}
@@ -1767,12 +1914,12 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
                 phx-value-evolution-id={row.instance_id}
                 phx-value-service-date={row.service_date}
                 phx-value-phase={boundary.kind}
-                class="group flex min-h-11 min-w-0 flex-col items-center justify-center rounded-control border border-control bg-white px-1 leading-tight text-strong hover:bg-canvas aria-pressed:border-focus aria-pressed:bg-selection aria-pressed:text-evo-action-hover"
+                class="group flex min-h-11 min-w-0 flex-col items-center justify-center rounded-control border border-control bg-white px-1 leading-tight text-strong hover:bg-canvas aria-pressed:border-action aria-pressed:bg-selection aria-pressed:text-action-hover"
               >
                 <span class="min-w-0 text-center text-[13px] font-[650] tabular-nums">
                   <span :if={boundary.weekday}>{boundary.weekday <> " "}</span><span class="whitespace-nowrap">{boundary.time_label}</span>
                 </span>
-                <span class="text-[12px] text-muted group-aria-pressed:text-evo-action-hover">
+                <span class="text-[12px] text-muted group-aria-pressed:text-action-hover">
                   {boundary.kind}
                 </span>
               </button>
@@ -2047,7 +2194,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
       local_end: NaiveDateTime.to_iso8601(finding.local_end),
       start_offset: finding.start_utc_offset,
       end_offset: finding.end_utc_offset,
-      when_label: range_window(finding, service_date, local_start_date, local_end_date),
+      when_label:
+        window_label(%{start_time: target.time, end_time: range_end_time(finding, target)}),
+      clock_label: range_window(finding, service_date, local_start_date, local_end_date),
       offset_note: range_offset_note(finding),
       lost: lost_lines(finding.comparison, stops),
       causes: range_causes(finding.instances, service_date, snapshot),
@@ -2161,9 +2310,17 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     end
   end
 
+  # The period's end in the service time its start is already counted in: the
+  # start is the backend's elapsed seconds from the service date's origin, and
+  # the period's length is the elapsed time between its two instants, so the
+  # end needs no origin of its own and holds across a daylight-saving change.
+  defp range_end_time(finding, target),
+    do: target.time + DateTime.diff(finding.ends_at, finding.starts_at, :second)
+
   # The local clock window of one period, with the local date named whenever it
   # is not the service date the group is keyed by, so a 25:00 window reads as the
-  # next civil morning instead of as midnight of its own service date.
+  # next civil morning instead of as midnight of its own service date. It is the
+  # secondary line under the service-time window the table leads with.
   defp range_window(finding, service_date, local_start_date, local_end_date) do
     window =
       "#{DisplayClock.format_time(finding.local_start)} – #{DisplayClock.format_time(finding.local_end)}"
@@ -2312,9 +2469,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
             data-local-end={row.local_end}
             data-start-offset={row.start_offset}
             data-end-offset={row.end_offset}
-            class="align-top hover:bg-canvas/50"
+            class="align-top hover:bg-canvas"
           >
-            <th scope="row" class="border-b border-subtle/60 py-2.5 pr-4 pl-5 font-normal">
+            <th scope="row" class="border-b border-subtle py-2.5 pr-4 pl-5 font-normal">
               <span id={row.id <> "-date-label"} class="block font-[650] text-strong">
                 {row.date_label}
               </span>
@@ -2330,21 +2487,22 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
                 id={row.id <> "-dates"}
               />
             </th>
-            <td class="border-b border-subtle/60 px-4 py-2.5">
-              <span id={row.id <> "-when"} class="block tabular-nums text-strong">
-                {row.when_label}
-              </span>
+            <td class="border-b border-subtle px-4 py-2.5">
+              <div id={row.id <> "-when"}>
+                <span class="block font-[650] tabular-nums text-strong">{row.when_label}</span>
+                <span class="block text-[13px] tabular-nums text-muted">{row.clock_label}</span>
+              </div>
               <span :if={row.offset_note} class="block text-[13px] text-muted">
                 {row.offset_note}
               </span>
             </td>
-            <td class="border-b border-subtle/60 px-4 py-2.5">
+            <td class="border-b border-subtle px-4 py-2.5">
               <.lost_lines lines={row.lost} id={row.id <> "-lost"} />
             </td>
-            <td class="border-b border-subtle/60 px-4 py-2.5">
+            <td class="border-b border-subtle px-4 py-2.5">
               <.range_cause_list causes={row.causes} id_prefix={row.id} />
             </td>
-            <td class="border-b border-subtle/60 py-1 pr-5 pl-4">
+            <td class="border-b border-subtle py-1 pr-5 pl-4">
               <.range_show_at row={row} id={row.show_id} />
               <span :if={length(row.dates) > 1} class="block text-[13px] text-muted">
                 First on {row.first_date_label}
@@ -2369,9 +2527,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
           class="border-t border-subtle px-4 py-3 first:border-t-0"
         >
           <p id={row.list_id <> "-date-label"} class="font-[650] text-strong">{row.date_label}</p>
-          <p id={row.list_id <> "-when"} class="mt-0.5 tabular-nums text-strong">
-            {row.when_label}
-          </p>
+          <div id={row.list_id <> "-when"} class="mt-0.5">
+            <span class="block font-[650] tabular-nums text-strong">{row.when_label}</span>
+            <span class="block text-[13px] tabular-nums text-muted">{row.clock_label}</span>
+          </div>
           <p :if={row.offset_note} class="text-[13px] text-muted">{row.offset_note}</p>
           <.lost_lines lines={row.lost} id={row.list_id <> "-lost"} />
           <.range_cause_list causes={row.causes} id_prefix={row.list_id} />
@@ -2459,7 +2618,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
       <summary class="inline-flex min-h-11 cursor-pointer items-center gap-1 text-[13px] font-[650] text-action">
         <.icon name="hero-chevron-right" class="size-3.5" />{length(@row.dates)} days
       </summary>
-      <div class="mt-1 rounded-control bg-canvas/60 px-2 py-2">
+      <div class="mt-1 rounded-control bg-canvas px-2 py-2">
         <p class="text-[13px] text-muted">Preview at {@row.target_label} on:</p>
         <ul class="mt-1 flex flex-wrap gap-x-1">
           <li :for={date <- @row.dates}>
@@ -2483,55 +2642,63 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
 
   attr :id, :string, required: true
   attr :title, :string, required: true
-  attr :body, :string, required: true
+
+  attr :body, :list,
+    required: true,
+    doc: "sentence parts for `sentence/1`: text, and `{:pathway_id, id}` for an ID"
+
   attr :tone, :atom, required: true, values: [:loss, :ok]
   attr :computed_label, :string, required: true
   attr :moment_label, :string, required: true
+  attr :moment_zone, :string, default: nil, doc: "the agency zone and offset, as secondary text"
 
   @doc """
-  Renders the moment preview's result banner: its heading, the contributing
-  closures and what remains, the computed-at line and the moment it describes.
+  Renders the moment preview's result verdict: a tone badge, the conclusion as
+  the heading, one paragraph of what it means and the moment it describes.
+
+  A closure that removes access is a confirmed interruption, so a loss takes
+  the error tone and an all-clear the success tone. The tone rides on the
+  card's head rule and badge, and the words carry the same meaning. The
+  computed-at line is the card's footer.
   """
   def preview_banner(assigns) do
     ~H"""
-    <section
+    <.result_summary
       id={@id}
-      aria-labelledby="preview-result-title"
-      class={[
-        "flex gap-3 rounded-card px-5 py-4",
-        @tone == :loss && "bg-error/10",
-        @tone == :ok && "bg-success/10"
-      ]}
+      title_id="preview-result-title"
+      tone={if @tone == :loss, do: "error", else: "success"}
+      badge={if @tone == :loss, do: "Access interrupted", else: "Access kept"}
+      title={@title}
     >
-      <.icon
-        name={if @tone == :loss, do: "hero-x-circle", else: "hero-check-circle"}
-        class={["mt-0.5 size-5", @tone == :loss && "text-error", @tone == :ok && "text-success"]}
-      />
-      <div class="min-w-0 flex-1">
-        <div class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
-          <h2
-            id="preview-result-title"
-            tabindex="-1"
-            class={[
-              "font-display text-[20px] focus:outline-none",
-              @tone == :loss && "text-error",
-              @tone == :ok && "text-success"
-            ]}
-          >
-            {@title}
-          </h2>
-          <p id="preview-computed" class="text-[13px] tabular-nums max-sm:hidden">
-            {@computed_label}
-          </p>
-        </div>
-        <p id="preview-result-body" class="mt-1 text-sm text-strong">{@body}</p>
-        <p id="preview-moment" class="mt-1.5 text-[13px] tabular-nums text-base-content">
-          {@moment_label}<span class="sm:hidden"> · {@computed_label}</span>
+      <span id="preview-result-body"><.sentence parts={@body} /></span>
+      <:extra>
+        <p id="preview-moment" class="mt-3 text-[13px] tabular-nums text-default">
+          {@moment_label}<span :if={@moment_zone} class="text-muted"> · {@moment_zone}</span>
         </p>
-      </div>
-    </section>
+      </:extra>
+      <:foot><span id="preview-computed">{@computed_label}</span></:foot>
+    </.result_summary>
     """
   end
+
+  @doc """
+  Renders a sentence built from parts: text, and `{:pathway_id, id}` for a
+  pathway's ID, which reads as muted monospace secondary text beside its
+  `Mode · From ↔ To` label instead of as a name.
+  """
+  attr :parts, :list, required: true
+
+  def sentence(assigns) do
+    ~H"""
+    <span :for={part <- @parts} class={sentence_part_class(part)}>{sentence_part_text(part)}</span>
+    """
+  end
+
+  defp sentence_part_class({:pathway_id, _id}), do: "font-mono text-[13px] text-muted"
+  defp sentence_part_class(_text), do: nil
+
+  defp sentence_part_text({:pathway_id, id}), do: id
+  defp sentence_part_text(text), do: text
 
   defp direction_label(:to_platform), do: "To platform"
   defp direction_label(:to_exit), do: "From platform"

@@ -4,10 +4,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   This page replaces the Evolutions placeholder. It mounts through the ordinary
   `:gtfs_routes` session and the `:require_gtfs_access` guard, so a member
-  without the editor role never reaches it, and it reuses the station
-  sub-navigation with `active_tab: :evolutions` — the fifth tab and its stable
-  `#station-tab-evolutions` id are unchanged, only the destination behind them
-  is real.
+  without the editor role never reaches it, and it renders under the station
+  header with `active_tab: :evolutions` — the fifth tab, labelled Closures, and
+  its stable `#station-tab-evolutions` id are unchanged, only the destination
+  behind them is real.
 
   Everything on the page is a scoped read of saved domain state, plus the write
   the editor performs. The list is built from `Gtfs.station_closures/3`, whose
@@ -67,17 +67,22 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   import GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents
 
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [drawer_footer: 1, drawer_scroll: 1, message: 1, unsaved_badge: 1]
+
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Gtfs.DisplayClock
   alias GtfsPlanner.Gtfs.GtfsTime
-  alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.Components.DiagramPalette
   alias GtfsPlannerWeb.Gtfs.CalendarComponents
   alias GtfsPlannerWeb.Gtfs.CalendarEditorComponents
+  alias GtfsPlannerWeb.Gtfs.StopDetailComponents
   alias GtfsPlannerWeb.Layouts
+  alias GtfsPlannerWeb.StationWorkspace
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -85,7 +90,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   def mount(_params, _session, socket) do
     {:ok,
      socket
-     |> assign(:page_title, "Evolutions")
+     |> assign(:page_title, "Closures")
      |> assign(:station, nil)
      |> assign(:stop_id, nil)
      |> assign(:station_data, nil)
@@ -1229,12 +1234,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   defp service_clock(seconds) when is_integer(seconds), do: service_time_value(seconds)
 
+  # The moment the result describes: its service date and time, and the local
+  # clock time it falls on. The agency zone and its offset are secondary text
+  # (`preview_moment_zone/1`), so the sentence reads as a moment and not as a
+  # UTC conversion.
   defp preview_moment_label(assigns) do
-    with %{local_time: %NaiveDateTime{} = local, instant: %DateTime{} = instant} <-
-           assigns.preview,
+    with %{local_time: %NaiveDateTime{} = local} <- assigns.preview,
          %{fallback?: false} <- assigns.preview_zone do
-      offset = NaiveDateTime.diff(local, DateTime.to_naive(instant), :second)
-
       elsewhere =
         if NaiveDateTime.to_date(local) == assigns.preview.service_date,
           do: "",
@@ -1242,7 +1248,19 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
       "#{long_date(assigns.preview.service_date)} · " <>
         "#{service_clock(assigns.preview.service_time)} service time " <>
-        "(#{DisplayClock.format_time(local)}#{elsewhere} UTC#{utc_offset_label(offset)})"
+        "(#{DisplayClock.format_time(local)}#{elsewhere})"
+    else
+      _absent -> nil
+    end
+  end
+
+  defp preview_moment_zone(assigns) do
+    with %{local_time: %NaiveDateTime{} = local, instant: %DateTime{} = instant} <-
+           assigns.preview,
+         %{fallback?: false, timezone: timezone} <- assigns.preview_zone do
+      offset = NaiveDateTime.diff(local, DateTime.to_naive(instant), :second)
+
+      "#{timezone} · UTC#{utc_offset_label(offset)}"
     else
       _absent -> nil
     end
@@ -1301,11 +1319,10 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     "Nothing was changed. Check again; if it stops again, reload the page."
   end
 
-  defp preview_zone_note(%{preview_zone: %{fallback?: false, timezone: timezone}}) do
-    "#{timezone} · 24-hour time. 25:00 means 1 AM on the next day of this service."
-  end
-
-  defp preview_zone_note(_assigns), do: nil
+  # The agency zone is the identifier the version stores, so it is secondary
+  # text beside the sentence that says how service time reads.
+  defp preview_zone_name(%{preview_zone: %{fallback?: false, timezone: timezone}}), do: timezone
+  defp preview_zone_name(_assigns), do: nil
 
   # The range report's own display data, the summary and computed-at lines, and
   # the stale label that names what is on screen and what is still being
@@ -1498,7 +1515,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
         %{
           heading: "Access can’t be checked: the agency time zone is not recognized",
           reason:
-            "The agency time zone is not a name PostgreSQL recognizes, so no service-day instant can be resolved from it.",
+            "The agency time zone is not a recognized time zone name, so no service-day instant can be resolved from it.",
           fix: "correct it in Settings › Agencies."
         }
 
@@ -1563,10 +1580,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   defp local_end_label(_instant, _zone), do: nil
 
-  # The banner is the answer of the moment: the step-free consequence when a
+  # The verdict is the answer of the moment: the step-free consequence when a
   # platform lost its last step-free route, otherwise how many connections were
   # lost, otherwise an explicit all-clear. An incomplete evaluation has no
-  # banner at all - its own region says why the check cannot answer.
+  # verdict at all - its own region says why the check cannot answer. The body
+  # is a list of sentence parts, so a pathway's ID can read as secondary text.
   defp preview_banner_copy(_snapshot, nil), do: nil
 
   defp preview_banner_copy(snapshot, preview) do
@@ -1577,7 +1595,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
       case step_free_heading(comparison, snapshot) || loss_heading(comparison) do
         nil ->
-          %{tone: :ok, title: "No connection lost at this time", body: all_clear_body(preview)}
+          %{tone: :ok, title: "No connection lost at this time", body: [all_clear_body(preview)]}
 
         heading ->
           %{tone: :loss, title: heading, body: loss_body(preview, comparison, snapshot)}
@@ -1627,27 +1645,51 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   # never connected: three separate statements, so no closure is claimed to be
   # the single cause of a loss and no baseline gap is blamed on a closure.
   defp loss_body(preview, comparison, snapshot) do
-    [
-      Enum.map_join(preview.closed, " ", &cause_sentence(&1, preview.service_date, snapshot)),
-      walking_remaining(preview, comparison, snapshot),
-      baseline_gap_sentences(comparison, snapshot)
-    ]
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.join(" ")
+    causes = Enum.map(preview.closed, &cause_sentence(&1, preview.service_date, snapshot))
+
+    (causes ++
+       [
+         walking_remaining(preview, comparison, snapshot),
+         baseline_gap_sentences(comparison, snapshot)
+       ])
+    |> Enum.reject(&(&1 == []))
+    |> join_sentences()
+  end
+
+  # Each sentence after the first carries its own leading space, so the join
+  # never depends on a part that is only whitespace.
+  defp join_sentences([]), do: []
+
+  defp join_sentences([first | rest]) do
+    first ++
+      Enum.flat_map(rest, fn
+        [text | parts] when is_binary(text) -> [" " <> text | parts]
+        parts -> [" " | parts]
+      end)
   end
 
   defp cause_sentence(instance, service_date, snapshot) do
     row = closure_row(snapshot.closures, instance.evolution_id)
-
-    mode = if row, do: Pathway.mode_label(row.pathway.pathway_mode), else: "Pathway"
-    ends = if row, do: ends_label(row.pathway), else: instance.pathway_id
 
     spill =
       if Date.compare(instance.service_date, service_date) == :eq,
         do: "",
         else: " from the #{long_date(instance.service_date)} service day"
 
-    "#{mode} #{instance.pathway_id} (#{ends}) is closed #{window_label(instance)}#{spill}."
+    pathway_reference(row && row.pathway, instance.pathway_id) ++
+      [" is closed #{window_label(instance)}#{spill}."]
+  end
+
+  # A pathway has no name, so a sentence labels it `Mode · From ↔ To` with the
+  # ID after it as secondary text. A pathway the snapshot does not hold has only
+  # its ID to go by.
+  defp pathway_reference(nil, pathway_id), do: [{:pathway_id, pathway_id}]
+
+  defp pathway_reference(pathway, pathway_id),
+    do: [pathway_label(pathway), " (", {:pathway_id, pathway_id}, ")"]
+
+  defp snapshot_pathway_reference(snapshot, pathway_id) do
+    pathway_reference(Enum.find(snapshot.pathways, &(&1.pathway_id == pathway_id)), pathway_id)
   end
 
   defp walking_remaining(preview, comparison, snapshot) do
@@ -1664,19 +1706,22 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
       end)
 
     case kept do
-      [] -> ""
-      kept -> "Walking connections to and from #{platform_names(kept, snapshot)} remain."
+      [] -> []
+      kept -> ["Walking connections to and from #{platform_names(kept, snapshot)} remain."]
     end
   end
 
   defp baseline_gap_sentences(comparison, snapshot) do
-    comparison.baseline_gaps
-    |> Enum.filter(&(&1.mode == :step_free))
-    |> Enum.uniq_by(&{&1.entrance_id, &1.platform_id})
-    |> Enum.map_join(" ", fn gap ->
-      "#{child_stop_name(snapshot, gap.entrance_id)} has no step-free route to " <>
-        "#{child_stop_name(snapshot, gap.platform_id)} even without closures."
-    end)
+    sentences =
+      comparison.baseline_gaps
+      |> Enum.filter(&(&1.mode == :step_free))
+      |> Enum.uniq_by(&{&1.entrance_id, &1.platform_id})
+      |> Enum.map_join(" ", fn gap ->
+        "#{child_stop_name(snapshot, gap.entrance_id)} has no step-free route to " <>
+          "#{child_stop_name(snapshot, gap.platform_id)} even without closures."
+      end)
+
+    if sentences == "", do: [], else: [sentences]
   end
 
   defp preview_incomplete_reasons(assigns) do
@@ -1693,23 +1738,38 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     end
   end
 
+  # Each reason is a list of sentence parts. The station's stops are named the
+  # way riders and operators know them, not by their GTFS location type.
   defp incomplete_reason(:no_entrances, _snapshot),
-    do: "This station has no entrance (location_type 2) to start from."
+    do: ["This station has no entrance to start from."]
 
   defp incomplete_reason(:no_platforms, _snapshot),
-    do: "This station has no platform (location_type 0) to reach."
+    do: ["This station has no platform to reach."]
 
-  defp incomplete_reason({:cross_station_pathways, [pathway_id]}, _snapshot) do
-    "Pathway #{pathway_id} connects to a stop outside this station, so it is " <>
-      "evaluated but its result is not part of this station's pairs."
+  defp incomplete_reason({:cross_station_pathways, [pathway_id]}, snapshot) do
+    snapshot_pathway_reference(snapshot, pathway_id) ++
+      [
+        " connects to a stop outside this station, so it is " <>
+          "evaluated but its result is not part of this station's pairs."
+      ]
   end
 
-  defp incomplete_reason({:cross_station_pathways, pathway_ids}, _snapshot) do
-    "Pathways #{Enum.join(pathway_ids, ", ")} connect to a stop outside this " <>
-      "station, so they are evaluated but not part of this station's pairs."
+  defp incomplete_reason({:cross_station_pathways, pathway_ids}, snapshot) do
+    references =
+      pathway_ids
+      |> Enum.map(&snapshot_pathway_reference(snapshot, &1))
+      |> Enum.intersperse([", "])
+      |> Enum.concat()
+
+    ["Pathways "] ++
+      references ++
+      [
+        " connect to a stop outside this " <>
+          "station, so they are evaluated but not part of this station's pairs."
+      ]
   end
 
-  defp incomplete_reason(_reason, _snapshot), do: "Part of this station's data is missing."
+  defp incomplete_reason(_reason, _snapshot), do: ["Part of this station's data is missing."]
 
   defp closure_row(closures, evolution_id),
     do: Enum.find(closures, &(&1.evolution.id == evolution_id))
@@ -2741,11 +2801,12 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
       |> assign(:preview_banner, preview_banner_copy(assigns.station_data, assigns.preview))
       |> assign(:preview_computed_label, preview_computed_label(assigns))
       |> assign(:preview_moment_label, preview_moment_label(assigns))
+      |> assign(:preview_moment_zone, preview_moment_zone(assigns))
       |> assign(:preview_short_moment, preview_short_moment(assigns))
       |> assign(:preview_stale_detail, preview_stale_detail(assigns))
       |> assign(:preview_incomplete_reasons, preview_incomplete_reasons(assigns))
       |> assign(:preview_error_detail, preview_error_detail(assigns))
-      |> assign(:preview_zone_note, preview_zone_note(assigns))
+      |> assign(:preview_zone_name, preview_zone_name(assigns))
       |> assign(:timezone_copy, timezone_copy(assigns))
       |> assign(:preview_lost?, assigns.preview != nil and assigns.preview.comparison.lost != [])
       |> assign(
@@ -2784,19 +2845,30 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
       available_versions={assigns[:available_versions] || []}
     >
       <:sub_header>
-        <.station_sub_nav
-          station={@station}
+        <StationWorkspace.station_header
+          title={station_name(@station)}
+          stop_id={@station.stop_id}
           gtfs_version_id={@current_gtfs_version.id}
           active_tab={:evolutions}
-        />
+        >
+          <:meta>
+            {StopDetailComponents.inventory(@station, @station_data.child_stops, @station_data.levels)}
+          </:meta>
+        </StationWorkspace.station_header>
       </:sub_header>
 
-      <div id="evolutions" class="mt-5">
-        <.evolutions_view_nav
-          current={@live_action}
-          closures_href={@closures_view_href}
-          access_href={@access_view_href}
-        />
+      <div
+        id="evolutions"
+        class="ds-page pb-16 pt-6"
+        style={DiagramPalette.css_custom_properties()}
+      >
+        <div class="mb-6">
+          <.evolutions_view_nav
+            current={@live_action}
+            closures_href={@closures_view_href}
+            access_href={@access_view_href}
+          />
+        </div>
 
         <%= if @live_action == :access do %>
           <%!--
@@ -2820,51 +2892,47 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
           instant in the wrong zone. Authoring stays reachable through the view
           switch and the settings link.
           --%>
-          <section
-            :if={@timezone_copy}
-            id="analysis-timezone-unavailable"
-            aria-labelledby="tz-title"
-            class="mt-4 flex max-w-3xl gap-3 rounded-card bg-warning/10 px-5 py-4 text-base-content"
-          >
-            <.icon name="hero-clock" class="mt-0.5 size-5 shrink-0 text-warning" />
-            <div class="min-w-0">
-              <h2 id="tz-title" class="font-display text-[20px] text-warning">
-                {@timezone_copy.heading}
-              </h2>
-              <p id="tz-reason" class="mt-2 text-sm">{@timezone_copy.reason}</p>
-              <p class="mt-2 text-sm">
-                <strong class="font-[650] text-strong">To fix:</strong> {@timezone_copy.fix}
+          <div :if={@timezone_copy} class="max-w-3xl">
+            <.message
+              id="analysis-timezone-unavailable"
+              kind="warning"
+              role="status"
+              title={@timezone_copy.heading}
+            >
+              <p id="tz-reason">{@timezone_copy.reason}</p>
+              <p class="mt-2">
+                <strong class="font-[650]">To fix:</strong> {@timezone_copy.fix}
               </p>
-              <p class="mt-2 text-sm">You can still create and edit closures.</p>
-              <div class="mt-3 flex flex-wrap gap-x-5">
+              <p class="mt-2">You can still create and edit closures.</p>
+              <div class="mt-1 flex flex-wrap gap-x-5">
                 <a
                   id="tz-settings"
                   href={"/gtfs/#{@current_gtfs_version.id}/settings/agencies"}
-                  class="inline-flex min-h-11 items-center text-sm font-[650] text-action hover:underline"
+                  class="inline-flex min-h-11 items-center text-sm font-[650] underline"
                 >
                   Open agency settings
                 </a>
                 <.link
                   id="tz-closures"
                   patch={@closures_view_href}
-                  class="inline-flex min-h-11 items-center text-sm font-[650] text-action hover:underline"
+                  class="inline-flex min-h-11 items-center text-sm font-[650] underline"
                 >
                   Schedule closures
                 </.link>
               </div>
-            </div>
-          </section>
+            </.message>
+          </div>
 
           <div :if={is_nil(@timezone_copy)} id="access-analysis" phx-hook="FormErrorFocus">
             <form
               id="preview-form"
               phx-submit="update_preview"
               novalidate
-              class="mt-4 rounded-card border border-subtle bg-white px-4 py-3 md:px-5"
+              class="rounded-card border border-subtle bg-white px-4 py-3 md:px-5"
             >
               <div class="flex flex-wrap items-end gap-x-3 gap-y-2">
                 <div class="grid gap-1.5">
-                  <label for="preview-date" class="text-[13px] font-[650] text-base-content">
+                  <label for="preview-date" class="text-[13px] font-[650] text-strong">
                     Service date
                   </label>
                   <input
@@ -2875,11 +2943,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                     required
                     aria-describedby="preview-zone preview-date-error"
                     aria-invalid={@preview_form_errors[:date] && "true"}
-                    class="h-11 w-[10.5rem] rounded-control border border-control bg-white px-3 text-sm tabular-nums text-strong aria-[invalid=true]:border-2 aria-[invalid=true]:border-error"
+                    class="h-11 w-[10.5rem] rounded-control border border-control bg-white px-3 text-sm tabular-nums text-strong aria-[invalid=true]:border-2 aria-[invalid=true]:border-error-line"
                   />
                 </div>
                 <div class="grid gap-1.5">
-                  <label for="preview-time" class="text-[13px] font-[650] text-base-content">
+                  <label for="preview-time" class="text-[13px] font-[650] text-strong">
                     Service time
                   </label>
                   <input
@@ -2892,29 +2960,34 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                     value={@preview_form.time}
                     aria-describedby="preview-zone preview-time-error"
                     aria-invalid={@preview_form_errors[:time] && "true"}
-                    class="h-11 w-28 rounded-control border border-control bg-white px-3 font-mono text-sm tabular-nums text-strong aria-[invalid=true]:border-2 aria-[invalid=true]:border-error"
+                    class="h-11 w-28 rounded-control border border-control bg-white px-3 text-sm tabular-nums text-strong aria-[invalid=true]:border-2 aria-[invalid=true]:border-error-line"
                   />
                 </div>
                 <.button
                   id="update-preview"
                   type="submit"
                   phx-disable-with="Updating…"
-                  class="h-11 min-w-[136px] rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-evo-action-hover"
+                  class="min-h-11 min-w-[136px]"
                 >
                   Update preview
                 </.button>
                 <p
                   id="preview-zone"
-                  class="flex min-h-11 max-w-[42rem] items-center text-[13px] leading-snug text-muted md:ml-2"
+                  class="flex min-h-11 max-w-[42rem] flex-col justify-center text-[13px] leading-snug text-muted md:ml-2"
                 >
-                  {@preview_zone_note}
+                  <span :if={@preview_zone_name}>
+                    Service time is 24-hour. 25:00 means 1 AM on the next day of this service.
+                  </span>
+                  <span :if={@preview_zone_name}>
+                    Agency time zone <span class="font-mono">{@preview_zone_name}</span>
+                  </span>
                 </p>
               </div>
               <p
                 :if={@preview_form_errors[:date]}
                 id="preview-date-error"
                 role="alert"
-                class="mt-2 flex items-center gap-1.5 text-[13px] font-[650] text-error"
+                class="mt-2 flex items-center gap-1.5 text-[13px] font-[650] text-error-fg"
               >
                 <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
                 {@preview_form_errors[:date]}
@@ -2923,7 +2996,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 :if={@preview_form_errors[:time]}
                 id="preview-time-error"
                 role="alert"
-                class="mt-2 flex items-center gap-1.5 text-[13px] font-[650] text-error"
+                class="mt-2 flex items-center gap-1.5 text-[13px] font-[650] text-error-fg"
               >
                 <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
                 {@preview_form_errors[:time]}
@@ -2931,15 +3004,15 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
             </form>
 
             <div id="preview-area" class="mt-4 grid grid-cols-[minmax(0,1fr)] gap-4">
-              <p
+              <.message
                 :if={@preview_stale_detail}
                 id="analysis-stale"
-                class="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-control bg-warning/10 px-4 py-2.5 text-[13px] text-warning"
+                kind="warning"
+                role="status"
+                title="Results are from an earlier check"
               >
-                <.icon name="hero-clock" class="size-4 shrink-0" />
-                <strong class="font-[650]">Results are from an earlier check</strong>
                 <span id="analysis-stale-detail">{@preview_stale_detail}</span>
-              </p>
+              </.message>
 
               <.preview_banner
                 :if={@preview_banner}
@@ -2949,6 +3022,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 tone={@preview_banner.tone}
                 computed_label={@preview_computed_label}
                 moment_label={@preview_moment_label}
+                moment_zone={@preview_moment_zone}
               />
 
               <%!--
@@ -2956,68 +3030,49 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
               check cannot answer, keeps the known pairs below, and leaves the
               decision to fix the station data.
               --%>
-              <section
+              <.message
                 :if={@preview_incomplete_reasons}
                 id="analysis-incomplete"
-                aria-labelledby="incomplete-title"
-                class="flex gap-3 rounded-card bg-warning/10 px-5 py-4 text-base-content"
+                kind="warning"
+                role="status"
+                title="Access check incomplete"
               >
-                <.icon
-                  name="hero-exclamation-triangle"
-                  class="mt-0.5 size-5 shrink-0 text-warning"
-                />
-                <div class="min-w-0 flex-1">
-                  <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                    <h2 id="incomplete-title" class="font-display text-[20px] text-warning">
-                      Access check incomplete
-                    </h2>
-                    <p id="incomplete-computed" class="text-[13px] tabular-nums text-warning">
-                      {@preview_computed_label}
-                    </p>
-                  </div>
-                  <p class="mt-1.5 text-sm">
-                    This check can’t say whether any connection is lost until the station data is fixed:
-                  </p>
-                  <ul id="incomplete-reasons" class="mt-1 list-disc pl-5 text-sm">
-                    <li :for={reason <- @preview_incomplete_reasons}>{reason}</li>
-                  </ul>
-                  <p id="incomplete-moment" class="mt-1.5 text-[13px] tabular-nums text-muted">
-                    {@preview_moment_label}
-                  </p>
-                  <a
-                    id="incomplete-floorplans"
-                    href={"/gtfs/#{@current_gtfs_version.id}/stops/#{URI.encode(@stop_id)}/diagram"}
-                    class="mt-1 inline-flex min-h-11 items-center text-sm font-[650] text-action hover:underline"
-                  >
-                    Review pathways on Floorplans
-                  </a>
-                </div>
-              </section>
+                <p>
+                  This check can’t say whether any connection is lost until the station data is fixed:
+                </p>
+                <ul id="incomplete-reasons" class="mt-1 list-disc pl-5">
+                  <li :for={reason <- @preview_incomplete_reasons}><.sentence parts={reason} /></li>
+                </ul>
+                <p id="incomplete-moment" class="mt-1.5 tabular-nums">
+                  {@preview_moment_label}<span :if={@preview_moment_zone}> · {@preview_moment_zone}</span>
+                </p>
+                <p id="incomplete-computed" class="tabular-nums">{@preview_computed_label}</p>
+                <a
+                  id="incomplete-floorplans"
+                  href={"/gtfs/#{@current_gtfs_version.id}/stops/#{URI.encode(@stop_id)}/diagram"}
+                  class="inline-flex min-h-11 items-center text-sm font-[650] underline"
+                >
+                  Review pathways on Floorplans
+                </a>
+              </.message>
 
-              <section
+              <.message
                 :if={@preview_error}
                 id="analysis-error"
-                aria-labelledby="error-title"
-                class="flex gap-3 rounded-card bg-error/10 px-5 py-4 text-base-content"
+                kind="error"
+                title="The access check stopped before it finished"
               >
-                <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0 text-error" />
-                <div class="min-w-0">
-                  <h2 id="error-title" class="font-display text-[20px] text-error">
-                    The access check stopped before it finished
-                  </h2>
-                  <p id="analysis-error-detail" class="mt-1.5 text-sm">
-                    {@preview_error_detail}
-                  </p>
-                  <button
-                    id="analysis-retry"
-                    type="button"
-                    phx-click="retry_preview"
-                    class="mt-3 inline-flex min-h-11 items-center justify-center gap-2 rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
-                  >
-                    <.icon name="hero-arrow-path" class="size-4" /> Check again
-                  </button>
-                </div>
-              </section>
+                <p id="analysis-error-detail">{@preview_error_detail}</p>
+                <.button
+                  id="analysis-retry"
+                  type="button"
+                  variant="secondary"
+                  phx-click="retry_preview"
+                  class="mt-3 min-h-11 gap-2"
+                >
+                  <.icon name="hero-arrow-path" class="size-4" /> Check again
+                </.button>
+              </.message>
 
               <%!--
               The first load: a skeleton in the shape of the answer, with no
@@ -3032,9 +3087,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
               >
                 <div class="rounded-card border border-subtle bg-white px-5 py-4">
                   <p class="font-display text-[18px] text-strong">Checking access…</p>
-                  <div class="mt-3 h-3.5 w-72 max-w-full rounded-evo-badge bg-canvas motion-safe:animate-pulse">
+                  <div class="mt-3 h-3.5 w-72 max-w-full rounded-badge bg-canvas motion-safe:animate-pulse">
                   </div>
-                  <div class="mt-2 h-3.5 w-96 max-w-full rounded-evo-badge bg-canvas motion-safe:animate-pulse">
+                  <div class="mt-2 h-3.5 w-96 max-w-full rounded-badge bg-canvas motion-safe:animate-pulse">
                   </div>
                 </div>
               </section>
@@ -3091,7 +3146,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 </p>
                 <div class="mt-3 grid grid-cols-1 items-end gap-3 min-[360px]:grid-cols-2 sm:flex sm:flex-wrap">
                   <div class="grid min-w-0 gap-1.5">
-                    <label for="range-first" class="text-[13px] font-[650] text-base-content">
+                    <label for="range-first" class="text-[13px] font-[650] text-strong">
                       First date
                     </label>
                     <input
@@ -3102,11 +3157,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                       required
                       aria-describedby="range-help range-invalid"
                       aria-invalid={@range_invalid_message && "true"}
-                      class="h-11 w-full rounded-control border border-control bg-white px-3 text-sm tabular-nums text-strong sm:w-[10.5rem] aria-[invalid=true]:border-2 aria-[invalid=true]:border-error"
+                      class="h-11 w-full rounded-control border border-control bg-white px-3 text-sm tabular-nums text-strong sm:w-[10.5rem] aria-[invalid=true]:border-2 aria-[invalid=true]:border-error-line"
                     />
                   </div>
                   <div class="grid min-w-0 gap-1.5">
-                    <label for="range-last" class="text-[13px] font-[650] text-base-content">
+                    <label for="range-last" class="text-[13px] font-[650] text-strong">
                       Last date
                     </label>
                     <input
@@ -3117,14 +3172,15 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                       required
                       aria-describedby="range-help range-invalid"
                       aria-invalid={@range_invalid_message && "true"}
-                      class="h-11 w-full rounded-control border border-control bg-white px-3 text-sm tabular-nums text-strong sm:w-[10.5rem] aria-[invalid=true]:border-2 aria-[invalid=true]:border-error"
+                      class="h-11 w-full rounded-control border border-control bg-white px-3 text-sm tabular-nums text-strong sm:w-[10.5rem] aria-[invalid=true]:border-2 aria-[invalid=true]:border-error-line"
                     />
                   </div>
                   <.button
                     id="check-range"
                     type="submit"
+                    variant="secondary"
                     phx-disable-with="Updating…"
-                    class="col-span-full h-11 min-w-[152px] justify-self-start rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas sm:col-auto"
+                    class="col-span-full min-h-11 min-w-[152px] justify-self-start sm:col-auto"
                   >
                     Check date range
                   </.button>
@@ -3133,7 +3189,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                   :if={@range_invalid_message}
                   id="range-invalid"
                   role="alert"
-                  class="mt-2 flex items-center gap-1.5 text-[13px] font-[650] text-error"
+                  class="mt-2 flex items-center gap-1.5 text-[13px] font-[650] text-error-fg"
                 >
                   <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
                   {@range_invalid_message}
@@ -3146,72 +3202,48 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 than its bound allows, and one that outlived the deadline. Both
                 say what happened and what to change, and neither is a result.
                 --%>
-                <section
-                  :if={@range_error == :too_large}
-                  id="range-too-large"
-                  aria-labelledby="range-too-large-title"
-                  class="mx-5 mt-4 flex gap-3 rounded-card bg-error/10 px-4 py-3 text-sm"
-                >
-                  <.icon
-                    name="hero-exclamation-triangle"
-                    class="mt-0.5 size-5 shrink-0 text-error"
-                  />
-                  <div class="min-w-0">
-                    <h3 id="range-too-large-title" class="font-[650] text-error">
-                      This range is too large to check
-                    </h3>
-                    <p id="range-too-large-detail" class="mt-0.5 text-strong">
+                <div :if={@range_error == :too_large} class="mx-5 mt-4">
+                  <.message
+                    id="range-too-large"
+                    kind="error"
+                    title="This range is too large to check"
+                  >
+                    <span id="range-too-large-detail">
                       It has more than 200,000 closure instances. Choose fewer days.
-                    </p>
-                  </div>
-                </section>
+                    </span>
+                  </.message>
+                </div>
 
-                <section
-                  :if={@range_error == :timeout}
-                  id="range-timeout"
-                  aria-labelledby="range-timeout-title"
-                  class="mx-5 mt-4 flex gap-3 rounded-card bg-error/10 px-4 py-3 text-sm"
-                >
-                  <.icon name="hero-clock" class="mt-0.5 size-5 shrink-0 text-error" />
-                  <div class="min-w-0">
-                    <h3 id="range-timeout-title" class="font-[650] text-error">
-                      The check took too long
-                    </h3>
-                    <p id="range-timeout-detail" class="mt-0.5 text-strong">
+                <div :if={@range_error == :timeout} class="mx-5 mt-4">
+                  <.message id="range-timeout" kind="error" title="The check took too long">
+                    <span id="range-timeout-detail">
                       It stopped after 10 seconds. Choose fewer days, or check the range again.
-                    </p>
-                  </div>
-                </section>
+                    </span>
+                  </.message>
+                </div>
 
-                <section
-                  :if={@range_error == :unexpected}
-                  id="range-error"
-                  aria-labelledby="range-error-title"
-                  class="mx-5 mt-4 flex gap-3 rounded-card bg-error/10 px-4 py-3 text-sm"
-                >
-                  <.icon
-                    name="hero-exclamation-triangle"
-                    class="mt-0.5 size-5 shrink-0 text-error"
-                  />
-                  <div class="min-w-0">
-                    <h3 id="range-error-title" class="font-[650] text-error">
-                      The range check stopped before it finished
-                    </h3>
-                    <p id="range-error-detail" class="mt-0.5 text-strong">
+                <div :if={@range_error == :unexpected} class="mx-5 mt-4">
+                  <.message
+                    id="range-error"
+                    kind="error"
+                    title="The range check stopped before it finished"
+                  >
+                    <span id="range-error-detail">
                       Nothing was changed. Check the range again; if it stops again, reload the page.
-                    </p>
-                  </div>
-                </section>
+                    </span>
+                  </.message>
+                </div>
 
-                <p
-                  :if={@range_stale_detail}
-                  id="range-stale"
-                  class="mx-5 mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-control bg-warning/10 px-4 py-2.5 text-[13px] text-warning"
-                >
-                  <.icon name="hero-clock" class="size-4 shrink-0" />
-                  <strong class="font-[650]">Results are from an earlier check</strong>
-                  <span id="range-stale-detail">{@range_stale_detail}</span>
-                </p>
+                <div :if={@range_stale_detail} class="mx-5 mt-4">
+                  <.message
+                    id="range-stale"
+                    kind="warning"
+                    role="status"
+                    title="Results are from an earlier check"
+                  >
+                    <span id="range-stale-detail">{@range_stale_detail}</span>
+                  </.message>
+                </div>
 
                 <div
                   :if={@range_report}
@@ -3241,7 +3273,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                       phx-value-view={view}
                       data-range-view={view}
                       aria-pressed={to_string(@range_view == view)}
-                      class="px-3.5 text-sm font-[650] text-base-content hover:bg-canvas aria-pressed:bg-strong aria-pressed:text-white"
+                      class="px-3.5 text-sm font-[650] text-strong hover:bg-canvas aria-pressed:bg-strong aria-pressed:font-bold aria-pressed:text-white"
                     >
                       {label}
                     </button>
@@ -3253,36 +3285,31 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 reasons are named, and the periods below are the ones that could
                 be computed. No no-loss region renders in this state.
                 --%>
-                <section
-                  :if={@range_incomplete?}
-                  id="range-incomplete"
-                  aria-labelledby="range-incomplete-title"
-                  class="mx-5 mt-4 flex gap-3 rounded-card bg-warning/10 px-4 py-3 text-sm"
-                >
-                  <.icon
-                    name="hero-exclamation-triangle"
-                    class="mt-0.5 size-5 shrink-0 text-warning"
-                  />
-                  <div class="min-w-0">
-                    <h3 id="range-incomplete-title" class="font-[650] text-warning">
-                      Range check incomplete
-                    </h3>
-                    <p class="mt-0.5 text-strong">
+                <div :if={@range_incomplete?} class="mx-5 mt-4">
+                  <.message
+                    id="range-incomplete"
+                    kind="warning"
+                    role="status"
+                    title="Range check incomplete"
+                  >
+                    <p>
                       This check can’t say whether any connection is lost until the station data
                       is fixed:
                     </p>
                     <ul id="range-incomplete-reasons" class="mt-1 list-disc pl-5">
-                      <li :for={reason <- @range_incomplete_reasons}>{reason}</li>
+                      <li :for={reason <- @range_incomplete_reasons}>
+                        <.sentence parts={reason} />
+                      </li>
                     </ul>
                     <a
                       id="range-incomplete-floorplans"
                       href={"/gtfs/#{@current_gtfs_version.id}/stops/#{URI.encode(@stop_id)}/diagram"}
-                      class="mt-1 inline-flex min-h-11 items-center text-sm font-[650] text-action hover:underline"
+                      class="inline-flex min-h-11 items-center text-sm font-[650] underline"
                     >
                       Review pathways on Floorplans
                     </a>
-                  </div>
-                </section>
+                  </.message>
+                </div>
 
                 <.range_results
                   :if={@range_segments?}
@@ -3290,20 +3317,12 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                   view={range_results_view(assigns)}
                 />
 
-                <section
-                  :if={@range_no_loss?}
-                  id="range-no-loss"
-                  class="mx-5 mt-4 mb-5 flex items-start gap-3 rounded-card bg-success/10 px-4 py-3 text-sm"
-                >
-                  <.icon name="hero-check-circle" class="mt-0.5 size-5 shrink-0 text-success" />
-                  <div class="min-w-0">
-                    <p class="font-[650] text-success">No connection lost in this range</p>
-                    <p class="mt-0.5 text-strong">
-                      Every entrance keeps the walking and step-free connections it has without
-                      closures, at every closure boundary in the span above.
-                    </p>
-                  </div>
-                </section>
+                <div :if={@range_no_loss?} class="mx-5 mt-4 mb-5">
+                  <.message id="range-no-loss" kind="success" title="No connection lost in this range">
+                    Every entrance keeps the walking and step-free connections it has without
+                    closures, at every closure boundary in the span above.
+                  </.message>
+                </div>
 
                 <p :if={@range_empty?} id="range-empty" class="px-5 py-4 text-sm text-muted">
                   No range checked yet. A preview covers one moment; a range check lists every time a connection is lost across the dates you choose.
@@ -3372,7 +3391,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 class="flex w-full flex-wrap items-end gap-3 sm:w-auto"
               >
                 <div class="grid min-w-0 flex-1 gap-1.5 sm:w-60 sm:flex-none">
-                  <label for="closures-search" class="text-[13px] font-[650] text-base-content">
+                  <label for="closures-search" class="text-[13px] font-[650] text-strong">
                     Find pathway or calendar
                   </label>
                   <form
@@ -3403,7 +3422,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                   type="button"
                   phx-click="start_closure"
                   variant="secondary"
-                  class="h-11 min-h-11 gap-2 rounded-control border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
+                  class="min-h-11 gap-2"
                 >
                   <.icon name="hero-plus" class="size-4" /> Create closure
                 </.button>
@@ -3419,19 +3438,19 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 <tr>
                   <th
                     scope="col"
-                    class="w-[46%] border-b border-subtle bg-canvas py-2.5 pr-3 pl-5 text-[13px] font-[650] text-base-content"
+                    class="w-[46%] border-b border-subtle bg-canvas py-2.5 pr-3 pl-5 text-[13px] font-[650] text-strong"
                   >
                     Pathway
                   </th>
                   <th
                     scope="col"
-                    class="border-b border-subtle bg-canvas px-3 py-2.5 text-[13px] font-[650] text-base-content"
+                    class="border-b border-subtle bg-canvas px-3 py-2.5 text-[13px] font-[650] text-strong"
                   >
                     Calendar
                   </th>
                   <th
                     scope="col"
-                    class="w-[152px] border-b border-subtle bg-canvas py-2.5 pr-5 pl-3 text-[13px] font-[650] text-base-content"
+                    class="w-[152px] border-b border-subtle bg-canvas py-2.5 pr-5 pl-3 text-[13px] font-[650] text-strong"
                   >
                     Window
                   </th>
@@ -3465,7 +3484,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                   id="new-closure"
                   type="button"
                   phx-click="start_closure"
-                  class="h-11 min-h-11 gap-2 rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-evo-action-hover"
+                  class="min-h-11 gap-2"
                 >
                   <.icon name="hero-plus" class="size-4" /> Create closure
                 </.button>
@@ -3484,7 +3503,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                   type="button"
                   phx-click={JS.push("clear_search") |> JS.focus(to: "#closures-search")}
                   variant="secondary"
-                  class="h-11 min-h-11 rounded-control border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
+                  class="min-h-11"
                 >
                   Clear search
                 </.button>
@@ -3501,7 +3520,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 <.button
                   id="closures-open-floorplans"
                   navigate={~p"/gtfs/#{@current_gtfs_version.id}/stops/#{@stop_id}/diagram"}
-                  class="h-11 min-h-11 rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-evo-action-hover"
+                  class="min-h-11"
                 >
                   Open floorplans
                 </.button>
@@ -3518,7 +3537,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 <.button
                   id="closures-open-calendars"
                   navigate={~p"/gtfs/#{@current_gtfs_version.id}/calendars"}
-                  class="h-11 min-h-11 rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-evo-action-hover"
+                  class="min-h-11"
                 >
                   Open calendars
                 </.button>
@@ -3529,7 +3548,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
           <%!--
           The editor stays non-modal beside the list: it is a form for the row the
           list selected, and on the access step it is the surface a preview link
-          returns to.
+          returns to. The heading leads the panel, the fields scroll in their own
+          region, and the footer holds what saving will do beside the actions, so
+          nothing in it can cover a field.
           --%>
           <aside
             :if={is_nil(@blocked)}
@@ -3541,20 +3562,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
             aria-labelledby={if @editor_mode, do: "closure-editor-title", else: "closure-idle-title"}
             class="flex min-w-0 flex-col overflow-clip rounded-card border border-subtle bg-white lg:sticky lg:top-4 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:max-h-[calc(100dvh-2rem)]"
           >
-            <p
-              id="evolutions-status"
-              role="status"
-              aria-live="polite"
-              class={[
-                "items-center gap-2 border-b border-subtle px-5 py-2.5 text-sm",
-                @status_message && "text-strong",
-                !@status_message && "hidden"
-              ]}
-            >
-              {@status_message}
-            </p>
-
-            <div :if={is_nil(@editor_mode)} id="closure-idle" class="px-5 py-5">
+            <div :if={is_nil(@editor_mode)} id="closure-idle" class="px-5 py-5 sm:px-6">
               <h2
                 id="closure-idle-title"
                 tabindex="-1"
@@ -3565,8 +3573,9 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
               <p id="closure-idle-guidance" class="mt-1.5 text-sm text-default">
                 Choose a closure to edit it, or choose a pathway to schedule a new one.
               </p>
+              <.editor_status message={@status_message} class="mt-3" />
               <p class="mt-4 border-t border-subtle pt-4 text-[13px] text-muted">
-                Saving updates this version immediately. Full exports include closures.
+                Changes apply to {@current_gtfs_version.name}, a published version, as soon as you save.
               </p>
             </div>
 
@@ -3579,7 +3588,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
               phx-submit="save_closure"
               class="flex min-h-0 flex-1 flex-col"
             >
-              <header class="border-b border-subtle px-5 py-4">
+              <header class="border-b border-subtle px-5 py-4 sm:px-6">
                 <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
                   <h2
                     id="closure-editor-title"
@@ -3588,13 +3597,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                   >
                     {if @editor_mode == :new, do: "New closure", else: "Edit closure"}
                   </h2>
-                  <span
-                    :if={@dirty?}
-                    id="closure-dirty-chip"
-                    class="inline-flex items-center gap-1.5 rounded-evo-badge bg-warning/15 px-2 py-0.5 text-[13px] font-[650] text-warning"
-                  >
-                    <.icon name="hero-exclamation-triangle" class="size-3.5" /> Unsaved changes
-                  </span>
+                  <.unsaved_badge :if={@dirty?} id="closure-dirty-chip" />
                 </div>
                 <p id="closure-editor-context" class="mt-1 text-[13px] text-muted">
                   <span :if={@editor_pathway}>
@@ -3607,11 +3610,8 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 </p>
               </header>
 
-              <div
-                id="closure-body"
-                class="grid content-start gap-5 px-5 py-5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto"
-              >
-                <.callout
+              <.drawer_scroll>
+                <.message
                   :if={@duplicate_id || @form_errors != []}
                   id="closure-errors"
                   kind="error"
@@ -3626,50 +3626,51 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                         :if={error.id}
                         type="button"
                         phx-click={JS.focus(to: "#" <> error.id)}
-                        class="inline-flex min-h-11 items-center text-left text-error underline underline-offset-4"
+                        class="inline-flex min-h-11 items-center text-left underline underline-offset-4"
                       >
                         {error.message}
                       </button>
-                      <span :if={is_nil(error.id)} class="text-error">{error.message}</span>
+                      <span :if={is_nil(error.id)}>{error.message}</span>
                     </li>
                   </ul>
                   <div :if={@duplicate_id}>
-                    <p id="closure-duplicate" class="text-sm">
+                    <p id="closure-duplicate">
                       Another closure has the same pathway, calendar and window.
                     </p>
                     <button
                       id="closure-open-existing"
                       type="button"
                       phx-click="open_existing_closure"
-                      class="-mb-2 inline-flex min-h-11 items-center gap-1.5 text-sm font-[650] text-error underline underline-offset-4"
+                      class="-mb-2 inline-flex min-h-11 items-center gap-1.5 text-sm font-[650] underline underline-offset-4"
                     >
                       Open existing closure
                     </button>
                   </div>
-                </.callout>
+                </.message>
 
-                <.callout
+                <.message
                   :if={@stale?}
                   id="closure-stale"
                   kind="warning"
                   title="Closure changed after you opened it"
                   tabindex="-1"
                 >
-                  <p class="text-sm">
+                  <p>
                     Nothing was saved and your entries are kept. Reload the closure to see the current version, then make your change again.
                   </p>
-                  <button
+                  <.button
                     id="closure-reload"
                     type="button"
+                    variant="secondary"
                     phx-click="reload_closure"
-                    class="mt-3 inline-flex min-h-11 items-center justify-center gap-2 rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
+                    class="mt-3 min-h-11 gap-2"
                   >
                     <.icon name="hero-arrow-path" class="size-4" /> Reload closure
-                  </button>
-                </.callout>
+                  </.button>
+                </.message>
 
                 <div :if={@notices != []} id="closure-notices" class="grid gap-2">
-                  <.callout
+                  <.message
                     :for={notice <- @notices}
                     id={notice.id}
                     data-notice={notice.kind}
@@ -3677,7 +3678,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                     title={notice.title}
                   >
                     {notice.body}
-                  </.callout>
+                  </.message>
                 </div>
 
                 <.input
@@ -3688,7 +3689,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                   prompt="Choose a pathway"
                   options={pathway_options(@station_data.pathways)}
                   help={pathway_help(@editor_pathway)}
-                  class={control_class()}
                 />
 
                 <div class="grid gap-1.5">
@@ -3700,7 +3700,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                     prompt="Choose a calendar"
                     options={calendar_options(@calendars)}
                     help={calendar_usage_line(@editor_calendar)}
-                    class={control_class()}
                   />
 
                   <%!--
@@ -3797,34 +3796,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                   </div>
                 </div>
 
-                <fieldset class="min-w-0">
-                  <legend class="text-[13px] font-[650] text-base-content">Closure window</legend>
-                  <div class="mt-2 flex flex-wrap items-end gap-x-3 gap-y-2">
-                    <.input
-                      field={@form[:start_time]}
-                      id="closure-start"
-                      type="text"
-                      label="Starts at"
-                      inputmode="numeric"
-                      autocomplete="off"
-                      spellcheck="false"
-                      class={time_class()}
-                      phx-debounce="blur"
-                    />
-                    <.input
-                      field={@form[:end_time]}
-                      id="closure-end"
-                      type="text"
-                      label="Ends at"
-                      inputmode="numeric"
-                      autocomplete="off"
-                      spellcheck="false"
-                      help="Service time. Use 24-hour time. For 2 AM the next day, enter 26:00."
-                      class={time_class()}
-                      phx-debounce="blur"
-                    />
-                  </div>
-                </fieldset>
+                <.window_pair start_field={@form[:start_time]} end_field={@form[:end_time]} />
 
                 <.input
                   field={@form[:note]}
@@ -3836,8 +3808,15 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                   class={textarea_class()}
                   phx-debounce="blur"
                 />
+              </.drawer_scroll>
 
-                <div class="rounded-control bg-canvas px-4 py-3">
+              <.drawer_footer>
+                <.editor_status message={@status_message} class="basis-full" />
+                <div
+                  id="closure-summary-card"
+                  aria-live="polite"
+                  class="basis-full rounded-control bg-canvas px-4 py-3"
+                >
                   <p id="closure-summary" class="text-sm text-strong">
                     {closure_summary(@form.params, @editor_pathway, @editor_calendar)}
                   </p>
@@ -3857,38 +3836,26 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                     {@preview_unavailable}
                   </p>
                 </div>
-
-                <p id="closure-scope" class="text-[13px] text-muted">
-                  Saving updates this version immediately. Full exports include this closure.
+                <p id="closure-scope" class="basis-full text-[13px] text-muted">
+                  Changes apply to {@current_gtfs_version.name}, a published version, as soon as you save.
                 </p>
-              </div>
-
-              <footer
-                id="closure-actions"
-                class="sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 border-t border-subtle bg-white px-5 py-4"
-              >
-                <div
+                <.button
                   :if={@editor_mode == :edit}
-                  id="delete-closure-wrap"
-                  class="mr-auto max-sm:basis-full"
+                  id="delete-closure"
+                  type="button"
+                  variant="quiet"
+                  phx-click="request_delete"
+                  disabled={@delete_pending?}
+                  class="mr-auto min-h-11 gap-1.5 px-2 text-error-fg hover:bg-error-bg"
                 >
-                  <.button
-                    id="delete-closure"
-                    type="button"
-                    phx-click="request_delete"
-                    variant="secondary"
-                    disabled={@delete_pending?}
-                    class="min-h-11 gap-1.5 rounded-control border-control bg-white px-3 text-sm font-[650] text-error hover:bg-error/10 disabled:pointer-events-none disabled:opacity-60"
-                  >
-                    <.icon name="hero-trash" class="size-4" /> Delete closure
-                  </.button>
-                </div>
+                  <.icon name="hero-trash" class="size-4" /> Delete closure
+                </.button>
                 <.button
                   id="discard-closure"
                   type="button"
-                  phx-click="discard_closure"
                   variant="secondary"
-                  class="min-h-11 rounded-control border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
+                  phx-click="discard_closure"
+                  class="min-h-11"
                 >
                   {if @dirty?, do: "Discard edits", else: "Close"}
                 </.button>
@@ -3898,11 +3865,11 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                   disabled={@stale?}
                   title={@stale? && "Reload the closure before saving"}
                   phx-disable-with="Saving…"
-                  class="min-h-11 min-w-[7.5rem] rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-evo-action-hover disabled:pointer-events-none disabled:opacity-60"
+                  class="min-h-11"
                 >
                   Save closure
                 </.button>
-              </footer>
+              </.drawer_footer>
             </.form>
 
             <%!--
@@ -3912,6 +3879,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
             --%>
             <.confirm_dialog
               id="closure-dirty-dialog"
+              chrome="planner"
               open={@pending_action != nil}
               title="Discard closure edits?"
               confirm_label="Discard edits"
@@ -3920,7 +3888,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
               on_confirm="discard_edits"
               on_cancel="keep_editing"
               described_by="closure-dirty-body"
-              confirm_variant="primary"
               return_focus_id="closure-editor-title"
             >
               <p id="closure-dirty-body">{@dirty_dialog_body}</p>
@@ -3928,14 +3895,16 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
             <%!--
             The delete confirmation: the one explicit choice before a closure
-            is removed. It names the saved row it would remove and states that
-            the calendar stays, and its confirmation is disabled while the
-            context's delete is in flight.
+            is removed. Its title and body name the saved row it would remove and
+            state that the calendar stays; Keep closure takes initial focus, the
+            delete action repeats its verb and object in the error ink, and the
+            confirmation is disabled while the context's delete is in flight.
             --%>
             <.confirm_dialog
               id="closure-delete-dialog"
+              chrome="planner"
               open={@delete_confirm?}
-              title="Delete this closure?"
+              title={delete_dialog_title(@delete_target)}
               confirm_label="Delete closure"
               cancel_label="Keep closure"
               pending_label="Deleting…"
@@ -3943,7 +3912,6 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
               on_cancel="cancel_delete"
               pending={@delete_pending?}
               described_by="closure-delete-body"
-              confirm_variant="primary"
               return_focus_id="delete-closure"
             >
               <div id="closure-delete-body">
@@ -3969,7 +3937,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                     </dd>
                   </dl>
                   <p class="mt-3">
-                    Deleting changes this version immediately.
+                    Changes apply to {@current_gtfs_version.name}, a published version, as soon as you delete.
                     <span id="closure-delete-calendar-note">{@delete_target.calendar_label}</span>
                     stays unchanged.
                   </p>
@@ -4018,7 +3986,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                   phx-value-view={to_string(view)}
                   aria-pressed={to_string(@floorplan_view == view)}
                   class={[
-                    "inline-flex min-h-11 items-center gap-1.5 px-3.5 text-[13px] font-[650] text-base-content hover:bg-canvas aria-pressed:bg-strong aria-pressed:text-white",
+                    "inline-flex min-h-11 items-center gap-1.5 px-3.5 text-[13px] font-[650] text-strong hover:bg-canvas aria-pressed:bg-strong aria-pressed:font-bold aria-pressed:text-white",
                     view == :list && "border-l border-control"
                   ]}
                 >
@@ -4069,21 +4037,102 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
     """
   end
 
-  # The editor's controls carry the design system's control treatment, plus the
-  # invalid state the input component marks with `aria-invalid`.
-  defp control_class do
-    "h-11 w-full rounded-control border border-control bg-white px-3 text-sm text-strong " <>
-      "aria-[invalid=true]:border-2 aria-[invalid=true]:border-error"
+  # The status line of the closures panel: the outcome of the last thing the
+  # reader did, in the panel's own words. It stays in the DOM, empty and hidden,
+  # so a later message is announced by the region that already exists.
+  attr :message, :string, default: nil
+  attr :class, :string, default: nil
+
+  defp editor_status(assigns) do
+    ~H"""
+    <p
+      id="evolutions-status"
+      role="status"
+      aria-live="polite"
+      class={["text-sm text-strong", @class, !@message && "hidden"]}
+    >
+      {@message}
+    </p>
+    """
   end
 
-  defp time_class do
-    "h-11 w-[6.5rem] rounded-control border border-control bg-white px-3 font-mono " <>
-      "text-sm tabular-nums text-strong aria-[invalid=true]:border-2 aria-[invalid=true]:border-error"
+  # The window of a closure is one pair: two narrow time inputs with their
+  # labels above them, one help line and one error line for both. Each input
+  # still carries its own `aria-invalid`, so the focus and error summary flows
+  # land on the field that is wrong; the messages of both are listed under the
+  # pair, where they have the panel's width to read in.
+  attr :start_field, Phoenix.HTML.FormField, required: true
+  attr :end_field, Phoenix.HTML.FormField, required: true
+
+  defp window_pair(assigns) do
+    errors =
+      for field <- [assigns.start_field, assigns.end_field],
+          message <- field.errors,
+          do: "#{window_field_label(field)}: #{translate_error(message)}"
+
+    describedby =
+      if errors == [], do: "closure-window-help", else: "closure-window-help closure-window-error"
+
+    assigns = assign(assigns, errors: errors, describedby: describedby)
+
+    ~H"""
+    <fieldset id="closure-window" class="min-w-0" aria-describedby={@describedby}>
+      <legend class="text-[13px] font-[650] text-strong">Closure window</legend>
+      <div class="mt-2 grid grid-cols-2 gap-3 sm:max-w-[21rem]">
+        <div :for={{field, id, label} <- window_inputs(assigns)} class="fieldset">
+          <label>
+            <span class="label">{label}</span>
+            <input
+              type="text"
+              id={id}
+              name={field.name}
+              value={Phoenix.HTML.Form.normalize_value("text", field.value)}
+              inputmode="numeric"
+              autocomplete="off"
+              spellcheck="false"
+              aria-invalid={to_string(field.errors != [])}
+              phx-debounce="blur"
+              class="w-full input tabular-nums"
+            />
+          </label>
+        </div>
+      </div>
+      <p id="closure-window-help" class="mt-1.5 text-[13px] text-muted">
+        Service time, 24-hour. For 2 AM the next day, enter 26:00.
+      </p>
+      <p
+        :if={@errors != []}
+        id="closure-window-error"
+        class="mt-1.5 flex flex-col gap-1 text-[13px] font-semibold text-error-fg"
+      >
+        <span :for={message <- @errors} class="flex items-start gap-1.5">
+          <.icon name="hero-exclamation-circle" class="mt-px size-4 shrink-0" />
+          <span>{message}</span>
+        </span>
+      </p>
+    </fieldset>
+    """
   end
 
+  defp window_inputs(assigns) do
+    [
+      {assigns.start_field, "closure-start", "Starts at"},
+      {assigns.end_field, "closure-end", "Ends at"}
+    ]
+  end
+
+  defp window_field_label(%{field: :start_time}), do: "Starts at"
+  defp window_field_label(%{field: :end_time}), do: "Ends at"
+
+  # The delete confirmation's title names the saved row it would remove.
+  defp delete_dialog_title(%{pathway_label: label}), do: "Delete the closure on #{label}?"
+  defp delete_dialog_title(_target), do: "Delete this closure?"
+
+  # The note is the one field `<.input>` gives no design-system height, so its
+  # class carries the control boundary and the 2px invalid border itself.
   defp textarea_class do
     "min-h-16 w-full resize-y rounded-control border border-control bg-white px-3 py-2.5 text-sm " <>
-      "text-strong aria-[invalid=true]:border-2 aria-[invalid=true]:border-error"
+      "text-strong aria-[invalid=true]:border-2 aria-[invalid=true]:border-error-line"
   end
 
   # Why the access preview cannot be offered yet, or nil when it can. A new

@@ -445,7 +445,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
       assert has_element?(
                view,
                "#preview-result-body",
-               "Elevator ACCESS PW/LIFT 1 (Mezzanine hall ↔ Platform 1) is closed 09:00–15:00."
+               "Elevator · Mezzanine hall ↔ Platform 1 (ACCESS PW/LIFT 1) is closed 09:00–15:00."
              )
 
       assert has_element?(
@@ -465,10 +465,36 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
       assert has_element?(
                view,
                "#preview-moment",
-               "Friday, January 15, 2027 · 12:00 service time (12:00 PM UTC-05:00)"
+               "Friday, January 15, 2027 · 12:00 service time (12:00 PM)"
              )
 
       assert view |> element("#preview-computed") |> render() =~ "Calculated "
+
+      # The verdict is a result card: the tone rides on a badge with words, the
+      # pathway is named Mode · From ↔ To, and its ID is quiet mono text. The
+      # agency zone and offset are secondary text after the moment.
+      assert has_element?(view, "#preview-result [data-tone='error']", "Access interrupted")
+      assert has_element?(view, "#preview-result-body .font-mono", @lift_pathway_id)
+      assert has_element?(view, "#preview-moment .text-muted", "America/New_York · UTC-05:00")
+      assert view |> element("#preview-zone") |> render() =~ "25:00 means 1 AM"
+      assert has_element?(view, "#preview-zone .font-mono", "America/New_York")
+
+      # A table stays quiet in its common case: Available is coloured text and
+      # an icon, and only Lost takes a tinted badge. A pair with no route even
+      # without closures is a muted consequence, not a second problem.
+      doc = LazyHTML.from_fragment(html)
+      lost = LazyHTML.query(doc, "#findings-table [data-connection-state='lost']")
+      available = LazyHTML.query(doc, "#findings-table [data-connection-state='available']")
+      gap = LazyHTML.query(doc, "#findings-table [data-connection-state='gap']")
+
+      refute Enum.empty?(lost)
+      assert Enum.all?(LazyHTML.attribute(lost, "data-tone"), &(&1 == "error"))
+      assert LazyHTML.attribute(available, "data-tone") == []
+      assert LazyHTML.attribute(gap, "data-tone") == []
+
+      refute Enum.any?(LazyHTML.attribute(available, "class"), &(&1 =~ "bg-"))
+      refute Enum.any?(LazyHTML.attribute(gap, "class"), &(&1 =~ "bg-"))
+      refute has_element?(view, "#evolutions .rounded-full")
 
       # The coverage disclaimer never claims more than the evaluation does.
       assert has_element?(
@@ -626,7 +652,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
       assert has_element?(view, "#preview-result-title", "No connection lost at this time")
       assert has_element?(view, "#preview-result-body", "No closure is active.")
       assert has_element?(view, "#preview-causes", "No closure is active at")
-      assert has_element?(view, "#preview-moment", "16:00 service time (4:00 PM UTC-05:00)")
+      assert has_element?(view, "#preview-moment", "16:00 service time (4:00 PM)")
       refute html =~ "No step-free route"
 
       # The form shows the moment the page now describes.
@@ -825,6 +851,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsAccessLiveTest do
 
       assert has_element?(view, "#analysis-incomplete", "Access check incomplete")
       assert has_element?(view, "#incomplete-reasons", "no entrance")
+      refute has_element?(view, "#incomplete-reasons", "location_type")
       assert has_element?(view, "#findings-incomplete-badge", "Incomplete")
 
       # No banner and no success claim; the pairs that could be computed are

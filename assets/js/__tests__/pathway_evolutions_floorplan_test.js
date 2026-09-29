@@ -12,7 +12,7 @@ import FloorplanHook, {
 // cross-level elevator whose far endpoint is on another level.
 const STOPS = [
   { stop_id: "FP_ENTRANCE", name: "North entrance", type: 2, x: 20, y: 15 },
-  { stop_id: "FP_MEZZANINE", name: "Mezzanine hall", type: 0, x: 50, y: 30 },
+  { stop_id: "FP_MEZZANINE", name: "Mezzanine hall", type: 3, x: 50, y: 30 },
   { stop_id: "FP_PLATFORM", name: "Platform 1", type: 0, x: 78, y: 55 },
   { stop_id: "FP_STREET", name: "Street landing", type: 2, x: 45, y: 55 },
 ];
@@ -218,7 +218,7 @@ describe("buildFloorplanSvg", () => {
     const group = groupFor(container, LIFT_ID);
     const line = group.querySelector("line.evo-fp-line");
 
-    expect(line.className).toContain("stroke-evo-closed");
+    expect(line.className).toContain("stroke-error-line");
     expect(line.getAttribute("stroke-dasharray")).toBe("7 5");
     expect(group.querySelector(".evo-fp-closed-marker")).not.toBeNull();
     expect(group.querySelector(".evo-fp-closed-word").textContent).toBe("Closed");
@@ -229,7 +229,7 @@ describe("buildFloorplanSvg", () => {
     const lift = groupFor(container, LIFT_ID);
 
     expect(lift.querySelector(".evo-fp-dot")).not.toBeNull();
-    expect(lift.querySelector("line.evo-fp-line").className).not.toContain("stroke-evo-closed");
+    expect(lift.querySelector("line.evo-fp-line").className).not.toContain("stroke-error-line");
     expect(groupFor(container, WALK_ID).querySelector(".evo-fp-dot")).toBeNull();
   });
 
@@ -250,19 +250,68 @@ describe("buildFloorplanSvg", () => {
     expect(groups).toHaveLength(2);
     expect(groups[0].dataset.pathwayId).toBe("FP/PW LIFT");
     expect(groups[1].dataset.pathwayId).toBe("FP/PW LIFT 2");
-    expect(groups[1].querySelector("line.evo-fp-line").className).toContain("stroke-evo-closed");
+    expect(groups[1].querySelector("line.evo-fp-line").className).toContain("stroke-error-line");
   });
 
-  it("draws entrances as squares and other stops as dots, hiding a marker's own node", () => {
+  it("draws entrances as squares and junctions as dots, hiding a marker's own stop", () => {
     const container = render(buildFloorplanSvg({ stops: STOPS, pathways: PATHWAYS }));
     const entrance = container.querySelector(".evo-fp-entrance");
     const nodes = [...container.querySelectorAll(".evo-fp-node")];
 
-    expect(entrance.getAttribute("x")).toBe("18.5");
-    expect(entrance.getAttribute("y")).toBe("13.5");
-    // FP_PLATFORM is the cross-level marker's own stop, so it has no node.
+    expect(entrance.getAttribute("x")).toBe("18.6");
+    expect(entrance.getAttribute("y")).toBe("13.6");
+    // FP_PLATFORM is the cross-level marker's own stop, so it has no mark.
     expect(nodes).toHaveLength(1);
+    expect(container.querySelectorAll(".evo-fp-platform")).toHaveLength(0);
     expect(nodes[0].parentElement.textContent).not.toContain("Platform 1");
+  });
+
+  it("gives an entrance a halo fill with the point outline, and a platform an upright rounded rectangle", () => {
+    const stops = [
+      { stop_id: "E", name: "East entrance", type: 2, x: 20, y: 20 },
+      { stop_id: "P", name: "Bay 1", type: 0, x: 40, y: 20 },
+      { stop_id: "B", name: "Boarding", type: 4, x: 60, y: 20 },
+      { stop_id: "J", name: "Junction", type: 3, x: 80, y: 20 },
+    ];
+    const container = render(buildFloorplanSvg({ stops, pathways: [] }));
+
+    const entrance = container.querySelector(".evo-fp-entrance");
+    expect(entrance.getAttribute("class")).toContain("fill-(--diagram-label-halo)");
+    expect(entrance.getAttribute("class")).toContain("stroke-(--diagram-active-stop)");
+
+    const platform = container.querySelector(".evo-fp-platform");
+    expect(Number(platform.getAttribute("height"))).toBeGreaterThan(
+      Number(platform.getAttribute("width")),
+    );
+    expect(platform.getAttribute("rx")).not.toBeNull();
+    expect(platform.getAttribute("class")).toContain("fill-(--diagram-active-stop)");
+    expect(platform.getAttribute("class")).toContain("stroke-(--diagram-label-halo)");
+
+    const boarding = container.querySelector(".evo-fp-boarding");
+    expect(boarding.getAttribute("width")).toBe(boarding.getAttribute("height"));
+
+    expect(container.querySelectorAll(".evo-fp-node")).toHaveLength(1);
+  });
+
+  it("marks the selected pathway with a ring and a thicker line, not the ink alone", () => {
+    const selected = render(
+      buildFloorplanSvg({ stops: STOPS, pathways: PATHWAYS, selectedId: LIFT_ID }),
+    );
+    const unselected = render(buildFloorplanSvg({ stops: STOPS, pathways: PATHWAYS }));
+
+    const line = groupFor(selected, LIFT_ID).querySelector("line.evo-fp-line");
+    const plain = groupFor(unselected, LIFT_ID).querySelector("line.evo-fp-line");
+
+    expect(groupFor(selected, LIFT_ID).querySelector(".evo-fp-ring")).not.toBeNull();
+    expect(groupFor(unselected, LIFT_ID).querySelector(".evo-fp-ring")).toBeNull();
+    expect(Number(line.getAttribute("stroke-width"))).toBeGreaterThan(
+      Number(plain.getAttribute("stroke-width")),
+    );
+
+    const marker = render(
+      buildFloorplanSvg({ stops: STOPS, pathways: PATHWAYS, selectedId: CROSS_ID }),
+    );
+    expect(groupFor(marker, CROSS_ID).querySelector(".evo-fp-ring")).not.toBeNull();
   });
 
   it("adds entrance names only when the surface asks for them", () => {

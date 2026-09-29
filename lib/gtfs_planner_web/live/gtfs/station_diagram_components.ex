@@ -5964,7 +5964,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   # AC-12: the shared refusal for a deletion the closure guard refused. It
   # renders inside the surface that owns the action — the pathway drawer or the
   # child-stop drawer — keeps that surface and its values open, and links each
-  # blocked pathway to its exact Evolutions filter. `phx-mounted` moves focus to
+  # blocked pathway to its exact closures filter. `phx-mounted` moves focus to
   # the explanation when it appears; dismissing the confirmation returns focus to
   # the trigger afterwards.
   defp deletion_refusal(assigns) do
@@ -5986,6 +5986,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             class="inline-flex min-h-11 items-center font-semibold underline underline-offset-2"
           >
             {link.label}
+            <span :if={link.detail} class="ml-1.5 font-mono text-[13px] font-normal">
+              {link.detail}
+            </span>
           </.link>
         </li>
       </ul>

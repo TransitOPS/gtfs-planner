@@ -341,7 +341,7 @@ test.describe("authoring", () => {
       ).toHaveCount(1);
       await expect(
         page.locator("#station-sub-nav a[aria-current='page']"),
-      ).toHaveText("Evolutions");
+      ).toHaveText("Closures");
       await expect(
         page.locator("#main-navigation #nav-stops[aria-current='page']"),
       ).toHaveCount(1);
@@ -1224,7 +1224,7 @@ test.describe("delete", () => {
 
     await expect(page.locator("#closure-delete-dialog")).toBeVisible();
     await expect(page.locator("#closure-delete-dialog-title")).toHaveText(
-      "Delete this closure?",
+      "Delete the closure on Elevator · Mezzanine hall ↔ Platform 1?",
     );
     await expect(page.locator("#closure-delete-pathway")).toContainText(
       "Elevator · Mezzanine hall ↔ Platform 1",
@@ -2846,7 +2846,7 @@ test.describe("guards", () => {
   // These cases write nothing: the seeded lift and stair closures stay, so no
   // later case sees a station whose closure set this group changed.
   test.describe("floorplan deletions", () => {
-    test("refuses a closure-backed pathway delete and opens its scoped Evolutions filter", async ({
+    test("refuses a closure-backed pathway delete and opens its scoped closures filter", async ({
       page,
     }, testInfo) => {
       const versionId = await seededVersionId(page);
@@ -2874,7 +2874,7 @@ test.describe("guards", () => {
       await expect(refusal).toBeFocused();
       await expect(refusal).toContainText("Pathway not deleted");
       await expect(refusal).toContainText(
-        "This pathway has scheduled closures. Delete them on the Evolutions tab first.",
+        "This pathway has scheduled closures. Delete them on the station’s Closures tab first.",
       );
 
       // The exact natural ID travels in the data attribute and in the encoded
@@ -2889,7 +2889,7 @@ test.describe("guards", () => {
         "href",
         `/gtfs/${versionId}/stops/${STATION}/evolutions?pathway=BROWSER_EVO%2FPW+LIFT+1`,
       );
-      await expect(link).toContainText("Open Evolutions");
+      await expect(link).toContainText("Open closures");
 
       // The drawer keeps the pathway it loaded, the confirmation it replaced is
       // closed, and no pathway was removed.
@@ -2975,7 +2975,7 @@ test.describe("guards", () => {
       await expect(refusal).toBeFocused();
       await expect(refusal).toContainText("Stop not deleted");
       await expect(refusal).toContainText(
-        "A pathway connected to this stop has scheduled closures. Delete them on the Evolutions tab first.",
+        "A pathway connected to this stop has scheduled closures. Delete them on the station’s Closures tab first.",
       );
 
       // The mezzanine is an endpoint of both closure-backed pathways, so each
@@ -3127,6 +3127,9 @@ test.describe("preview", () => {
       await expect(page.locator("#preview-zone")).toContainText(
         "25:00 means 1 AM on the next day of this service",
       );
+      // The zone is the stored identifier, so it is secondary text, and the
+      // moment line leaves the UTC offset out of its sentence.
+      await expect(page.locator("#preview-moment")).not.toContainText("(12:00 PM UTC");
 
       // The elevator is closed 09:00-15:00: Platform 1 loses its step-free
       // connection in both directions and keeps walking over the staircase.
@@ -3176,7 +3179,7 @@ test.describe("preview", () => {
 
       const body = page.locator("#preview-result-body");
       await expect(body).toContainText(
-        "Elevator BROWSER_EVO/PW LIFT 1 (Mezzanine hall ↔ Platform 1) is closed 09:00–15:00.",
+        "Elevator · Mezzanine hall ↔ Platform 1 (BROWSER_EVO/PW LIFT 1) is closed 09:00–15:00.",
       );
       await expect(body).toContainText(
         "Walking connections to and from Platform 1 remain.",
@@ -3977,7 +3980,10 @@ test.describe("range", () => {
 
       const first = page.locator("#range-periods-table tbody tr").first();
 
-      await expect(first.locator("[id$='-when']")).toHaveText("9:00 AM – 3:00 PM");
+      // The window leads in service time, as the closure list and the
+      // timeline do; the clock time is the secondary line.
+      await expect(first.locator("[id$='-when']")).toContainText("09:00–15:00");
+      await expect(first.locator("[id$='-when']")).toContainText("9:00 AM – 3:00 PM");
       await expect(first).toContainText("No step-free route to Platform 1");
       await expect(first).toContainText(
         "Step-free to platform · North entrance ↔ Platform 1",
@@ -4693,7 +4699,7 @@ test.describe("journey", () => {
       "available",
     );
     await expect(page.locator("#preview-result-body")).toContainText(
-      "Elevator BROWSER_EVO/PW LIFT 1 (Mezzanine hall ↔ Platform 1) is closed 16:00–17:00.",
+      "Elevator · Mezzanine hall ↔ Platform 1 (BROWSER_EVO/PW LIFT 1) is closed 16:00–17:00.",
     );
     await expect(page.locator("#preview-result-body")).toContainText(
       "Walking connections to and from Platform 1 remain.",

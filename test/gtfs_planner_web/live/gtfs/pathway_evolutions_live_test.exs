@@ -230,6 +230,162 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
     }
   end
 
+  describe "the closures page frame" do
+    setup :editor_setup
+
+    test "renders the station header with the Closures tab and the station's inventory",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      assert page_title(view) =~ "Closures"
+      assert has_element?(view, "#station-tab-evolutions[aria-current='page']", "Closures")
+      assert has_element?(view, "#station-back", "Stops & stations")
+      assert has_element?(view, "#station-sub-nav", "Station · 2 platforms, 1 entrance")
+      assert has_element?(view, "#station-sub-nav .font-mono", station.stop_id)
+      refute has_element?(view, "#station-sub-nav nav a", "Evolutions")
+      assert has_element?(view, ~s(nav#evolutions-view-nav[aria-label="Closure views"]))
+    end
+
+    test "keeps the status line out of the heading and inside the editor",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      assert has_element?(
+               view,
+               "#closure-idle",
+               "Changes apply to #{version.name}, a published version, as soon as you save."
+             )
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      assert has_element?(view, "#closure-form footer #evolutions-status", "Selected closure on")
+      refute has_element?(view, "#closure-editor > #evolutions-status")
+
+      view |> element("#discard-closure") |> render_click()
+
+      assert has_element?(view, "#closure-idle #evolutions-status", "Closure closed.")
+    end
+
+    test "puts what saving will do next to the actions, in the words of the commit model",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      assert has_element?(
+               view,
+               "#closure-form footer #closure-summary-card[aria-live='polite'] #closure-summary",
+               "closes 09:00–15:00"
+             )
+
+      # A two-way pathway reopens both ways; the old wording is gone.
+      assert has_element?(view, "#closure-summary", "Reopens both ways at 15:00.")
+      refute render(view) =~ "Both directions"
+      refute render(view) =~ "both directions"
+
+      assert has_element?(
+               view,
+               "#closure-form footer #closure-scope",
+               "Changes apply to #{version.name}, a published version, as soon as you save."
+             )
+
+      assert has_element?(view, "#closure-form footer #delete-closure")
+      assert has_element?(view, "#closure-form footer #discard-closure")
+      assert has_element?(view, "#closure-form footer #save-closure")
+      # The preview link, or the reason there is none, is part of the same card.
+      assert has_element?(view, "#closure-summary-card #closure-preview-unavailable")
+    end
+
+    test "labels pathways Mode · From ↔ To with the ID after them, and says both ways",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#new-closure") |> render_click()
+
+      assert has_element?(
+               view,
+               "#closure-pathway option",
+               "Elevator · Mezzanine hall ↔ Platform 1 · #{@punctuated_pathway_id}"
+             )
+
+      assert has_element?(view, "#closure-pathway-help", "Any pathway at this station")
+
+      change_editor(view, %{"pathway_id" => @punctuated_pathway_id})
+      assert has_element?(view, "#closure-pathway-help", "Closes it both ways.")
+
+      change_editor(view, %{"pathway_id" => "PW-STAIR"})
+
+      assert has_element?(
+               view,
+               "#closure-pathway-help",
+               "Closes the stairs from Mezzanine hall to Platform 1."
+             )
+    end
+
+    test "draws the closure window as a labelled pair of tabular time inputs",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#new-closure") |> render_click()
+
+      doc = LazyHTML.from_fragment(render(view))
+
+      assert has_element?(view, "fieldset#closure-window legend", "Closure window")
+      assert has_element?(view, "fieldset#closure-window label", "Starts at")
+      assert has_element?(view, "fieldset#closure-window label", "Ends at")
+
+      assert has_element?(
+               view,
+               "#closure-window-help",
+               "Service time, 24-hour. For 2 AM the next day, enter 26:00."
+             )
+
+      refute has_element?(view, "#closure-window-error")
+
+      for id <- ["closure-start", "closure-end"] do
+        [classes] = doc |> LazyHTML.query("##{id}") |> LazyHTML.attribute("class")
+
+        assert classes =~ "tabular-nums"
+        refute classes =~ "font-mono"
+      end
+    end
+
+    test "shows a selected row's ID as quiet mono text and underlines only the name on hover",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      %{station: station, daytime: daytime} = station_with_closures(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, evolutions_path(version, station.stop_id))
+
+      view |> element("#closure-open-#{daytime.id}") |> render_click()
+
+      doc = LazyHTML.from_fragment(render(view))
+
+      [button_classes] =
+        doc |> LazyHTML.query("#closure-open-#{daytime.id}") |> LazyHTML.attribute("class")
+
+      refute button_classes =~ "underline"
+      assert button_classes =~ "min-h-11"
+      assert has_element?(view, "#closure-open-#{daytime.id} .font-mono", @punctuated_pathway_id)
+      assert has_element?(view, "#closure-open-#{daytime.id} .group-hover\\/open\\:underline")
+    end
+  end
+
   describe "the station closure list" do
     setup :editor_setup
 
@@ -665,6 +821,24 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
       assert has_element?(view, "#closure-end[value='02:00']")
       assert has_element?(view, "#closure-end[aria-invalid='true']")
       assert has_element?(view, "#closure-errors-list", "must be later than the start time")
+
+      # The pair reports once, under both inputs, and only the wrong one is
+      # marked invalid.
+      assert has_element?(view, "#closure-start[aria-invalid='false']")
+
+      assert has_element?(
+               view,
+               "#closure-window-error",
+               "Ends at: must be later than the start time"
+             )
+
+      assert Enum.count(LazyHTML.query(LazyHTML.from_fragment(html), "#closure-window-error")) ==
+               1
+
+      assert has_element?(
+               view,
+               ~s(#closure-window[aria-describedby="closure-window-help closure-window-error"])
+             )
 
       assert_push_event(view, "focus_form_error", %{
         form_id: "closure-form",
@@ -1339,7 +1513,12 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
       asked = view |> element("#delete-closure") |> render_click()
 
       assert dialog_open?(asked, "closure-delete-dialog")
-      assert has_element?(view, "#closure-delete-dialog-title", "Delete this closure?")
+
+      assert has_element?(
+               view,
+               "#closure-delete-dialog-title",
+               "Delete the closure on Elevator · Mezzanine hall ↔ Platform 1?"
+             )
 
       assert has_element?(
                view,
@@ -1352,6 +1531,14 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLiveTest do
       assert has_element?(view, "#closure-delete-window", "09:00–15:00")
       assert has_element?(view, "#closure-delete-calendar-note", "CAL_DAILY")
       assert render(view) =~ "stays unchanged."
+
+      assert has_element?(
+               view,
+               "#closure-delete-body",
+               "Changes apply to #{version.name}, a published version, as soon as you delete."
+             )
+
+      refute render(view) =~ "Deleting changes this version immediately"
       assert has_element?(view, "#closure-delete-dialog-cancel", "Keep closure")
       assert has_element?(view, "#closure-delete-dialog-confirm", "Delete closure")
 
