@@ -2284,3 +2284,16 @@ tbody#calendars-list tr:has(input[data-calendar-selected="true"]) {
 #calendar-selection-bar {
   border-color: var(--color-base-300);
 }
+
+/* ── Homepage theme ──
+   The homepage body adopts the design system's fonts and ink from
+   `.specs/26-homepage/references/planner-home-next-step.html`, scoped to
+   `#home-page` so the header and every other page keep the daisyUI palette
+   (INV-5). The components express the reference's composition with utilities;
+   the focus outline is the one rule the utilities cannot express once for the
+   whole page, and it gives every page control the same 2 px indicator the
+   reference draws (AC-34). */
+#home-page :is(a, button, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
