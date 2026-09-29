@@ -1402,6 +1402,213 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
     end
   end
 
+  describe "details advisory field warnings" do
+    setup :shared_setup
+
+    # AC-20's two-sided rule: warnings are advisory and changed-field-only, so
+    # the imported values this route already carries never warn on their own —
+    # but a changed conflicting value produces the advisory and the save still
+    # goes through the ordinary audited command.
+    test "unchanged imported values warn nothing, and a changed conflicting color advises while staying saveable",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "AG1",
+        agency_name: "Harbor Transit",
+        agency_url: "https://harbor.example.com"
+      })
+
+      route =
+        details_route(organization.id, version.id, %{
+          agency_id: "AG1",
+          route_url: "https://harbor.example.com",
+          route_desc: nil
+        })
+
+      # A saved neighbour the draft could collide with: same number once trimmed
+      # and case-folded, and a color one hex step away.
+      route_fixture(organization.id, version.id, %{
+        route_id: "OTHER1",
+        route_short_name: "p1",
+        route_color: "0B6E4E",
+        route_text_color: "FFFFFF"
+      })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      # An unrelated edit earns no advisory from any unchanged imported value.
+      view
+      |> form("#route-details-form", %{route: %{route_desc: "Runs along the waterfront."}})
+      |> render_change()
+
+      refute has_element?(view, "#route-details-short-warn")
+      refute has_element?(view, "#route-details-color-warn")
+      refute has_element?(view, "#route-details-url-warn")
+      refute has_element?(view, "#route-details-cont-warn")
+
+      # The changed conflicting color does warn, and names the neighbour.
+      view
+      |> form("#route-details-form", %{route: %{route_color: "0B6E4E"}, text_mode: "automatic"})
+      |> render_change()
+
+      assert has_element?(view, "#route-details-color-warn", "Looks like Route OTHER1 (#0B6E4E)")
+      assert has_element?(view, "#route-details-color-warn", "You can still use it.")
+
+      # Advisory, not an error: the save goes through and writes the draft.
+      view
+      |> form("#route-details-form", %{route: %{route_color: "0B6E4E"}, text_mode: "automatic"})
+      |> render_submit()
+
+      assert saved_route(route).route_color == "0B6E4E"
+      assert has_element?(view, "#route-details-saved", "Changes to Route PREVIEW1 saved.")
+      refute has_element?(view, "#route-details-color-warn")
+    end
+
+    test "duplicate and long numbers warn from the scoped saved candidates",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route =
+        details_route(organization.id, version.id, %{
+          route_short_name: "N1",
+          route_color: "0B6E4F"
+        })
+
+      route_fixture(organization.id, version.id, %{
+        route_id: "TWIN1",
+        route_short_name: "n1",
+        route_color: "123456"
+      })
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      # Trimmed and case-folded, "n1" is TWIN1's number.
+      view
+      |> form("#route-details-form", %{route: %{route_short_name: "n1"}})
+      |> render_change()
+
+      assert has_element?(view, "#route-details-short-warn", "Route TWIN1")
+      assert has_element?(view, "#route-details-short-warn", "already uses the number “n1”")
+      assert has_element?(view, "#route-details-short-warn", "You can still save.")
+
+      # A number over 12 code points earns the length note instead.
+      view
+      |> form("#route-details-form", %{route: %{route_short_name: "1234567890123"}})
+      |> render_change()
+
+      assert has_element?(view, "#route-details-short-warn", "longer than 12 characters")
+      refute has_element?(view, "#route-details-short-warn", "TWIN1")
+    end
+
+    test "the agency home page warns by exact normalized comparison",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      agency_fixture(organization.id, version.id, %{
+        agency_id: "AG1",
+        agency_name: "Harbor Transit",
+        agency_url: "https://harbor.example.com"
+      })
+
+      route = details_route(organization.id, version.id, %{})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      # Case and a trailing slash do not make the agency home page a route page.
+      view
+      |> form("#route-details-form", %{route: %{route_url: "HTTPS://HARBOR.Example.com/"}})
+      |> render_change()
+
+      assert has_element?(view, "#route-details-url-warn", "This is Harbor Transit’s home page")
+      assert has_element?(view, "#route-details-url-warn", "such as its timetable")
+
+      view
+      |> form("#route-details-form", %{route: %{route_url: "https://harbor.example.com/d1"}})
+      |> render_change()
+
+      refute has_element?(view, "#route-details-url-warn")
+    end
+
+    # R7: enabled continuous boarding with *known* missing paths warns with the
+    # pattern count; unknown geometry (a referenced stop that does not exist) is
+    # unavailable and is never reported missing.
+    test "continuous boarding warns with known missing paths and never fabricates them from unavailable geometry",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route =
+        details_route(organization.id, version.id, %{
+          route_id: "CONT1",
+          route_short_name: "C1"
+        })
+
+      pattern =
+        route_pattern_fixture(organization.id, version.id, %{
+          route_pattern_id: "cp1",
+          route_id: "CONT1"
+        })
+
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "located",
+        stop_lat: Decimal.new("1.0"),
+        stop_lon: Decimal.new("2.0")
+      })
+
+      # A stored stop whose coordinates are absent: the path between the two is
+      # known missing. An occurrence naming a stop with no row is unknown
+      # geometry instead.
+      Repo.insert!(%GtfsPlanner.Gtfs.Stop{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        stop_id: "unmapped",
+        stop_name: "Stored without coordinates"
+      })
+
+      route_pattern_stop_fixture(pattern, "located", 1)
+      route_pattern_stop_fixture(pattern, "unmapped", 2)
+      route_pattern_stop_fixture(pattern, "ghost", 3)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      # Enabling continuous boarding turns the known gap into one advisory with
+      # its own action, and the count names the one pattern that is truly
+      # affected — the unknown occurrence is unavailable, not missing.
+      view
+      |> form("#route-details-form", %{route: %{continuous_pickup: "0"}})
+      |> render_change()
+
+      assert has_element?(
+               view,
+               "#route-details-cont-warn",
+               "1 pattern has sections without a path"
+             )
+
+      assert has_element?(
+               view,
+               "#route-details-cont-warn",
+               "boarding between stops applies there"
+             )
+
+      href =
+        view
+        |> element("#route-details-cont-warn")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("a")
+        |> LazyHTML.attribute("href")
+        |> List.first()
+
+      assert href == "/gtfs/#{version.id}/routes/CONT1/patterns"
+
+      # Turning boarding off again silences the advisory without a save.
+      view
+      |> form("#route-details-form", %{route: %{continuous_pickup: "1"}})
+      |> render_change()
+
+      refute has_element?(view, "#route-details-cont-warn")
+
+      # And an unrelated edit warns nothing, even with the gap still in place.
+      view
+      |> form("#route-details-form", %{route: %{route_desc: "A description."}})
+      |> render_change()
+
+      refute has_element?(view, "#route-details-cont-warn")
+    end
+  end
+
   defp link_href(view, selector) do
     view
     |> element(selector)

@@ -667,18 +667,22 @@ defmodule GtfsPlanner.Gtfs.Routes do
 
   `agencies` and `mode_counts` are the same scoped reads `route_editor/3` builds
   for Details, so the create drawer and the Details workspace share one
-  definition of "the agencies this version has" and "the modes it uses". No
-  geometry query and no write runs here.
+  definition of "the agencies this version has" and "the modes it uses".
+  `warning_candidates` is the same projection Details warns against, so the
+  drawer's new values are evaluated against exactly the saved routes a save
+  would collide with. No geometry query and no write runs here.
   """
   @spec route_creation_options(Ecto.UUID.t(), Ecto.UUID.t()) :: %{
           agencies: [agency_option()],
-          mode_counts: [mode_count()]
+          mode_counts: [mode_count()],
+          warning_candidates: [warning_candidate()]
         }
   def route_creation_options(organization_id, gtfs_version_id)
       when is_binary(organization_id) and is_binary(gtfs_version_id) do
     %{
       agencies: agency_options(organization_id, gtfs_version_id),
-      mode_counts: mode_counts(organization_id, gtfs_version_id)
+      mode_counts: mode_counts(organization_id, gtfs_version_id),
+      warning_candidates: warning_candidates(organization_id, gtfs_version_id)
     }
   end
 

@@ -74,6 +74,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
      |> assign(:new_route_form, nil)
      |> assign(:agency_options, [])
      |> assign(:new_route_mode_counts, [])
+     |> assign(:warning_candidates, [])
+     |> assign(:field_warnings, RouteFormComponents.field_warnings(%{}))
      |> assign(:new_route_attempt, nil)
      |> assign(:new_route_id_mode, :auto)
      |> assign(:new_route_id_suggestion, nil)
@@ -935,6 +937,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
         blocked?={@new_route_blocked?}
         failure={@new_route_failure}
         agency_required?={@new_route_agency_required?}
+        field_warnings={@field_warnings}
         version={@current_gtfs_version}
       />
 
@@ -1138,6 +1141,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   attr :blocked?, :boolean, default: false
   attr :failure, :any, default: nil
   attr :agency_required?, :boolean, default: false
+
+  attr :field_warnings, :map,
+    default: %{},
+    doc: "the draft's `RouteFormComponents.field_warnings/1` advisories"
+
   attr :version, :any, required: true
 
   # The create drawer is the reference's `create-drawer` composed from the
@@ -1276,12 +1284,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
             prefix="new-route"
             mode_counts={@mode_counts}
             agency_options={@agency_options}
+            short_warning={@field_warnings[:short]}
           />
 
           <RouteFormComponents.color_fields
             form={@form}
             prefix="new-route"
             text_mode={@text_mode}
+            similar_warning={@field_warnings[:similar]}
           />
 
           <%!-- Natural ID is creation-only (R1): the drawer either shows the
@@ -1717,6 +1727,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       socket
       |> assign(:agency_options, options.agencies)
       |> assign(:new_route_mode_counts, options.mode_counts)
+      |> assign(:warning_candidates, options.warning_candidates)
+      |> assign(:field_warnings, RouteFormComponents.field_warnings(%{}))
       |> assign(:new_route_attempt, sign_creation_attempt(socket))
       |> assign(:new_route_id_mode, :auto)
       |> assign(:new_route_id_suggestion, nil)
@@ -1779,9 +1791,25 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
       |> then(&new_route_draft_changeset(socket, &1))
       |> then(&if action, do: Map.put(&1, :action, action), else: &1)
 
+    draft_route = Changeset.apply_changes(changeset)
+
     socket
     |> assign(:new_route_form, to_form(changeset, as: :route))
     |> assign(:new_route_text_mode, text_mode)
+    |> assign(
+      :field_warnings,
+      # Creation evaluates its new values against the scoped saved routes
+      # (AC-20): no current UUID to exclude, and every entered field is a
+      # changed one. The drawer has no boarding controls, so no geometry read
+      # belongs here.
+      RouteFormComponents.field_warnings(%{
+        draft: draft_route,
+        changed: :all,
+        current_uuid: nil,
+        candidates: socket.assigns.warning_candidates,
+        agencies: socket.assigns.agency_options
+      })
+    )
     |> assign(:new_route_dirty?, new_route_dirty?(attrs, text_mode))
   end
 

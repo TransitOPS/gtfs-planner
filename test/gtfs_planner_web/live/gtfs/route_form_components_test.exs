@@ -511,4 +511,239 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponentsTest do
       assert text(details, "#route-details-color-help") =~ "blank means white"
     end
   end
+
+  describe "advisory field warnings computation" do
+    # `field_warnings/1` is the one pure function both mounting surfaces call,
+    # so the prototype's rules are asserted here once: trim/case-fold
+    # duplicates over 12 code points, CIE76 similarity over nonwhite colors,
+    # exact normalized agency-home URLs, boarding against known-missing paths,
+    # and the changed-field gate that keeps untouched imported values quiet.
+    @candidates [
+      %{id: "uuid-a", route_id: "E1", route_short_name: "14", route_color: "2060C2"},
+      %{id: "uuid-b", route_id: "W1", route_short_name: " White ", route_color: "FFFFFF"},
+      %{id: "uuid-c", route_id: "N0", route_short_name: nil, route_color: nil}
+    ]
+
+    @agencies [
+      %{agency_id: "NCT", agency_name: "North City Transit", agency_url: "https://nct.example"}
+    ]
+
+    test "creation evaluates every new value with no UUID excluded" do
+      warnings =
+        RouteFormComponents.field_warnings(%{
+          draft: %{route_short_name: "  14  ", route_color: "2060c3", route_url: nil},
+          changed: :all,
+          current_uuid: nil,
+          candidates: @candidates,
+          agencies: @agencies
+        })
+
+      assert warnings.short == %{kind: :duplicate, route: Enum.at(@candidates, 0)}
+      assert warnings.similar.route.route_id == "E1"
+      assert warnings.url == nil
+      assert warnings.boarding == nil
+    end
+
+    test "the current UUID is excluded from the saved candidates" do
+      warnings =
+        RouteFormComponents.field_warnings(%{
+          draft: %{route_short_name: "14", route_color: "2060C2"},
+          changed: :all,
+          current_uuid: "uuid-a",
+          candidates: @candidates,
+          agencies: @agencies
+        })
+
+      # The draft matching its own saved row is not a collision.
+      assert warnings.short == nil
+      assert warnings.similar == nil
+    end
+
+    test "a number over 12 code points warns only when it is not a duplicate" do
+      long_number = "1234567890123"
+
+      plain =
+        RouteFormComponents.field_warnings(%{
+          draft: %{route_short_name: long_number},
+          changed: :all,
+          candidates: @candidates
+        })
+
+      assert plain.short == %{kind: :too_long}
+
+      # Duplicate takes precedence: a trimmed, case-folded match is the more
+      # concrete confusion, whatever its length.
+      duplicated =
+        RouteFormComponents.field_warnings(%{
+          draft: %{route_short_name: long_number},
+          changed: :all,
+          candidates: [%{id: "uuid-d", route_id: "L1", route_short_name: long_number}]
+        })
+
+      assert duplicated.short.kind == :duplicate
+      assert duplicated.short.route.route_id == "L1"
+    end
+
+    test "similarity compares valid nonwhite colors and names the nearest" do
+      warnings =
+        RouteFormComponents.field_warnings(%{
+          draft: %{route_color: "D32F2F"},
+          changed: :all,
+          candidates: [
+            %{id: "uuid-e", route_id: "FAR", route_short_name: "1", route_color: "1A73E8"},
+            %{id: "uuid-f", route_id: "NEAR", route_short_name: "2", route_color: "c0392b"}
+          ]
+        })
+
+      assert warnings.similar.route.route_id == "NEAR"
+
+      # An unusable draft color is the changeset's error, not a warning.
+      invalid =
+        RouteFormComponents.field_warnings(%{
+          draft: %{route_color: "6A1B9"},
+          changed: :all,
+          candidates: @candidates
+        })
+
+      assert invalid.similar == nil
+    end
+
+    test "the agency home URL compares normalized and falls back to a lone agency" do
+      exact =
+        RouteFormComponents.field_warnings(%{
+          draft: %{route_url: "HTTPS://NCT.Example/"},
+          changed: :all,
+          agencies: @agencies
+        })
+
+      assert exact.url.agency.agency_name == "North City Transit"
+
+      deeper =
+        RouteFormComponents.field_warnings(%{
+          draft: %{route_url: "https://nct.example/routes/14"},
+          changed: :all,
+          agencies: @agencies
+        })
+
+      assert deeper.url == nil
+
+      # With no agency selected, the version's only agency is the comparison.
+      unassigned =
+        RouteFormComponents.field_warnings(%{
+          draft: %{route_url: "https://nct.example", agency_id: nil},
+          changed: :all,
+          agencies: @agencies
+        })
+
+      assert unassigned.url != nil
+
+      many =
+        RouteFormComponents.field_warnings(%{
+          draft: %{route_url: "https://nct.example", agency_id: nil},
+          changed: :all,
+          agencies:
+            Enum.concat(@agencies, [%{agency_id: "CTR", agency_name: "C", agency_url: nil}])
+        })
+
+      assert many.url == nil
+    end
+
+    test "boarding warns from known missing paths and never from unknown geometry" do
+      enabled = %{continuous_pickup: 0, continuous_drop_off: 1}
+
+      missing =
+        RouteFormComponents.field_warnings(%{
+          draft: enabled,
+          changed: :all,
+          geometry: %{patterns_missing: 2}
+        })
+
+      assert missing.boarding == %{patterns_missing: 2}
+
+      # Boarding that is off everywhere has no advisory to earn.
+      disabled =
+        RouteFormComponents.field_warnings(%{
+          draft: %{continuous_pickup: 1, continuous_drop_off: 1},
+          changed: :all,
+          geometry: %{patterns_missing: 2}
+        })
+
+      assert disabled.boarding == nil
+
+      # A failed map read is unknown geometry: no path is fabricated as missing.
+      unavailable =
+        RouteFormComponents.field_warnings(%{
+          draft: enabled,
+          changed: :all,
+          geometry: :unavailable
+        })
+
+      assert unavailable.boarding == nil
+    end
+
+    test "Details warns only about changed relevant fields" do
+      draft = %{
+        route_short_name: "14",
+        route_color: "2060C2",
+        route_url: "https://nct.example",
+        continuous_pickup: 0
+      }
+
+      quiet =
+        RouteFormComponents.field_warnings(%{
+          draft: draft,
+          changed: [:route_desc],
+          current_uuid: "uuid-z",
+          candidates: @candidates,
+          agencies: @agencies,
+          geometry: %{patterns_missing: 3}
+        })
+
+      assert quiet == %{short: nil, similar: nil, url: nil, boarding: nil}
+
+      # The one field that changed earns exactly its own advisory.
+      color_changed =
+        RouteFormComponents.field_warnings(%{
+          draft: draft,
+          changed: [:route_color],
+          current_uuid: "uuid-z",
+          candidates: @candidates,
+          agencies: @agencies,
+          geometry: %{patterns_missing: 3}
+        })
+
+      assert color_changed.similar.route.route_id == "E1"
+      assert color_changed.short == nil
+      assert color_changed.url == nil
+      assert color_changed.boarding == nil
+    end
+  end
+
+  describe "advisory field warning rendering" do
+    test "the number advisory renders under the name fields and is announced" do
+      d =
+        doc(
+          identity(create_form(%{"route_short_name" => "14"}),
+            short_warning: %{kind: :duplicate, route: %{route_id: "E1", route_short_name: "14"}}
+          )
+        )
+
+      assert ids(d, "#new-route-short-warn") == ["new-route-short-warn"]
+      assert text(d, "#new-route-short-warn") =~ "Route E1"
+      assert text(d, "#new-route-short-warn") =~ "already uses the number “14”"
+      assert text(d, "#new-route-short-warn") =~ "You can still save."
+      assert attrs(d, "#new-route-short", "aria-describedby") == ["new-route-short-warn"]
+    end
+
+    test "a clean draft renders no warning boxes and names no advisory" do
+      d = doc(identity(create_form(%{"route_short_name" => "15"})))
+
+      assert ids(d, "#new-route-short-warn") == []
+
+      refute Enum.any?(
+               attrs(d, "#new-route-short", "aria-describedby"),
+               &String.contains?(&1, "warn")
+             )
+    end
+  end
 end

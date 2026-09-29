@@ -102,10 +102,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
      |> assign(:route_form, nil)
      |> assign(:agencies, [])
      |> assign(:mode_counts, [])
+     |> assign(:warning_candidates, [])
+     |> assign(:geometry_status, nil)
      |> assign(:last_saved, nil)
      |> assign(:draft_route, nil)
      |> assign(:route_text_mode, nil)
      |> assign(:changed_fields, [])
+     |> assign(:field_warnings, field_warnings_for_clean_load(nil, [], [], nil))
      |> assign(:merge, nil)
      |> assign(:save_outcome, nil)
      |> assign(:pending_navigation, nil)
@@ -174,7 +177,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # Cancel restores the saved row and its preview; during a merge it reloads
   # the latest saved values instead, because the route's saved truth has moved
   # on from the row the draft was started from. Either way it writes nothing
-  # (AC-19/AC-21).
+  # (AC-19/AC-21), and the advisories go back to the loaded workspace's.
   @impl true
   def handle_event("discard_route_details", _params, socket) do
     if socket.assigns.merge do
@@ -187,7 +190,16 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
        |> assign(:route_form, route_form(route))
        |> assign(:draft_route, route)
        |> assign(:route_text_mode, nil)
-       |> assign(:changed_fields, [])}
+       |> assign(:changed_fields, [])
+       |> assign(
+         :field_warnings,
+         field_warnings_for_clean_load(
+           route,
+           socket.assigns.agencies,
+           socket.assigns.warning_candidates,
+           socket.assigns.geometry_status
+         )
+       )}
     end
   end
 
@@ -375,16 +387,32 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         assign(socket, :route_state, :unavailable)
 
       {:ok, workspace} ->
+        geometry_status =
+          organization_id
+          |> Gtfs.route_map(gtfs_version_id, workspace.route.route_id)
+          |> geometry_status()
+
         socket
         |> assign(:route, workspace.route)
         |> assign(:source, workspace.source)
         |> assign(:agencies, workspace.agencies)
         |> assign(:mode_counts, workspace.mode_counts)
+        |> assign(:warning_candidates, workspace.warning_candidates)
+        |> assign(:geometry_status, geometry_status)
         |> assign(:last_saved, workspace.last_saved)
         |> assign(:route_form, route_form(workspace.route))
         |> assign(:draft_route, workspace.route)
         |> assign(:route_text_mode, nil)
         |> assign(:changed_fields, [])
+        |> assign(
+          :field_warnings,
+          field_warnings_for_clean_load(
+            workspace.route,
+            workspace.agencies,
+            workspace.warning_candidates,
+            geometry_status
+          )
+        )
         |> assign(:merge, nil)
         |> assign(:save_outcome, nil)
         |> assign(:route_state, :ready)
@@ -395,6 +423,33 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         )
     end
   end
+
+  # A freshly loaded workspace warns about nothing: the saved row is not a
+  # draft, so imported values are presented without an advisory the operator
+  # did not earn (AC-20). The map read fails independently of the editor read:
+  # its failure only silences the boarding advisory, never the workspace.
+  defp field_warnings_for_clean_load(route, agencies, candidates, geometry_status) do
+    RouteFormComponents.field_warnings(%{
+      draft: route || %{},
+      changed: [],
+      current_uuid: (route && route.id) || nil,
+      candidates: candidates,
+      agencies: agencies,
+      geometry: geometry_status
+    })
+  end
+
+  # The boarding advisory's own count comes from the step-17 map projection:
+  # patterns whose connector sections are known missing. A failed read is
+  # `:unavailable` — unknown geometry is never reported as missing (R7).
+  defp geometry_status({:ok, route_map}) do
+    %{patterns_missing: Enum.count(route_map.patterns, &pattern_missing_paths?/1)}
+  end
+
+  defp geometry_status({:error, _failure}), do: :unavailable
+
+  defp pattern_missing_paths?(%{sections: sections}),
+    do: Enum.any?(sections, &(&1.status == :missing))
 
   # The saved route rendered through the same editor changeset a save will use,
   # with no submitted values: the controls read the persisted row, and the form
@@ -535,6 +590,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         |> assign(:last_saved, workspace.last_saved)
         |> assign(:agencies, workspace.agencies)
         |> assign(:mode_counts, workspace.mode_counts)
+        |> assign(:warning_candidates, workspace.warning_candidates)
 
       _failure ->
         socket
@@ -646,27 +702,57 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
   defp detail_attrs(payload), do: payload
 
-  # One draft, three projections of it: the form the operator keeps editing, the
-  # saved row with the valid changes applied (the header/chip preview), and the
-  # fields a save would change (the save bar). The dirty set is the changeset's
-  # own changes, so the bar and the save path cannot disagree about what changed.
+  # One draft, four projections of it: the form the operator keeps editing, the
+  # saved row with the valid changes applied (the header/chip preview), the
+  # fields a save would change (the save bar), and the advisories the changed
+  # values earn (AC-20). The dirty set is the changeset's own changes, so the
+  # bar, the warnings and the save path cannot disagree about what changed.
   defp assign_details_draft(socket, attrs, action) do
     changeset =
       socket.assigns.route
       |> Route.editor_changeset(attrs, :edit)
       |> Map.put(:action, action)
 
+    changed = changed_fields(changeset)
+    draft_route = Changeset.apply_changes(changeset)
+
     socket
     |> assign(:route_form, to_form(changeset, as: :route))
     |> assign(:route_text_mode, attrs["text_mode"])
-    |> assign(:draft_route, Changeset.apply_changes(changeset))
-    |> assign(:changed_fields, changed_fields(changeset))
+    |> assign(:draft_route, draft_route)
+    |> assign(:changed_fields, changed)
+    |> assign(:field_warnings, field_warnings(socket, draft_route, changed))
+  end
+
+  # The draft's own advisories: computed from the same applied draft the header
+  # previews, against the workspace's scoped candidates (this route's own UUID
+  # excluded), this version's agencies and the map projection's geometry status.
+  # Only a changed relevant field warns, so the saved row the operator has not
+  # touched never does (AC-20).
+  defp field_warnings(socket, draft_route, changed) do
+    RouteFormComponents.field_warnings(%{
+      draft: draft_route,
+      changed: changed,
+      current_uuid: socket.assigns.route.id,
+      candidates: socket.assigns.warning_candidates,
+      agencies: socket.assigns.agencies,
+      geometry: socket.assigns.geometry_status
+    })
   end
 
   defp changed_fields(changeset) do
     changed = Map.keys(changeset.changes)
 
     for {field, _label} <- @detail_field_labels, field in changed, do: field
+  end
+
+  # The boarding advisory's action stays where the reference puts it: the
+  # surface where the missing paths are added. The advisory itself is computed
+  # against the saved map projection; only the destination is added here.
+  defp boarding_href(nil, _version_id, _route_id), do: nil
+
+  defp boarding_href(%{patterns_missing: _} = warning, version_id, route_id) do
+    Map.put(warning, :href, "/gtfs/#{version_id}/routes/#{route_id}/patterns")
   end
 
   defp changed_field_labels(fields) do
@@ -1013,6 +1099,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                         prefix="route-details"
                         mode_counts={@mode_counts}
                         agency_options={@agencies}
+                        short_warning={@field_warnings[:short]}
                       />
 
                       <RouteFormComponents.color_fields
@@ -1021,6 +1108,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                         text_mode={@route_text_mode}
                         nav_guard
                         nav_dirty={@changed_fields != [] or @merge != nil}
+                        similar_warning={@field_warnings[:similar]}
                       />
                     </section>
 
@@ -1038,6 +1126,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                       <RouteFormComponents.rider_fields
                         form={@route_form}
                         prefix="route-details"
+                        url_warning={@field_warnings[:url]}
                       />
                     </section>
 
@@ -1045,6 +1134,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                       form={@route_form}
                       prefix="route-details"
                       route_id={@route.route_id}
+                      boarding_warning={
+                        boarding_href(
+                          @field_warnings[:boarding],
+                          @current_gtfs_version.id,
+                          @route.route_id
+                        )
+                      }
                     />
 
                     <%!-- The reference's sticky save bar: it appears only when a

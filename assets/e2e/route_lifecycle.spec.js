@@ -426,6 +426,102 @@ test.describe("Route details workspace", () => {
 
     expect(await bodyFitsViewport(page)).toBe(true);
   });
+
+  test("details warnings appear for changed conflicting values and stay quiet for unchanged ones", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+
+    const short = page.locator("#route-details-short");
+
+    // The seeded BROWSER_PATTERNS_EMPTY route already uses "PE". Typing it as
+    // this route's number warns against that saved route, not this one.
+    await short.fill("PE");
+    await short.blur();
+
+    const shortWarn = page.locator("#route-details-short-warn");
+    await expect(shortWarn).toBeVisible();
+    await expect(shortWarn).toContainText("Route BROWSER_PATTERNS_EMPTY");
+    await expect(shortWarn).toContainText("already uses the number “PE”");
+    await expect(shortWarn).toContainText("You can still save.");
+    await expect(short).toHaveAttribute("aria-describedby", /short-warn/);
+
+    // One step from the seeded LONG_ROUTE_1 color, the draft warns about map
+    // confusion, still as an advisory.
+    const color = page.locator("#route-details-color");
+    await color.fill("FF5734");
+    await color.blur();
+
+    const colorWarn = page.locator("#route-details-color-warn");
+    await expect(colorWarn).toBeVisible();
+    await expect(colorWarn).toContainText(
+      "Looks like Route LONG_ROUTE_1 (#FF5733)",
+    );
+
+    // The agency home page is not a route page: case and trailing slash do not
+    // matter. BROWSER_AGENCY is the version's only agency, so it is the
+    // comparison for this route's draft page.
+    const url = page.locator("#route-details-url");
+    await url.fill("https://EXAMPLE.test/");
+    await url.blur();
+
+    const urlWarn = page.locator("#route-details-url-warn");
+    await expect(urlWarn).toBeVisible();
+    await expect(urlWarn).toContainText(
+      "This is Browser Test Transit’s home page",
+    );
+
+    // None of the advisories blocks the save: the button stays enabled.
+    await expect(page.locator("#route-save")).toBeEnabled();
+
+    // Discarding restores the saved row: no warnings, nothing written.
+    await page.locator("#route-details-discard").click();
+
+    await expect(page.locator("#route-details-short-warn")).toHaveCount(0);
+    await expect(page.locator("#route-details-color-warn")).toHaveCount(0);
+    await expect(page.locator("#route-details-url-warn")).toHaveCount(0);
+    await expect(short).toHaveValue("PR");
+  });
+
+  test("details boarding warns with the seeded missing paths and unknown geometry stays unreported", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+
+    // BROWSER_PATTERNS_READY's two patterns run over stops stored without
+    // coordinates, so the saved geometry itself reports known-missing paths.
+    // With boarding untouched, the imported values warn nothing.
+    await expect(page.locator("#route-details-cont-warn")).toHaveCount(0);
+
+    await page.locator("#route-details-additional summary").click();
+
+    const pickup = page.locator("#route-details-pickup");
+    await pickup.selectOption({ label: "Anywhere along the route" });
+    await pickup.blur();
+
+    const contWarn = page.locator("#route-details-cont-warn");
+    await expect(contWarn).toBeVisible();
+    await expect(contWarn).toContainText(
+      "2 patterns have sections without a path",
+    );
+    await expect(contWarn).toContainText(
+      "boarding between stops applies there",
+    );
+    await expect(contWarn.locator("a")).toHaveAttribute(
+      "href",
+      `/gtfs/${version}/routes/${DETAILS_ROUTE}/patterns`,
+    );
+
+    // Advisory, not a rejection: Save stays enabled while the warning stands.
+    await expect(page.locator("#route-save")).toBeEnabled();
+
+    await page.locator("#route-details-discard").click();
+    await expect(contWarn).toHaveCount(0);
+  });
 });
 
 /**

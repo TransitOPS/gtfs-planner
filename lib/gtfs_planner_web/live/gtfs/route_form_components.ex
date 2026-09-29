@@ -98,6 +98,188 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     """
   end
 
+  # The reference's non-blocking advisory: a left-bordered warning note that
+  # explains itself and never blocks a save (AC-20). An error keeps its own red
+  # line; a warning is a different color and a different element, so an
+  # advisory can never read as a validation failure.
+  attr :id, :string, required: true
+  attr :class, :any, default: nil, doc: "extra spacing classes merged into the box"
+  attr :rest, :global
+  slot :inner_block, required: true
+
+  defp field_warning(assigns) do
+    ~H"""
+    <div
+      id={@id}
+      class={[
+        "flex items-start gap-2 rounded-control border-l-[3px] border-warning-line bg-warning-bg px-3 py-2 text-[13px] text-warning-fg",
+        @class
+      ]}
+      {@rest}
+    >
+      <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4 shrink-0" />
+      <div class="min-w-0">{render_slot(@inner_block)}</div>
+    </div>
+    """
+  end
+
+  # The reference caps a route number's usefulness at 12 characters: trip
+  # planners may cut longer numbers off. Code points, not bytes, so a number
+  # with combining or wide characters is measured the way riders see it.
+  @max_number_code_points 12
+
+  @doc """
+  Computes the advisory field warnings one form draft earns (AC-20, R7).
+
+  Input is one map:
+
+    * `:draft` — the draft the warnings describe, with the editor fields
+      (`route_short_name`, `route_color`, `route_url`, `agency_id`,
+      `continuous_pickup`, `continuous_drop_off`); a changeset's applied
+      changes are the caller's own draft projection
+    * `:changed` — `:all` when every draft value is new (creation), or the
+      changed editor fields; only a changed field earns its warning, so an
+      untouched imported value never produces one
+    * `:current_uuid` — the route UUID a Details draft edits; its own saved
+      row is excluded from the candidate comparison
+    * `:candidates` — the scoped saved routes projected to UUID, natural ID,
+      short name and color (`Routes.route_editor/3`)
+    * `:agencies` — the version's agency options with their home URLs
+    * `:geometry` — `%{patterns_missing: n}` from the route map projection,
+      `:unavailable` when that read failed, or `nil`; unknown geometry is
+      never reported as missing
+
+  Returns `%{short: nil | ..., similar: nil | ..., url: nil | ..., boarding:
+  nil | ...}`. Every entry renders as an advisory and none of them blocks a
+  save. Invalid input is not a warning: an unusable color or URL earns nothing
+  here and stays the changeset's error.
+  """
+  def field_warnings(input \\ %{}) do
+    draft = Map.get(input, :draft) || %{}
+    changed = Map.get(input, :changed, :all)
+    current_uuid = Map.get(input, :current_uuid)
+    candidates = candidates_excluding(Map.get(input, :candidates) || [], current_uuid)
+
+    %{
+      short: short_warning(draft, changed, candidates),
+      similar: similar_warning(draft, changed, candidates),
+      url: url_warning(draft, changed, Map.get(input, :agencies) || []),
+      boarding: boarding_warning(draft, changed, Map.get(input, :geometry))
+    }
+  end
+
+  defp candidates_excluding(candidates, nil), do: candidates
+
+  defp candidates_excluding(candidates, current_uuid) do
+    Enum.reject(candidates, fn candidate -> candidate[:id] == current_uuid end)
+  end
+
+  # Duplicate takes precedence over the length note, the way the reference
+  # orders them: a trimmed, case-folded match on another route's number is the
+  # more concrete confusion.
+  defp short_warning(draft, changed, candidates) do
+    if field_changed?(:route_short_name, changed) do
+      number = normalized_number(Map.get(draft, :route_short_name))
+
+      cond do
+        is_nil(number) ->
+          nil
+
+        duplicate = Enum.find(candidates, &(normalized_number(&1[:route_short_name]) == number)) ->
+          %{kind: :duplicate, route: duplicate}
+
+        String.length(number) > @max_number_code_points ->
+          %{kind: :too_long}
+
+        true ->
+          nil
+      end
+    else
+      nil
+    end
+  end
+
+  defp normalized_number(nil), do: nil
+
+  defp normalized_number(value) do
+    case value |> to_string() |> String.trim() do
+      "" -> nil
+      number -> String.downcase(number)
+    end
+  end
+
+  defp similar_warning(draft, changed, candidates) do
+    if field_changed?(:route_color, changed) do
+      case RouteIdentity.similar_color(Map.get(draft, :route_color), candidates) do
+        %{route: route} -> %{route: route}
+        nil -> nil
+      end
+    else
+      nil
+    end
+  end
+
+  # The warning names the agency the draft's page actually belongs to: the
+  # selected agency, or the version's only agency when the draft does not name
+  # one yet. Trailing slashes and letter case do not make a home page a route
+  # page.
+  defp url_warning(draft, changed, agencies) do
+    if field_changed?(:route_url, changed) or field_changed?(:agency_id, changed) do
+      url = normalized_url(Map.get(draft, :route_url))
+      agency = effective_agency(Map.get(draft, :agency_id), agencies)
+
+      if url && agency && agency[:agency_url] && normalized_url(agency[:agency_url]) == url do
+        %{agency: agency}
+      else
+        nil
+      end
+    else
+      nil
+    end
+  end
+
+  defp effective_agency(agency_id, agencies) when is_binary(agency_id) and agency_id != "" do
+    Enum.find(agencies, &(&1[:agency_id] == agency_id))
+  end
+
+  defp effective_agency(_agency_id, [agency]), do: agency
+  defp effective_agency(_agency_id, _agencies), do: nil
+
+  defp normalized_url(nil), do: nil
+
+  defp normalized_url(value) do
+    case value |> to_string() |> String.trim() do
+      "" -> nil
+      url -> url |> String.replace_trailing("/", "") |> String.downcase()
+    end
+  end
+
+  # Continuous boarding means little where a path between stops is known to be
+  # absent: the map projection counts patterns with `:missing` sections, and
+  # unavailable or absent geometry reports nothing rather than fabricating a
+  # missing path from unknown data.
+  defp boarding_warning(_draft, _changed, nil), do: nil
+  defp boarding_warning(_draft, _changed, :unavailable), do: nil
+
+  defp boarding_warning(draft, changed, %{patterns_missing: patterns_missing})
+       when is_integer(patterns_missing) and patterns_missing > 0 do
+    if field_changed?(:continuous_pickup, changed) or
+         field_changed?(:continuous_drop_off, changed) do
+      boarding_enabled? =
+        Map.get(draft, :continuous_pickup) != 1 or Map.get(draft, :continuous_drop_off) != 1
+
+      if boarding_enabled?, do: %{patterns_missing: patterns_missing}, else: nil
+    else
+      nil
+    end
+  end
+
+  defp boarding_warning(_draft, _changed, _geometry), do: nil
+
+  # Creation evaluates its new values; Details warns only about changed fields.
+  defp field_changed?(_field, :all), do: true
+  defp field_changed?(field, changed) when is_list(changed), do: field in changed
+
   @doc """
   Renders the route number, route name, mode and agency fields.
 
@@ -109,6 +291,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   attr :prefix, :string, required: true, doc: "namespace for the stable control ids"
   attr :mode_counts, :list, default: [], doc: "scoped mode counts, most used first"
   attr :agency_options, :list, default: [], doc: "scoped agency options for this version"
+
+  attr :short_warning, :map,
+    default: nil,
+    doc: "advisory `%{kind: :duplicate | :too_long}` from `field_warnings/1`"
 
   def identity_fields(assigns) do
     assigns = assign(assigns, :selected_mode, to_string(assigns.form[:route_type].value || ""))
@@ -123,6 +309,18 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     assigns = assign(assigns, :mode_errors, field_errors(assigns.form[:route_type]))
     assigns = assign(assigns, :agency_errors, field_errors(assigns.form[:agency_id]))
 
+    assigns =
+      assign(
+        assigns,
+        :short_described_by,
+        described_by(
+          assigns.name_errors,
+          "#{assigns.prefix}-names-error",
+          nil,
+          (assigns.short_warning && "#{assigns.prefix}-short-warn") || nil
+        )
+      )
+
     ~H"""
     <div id={"#{@prefix}-identity"} class="grid gap-6">
       <div class="min-w-0">
@@ -135,7 +333,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
               name={@form[:route_short_name].name}
               value={@form[:route_short_name].value}
               aria-invalid={to_string(@name_errors != [])}
-              aria-describedby={described_by(@name_errors, "#{@prefix}-names-error")}
+              aria-describedby={@short_described_by}
               phx-debounce="blur"
               autocomplete="off"
               spellcheck="false"
@@ -160,6 +358,23 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
           </div>
         </div>
         <.error_line id={"#{@prefix}-names-error"} messages={@name_errors} />
+        <.field_warning :if={@short_warning} id={"#{@prefix}-short-warn"}>
+          <%= if @short_warning.kind == :duplicate do %>
+            <strong class="font-[650]">
+              Route {@short_warning.route[:route_id]}
+            </strong>
+            <%= if present_name?(@short_warning.route[:route_short_name]) do %>
+              already uses the number “{@short_warning.route[:route_short_name]}”. Riders may mix
+              them up. You can still save.
+            <% else %>
+              already has this number without its own name. Riders may mix them up. You can still
+              save.
+            <% end %>
+          <% else %>
+            Trip planners may cut off numbers longer than 12 characters. Put words in the route
+            name instead.
+          <% end %>
+        </.field_warning>
         <p class={help_class()}>
           Enter a number, a name, or both. The number goes on the badge and signs; the name
           usually gives the ends of the line.
@@ -307,12 +522,28 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     default: false,
     doc: "the server's dirty verdict the guard mirrors; read only when nav_guard is set"
 
+  attr :similar_warning, :map,
+    default: nil,
+    doc: "advisory `%{route: candidate}` from `field_warnings/1` for the draft color"
+
   def color_fields(assigns) do
     assigns = assign(assigns, :colors, color_preview(assigns.form, assigns.text_mode))
     assigns = assign(assigns, :color_errors, field_errors(assigns.form[:route_color]))
     assigns = assign(assigns, :text_errors, field_errors(assigns.form[:route_text_color]))
     assigns = assign(assigns, :badge_route, badge_route(assigns.form))
     assigns = assign(assigns, :warned?, assigns.colors.usable? and not assigns.colors.readable?)
+
+    assigns =
+      assign(
+        assigns,
+        :color_described_by,
+        described_by(
+          assigns.color_errors,
+          "#{assigns.prefix}-color-error",
+          "#{assigns.prefix}-color-help",
+          (assigns.similar_warning && "#{assigns.prefix}-color-warn") || nil
+        )
+      )
 
     ~H"""
     <div
@@ -354,9 +585,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
                 spellcheck="false"
                 placeholder="FFFFFF"
                 aria-invalid={to_string(@color_errors != [])}
-                aria-describedby={
-                  described_by(@color_errors, "#{@prefix}-color-error", "#{@prefix}-color-help")
-                }
+                aria-describedby={@color_described_by}
                 class={[control_class(), "pl-7 uppercase tabular-nums"]}
               />
             </div>
@@ -417,6 +646,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
       </div>
       <.error_line id={"#{@prefix}-color-error"} messages={@color_errors} />
       <.error_line id={"#{@prefix}-text-error"} messages={@text_errors} />
+      <.field_warning :if={@similar_warning} id={"#{@prefix}-color-warn"}>
+        Looks like Route {@similar_warning.route[:route_id]} {similar_color_label(
+          @similar_warning.route
+        )} on a map. You can still use it.
+      </.field_warning>
       <p id={"#{@prefix}-color-help"} class={help_class()}>
         Six hex digits from your brand guide, or pick one; blank means white. Automatic text is
         black or white, whichever reads better.
@@ -475,9 +709,25 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   attr :form, Phoenix.HTML.Form, required: true
   attr :prefix, :string, required: true, doc: "namespace for the stable control ids"
 
+  attr :url_warning, :map,
+    default: nil,
+    doc: "advisory `%{agency: option}` from `field_warnings/1` for the draft URL"
+
   def rider_fields(assigns) do
     assigns = assign(assigns, :desc_errors, field_errors(assigns.form[:route_desc]))
     assigns = assign(assigns, :url_errors, field_errors(assigns.form[:route_url]))
+
+    assigns =
+      assign(
+        assigns,
+        :url_described_by,
+        described_by(
+          assigns.url_errors,
+          "#{assigns.prefix}-url-error",
+          "#{assigns.prefix}-url-help",
+          (assigns.url_warning && "#{assigns.prefix}-url-warn") || nil
+        )
+      )
 
     ~H"""
     <div id={"#{@prefix}-rider"} class="grid gap-6">
@@ -519,6 +769,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
           class={control_class()}
         />
         <.error_line id={"#{@prefix}-url-error"} messages={@url_errors} />
+        <.field_warning :if={@url_warning} id={"#{@prefix}-url-warn"}>
+          This is {@url_warning.agency[:agency_name]}’s home page. Link to a page about this
+          route, such as its timetable.
+        </.field_warning>
         <p id={"#{@prefix}-url-help"} class={help_class()}>
           A page riders can open for this route. It must start with http:// or https://.
         </p>
@@ -552,6 +806,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   attr :prefix, :string, required: true, doc: "namespace for the stable control ids"
   attr :route_id, :string, required: true, doc: "the saved natural ID, rendered read-only"
   attr :open?, :boolean, default: false
+
+  attr :boarding_warning, :map,
+    default: nil,
+    doc: """
+    advisory `%{patterns_missing: n}` from `field_warnings/1`; `href` names the
+    surface where the missing paths are added
+    """
 
   def additional_details(assigns) do
     assigns = assign(assigns, :summary, additional_summary(assigns.form, assigns.route_id))
@@ -648,6 +909,16 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
               <.error_line id={"#{@prefix}-dropoff-error"} messages={@drop_errors} />
             </div>
           </div>
+          <.field_warning :if={@boarding_warning} id={"#{@prefix}-cont-warn"} class="mt-2">
+            {boarding_warning_text(@boarding_warning.patterns_missing)}
+            <.link
+              :if={@boarding_warning[:href]}
+              navigate={@boarding_warning.href}
+              class="font-[650] text-warning-fg underline"
+            >
+              Add the missing paths
+            </.link>
+          </.field_warning>
         </fieldset>
 
         <div class="grid gap-1.5">
@@ -711,6 +982,17 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
       option_value(option) == value && label
     end)
   end
+
+  # "1 pattern has…" / "2 patterns have…", the reference's own sentence, with
+  # the count of patterns the map projection reported known-missing sections
+  # for.
+  defp boarding_warning_text(1),
+    do:
+      "1 pattern has sections without a path, so riders can’t tell where boarding between stops applies there."
+
+  defp boarding_warning_text(count),
+    do:
+      "#{count} patterns have sections without a path, so riders can’t tell where boarding between stops applies there."
 
   # Select options compare as strings; a saved integer and a submitted string are
   # the same choice.
@@ -781,15 +1063,24 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   end
 
   # A control names the descriptions it actually renders: the error line only
-  # while it has errors, and standing help text whenever it is present.
-  defp described_by(messages, error_id, help_id \\ nil) do
-    [if(messages == [], do: nil, else: error_id), help_id]
+  # while it has errors, standing help text whenever it is present, and the
+  # field's advisory while it has one.
+  defp described_by(messages, error_id, help_id \\ nil, warn_id \\ nil) do
+    [if(messages == [], do: nil, else: error_id), help_id, warn_id]
     |> Enum.reject(&is_nil/1)
     |> case do
       [] -> nil
       ids -> Enum.join(ids, " ")
     end
   end
+
+  defp present_name?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_name?(_value), do: false
+
+  # The saved color a similar-color advisory names; the candidate projection
+  # stores it already normalized, so the label is the stored value verbatim.
+  defp similar_color_label(%{route_color: color}) when is_binary(color), do: "(##{color})"
+  defp similar_color_label(_route), do: ""
 
   # An unassigned route in a one-agency version is stated as an assignment the
   # save will make, so the read-only control never implies a stored value the
