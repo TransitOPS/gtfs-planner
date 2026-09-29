@@ -42,12 +42,22 @@ defmodule GtfsPlanner.Gtfs.DeadheadTime do
   Changeset for an entered driving time.
 
   Casts only the user field `minutes`; the scoping fields are assigned by the
-  caller. One row exists per organization, version and ordered reference pair.
+  caller. `minutes` is range-checked here and again by the named database
+  constraint, so 0–600 is a changeset error rather than a raised violation, and
+  `0` is a real value rather than a missing one.
+
+  One row exists per organization, version and ordered reference pair.
   """
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(time, attrs) do
     time
-    |> cast(attrs, [:minutes])
+    |> cast(attrs, [:minutes], empty_values: [])
+    |> validate_required([:minutes])
+    |> validate_number(:minutes,
+      greater_than_or_equal_to: 0,
+      less_than_or_equal_to: 600,
+      message: "must be a whole number between 0 and 600"
+    )
     |> check_constraint(:minutes,
       name: :minutes_range,
       message: "must be a whole number between 0 and 600"
