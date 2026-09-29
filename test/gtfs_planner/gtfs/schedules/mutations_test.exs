@@ -1292,6 +1292,65 @@ defmodule GtfsPlanner.Gtfs.Schedules.MutationsTest do
 
       assert MapSet.new(exported_rows) == MapSet.new(expected_export_rows)
     end
+
+    test "the shared removal counts the same transfers delete_trips/4 deletes", context do
+      # Step 15 (R14/INV-6): `remove_locked_trips!/3` is private, so the
+      # identical-counts contract is asserted through its observable seam —
+      # the pre-delete count runs the same `trip_transfers_query/3` the
+      # helper deletes through, and `delete_trips/4` reports what the helper
+      # removed. A trip naming exactly two transfers must count 2 and delete 2.
+      scope = schedule_scope!(context, "12v", %{stops: [{"S1", 0, 0, 1}, {"S2", 300, 330, 1}]})
+
+      other_scope =
+        schedule_scope!(context, "12w", %{stops: [{"S1", 0, 0, 1}, {"S2", 300, 330, 1}]})
+
+      trip =
+        schedule_trip_fixture(context.organization.id, context.version.id, "12v", scope.bundle, %{
+          trip_id: "12v-0-#{scope.service}-0600",
+          service_id: scope.service,
+          start_time: "06:00:00"
+        }).trip
+
+      other_trip =
+        schedule_trip_fixture(
+          context.organization.id,
+          context.version.id,
+          "12w",
+          other_scope.bundle,
+          %{
+            trip_id: "12w-0-#{other_scope.service}-0700",
+            service_id: other_scope.service,
+            start_time: "07:00:00"
+          }
+        ).trip
+
+      transfer_fixture(context.organization.id, context.version.id, %{
+        transfer_type: 4,
+        from_trip_id: trip.trip_id,
+        to_trip_id: other_trip.trip_id
+      })
+
+      transfer_fixture(context.organization.id, context.version.id, %{
+        transfer_type: 4,
+        from_trip_id: other_trip.trip_id,
+        to_trip_id: trip.trip_id
+      })
+
+      assert Gtfs.count_trip_transfers(context.organization.id, context.version.id, [
+               trip.trip_id
+             ]) == 2
+
+      assert {:ok, %{trips: 1, transfers: 2}} =
+               Gtfs.delete_trips("12v", scope.service, [trip.id], context.audit)
+
+      refute Repo.exists?(from(t in Trip, where: t.id == ^trip.id))
+
+      assert Gtfs.count_trip_transfers(context.organization.id, context.version.id, [
+               trip.trip_id
+             ]) == 0
+
+      assert Repo.get!(Trip, other_trip.id) == other_trip
+    end
   end
 
   describe "export equality" do
