@@ -295,7 +295,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
 
       planned_day(context)
 
-      assert {:ok, :ok} =
+      # The Block rules drawer writes first, through its own facade. It answers the
+      # stored row rather than `:ok`, which is why this case matches on the row.
+      assert {:ok, %BlockingSetting{} = stored} =
                Gtfs.update_blocking_settings(organization.id, version.id, %{
                  "min_layover_minutes" => "8",
                  "pull_out_buffer_minutes" => "4",
@@ -303,6 +305,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
                  "deadhead_speed_kmh" => "40",
                  "deadhead_circuity" => "1.4"
                })
+
+      assert stored.min_layover_minutes == 8
+      assert stored.max_piece_minutes == nil
 
       assert {:ok, :ok} =
                Gtfs.update_relief_settings(organization.id, version.id, nil, %{
@@ -402,7 +407,18 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
         assert setting.max_piece_minutes == if(limit in [nil, ""], do: nil, else: limit)
       end
 
-      # The stored limit is the version's own planning input, read by the day load.
+      # The stored limit is the version's own planning input, read by the day load:
+      # a blank saved last leaves no limit, and 720 then reaches the context as the
+      # relief limit the checks compare stretches against.
+      {:ok, blank} = Gtfs.load_blocking_day(organization.id, version.id, nil)
+      assert blank.context.max_piece_minutes == nil
+
+      assert {:ok, :ok} =
+               Gtfs.update_relief_settings(organization.id, version.id, nil, %{
+                 max_piece_minutes: 720,
+                 marked: ["RIV"]
+               })
+
       {:ok, day} = Gtfs.load_blocking_day(organization.id, version.id, nil)
       assert day.context.max_piece_minutes == 720
     end
