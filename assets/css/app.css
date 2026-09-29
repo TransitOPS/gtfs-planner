@@ -572,6 +572,104 @@ body {
   #blocks-page .blocks-gap-label { display: inline; }
 }
 
+/* The operator-change mark needs the minutes and its own glyph, so it waits for
+   a wider bar rather than overflowing the one it sits in. */
+#blocks-page [data-role="blocks-gap-relief"] { display: none; }
+
+@container (min-width: 44px) {
+  #blocks-page [data-role="blocks-gap-relief"] { display: inline; }
+}
+
+/* A garage leg and a drive sit on the track like a trip bar, so they share its
+   box: same top, same height, same rounded corners, above the grid rules. */
+#blocks-page .blocks-track-mark {
+  position: absolute;
+  top: 6px;
+  height: 24px;
+  min-width: 2px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 0;
+  border-radius: 3px;
+  padding: 0;
+  font-size: 10px;
+  line-height: 1;
+}
+
+#blocks-page .blocks-track-mark:hover { filter: brightness(0.92); }
+
+/* Travel to and from the garage: a pale fill with a solid edge, so it never
+   reads as a revenue trip. */
+#blocks-page .blocks-pull {
+  background-color: var(--color-canvas);
+  border: 1px solid var(--color-navy-300);
+  color: var(--color-default);
+}
+
+/* Driving without riders between stops: hatched, so it never reads as a revenue
+   trip either. */
+#blocks-page .blocks-drive {
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--color-navy-100) 0 3px,
+    var(--color-navy-300) 3px 5px
+  );
+}
+
+/* A drive the vehicle cannot make in time: the same hatch in the error pair,
+   with a 2px outline and a "!" in the bar, so it is never colour alone. */
+#blocks-page .blocks-drive-bad {
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--color-error-bg) 0 3px,
+    color-mix(in srgb, var(--color-error-line) 55%, var(--color-error-bg)) 3px 5px
+  );
+  outline: 2px solid var(--color-error-line);
+  outline-offset: -2px;
+  color: var(--color-error-fg);
+  font-weight: 700;
+  font-size: 12px;
+}
+
+/* A drive the version cannot compute: no hatch and no feasibility claim, just a
+   dashed edge and a "?". */
+#blocks-page .blocks-drive-unknown {
+  background-color: var(--color-canvas);
+  border: 1px dashed var(--color-control);
+  color: var(--color-default);
+  font-weight: 700;
+  font-size: 12px;
+}
+
+/* The legend keys paint the marks they name, so the key cannot drift from the
+   surface it explains. They are spans, not the row's own buttons, so they carry
+   no positioning. */
+#blocks-page .blocks-legend-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 14px;
+  flex: none;
+  border-radius: 3px;
+}
+
+#blocks-page .blocks-wait {
+  background-image: linear-gradient(var(--color-navy-300), var(--color-navy-300));
+  background-size: 100% 2px;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+#blocks-page .blocks-legend-relief {
+  color: var(--color-default);
+  font-size: 14px;
+  line-height: 1;
+}
+
 #station-sub-nav {
   overflow: visible;
 }
