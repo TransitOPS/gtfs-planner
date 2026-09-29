@@ -92,16 +92,10 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
   ]
 
   # The built All versions pages, in the sitemap's order. A page that ships keeps
-  # the place its Coming soon entry held — Export defaults leads the group and
-  # carries that entry's summary — so building a page never reorders the group
-  # around it.
+  # the place its Coming soon entry held — Export defaults sits where its
+  # placeholder did, after Garages and Fleet — so building a page never reorders
+  # the group around it.
   @all_version_pages [
-    %{
-      key: :export_defaults,
-      slug: "export-defaults",
-      title: "Export defaults",
-      summary: "Choose how future exports are written."
-    },
     %{
       key: :garages,
       slug: "garages",
@@ -113,6 +107,12 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLive do
       slug: "fleet",
       title: "Fleet",
       summary: "Your vehicles, so you can check that a plan fits your fleet."
+    },
+    %{
+      key: :export_defaults,
+      slug: "export-defaults",
+      title: "Export defaults",
+      summary: "Choose how future exports are written."
     }
   ]
 

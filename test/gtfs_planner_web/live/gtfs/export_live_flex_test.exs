@@ -68,7 +68,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveFlexTest do
 
     {:ok, main_view, _html} = live(log_in, "/gtfs/#{version.id}/export")
 
-    assert has_element?(main_view, "#export-download-link", "Download ZIP")
+    assert has_element?(main_view, "#export-download-link", "Download file")
     refute has_element?(main_view, "#export-flex-download-link")
     refute main_run.flex_artifact_key
 
@@ -100,7 +100,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveFlexTest do
       log_in = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(log_in, "/gtfs/#{version.id}/export")
 
-      assert has_element?(view, "#run-validation", "Run validation")
+      assert has_element?(view, "#run-validation", "Check feed")
       assert has_element?(view, "#validate-flex-button", "Validate flex file")
 
       test_pid = self()

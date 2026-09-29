@@ -337,6 +337,8 @@ for (const { width, height, label } of VIEWPORTS) {
       await expectNoPageOverflow(page);
 
       // ── Export defaults is a built page, not a placeholder ──
+      await page.goto(`/gtfs/${versionId}/settings`);
+      await waitForLiveView(page);
       await page.locator("#settings-entry-export_defaults a").click();
       await page.waitForURL(new RegExp(`/settings/export-defaults$`));
       await waitForLiveView(page);
@@ -352,7 +354,9 @@ for (const { width, height, label } of VIEWPORTS) {
 
       // ── The one remaining allowlisted section renders its shared body ──
       for (const [entry, title, slug] of SETTINGS_SECTIONS) {
-        await page.locator(`#${entry}`).click();
+        await page.goto(`/gtfs/${versionId}/settings`);
+        await waitForLiveView(page);
+        await page.locator(`#${entry} a`).click();
         await page.waitForURL(new RegExp(`/settings/${slug}$`));
         await waitForLiveView(page);
 

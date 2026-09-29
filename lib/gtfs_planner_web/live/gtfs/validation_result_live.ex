@@ -1183,7 +1183,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   end
 
   defp validation_lede(%{run_type: "mobility_data_flex"}, version) do
-    "What the MobilityData GTFS validator found in the flex file for #{version.name}."
+    "Flex file: what the MobilityData GTFS validator found in #{version.name}."
   end
 
   defp validation_lede(_run, version) do
