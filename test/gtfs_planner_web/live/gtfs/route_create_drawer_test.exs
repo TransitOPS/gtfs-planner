@@ -411,11 +411,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
 
       {:ok, details, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}?created=1")
 
-      assert has_element?(details, "#route-details-heading", "Crosstown")
+      assert has_element?(details, "#route-title", "Crosstown")
 
       assert has_element?(
                details,
-               "#route-details-workspace[data-focus-on-mount='route-details-heading']"
+               "#route-details-workspace[data-focus-on-mount='route-title']"
              )
     end
 
@@ -811,7 +811,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteCreateDrawerTest do
       {:ok, details, _html} =
         live(conn, "/gtfs/#{version.id}/routes/#{created.route_id}?created=1")
 
-      assert has_element?(details, "#route-details-heading", "Riverside")
+      assert has_element?(details, "#route-title", "Riverside")
     end
   end
 

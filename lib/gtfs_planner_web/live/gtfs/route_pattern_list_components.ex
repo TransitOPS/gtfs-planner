@@ -153,7 +153,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
     ~H"""
     <div id="route-patterns-page" class="ds-page">
-      <.route_header route={@route} gtfs_version_id={@version.id} active_tab={:patterns} />
+      <.route_header
+        route={@route}
+        gtfs_version_id={@version.id}
+        active_tab={:patterns}
+        trip_count={@route_trip_count}
+      />
 
       <section aria-labelledby="patterns-heading" class="pt-7">
         <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">

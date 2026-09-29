@@ -22,8 +22,8 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
   use Phoenix.Component
   use GtfsPlannerWeb, :verified_routes
 
-  import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
-  import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1]
+  import GtfsPlannerWeb.CoreComponents, only: [button: 1, icon: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1, message: 1]
 
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlannerWeb.Components.RouteIdentity
@@ -43,9 +43,17 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
   The name is the route's long name. When the feed gives none it reads "Route 12"
   from the short name or the route ID, so the heading is never empty. The badge
   already carries the short name, so the heading does not repeat it. An
-  `Inactive` chip shows only while the route is inactive. A page that knows how
-  many patterns the route has passes `pattern_count` to show it on the Patterns
-  tab.
+  `Inactive` chip and the message that says what inactive means for exports show
+  only while the route's `active` flag is explicitly false; a route with no flag
+  is eligible like an active one. A page that knows how many patterns the route
+  has passes `pattern_count` to show it on the Patterns tab.
+
+  An editing page adds what it knows about its draft: `identifier` replaces the
+  identifying line, `preview` marks the header as showing unsaved values,
+  `dirty` puts the "Unsaved" chip on the Details tab and `focus_title` makes
+  the heading a landing place after a redirect. `trip_count` lets the inactive
+  message name the trips an export leaves out. The message's Reactivate sends
+  `reactivate_route` to the page.
 
   ## Examples
 
@@ -60,8 +68,15 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
   attr :active_tab, :atom, values: [:details, :patterns, :schedules], default: :details
   attr :pattern_count, :integer, default: nil, doc: "shown on the Patterns tab when known"
   attr :loading, :boolean, default: false, doc: "draws a skeleton while the route is nil"
+  attr :identifier, :string, default: nil, doc: "replaces the \"Route ID\" line"
+  attr :preview, :boolean, default: false, doc: "the header shows values that are not saved"
+  attr :dirty, :boolean, default: false, doc: "the page holds unsaved changes"
+  attr :focus_title, :boolean, default: false, doc: "lets a redirect move focus to the heading"
+  attr :trip_count, :integer, default: nil, doc: "trips an export leaves out while inactive"
 
   def route_header(assigns) do
+    assigns = assign(assigns, :inactive?, match?(%{active: false}, assigns.route))
+
     ~H"""
     <div id="route-workspace">
       <.back_link id="route-back" navigate={"/gtfs/#{@gtfs_version_id}/routes"}>
@@ -83,10 +98,16 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
 
       <header :if={@route} class="mt-1">
         <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <RouteIdentity.route_badge route={@route} size="large" />
+          <span id="route-badge" class="inline-flex">
+            <RouteIdentity.route_badge route={@route} size="large" />
+          </span>
           <h1
             id="route-title"
-            class="min-w-0 break-words font-display text-[28px] font-semibold leading-tight tracking-[-0.025em] text-strong"
+            tabindex={@focus_title && "-1"}
+            class={[
+              "min-w-0 break-words font-display text-[28px] font-semibold leading-tight tracking-[-0.025em] text-strong",
+              @focus_title && "outline-none"
+            ]}
           >
             {route_title(@route)}
           </h1>
@@ -97,15 +118,22 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
             {mode_label(@route.route_type)}
           </span>
           <span
-            :if={!@route.active}
+            :if={@inactive?}
             id="route-inactive"
             class="inline-flex min-h-7 items-center gap-1.5 rounded-badge bg-white px-2 text-[13px] font-[650] text-muted ring-1 ring-inset ring-subtle"
           >
             <.icon name="hero-eye-slash" class="size-3.5" /> Inactive
           </span>
+          <.badge :if={@preview} id="route-unsaved-preview" tone="warning" icon="hero-pencil-square">
+            Unsaved preview
+          </.badge>
         </div>
         <p id="route-identifier" class="mt-2 text-sm text-muted">
-          Route ID <span class="font-mono text-default">{@route.route_id}</span>
+          <%= if @identifier do %>
+            {@identifier}
+          <% else %>
+            Route ID <span class="font-mono text-default">{@route.route_id}</span>
+          <% end %>
         </p>
       </header>
 
@@ -123,6 +151,9 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
             aria-current={@active_tab == :details && "page"}
           >
             Details
+            <.badge :if={@dirty} id="route-tab-details-unsaved" tone="warning" class="ml-2">
+              Unsaved
+            </.badge>
           </.link>
           <.link
             id="route-tab-patterns"
@@ -149,9 +180,44 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
           </.link>
         </div>
       </nav>
+
+      <.message
+        :if={@route && @inactive?}
+        id="route-inactive-banner"
+        kind="neutral"
+        icon="hero-eye-slash"
+        title={"#{route_label(@route)} is inactive."}
+        class="mt-5"
+      >
+        {inactive_sentence(@route, @trip_count)}
+        <:action>
+          <.button
+            id="route-reactivate"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="reactivate_route"
+          >
+            Reactivate route
+          </.button>
+        </:action>
+      </.message>
     </div>
     """
   end
+
+  defp inactive_sentence(_route, nil),
+    do: "The next export leaves it out. Exports you already ran keep the route."
+
+  defp inactive_sentence(_route, 0),
+    do: "The next export leaves it out. Exports you already ran keep the route."
+
+  defp inactive_sentence(_route, 1),
+    do: "The next export leaves it out with its 1 trip. Exports you already ran keep the route."
+
+  defp inactive_sentence(_route, count),
+    do:
+      "The next export leaves it out with its #{count} trips. Exports you already ran keep the route."
 
   @doc """
   What a route is called on screen: its long name, else "Route" and its short

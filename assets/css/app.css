@@ -119,13 +119,8 @@
   --color-info-fg: #0e5c73;
   --color-info-line: #2c8faa;
 
-  /* Warning and map tokens for the route surfaces (spec 16). The route form
-     warnings and the saved-route map have referenced these since their steps;
-     without the tokens the utilities emitted nothing, so the same values the
-     prototype's design-system theme defines are recorded here. */
-  --color-warning-bg: #fcf1db;
-  --color-warning-fg: #8a5a0e;
-  --color-warning-line: #d69822;
+  /* Map tokens for the saved-route map: the ground under the streets and the
+     ink of its attribution. */
   --color-map-paper: #f0f3f6;
   --color-map-label: #536276;
 
@@ -1143,6 +1138,26 @@ body {
 .ds-page .btn-error:not(:disabled):hover {
   border-color: var(--color-error-fg);
   background: color-mix(in oklab, var(--color-error-fg) 88%, black);
+}
+
+/* A secondary button in the error ink: the design system's
+   `.button.secondary.danger`, the row-two Delete of the lifecycle card, which
+   opens a review instead of deleting. `.ds-page .btn-outline` sets the ink
+   with an id-strength selector, so the override is scoped to the id as well. */
+#route-detail-page .btn-outline.btn-outline-danger {
+  border-color: var(--color-error-line);
+  color: var(--color-error-fg);
+}
+
+/* The sticky save bar must not cover the field a keyboard user moves to. */
+html:has(#route-details-save-bar:not([hidden])) {
+  scroll-padding-bottom: 104px;
+}
+
+#route-detail-page .btn-outline.btn-outline-danger:hover {
+  border-color: var(--color-error-line);
+  background: var(--color-error-bg);
+  color: var(--color-error-fg);
 }
 
 /* Member table. The whole row is one record on tablet and phone: the person on
@@ -3487,17 +3502,6 @@ body:has(#home-page) {
    heading sits 32px below the header as drawn, not 64px. */
 #home-page {
   margin-top: -2rem;
-}
-
-/* Route workspace scoping (spec 16, steps 21–22). The reference's route
-   surfaces use the TransitOps display and text faces; the rest of the
-   application, including the shared header's own header rules, keeps Inter. The
-   rule names the two real route surfaces by their stable ids rather than
-   restyling a shared component, so neither the create drawer nor the Details
-   workspace can restyle another page. */
-#route-details-workspace,
-#new-route-form {
-  font-family: var(--font-ds);
 }
 
 /* The reserved map column keeps a zero min-width of its own, so a long form

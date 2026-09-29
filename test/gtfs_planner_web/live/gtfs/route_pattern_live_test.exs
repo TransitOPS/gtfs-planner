@@ -1187,16 +1187,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       {:ok, view, _html} = live(conn, patterns_path(version, inactive))
 
-      assert has_element?(view, "#route-inactive-chip", "Inactive")
-      assert has_element?(view, "#route-inactive-banner", "Inactive: left out of exports")
-      assert has_element?(view, "#route-inactive-banner", "The next export skips INACT1")
+      assert has_element?(view, "#route-inactive", "Inactive")
+      assert has_element?(view, "#route-inactive-banner", "Route INACT1 is inactive.")
+      assert has_element?(view, "#route-inactive-banner", "The next export leaves it out")
       assert has_element?(view, "#route-reactivate", "Reactivate route")
 
       {:ok, view, _html} = live(conn, patterns_path(version, imported))
 
       # NULL is effectively eligible: no banner and no chip anywhere (INV-4).
       refute has_element?(view, "#route-inactive-banner")
-      refute has_element?(view, "#route-inactive-chip")
+      refute has_element?(view, "#route-inactive")
     end
 
     test "Reactivate persists through the status command and clears the banner",

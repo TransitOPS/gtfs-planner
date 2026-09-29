@@ -1095,8 +1095,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
 
       {:ok, view, _html} = live(conn, schedules_path(version, inactive))
 
-      assert has_element?(view, "#route-inactive-banner", "Inactive: left out of exports")
-      assert has_element?(view, "#route-inactive-chip", "Inactive")
+      assert has_element?(view, "#route-inactive-banner", "is inactive.")
+      assert has_element?(view, "#route-inactive", "Inactive")
       assert has_element?(view, "#route-reactivate", "Reactivate route")
 
       view |> element("#route-reactivate") |> render_click()
@@ -1109,7 +1109,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       {:ok, view, _html} = live(conn, schedules_path(version, imported))
 
       refute has_element?(view, "#route-inactive-banner")
-      refute has_element?(view, "#route-inactive-chip")
+      refute has_element?(view, "#route-inactive")
     end
   end
 end

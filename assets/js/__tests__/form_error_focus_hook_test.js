@@ -133,6 +133,49 @@ describe("FormErrorFocus", () => {
   });
 
   // =========================================================================
+  // Disclosures: an invalid control inside a closed <details>
+  // =========================================================================
+  describe("closed disclosure", () => {
+    const DISCLOSURE_FORM_HTML = `
+      <form id="details_form">
+        <input id="name" type="text" />
+        <details id="more">
+          <summary>Additional details</summary>
+          <input id="sort" type="number" aria-invalid="true" />
+        </details>
+      </form>
+    `;
+
+    it("opens the disclosure that holds the first invalid control before focusing it", () => {
+      const root = buildRoot({ innerHTML: DISCLOSURE_FORM_HTML });
+      const { hook, registrations } = makeHook(root);
+      hook.mounted();
+
+      pushServerEvent(registrations, { form_id: "details_form" });
+
+      expect(root.querySelector("#more").open).toBe(true);
+    });
+
+    it("leaves a disclosure closed when its controls are valid", () => {
+      const root = buildRoot({
+        innerHTML: DISCLOSURE_FORM_HTML.replace(
+          ' aria-invalid="true"',
+          "",
+        ).replace(
+          'id="name" type="text"',
+          'id="name" type="text" aria-invalid="true"',
+        ),
+      });
+      const { hook, registrations } = makeHook(root);
+      hook.mounted();
+
+      pushServerEvent(registrations, { form_id: "details_form" });
+
+      expect(root.querySelector("#more").open).toBe(false);
+    });
+  });
+
+  // =========================================================================
   // Scoped target focus: outcomes with no form and no invalid field
   // =========================================================================
   describe("scoped target focus", () => {
@@ -484,7 +527,10 @@ describe("FormErrorFocus", () => {
       const insideSpy = focusSpy(root, "#dup-inside-input");
 
       expect(() =>
-        pushServerEvent(registrations, { form_id: "dup_form", fallback_id: null }),
+        pushServerEvent(registrations, {
+          form_id: "dup_form",
+          fallback_id: null,
+        }),
       ).not.toThrow();
 
       expect(outsideSpy).not.toHaveBeenCalled();
