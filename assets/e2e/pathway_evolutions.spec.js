@@ -3368,3 +3368,390 @@ test.describe("preview", () => {
     });
   });
 });
+
+// Step 27 (EV-29): the service-time timeline under the moment preview. The
+// seeded station carries a daytime elevator window and an overnight staircase
+// window that runs to 26:00, so whatever day the suite runs on the timeline
+// shows the selected service date's own instances plus the previous service
+// date's spill-over, and the axis always reaches past 24:00.
+test.describe("timeline", () => {
+  // The zone the seeded version's agency runs in, so the dates the page
+  // resolved are labelled the way the page labels them without depending on the
+  // runner's own timezone.
+  const AGENCY_TZ = "America/New_York";
+
+  async function agencyToday(page) {
+    return page.evaluate(
+      (timeZone) =>
+        new Intl.DateTimeFormat("en-CA", { timeZone }).format(new Date()),
+      AGENCY_TZ,
+    );
+  }
+
+  function shiftDays(iso, days) {
+    const [year, month, day] = iso.split("-").map(Number);
+
+    return new Date(Date.UTC(year, month - 1, day) + days * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+  }
+
+  // The page's own civil label for a date: weekday, month and day (`%a, %b %-d`).
+  function civilLabel(iso) {
+    const [year, month, day] = iso.split("-").map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    const part = (options) =>
+      new Intl.DateTimeFormat("en-US", { timeZone: "UTC", ...options }).format(
+        date,
+      );
+
+    return `${part({ weekday: "short" })}, ${part({ month: "short" })} ${day}`;
+  }
+
+  const closureRow = (page, serviceDate, pathwayId) =>
+    page
+      .locator(`#timeline-rows > li[data-service-date="${serviceDate}"]`)
+      .filter({ hasText: pathwayId });
+
+  const boundary = (row, phase) =>
+    row.locator(`[data-boundary-phase="${phase}"]`);
+
+  // A boundary action patches the route, and the patched query encodes the
+  // colon in the service time, so the wait reads the parameters rather than
+  // matching a spelled-out URL.
+  async function waitForMoment(page, versionId, date, time) {
+    await page.waitForURL(
+      (url) =>
+        url.pathname ===
+          `/gtfs/${versionId}/stops/${STATION}/evolutions/access` &&
+        url.searchParams.get("date") === date &&
+        url.searchParams.get("time") === time,
+    );
+  }
+
+  // The earlier answer stays on screen under its stale label while the new
+  // moment is calculated, so a check waits for the new answer itself.
+  async function waitForMomentApplied(page, time) {
+    await page.waitForFunction(
+      (expected) => {
+        const moment = document.querySelector("#preview-moment");
+
+        return Boolean(
+          moment &&
+            moment.textContent.includes(`${expected} service time`) &&
+            !document.querySelector("#analysis-stale"),
+        );
+      },
+      time,
+    );
+  }
+
+  const connectionCell = (page, connection) =>
+    page
+      .locator(
+        '#findings-table tbody[data-platform-id="BROWSER_EVO_PLATFORM"] tr',
+        { hasText: "North entrance" },
+      )
+      .locator(`td[data-connection="${connection}"]`);
+
+  test.describe("the closure timeline", () => {
+    test.beforeEach(async ({ page }) => {
+      await logIn(page);
+    });
+
+    test("draws the selected date's overnight window, its spill-over and its exact actions", async ({
+      page,
+    }) => {
+      const versionId = await seededVersionId(page);
+
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      const today = await agencyToday(page);
+      const yesterday = shiftDays(today, -1);
+      const tomorrow = shiftDays(today, 1);
+
+      // The default moment is the agency's own today at noon, which the form
+      // and the timeline's title both name.
+      await expect(page.locator("#preview-date")).toHaveValue(today);
+      await expect(page.locator("#timeline-title")).toHaveText(
+        `Closures on ${civilLabel(today)}`,
+      );
+
+      // The staircase window runs to 26:00, so the axis reaches past midnight
+      // and the sub-line maps those hours onto the local clock.
+      await expect(page.locator("#preview-timeline")).toHaveAttribute(
+        "data-axis-seconds",
+        "93600",
+      );
+      await expect(page.locator("#timeline-sub")).toHaveText(
+        `Service hours 00:00–26:00. 24:00–26:00 is 12:00 AM–2:00 AM on ${civilLabel(tomorrow)}. Choose a boundary to preview that moment.`,
+      );
+      await expect(page.locator("#timeline-cursor-label")).toHaveText(
+        "Selected time · 12:00",
+      );
+
+      // Three instances intersect the displayed span: yesterday's staircase
+      // window, today's elevator window and today's staircase window.
+      await expect(page.locator("#timeline-rows > li")).toHaveCount(3);
+
+      // The previous service date's instance is clipped where the span starts,
+      // carries its own service date, and keeps its own window.
+      const spill = closureRow(page, yesterday, "BROWSER_EVO_PW_STAIR");
+      await expect(spill).toHaveCount(1);
+      await expect(spill).toHaveAttribute("data-from-seconds", "0");
+      await expect(spill).toHaveAttribute("data-to-seconds", "7200");
+      await expect(spill).toContainText(
+        `From ${civilLabel(yesterday)} service`,
+      );
+      await expect(spill).toContainText("22:00–26:00");
+      await expect(spill.locator("[data-timeline-closed]")).toHaveAttribute(
+        "style",
+        /left: 0\.000%; width: 7\.692%/,
+      );
+      await expect(boundary(spill, "closes")).toHaveCount(0);
+      await expect(spill).toContainText(
+        `Boundary actions are on the ${civilLabel(yesterday)} service date.`,
+      );
+
+      const lift = closureRow(page, today, "BROWSER_EVO/PW LIFT 1");
+      const stair = closureRow(page, today, "BROWSER_EVO_PW_STAIR");
+
+      await expect(boundary(lift, "before")).toHaveAttribute(
+        "data-boundary-time",
+        "32340",
+      );
+      await expect(boundary(lift, "closes")).toHaveAttribute(
+        "data-boundary-time",
+        "32400",
+      );
+      await expect(boundary(lift, "during")).toHaveAttribute(
+        "data-boundary-time",
+        "43200",
+      );
+      await expect(boundary(lift, "reopens")).toHaveAttribute(
+        "data-boundary-time",
+        "54000",
+      );
+      await expect(boundary(lift, "before")).toContainText("08:59");
+      await expect(boundary(lift, "reopens")).toContainText("15:00");
+
+      // The default noon moment is the elevator window's own midpoint, so that
+      // action is the current one and the others are not.
+      await expect(boundary(lift, "during")).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      await expect(boundary(lift, "closes")).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      );
+
+      // A 24:00 and a 26:00 action are exact instants like any other: they stay
+      // in service seconds rather than being reparsed as a clock label.
+      await expect(boundary(stair, "during")).toHaveAttribute(
+        "data-boundary-time",
+        "86400",
+      );
+      await expect(boundary(stair, "during")).toContainText("24:00");
+      await expect(boundary(stair, "reopens")).toHaveAttribute(
+        "data-boundary-time",
+        "93600",
+      );
+      await expect(boundary(stair, "reopens")).toContainText("26:00");
+
+      // Closes shows the loss that window causes: 09:00 closes the elevator, so
+      // step-free travel is lost while the staircase keeps walking.
+      await boundary(lift, "closes").click();
+      await waitForMoment(page, versionId, today, "09:00:00");
+      await waitForMomentApplied(page, "09:00");
+
+      await expect(connectionCell(page, "step_free_to_platform")).toHaveAttribute(
+        "data-state",
+        "lost",
+      );
+      await expect(connectionCell(page, "walking_to_platform")).toHaveAttribute(
+        "data-state",
+        "available",
+      );
+      await expect(page.locator("#preview-moment")).toContainText(
+        "09:00 service time",
+      );
+      await expect(boundary(lift, "closes")).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      await expect(page.locator("#analysis-stale")).toHaveCount(0);
+
+      // Reopens at 26:00 restores it, and the moment line names the instant the
+      // action carried: 2:00 AM on the next civil day.
+      await boundary(stair, "reopens").click();
+      await waitForMoment(page, versionId, today, "26:00:00");
+      await waitForMomentApplied(page, "26:00");
+
+      await expect(page.locator("#preview-result-title")).toHaveText(
+        "No connection lost at this time",
+      );
+      await expect(page.locator("#preview-moment")).toContainText(
+        "26:00 service time",
+      );
+      await expect(page.locator("#preview-moment")).toContainText("2:00 AM");
+      await expect(page.locator("#timeline-cursor-label")).toHaveText(
+        "Selected time · 26:00",
+      );
+      await expect(boundary(stair, "reopens")).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      await expect(boundary(stair, "closes")).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      );
+    });
+
+    test("keeps the boundary actions keyboard operable and inside the viewport", async ({
+      page,
+    }) => {
+      const versionId = await seededVersionId(page);
+
+      await page.setViewportSize(MOBILE);
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      const today = await agencyToday(page);
+      const stair = closureRow(page, today, "BROWSER_EVO_PW_STAIR");
+      const actions = stair.locator("[data-boundary-phase]");
+
+      // Every action keeps the 44px target floor at the phone width.
+      await expect(actions).toHaveCount(4);
+
+      for (let index = 0; index < 4; index += 1) {
+        const box = await actions.nth(index).boundingBox();
+        if (box) expect(box.height).toBeGreaterThanOrEqual(44);
+      }
+
+      // A boundary is a real button: it is reachable by keyboard and fires on
+      // Enter, which is what a keyboard-only reader has.
+      await actions.nth(2).focus();
+      await page.keyboard.press("Enter");
+      await waitForMoment(page, versionId, today, "24:00:00");
+      await waitForMomentApplied(page, "24:00");
+
+      await expect(page.locator("#timeline-cursor-label")).toHaveText(
+        "Selected time · 24:00",
+      );
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      // At 320 the page still has no horizontal overflow, and each action's own
+      // label stays inside the button that carries it.
+      await page.setViewportSize(NARROW);
+      await page.goto(accessPath(versionId, STATION, `?date=${today}&time=24:00:00`));
+      await waitForLiveView(page);
+
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      const narrow = closureRow(page, today, "BROWSER_EVO_PW_STAIR").locator(
+        "[data-boundary-phase]",
+      );
+
+      for (let index = 0; index < (await narrow.count()); index += 1) {
+        const overflow = await narrow
+          .nth(index)
+          .evaluate((element) => element.scrollWidth - element.clientWidth);
+
+        expect(overflow).toBeLessThanOrEqual(1);
+      }
+    });
+  });
+
+  test.describe("rendered result", () => {
+    test.beforeEach(async ({ page }) => {
+      await logIn(page);
+    });
+
+    test("matches the reference timeline hierarchy with production fonts and tokens", async ({
+      page,
+    }, testInfo) => {
+      const versionId = await seededVersionId(page);
+
+      await page.setViewportSize(DESKTOP);
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      await expect(page.locator("#timeline-title")).toBeVisible();
+      await expect(page.locator("#timeline-title")).toHaveCSS(
+        "font-family",
+        /Gabarito/,
+      );
+      await expect(page.locator("#timeline-sub")).toContainText(
+        "Service hours 00:00–26:00.",
+      );
+      await expect(page.locator("#timeline-rows > li").first()).toBeVisible();
+      await expect(page.locator("#timeline-rows > li").first()).toHaveCSS(
+        "font-family",
+        /Figtree/,
+      );
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-027-production-desktop.png"),
+        fullPage: true,
+      });
+
+      // Each width re-enters the route so the state is the route's own, not a
+      // client-side reflow of the desktop render.
+      await page.setViewportSize(MOBILE);
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      await expect(page.locator("#timeline-rows > li").first()).toBeVisible();
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-027-production-mobile.png"),
+        fullPage: true,
+      });
+
+      await page.setViewportSize(NARROW);
+      await page.goto(accessPath(versionId, STATION));
+      await waitForLiveView(page);
+
+      expect(await bodyFitsViewport(page)).toBe(true);
+
+      await page.screenshot({
+        path: capturePath(testInfo, "step-027-production-320.png"),
+        fullPage: true,
+      });
+    });
+
+    // The reference is a self-contained file in the gitignored `.specs/`
+    // workspace, so this case skips (rather than fails) in a checkout without it.
+    test.describe("reference capture", () => {
+      test.skip(() => !fs.existsSync(ACCESS_REFERENCE_PATH), "reference file not present");
+
+      test("captures the reference timeline at the same viewports", async ({
+        page,
+      }, testInfo) => {
+        await page.setViewportSize(DESKTOP);
+        await page.goto(
+          `${pathToFileURL(ACCESS_REFERENCE_PATH).href}?state=overnight`,
+        );
+        await expect(page.locator("#preview-timeline")).toBeVisible();
+        await page.screenshot({
+          path: capturePath(testInfo, "step-027-reference-desktop.png"),
+          fullPage: true,
+        });
+
+        await page.setViewportSize(MOBILE);
+        await page.goto(
+          `${pathToFileURL(ACCESS_REFERENCE_PATH).href}?state=overnight`,
+        );
+        await expect(page.locator("#preview-timeline")).toBeVisible();
+        await page.screenshot({
+          path: capturePath(testInfo, "step-027-reference-mobile.png"),
+          fullPage: true,
+        });
+      });
+    });
+  });
+});

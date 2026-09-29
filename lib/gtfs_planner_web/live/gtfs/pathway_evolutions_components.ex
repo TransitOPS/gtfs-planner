@@ -942,6 +942,331 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsComponents do
     """
   end
 
+  # The four action instants the domain derives for one selected-date instance,
+  # in the order the reference shows them. Each button's second line is the
+  # phase's own name, so a reader sees which side of the window it names.
+  @timeline_phases [:before, :closes, :during, :reopens]
+
+  # Timeline gridlines every six service hours. A regular tick closer to the end
+  # than a twelfth of the axis is dropped instead of printed beside the end
+  # label, so `24:00` and `26:00` never overlap on a narrow axis.
+  @axis_tick_seconds 21_600
+
+  attr :snapshot, :map, required: true
+  attr :preview, :map, required: true
+  attr :axis_note, :string, required: true
+
+  @doc """
+  Renders the closure-instance timeline of one moment preview.
+
+  Every row is one instance `timeline_instances` carried: an instance belonging
+  to the selected service date, or one from an earlier or later service date
+  that intersects the displayed span. A row of another service date is labelled
+  with that date, and its bar is clipped to the span for drawing only - the
+  instance identity, its own window and its own service date stay the domain's
+  values. Bars are positioned in service seconds from `timeline_start`, and the
+  axis reaches the later of the span and `24:00`.
+
+  Boundary actions are shown only for the selected service date's instances,
+  because those are the instances the domain derived `boundary_targets` for
+  (AC-38). Each action names an exact instant through that map; the view never
+  reparses a civil label or derives an origin of its own.
+  """
+  def preview_timeline(assigns) do
+    assigns = assign(assigns, :timeline, timeline(assigns.preview, assigns.snapshot))
+
+    ~H"""
+    <section
+      id="preview-timeline"
+      aria-labelledby="timeline-title"
+      tabindex="-1"
+      data-axis-seconds={@timeline.axis}
+      class="flex min-w-0 flex-col overflow-clip rounded-card border border-subtle bg-white"
+    >
+      <header class="flex flex-wrap items-start justify-between gap-x-6 gap-y-2 border-b border-subtle px-5 py-3.5">
+        <div class="min-w-0">
+          <h2
+            id="timeline-title"
+            class="flex min-h-[26px] items-center font-display text-[18px] tracking-[-0.02em]"
+          >
+            Closures on {@timeline.date_label}
+          </h2>
+          <p id="timeline-sub" class="mt-0.5 text-[13px] text-muted">{@axis_note}</p>
+        </div>
+        <ul
+          class="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-muted"
+          aria-label="Timeline legend"
+        >
+          <li class="flex items-center gap-1.5">
+            <span
+              aria-hidden="true"
+              class="evo-closed-bar inline-block h-3.5 w-6 rounded-[3px]"
+            ></span>Closed
+          </li>
+          <li class="flex items-center gap-1.5">
+            <span aria-hidden="true" class="inline-block h-4 w-0.5 bg-strong"></span>
+            <span id="timeline-cursor-label">Selected time · {@timeline.cursor_label}</span>
+          </li>
+        </ul>
+      </header>
+
+      <div class="px-4 pt-3 pb-4 md:px-5">
+        <div class="grid lg:grid-cols-[minmax(0,17rem)_minmax(0,1fr)_minmax(0,20rem)] lg:gap-x-5">
+          <div class="max-lg:hidden"></div>
+          <div
+            id="timeline-axis"
+            aria-hidden="true"
+            class="relative h-6 text-[12px] tabular-nums text-muted"
+          >
+            <span
+              :for={tick <- @timeline.ticks}
+              id={"timeline-tick-#{tick.seconds}"}
+              class={["absolute top-0", tick.position]}
+              style={if(tick.position == "-translate-x-1/2", do: "left: #{tick.pct}%", else: nil)}
+            >
+              {tick.label}
+            </span>
+          </div>
+        </div>
+
+        <ol id="timeline-rows" class="mt-1">
+          <li
+            :for={row <- @timeline.rows}
+            id={row.id}
+            data-timeline-row={row.instance_id}
+            data-service-date={row.service_date}
+            data-start-time={row.start_time}
+            data-end-time={row.end_time}
+            data-from-seconds={row.from}
+            data-to-seconds={row.to}
+            class="grid items-center border-t border-subtle py-2.5 lg:grid-cols-[minmax(0,17rem)_minmax(0,1fr)_minmax(0,20rem)] lg:gap-x-5"
+          >
+            <div class="min-w-0 max-lg:mb-2">
+              <p class="text-[13px] leading-snug font-[650] text-strong">
+                {row.pathway_label}
+              </p>
+              <p class="flex flex-wrap items-center gap-x-1.5 text-[13px] leading-snug tabular-nums text-muted">
+                <span class="font-mono">{row.pathway_id}</span>
+                <span>·</span>
+                <span>{row.window}</span>
+                <span
+                  :if={row.elsewhere?}
+                  data-spill={row.service_date}
+                  class="inline-flex items-center gap-0.5 rounded-evo-badge bg-info/10 px-1.5 text-[12px] font-[650] text-info"
+                >
+                  <.icon name="hero-chevron-double-left" class="size-3" />From {row.service_label} service
+                </span>
+              </p>
+            </div>
+
+            <div
+              id={row.bar_id}
+              data-timeline-bar={row.service_date}
+              title={row.title}
+              class="relative h-8 min-w-0 rounded-[4px] bg-canvas"
+            >
+              <span
+                :for={tick <- @timeline.ticks}
+                :if={tick.seconds > 0}
+                aria-hidden="true"
+                class="evo-axis-grid absolute inset-y-0 w-px"
+                style={"left: #{tick.pct}%"}
+              >
+              </span>
+              <span
+                :if={@timeline.cursor_pct}
+                id="timeline-cursor"
+                aria-hidden="true"
+                class="absolute inset-y-0 z-10 w-0.5 -translate-x-1/2 bg-strong"
+                style={"left: #{@timeline.cursor_pct}%"}
+              >
+              </span>
+              <span
+                data-timeline-closed={row.service_date}
+                class={[
+                  "evo-closed-bar absolute inset-y-1 min-w-[3px] rounded-[3px]",
+                  row.clipped_left? && "rounded-l-none border-l-0"
+                ]}
+                style={"left: #{row.left}%; width: #{row.width}%"}
+              >
+                <span class="sr-only">Closed {row.window}</span>
+              </span>
+            </div>
+
+            <div class="mt-2 grid grid-cols-4 gap-1 lg:col-start-3 lg:mt-0">
+              <button
+                :for={boundary <- row.boundaries}
+                id={boundary.id}
+                type="button"
+                data-boundary-phase={boundary.kind}
+                data-boundary-date={boundary.service_date}
+                data-boundary-time={boundary.time}
+                aria-pressed={to_string(boundary.pressed?)}
+                phx-click="preview_boundary"
+                phx-value-evolution-id={row.instance_id}
+                phx-value-service-date={row.service_date}
+                phx-value-phase={boundary.kind}
+                class="group flex min-h-11 min-w-0 flex-col items-center justify-center rounded-control border border-control bg-white px-1 leading-tight text-strong hover:bg-canvas aria-pressed:border-focus aria-pressed:bg-selection aria-pressed:text-evo-action-hover"
+              >
+                <span class="min-w-0 text-center text-[13px] font-[650] tabular-nums">
+                  <span :if={boundary.weekday}>{boundary.weekday <> " "}</span><span class="whitespace-nowrap">{boundary.time_label}</span>
+                </span>
+                <span class="text-[12px] text-muted group-aria-pressed:text-evo-action-hover">
+                  {boundary.kind}
+                </span>
+              </button>
+              <p
+                :if={row.boundaries == []}
+                id={row.id <> "-actions"}
+                class="col-span-4 flex min-h-11 items-center text-[13px] text-muted"
+              >
+                Boundary actions are on the {row.service_label} service date.
+              </p>
+            </div>
+          </li>
+        </ol>
+
+        <p
+          :if={@timeline.rows == []}
+          id="timeline-empty"
+          class="border-t border-subtle pt-4 text-sm text-muted"
+        >
+          No closure affects {@timeline.date_label}. Choose another date to see its closures.
+        </p>
+      </div>
+    </section>
+    """
+  end
+
+  # One row per instance of the displayed span, in the order the domain built
+  # them. The axis reaches the later of the span and 24:00, so a window past
+  # midnight keeps its whole bar and a short civil day still reads as a day.
+  defp timeline(preview, snapshot) do
+    starts_at = preview.timeline_start
+    axis = max(DateTime.diff(preview.timeline_end, starts_at, :second), 86_400)
+    cursor = preview.service_time
+
+    %{
+      axis: axis,
+      date_label: Calendar.strftime(preview.service_date, "%a, %b %-d"),
+      cursor_label: service_time_value(cursor),
+      cursor_pct: if(cursor <= axis, do: pct(cursor, axis), else: nil),
+      ticks: axis_ticks(axis),
+      rows:
+        Enum.map(
+          preview.timeline_instances,
+          &timeline_row(&1, preview, snapshot, starts_at, axis)
+        )
+    }
+  end
+
+  defp timeline_row(instance, preview, snapshot, starts_at, axis) do
+    row = Enum.find(snapshot.closures, &(&1.evolution.id == instance.evolution_id))
+    from = DateTime.diff(instance.starts_at, starts_at, :second)
+    left = max(from, 0)
+    right = min(DateTime.diff(instance.ends_at, starts_at, :second), axis)
+    elsewhere? = Date.compare(instance.service_date, preview.service_date) != :eq
+
+    %{
+      id: "timeline-instance-#{instance.evolution_id}-#{Date.to_iso8601(instance.service_date)}",
+      bar_id: "timeline-bar-#{instance.evolution_id}-#{Date.to_iso8601(instance.service_date)}",
+      instance_id: instance.evolution_id,
+      service_date: Date.to_iso8601(instance.service_date),
+      service_label: service_date_label(instance.service_date),
+      start_time: instance.start_time,
+      end_time: instance.end_time,
+      from: left,
+      to: max(right, left),
+      left: pct(left, axis),
+      width: pct(max(right - left, 0), axis),
+      clipped_left?: left == 0 and from < 0,
+      pathway_label: if(row, do: pathway_label(row.pathway), else: instance.pathway_id),
+      pathway_id: instance.pathway_id,
+      window: window_label(instance),
+      elsewhere?: elsewhere?,
+      title: timeline_title(row, instance, elsewhere?),
+      boundaries: if(elsewhere?, do: [], else: boundaries(instance, preview))
+    }
+  end
+
+  # The domain's own boundary targets for one selected-date instance. A phase
+  # the preview did not derive is simply absent, and an action carries the exact
+  # date and elapsed seconds it names, so a click never renames an instant.
+  defp boundaries(instance, preview) do
+    Enum.flat_map(@timeline_phases, fn phase ->
+      case Map.get(
+             preview.boundary_targets,
+             {instance.evolution_id, instance.service_date, phase}
+           ) do
+        %{date: %Date{} = date, time: time} when is_integer(time) ->
+          [
+            %{
+              id: "boundary-#{instance.evolution_id}-#{Date.to_iso8601(date)}-#{phase}",
+              kind: Atom.to_string(phase),
+              service_date: Date.to_iso8601(date),
+              time: time,
+              time_label: service_time_value(time),
+              weekday:
+                if(Date.compare(date, preview.service_date) == :eq, do: nil, else: weekday(date)),
+              pressed?:
+                Date.compare(date, preview.service_date) == :eq and time == preview.service_time
+            }
+          ]
+
+        _absent ->
+          []
+      end
+    end)
+  end
+
+  defp axis_ticks(axis) do
+    regular =
+      0
+      |> Stream.iterate(&(&1 + @axis_tick_seconds))
+      |> Enum.take_while(&(&1 < axis))
+      |> Enum.filter(&(&1 == 0 or axis - &1 >= div(axis, 12)))
+
+    (regular ++ [axis])
+    |> Enum.uniq()
+    |> Enum.map(fn seconds ->
+      %{
+        seconds: seconds,
+        label: service_time_value(seconds),
+        pct: pct(seconds, axis),
+        position: axis_position(seconds, axis)
+      }
+    end)
+  end
+
+  defp axis_position(0, _axis), do: "left-0"
+  defp axis_position(seconds, seconds), do: "right-0"
+  defp axis_position(_seconds, _axis), do: "-translate-x-1/2"
+
+  # A percentage with a fixed three decimals, so a bar's own geometry is
+  # reproducible and can be read back by an assertion.
+  defp pct(seconds, axis) do
+    seconds
+    |> Kernel./(axis)
+    |> Kernel.*(100)
+    |> Float.round(3)
+    |> :erlang.float_to_binary(decimals: 3)
+  end
+
+  defp service_date_label(%Date{} = date), do: Calendar.strftime(date, "%a, %b %-d")
+
+  defp weekday(%Date{} = date), do: Calendar.strftime(date, "%a")
+
+  defp timeline_title(row, instance, elsewhere?) do
+    label = if(row, do: pathway_label(row.pathway), else: instance.pathway_id)
+
+    suffix =
+      if elsewhere?,
+        do: " on the #{Calendar.strftime(instance.service_date, "%A, %B %-d, %Y")} service day",
+        else: ""
+
+    "#{label} closed #{window_label(instance)}#{suffix}"
+  end
+
   attr :id, :string, required: true
   attr :title, :string, required: true
   attr :body, :string, required: true

@@ -469,6 +469,32 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   def handle_event("update_preview", _params, socket), do: {:noreply, socket}
 
+  # A timeline boundary action. The click carries only the identity of a boundary
+  # of the rendered preview, and the moment it names is read back out of that
+  # preview's own `boundary_targets`, so no client-supplied date or time can
+  # reach the context and no civil label is reparsed here. The patched address
+  # is the ordinary access route with `?date`/`?time`, which re-runs the same
+  # validated moment request; the retained result stays on screen, labelled,
+  # while the new one is calculated, and focus stays in the timeline.
+  def handle_event("preview_boundary", params, socket) when is_map(params) do
+    case boundary_moment(socket, params) do
+      %{date: %Date{} = date, time: time} when is_integer(time) ->
+        {:noreply,
+         socket
+         |> push_patch(
+           to:
+             access_target(socket.assigns.current_gtfs_version.id, socket.assigns.stop_id, %{
+               date: date,
+               time: time
+             })
+         )
+         |> focus_scoped("preview-timeline")}
+
+      _absent ->
+        {:noreply, socket}
+    end
+  end
+
   # The retry of the last request, not of a new one: the moment is the one the
   # error names, so a repeated failure cannot silently answer a different time.
   def handle_event("retry_preview", _params, socket) do
@@ -704,6 +730,35 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
 
   defp parse_moment_time(_value), do: {:ok, @preview_default_time}
 
+  # The boundary phases the domain derives targets under, as the strings an
+  # event carries. An unknown phase is not a target, so it resolves to nothing.
+  @boundary_phases %{
+    "before" => :before,
+    "closes" => :closes,
+    "during" => :during,
+    "reopens" => :reopens
+  }
+
+  # The exact moment one rendered boundary action names, read from the preview
+  # the page is showing. A boundary of a different station, closure, service
+  # date or phase than the rendered preview simply is not there, so a stale or
+  # forged request changes nothing.
+  defp boundary_moment(%{assigns: %{preview: %{boundary_targets: targets}}}, params)
+       when is_map(targets) and is_map(params) do
+    with evolution_id when is_binary(evolution_id) <- params["evolution-id"],
+         service_date when is_binary(service_date) <- params["service-date"],
+         {:ok, date} <- Date.from_iso8601(service_date),
+         {:ok, phase} <- Map.fetch(@boundary_phases, params["phase"]),
+         %{date: %Date{} = target_date, time: time} when is_integer(time) <-
+           Map.get(targets, {evolution_id, date, phase}) do
+      %{date: target_date, time: time}
+    else
+      _absent -> nil
+    end
+  end
+
+  defp boundary_moment(_socket, _params), do: nil
+
   # One request per moment. The generation and the mounted scope travel with the
   # request into the task and come back with its result, so a completion can be
   # matched against what this view is waiting for. The retained result is never
@@ -885,6 +940,55 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
   end
 
   defp preview_zone_note(_assigns), do: nil
+
+  # The timeline's own sub-line: the service hours its axis covers, where the
+  # hours past 24:00 land on the local clock, and what the reader can do with
+  # the boundaries. The axis is in service seconds from `timeline_start`, which
+  # is the same instant the bars are placed against. Every local label comes
+  # from the same zone resolution as the rest of the page; a preview without a
+  # usable zone never renders a timeline, so no local clock is invented here.
+  defp preview_axis_note(
+         %{preview: %{timeline_start: %DateTime{} = starts_at} = preview} = assigns
+       ) do
+    case assigns.preview_zone do
+      %{fallback?: false} = zone ->
+        axis = preview_axis(preview)
+        last = DateTime.add(starts_at, axis, :second)
+
+        hours =
+          if axis > 86_400 do
+            [midnight, local_last] =
+              DisplayClock.localize_many([DateTime.add(starts_at, 86_400, :second), last], zone)
+
+            "Service hours 00:00–#{service_time_value(axis)}. 24:00–#{service_time_value(axis)} is " <>
+              "#{DisplayClock.format_time(midnight)}–#{DisplayClock.format_time(local_last)} on " <>
+              "#{Calendar.strftime(NaiveDateTime.to_date(local_last), "%a, %b %-d")}."
+          else
+            "Service hours 00:00–#{service_time_value(axis)}."
+          end
+
+        cond do
+          preview.boundary_targets != %{} ->
+            hours <> " Choose a boundary to preview that moment."
+
+          preview.timeline_instances != [] ->
+            hours <> " No closure starts on this service date."
+
+          true ->
+            hours
+        end
+
+      _absent ->
+        ""
+    end
+  end
+
+  defp preview_axis_note(_assigns), do: ""
+
+  # The axis reaches the later of the displayed span and 24:00, so a window past
+  # midnight keeps its whole bar while every date still reads as a day.
+  defp preview_axis(%{timeline_start: starts_at, timeline_end: ends_at}),
+    do: max(DateTime.diff(ends_at, starts_at, :second), 86_400)
 
   # Why the analysis is off, in the reader's terms. Closure authoring is never
   # blocked by an unusable zone, so the switch and the settings link stay.
@@ -2079,6 +2183,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
       |> assign(:closures_view_href, closures_view_path(assigns))
       |> assign(:access_view_href, access_view_path(assigns))
       |> assign(:preview_causes, preview_causes(assigns))
+      |> assign(:preview_axis_note, preview_axis_note(assigns))
       |> assign(:preview_banner, preview_banner_copy(assigns.station_data, assigns.preview))
       |> assign(:preview_computed_label, preview_computed_label(assigns))
       |> assign(:preview_moment_label, preview_moment_label(assigns))
@@ -2176,7 +2281,7 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
             </div>
           </section>
 
-          <div :if={is_nil(@timezone_copy)} id="access-analysis">
+          <div :if={is_nil(@timezone_copy)} id="access-analysis" phx-hook="FormErrorFocus">
             <form
               id="preview-form"
               phx-submit="update_preview"
@@ -2368,6 +2473,13 @@ defmodule GtfsPlannerWeb.Gtfs.PathwayEvolutionsLive do
                 moment={@preview_short_moment}
                 incomplete?={not is_nil(@preview_incomplete_reasons)}
                 lost?={@preview_lost?}
+              />
+
+              <.preview_timeline
+                :if={@preview}
+                snapshot={@station_data}
+                preview={@preview}
+                axis_note={@preview_axis_note}
               />
             </div>
           </div>
