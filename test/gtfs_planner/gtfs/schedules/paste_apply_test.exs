@@ -528,6 +528,352 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
     end
   end
 
+  describe "apply_paste/5 adds" do
+    test "adding 3 trips inserts natural ids in pattern order with timepoints 1/0/1",
+         context do
+      scope = apply_case!(context)
+
+      input =
+        add_input("Central Station\tHospital\n08:00\t08:12\n09:00\t09:12\n10:00\t10:12\n")
+
+      review = prepare_review!(context, scope, input)
+
+      assert review.plan.counts.add == 3
+      assert review.plan.counts.change == 0
+      assert review.plan.counts.remove == 0
+      assert length(review.plan.new_timings) == 1
+
+      assert {:ok, summary} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 scope_params(scope),
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+
+      assert summary.added == 3
+      assert summary.changed == 0
+      assert summary.removed == 0
+      assert summary.transfers_removed == 0
+      assert summary.new_timings == ["Pasted Sep 28 · A"]
+      assert summary.vehicles_before == review.plan.vehicles.before
+      assert summary.vehicles_after == review.plan.vehicles.after
+
+      expected_ids = [
+        "R-APPLY-0-WKD-APPLY-0800",
+        "R-APPLY-0-WKD-APPLY-0900",
+        "R-APPLY-0-WKD-APPLY-1000"
+      ]
+
+      assert Enum.sort(summary.trip_ids) == Enum.sort(expected_ids)
+
+      for {trip_id, start, middle, finish} <- [
+            {"R-APPLY-0-WKD-APPLY-0800", "08:00:00", "08:06:00", "08:12:00"},
+            {"R-APPLY-0-WKD-APPLY-0900", "09:00:00", "09:06:00", "09:12:00"},
+            {"R-APPLY-0-WKD-APPLY-1000", "10:00:00", "10:06:00", "10:12:00"}
+          ] do
+        trip = Repo.get_by!(Trip, trip_id: trip_id)
+        assert trip.trip_id == trip_id
+        assert trip.direction_id == 0
+        assert trip.route_pattern_id == "MAIN"
+        assert trip.pattern_derivation_state == "linked"
+        assert trip.pattern_derivation_reason == nil
+        assert trip.trip_short_name == nil
+        assert trip.block_id == nil
+        assert trip.trip_headsign == "Hospital"
+
+        assert ordered_stop_times(context, trip_id) == [
+                 {start, start, 1},
+                 {middle, middle, 0},
+                 {finish, finish, 1}
+               ]
+
+        assert ordered_stop_ids(context, trip_id) == ["PSA-1", "PSA-2", "PSA-3"]
+      end
+
+      timing = Repo.one!(from t in TimedPattern, where: t.name == "Pasted Sep 28 · A")
+
+      for trip_id <- expected_ids do
+        assert Repo.get_by!(Trip, trip_id: trip_id).timed_pattern_id == timing.id
+      end
+
+      created_logs =
+        context |> trip_logs() |> Enum.filter(&(&1.action == "created"))
+
+      assert length(created_logs) == 3
+      assert Enum.sort(Enum.map(created_logs, & &1.entity_external_id)) == Enum.sort(expected_ids)
+
+      assert created_logs
+             |> Enum.map(& &1.changed_fields["operation_id"])
+             |> Enum.uniq()
+             |> length() == 1
+
+      assert {:ok, schedule} =
+               Schedules.load_route_schedule(
+                 context.organization.id,
+                 context.version.id,
+                 scope.route_id,
+                 %{service_id: scope.service, direction_id: 0}
+               )
+
+      assert schedule.summary.vehicles.count == summary.vehicles_after
+    end
+
+    test "an add sharing a vector with changes uses the same new timing", context do
+      scope = apply_case!(context)
+
+      input =
+        replace_input("Central Station\tHospital\n06:00\t06:12\n07:00\t07:12\n08:00\t08:12\n")
+
+      review = prepare_review!(context, scope, input)
+
+      assert review.plan.counts.change == 2
+      assert review.plan.counts.add == 1
+      assert review.plan.counts.remove == 0
+      assert length(review.plan.new_timings) == 1
+
+      assert {:ok, summary} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 scope_params(scope),
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+
+      assert summary.changed == 2
+      assert summary.added == 1
+      assert summary.removed == 0
+      assert summary.new_timings == ["Pasted Sep 28 · A"]
+
+      assert Repo.aggregate(
+               from(t in TimedPattern, where: t.name == "Pasted Sep 28 · A"),
+               :count
+             ) == 1
+
+      timing = Repo.one!(from t in TimedPattern, where: t.name == "Pasted Sep 28 · A")
+      assert Repo.get_by!(Trip, trip_id: scope.trips.first).timed_pattern_id == timing.id
+      assert Repo.get_by!(Trip, trip_id: scope.trips.second).timed_pattern_id == timing.id
+
+      assert Repo.get_by!(Trip, trip_id: "R-APPLY-0-WKD-APPLY-0800").timed_pattern_id ==
+               timing.id
+
+      assert Enum.sort(summary.trip_ids) ==
+               Enum.sort([scope.trips.first, scope.trips.second, "R-APPLY-0-WKD-APPLY-0800"])
+    end
+
+    test "an Add paste with a duplicate row writes only the new trip and leaves no orphans",
+         context do
+      scope = apply_case!(context)
+
+      input = add_input("Central Station\tHospital\n06:00\t06:12\n08:00\t08:12\n")
+      review = prepare_review!(context, scope, input)
+
+      assert review.plan.counts.add == 1
+      assert review.plan.counts.duplicate == 1
+
+      assert {:ok, summary} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 scope_params(scope),
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+
+      assert summary.added == 1
+      assert summary.changed == 0
+      assert summary.removed == 0
+      assert summary.trip_ids == ["R-APPLY-0-WKD-APPLY-0800"]
+
+      assert ordered_stop_times(context, "R-APPLY-0-WKD-APPLY-0800") == [
+               {"08:00:00", "08:00:00", 1},
+               {"08:06:00", "08:06:00", 0},
+               {"08:12:00", "08:12:00", 1}
+             ]
+
+      assert ordered_stop_times(context, scope.trips.first)
+             |> Enum.map(fn {arrival, departure, _timepoint} -> {arrival, departure} end) == [
+               {"06:00:00", "06:00:00"},
+               {"06:05:00", "06:05:00"},
+               {"06:10:00", "06:10:00"}
+             ]
+
+      assert scoped(StopTime, context) |> Repo.aggregate(:count) == 9
+
+      trip_ids =
+        Repo.all(
+          from t in Trip,
+            where:
+              t.organization_id == ^context.organization.id and
+                t.gtfs_version_id == ^context.version.id,
+            select: t.trip_id
+        )
+        |> MapSet.new()
+
+      orphans =
+        Repo.all(
+          from st in StopTime,
+            where:
+              st.organization_id == ^context.organization.id and
+                st.gtfs_version_id == ^context.version.id,
+            select: st.trip_id
+        )
+        |> Enum.reject(&MapSet.member?(trip_ids, &1))
+
+      assert orphans == []
+    end
+
+    test "a mixed add/change/remove commits all three with one operation_id", context do
+      scope = apply_case!(context)
+
+      input = replace_input("Central Station\tHospital\n07:00\t07:12\n08:00\t08:12\n")
+      review = prepare_review!(context, scope, input)
+
+      assert review.plan.counts.change == 1
+      assert review.plan.counts.add == 1
+      assert review.plan.counts.remove == 1
+
+      assert {:ok, summary} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 scope_params(scope),
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+
+      assert summary.added == 1
+      assert summary.changed == 1
+      assert summary.removed == 1
+      assert summary.transfers_removed == 2
+      assert summary.new_timings == ["Pasted Sep 28 · A"]
+
+      assert Enum.sort(summary.trip_ids) ==
+               Enum.sort([scope.trips.second, "R-APPLY-0-WKD-APPLY-0800"])
+
+      assert Repo.get_by(Trip, trip_id: scope.trips.first) == nil
+      assert scoped(StopTime, context) |> where_trip(scope.trips.first) |> Repo.all() == []
+
+      assert ordered_stop_times(context, scope.trips.second) == [
+               {"07:00:00", "07:00:00", 1},
+               {"07:06:00", "07:06:00", 0},
+               {"07:12:00", "07:12:00", 1}
+             ]
+
+      assert ordered_stop_times(context, "R-APPLY-0-WKD-APPLY-0800") == [
+               {"08:00:00", "08:00:00", 1},
+               {"08:06:00", "08:06:00", 0},
+               {"08:12:00", "08:12:00", 1}
+             ]
+
+      operation_ids =
+        context
+        |> trip_logs()
+        |> Enum.filter(&(&1.action in ["created", "updated", "deleted"]))
+        |> Enum.map(& &1.changed_fields["operation_id"])
+        |> Enum.uniq()
+
+      assert match?([operation_id] when is_binary(operation_id), operation_ids)
+    end
+
+    test "an audit failure on the last added trip rolls back the whole mixed apply",
+         context do
+      scope = apply_case!(context)
+
+      input = replace_input("Central Station\tHospital\n07:00\t07:12\n08:00\t08:12\n")
+      review = prepare_review!(context, scope, input)
+
+      assert review.plan.counts.change == 1
+      assert review.plan.counts.add == 1
+      assert review.plan.counts.remove == 1
+      counts_before = scoped_counts(context)
+
+      install_last_add_rejection!("R-APPLY-0-WKD-APPLY-0800")
+
+      assert_raise Postgrex.Error, fn ->
+        Schedules.apply_paste(
+          scope.route_id,
+          scope_params(scope),
+          input,
+          review.fingerprint,
+          context.audit
+        )
+      end
+
+      remove_last_add_rejection!()
+
+      assert scoped_counts(context) == counts_before
+      assert %Trip{} = Repo.get_by(Trip, trip_id: scope.trips.first)
+      assert %Trip{} = Repo.get_by(Trip, trip_id: scope.trips.second)
+      assert Repo.get_by(Trip, trip_id: "R-APPLY-0-WKD-APPLY-0800") == nil
+
+      assert Repo.aggregate(
+               from(t in TimedPattern, where: t.name == "Pasted Sep 28 · A"),
+               :count
+             ) == 0
+
+      assert ordered_stop_times(context, scope.trips.second)
+             |> Enum.map(fn {arrival, departure, _timepoint} -> {arrival, departure} end) == [
+               {"07:00:00", "07:00:00"},
+               {"07:05:00", "07:05:00"},
+               {"07:10:00", "07:10:00"}
+             ]
+
+      assert trip_logs(context) == []
+    end
+  end
+
+  defp add_input(text) do
+    %{
+      text: text,
+      layout: :auto,
+      header?: true,
+      overrides: %{},
+      confirmations: MapSet.new(),
+      decisions: %{},
+      mode: :add,
+      template_timing_id: nil,
+      stamp: "Sep 28",
+      block_rows: []
+    }
+  end
+
+  defp ordered_stop_ids(context, trip_id) do
+    scoped(StopTime, context)
+    |> where_trip(trip_id)
+    |> Repo.all()
+    |> Enum.sort_by(&{&1.stop_sequence, &1.id})
+    |> Enum.map(& &1.stop_id)
+  end
+
+  defp install_last_add_rejection!(trip_id) do
+    Repo.query!("""
+    CREATE FUNCTION trip_audit_last_add_rejection() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.entity_type = 'trip' AND NEW.entity_external_id = '#{trip_id}' THEN
+        RAISE EXCEPTION 'trip audit rejection for last add fixture' USING ERRCODE = 'check_violation';
+      END IF;
+      RETURN NEW;
+    END;
+    $$;
+    """)
+
+    Repo.query!("""
+    CREATE CONSTRAINT TRIGGER trip_audit_last_add_rejection_trigger
+    AFTER INSERT ON change_logs
+    DEFERRABLE INITIALLY IMMEDIATE
+    FOR EACH ROW
+    EXECUTE FUNCTION trip_audit_last_add_rejection();
+    """)
+  end
+
+  defp remove_last_add_rejection! do
+    Repo.query!("DROP TRIGGER IF EXISTS trip_audit_last_add_rejection_trigger ON change_logs")
+    Repo.query!("DROP FUNCTION IF EXISTS trip_audit_last_add_rejection()")
+  end
+
   defp timing_logs(context) do
     Repo.all(
       from(l in ChangeLog,

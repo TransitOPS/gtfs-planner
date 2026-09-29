@@ -666,8 +666,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   reference them, and each changed trip keeps its `trip_id` while its times
   are rematerialized (or its stop times re-inserted when its stop count
   differs) with one `'updated'` audit carrying the before/after
-  `trip_snapshot/6`. Step 18 (added trips) extends the write sequence at the
-  marked point, so `added` is 0 here. `vehicles_before/after` come from the
+  `trip_snapshot/6`. Each `:add` then inserts one trip with an
+  `allocate_trip_ids/5` natural ID, `linked` state and the plan's R13
+  metadata, materializes its stop times (R9 timepoints 1/0) via
+  `stop_time_rows/3` + `insert_stop_times!/1`, and audits 'created' — all
+  under the same `operation_id`. `vehicles_before/after` come from the
   locked plan.
 
   A foreign, invalid or unpublished organization, version, route or calendar,
@@ -748,19 +751,26 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         audit_context
       )
 
-    # Step 18 extension point: insert the :add trips via allocate_trip_ids/5,
-    # insert_trip!/1, stop_time_rows/3 and insert_stop_times!/1 here, with
-    # 'created' audits under the same operation_id, and extend the summary
-    # (added count and added IDs).
+    {added_count, added_ids} =
+      apply_paste_adds!(
+        route,
+        review.plan,
+        service_id,
+        direction,
+        timings_by_name,
+        operation_id,
+        audit_context
+      )
+
     %{
-      added: 0,
+      added: added_count,
       changed: changed_count,
       removed: result.trips,
       transfers_removed: result.transfers,
       new_timings: paste_timing_names(review.plan),
       vehicles_before: review.plan.vehicles.before,
       vehicles_after: review.plan.vehicles.after,
-      trip_ids: changed_ids
+      trip_ids: paste_result_trip_ids(review.plan, changed_ids, added_ids)
     }
   end
 
@@ -1052,6 +1062,233 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     })
     |> Ecto.Changeset.force_change(:updated_at, DateTime.utc_now())
     |> update_trip_row!()
+  end
+
+  # Step 18: one insert per :add, in plan order (AC-11, AC-16, AC-22).
+  # IDs come from `allocate_trip_ids/5` seeded with the version's IDs read
+  # after the removals, so a removed natural ID is free to reuse and a
+  # later departure never reuses an ID this apply already reserved (a
+  # same-HHMM collision takes the `-2` suffix). Each add sets its
+  # `timed_pattern_id` (existing id or mapped pending id), `linked` state,
+  # and the plan's R13 metadata (a blank headsign stores nil, never "");
+  # stop times come from `Materializer.materialize/3` with R9 timepoints
+  # (1 at pasted occurrences, 0 at estimated ones) and GTFS-convention 0
+  # pickup/drop attributes, inserted via `stop_time_rows/3` +
+  # `insert_stop_times!/1`. Each new trip audits 'created' with the
+  # before/after `trip_snapshot/6` under the shared operation id. Timing
+  # 'created' audits already ran in `create_paste_timings!/3`, so no timing
+  # audit belongs here. Any stale add (no locked pattern, mistimed vector,
+  # unmapped timing) rolls back `:stale_plan`, never partial (AC-19).
+  defp apply_paste_adds!(
+         route,
+         plan,
+         service_id,
+         direction,
+         timings_by_name,
+         operation_id,
+         audit_context
+       ) do
+    adds = paste_adds(plan)
+
+    if adds == [] do
+      {0, []}
+    else
+      organization_id = audit_context.organization_id
+      version_id = audit_context.gtfs_version_id
+
+      starts = Enum.map(adds, &paste_add_start!(&1))
+
+      trip_ids =
+        allocate_trip_ids(
+          route.route_id,
+          direction,
+          service_id,
+          starts,
+          version_trip_ids(organization_id, version_id)
+        )
+
+      now = DateTime.utc_now()
+
+      inserted =
+        Enum.map(Enum.zip(adds, trip_ids), fn {change, trip_id} ->
+          insert_paste_add!(
+            route,
+            change,
+            trip_id,
+            service_id,
+            direction,
+            timings_by_name,
+            audit_context,
+            now
+          )
+        end)
+
+      all_stop_rows = Enum.flat_map(inserted, &elem(&1, 1))
+      unless all_stop_rows == [], do: insert_stop_times!(all_stop_rows)
+
+      trips = Enum.map(inserted, &elem(&1, 0))
+      affected = Enum.map(trips, & &1.id)
+
+      Enum.each(inserted, fn {trip, _rows, materialized, start_secs, timing_label} ->
+        after_snapshot =
+          trip_snapshot(trip, timing_label, start_secs, materialized, [], false)
+
+        audit_trip!(
+          audit_context,
+          trip,
+          "created",
+          nil,
+          after_snapshot,
+          operation_id,
+          affected
+        )
+      end)
+
+      {length(adds), Enum.map(trips, & &1.trip_id)}
+    end
+  end
+
+  defp paste_adds(plan), do: plan |> paste_changes() |> Enum.filter(&paste_add?(&1))
+
+  defp paste_add?(change), do: attr(change, :op) in [:add, "add"]
+
+  defp paste_add_start!(change) do
+    start_secs = attr(attr(change, :row), :start_secs)
+    unless is_integer(start_secs), do: Repo.rollback(:stale_plan)
+    start_secs
+  end
+
+  # Inserts one :add trip row and builds (but does not yet insert) its stop
+  # times; the caller inserts all stop rows in one `insert_stop_times!/1`
+  # call and then audits. Returns `{trip, stop_rows, materialized,
+  # start_secs, timing_label}` for the audit.
+  defp insert_paste_add!(
+         route,
+         change,
+         trip_id,
+         service_id,
+         direction,
+         timings_by_name,
+         audit_context,
+         now
+       ) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+
+    row = attr(change, :row)
+    unless is_map(row), do: Repo.rollback(:stale_plan)
+
+    start_secs = attr(row, :start_secs)
+    unless is_integer(start_secs), do: Repo.rollback(:stale_plan)
+
+    raw_timing_rows = attr(row, :timing_rows)
+
+    unless is_list(raw_timing_rows) and raw_timing_rows != [],
+      do: Repo.rollback(:stale_plan)
+
+    timing_rows = normalize_paste_timing_rows(raw_timing_rows)
+    timed_pattern_id = paste_change_timing_id!(change, timings_by_name)
+    pattern = lock_paste_pattern!(route, attr(row, :pattern_id))
+    if pattern.direction_id != direction, do: Repo.rollback(:stale_plan)
+
+    occurrences = pattern_occurrences(pattern)
+    unless length(timing_rows) == length(occurrences), do: Repo.rollback(:stale_plan)
+
+    materialized =
+      case Materializer.materialize(start_secs, occurrences, timing_rows) do
+        {:ok, rows} -> rows
+        {:error, _reason} -> Repo.rollback(:stale_plan)
+      end
+
+    shape_attrs = Alignments.trip_shape_attrs(pattern)
+
+    trip =
+      insert_trip!(%{
+        trip_id: trip_id,
+        route_id: route.route_id,
+        service_id: service_id,
+        direction_id: pattern.direction_id,
+        trip_headsign: paste_add_headsign(change),
+        trip_short_name: attr(change, :trip_short_name),
+        block_id: attr(change, :block_id),
+        shape_id: shape_attrs.shape_id,
+        organization_id: organization_id,
+        gtfs_version_id: version_id,
+        route_pattern_id: pattern.route_pattern_id,
+        timed_pattern_id: timed_pattern_id,
+        pattern_derivation_state: "linked",
+        pattern_derivation_reason: nil
+      })
+
+    stop_rows = stop_time_rows(trip, materialized, shape_attrs.visit_distances, now)
+
+    {trip, stop_rows, materialized, start_secs,
+     paste_add_timing_label(change, timed_pattern_id, organization_id, version_id)}
+  end
+
+  # GTFS reads an absent pickup/drop as 0; normalize nil here so the add
+  # path never stores nil next to the 0s RowResolver keys and
+  # `create_pasted_timing!/5` stores (coordinator note on e8e2cefe).
+  defp normalize_paste_timing_rows(rows) do
+    Enum.map(rows, fn row when is_map(row) ->
+      pickup = attr(row, :pickup_type)
+      drop = attr(row, :drop_off_type)
+
+      row
+      |> Map.put(:pickup_type, if(is_nil(pickup), do: 0, else: pickup))
+      |> Map.put(:drop_off_type, if(is_nil(drop), do: 0, else: drop))
+      |> Map.put("pickup_type", if(is_nil(pickup), do: 0, else: pickup))
+      |> Map.put("drop_off_type", if(is_nil(drop), do: 0, else: drop))
+    end)
+  end
+
+  # New trips take the plan's effective default headsign already; a blank
+  # stores nil so an empty headsign never writes (INV-4).
+  defp paste_add_headsign(change) do
+    case attr(change, :trip_headsign) do
+      headsign when is_binary(headsign) ->
+        if String.trim(headsign) == "", do: nil, else: headsign
+
+      headsign ->
+        headsign
+    end
+  end
+
+  # The audit's timing label: pending timings already name themselves;
+  # existing timings read back through the locked version state.
+  defp paste_add_timing_label(change, timed_pattern_id, organization_id, version_id) do
+    case attr(change, :timing) do
+      {:new, name} when is_binary(name) -> name
+      {:existing, _id} -> timing_name(organization_id, version_id, timed_pattern_id)
+      _timing -> nil
+    end
+  end
+
+  # `trip_ids` in overall plan order: the :change ids and :add ids each
+  # arrive in plan order, so walk the plan and drain each queue in turn.
+  defp paste_result_trip_ids(plan, changed_ids, added_ids) do
+    {ids, _, _} =
+      Enum.reduce(paste_changes(plan), {[], changed_ids, added_ids}, fn change,
+                                                                        {acc, changes, adds} ->
+        case attr(change, :op) do
+          op when op in [:change, "change"] ->
+            case changes do
+              [id | rest] -> {[id | acc], rest, adds}
+              [] -> {acc, [], adds}
+            end
+
+          op when op in [:add, "add"] ->
+            case adds do
+              [id | rest] -> {[id | acc], changes, rest}
+              [] -> {acc, changes, []}
+            end
+
+          _op ->
+            {acc, changes, adds}
+        end
+      end)
+
+    Enum.reverse(ids)
   end
 
   defp paste_changes(plan), do: attr(plan, :changes) || []
