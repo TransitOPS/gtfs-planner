@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
   loginAndGoToDiagram,
+  onePixelPng,
   selectDiagramMode,
 } from "./station_diagram_helpers";
 import { readPendingStates, watchPendingState } from "./browser_helpers";
@@ -252,6 +253,17 @@ test.describe("Station diagram map alignment", () => {
   test("reports offline state and provides a retry without adding hidden tab stops", async ({
     page,
   }) => {
+    // Serve the basemap tiles locally. Tiles from the live imagery server can
+    // still be loading or failing after the offline event, and each Leaflet
+    // `load` or `tileerror` resets the map state, which adds and removes Retry
+    // map while the test is trying to click it.
+    await page.route(/server\.arcgisonline\.com/, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "image/png",
+        body: onePixelPng,
+      }),
+    );
     await loginAndGoToDiagram(page);
     await selectDiagramMode(page, "map");
 
