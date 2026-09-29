@@ -120,6 +120,20 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeDecisionSerializer do
     |> Base.encode16(case: :lower)
   end
 
+  @doc """
+  Fingerprints a live record over `captured_keys` with the normalization
+  `serialize/1` applies to `current_record`, so a record that has not changed
+  since the diff hashes to the stored `current_fingerprint`.
+
+  Pass the record itself, not `Gtfs.entity_snapshot/2`: the snapshot renders
+  decimals with their stored scale ("44.6400"), which this normalization does not.
+  """
+  def record_fingerprint(entity_type, record, captured_keys) do
+    with {:ok, values} <- normalize_values(record, entity_type, :current_values) do
+      {:ok, values |> Map.take(captured_keys) |> current_fingerprint()}
+    end
+  end
+
   defp validate_identity(%DiffDecision{
          id: id,
          entity_type: entity_type,

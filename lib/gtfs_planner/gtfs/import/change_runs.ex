@@ -1045,14 +1045,14 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   defp fingerprint_matches?(%ChangeDecision{current_fingerprint: nil}, _entity), do: :ok
 
   defp fingerprint_matches?(%ChangeDecision{} = decision, entity) do
-    fingerprint =
-      decision.entity_type
-      |> Gtfs.entity_snapshot(entity)
-      |> Map.new(fn {key, value} -> {to_string(key), value} end)
-      |> Map.take(Map.keys(decision.current_values))
-      |> ChangeDecisionSerializer.current_fingerprint()
-
-    if fingerprint == decision.current_fingerprint, do: :ok, else: {:error, :drifted}
+    case ChangeDecisionSerializer.record_fingerprint(
+           decision.entity_type,
+           entity,
+           Map.keys(decision.current_values)
+         ) do
+      {:ok, fingerprint} when fingerprint == decision.current_fingerprint -> :ok
+      _ -> {:error, :drifted}
+    end
   end
 
   defp dependencies_satisfied?(run, %ChangeDecision{dependency_keys: dependencies}) do

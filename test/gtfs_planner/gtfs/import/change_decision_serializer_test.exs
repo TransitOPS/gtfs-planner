@@ -102,5 +102,64 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeDecisionSerializerTest do
                  "level_index" => 1
                })
     end
+
+    test "fingerprints an unchanged live record to the serialized fingerprint" do
+      record = %{
+        stop_name: "Central",
+        stop_lat: Decimal.new("40.730000"),
+        stop_lon: Decimal.new("-73.990000"),
+        diagram_coordinate: %{"x" => 1, "y" => 2}
+      }
+
+      decision = %DiffDecision{
+        id: "stop:central",
+        entity_type: :stop,
+        action: :remove,
+        natural_key: "central",
+        current_record: record
+      }
+
+      assert {:ok, serialized} = ChangeDecisionSerializer.serialize(decision)
+
+      assert {:ok, fingerprint} =
+               ChangeDecisionSerializer.record_fingerprint(
+                 :stop,
+                 record,
+                 Map.keys(serialized.current_values)
+               )
+
+      assert fingerprint == serialized.current_fingerprint
+    end
+
+    test "fingerprints a changed live record differently from the serialized fingerprint" do
+      record = %{stop_name: "Central", stop_lat: Decimal.new("40.730000")}
+
+      assert {:ok, serialized} =
+               ChangeDecisionSerializer.serialize(%DiffDecision{
+                 id: "stop:central",
+                 entity_type: :stop,
+                 action: :remove,
+                 natural_key: "central",
+                 current_record: record
+               })
+
+      assert {:ok, fingerprint} =
+               ChangeDecisionSerializer.record_fingerprint(
+                 :stop,
+                 %{record | stop_lat: Decimal.new("40.731000")},
+                 Map.keys(serialized.current_values)
+               )
+
+      refute fingerprint == serialized.current_fingerprint
+    end
+
+    test "rejects fingerprinting a live record with an unsafe value" do
+      assert {:error, {:unsafe_value, :current_values}} =
+               ChangeDecisionSerializer.record_fingerprint(
+                 :stop,
+                 %{stop_desc: String.duplicate("a", 4_097)},
+                 ["stop_desc"]
+               )
+    end
   end
 end

@@ -9,7 +9,8 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
     ChangeRun,
     ChangeRunner,
     ChangeRuns,
-    ChangeWorker
+    ChangeWorker,
+    DiffDecision
   }
 
   alias GtfsPlanner.Repo
@@ -194,6 +195,133 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
 
     assert %ChangeRun{state: :completed, summary: %{"applied" => 1, "unapplied" => 0}} =
              Repo.get!(ChangeRun, run.id)
+  end
+
+  test "applies a reviewed modification of a stop stored with trailing-zero coordinates" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop = trailing_zero_stop!(organization.id, version.id)
+
+    run =
+      review_run!(organization.id, version.id, [
+        reviewed_decision(:modify, :stop, stop, %{stop_name: "Central Station"})
+      ])
+
+    assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :apply)
+
+    assert :ok =
+             ChangeWorker.apply(
+               claimed,
+               generation,
+               token,
+               audit_context(claimed),
+               ChangeRuns.topic(run)
+             )
+
+    assert %{stop_name: "Central Station"} =
+             GtfsPlanner.Gtfs.get_stop_by_stop_id(organization.id, version.id, "central")
+
+    assert [%ChangeDecision{status: :applied, apply_failure_code: nil}] =
+             ChangeRuns.list_decisions(organization.id, run.id)
+  end
+
+  test "applies a reviewed removal of a stop stored with trailing-zero coordinates" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop = trailing_zero_stop!(organization.id, version.id)
+
+    run =
+      review_run!(organization.id, version.id, [
+        reviewed_decision(:remove, :stop, stop, nil)
+      ])
+
+    assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :apply)
+
+    assert :ok =
+             ChangeWorker.apply(
+               claimed,
+               generation,
+               token,
+               audit_context(claimed),
+               ChangeRuns.topic(run)
+             )
+
+    refute GtfsPlanner.Gtfs.get_stop_by_stop_id(organization.id, version.id, "central")
+
+    assert [%ChangeDecision{status: :applied, apply_failure_code: nil}] =
+             ChangeRuns.list_decisions(organization.id, run.id)
+  end
+
+  test "applies a reviewed pathway modification when its decimals carry trailing zeros" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop_fixture(organization.id, version.id, %{stop_id: "from"})
+    stop_fixture(organization.id, version.id, %{stop_id: "to"})
+
+    pathway_fixture(organization.id, version.id, "from", "to", %{
+      pathway_id: "walk",
+      length: Decimal.new("12.50"),
+      max_slope: Decimal.new("0.0500"),
+      min_width: Decimal.new("2.00")
+    })
+
+    pathway = GtfsPlanner.Gtfs.get_pathway_by_pathway_id(organization.id, version.id, "walk")
+    assert Decimal.to_string(pathway.length) == "12.50"
+
+    run =
+      review_run!(organization.id, version.id, [
+        reviewed_decision(:modify, :pathway, pathway, %{traversal_time: 90})
+      ])
+
+    assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :apply)
+
+    assert :ok =
+             ChangeWorker.apply(
+               claimed,
+               generation,
+               token,
+               audit_context(claimed),
+               ChangeRuns.topic(run)
+             )
+
+    assert %{traversal_time: 90} =
+             GtfsPlanner.Gtfs.get_pathway_by_pathway_id(organization.id, version.id, "walk")
+
+    assert [%ChangeDecision{status: :applied}] =
+             ChangeRuns.list_decisions(organization.id, run.id)
+  end
+
+  test "a coordinate changed after review is drifted without mutation or audit" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop = trailing_zero_stop!(organization.id, version.id)
+
+    run =
+      review_run!(organization.id, version.id, [
+        reviewed_decision(:modify, :stop, stop, %{stop_name: "Central Station"})
+      ])
+
+    assert {:ok, claimed, generation, token} = ChangeRuns.claim(organization.id, run.id, :apply)
+
+    {:ok, _moved} =
+      GtfsPlanner.Gtfs.import_update_stop(stop, %{stop_lat: Decimal.new("40.731000")})
+
+    assert :ok =
+             ChangeWorker.apply(
+               claimed,
+               generation,
+               token,
+               audit_context(claimed),
+               ChangeRuns.topic(run)
+             )
+
+    assert [%ChangeDecision{status: :stale, apply_failure_code: "drifted"}] =
+             ChangeRuns.list_decisions(organization.id, run.id)
+
+    assert %{stop_name: "Central"} =
+             GtfsPlanner.Gtfs.get_stop_by_stop_id(organization.id, version.id, "central")
+
+    assert Repo.aggregate(ChangeLog, :count) == 0
   end
 
   test "a reviewed station change leaves the stored zone when its attrs carry zone_id: nil" do
@@ -396,6 +524,42 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeWorkerApplyTest do
     {:ok, pending_apply} = ChangeRuns.request_apply(organization_id, review.id)
     pending_apply
   end
+
+  # A feed import stores 6-decimal coordinates, so the live Decimal keeps its
+  # trailing zeros while the serialized decision holds the normalized form.
+  defp trailing_zero_stop!(organization_id, version_id) do
+    stop_fixture(organization_id, version_id, %{
+      stop_id: "central",
+      stop_name: "Central",
+      stop_lat: Decimal.new("40.730000"),
+      stop_lon: Decimal.new("-73.990000")
+    })
+
+    stop = GtfsPlanner.Gtfs.get_stop_by_stop_id(organization_id, version_id, "central")
+    assert Decimal.to_string(stop.stop_lat) == "40.730000"
+    assert Decimal.to_string(stop.stop_lon) == "-73.990000"
+    stop
+  end
+
+  # Serializes the decision the way a diff does, from the live record.
+  defp reviewed_decision(action, entity_type, record, uploaded_attrs) do
+    natural_key = Map.fetch!(record, natural_key_field(entity_type))
+
+    {:ok, serialized} =
+      ChangeDecisionSerializer.serialize(%DiffDecision{
+        id: "#{entity_type}:#{natural_key}",
+        action: action,
+        entity_type: entity_type,
+        natural_key: natural_key,
+        current_record: record,
+        uploaded_attrs: uploaded_attrs
+      })
+
+    serialized
+  end
+
+  defp natural_key_field(:stop), do: :stop_id
+  defp natural_key_field(:pathway), do: :pathway_id
 
   defp decision(entity_type, action, natural_key, uploaded_values, dependencies, decision_id) do
     %{
