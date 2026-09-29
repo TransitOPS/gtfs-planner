@@ -209,24 +209,26 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
   describe "sorting the whole day type" do
     setup :editor_scope
 
-    test "the busiest block leads the page and the header shows the direction",
+    test "Time out orders the whole day type and the header shows the direction",
          %{version: version} = context do
       seed_paged_day(context)
       conn = editor_conn(context)
 
-      {:ok, view, _html} = live(conn, blocks_path(version.id) <> "?sort=trips&dir=desc")
+      {:ok, view, _html} = live(conn, blocks_path(version.id) <> "?sort=out&dir=desc")
 
-      assert row_blocks(view) |> hd() == "1"
-      assert has_element?(view, "th[aria-sort='descending']", "Trips")
+      # Block 1 leaves at 06:00 and every other block at 08:00, so the latest out
+      # leads page 1 and the earliest one is on the last page of the day type.
+      assert row_blocks(view) |> hd() == "2"
+      refute "1" in row_blocks(view)
+      assert has_element?(view, "th[aria-sort='descending']", "Time out")
       assert has_element?(view, "th[aria-sort='descending']", "↓")
 
-      # The same key reverses: ascending puts the fewest-trips block first, so the
-      # one-trip blocks lead the page and the busiest block is not on it.
-      view |> element("button[phx-value-key='trips']") |> render_click()
+      # The same key reverses: ascending puts the earliest pull-out first.
+      view |> element("button[phx-value-key='out']") |> render_click()
 
-      assert_patch(view, blocks_path(version.id) <> "?sort=trips")
+      assert_patch(view, blocks_path(version.id) <> "?sort=out")
       assert has_element?(view, "th[aria-sort='ascending']", "↑")
-      assert row_blocks(view) |> hd() == "6"
+      assert row_blocks(view) |> hd() == "1"
     end
 
     test "status puts the error blocks first with natural ties",
@@ -417,7 +419,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
       assert has_element?(view, "#blocks-timeline .blocks-axis-tick", "08:00")
     end
 
-    test "an end after midnight prints its next-day clock and time",
+    test "a span after midnight prints its next-day clock and time",
          %{version: version} = context do
       calendar(context, "WK", "Weekday")
       trip(context, %{trip_id: "overnight", block_id: "103", first: "24:30:00", last: "25:15:00"})
@@ -425,10 +427,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
       conn = editor_conn(context)
       {:ok, view, _html} = live(conn, blocks_path(version.id))
 
+      # The fixture's version has no garage, so the platform span is the trip
+      # span and the cell carries both of its next-day ends.
       assert has_element?(
                view,
-               "#blocks-timeline tbody tr[data-block='103'] .blocks-meta-end",
-               "01:15 +1d"
+               "#blocks-timeline tbody tr[data-block='103'] .blocks-meta-out",
+               "00:30 +1d–01:15 +1d"
              )
 
       assert bar_attribute(view, "overnight", "style") =~ "width: 37.50%"

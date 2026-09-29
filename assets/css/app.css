@@ -271,20 +271,18 @@ body {
    a real button, and the List view is the full-size control surface. */
 #blocks-page {
   --blocks-meta-block: 112px;
-  --blocks-meta-trips: 54px;
-  --blocks-meta-start: 64px;
-  --blocks-meta-end: 88px;
+  --blocks-meta-garage: 132px;
+  --blocks-meta-out: 140px;
   --blocks-meta-hours: 58px;
   --blocks-meta-status: 208px;
   --blocks-meta-width: calc(
-    var(--blocks-meta-block) + var(--blocks-meta-trips) + var(--blocks-meta-start) +
-      var(--blocks-meta-end) + var(--blocks-meta-hours) + var(--blocks-meta-status)
+    var(--blocks-meta-block) + var(--blocks-meta-garage) + var(--blocks-meta-out) +
+      var(--blocks-meta-hours) + var(--blocks-meta-status)
   );
   --blocks-meta-offset-2: var(--blocks-meta-block);
-  --blocks-meta-offset-3: calc(var(--blocks-meta-offset-2) + var(--blocks-meta-trips));
-  --blocks-meta-offset-4: calc(var(--blocks-meta-offset-3) + var(--blocks-meta-start));
-  --blocks-meta-offset-5: calc(var(--blocks-meta-offset-4) + var(--blocks-meta-end));
-  --blocks-meta-offset-6: calc(var(--blocks-meta-offset-5) + var(--blocks-meta-hours));
+  --blocks-meta-offset-3: calc(var(--blocks-meta-offset-2) + var(--blocks-meta-garage));
+  --blocks-meta-offset-4: calc(var(--blocks-meta-offset-3) + var(--blocks-meta-out));
+  --blocks-meta-offset-5: calc(var(--blocks-meta-offset-4) + var(--blocks-meta-hours));
   --blocks-track-min: 560px;
   --blocks-timeline-max-height: max(440px, calc(100vh - 110px));
 }
@@ -324,9 +322,8 @@ body {
 }
 
 #blocks-timeline .blocks-col-block { width: var(--blocks-meta-block); }
-#blocks-timeline .blocks-col-trips { width: var(--blocks-meta-trips); }
-#blocks-timeline .blocks-col-start { width: var(--blocks-meta-start); }
-#blocks-timeline .blocks-col-end { width: var(--blocks-meta-end); }
+#blocks-timeline .blocks-col-garage { width: var(--blocks-meta-garage); }
+#blocks-timeline .blocks-col-out { width: var(--blocks-meta-out); }
 #blocks-timeline .blocks-col-hours { width: var(--blocks-meta-hours); }
 #blocks-timeline .blocks-col-status { width: var(--blocks-meta-status); }
 
@@ -357,12 +354,11 @@ body {
 }
 
 #blocks-timeline .blocks-meta-block { left: 0; }
-#blocks-timeline .blocks-meta-trips { left: var(--blocks-meta-offset-2); }
-#blocks-timeline .blocks-meta-start { left: var(--blocks-meta-offset-3); }
-#blocks-timeline .blocks-meta-end { left: var(--blocks-meta-offset-4); }
-#blocks-timeline .blocks-meta-hours { left: var(--blocks-meta-offset-5); }
+#blocks-timeline .blocks-meta-garage { left: var(--blocks-meta-offset-2); }
+#blocks-timeline .blocks-meta-out { left: var(--blocks-meta-offset-3); }
+#blocks-timeline .blocks-meta-hours { left: var(--blocks-meta-offset-4); }
 #blocks-timeline .blocks-meta-status {
-  left: var(--blocks-meta-offset-6);
+  left: var(--blocks-meta-offset-5);
   box-shadow: 1px 0 0 var(--color-subtle);
 }
 
@@ -381,9 +377,24 @@ body {
 #blocks-timeline tbody tr:hover td { background-color: var(--color-canvas); }
 #blocks-timeline tbody tr:last-child td { border-bottom: 0; }
 
-#blocks-timeline :is(th, td):is(.blocks-meta-trips, .blocks-meta-start, .blocks-meta-end, .blocks-meta-hours) {
+#blocks-timeline :is(th, td).blocks-meta-hours {
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+#blocks-timeline .blocks-meta-out {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A block whose calendars disagree has no single garage: the word is the
+   warning colour, not a second name. A block with no garage at all is muted. */
+#blocks-timeline .blocks-meta-garage-conflict {
+  color: var(--color-warning);
+  font-weight: 600;
+}
+
+#blocks-timeline .blocks-meta-garage-none {
+  color: var(--color-muted);
 }
 
 #blocks-page .blocks-block-button {
