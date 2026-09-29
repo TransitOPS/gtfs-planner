@@ -33,6 +33,18 @@
  * this behavior. No second router is installed: intercepted clicks hand the
  * intended path to the LiveView, and the server decides.
  *
+ * Both route forms also carry the connectivity recovery (AC-23): a form marked
+ * `data-recovery="true"` has its commit controls disabled and its entries left
+ * untouched the moment the socket drops, and reconnecting does not re-enable
+ * anything by itself — the hook asks the server (the form's recovery event,
+ * carrying the signed attempt where one exists) and only clears the block when
+ * the server has revalidated scope and permission and answers `retryable`.
+ * A `blocked` answer keeps the controls disabled and announces the server's
+ * message, so an unverifiable attempt or a removed editor keeps a visible
+ * unverified draft instead of a blind save (R2/R3). Only controls this hook
+ * disabled are ever re-enabled, so a save that is pending for another reason
+ * stays pending.
+ *
  * `paint/0` derives every pixel it touches from the DOM's current values and
  * writes only properties the operator is not typing into — it never rewrites a
  * hex field, and it never replaces a node. That is what makes `updated/0` safe:
@@ -129,7 +141,94 @@ const RouteDetailsEditor = {
 
     if (this.el.dataset.navGuard === "true") this._mountGuard();
 
+    this.recoveryForm = this.el.closest('form[data-recovery="true"]');
+    if (this.recoveryForm) this._mountRecovery();
+
     this.paint();
+  },
+
+  // Connectivity recovery (AC-23). The offline block is applied locally the
+  // moment the socket drops — a disconnected socket can receive no server
+  // push — and it is cleared only by the server's post-revalidation answer,
+  // never by the reconnect itself.
+  _mountRecovery() {
+    this.recoveryEvent =
+      this.recoveryForm.dataset.recoveryEvent || "recover_new_route";
+    this.offline = false;
+    this.recoveryRegion = this.el.ownerDocument.getElementById(
+      `${this.prefix}-recovery`,
+    );
+
+    this.handleEvent("route_recovery", ({ state, message }) => {
+      if (state === "retryable") {
+        this._clearOfflineBlock();
+        this._announce(
+          message ||
+            "Connection restored. Your entries are preserved — you can save again.",
+        );
+      } else {
+        this._announce(
+          message ||
+            "Connection restored, but your changes could not be verified.",
+        );
+      }
+    });
+  },
+
+  disconnected() {
+    if (!this.recoveryForm) return;
+    this._applyOffline(true);
+  },
+
+  // Reconnecting re-enables nothing: the server must revalidate scope and
+  // permission first. The hook only announces the check and asks, carrying the
+  // form's signed attempt where the drawer renders one.
+  reconnected() {
+    if (!this.recoveryForm) return;
+    this._announce("Connection restored. Checking your work…");
+    this.pushEvent(this.recoveryEvent, {
+      _attempt:
+        this.recoveryForm.querySelector('input[name="_attempt"]')?.value ?? "",
+    });
+  },
+
+  // Blocks the form's commit controls and announces the lost connection. The
+  // entries themselves are never touched: the draft the operator typed stays
+  // exactly as it is, offline or not (AC-23).
+  _applyOffline(offline) {
+    this.offline = Boolean(offline);
+
+    if (this.offline) {
+      this._announce(
+        "Connection lost. Your entries are preserved — reconnecting…",
+      );
+    }
+
+    for (const control of this.recoveryForm.querySelectorAll(
+      "button[type='submit']",
+    )) {
+      if (this.offline) {
+        control.dataset.recoveryProtected = "true";
+        control.disabled = true;
+      } else if (control.dataset.recoveryProtected === "true") {
+        delete control.dataset.recoveryProtected;
+        control.disabled = false;
+      }
+    }
+  },
+
+  // Only the server's post-revalidation answer reaches here: controls this
+  // hook disabled come back, and anything disabled for another reason — a save
+  // already in flight — stays as the server rendered it.
+  _clearOfflineBlock() {
+    this._applyOffline(false);
+  },
+
+  _announce(text) {
+    if (!this.recoveryRegion) return;
+
+    this.recoveryRegion.textContent = text;
+    this.recoveryRegion.hidden = false;
   },
 
   // The dirty-navigation guard: same interception surface as the route pattern
@@ -227,6 +326,12 @@ const RouteDetailsEditor = {
 
   updated() {
     this.paint();
+
+    if (this.recoveryForm && this.offline) {
+      // A patch that arrived around the reconnect must not unblock what the
+      // server has not revalidated yet.
+      this._applyOffline(true);
+    }
 
     if (this.el.dataset.navGuard === "true") {
       this.currentUrl = location.href;
