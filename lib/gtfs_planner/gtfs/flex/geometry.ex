@@ -23,7 +23,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
 
   `stats/3` measures a draft area against one version (km², the stops inside and
   the routes serving them), `overlaps/4` measures its intersection with other
-  active area services, and `compare/2` reports the change against a saved area.
+  active area services, `self_overlaps/1` lists the pairs of one service's own
+  areas that overlap, and `compare/2` reports the change against a saved area.
 
   `route_buffer/4` derives a route-distance area from the version's current
   shapes (AC-11) and `detour_zones/3` derives the detour zones of a detour
@@ -168,6 +169,30 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   # measured km².
   @area_sql """
   SELECT ST_Area(ST_GeomFromGeoJSON($1)::geography) / 1e6
+  """
+
+  # The overlapping pairs of one service's stored areas ($1 service, $2
+  # organization, $3 version). Each pair appears once, lesser key first. Two
+  # areas that merely touch along a boundary intersect but do not overlap, so
+  # the intersection's polygonal area decides; a line or point intersection has
+  # no polygonal part and is left out (ST_CollectionExtract keeps the geography
+  # cast safe).
+  @self_overlaps_sql """
+  SELECT a.key, b.key
+  FROM flex_areas a
+  JOIN flex_areas b
+    ON b.flex_service_id = a.flex_service_id
+   AND b.organization_id = a.organization_id
+   AND b.gtfs_version_id = a.gtfs_version_id
+   AND b.key > a.key
+  WHERE a.flex_service_id = $1
+    AND a.organization_id = $2
+    AND a.gtfs_version_id = $3
+    AND a.geom IS NOT NULL
+    AND b.geom IS NOT NULL
+    AND ST_Intersects(a.geom, b.geom)
+    AND ST_Area(ST_CollectionExtract(ST_Intersection(a.geom, b.geom), 3)::geography) > 0
+  ORDER BY a.key, b.key
   """
 
   # Route-distance derivation (R8, AC-11) for `route_buffer/4`. $1 organization,
@@ -647,6 +672,33 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
       stops_left: before.stop_ids -- after_stats.stop_ids
     }
   end
+
+  @doc """
+  Lists the pairs of one service's stored areas whose polygons overlap (AC-8).
+
+  Pairs are `{area_key, area_key}` with the lesser key first, ordered by key.
+  Only stored polygons count: a `:route_distance` area has no geometry, and two
+  areas that only touch along a boundary do not overlap. A service without an
+  id or scope (a draft) has no stored areas and answers `[]`.
+  """
+  @spec self_overlaps(FlexService.t()) :: [{String.t(), String.t()}]
+  def self_overlaps(%FlexService{
+        id: id,
+        organization_id: organization_id,
+        gtfs_version_id: version_id
+      })
+      when is_binary(id) and is_binary(organization_id) and is_binary(version_id) do
+    %Postgrex.Result{rows: rows} =
+      Repo.query!(@self_overlaps_sql, [
+        Ecto.UUID.dump!(id),
+        Ecto.UUID.dump!(organization_id),
+        Ecto.UUID.dump!(version_id)
+      ])
+
+    Enum.map(rows, fn [key_a, key_b] -> {key_a, key_b} end)
+  end
+
+  def self_overlaps(%FlexService{}), do: []
 
   @doc """
   Derives the buffered area around the given routes' current shapes (AC-11).
