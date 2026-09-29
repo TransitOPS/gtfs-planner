@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolverTest do
   use ExUnit.Case, async: true
 
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.TimetablePaste.RowResolver
 
   # Literal fixtures: a full route, a Hospital short turn, a Riverside
@@ -138,9 +139,9 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolverTest do
                  issue: nil,
                  pattern_id: "pattern-full",
                  how: :default,
-                 start_secs: nil,
-                 timing_rows: nil,
-                 key: nil,
+                 start_secs: start_secs,
+                 timing_rows: timing_rows,
+                 key: key,
                  pasted: [1, 2, 3, 4],
                  trip_short_name: "101",
                  block_id: "12",
@@ -149,6 +150,49 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolverTest do
                  shift: 0
                }
              ] = RowResolver.resolve(grid, @main_columns, scope([@full, @short]), %{}, nil)
+
+      # No timings in scope: offsets are exact with default attributes.
+      assert start_secs == 7 * 3_600
+
+      assert timing_rows == [
+               %{
+                 arrival_offset: 0,
+                 departure_offset: 0,
+                 timepoint: 1,
+                 pickup_type: 0,
+                 drop_off_type: 0,
+                 stop_headsign: nil
+               },
+               %{
+                 arrival_offset: 900,
+                 departure_offset: 900,
+                 timepoint: 1,
+                 pickup_type: 0,
+                 drop_off_type: 0,
+                 stop_headsign: nil
+               },
+               %{
+                 arrival_offset: 1_800,
+                 departure_offset: 1_800,
+                 timepoint: 1,
+                 pickup_type: 0,
+                 drop_off_type: 0,
+                 stop_headsign: nil
+               },
+               %{
+                 arrival_offset: 2_700,
+                 departure_offset: 2_700,
+                 timepoint: 1,
+                 pickup_type: 0,
+                 drop_off_type: 0,
+                 stop_headsign: nil
+               }
+             ]
+
+      assert is_binary(key)
+
+      assert [%{key: ^key}] =
+               RowResolver.resolve(grid, @main_columns, scope([@full, @short]), %{}, nil)
     end
 
     test "a full row whose times roll past noon still keeps the chosen pattern" do
@@ -425,4 +469,440 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolverTest do
                )
     end
   end
+
+  describe "first-departure anchors" do
+    @describetag :estimation
+
+    @pair_columns [
+      %{
+        col: 0,
+        header: "Central arr",
+        target: {:occurrence, "occ-pattern-pair-1", :arrival},
+        status: :exact,
+        by: :stop_name
+      },
+      %{
+        col: 1,
+        header: "Central dep",
+        target: {:occurrence, "occ-pattern-pair-1", :departure},
+        status: :exact,
+        by: :stop_name
+      },
+      %{
+        col: 2,
+        header: "Market",
+        target: {:occurrence, "occ-pattern-pair-2", :departure},
+        status: :exact,
+        by: :stop_name
+      }
+    ]
+
+    test "arrive 06:00, depart 06:05 at the first stop gives start 06:05 and arrival offset -300" do
+      grid = [["6:00:45", "6:05:10", "6:20:33"]]
+      scope = %{pattern_id: "pattern-pair", patterns: [line_pattern("pattern-pair", 2, [])]}
+
+      assert [
+               %{
+                 status: :ready,
+                 how: :default,
+                 start_secs: start_secs,
+                 timing_rows: timing_rows,
+                 pasted: [1, 2]
+               }
+             ] = RowResolver.resolve(grid, @pair_columns, scope, %{}, nil)
+
+      # Pasted times are stored exactly, to the second: no rounding.
+      assert start_secs == 6 * 3_600 + 5 * 60 + 10
+
+      assert timing_rows == [
+               %{
+                 arrival_offset: -265,
+                 departure_offset: 0,
+                 timepoint: 1,
+                 pickup_type: 0,
+                 drop_off_type: 0,
+                 stop_headsign: nil
+               },
+               %{
+                 arrival_offset: 923,
+                 departure_offset: 923,
+                 timepoint: 1,
+                 pickup_type: 0,
+                 drop_off_type: 0,
+                 stop_headsign: nil
+               }
+             ]
+    end
+  end
+
+  describe "template-scaled estimates" do
+    @describetag :estimation
+
+    test "the worked example yields 07:17:04, 07:19:35 and 07:22:01" do
+      timing =
+        template_timing("timing-worked", [{0, 0}, {23, 23}, {51, 51}, {78, 78}, {100, 100}], 5)
+
+      scope = %{pattern_id: "pattern-five", patterns: [line_pattern("pattern-five", 5, [timing])]}
+      grid = [["7:15", "", "", "", "7:24"]]
+
+      assert [
+               %{
+                 status: :ready,
+                 how: :auto,
+                 start_secs: start_secs,
+                 timing_rows: timing_rows,
+                 key: key
+               }
+             ] =
+               RowResolver.resolve(
+                 grid,
+                 line_columns("pattern-five", 5),
+                 scope,
+                 %{},
+                 "timing-worked"
+               )
+
+      assert start_secs == 7 * 3_600 + 15 * 60
+      assert Enum.map(timing_rows, & &1.arrival_offset) == [0, 124, 275, 421, 540]
+      assert Enum.map(timing_rows, & &1.departure_offset) == [0, 124, 275, 421, 540]
+
+      assert Enum.map(timing_rows, &GtfsTime.format(start_secs + &1.arrival_offset)) == [
+               "07:15:00",
+               "07:17:04",
+               "07:19:35",
+               "07:22:01",
+               "07:24:00"
+             ]
+
+      assert is_binary(key)
+    end
+
+    test "a zero-length template segment spaces estimates evenly" do
+      timing = template_timing("timing-flat", [{0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}], 5)
+      scope = %{pattern_id: "pattern-five", patterns: [line_pattern("pattern-five", 5, [timing])]}
+      grid = [["7:00", "", "", "", "7:10"]]
+
+      assert [%{start_secs: start_secs, timing_rows: timing_rows}] =
+               RowResolver.resolve(
+                 grid,
+                 line_columns("pattern-five", 5),
+                 scope,
+                 %{},
+                 "timing-flat"
+               )
+
+      assert start_secs == 7 * 3_600
+      # div(j * 600, k + 1) with k = 3 gives 150/300/450; without the rule
+      # the zero-length template segment would divide by zero or stack
+      # every estimate on one time.
+      assert Enum.map(timing_rows, & &1.arrival_offset) == [0, 150, 300, 450, 600]
+      assert Enum.map(timing_rows, & &1.departure_offset) == [0, 150, 300, 450, 600]
+    end
+
+    test "estimates never cross a pasted time and keep dwell only when it fits" do
+      tight = template_timing("timing-tight", [{0, 0}, {99, 129}, {100, 100}], 4)
+      fits = template_timing("timing-fits", [{0, 0}, {99, 100}, {100, 100}], 1)
+
+      scope = %{
+        pattern_id: "pattern-dwell",
+        patterns: [line_pattern("pattern-dwell", 3, [tight, fits])]
+      }
+
+      columns = line_columns("pattern-dwell", 3)
+      grid = [["7:00", "", "7:01:54"]]
+
+      # floor(99 * 114 / 100) = 112; a 30-second dwell past 114 does not fit.
+      assert [%{timing_rows: [first, middle, last]}] =
+               RowResolver.resolve(grid, columns, scope, %{}, "timing-tight")
+
+      assert first == %{
+               arrival_offset: 0,
+               departure_offset: 0,
+               timepoint: 1,
+               pickup_type: 0,
+               drop_off_type: 0,
+               stop_headsign: nil
+             }
+
+      assert middle.arrival_offset == 112
+      assert middle.departure_offset == 112
+      assert middle.timepoint == 0
+      assert last == %{first | arrival_offset: 114, departure_offset: 114}
+
+      # A 1-second dwell fits before the next pasted time and is kept.
+      assert [%{timing_rows: [_first, middle, _last]}] =
+               RowResolver.resolve(grid, columns, scope, %{}, "timing-fits")
+
+      assert middle.arrival_offset == 112
+      assert middle.departure_offset == 113
+    end
+
+    test "estimated rows carry timepoint 0 and pasted rows timepoint 1" do
+      timing =
+        template_timing("timing-worked", [{0, 0}, {23, 23}, {51, 51}, {78, 78}, {100, 100}], 5)
+
+      scope = %{pattern_id: "pattern-five", patterns: [line_pattern("pattern-five", 5, [timing])]}
+      grid = [["7:15", "", "", "", "7:24"]]
+
+      assert [%{timing_rows: timing_rows}] =
+               RowResolver.resolve(
+                 grid,
+                 line_columns("pattern-five", 5),
+                 scope,
+                 %{},
+                 "timing-worked"
+               )
+
+      assert Enum.map(timing_rows, & &1.timepoint) == [1, 0, 0, 0, 1]
+      refute Enum.any?(timing_rows, &is_nil(&1.timepoint))
+    end
+  end
+
+  describe "template selection and timing keys" do
+    @describetag :estimation
+
+    test "the input template timing wins when it belongs to the row's pattern" do
+      scope = two_timing_scope()
+      grid = [["7:15", "", "", "", "7:24"]]
+
+      assert [%{timing_rows: timing_rows}] =
+               RowResolver.resolve(grid, line_columns("pattern-five", 5), scope, %{}, "timing-a")
+
+      assert Enum.map(timing_rows, & &1.stop_headsign) == ["A", "A", "A", "A", "A"]
+    end
+
+    test "otherwise the pattern's most-used timing is used" do
+      scope = two_timing_scope()
+      grid = [["7:15", "", "", "", "7:24"]]
+
+      for template_id <- [nil, "timing-missing"] do
+        assert [%{timing_rows: timing_rows}] =
+                 RowResolver.resolve(
+                   grid,
+                   line_columns("pattern-five", 5),
+                   scope,
+                   %{},
+                   template_id
+                 )
+
+        assert Enum.map(timing_rows, & &1.stop_headsign) == ["B", "B", "B", "B", "B"]
+      end
+    end
+
+    test "the key covers the full final vector" do
+      scope = two_timing_scope()
+      columns = line_columns("pattern-five", 5)
+      grid = [["7:15", "", "", "", "7:24"]]
+
+      assert [%{key: key}] = RowResolver.resolve(grid, columns, scope, %{}, "timing-a")
+      assert [%{key: same}] = RowResolver.resolve(grid, columns, scope, %{}, "timing-a")
+      assert same == key
+
+      assert [%{key: other_time}] =
+               RowResolver.resolve(
+                 [["7:15", "", "", "", "7:25"]],
+                 columns,
+                 scope,
+                 %{},
+                 "timing-a"
+               )
+
+      assert other_time != key
+
+      assert [%{key: other_attrs}] = RowResolver.resolve(grid, columns, scope, %{}, "timing-b")
+      assert other_attrs != key
+    end
+  end
+
+  describe "KCM real-feed oracle" do
+    @describetag :estimation
+
+    @oracle_path Path.expand("../../../fixtures/timetable_paste/kcm_route_100224.json", __DIR__)
+
+    test "six timepoints pasted over the template stay exact and estimates fall between neighbours" do
+      oracle = @oracle_path |> File.read!() |> Jason.decode!()
+      stops = oracle["stops"]
+
+      anchors =
+        stops
+        |> Enum.with_index()
+        |> Enum.flat_map(fn {stop, i} -> if stop["timepoint"] == 1, do: [i], else: [] end)
+
+      assert anchors == [0, 5, 11, 14, 23, 26]
+
+      occurrences =
+        Enum.with_index(stops, 1)
+        |> Enum.map(fn {stop, position} ->
+          %{id: "occ-kcm-#{position}", stop_id: stop["stop_id"], position: position}
+        end)
+
+      template_rows =
+        Enum.map(oracle["template"]["offsets"], fn [arrival, departure] ->
+          %{
+            arrival_offset: arrival,
+            departure_offset: departure,
+            pickup_type: 0,
+            drop_off_type: 0,
+            stop_headsign: nil
+          }
+        end)
+
+      timing = %{id: "timing-kcm-template", rows: template_rows, trip_count: 8}
+
+      scope = %{
+        pattern_id: "pattern-kcm",
+        patterns: [%{id: "pattern-kcm", occurrences: occurrences, timings: [timing]}]
+      }
+
+      columns =
+        Enum.with_index(anchors)
+        |> Enum.map(fn {stop_index, col} ->
+          %{
+            col: col,
+            header: Enum.at(stops, stop_index)["stop_name"],
+            target: {:occurrence, "occ-kcm-#{stop_index + 1}", :departure},
+            status: :exact,
+            by: :stop_name
+          }
+        end)
+
+      target_arrivals = Enum.map(oracle["target"]["arrival_time"], &parse_clock!/1)
+      target_departures = Enum.map(oracle["target"]["departure_time"], &parse_clock!/1)
+
+      grid = [
+        Enum.map(anchors, fn i ->
+          String.slice(Enum.at(oracle["target"]["departure_time"], i), 0, 5)
+        end)
+      ]
+
+      assert [
+               %{
+                 status: :ready,
+                 how: :default,
+                 start_secs: start_secs,
+                 timing_rows: timing_rows,
+                 pasted: pasted,
+                 key: key
+               }
+             ] = RowResolver.resolve(grid, columns, scope, %{}, "timing-kcm-template")
+
+      # A 42-minute trip (16:45-17:27) pasted over the 33-minute template.
+      assert start_secs == 16 * 3_600 + 45 * 60
+      assert length(timing_rows) == 27
+      assert pasted == [1, 6, 12, 15, 24, 27]
+      assert is_binary(key)
+
+      # The six pasted timepoints are exact.
+      for i <- anchors do
+        row = Enum.at(timing_rows, i)
+        assert start_secs + row.arrival_offset == Enum.at(target_arrivals, i)
+        assert start_secs + row.departure_offset == Enum.at(target_departures, i)
+        assert row.timepoint == 1
+      end
+
+      # Every estimate lies between its neighbouring pasted times.
+      for {a, b} <- Enum.zip(anchors, tl(anchors)), b - a > 1, j <- (a + 1)..(b - 1) do
+        row = Enum.at(timing_rows, j)
+        assert row.timepoint == 0
+        assert start_secs + row.arrival_offset >= Enum.at(target_departures, a)
+        assert start_secs + row.departure_offset <= Enum.at(target_arrivals, b)
+      end
+
+      # The whole vector is non-decreasing.
+      absolutes =
+        Enum.map(timing_rows, &{start_secs + &1.arrival_offset, start_secs + &1.departure_offset})
+
+      assert absolutes
+             |> Enum.chunk_every(2, 1, :discard)
+             |> Enum.all?(fn [{_a1, d1}, {a2, d2}] -> a2 >= d1 and d2 >= a2 end)
+
+      # Per-stop error of the template-scaled estimates against the actual
+      # trip, written to the test output for the EV-5 oracle comparison.
+      errors =
+        Enum.with_index(stops)
+        |> Enum.map(fn {stop, i} ->
+          actual = Enum.at(target_departures, i)
+          estimated = start_secs + Enum.at(timing_rows, i).departure_offset
+          error = actual - estimated
+
+          IO.puts(
+            "oracle #{stop["stop_id"]} actual=#{GtfsTime.format(actual)} " <>
+              "estimated=#{GtfsTime.format(estimated)} err=#{format_error(error)}"
+          )
+
+          error
+        end)
+
+      max_error = errors |> Enum.map(&abs/1) |> Enum.max()
+      IO.puts("oracle max abs error: #{max_error}s over #{length(stops)} stops")
+      # The fixture's template profile tracks the actual trip within a
+      # second; the bound rejects minute-rounding regressions (which err by
+      # up to ~59 s and stack identical consecutive times) without pinning
+      # exact fixture values.
+      assert max_error <= 5
+    end
+  end
+
+  defp line_pattern(id, count, timings) do
+    %{
+      id: id,
+      occurrences:
+        Enum.map(1..count, fn i ->
+          %{id: "occ-#{id}-#{i}", stop_id: "STOP_#{id}_#{i}", position: i}
+        end),
+      timings: timings
+    }
+  end
+
+  defp line_columns(id, count) do
+    Enum.map(0..(count - 1), fn i ->
+      %{
+        col: i,
+        header: "Stop #{i + 1}",
+        target: {:occurrence, "occ-#{id}-#{i + 1}", :departure},
+        status: :exact,
+        by: :stop_name
+      }
+    end)
+  end
+
+  defp template_timing(id, pairs, trip_count, headsign \\ nil) do
+    %{
+      id: id,
+      rows:
+        Enum.map(pairs, fn {arrival, departure} ->
+          %{
+            arrival_offset: arrival,
+            departure_offset: departure,
+            pickup_type: 0,
+            drop_off_type: 0,
+            stop_headsign: headsign
+          }
+        end),
+      trip_count: trip_count
+    }
+  end
+
+  defp two_timing_scope do
+    pairs = [{0, 0}, {23, 23}, {51, 51}, {78, 78}, {100, 100}]
+
+    %{
+      pattern_id: "pattern-five",
+      patterns: [
+        line_pattern("pattern-five", 5, [
+          template_timing("timing-a", pairs, 2, "A"),
+          template_timing("timing-b", pairs, 9, "B")
+        ])
+      ]
+    }
+  end
+
+  defp parse_clock!(clock) do
+    [hours, minutes, seconds] = clock |> String.split(":") |> Enum.map(&String.to_integer/1)
+    hours * 3_600 + minutes * 60 + seconds
+  end
+
+  defp format_error(0), do: "+0s"
+  defp format_error(error) when error > 0, do: "+#{error}s"
+  defp format_error(error), do: "#{error}s"
 end

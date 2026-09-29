@@ -1,0 +1,319 @@
+{
+ "source": "King County Metro GTFS via Mobility Database, SPR26-160.3-MetroDayShuttleUpdate",
+ "url": "https://storage.googleapis.com/storage/v1/b/mdb-latest/o/us-washington-king-county-metro-gtfs-1330.zip?alt=media",
+ "archive_sha256": "89ca11de186bf7d714c00a350398996f29f469c6fe655987027e3b3d2c81f2cd",
+ "attribution": "Data: King County Metro (public GTFS feed).",
+ "route_id": "100224",
+ "direction_id": "0",
+ "stops": [
+  {
+   "stop_id": "25240",
+   "stop_name": "Montlake Blvd NE & NE Pacific Pl - Bay 3",
+   "timepoint": 1
+  },
+  {
+   "stop_id": "29405",
+   "stop_name": "NE Pacific St & Montlake Blvd NE - Bay 2",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29420",
+   "stop_name": "NE Pacific St & 15th Ave NE",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29440",
+   "stop_name": "15th Ave NE & NE Campus Pkwy",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "11352",
+   "stop_name": "15th Ave NE & NE 42nd St",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "9587",
+   "stop_name": "U District Station - Bay 1",
+   "timepoint": 1
+  },
+  {
+   "stop_id": "29455",
+   "stop_name": "NE 45th St & 9th Ave NE",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29480",
+   "stop_name": "NE 45th St & Latona Ave NE",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29500",
+   "stop_name": "N 45th St & Sunnyside Ave N",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "17310",
+   "stop_name": "N 45th St & Wallingford Ave N",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29530",
+   "stop_name": "N 45th St & Woodlawn Ave N",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29540",
+   "stop_name": "N 45th St & Stone Way N",
+   "timepoint": 1
+  },
+  {
+   "stop_id": "29557",
+   "stop_name": "N 46th St & Green Lake Way N",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29581",
+   "stop_name": "N 46th St & Linden Ave N",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29600",
+   "stop_name": "N 46th St & Phinney Ave N",
+   "timepoint": 1
+  },
+  {
+   "stop_id": "29620",
+   "stop_name": "NW Market St & NW 48th St",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29630",
+   "stop_name": "NW Market St & NW 50th St",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29640",
+   "stop_name": "NW Market St & 3rd Ave NW",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29650",
+   "stop_name": "NW Market St & 5th Ave NW",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29660",
+   "stop_name": "NW Market St & 8th Ave NW",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29680",
+   "stop_name": "NW Market St & 11th Ave NW",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29700",
+   "stop_name": "NW Market St & 15th Ave NW",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "29720",
+   "stop_name": "NW Market St & 20th Ave NW",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "18740",
+   "stop_name": "NW Market St & Ballard Ave NW",
+   "timepoint": 1
+  },
+  {
+   "stop_id": "18760",
+   "stop_name": "NW Market St & 28th Ave NW",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "18785",
+   "stop_name": "NW Market St & 30th Ave NW",
+   "timepoint": 0
+  },
+  {
+   "stop_id": "18085",
+   "stop_name": "32nd Ave NW & NW Market St",
+   "timepoint": 1
+  }
+ ],
+ "template": {
+  "trip_id": "629474760",
+  "offsets": [
+   [
+    0,
+    0
+   ],
+   [
+    52,
+    52
+   ],
+   [
+    162,
+    162
+   ],
+   [
+    278,
+    278
+   ],
+   [
+    352,
+    352
+   ],
+   [
+    420,
+    420
+   ],
+   [
+    519,
+    519
+   ],
+   [
+    631,
+    631
+   ],
+   [
+    723,
+    723
+   ],
+   [
+    790,
+    790
+   ],
+   [
+    854,
+    854
+   ],
+   [
+    900,
+    900
+   ],
+   [
+    979,
+    979
+   ],
+   [
+    1069,
+    1069
+   ],
+   [
+    1200,
+    1200
+   ],
+   [
+    1273,
+    1273
+   ],
+   [
+    1319,
+    1319
+   ],
+   [
+    1387,
+    1387
+   ],
+   [
+    1429,
+    1429
+   ],
+   [
+    1482,
+    1482
+   ],
+   [
+    1557,
+    1557
+   ],
+   [
+    1654,
+    1654
+   ],
+   [
+    1740,
+    1740
+   ],
+   [
+    1800,
+    1800
+   ],
+   [
+    1889,
+    1889
+   ],
+   [
+    1935,
+    1935
+   ],
+   [
+    1980,
+    1980
+   ]
+  ]
+ },
+ "target": {
+  "trip_id": "664048700",
+  "arrival_time": [
+   "16:45:00",
+   "16:46:07",
+   "16:48:28",
+   "16:50:58",
+   "16:52:32",
+   "16:54:00",
+   "16:56:16",
+   "16:58:50",
+   "17:00:56",
+   "17:02:29",
+   "17:03:57",
+   "17:05:00",
+   "17:06:19",
+   "17:07:49",
+   "17:10:00",
+   "17:11:28",
+   "17:12:23",
+   "17:13:45",
+   "17:14:35",
+   "17:15:38",
+   "17:17:09",
+   "17:19:05",
+   "17:20:48",
+   "17:22:00",
+   "17:24:28",
+   "17:25:45",
+   "17:27:00"
+  ],
+  "departure_time": [
+   "16:45:00",
+   "16:46:07",
+   "16:48:28",
+   "16:50:58",
+   "16:52:32",
+   "16:54:00",
+   "16:56:16",
+   "16:58:50",
+   "17:00:56",
+   "17:02:29",
+   "17:03:57",
+   "17:05:00",
+   "17:06:19",
+   "17:07:49",
+   "17:10:00",
+   "17:11:28",
+   "17:12:23",
+   "17:13:45",
+   "17:14:35",
+   "17:15:38",
+   "17:17:09",
+   "17:19:05",
+   "17:20:48",
+   "17:22:00",
+   "17:24:28",
+   "17:25:45",
+   "17:27:00"
+  ]
+ }
+}

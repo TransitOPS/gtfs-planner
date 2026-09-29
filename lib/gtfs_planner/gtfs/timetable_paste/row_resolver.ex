@@ -1,14 +1,15 @@
 defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
   @moduledoc """
-  Assigns each pasted timetable row a pattern (rule R6).
+  Assigns each pasted timetable row a pattern (rule R6) and computes its
+  offsets, template-scaled estimates and timing key (rules R7, R8, R9).
 
-  `resolve/5` implements the step 5 partial contract: per data row it
-  classifies the stop cells with `TimeToken`, applies the row decisions
+  `resolve/5` implements the full contract: per data row it classifies the
+  stop cells with `TimeToken`, applies the row decisions
   (`%{skip, pattern_id, cells, shift, keep_early}`), resolves times with
-  `TimeToken.resolve_row/2`, answers the R3 twelve-hour question, and then
-  assigns a pattern per R6. Offsets, estimates, `timing_rows` and `key` are
-  step 6 work: `start_secs`, `timing_rows` and `key` stay `nil` here so the
-  `resolved_row()` shape is already complete for step 6 to fill.
+  `TimeToken.resolve_row/2`, answers the R3 twelve-hour question, assigns a
+  pattern per R6, and then fills `start_secs`, `timing_rows` and `key` for
+  every ready row. Decision and skipped rows carry no offsets
+  (`start_secs`/`timing_rows`/`key` stay `nil`).
 
   ## Inputs
 
@@ -21,16 +22,26 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
       `{:occurrence, id, _side}` targets must name occurrences of the chosen
       pattern (INV-1: the column mapping is the only path from pasted columns
       to stop occurrences; positions are never copied across patterns).
-    * `scope` — `%{pattern_id: chosen_id, patterns: [%{id:,
-      occurrences: [%{id:, stop_id:, position:}]}]}`; extra keys are ignored.
+    * `scope` — `%{pattern_id: chosen_id, patterns: [%{id:, occurrences:
+      [%{id:, stop_id:, position:}], timings: [%{id:, rows:,
+      trip_count:}]}]}`; extra keys are ignored. Each timing's `rows` align
+      positionally with the pattern's occurrences (both in position order,
+      as `RoutePatterns` reads them): `%{arrival_offset:, departure_offset:,
+      pickup_type:, drop_off_type:, stop_headsign:}`. The rows and counts
+      arrive as arguments; the database is never read.
     * `decisions` — `%{row => %{skip:, pattern_id:, cells:, shift:,
       keep_early:}}`. Atom and string keys are both accepted because the
       LiveView round-trips decisions through a JSON hidden field; row keys may
       be integers or numeric strings, and `cells` keys may be column indexes
       or numeric strings. An unknown `pattern_id` is ignored (the row falls
       back to automatic assignment and surfaces as a decision again).
-    * `template_timing_id` — reserved for the step 6 template-scaled
-      estimates; ignored here.
+    * `template_timing_id` — the review's Fill-other-stops-from timing.
+      When it names a timing of the row's pattern that timing scales the
+      estimates; otherwise the pattern's most-used timing (highest
+      `trip_count`, ties broken by scope order) is used. A pattern with no
+      timings falls back to even spacing between pasted anchors with
+      default attributes (`pickup_type: 0`, `drop_off_type: 0`,
+      `stop_headsign: nil`, as in `Materializer`).
 
   ## Pattern assignment (R6)
 
@@ -57,6 +68,43 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
   `|`, `x`, `n/a`, case-insensitive) constrains candidates; this keeps the
   distinction between "no column for this stop" (interpolation) and "this
   trip does not serve this stop" (pattern constraint).
+
+  ## Offsets and estimates (R7, R8, R9)
+
+  Offsets are relative to the first departure (R7), matching the
+  `Materializer` anchor: `start_secs` is the departure seconds at the
+  pattern's first occurrence and every offset is absolute seconds minus
+  `start_secs`. Pasted times are stored exactly — no rounding is applied to
+  a pasted value, so a first-stop arrival earlier than the departure is a
+  negative `arrival_offset`.
+
+  Each pattern occurrence maps to one timing row. An occurrence with a
+  pasted time keeps `timepoint: 1`; every other occurrence is estimated
+  with an explicit `timepoint: 0`, never `nil` (R9). `pickup_type`,
+  `drop_off_type` and `stop_headsign` come from the template timing's row
+  at the same position. An arrival/departure column pair for one occurrence
+  (R4) contributes its first cell as the arrival and its last cell as the
+  departure; a lone column serves as both.
+
+  Estimated stops take whole seconds floored from the template's cumulative
+  share (R8). Between two pasted anchors — the previous anchor's departure
+  `P0` at template departure `T0` and the next anchor's arrival `P1` at
+  template arrival `T1` — the estimate at template arrival `Tj` is
+  `P0 + floor((Tj - T0) * (P1 - P0) / (T1 - T0))`. A zero-length (or
+  backwards) template segment spaces the run evenly with
+  `div(j * gap, k + 1)`, the same rule the Materializer uses for inserted
+  stops. Estimates are clamped as a guard so the vector stays
+  non-decreasing and never crosses a pasted time (monotonicity wins on a
+  forced choice whose pasted times run backwards). The template dwell is
+  kept only when it fits before the next pasted time. Estimates outside the
+  pasted span — possible only on a forced `:chosen` pattern that does not
+  fit, whose stale choice `Plan` discards at rebuild — stack on the nearest
+  anchor; a row with no anchor at all resolves to degenerate zero offsets.
+
+  `key` is `:erlang.term_to_binary/2` (`[:deterministic]`) over the full
+  final vector — one `{arrival_offset, departure_offset, timepoint,
+  pickup_type, drop_off_type, stop_headsign}` tuple per occurrence — so
+  `Plan` reuses a timing only on an exact key.
 
   ## Statuses
 
@@ -115,15 +163,16 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
   @type decision :: %{optional(atom() | String.t()) => term()}
 
   @doc """
-  Resolves each data row to a pattern per R6 without computing offsets.
+  Resolves each data row to a pattern per R6 and computes its offsets,
+  estimates and timing key per R7, R8 and R9.
 
-  Returns one `resolved_row()` per data row, in order. `start_secs`,
-  `timing_rows` and `key` are always `nil`; step 6 fills them for ready rows.
-  Pure: no Repo, clock or process state.
+  Returns one `resolved_row()` per data row, in order. Every `:ready` row
+  carries `start_secs`, `timing_rows` and `key`; decision and skipped rows
+  leave them `nil`. Pure: no Repo, clock or process state.
   """
   @spec resolve([[String.t()]], [ColumnMatcher.column()], scope(), map(), Ecto.UUID.t() | nil) ::
           [resolved_row()]
-  def resolve(grid, columns, scope, decisions, _template_timing_id) do
+  def resolve(grid, columns, scope, decisions, template_timing_id) do
     rows = normalize_grid(grid)
     stop_cols = stop_columns(columns)
 
@@ -149,7 +198,10 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
 
     median = median_first(prelim)
 
-    Enum.map(prelim, &finish_row(&1, field_cols, chosen, patterns, by_pattern, median))
+    Enum.map(
+      prelim,
+      &finish_row(&1, field_cols, chosen, patterns, by_pattern, median, template_timing_id)
+    )
   end
 
   # --- Grid and scope normalization ---
@@ -199,7 +251,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
 
   defp field_column(_columns, _field), do: nil
 
-  @spec normalize_patterns(term()) :: [%{id: term(), occurrences: [map()]}]
+  @spec normalize_patterns(term()) :: [%{id: term(), occurrences: [map()], timings: [map()]}]
   defp normalize_patterns(patterns) when is_list(patterns) do
     patterns
     |> Enum.map(fn
@@ -210,15 +262,71 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
           |> Enum.filter(&valid_occurrence?/1)
           |> Enum.sort_by(& &1.position)
 
-        %{id: Map.get(pattern, :id), occurrences: occurrences}
+        %{
+          id: Map.get(pattern, :id),
+          occurrences: occurrences,
+          timings: normalize_timings(Map.get(pattern, :timings, []))
+        }
 
       _pattern ->
-        %{id: nil, occurrences: []}
+        %{id: nil, occurrences: [], timings: []}
     end)
     |> Enum.reject(&is_nil(&1.id))
   end
 
   defp normalize_patterns(_patterns), do: []
+
+  @spec normalize_timings(term()) :: [%{id: term(), rows: [map()], trip_count: non_neg_integer()}]
+  defp normalize_timings(timings) when is_list(timings) do
+    timings
+    |> Enum.map(fn
+      timing when is_map(timing) ->
+        %{
+          id: Map.get(timing, :id),
+          rows: normalize_timing_rows(Map.get(timing, :rows, [])),
+          trip_count: to_trip_count(Map.get(timing, :trip_count, 0))
+        }
+
+      _timing ->
+        %{id: nil, rows: [], trip_count: 0}
+    end)
+    |> Enum.reject(&is_nil(&1.id))
+  end
+
+  defp normalize_timings(_timings), do: []
+
+  @spec normalize_timing_rows(term()) :: [map()]
+  defp normalize_timing_rows(rows) when is_list(rows) do
+    Enum.map(rows, fn
+      row when is_map(row) ->
+        %{
+          arrival_offset: to_offset(Map.get(row, :arrival_offset)),
+          departure_offset: to_offset(Map.get(row, :departure_offset)),
+          pickup_type: Map.get(row, :pickup_type, 0),
+          drop_off_type: Map.get(row, :drop_off_type, 0),
+          stop_headsign: Map.get(row, :stop_headsign)
+        }
+
+      _row ->
+        %{
+          arrival_offset: 0,
+          departure_offset: 0,
+          pickup_type: 0,
+          drop_off_type: 0,
+          stop_headsign: nil
+        }
+    end)
+  end
+
+  defp normalize_timing_rows(_rows), do: []
+
+  @spec to_offset(term()) :: integer()
+  defp to_offset(value) when is_integer(value), do: value
+  defp to_offset(_value), do: 0
+
+  @spec to_trip_count(term()) :: non_neg_integer()
+  defp to_trip_count(count) when is_integer(count) and count >= 0, do: count
+  defp to_trip_count(_count), do: 0
 
   @spec valid_occurrence?(term()) :: boolean()
   defp valid_occurrence?(%{id: id, stop_id: stop_id, position: position})
@@ -432,21 +540,37 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
 
   # --- Second pass: twelve-hour question, then pattern assignment ---
 
-  @spec finish_row(map(), map(), map() | nil, [map()], map(), non_neg_integer() | nil) ::
+  @spec finish_row(map(), map(), map() | nil, [map()], map(), non_neg_integer() | nil, term()) ::
           resolved_row()
-  defp finish_row(%{outcome: :skip} = prelim, _fields, _chosen, _patterns, _by, _median) do
+  defp finish_row(
+         %{outcome: :skip} = prelim,
+         _fields,
+         _chosen,
+         _patterns,
+         _by,
+         _median,
+         _template
+       ) do
     skipped_row(prelim.row, nil, prelim.decision.shift)
   end
 
-  defp finish_row(%{outcome: :empty} = prelim, _fields, _chosen, _patterns, _by, _median) do
+  defp finish_row(
+         %{outcome: :empty} = prelim,
+         _fields,
+         _chosen,
+         _patterns,
+         _by,
+         _median,
+         _template
+       ) do
     skipped_row(prelim.row, :empty, prelim.decision.shift)
   end
 
-  defp finish_row(%{outcome: {:cell, col, raw}} = prelim, fields, _c, _p, _b, _m) do
+  defp finish_row(%{outcome: {:cell, col, raw}} = prelim, fields, _c, _p, _b, _m, _template) do
     decision_row(prelim, fields, {:cell, col, raw})
   end
 
-  defp finish_row(%{outcome: {:backwards, col, raw}} = prelim, fields, _c, _p, _b, _m) do
+  defp finish_row(%{outcome: {:backwards, col, raw}} = prelim, fields, _c, _p, _b, _m, _template) do
     decision_row(prelim, fields, {:backwards, col, raw})
   end
 
@@ -456,14 +580,24 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
          chosen,
          patterns,
          by_pattern,
-         median
+         median,
+         template_timing_id
        ) do
     case twelve_hour_issue(entries, prelim.decision, median) do
       {:twelve_hour, _secs} = issue ->
         decision_row(prelim, field_cols, issue)
 
       nil ->
-        assign_pattern(prelim, entries, field_cols, chosen, patterns, by_pattern, shift)
+        assign_pattern(
+          prelim,
+          entries,
+          field_cols,
+          chosen,
+          patterns,
+          by_pattern,
+          shift,
+          template_timing_id
+        )
     end
   end
 
@@ -482,9 +616,27 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
     end
   end
 
-  @spec assign_pattern(map(), [stop_entry()], map(), map() | nil, [map()], map(), integer()) ::
+  @spec assign_pattern(
+          map(),
+          [stop_entry()],
+          map(),
+          map() | nil,
+          [map()],
+          map(),
+          integer(),
+          term()
+        ) ::
           resolved_row()
-  defp assign_pattern(prelim, entries, field_cols, chosen, patterns, by_pattern, shift) do
+  defp assign_pattern(
+         prelim,
+         entries,
+         field_cols,
+         chosen,
+         patterns,
+         by_pattern,
+         shift,
+         template_timing_id
+       ) do
     chosen_by_id = chosen_occurrences(chosen)
     served = entries |> Enum.filter(&time_cell?/1) |> attach_stops(chosen_by_id)
 
@@ -494,14 +646,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
         target = Map.fetch!(by_pattern, prelim.decision.pattern_id)
         occ_map = correspondence_map(served, target.occurrences)
 
-        ready_row(
-          prelim,
-          field_cols,
-          target.id,
-          :chosen,
-          pasted_positions(served, occ_map),
-          shift
-        )
+        ready_row(prelim, field_cols, target, :chosen, occ_map, served, shift, template_timing_id)
 
       keep_chosen?(entries, served, chosen) ->
         occ_map = Map.new(chosen.occurrences, &{&1.id, &1})
@@ -509,10 +654,12 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
         ready_row(
           prelim,
           field_cols,
-          chosen.id,
+          chosen,
           :default,
-          pasted_positions(served, occ_map),
-          shift
+          occ_map,
+          served,
+          shift,
+          template_timing_id
         )
 
       true ->
@@ -521,10 +668,12 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
             ready_row(
               prelim,
               field_cols,
-              pattern.id,
+              pattern,
               :auto,
-              pasted_positions(served, occ_map),
-              shift
+              occ_map,
+              served,
+              shift,
+              template_timing_id
             )
 
           [] ->
@@ -680,15 +829,20 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
 
   @spec pasted_positions([map()], map()) :: [integer()]
   defp pasted_positions(served, occ_map) do
-    Enum.flat_map(served, fn %{occurrence_id: id} ->
+    # An arrival/departure pair contributes two served entries for one
+    # occurrence; positions are deduplicated so `pasted` lists each
+    # occurrence once.
+    served
+    |> Enum.flat_map(fn %{occurrence_id: id} ->
       case Map.fetch(occ_map, id) do
         {:ok, %{position: position}} -> [position]
         :error -> []
       end
     end)
+    |> Enum.uniq()
   end
 
-  # --- Row builders (offsets stay nil; step 6 fills ready rows) ---
+  # --- Row builders ---
 
   @spec field_values([String.t()], map()) :: map()
   defp field_values(cells, field_cols) do
@@ -717,27 +871,342 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
     end)
   end
 
-  @spec ready_row(map(), map(), term(), :default | :auto | :chosen, [integer()], integer()) ::
+  @spec ready_row(
+          map(),
+          map(),
+          map(),
+          :default | :auto | :chosen,
+          map(),
+          [map()],
+          integer(),
+          term()
+        ) ::
           resolved_row()
-  defp ready_row(prelim, field_cols, pattern_id, how, pasted, shift) do
+  defp ready_row(prelim, field_cols, target, how, occ_map, served, shift, template_timing_id) do
     fields = field_values(prelim.cells, field_cols)
+    pasted = group_pasted(served, occ_map)
+    template_rows = select_template(target.timings, template_timing_id)
+    {start_secs, timing_rows} = build_offsets(target.occurrences, pasted, template_rows)
 
     %{
       row: prelim.row,
       status: :ready,
       issue: nil,
-      pattern_id: pattern_id,
+      pattern_id: target.id,
       how: how,
-      start_secs: nil,
-      timing_rows: nil,
-      key: nil,
-      pasted: pasted,
+      start_secs: start_secs,
+      timing_rows: timing_rows,
+      key: timing_key(timing_rows),
+      pasted: pasted_positions(served, occ_map),
       trip_short_name: fields.trip_short_name,
       block_id: fields.block_id,
       trip_headsign: fields.trip_headsign,
       rolled?: rolled?(served_entries(prelim)),
       shift: shift
     }
+  end
+
+  # --- Offsets, estimates and timing key (R7, R8, R9) ---
+
+  # Groups pasted seconds by target occurrence id, preserving column order.
+  # An arrival/departure pair (R4) contributes its first cell as the arrival
+  # and its last cell as the departure; a lone column serves as both.
+  @spec group_pasted([map()], map()) :: %{term() => [non_neg_integer()]}
+  defp group_pasted(served, occ_map) do
+    Enum.reduce(served, %{}, fn entry, acc ->
+      case Map.fetch(occ_map, entry.occurrence_id) do
+        {:ok, %{id: target_id}} ->
+          Map.update(acc, target_id, [entry.cell.secs], &(&1 ++ [entry.cell.secs]))
+
+        :error ->
+          acc
+      end
+    end)
+  end
+
+  # Selects the template timing for a row's pattern: the input timing when
+  # it belongs to the pattern, else the pattern's most-used timing (highest
+  # trip_count, ties broken by scope order). No timings means no template.
+  @spec select_template([map()], term()) :: [map()] | nil
+  defp select_template(timings, template_timing_id) when is_list(timings) do
+    if is_binary(template_timing_id) do
+      case Enum.find(timings, &(&1.id == template_timing_id)) do
+        %{rows: rows} -> rows
+        nil -> most_used_rows(timings)
+      end
+    else
+      most_used_rows(timings)
+    end
+  end
+
+  defp select_template(_timings, _template_timing_id), do: nil
+
+  @spec most_used_rows([map()]) :: [map()] | nil
+  defp most_used_rows([]), do: nil
+
+  defp most_used_rows(timings) do
+    # Enum.sort_by/3 is stable, so ties keep scope order.
+    case timings |> Enum.sort_by(& &1.trip_count, :desc) |> List.first() do
+      %{rows: rows} -> rows
+      nil -> nil
+    end
+  end
+
+  @spec build_offsets([map()], map(), [map()] | nil) :: {non_neg_integer(), [timing_row()]}
+  defp build_offsets([], _pasted, _template_rows) do
+    {0, []}
+  end
+
+  defp build_offsets(occurrences, pasted, template_rows) do
+    absolutes = absolute_times(occurrences, pasted, template_rows)
+    {_first_arrival, start} = hd(absolutes)
+    {start, build_timing_rows(occurrences, absolutes, pasted, template_rows, start)}
+  end
+
+  @spec absolute_times([map()], map(), [map()] | nil) :: [{integer(), integer()}]
+  defp absolute_times(occurrences, pasted, template_rows) do
+    anchors = anchor_indexes(occurrences, pasted)
+
+    occurrences
+    |> Enum.with_index()
+    |> Enum.map_reduce(nil, fn {occurrence, index}, previous_departure ->
+      absolute =
+        absolute_at(
+          occurrence,
+          index,
+          pasted,
+          template_rows,
+          anchors,
+          previous_departure,
+          occurrences
+        )
+
+      {_arrival, departure} = absolute
+      {absolute, departure}
+    end)
+    |> elem(0)
+  end
+
+  @spec anchor_indexes([map()], map()) :: [non_neg_integer()]
+  defp anchor_indexes(occurrences, pasted) do
+    occurrences
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {occurrence, index} ->
+      if Map.has_key?(pasted, occurrence.id), do: [index], else: []
+    end)
+  end
+
+  @spec absolute_at(
+          map(),
+          non_neg_integer(),
+          map(),
+          [map()] | nil,
+          [non_neg_integer()],
+          integer() | nil,
+          [map()]
+        ) ::
+          {integer(), integer()}
+  defp absolute_at(
+         occurrence,
+         index,
+         pasted,
+         template_rows,
+         anchors,
+         previous_departure,
+         occurrences
+       ) do
+    case Map.fetch(pasted, occurrence.id) do
+      {:ok, [first | _] = secs} ->
+        {first, List.last(secs)}
+
+      :error ->
+        estimate_at(index, pasted, template_rows, anchors, previous_departure, occurrences)
+    end
+  end
+
+  @spec estimate_at(
+          non_neg_integer(),
+          map(),
+          [map()] | nil,
+          [non_neg_integer()],
+          integer() | nil,
+          [map()]
+        ) ::
+          {integer(), integer()}
+  defp estimate_at(index, pasted, template_rows, anchors, previous_departure, occurrences) do
+    previous_anchor = anchors |> Enum.filter(&(&1 < index)) |> List.last()
+    next_anchor = Enum.find(anchors, &(&1 > index))
+
+    case {previous_anchor, next_anchor} do
+      {nil, nil} ->
+        # No pasted anchor on the row: only a forced choice that fits
+        # nothing lands here. Degenerate zeros keep the vector well-formed;
+        # Plan discards the stale choice at rebuild.
+        {0, 0}
+
+      {nil, next} ->
+        bound = pasted_arrival(occurrences, pasted, next)
+        {bound, bound}
+
+      {previous, nil} ->
+        bound = pasted_departure(occurrences, pasted, previous)
+        {bound, bound}
+
+      {previous, next} ->
+        segment_estimate(
+          index,
+          previous,
+          next,
+          pasted,
+          template_rows,
+          previous_departure,
+          occurrences
+        )
+    end
+  end
+
+  @spec segment_estimate(
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          map(),
+          [map()] | nil,
+          integer() | nil,
+          [map()]
+        ) ::
+          {integer(), integer()}
+  defp segment_estimate(
+         index,
+         previous,
+         next,
+         pasted,
+         template_rows,
+         previous_departure,
+         occurrences
+       ) do
+    previous_departure_pasted = pasted_departure(occurrences, pasted, previous)
+    next_arrival_pasted = pasted_arrival(occurrences, pasted, next)
+    template_start = template_departure(template_rows, previous)
+    template_end = template_arrival(template_rows, next)
+    template_at = template_arrival(template_rows, index)
+
+    raw =
+      if template_end > template_start do
+        previous_departure_pasted +
+          Integer.floor_div(
+            (template_at - template_start) * (next_arrival_pasted - previous_departure_pasted),
+            template_end - template_start
+          )
+      else
+        # Zero-length (or backwards) template segment: even spacing with
+        # div(j * gap, k + 1), the Materializer inserted-stop rule.
+        previous_departure_pasted +
+          div(
+            (index - previous) * (next_arrival_pasted - previous_departure_pasted),
+            next - previous
+          )
+      end
+
+    low = if is_nil(previous_departure), do: previous_departure_pasted, else: previous_departure
+
+    # Guard clamp: estimates stay non-decreasing and never cross the next
+    # pasted time. Monotonicity wins when a forced row's pasted times run
+    # backwards (the upper bound then sits below the lower one).
+    arrival = raw |> max(low) |> min(next_arrival_pasted) |> max(low)
+
+    dwell = template_departure(template_rows, index) - template_arrival(template_rows, index)
+
+    departure =
+      if dwell > 0 and arrival + dwell <= next_arrival_pasted, do: arrival + dwell, else: arrival
+
+    {arrival, departure}
+  end
+
+  @spec pasted_arrival([map()], map(), non_neg_integer()) :: integer()
+  defp pasted_arrival(occurrences, pasted, index) do
+    occurrences
+    |> Enum.at(index)
+    |> Map.fetch!(:id)
+    |> then(&Map.fetch!(pasted, &1))
+    |> List.first()
+  end
+
+  @spec pasted_departure([map()], map(), non_neg_integer()) :: integer()
+  defp pasted_departure(occurrences, pasted, index) do
+    occurrences
+    |> Enum.at(index)
+    |> Map.fetch!(:id)
+    |> then(&Map.fetch!(pasted, &1))
+    |> List.last()
+  end
+
+  @spec template_arrival([map()] | nil, non_neg_integer()) :: integer()
+  defp template_arrival(nil, _index), do: 0
+
+  defp template_arrival(rows, index) do
+    case Enum.at(rows, index) do
+      %{arrival_offset: value} when is_integer(value) -> value
+      _row -> 0
+    end
+  end
+
+  @spec template_departure([map()] | nil, non_neg_integer()) :: integer()
+  defp template_departure(nil, _index), do: 0
+
+  defp template_departure(rows, index) do
+    case Enum.at(rows, index) do
+      %{departure_offset: value} when is_integer(value) -> value
+      _row -> 0
+    end
+  end
+
+  @spec template_attrs([map()] | nil, non_neg_integer()) :: map()
+  defp template_attrs(nil, _index) do
+    %{pickup_type: 0, drop_off_type: 0, stop_headsign: nil}
+  end
+
+  defp template_attrs(rows, index) do
+    case Enum.at(rows, index) do
+      %{pickup_type: pickup, drop_off_type: drop, stop_headsign: headsign} ->
+        %{pickup_type: pickup, drop_off_type: drop, stop_headsign: headsign}
+
+      _row ->
+        %{pickup_type: 0, drop_off_type: 0, stop_headsign: nil}
+    end
+  end
+
+  @spec build_timing_rows([map()], [{integer(), integer()}], map(), [map()] | nil, integer()) ::
+          [timing_row()]
+  defp build_timing_rows(occurrences, absolutes, pasted, template_rows, start) do
+    occurrences
+    |> Enum.with_index()
+    |> Enum.map(fn {occurrence, index} ->
+      {arrival, departure} = Enum.at(absolutes, index)
+      attrs = template_attrs(template_rows, index)
+
+      %{
+        arrival_offset: arrival - start,
+        departure_offset: departure - start,
+        timepoint: if(Map.has_key?(pasted, occurrence.id), do: 1, else: 0),
+        pickup_type: attrs.pickup_type,
+        drop_off_type: attrs.drop_off_type,
+        stop_headsign: attrs.stop_headsign
+      }
+    end)
+  end
+
+  # The timing key covers the full final vector — every occurrence's
+  # offsets plus its per-stop attributes — so Plan reuses a timing only on
+  # an exact key.
+  @spec timing_key([timing_row()]) :: binary()
+  defp timing_key(timing_rows) do
+    vector =
+      Enum.map(timing_rows, fn row ->
+        {row.arrival_offset, row.departure_offset, row.timepoint, row.pickup_type,
+         row.drop_off_type, row.stop_headsign}
+      end)
+
+    :erlang.term_to_binary(vector, [:deterministic])
   end
 
   @spec decision_row(map(), map(), row_issue()) :: resolved_row()
