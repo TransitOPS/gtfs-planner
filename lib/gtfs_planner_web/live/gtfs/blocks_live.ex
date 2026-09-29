@@ -122,6 +122,32 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # enforces on a driving time.
   @driving_minutes_error "Enter 0–600 min."
 
+  # The Operator changes drawer's transient state: the version and day type the
+  # candidates were read for, the candidates themselves, the limit the reader
+  # typed so far, the ticked candidate IDs so far, and a drawer-level sentence.
+  @empty_operator_changes %{
+    key: nil,
+    candidates: [],
+    limit: "",
+    marked: nil,
+    limit_error: nil,
+    error: nil
+  }
+
+  # The drawer's own sentences. Its error is the top-layer dialog's own, not the
+  # page flash behind it (AC-31).
+  @operator_changes_unreadable "These operator changes couldn't be read. Your entries are kept."
+
+  @operator_changes_save_failed "These operator changes could not be saved. Your entries are retained. Try again."
+
+  # The reference's own limit error, over the range the context's changeset
+  # enforces on the relief limit (AC-1).
+  @operator_limit_error "Enter a whole number from 60 to 720, or leave it blank."
+
+  # The researched common contract limit, pre-filled when the version has none
+  # (AC-1, research question 1).
+  @default_piece_minutes 330
+
   @sort_keys %{
     "block" => :block,
     "garage" => :garage,
@@ -176,6 +202,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:review_stale?, false)
      |> assign(:block_rules, @empty_block_rules)
      |> assign(:driving_times, @empty_driving_times)
+     |> assign(:operator_changes, @empty_operator_changes)
      |> assign(:block_attributes, nil)
      |> assign_empty_derived()}
   end
@@ -654,6 +681,29 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
       true ->
         save_driving_entries(socket, state, entries)
+    end
+  end
+
+  # The Operator changes drawer's one event (AC-41, AC-4). The limit and the
+  # marks are the version's own settings, so the save is a single call to
+  # `Gtfs.update_relief_settings/4`: the page validates the limit itself and
+  # nothing is written when it refuses, and a save that reaches the context
+  # reloads the day so the warnings, the timeline's change marks and the Plan
+  # summary all redraw from the stored answer.
+  def handle_event("save_operator_changes", _params, %{assigns: %{day_type: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("save_operator_changes", params, socket) do
+    state = socket.assigns.operator_changes
+    limit = params["limit"] |> to_string() |> String.trim()
+    marked = listed_marks(state, params["marked"])
+
+    if editor_access?(socket) do
+      save_operator_changes(socket, state, limit, marked)
+    else
+      # The refusal is the drawer's own sentence: the drawer is a top-layer
+      # `<dialog>` and the page flash renders behind it (AC-31).
+      {:noreply, put_operator_error(socket, state, limit, marked, @permission_message)}
     end
   end
 
@@ -1144,6 +1194,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           block_attributes_state(socket.assigns.block_attributes, block)
         )
         |> resolve_driving_times(day, Map.get(@drawers, state.drawer))
+        |> resolve_operator_changes(day, Map.get(@drawers, state.drawer))
 
       _other ->
         assign(socket,
@@ -2285,6 +2336,200 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp driving_times_key(socket, day),
     do: {socket.assigns.state.version_id, day.day_type && day.day_type.key}
 
+  # The Operator changes drawer reads the same day load's candidates through the
+  # context's own `list_relief_candidates/3`, in the URL change that opens it and
+  # never in `render/1` (CR-4). A draft is kept while the same version and day
+  # type stay on screen, so opening the drawer again does not discard what was
+  # typed; a day type or version change drops it, because those marks belonged to
+  # another day's candidates.
+  defp resolve_operator_changes(
+         %{assigns: %{operator_changes: %{key: key}}} = socket,
+         day,
+         :operator_changes
+       )
+       when not is_nil(key) and not is_nil(day) do
+    if key == operator_changes_key(socket, day) do
+      socket
+    else
+      load_operator_changes(socket, day)
+    end
+  end
+
+  defp resolve_operator_changes(%{assigns: %{day: day}} = socket, day, :operator_changes)
+       when not is_nil(day),
+       do: load_operator_changes(socket, day)
+
+  defp resolve_operator_changes(socket, _day, _drawer), do: socket
+
+  defp load_operator_changes(socket, day) do
+    key = operator_changes_key(socket, day)
+
+    case Gtfs.list_relief_candidates(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           day.day_type && day.day_type.key
+         ) do
+      {:ok, candidates} ->
+        assign(socket, :operator_changes, %{
+          @empty_operator_changes
+          | key: key,
+            candidates: candidates,
+            limit: piece_limit_text(socket.assigns.settings.max_piece_minutes)
+        })
+
+      {:error, _reason} ->
+        assign(socket, :operator_changes, %{
+          @empty_operator_changes
+          | key: key,
+            error: @operator_changes_unreadable
+        })
+    end
+  end
+
+  defp operator_changes_key(socket, day),
+    do: {socket.assigns.state.version_id, day.day_type && day.day_type.key}
+
+  # With no stored limit the field is pre-filled with the researched common
+  # contract limit rather than left blank, because a blank limit is a real
+  # answer — it turns the checks off — and an empty field would offer that answer
+  # before the reader has read it (AC-1).
+  defp piece_limit_text(nil), do: to_string(@default_piece_minutes)
+  defp piece_limit_text(minutes), do: to_string(minutes)
+
+  # A refusal the limit field can explain is that field's own error, so the
+  # shared `input` marks the field invalid and the drawer's focus hook moves
+  # focus onto it; anything else is the drawer's own sentence above the form.
+  defp put_operator_limit_error(socket, state, limit, marked, message) do
+    assign(socket, :operator_changes, %{
+      state
+      | limit: limit,
+        marked: marked,
+        limit_error: message,
+        error: nil
+    })
+  end
+
+  defp put_operator_error(socket, state, limit, marked, message) do
+    assign(socket, :operator_changes, %{
+      state
+      | limit: limit,
+        marked: marked,
+        limit_error: nil,
+        error: message
+    })
+  end
+
+  # The ticked candidate IDs of a submitted form, narrowed to the candidates the
+  # drawer listed, so a crafted payload cannot mark a stop the day type does not
+  # offer as one. The context recomputes them under its own lock anyway; this
+  # keeps the tick the reader is shown and the tick that is written the same set
+  # (CR-4).
+  defp listed_marks(state, marked) when is_list(marked) do
+    candidates = MapSet.new(state.candidates, & &1.stop_id)
+
+    marked
+    |> Enum.filter(&is_binary/1)
+    |> MapSet.new()
+    |> MapSet.intersection(candidates)
+    |> MapSet.to_list()
+  end
+
+  # An unticked form posts no `marked` key at all, which is the reader's decision
+  # to clear every mark rather than a payload to be discarded; a crafted
+  # non-list value reads the same way, because clearing marks is the one answer
+  # that cannot reach a stop the drawer did not offer.
+  defp listed_marks(_state, _not_a_list), do: []
+
+  # The one write this drawer owns. The page judges the limit against the same
+  # 60–720 range the context's changeset enforces, so a value the page accepts
+  # is one the context accepts; a refusal the page cannot explain (an unpublished
+  # version, an unknown day type) keeps the drawer and every entry with its own
+  # sentence. A save reloads the day so the checks, the timeline's change marks
+  # and the Plan summary read the stored answer rather than the draft.
+  defp save_operator_changes(socket, state, limit, marked) do
+    case piece_limit_entry(limit) do
+      :error ->
+        {:noreply,
+         socket
+         |> put_operator_limit_error(state, limit, marked, @operator_limit_error)
+         |> push_event("focus_form_error", %{
+           form_id: "operator-changes-form",
+           fallback_id: "operator-changes-limit"
+         })}
+
+      {:ok, minutes} ->
+        write_operator_changes(socket, state, minutes, marked, limit)
+    end
+  end
+
+  defp write_operator_changes(socket, state, minutes, marked, limit) do
+    case Gtfs.update_relief_settings(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           socket.assigns.day_type && socket.assigns.day_type.key,
+           %{max_piece_minutes: minutes, marked: marked}
+         ) do
+      {:ok, :ok} ->
+        socket =
+          socket
+          |> assign(:operator_changes, @empty_operator_changes)
+          |> load_day()
+          |> resolve_drawers()
+          |> assign_page_rows_if_loaded()
+          |> put_flash(:info, operator_changes_saved(minutes))
+
+        {:noreply, close_operator_drawer(socket)}
+
+      {:error, %Ecto.Changeset{}} ->
+        {:noreply, put_operator_limit_error(socket, state, limit, marked, @operator_limit_error)}
+
+      {:error, _reason} ->
+        {:noreply,
+         put_operator_error(socket, state, limit, marked, @operator_changes_save_failed)}
+    end
+  end
+
+  defp operator_changes_saved(nil), do: "Operator checks turned off"
+  defp operator_changes_saved(_minutes), do: "Operator changes saved"
+
+  # The save closes the drawer, as the reference does: the page behind it is
+  # where the answer is read, and the flash only renders once the top-layer
+  # dialog is gone (AC-31). The `open_drawer` assign is cleared as well as the
+  # URL parameter, because `resolve_drawers/1` keeps the last open panel when the
+  # URL names none — patching the parameter alone would reload the day's answers
+  # and leave the drawer standing on top of them.
+  defp close_operator_drawer(socket) do
+    socket = assign(socket, :open_drawer, nil)
+    state = socket.assigns.state
+
+    if state.drawer == "operator_changes" do
+      push_patch(socket, to: blocks_path(%{state | drawer: nil}))
+    else
+      socket
+    end
+  end
+
+  # The limit is 60–720 or blank, exactly the range the context's changeset
+  # enforces on the relief limit (AC-1). A blank limit stores `nil`, which turns
+  # the `:no_relief_opportunity` checks off rather than refusing the save.
+  defp piece_limit_entry(value) do
+    trimmed = String.trim(value)
+
+    cond do
+      trimmed == "" ->
+        {:ok, nil}
+
+      not Regex.match?(~r/\A\d+\z/, trimmed) ->
+        :error
+
+      String.to_integer(trimmed) < 60 or String.to_integer(trimmed) > 720 ->
+        :error
+
+      true ->
+        {:ok, String.to_integer(trimmed)}
+    end
+  end
+
   # One row per listed pair, in the context's own order, with the index the input
   # id and the row id use. The index is assigned before the “Estimated only” filter
   # narrows the rows, so a filter change never renames an input the reader is
@@ -2331,6 +2576,32 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp driving_times_estimated_count(pairs) do
     Enum.count(pairs, &(&1.source == :estimated))
   end
+
+  # One row per candidate the context listed, in that order, with the index the
+  # row and checkbox ids use. A tick the reader has made and not yet saved is
+  # the drawer's own, so a refused save shows exactly the marks the reader
+  # chose rather than the stored ones.
+  defp operator_changes_rows(assigns) do
+    state = assigns.operator_changes
+
+    state.candidates
+    |> Enum.with_index()
+    |> Enum.map(fn {candidate, index} ->
+      %{
+        dom_id: "operator-candidate-row-#{index}",
+        input_id: "operator-candidate-#{index}",
+        stop_id: candidate.stop_id,
+        name: candidate.name,
+        station?: candidate.station?,
+        child_names: candidate.child_names,
+        waits: candidate.waits,
+        marked?: operator_marked?(state, candidate)
+      }
+    end)
+  end
+
+  defp operator_marked?(%{marked: nil}, candidate), do: candidate.marked?
+  defp operator_marked?(state, candidate), do: candidate.stop_id in state.marked
 
   # --- editor authority ------------------------------------------------------
 
@@ -2688,10 +2959,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
     block_rules_form = block_rules_form(assigns)
     driving_rows = driving_times_rows(assigns)
+    operator_rows = operator_changes_rows(assigns)
 
     assigns =
       assigns
       |> assign(:driving_times_rows, driving_rows)
+      |> assign(:operator_changes_rows, operator_rows)
       |> assign(:assign_form, assign_form(assigns.assign))
       |> assign(:block_action_form, block_action_form(assigns.block_action))
       |> assign(:block_rules_form, block_rules_form)
@@ -2870,6 +3143,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   total_count={length(@driving_times.pairs)}
                   focus_id={driving_times_focus_id(@driving_times_rows)}
                   error={@driving_times.error}
+                />
+
+                <BlocksComponents.operator_changes_drawer
+                  open={@open_drawer == :operator_changes}
+                  rows={@operator_changes_rows}
+                  limit={@operator_changes.limit}
+                  limit_error={@operator_changes.limit_error}
+                  error={@operator_changes.error}
                 />
 
                 <%= case @trip_view do %>

@@ -514,8 +514,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   the chart is the chart's text equivalent, so the encoding is readable without
   the pixels.
 
-  The two Operator changes links are step 42's: this step renders the section's
-  own answers and leaves the drawer they open to that step.
+  The Operator changes button below the section is step 42's: it opens the
+  drawer that sets the limit and the marks, and its own label is the section's
+  answer, so a reader who has not set a limit is offered the setup rather than
+  a review.
   """
   attr :open, :boolean, required: true
   attr :figures, :map, required: true
@@ -732,6 +734,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             )}
           </p>
         </div>
+
+        <button
+          type="button"
+          id="plan-summary-relief-open"
+          phx-click="open_drawer"
+          phx-value-key="operator_changes"
+          class="link link-primary mt-2 inline-flex min-h-11 items-center"
+        >
+          {if @max_piece_minutes, do: "Review operator changes", else: "Set up operator checks"}
+        </button>
       </section>
     </.drawer>
     """
@@ -1168,6 +1180,141 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               class="btn min-h-11"
             >
               Cancel
+            </button>
+          </div>
+        </form>
+      </div>
+    </.drawer>
+    """
+  end
+
+  @doc """
+  Renders the Operator changes drawer: the longest time one operator may work
+  before another takes over, and the stops and stations where that can happen
+  (AC-41, AC-4).
+
+  The rows are the candidates `Gtfs.list_relief_candidates/3` read for this day
+  type, in that function's own order (waits descending, then name, then ID), so
+  the drawer and the day it checks cannot disagree about where a change is
+  possible. A station row carries the names of the stops it covers on its own
+  line, so marking it once is visibly the same thing as marking both bays.
+
+  The limit is pre-filled with 330 when the version has none, which is the
+  researched common contract limit (AC-1); a blank limit is a real answer — it
+  turns the checks off — so the field carries the reader's own text and an
+  out-of-range value keeps every tick while the error prints under the field.
+  `limit_error` is the shared input's own field error, which is also what makes
+  the field `aria-invalid` and the target the drawer's focus hook moves to;
+  `error` is the drawer's own sentence, for a refusal the field cannot explain
+  and for the flash that would otherwise render behind this top-layer dialog
+  (AC-31).
+  """
+  attr :open, :boolean, required: true
+  attr :rows, :list, required: true
+  attr :limit, :string, default: ""
+  attr :error, :string, default: nil
+  attr :limit_error, :string, default: nil
+
+  def operator_changes_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="operator-changes-drawer"
+      open={@open}
+      title="Operator changes"
+      initial_focus={:first_field}
+      initial_focus_id="operator-changes-limit"
+      return_focus_id="blocks-summary-figures-item-vehicles"
+    >
+      <div id="operator-changes-content" phx-hook="FormErrorFocus" class="flex flex-col gap-4">
+        <%!-- The scope sentence names the version rather than the loaded day
+        type, because the limit and the marks are stored per version: a reader
+        who sets them here is answering for every day type, while the rows below
+        are this one's candidates. --%>
+        <p id="operator-changes-scope" class="text-sm text-base-content/70">
+          This version · every day type
+        </p>
+
+        <p id="operator-changes-intro">
+          A block longer than one operator’s shift needs a stop where another operator can take
+          over. This is also called a relief point.
+        </p>
+
+        <form id="operator-changes-form" novalidate phx-submit="save_operator_changes">
+          <%!-- The refused limit is the shared `input`'s own field error, so the
+          sentence sits under the field it is about, the field carries
+          `aria-invalid`, and the drawer's focus hook moves the reader's focus
+          onto it rather than onto the summary above the form. A refusal the
+          field cannot explain is the drawer's own sentence instead. --%>
+          <p
+            :if={not is_nil(@error) and is_nil(@limit_error)}
+            id="operator-changes-error"
+            class="text-error text-sm"
+          >
+            {@error}
+          </p>
+
+          <.input
+            id="operator-changes-limit"
+            type="number"
+            name="limit"
+            value={@limit}
+            min={60}
+            max={720}
+            step={1}
+            label="Longest time before an operator change (min)"
+            errors={List.wrap(@limit_error)}
+            help="From sign-on, waits included. Blank turns these checks off. 330 min is 5½ hours, the most common contract limit before a meal break. 60–720."
+            class="input input-lg w-28 block"
+          />
+
+          <.table id="operator-changes" rows={@rows} row_id={& &1.dom_id}>
+            <:col :let={row} label="Stop or station">
+              <span class="font-medium">{row.name}</span>
+              <span :if={row.station?} class="block text-sm text-base-content/70">
+                Station · covers {Enum.join(row.child_names, " and ")}
+              </span>
+            </:col>
+            <:col :let={row} label="Waits here" align="right">
+              <span class="tabular-nums">{row.waits}</span>
+            </:col>
+            <:col :let={row} label="Operators can change here">
+              <%!-- A visible label would repeat the row's own name twice on one
+              row, so the checkbox carries that name as its accessible name
+              instead and the 44 px label around it is the target. --%>
+              <label class="flex min-h-11 cursor-pointer items-center">
+                <input
+                  type="checkbox"
+                  id={row.input_id}
+                  name="marked[]"
+                  value={row.stop_id}
+                  aria-label={"Operators can change at " <> row.name}
+                  checked={row.marked?}
+                  class="checkbox"
+                />
+              </label>
+            </:col>
+          </.table>
+
+          <p id="operator-changes-note" class="mt-4 text-sm text-base-content/70">
+            Lists the stops where this day type’s trips start or end. Changes partway through a
+            trip aren’t checked.
+          </p>
+
+          <div class="mt-3 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              id="operator-changes-cancel"
+              phx-click="close_drawer"
+              class="btn min-h-11"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              id="operator-changes-submit"
+              class="btn btn-primary min-h-11"
+            >
+              Save operator changes
             </button>
           </div>
         </form>
@@ -2057,7 +2204,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
       <div :if={@problems != []} id="block-problems" class="mt-4 grid gap-2">
         <.callout
-          :for={problem <- @problems}
+          :for={{problem, index} <- Enum.with_index(@problems)}
           kind={severity_status(problem.severity)}
           title={code_label(problem.code)}
           data-role="block-problem"
@@ -2075,6 +2222,23 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             class="link link-primary min-h-11"
           >
             Open this connection
+          </button>
+          <%!-- A stretch with no place to change operators is a limit or a mark
+          the reader can fix in the Operator changes drawer, so the reference's
+          callout offers that link rather than only naming the stretch. One block
+          can carry several unrelieved stretches and they all open the same
+          drawer, so the link appears on the first of them rather than repeating
+          it once per stretch. --%>
+          <button
+            :if={problem.code == :no_relief_opportunity and first_relief_problem?(@problems, index)}
+            type="button"
+            id={"block-open-operator-changes-#{@summary.block_id}"}
+            data-role="block-open-operator-changes"
+            phx-click="open_drawer"
+            phx-value-key="operator_changes"
+            class="link link-primary ml-1 inline-flex min-h-11 items-baseline"
+          >
+            Review operator changes
           </button>
         </.callout>
       </div>
@@ -2748,6 +2912,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     |> Enum.filter(&(&1.severity in [:error, :warning]))
     |> Enum.uniq_by(&Checks.finding_key/1)
     |> Enum.sort_by(&issue_rank/1)
+  end
+
+  # Whether the callout at this index is the first of the block's unrelieved
+  # stretches, which is the one that carries the Operator changes link: the
+  # drawer is the same for all of them, so one link answers them all.
+  defp first_relief_problem?(problems, index) do
+    problems
+    |> Enum.take(index + 1)
+    |> Enum.find_index(&(is_map(&1) and &1.code == :no_relief_opportunity))
+    |> Kernel.==(index)
   end
 
   # The connection a problem is about, when the problem is one of a connection's
