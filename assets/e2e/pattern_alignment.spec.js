@@ -125,7 +125,9 @@ test.describe("alignment shell", () => {
     await page.waitForSelector("#alignment-task", { timeout: 15000 });
     await page.waitForSelector("#alignment-sections", { timeout: 15000 });
     await waitForLiveView(page);
-    await expect(page.locator("#alignment-title")).toHaveText("Alignment");
+    await expect(page.locator("#alignment-title")).toHaveText(
+      "Path between stops",
+    );
     await expect(page.locator("#alignment-status")).toContainText("1 missing");
     await expect(page.locator("#alignment-section-2")).toBeVisible();
     await page.locator("#alignment-task").scrollIntoViewIfNeeded();
@@ -139,7 +141,9 @@ test.describe("alignment shell", () => {
     await page.waitForSelector("#alignment-task", { timeout: 15000 });
     await page.waitForSelector("#alignment-sections", { timeout: 15000 });
     await waitForLiveView(page);
-    await expect(page.locator("#alignment-title")).toHaveText("Alignment");
+    await expect(page.locator("#alignment-title")).toHaveText(
+      "Path between stops",
+    );
     await expect(page.locator("#alignment-section-2")).toBeVisible();
     await captureFullPage(page, "shell-320");
     expect(await bodyFitsViewport(page)).toBe(true);

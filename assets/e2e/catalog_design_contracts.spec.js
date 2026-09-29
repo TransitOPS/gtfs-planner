@@ -574,7 +574,7 @@ test.describe("Route pattern editor responsive contracts", () => {
     await expect(page.locator('label[for="timing-arrival-1"]')).toContainText(
       "Arrival relative to first departure",
     );
-    await expect(page.locator('label[for="timing-departure-1"]')).toContainText("Depart +mm:ss");
+    await expect(page.locator('label[for="timing-departure-1"]')).toContainText("Depart");
     await expect(page.locator("#timing-arrival-1")).toHaveAttribute("name", "timing[1][arrival]");
     await expect(page.locator("#timing-origin")).toContainText(
       "Times are measured from the first departure",

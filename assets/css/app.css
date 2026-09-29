@@ -1981,17 +1981,244 @@ dialog[role="alertdialog"][open] > div > div {
     inset 0 0 0 4px var(--color-primary);
 }
 
-/* A timing is one record; paired clocks stay together at narrow widths. */
-.pattern-timing-table tbody tr { display: grid; grid-template-columns: 2fr 1fr 1fr 1.5fr 1fr; }
-.pattern-timing-table thead tr { display: grid; grid-template-columns: 2fr 1fr 1fr 1.5fr 1fr; }
-.pattern-timing-table .timing-boarding-cell { grid-column: 1 / -1; }
+/* ── route-pattern-editor (design system) ──
+   The pattern editor (`/gtfs/:version/routes/:route/patterns/new` and
+   `.../patterns/:id`) is a `.ds-page`, which supplies the action colour, the
+   field grammar, the message and button treatment. What follows is only what
+   the editor adds: the save bar, the stop list's connecting line, the running-time
+   table, and the map chrome further down. `#pattern-editor` outranks the
+   `.ds-page` rules that assume a card owns the focus ring. */
+
+/* The save bar is sticky at the bottom of the page and runs edge to edge: a
+   pseudo-element wider than the column paints the ground and hairline, and the
+   main column clips the overflow so it never adds a horizontal scrollbar. */
+#pattern-editor .pe-savebar {
+  isolation: isolate;
+}
+
+#pattern-editor .pe-savebar::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 100vw;
+  transform: translateX(-50%);
+  border-top: 1px solid var(--color-subtle);
+  background: var(--color-base-100);
+  box-shadow: 0 -8px 24px color-mix(in srgb, var(--color-navy-800) 5%, transparent);
+}
+
+#main-content:has(#pattern-save-bar) {
+  overflow-x: clip;
+}
+
+/* On a short page the bar still sits at the bottom of the window: the editor
+   fills the height under the header and the bar takes the leftover space above
+   itself. Phones skip the minimum, where the stacked header is taller. */
+@media (min-width: 768px) {
+  #pattern-editor:has(#pattern-save-bar) {
+    display: flex;
+    flex-direction: column;
+    min-height: calc(100dvh - 72px - 2rem);
+  }
+
+  #pattern-editor:has(#pattern-save-bar) > #pattern-editor-content {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+  }
+
+  #pattern-editor .pe-savebar {
+    margin-top: auto;
+  }
+}
+
+/* Buttons that are not daisyUI `.btn` (the tabs, the actions menu) take the
+   design system's focus outline, and a checkbox keeps its own, which `.ds-page`
+   removes on the assumption that a card shows the ring instead. */
+#pattern-editor :is(button:not(.btn), [tabindex]):focus-visible,
+#pattern-editor input:is([type="checkbox"], [type="radio"]):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* The stop list's connecting line: the numbered rings carry order, the line
+   carries continuity. It stops at the first and last ring. */
+#pattern-editor .stop-line::before,
+#pattern-editor .stop-line::after {
+  content: "";
+  position: absolute;
+  left: 30px;
+  width: 2px;
+  background: var(--color-subtle);
+  z-index: 0;
+  pointer-events: none;
+}
+
+#pattern-editor .stop-line::before {
+  top: 0;
+  bottom: 50%;
+}
+
+#pattern-editor .stop-line::after {
+  top: 50%;
+  bottom: 0;
+}
+
+#pattern-editor .stop-line:first-child::before,
+#pattern-editor .stop-line:last-child::after {
+  display: none;
+}
+
+/* Running times. A stop is a row of cells over a second row that holds its
+   boarding options; below md each stop is a card whose cells stack, and the
+   column labels that headed each cell appear on the cell itself. */
+#pattern-editor .pe-times thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px;
+  border-bottom: 1px solid var(--color-subtle);
+  background: var(--color-canvas);
+  color: var(--color-default);
+  font-size: 13px;
+  font-weight: 650;
+  text-align: left;
+  vertical-align: bottom;
+}
+
+#pattern-editor .pe-times thead th:first-child {
+  padding-left: 16px;
+}
+
+#pattern-editor .pe-times tr.pe-row > * {
+  padding: 8px 8px 0;
+  vertical-align: top;
+}
+
+#pattern-editor .pe-times tr.pe-row > th {
+  padding-left: 16px;
+  font-weight: 400;
+}
+
+#pattern-editor .pe-times .pe-cell-sample {
+  padding-top: 18px;
+}
+
+#pattern-editor .pe-times tr.pe-options-row > td {
+  padding: 0 16px 0 46px;
+  border-bottom: 1px solid var(--color-subtle);
+}
+
+#pattern-editor .pe-times tr.pe-err-row > td {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--color-subtle);
+  background: var(--color-error-bg);
+  color: var(--color-error-fg);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* The per-cell labels name each input for assistive technology; the column
+   headers already name them on wide screens. */
+#pattern-editor .pe-times .pe-cell-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+#pattern-editor .pe-times .pe-options-row .fieldset > p {
+  margin: 0;
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  #pattern-editor .pe-times .pe-cell-sample,
+  #pattern-editor .pe-times thead th:nth-child(4) {
+    display: none;
+  }
+}
+
 @media (max-width: 767px) {
-  .pattern-timing-table thead { display: none; }
-  .pattern-timing-table tbody tr { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding: 0.75rem 0; }
-  .pattern-timing-table td { min-width: 0; padding: 0.5rem 0.25rem; white-space: normal; }
-  .pattern-timing-table td:first-child { grid-column: 1 / -1; }
-  .pattern-timing-table input[type="text"] { width: 100%; }
-  .pattern-timing-table td label { overflow-wrap: anywhere; }
+  #pattern-editor .pe-times,
+  #pattern-editor .pe-times tbody {
+    display: block;
+  }
+
+  #pattern-editor .pe-times thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
+  #pattern-editor .pe-times tr.pe-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+    padding: 12px 16px 0;
+  }
+
+  #pattern-editor .pe-times tr.pe-row > * {
+    min-width: 0;
+    padding: 0;
+  }
+
+  /* A label that wraps in one cell must not push its neighbour's input out of
+     line, so each cell sits on its bottom edge. */
+  #pattern-editor .pe-times tr.pe-row > td {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
+
+  #pattern-editor .pe-times tr.pe-row > th,
+  #pattern-editor .pe-times tr.pe-row > .pe-cell-sample,
+  #pattern-editor .pe-times tr.pe-row > .pe-cell-timepoint {
+    grid-column: 1 / -1;
+  }
+
+  #pattern-editor .pe-times .pe-cell-label {
+    position: static;
+    display: block;
+    width: auto;
+    height: auto;
+    margin-bottom: 4px;
+    overflow: visible;
+    clip: auto;
+    color: var(--color-default);
+    font-size: 13px;
+    font-weight: 650;
+    white-space: normal;
+  }
+
+  #pattern-editor .pe-times input[type="text"] {
+    width: 100%;
+  }
+
+  #pattern-editor .pe-times tr.pe-options-row,
+  #pattern-editor .pe-times tr.pe-options-row > td,
+  #pattern-editor .pe-times tr.pe-err-row,
+  #pattern-editor .pe-times tr.pe-err-row > td {
+    display: block;
+  }
+
+  #pattern-editor .pe-times tr.pe-options-row > td {
+    padding: 0 16px;
+  }
+
+  #pattern-editor .pe-times tr.pe-options-row {
+    border-bottom: 1px solid var(--color-subtle);
+  }
+
+  #pattern-editor .pe-times tr.pe-options-row > td {
+    border-bottom: 0;
+  }
 }
 
 /* Pattern alignment map (spec 12, step 23). The server renders only the
@@ -2008,6 +2235,7 @@ dialog[role="alertdialog"][open] > div > div {
 #alignment-map-root .pa-map {
   display: flex;
   flex-direction: column;
+  height: 100%;
   min-height: inherit;
 }
 
@@ -2018,7 +2246,7 @@ dialog[role="alertdialog"][open] > div > div {
   gap: 0.5rem;
   flex-wrap: wrap;
   background-color: var(--color-base-100);
-  border-bottom: 1px solid var(--color-base-300);
+  border-bottom: 1px solid var(--color-subtle);
   padding: 0.5rem 0.75rem;
 }
 
@@ -2028,12 +2256,63 @@ dialog[role="alertdialog"][open] > div > div {
   gap: 0.25rem;
 }
 
+/* Which of the two map modes is current reads as one segmented control: a joined
+   pair whose current segment takes the selection ground and action ink. The
+   hook draws both as daisyUI buttons and marks the current one with
+   `aria-pressed`. */
+#alignment-map-root .pa-bar-group:first-child {
+  gap: 0;
+  padding: 2px;
+  border: 1px solid var(--color-control);
+  border-radius: var(--radius-control);
+  background: var(--color-base-100);
+}
+
+#alignment-map-root .pa-bar-group:first-child .btn {
+  min-height: 40px;
+  border: 0;
+  border-radius: var(--radius-badge);
+  background: transparent;
+  color: var(--color-strong);
+  font-weight: 650;
+}
+
+#alignment-map-root .pa-bar-group:first-child .btn:hover {
+  background: var(--color-canvas);
+}
+
+#alignment-map-root .pa-bar-group:first-child .btn[aria-pressed="true"] {
+  background: var(--color-selection);
+  color: var(--color-action);
+}
+
+#alignment-map-root .pa-bar-group:first-child .btn:disabled {
+  background: transparent;
+  color: var(--color-muted);
+}
+
+/* Undo and redo are quiet: no boundary until hovered. */
+#alignment-map-root .pa-bar-group:last-child .btn {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-strong);
+  font-weight: 650;
+}
+
+#alignment-map-root .pa-bar-group:last-child .btn:hover {
+  background: var(--color-canvas);
+}
+
+#alignment-map-root .pa-bar-group:last-child .btn:disabled {
+  color: var(--color-muted);
+}
+
 #alignment-map-root .pa-stage {
   position: relative;
   flex: 1 1 auto;
   min-height: 380px;
   overflow: hidden;
-  background-color: var(--color-base-200);
+  background-color: var(--color-canvas);
 }
 
 #alignment-map-root .pa-leaflet {
@@ -2056,19 +2335,22 @@ dialog[role="alertdialog"][open] > div > div {
   max-width: calc(100% - 90px);
   background-color: var(--color-base-100);
   padding: 0.625rem 0.875rem;
-  border: 1px solid var(--color-base-300);
-  border-radius: 0.375rem;
+  border: 1px solid var(--color-subtle);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-card);
+  color: var(--color-strong);
   font-size: 0.8125rem;
   pointer-events: none;
 }
 
 #alignment-map-root .pa-help strong {
   display: block;
+  font-weight: 650;
 }
 
 #alignment-map-root .pa-help span {
+  color: var(--color-muted);
   font-size: 0.75rem;
-  opacity: 0.7;
 }
 
 /* Floating zoom/fit tools. Every button holds a 44 px target with a visible
@@ -2081,18 +2363,19 @@ dialog[role="alertdialog"][open] > div > div {
   z-index: 500;
   display: grid;
   background-color: var(--color-base-100);
-  border: 1px solid var(--color-base-300);
-  border-radius: 0.375rem;
+  border: 1px solid var(--color-control);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-card);
   overflow: hidden;
 }
 
 #alignment-map-root .pa-tools button {
   border: 0;
-  border-bottom: 1px solid var(--color-base-300);
+  border-bottom: 1px solid var(--color-subtle);
   min-width: 44px;
   min-height: 44px;
   background-color: var(--color-base-100);
-  color: var(--color-base-content);
+  color: var(--color-strong);
   font-size: 1.375rem;
   line-height: 1;
   cursor: pointer;
@@ -2103,11 +2386,11 @@ dialog[role="alertdialog"][open] > div > div {
 }
 
 #alignment-map-root .pa-tools button:hover {
-  background-color: var(--color-base-200);
+  background-color: var(--color-canvas);
 }
 
 #alignment-map-root .pa-tools button:focus-visible {
-  outline: 2px solid var(--color-primary);
+  outline: 2px solid var(--color-focus);
   outline-offset: -2px;
 }
 
@@ -2119,8 +2402,9 @@ dialog[role="alertdialog"][open] > div > div {
   flex-wrap: wrap;
   padding: 0.625rem 1rem;
   background-color: var(--color-base-100);
-  border-top: 1px solid var(--color-base-300);
-  font-size: 0.75rem;
+  border-top: 1px solid var(--color-subtle);
+  color: var(--color-default);
+  font-size: 0.8125rem;
 }
 
 #alignment-map-root .pa-legend {
@@ -2148,12 +2432,18 @@ dialog[role="alertdialog"][open] > div > div {
 
 #alignment-map-root .pa-toggle-labels {
   min-height: 44px;
-  color: var(--color-primary);
+  padding: 0 0.5rem;
+  color: var(--color-strong);
+  font-weight: 650;
   cursor: pointer;
 }
 
+#alignment-map-root .pa-toggle-labels:hover {
+  text-decoration: underline;
+}
+
 #alignment-map-root .pa-toggle-labels:focus-visible {
-  outline: 2px solid var(--color-primary);
+  outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
 
@@ -2200,36 +2490,6 @@ dialog[role="alertdialog"][open] > div > div {
   background-color: rgb(255 255 255 / 0.12);
   background-color: color-mix(in srgb, var(--color-primary) 15%, transparent);
   pointer-events: none;
-}
-
-/* Section-level draft actions (spec 12, step 26). The native More
-   section actions disclosure keeps Clear/Delete behind one explicit
-   tap; daisyUI `btn` carries the theme. The summary is a 44 px target
-   with the same visible focus ring as the point-list controls. */
-#alignment-detail .pa-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
-}
-
-#alignment-detail .pa-more-actions {
-  margin-top: 0.75rem;
-}
-
-#alignment-detail .pa-more-actions > summary {
-  display: flex;
-  align-items: center;
-  min-height: 44px;
-  font-size: 0.875rem;
-  opacity: 0.7;
-  cursor: pointer;
-  border-radius: 0.25rem;
-}
-
-#alignment-detail .pa-more-actions > summary:focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
 }
 
 /* Keyboard point list (spec 12, step 25). Hook-owned rows inside the

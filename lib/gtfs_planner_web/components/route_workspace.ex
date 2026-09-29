@@ -10,6 +10,10 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
   only and needs no page scope, so a page inside the design-system scope
   (`ds-page`) and one outside it can both call it.
 
+  `crumbs/1` is the lighter context for a page that sits below the route, such as
+  the pattern editor: the location trail above the page's own title. `badge/1` is
+  the design system's text badge for a short status or category.
+
   Called through an explicit import in each consumer; not part of the global
   `GtfsPlannerWeb.html_helpers/0` import set.
   """
@@ -21,6 +25,15 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
 
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlannerWeb.Components.RouteIdentity
+
+  @badge_tones %{
+    "neutral" => "bg-canvas text-muted",
+    "success" => "bg-success-bg text-success-fg",
+    "warning" => "bg-warning-bg text-warning-fg",
+    "error" => "bg-error-bg text-error-fg",
+    "info" => "bg-info-bg text-info-fg",
+    "selected" => "bg-selection text-action"
+  }
 
   @doc """
   The route header: back link, badge, name, mode, identifier and local tabs.
@@ -142,6 +155,107 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
     |> Route.route_type_label()
     |> String.replace("/", " or ")
     |> String.capitalize()
+  end
+
+  @doc """
+  A short status or category in words, on a tinted ground.
+
+  Every badge says its meaning in text; the tone and the optional icon only
+  reinforce it, so the state reads without colour.
+
+  ## Examples
+
+      <.badge tone="success" icon="hero-check-circle">Saved in this version</.badge>
+      <.badge tone="warning">Unsaved</.badge>
+  """
+  attr :tone, :string, values: ~w(neutral success warning error info selected), default: "neutral"
+  attr :icon, :string, default: nil, doc: "a hero icon name shown before the text"
+  attr :class, :any, default: nil
+  attr :rest, :global
+  slot :inner_block, required: true
+
+  def badge(assigns) do
+    assigns = assign(assigns, :tone_class, Map.fetch!(@badge_tones, assigns.tone))
+
+    ~H"""
+    <span
+      class={[
+        "inline-flex max-w-full items-center gap-1.5 rounded-badge px-2 py-0.5 text-[13px] font-[650] leading-normal",
+        @tone_class,
+        @class
+      ]}
+      {@rest}
+    >
+      <.icon :if={@icon} name={@icon} class="size-3.5 shrink-0" />{render_slot(@inner_block)}
+    </span>
+    """
+  end
+
+  @doc """
+  The trail above a route page's title: Routes, this route with its badge, the
+  section (Patterns), and the page itself.
+
+  The section crumb is a link unless the page passes its own in the `:section`
+  slot, as the pattern editor does so leaving with unsaved edits asks first. The
+  current page is text, not a link, and is hidden below `md` where the trail
+  would wrap.
+
+  ## Examples
+
+      <.crumbs route={@route} gtfs_version_id={@current_gtfs_version.id} current="New pattern" />
+  """
+  attr :route, :map, required: true, doc: "the route record"
+  attr :gtfs_version_id, :any, required: true
+  attr :current, :string, required: true, doc: "the name of the page"
+  attr :id, :string, default: "route-crumbs"
+  slot :section, doc: "replaces the Patterns link"
+
+  def crumbs(assigns) do
+    assigns = assign(assigns, :route_name, route_name(assigns.route))
+
+    ~H"""
+    <nav
+      id={@id}
+      aria-label="Location"
+      class="flex flex-wrap items-center gap-x-2 text-[13px] text-muted"
+    >
+      <.link
+        navigate={"/gtfs/#{@gtfs_version_id}/routes"}
+        class="inline-flex min-h-11 items-center text-muted hover:text-strong hover:underline"
+      >
+        Routes
+      </.link>
+      <span aria-hidden="true">/</span>
+      <.link
+        navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}"}
+        class="inline-flex min-h-11 items-center gap-2 text-muted hover:text-strong hover:underline"
+      >
+        <RouteIdentity.route_badge route={@route} />{@route_name}
+      </.link>
+      <span aria-hidden="true">/</span>
+      <%= if @section != [] do %>
+        {render_slot(@section)}
+      <% else %>
+        <.link
+          navigate={"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/patterns"}
+          class="inline-flex min-h-11 items-center text-muted hover:text-strong hover:underline"
+        >
+          Patterns
+        </.link>
+      <% end %>
+      <span aria-hidden="true">/</span>
+      <span aria-current="page" class="max-w-[46ch] truncate font-semibold text-strong max-md:hidden">
+        {@current}
+      </span>
+    </nav>
+    """
+  end
+
+  # The badge already carries the short name, so the crumb leads with the long
+  # name and falls back through the same fields the old route header used.
+  defp route_name(route) do
+    [route.route_long_name, route.route_short_name, route.route_id]
+    |> Enum.find(&(is_binary(&1) and String.trim(&1) != ""))
   end
 
   defp tab_class(active?) do

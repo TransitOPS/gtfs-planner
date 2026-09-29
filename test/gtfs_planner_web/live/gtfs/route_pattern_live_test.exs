@@ -538,7 +538,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       assert has_element?(view, "#pattern-stop-1", "Create Stop 1")
       assert has_element?(view, "#pattern-stop-2", "Create Stop 2")
-      assert has_element?(view, "#edit-status", "Unsaved changes")
+      assert has_element?(view, "#edit-status", "Not created yet")
 
       render_click(element(view, "#pattern-create"))
 
@@ -672,7 +672,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       assert has_element?(
                view,
                "#pattern-details-form",
-               "Existing trip destinations stay unchanged"
+               "Existing trips keep their own headsigns"
              )
 
       refute has_element?(view, "#details-impact-dialog[data-open='true']")
@@ -809,7 +809,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       assert index(html, "pattern-task-alignment") < index(html, "pattern-task-details")
 
       assert has_element?(view, "#pattern-task-stops", "Stops")
-      assert has_element?(view, "#pattern-task-timings", "Timings")
+      assert has_element?(view, "#pattern-task-timings", "Running times")
       assert has_element?(view, "#pattern-task-alignment", "Alignment")
       assert has_element?(view, "#pattern-task-details", "Details")
 
@@ -822,7 +822,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       assert has_element?(view, "#pattern-task-alignment[aria-current='page']")
       assert has_element?(view, "#alignment-task")
-      assert has_element?(view, "h3#alignment-title", "Alignment")
+      assert has_element?(view, "h2#alignment-title", "Path between stops")
       assert has_element?(view, "#alignment-status")
       assert has_element?(view, "#alignment-sections")
       assert has_element?(view, "#alignment-detail")
@@ -834,7 +834,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       refute has_element?(view, "#timing-rows")
     end
 
-    test "direct query entry keeps one h1 and the pattern h2 above the Alignment h3",
+    test "direct query entry keeps one h1, the pattern name, above the Alignment h2",
          %{conn: conn, organization: organization, version: version} do
       route = route(organization, version, "ALIGN2")
       stops = Enum.map(1..2, &stop(organization, version, "ALIGN2", &1))
@@ -849,13 +849,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       assert has_element?(view, "#pattern-task-alignment[aria-current='page']")
       assert has_element?(view, "#alignment-task")
-      assert has_element?(view, "h2", "Direct alignment")
-      assert has_element?(view, "h3#alignment-title", "Alignment")
+      assert has_element?(view, "h1", "Direct alignment")
+      assert has_element?(view, "h2#alignment-title", "Path between stops")
 
       html = render(view)
-      assert_single_h1(html, "ALIGN2 - ALIGN2 corridor")
-      assert index(html, "<h1") < index(html, "<h2")
-      assert index(html, "<h2") < index(html, "id=\"alignment-title\"")
+      assert_single_h1(html, "Direct alignment")
+      assert index(html, "<h1") < index(html, "id=\"alignment-title\"")
     end
 
     test "creating with task=alignment stays in Details with only Details and Stops",
@@ -1105,7 +1104,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       refute has_element?(view, "#discard-changes-dialog[data-open='true']")
 
       render_change(view, "validate_details", %{"pattern" => %{"name" => "Unsaved"}})
-      assert has_element?(view, "#edit-status", "Unsaved changes")
+      assert has_element?(view, "#edit-status", "Not created yet")
 
       render_click(view, "switch_gtfs_version", %{"version" => other_version.id})
 

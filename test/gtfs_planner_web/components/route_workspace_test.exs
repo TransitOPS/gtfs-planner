@@ -28,6 +28,14 @@ defmodule GtfsPlannerWeb.RouteWorkspaceTest do
     """)
   end
 
+  @crumb_route %{
+    route_id: "R1",
+    route_short_name: "1",
+    route_long_name: "Coast Highway",
+    route_color: "1F5FBF",
+    route_text_color: "FFFFFF"
+  }
+
   describe "route_title/1" do
     test "is the long name when the feed gives one" do
       assert route_title(route(%{})) == "Nye Beach – Hospital"
@@ -115,6 +123,94 @@ defmodule GtfsPlannerWeb.RouteWorkspaceTest do
 
       assert doc(active) |> LazyHTML.query("#route-inactive") |> Enum.count() == 0
       assert doc(inactive) |> LazyHTML.query("#route-inactive") |> LazyHTML.text() =~ "Inactive"
+    end
+  end
+
+  describe "badge/1" do
+    test "puts the state in words on the tone's ground" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.badge id="state" tone="warning">Unsaved changes</.badge>
+        """)
+
+      badge = doc(html) |> LazyHTML.query("#state")
+
+      assert LazyHTML.text(badge) |> String.trim() == "Unsaved changes"
+      assert LazyHTML.attribute(badge, "class") |> hd() =~ "bg-warning-bg"
+    end
+
+    test "shows its icon before the text and only when one is given" do
+      assigns = %{}
+
+      with_icon =
+        rendered_to_string(~H"""
+        <.badge id="with" tone="success" icon="hero-check-circle">Saved</.badge>
+        """)
+
+      without_icon =
+        rendered_to_string(~H"""
+        <.badge id="without" tone="neutral">Draft</.badge>
+        """)
+
+      assert Enum.count(doc(with_icon) |> LazyHTML.query("#with .hero-check-circle")) == 1
+      assert Enum.empty?(doc(without_icon) |> LazyHTML.query("#without [class*='hero-']"))
+    end
+  end
+
+  describe "crumbs/1" do
+    test "leads with Routes, this route's badge and name, the section and the page" do
+      assigns = %{route: @crumb_route}
+
+      html =
+        rendered_to_string(~H"""
+        <.crumbs id="trail" route={@route} gtfs_version_id="v1" current="Night owl" />
+        """)
+
+      trail = doc(html) |> LazyHTML.query("#trail")
+      hrefs = LazyHTML.query(trail, "a") |> LazyHTML.attribute("href")
+
+      assert hrefs == ["/gtfs/v1/routes", "/gtfs/v1/routes/R1", "/gtfs/v1/routes/R1/patterns"]
+      assert LazyHTML.text(trail) =~ "Coast Highway"
+      assert LazyHTML.text(trail) =~ "Patterns"
+
+      assert LazyHTML.attribute(LazyHTML.query(trail, "[aria-current='page']"), "aria-current") ==
+               ["page"]
+
+      assert LazyHTML.text(LazyHTML.query(trail, "[aria-current='page']")) =~ "Night owl"
+    end
+
+    test "lets a page replace the section link with its own control" do
+      assigns = %{route: @crumb_route}
+
+      html =
+        rendered_to_string(~H"""
+        <.crumbs id="trail" route={@route} gtfs_version_id="v1" current="Night owl">
+          <:section><button id="guarded-back" type="button">Patterns</button></:section>
+        </.crumbs>
+        """)
+
+      trail = doc(html) |> LazyHTML.query("#trail")
+
+      assert Enum.count(LazyHTML.query(trail, "#guarded-back")) == 1
+
+      refute LazyHTML.query(trail, "a")
+             |> LazyHTML.attribute("href")
+             |> Enum.member?("/gtfs/v1/routes/R1/patterns")
+    end
+
+    test "falls back to the route id when the route has no names" do
+      assigns = %{
+        route: %{route_id: "R9", route_short_name: nil, route_long_name: nil, route_color: nil}
+      }
+
+      html =
+        rendered_to_string(~H"""
+        <.crumbs id="trail" route={@route} gtfs_version_id="v1" current="New pattern" />
+        """)
+
+      assert doc(html) |> LazyHTML.query("#trail") |> LazyHTML.text() =~ "R9"
     end
   end
 end

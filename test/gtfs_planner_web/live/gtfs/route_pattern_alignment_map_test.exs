@@ -153,7 +153,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentMapTest do
 
       view |> element("#alignment-section-2") |> render_click()
       assert_push_event(view, "alignment:select", %{position: 2})
-      assert has_element?(view, "#alignment-detail", "Map Bravo")
+      assert has_element?(view, "#alignment-section-2", "Map Bravo")
+      assert has_element?(view, "#alignment-section-2 + #alignment-detail[data-position='2']")
     end
 
     test "draft_state stores the hook-owned edit state; invalid values are ignored",

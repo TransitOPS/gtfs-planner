@@ -2010,7 +2010,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
   this chrome. A `confirm_disabled` confirm takes the design system's disabled
   control instead of the action colour, so it reads as unavailable next to the
   reason the caller renders for it. `size="lg"` widens the panel to 600px for a review and bounds its
-  body at `max-h-[60vh]`, so the rows scroll and the actions stay in view.
+  body at `max-h-[60vh]`, so the rows scroll and the actions stay in view. `size="xl"`
+  is the 680px review whose footer is pinned: the panel is bounded to the viewport and
+  only the body scrolls, for a confirmation that carries a list to read.
 
   ## Examples
 
@@ -2058,7 +2060,12 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :return_focus_id, :string, default: nil
   attr :described_by, :string, default: nil
   attr :close_on_backdrop, :boolean, default: false
-  attr :size, :string, values: ~w(sm lg), default: "sm"
+
+  attr :size, :string,
+    values: ~w(sm lg xl),
+    default: "sm",
+    doc: ~s|"xl", the pinned-footer review, applies to chrome="planner" only|
+
   attr :confirm_variant, :string, values: ~w(primary danger), default: "danger"
   attr :chrome, :string, values: ~w(default planner), default: "default"
 
@@ -2149,6 +2156,20 @@ defmodule GtfsPlannerWeb.CoreComponents do
   # The class strings for each part of the dialog. The default chrome returns
   # the original strings; the planner chrome is the design system's confirm,
   # whose confirm button is the action colour whatever `confirm_variant` says.
+  # The pinned-footer review: a 680px panel bounded to the viewport, so only the
+  # body scrolls and the actions stay in view.
+  defp confirm_dialog_ui(%{chrome: "planner", size: "xl"} = assigns) do
+    %{
+      confirm_dialog_ui(%{assigns | size: "sm"})
+      | panel:
+          "flex max-h-[calc(100dvh-32px)] w-[min(680px,calc(100vw-32px))] flex-col rounded-card border border-subtle bg-white text-default shadow-float",
+        title:
+          "px-6 pt-6 font-display text-[22px] font-semibold leading-tight tracking-[-0.02em] text-strong [overflow-wrap:anywhere]",
+        body: "min-h-0 flex-1 overflow-y-auto px-6 pb-4 pt-3 text-sm text-muted",
+        actions: "flex shrink-0 flex-wrap justify-end gap-3 border-t border-subtle px-6 py-4"
+    }
+  end
+
   defp confirm_dialog_ui(%{chrome: "planner", size: size} = assigns) do
     %{
       panel: [

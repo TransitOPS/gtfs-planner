@@ -434,8 +434,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternAlignmentGenerationTest do
       assert has_element?(view, "#alignment-generating", "Finding a street path…")
 
       render_patch(view, pattern_path(version, route, second_pattern))
-      assert has_element?(view, "#alignment-title", "Alignment")
-      assert has_element?(view, "#alignment-detail", "Gen Switch C → Gen Switch D")
+      assert has_element?(view, "#alignment-title", "Path between stops")
+      assert has_element?(view, "#alignment-section-1", "Gen Switch C")
+      assert has_element?(view, "#alignment-section-1", "Gen Switch D")
+      assert has_element?(view, "#alignment-detail[data-position='1']")
 
       # The first pattern's late result must never land on the second pattern.
       refute_push_event(view, "alignment:suggestions", %{}, 1_500)

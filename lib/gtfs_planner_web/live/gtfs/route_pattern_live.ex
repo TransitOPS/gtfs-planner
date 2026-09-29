@@ -26,11 +26,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
   alias GtfsPlannerWeb.Gtfs.RoutePatternComponents
   alias GtfsPlannerWeb.Gtfs.RoutePatternListComponents
   alias LiveSelect.Component, as: LiveSelectComponent
+
+  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -1239,6 +1242,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   @impl true
   def render(assigns) do
+    assigns = assign(assigns, :save_bar, save_bar_spec(assigns))
+
     ~H"""
     <Layouts.app
       flash={@flash}
@@ -1249,25 +1254,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <:sub_header :if={@route && @live_action != :index}>
-        <.route_sub_nav
-          route={@route}
-          gtfs_version_id={@current_gtfs_version.id}
-          active_tab={:patterns}
-        />
-      </:sub_header>
-
       <div
         id="pattern-editor"
         phx-hook="RoutePatternEditor"
         data-dirty={to_string(@dirty?)}
         data-offline={to_string(@offline?)}
-        class={@live_action != :index && "mt-8"}
+        class={@live_action != :index && "ds-page"}
       >
         <div id="pattern-editor-content" phx-hook="FormErrorFocus">
           <RoutePatternComponents.status_regions
             error={@error_message}
             status={@status_message}
+            hide_error?={@save_bar != nil}
+            hide_status?={hide_status?(assigns)}
           />
 
           <%= cond do %>
@@ -1300,39 +1299,45 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
             <% @load_state == :loading -> %>
               <.skeleton id="patterns-loading" label="Loading patterns" rows={3} aria-busy="true" />
             <% @load_state == :unavailable -> %>
-              <div id="patterns-unavailable" class="mt-2">
-                <.callout kind="error" title="Patterns unavailable">
+              <div id="patterns-unavailable" class="mt-4">
+                <.message kind="error" title="Patterns unavailable">
                   This route’s patterns could not be loaded. The rest of the app is unaffected.
-                  <button
-                    id="patterns-retry"
-                    type="button"
-                    phx-click="reload_patterns"
-                    class="btn btn-sm btn-outline mt-2 min-h-11"
-                  >
-                    Retry
-                  </button>
-                </.callout>
+                  <:action>
+                    <button
+                      id="patterns-retry"
+                      type="button"
+                      phx-click="reload_patterns"
+                      class="btn btn-outline min-h-11"
+                    >
+                      <.icon name="hero-arrow-path" class="size-4" /> Retry
+                    </button>
+                  </:action>
+                </.message>
               </div>
             <% @editor_revoked? -> %>
-              <div id="pattern-editor-revoked" class="mt-2">
-                <.callout kind="error" title="Editing unavailable">
+              <div id="pattern-editor-revoked" class="mt-4">
+                <.message kind="error" title="Editing is no longer available">
                   Your editing access to this organization was removed, so this page can no
                   longer change patterns, timings or stops. Ask an administrator to restore the
                   editor role, then reload.
-                  <button
-                    id="pattern-editor-reload"
-                    type="button"
-                    phx-click="reload_patterns"
-                    class="btn btn-sm btn-outline mt-2 min-h-11"
-                  >
-                    Reload
-                  </button>
-                </.callout>
+                  <:action>
+                    <button
+                      id="pattern-editor-reload"
+                      type="button"
+                      phx-click="reload_patterns"
+                      class="btn btn-outline min-h-11"
+                    >
+                      <.icon name="hero-arrow-path" class="size-4" /> Reload
+                    </button>
+                  </:action>
+                </.message>
               </div>
             <% @load_state == :ready -> %>
               <%= if @pattern || @live_action == :new do %>
                 <RoutePatternComponents.pattern_detail_header
                   creating={@live_action == :new}
+                  route={@route}
+                  gtfs_version_id={@current_gtfs_version.id}
                   pattern_name={
                     if(@pattern,
                       do: @pattern.route_pattern_name || @pattern.route_pattern_id,
@@ -1340,10 +1345,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                     )
                   }
                   direction_id={header_direction_id(assigns)}
+                  toward={header_toward(assigns)}
                   stop_count={
                     if @live_action == :new, do: length(@staged_occurrences), else: @stop_count
                   }
                   trip_count={if @live_action == :new, do: 0, else: @detail_trip_count}
+                  timing_count={length(@timings)}
                   task={@task}
                   tasks={
                     if(@live_action == :new,
@@ -1351,119 +1358,154 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                       else: [:stops, :timings, :alignment, :details]
                     )
                   }
+                  tab_chips={tab_chips(assigns)}
                   dirty?={@dirty?}
-                  version_name={@current_gtfs_version.name}
                   show_actions={@live_action == :show}
                 />
 
                 <RoutePatternComponents.connectivity_banner offline?={@offline?} />
-                <button
-                  :if={@details_stale?}
-                  id="details-refresh-review"
-                  type="button"
-                  phx-click="refresh_details_review"
-                  class="btn btn-outline min-h-11"
-                >
-                  Refresh review
-                </button>
-                <button
+
+                <div :if={@details_stale?} class="pt-4">
+                  <.message
+                    id="details-stale"
+                    kind="warning"
+                    title="This pattern changed since you reviewed it"
+                  >
+                    Refresh the review to see the current values and trip counts. Your edits are still here.
+                    <:action>
+                      <button
+                        id="details-refresh-review"
+                        type="button"
+                        phx-click="refresh_details_review"
+                        class="btn btn-outline min-h-11"
+                      >
+                        <.icon name="hero-arrow-path" class="size-4" /> Refresh review
+                      </button>
+                    </:action>
+                  </.message>
+                </div>
+
+                <div
                   :if={
                     @task == :stops and
                       (map_size(@timing_edits) > 0 or map_size(@timing_headsign_edits) > 0)
                   }
-                  id="discard-timing-drafts"
-                  type="button"
-                  phx-click="discard_timing_drafts"
-                  class="btn btn-outline min-h-11"
+                  class="pt-4"
                 >
-                  Discard timing edits
-                </button>
+                  <.message
+                    id="pattern-timing-drafts"
+                    kind="warning"
+                    title="Running-time edits are unsaved"
+                  >
+                    To save stop changes, save or discard the running-time edits first.
+                    <:action>
+                      <button
+                        id="discard-timing-drafts"
+                        type="button"
+                        phx-click="discard_timing_drafts"
+                        class="btn btn-outline min-h-11"
+                      >
+                        Discard timing edits
+                      </button>
+                    </:action>
+                  </.message>
+                </div>
 
-                <%= cond do %>
-                  <% @task == :details -> %>
-                    <RoutePatternComponents.details_task
-                      form={@details_form}
-                      submit_event={
-                        if(@live_action == :new, do: "create_pattern", else: "save_details")
-                      }
-                      submit_label={
-                        if(@live_action == :new, do: "Create pattern", else: "Save details")
-                      }
-                      pattern_id={if @pattern, do: @pattern.route_pattern_id, else: nil}
-                      dirty?={@dirty?}
-                    />
-                  <% @task == :stops -> %>
-                    <RoutePatternComponents.stops_task
-                      creating={@live_action == :new}
-                      stop_rows={stop_rows(assigns)}
-                      custom_trip_count={detail_custom_trip_count(assigns)}
-                      trip_count={if @live_action == :new, do: 0, else: @detail_trip_count}
-                      timing_count={max(length(@timings), 1)}
-                      reorderable?={reorderable?(assigns)}
-                      dirty?={@stops_dirty? or (@live_action == :new and @staged_occurrences != [])}
-                      search_form={@stop_search_form}
-                      search_options={@stop_search_options}
-                      search_status={@stop_search_status}
-                      search_truncated?={@stop_search_truncated?}
-                      insert_form={@insert_form}
-                      busy?={@applying? or @offline?}
-                    />
-                  <% @task == :alignment -> %>
-                    <%= if @alignment do %>
-                      <RoutePatternAlignmentComponents.alignment_task
-                        alignment={@alignment}
-                        state={@alignment_state}
-                        notice={@alignment_notice}
-                        dialog_open={@alignment_dialog == :help}
-                        editable?={@alignment_editable}
-                        offline?={@offline?}
-                        applying?={@applying?}
-                        pending={@alignment_pending}
-                        save_notice={@alignment_save_notice}
-                        version_name={@current_gtfs_version.name}
-                        organization_name={@current_organization.name}
-                        delete_dialog={@alignment_delete_dialog}
-                        discard_dialog={@alignment_discard_dialog}
-                        simplify_dialog={@alignment_simplify_dialog}
-                        import_dialog={@alignment_import_dialog}
-                        generation={@alignment_generation}
-                        generate_dialog={@alignment_generate_dialog}
-                        generate_notice={@alignment_generate_notice}
+                <div class="mt-5">
+                  <%= cond do %>
+                    <% @task == :details -> %>
+                      <RoutePatternComponents.details_task
+                        form={@details_form}
+                        submit_event={
+                          if(@live_action == :new, do: "create_pattern", else: "save_details")
+                        }
+                        pattern_id={if @pattern, do: @pattern.route_pattern_id, else: nil}
+                        dirty?={@dirty?}
                       />
-                    <% else %>
-                      <.skeleton
-                        id="alignment-loading"
-                        label="Loading alignment"
-                        rows={3}
-                        aria-busy="true"
+                    <% @task == :stops -> %>
+                      <RoutePatternComponents.stops_task
+                        creating={@live_action == :new}
+                        stop_rows={stop_rows(assigns)}
+                        ring_color={ring_color(@route)}
+                        custom_trip_count={detail_custom_trip_count(assigns)}
+                        trip_count={if @live_action == :new, do: 0, else: @detail_trip_count}
+                        timing_count={max(length(@timings), 1)}
+                        reorderable?={reorderable?(assigns)}
+                        dirty?={@stops_dirty? or (@live_action == :new and @staged_occurrences != [])}
+                        search_form={@stop_search_form}
+                        search_options={@stop_search_options}
+                        search_status={@stop_search_status}
+                        search_truncated?={@stop_search_truncated?}
+                        insert_form={@insert_form}
+                        busy?={@applying? or @offline?}
                       />
-                    <% end %>
-                  <% true -> %>
-                    <RoutePatternComponents.timings_task
-                      timings={@timings}
-                      selected_timing={@selected_timing}
-                      timing_rows={@timing_rows}
-                      timing_form={@timing_form}
-                      timing_options={@timing_options}
-                      preview_time={@preview_time}
-                      timing_headsign={@timing_headsign}
-                      custom_trip_count={@detail_custom_trip_count}
-                      dirty?={@timing_rows != [] and map_size(@timing_edits) > 0}
-                      busy?={@applying? or @offline?}
-                    />
-                <% end %>
+                    <% @task == :alignment -> %>
+                      <%= if @alignment do %>
+                        <RoutePatternAlignmentComponents.alignment_task
+                          alignment={@alignment}
+                          state={@alignment_state}
+                          notice={@alignment_notice}
+                          dialog_open={@alignment_dialog == :help}
+                          editable?={@alignment_editable}
+                          offline?={@offline?}
+                          applying?={@applying?}
+                          pending={@alignment_pending}
+                          save_notice={@alignment_save_notice}
+                          version_name={@current_gtfs_version.name}
+                          organization_name={@current_organization.name}
+                          delete_dialog={@alignment_delete_dialog}
+                          discard_dialog={@alignment_discard_dialog}
+                          simplify_dialog={@alignment_simplify_dialog}
+                          import_dialog={@alignment_import_dialog}
+                          generation={@alignment_generation}
+                          generate_dialog={@alignment_generate_dialog}
+                          generate_notice={@alignment_generate_notice}
+                        />
+                      <% else %>
+                        <.skeleton
+                          id="alignment-loading"
+                          label="Loading alignment"
+                          rows={3}
+                          aria-busy="true"
+                        />
+                      <% end %>
+                    <% true -> %>
+                      <RoutePatternComponents.timings_task
+                        timings={@timings}
+                        selected_timing={@selected_timing}
+                        timing_rows={@timing_rows}
+                        timing_form={@timing_form}
+                        timing_options={@timing_options}
+                        preview_time={@preview_time}
+                        timing_headsign={@timing_headsign}
+                        timing_error={@timing_error}
+                        custom_trip_count={@detail_custom_trip_count}
+                        dirty?={@timing_rows != [] and map_size(@timing_edits) > 0}
+                        busy?={@applying? or @offline?}
+                      />
+                  <% end %>
+                </div>
+
+                <RoutePatternComponents.save_bar
+                  :if={@save_bar}
+                  primary={@save_bar.primary}
+                  secondary={@save_bar.secondary}
+                  status={@save_bar.status}
+                  version_name={@current_gtfs_version.name}
+                  creating={@live_action == :new}
+                />
               <% else %>
-                <div id="pattern-not-found" class="mt-2">
-                  <.callout kind="error" title="Pattern not found">
+                <div id="pattern-not-found" class="mt-4">
+                  <.message kind="error" title="Pattern not found">
                     This pattern does not belong to the selected route and version.
-                  </.callout>
+                  </.message>
                 </div>
               <% end %>
             <% true -> %>
-              <div id="patterns-unavailable" class="mt-2">
-                <.callout kind="error" title="Patterns unavailable">
+              <div id="patterns-unavailable" class="mt-4">
+                <.message kind="error" title="Patterns unavailable">
                   This route’s patterns could not be loaded.
-                </.callout>
+                </.message>
               </div>
           <% end %>
         </div>
@@ -1499,10 +1541,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
           on_cancel="cancel_details_review"
           described_by="details-impact-dialog-body"
           confirm_variant="primary"
+          chrome="planner"
+          return_focus_id="pattern-details-submit"
         >
           <p>
-            Saving this pattern updates the trips below.
-            <strong>This changes {@current_gtfs_version.name}, a published version.</strong>
+            Saving these details updates the trips that use this pattern.
+            <strong class="text-strong">
+              This changes {@current_gtfs_version.name}, a published version.
+            </strong>
           </p>
         </.confirm_dialog>
 
@@ -1516,9 +1562,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
           on_confirm="discard_changes"
           on_cancel="keep_editing"
           described_by="discard-changes-dialog-body"
+          chrome="planner"
         >
           <p>
-            Your unsaved changes were not saved. Keeping editing keeps them on this page.
+            {unsaved_summary(assigns)} If you leave now, they are lost.
           </p>
         </.confirm_dialog>
       </div>
@@ -2499,6 +2546,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         name: stop_name(socket.assigns.stops, row.stop_id),
         arrival: offset_input(row.arrival_offset),
         departure: offset_input(row.departure_offset),
+        stored_arrival: offset_input(row.arrival_offset),
+        stored_departure: offset_input(row.departure_offset),
         timepoint: row.timepoint == 1,
         pickup:
           if(is_integer(row.pickup_type), do: Integer.to_string(row.pickup_type), else: "0"),
@@ -3008,6 +3057,337 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       socket.assigns.source_fingerprint,
       audit_context(socket)
     )
+  end
+
+  # --- editor presentation -----------------------------------------------------
+
+  # What is unsaved in each task, from the same state `assign_dirty/2` reads.
+  defp tab_dirty(assigns) do
+    creating? = assigns.live_action == :new
+
+    %{
+      stops: assigns.stops_dirty? or (creating? and assigns.staged_occurrences != []),
+      timings: map_size(assigns.timing_edits) > 0 or map_size(assigns.timing_headsign_edits) > 0,
+      alignment:
+        (is_map(assigns.alignment_state) and assigns.alignment_state.dirty_positions != []) or
+          map_size(assigns[:alignment_suggestions] || %{}) > 0,
+      details: details_changed?(assigns)
+    }
+  end
+
+  defp details_changed?(%{live_action: :new} = assigns),
+    do: assigns.details_params != @creation_defaults
+
+  defp details_changed?(%{details_baseline: nil}), do: false
+  defp details_changed?(assigns), do: assigns.details_params != assigns.details_baseline
+
+  defp tab_chips(%{live_action: :new} = assigns) do
+    dirty = tab_dirty(assigns)
+
+    %{
+      details: if(dirty.details, do: :started),
+      stops: {:count, length(assigns.staged_occurrences)}
+    }
+  end
+
+  defp tab_chips(assigns) do
+    dirty = tab_dirty(assigns)
+
+    %{
+      stops: if(dirty.stops, do: :unsaved, else: {:count, assigns.stop_count}),
+      timings: if(dirty.timings, do: :unsaved, else: {:count, length(assigns.timings)}),
+      alignment: alignment_chip(assigns, dirty.alignment),
+      details: if(dirty.details, do: :unsaved)
+    }
+  end
+
+  defp alignment_chip(_assigns, true), do: :unsaved
+
+  defp alignment_chip(%{alignment: %{status: %{missing: missing}}}, false) when missing > 0,
+    do: {:missing, missing}
+
+  defp alignment_chip(%{alignment: %{status: %{blocked: blocked}}}, false) when blocked > 0,
+    do: :blocked
+
+  defp alignment_chip(_assigns, false), do: nil
+
+  # Where trips head, for the line under the title: the pattern's headsign, or
+  # while creating the typed headsign or the last stop added so far.
+  defp header_toward(%{live_action: :new} = assigns) do
+    typed = String.trim(assigns.details_params["headsign"] || "")
+
+    cond do
+      typed != "" -> typed
+      assigns.staged_occurrences == [] -> nil
+      true -> stop_name(assigns.stops, List.last(assigns.staged_occurrences).stop_id)
+    end
+  end
+
+  defp header_toward(%{pattern: %{headsign: headsign}}) when is_binary(headsign) do
+    case String.trim(headsign) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp header_toward(_assigns), do: nil
+
+  # The route color as a normalized hex for the stop rings, or nil when there is
+  # none or it would not show against the white list (a near-white route color
+  # keeps the ink ring, as the route badge keeps its edge).
+  defp ring_color(route) do
+    with {:ok, hex} <- RouteIdentity.normalize_hex(route && Map.get(route, :route_color)),
+         true <- RouteIdentity.contrast_ratio(hex, "FFFFFF") >= 3.0 do
+      hex
+    else
+      _ -> nil
+    end
+  end
+
+  # The status region's own copy is hidden when the bar shows the same message.
+  # The alignment task keeps it in view while a draft is open, because the hook's
+  # guidance ("Click the line to add a point") is not an outcome of any save.
+  defp hide_status?(%{save_bar: nil}), do: false
+
+  defp hide_status?(%{task: :alignment} = assigns),
+    do: assigns.save_bar.status.text == assigns.status_message
+
+  defp hide_status?(_assigns), do: true
+
+  # The save bar for the current task, or nil when the task has nothing to
+  # save: a pattern with no timing to edit, or an alignment still loading.
+  defp save_bar_spec(%{load_state: :ready, editor_revoked?: false} = assigns) do
+    if assigns.pattern || assigns.live_action == :new do
+      dirty = tab_dirty(assigns)
+      busy? = assigns.applying? or assigns.offline?
+      bar_for(assigns.task, assigns.live_action == :new, dirty, busy?, assigns)
+    end
+  end
+
+  defp save_bar_spec(_assigns), do: nil
+
+  defp bar_for(:timings, false, _dirty, _busy?, %{timings: []}), do: nil
+  defp bar_for(:alignment, _creating?, _dirty, _busy?, %{alignment: nil}), do: nil
+
+  defp bar_for(:stops, true, _dirty, busy?, assigns) do
+    %{
+      primary: %{
+        id: "pattern-create",
+        label: "Create pattern",
+        click: "create_pattern",
+        commit: true,
+        disabled?: busy?
+      },
+      secondary: nil,
+      status: bar_message(assigns) || creation_status(assigns)
+    }
+  end
+
+  defp bar_for(:details, true, _dirty, busy?, assigns) do
+    %{
+      primary: %{
+        id: "pattern-details-submit",
+        label: "Create pattern",
+        form: "pattern-details-form",
+        commit: true,
+        disabled?: busy?
+      },
+      secondary: nil,
+      status: bar_message(assigns) || creation_status(assigns)
+    }
+  end
+
+  defp bar_for(:stops, false, dirty, busy?, assigns) do
+    blocker = stop_edit_blocker_assigns(assigns)
+
+    %{
+      primary: %{
+        id: "pattern-save-stops",
+        label: "Save stops",
+        click: "save_stops",
+        commit: true,
+        disabled?: busy? or blocker != nil or not dirty.stops,
+        title: blocker
+      },
+      secondary: nil,
+      status:
+        bar_status(
+          assigns,
+          dirty.stops,
+          "You have unsaved stop changes.",
+          blocker_status(blocker)
+        )
+    }
+  end
+
+  defp bar_for(:timings, false, dirty, busy?, assigns) do
+    selected_edited? = selected_timing_edited?(assigns)
+
+    other =
+      if dirty.timings and not selected_edited?,
+        do: "Another timing has unsaved edits. Choose it to save them."
+
+    %{
+      primary: %{
+        id: "timing-save",
+        label: "Save running times",
+        click: "save_timing",
+        commit: true,
+        disabled?: busy? or not selected_edited?
+      },
+      secondary:
+        if(dirty.timings,
+          do: %{
+            id: "discard-timing-drafts",
+            label: "Discard timing edits",
+            click: "discard_timing_drafts"
+          }
+        ),
+      status: bar_status(assigns, selected_edited?, "You have unsaved running-time edits.", other)
+    }
+  end
+
+  defp bar_for(:details, false, dirty, busy?, assigns) do
+    %{
+      primary: %{
+        id: "pattern-details-submit",
+        label: "Save details",
+        form: "pattern-details-form",
+        commit: true,
+        disabled?: busy? or not dirty.details
+      },
+      secondary: nil,
+      status: bar_status(assigns, dirty.details, "You have unsaved detail changes.", nil)
+    }
+  end
+
+  defp bar_for(:alignment, false, dirty, _busy?, assigns) do
+    save =
+      RoutePatternAlignmentComponents.save_state(%{
+        alignment: assigns.alignment,
+        editable?: assigns.alignment_editable,
+        offline?: assigns.offline?,
+        applying?: assigns.applying?,
+        dirty_positions: assigns.alignment_state.dirty_positions,
+        generating?: not is_nil(assigns.alignment_generation)
+      })
+
+    count = length(assigns.alignment_state.dirty_positions)
+
+    %{
+      primary: %{
+        id: "alignment-save",
+        label: "Save alignment",
+        click:
+          JS.dispatch("alignment:action", to: "#alignment-map-root", detail: %{action: "save"}),
+        commit: "alignment",
+        disabled?: not save.enabled?,
+        title: save.title
+      },
+      secondary:
+        if(dirty.alignment and assigns.alignment_state.dirty_positions != [],
+          do: %{
+            id: "alignment-discard",
+            label: "Discard changes",
+            click: "alignment_open_discard"
+          }
+        ),
+      status:
+        bar_status(
+          assigns,
+          dirty.alignment,
+          "#{count} #{if count == 1, do: "section has", else: "sections have"} unsaved paths.",
+          nil
+        )
+    }
+  end
+
+  defp bar_for(_task, _creating?, _dirty, _busy?, _assigns), do: nil
+
+  defp selected_timing_edited?(assigns) do
+    id = assigns.selected_timing_id
+
+    id != nil and
+      (Map.has_key?(assigns.timing_edits, id) or Map.has_key?(assigns.timing_headsign_edits, id))
+  end
+
+  # The status line: a rejected action's error stays in view where the person
+  # acted; an unsaved task says so; a saved outcome shows until the next edit.
+  defp bar_status(assigns, dirty?, dirty_text, idle_text) do
+    cond do
+      msg = bar_message(assigns) -> msg
+      assigns.offline? -> %{tone: :warning, text: "Reconnect to save. Your edits are kept."}
+      dirty? -> %{tone: :warning, text: dirty_text}
+      msg = bar_outcome(assigns) -> msg
+      idle_text -> %{tone: :neutral, text: idle_text}
+      true -> %{tone: :neutral, text: "Nothing to save yet."}
+    end
+  end
+
+  defp bar_outcome(%{status_message: message}) when is_binary(message) and message != "",
+    do: %{tone: :success, text: message}
+
+  defp bar_outcome(_assigns), do: nil
+
+  defp bar_message(%{error_message: error}) when is_binary(error) and error != "",
+    do: %{tone: :error, text: error}
+
+  defp bar_message(_assigns), do: nil
+
+  defp blocker_status(nil), do: nil
+
+  defp blocker_status(_blocker),
+    do: "Stops can’t change while custom-time trips use this pattern."
+
+  defp stop_edit_blocker_assigns(%{live_action: :new}), do: nil
+
+  defp stop_edit_blocker_assigns(%{detail_custom_trip_count: count}) when count > 0,
+    do: "Stops can’t change while custom-time trips use this pattern."
+
+  defp stop_edit_blocker_assigns(_assigns), do: nil
+
+  # What a new pattern still needs, or that it is ready: creation always
+  # validates on click, so the button stays available and names the gap.
+  defp creation_status(assigns) do
+    needs =
+      [
+        if(String.trim(assigns.details_params["name"] || "") == "", do: "a pattern name"),
+        case length(assigns.staged_occurrences) do
+          0 -> "at least two stops"
+          1 -> "one more stop"
+          _ -> nil
+        end
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    if needs == [] do
+      %{tone: :ready, text: "Ready to create. It starts with one timing set to zero."}
+    else
+      %{
+        tone: :neutral,
+        text:
+          "To create the pattern, add #{Enum.join(needs, " and ")}. It starts with one timing set to zero."
+      }
+    end
+  end
+
+  # The unsaved work the leave-page dialog names.
+  defp unsaved_summary(assigns) do
+    dirty = tab_dirty(assigns)
+
+    parts =
+      [
+        if(dirty.stops, do: "stop changes"),
+        if(dirty.timings, do: "running-time edits"),
+        if(dirty.alignment, do: "unsaved paths"),
+        if(dirty.details, do: "detail changes")
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    case parts do
+      [] -> "You have unsaved changes on this page."
+      parts -> "You have #{Enum.join(parts, ", ")} on this page."
+    end
   end
 
   # --- helpers ---------------------------------------------------------------

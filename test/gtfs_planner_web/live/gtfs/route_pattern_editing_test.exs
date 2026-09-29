@@ -785,7 +785,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
 
       {:ok, view, _html} = live(conn, pattern_path(version, route, pattern, "?task=stops"))
 
-      assert has_element?(view, "#pattern-stops-custom", "keep their imported stop times")
+      assert has_element?(
+               view,
+               "#pattern-stops-custom",
+               "keep the stop times they were imported with"
+             )
+
       assert has_element?(view, "#pattern-stops-custom", "Copy the pattern")
       assert has_element?(view, "#pattern-remove-stop-1[disabled]")
       refute has_element?(view, "#pattern-stop-2-move-up")
@@ -846,7 +851,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       assert has_element?(view, "#timing-dropoff-2")
       assert has_element?(view, "#timing-stop-headsign-2")
       assert has_element?(view, "#timing-headsign")
-      assert has_element?(view, "#timing-help", "Phone agency")
+      assert has_element?(view, "#timing-help", "Phone the agency")
     end
 
     test "attribute disclosures retain values across timing selection and validation errors",
@@ -865,7 +870,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       render_change(view, "select_timing", %{"timing_id" => second.id})
       render_change(view, "select_timing", %{"timing_id" => first.id})
 
-      assert has_element?(view, "#timing-pickup-2", "Phone agency")
+      assert has_element?(view, "#timing-pickup-2", "Phone the agency")
       assert has_element?(view, "#timing-stop-headsign-2[value='Downtown only']")
 
       change_timing(view, 1, "departure", "01:00")
@@ -875,7 +880,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       assert has_element?(view, "#error", "first departure")
       assert has_element?(view, "#timing-departure-1[aria-invalid='true']")
       assert_push_event(view, "focus_form_error", %{form_id: "timing-form"})
-      assert has_element?(view, "#timing-pickup-2", "Phone agency")
+      assert has_element?(view, "#timing-pickup-2", "Phone the agency")
       assert audit_count(organization) == 0
       assert timing_rows(first) |> Enum.map(& &1.departure_offset) == [0, 60, 120]
     end
@@ -1377,7 +1382,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       assert arrival_clocks(trip) == ["08:00:00", "08:04:00", "08:10:00"]
 
       for view <- [stops_view, details_view, timing_view] do
-        assert has_element?(view, "#pattern-editor-revoked", "Editing unavailable")
+        assert has_element?(view, "#pattern-editor-revoked", "Editing is no longer available")
       end
 
       # Reloading keeps the page unavailable while the role is still missing.

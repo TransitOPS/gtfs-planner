@@ -326,18 +326,18 @@ const PatternAlignment = {
       <div class="pa-bar">
         <div class="pa-bar-group">
           <button type="button" class="btn btn-outline min-h-11" data-pa-pan aria-pressed="true">
-            Pan
+            <span class="hero-hand-raised size-4" aria-hidden="true"></span> Move map
           </button>
           <button type="button" class="btn btn-outline min-h-11" data-pa-edit disabled title="Point editing arrives with the editing tools">
-            Edit points
+            <span class="hero-pencil-square size-4" aria-hidden="true"></span> Edit points
           </button>
         </div>
         <div class="pa-bar-group">
           <button type="button" class="btn btn-outline min-h-11" data-pa-undo disabled aria-label="Undo" title="Undo">
-            Undo
+            <span class="hero-arrow-uturn-left size-4" aria-hidden="true"></span> Undo
           </button>
           <button type="button" class="btn btn-outline min-h-11" data-pa-redo disabled aria-label="Redo" title="Redo">
-            Redo
+            <span class="hero-arrow-uturn-right size-4" aria-hidden="true"></span> Redo
           </button>
         </div>
       </div>

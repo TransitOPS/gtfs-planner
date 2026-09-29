@@ -389,6 +389,7 @@ for (const viewport of VIEWPORTS) {
 
     // Copying produces a separate service with no trips and its own stop list.
     const originalUrl = page.url();
+    await page.locator("#pattern-actions-trigger").click();
     await page.locator("#pattern-copy").click();
     await page.waitForURL(
       (url) =>
@@ -417,7 +418,7 @@ for (const viewport of VIEWPORTS) {
     );
 
     await expect(page.locator("#pattern-stops-custom")).toContainText(
-      "keep their imported stop times",
+      "keep the stop times they were imported with",
     );
     await expect(page.locator("#pattern-remove-stop-1")).toBeDisabled();
     await capture(page, `step7-custom-blocked-${viewport.label}`);
@@ -425,6 +426,7 @@ for (const viewport of VIEWPORTS) {
     // A used pattern refuses deletion; an unused one confirms and deletes.
     await openPattern(page, versionId, viewport.usedRoute, viewport.usedPattern, "stops");
 
+    await page.locator("#pattern-actions-trigger").click();
     await page.locator("#pattern-delete").click();
     await expect(page.locator("#pattern-blocked-dialog[data-open='true']")).toBeVisible();
     await expect(page.locator("#pattern-blocked-dialog")).toContainText("in use");
@@ -434,6 +436,7 @@ for (const viewport of VIEWPORTS) {
 
     await openPattern(page, versionId, viewport.deleteRoute, viewport.deletePattern, "stops");
 
+    await page.locator("#pattern-actions-trigger").click();
     await page.locator("#pattern-delete").click();
     await expect(page.locator("#pattern-delete-dialog[data-open='true']")).toBeVisible();
     await page.locator("#pattern-delete-dialog-confirm").click();
@@ -493,6 +496,9 @@ test("a second session's stale review keeps the edits and offers Refresh review"
 
     await pageA.locator("#stop-review-refresh").click();
     await expect(pageA.locator("#stop-review-dialog[data-open='true']")).toBeVisible();
+    // The refreshed review starts with no acknowledgements. Waiting for the error
+    // to clear keeps the checkboxes from being read before the server resets them.
+    await expect(pageA.locator("#stop-review-error")).toBeEmpty();
     await acknowledgeReview(pageA);
     await pageA.locator("#stop-review-dialog-confirm").click();
     await expect(pageA.locator("#status")).toContainText("updated");
@@ -586,7 +592,7 @@ test("dirty navigation asks before discarding staged edits", async ({ page }) =>
   await page.fill("#pattern-details-name", "Unsaved browser rename");
   await expect(page.locator("#edit-status")).toContainText("Unsaved changes");
 
-  await page.locator('nav[aria-label="Route navigation"]').getByRole("link", {name: "Details", exact: true}).click();
+  await page.locator("#pattern-crumbs").getByRole("link", { name: "Routes", exact: true }).click();
   await expect(page.locator("#discard-changes-dialog[data-open='true']")).toBeVisible();
   await page.locator("#discard-changes-dialog-cancel").click();
   await expect(page.locator("#pattern-details-name")).toHaveValue("Unsaved browser rename");
@@ -618,6 +624,10 @@ test("a lost connection disables committing and reconnection announces recovery"
 
   await expect(page.locator("#pattern-connectivity")).toBeHidden();
 
+  // Save is unavailable until something is unsaved, so stage a change first.
+  await page.locator("#pattern-remove-stop-2").click();
+  await expect(page.locator("#pattern-save-stops")).toBeEnabled();
+
   // The repository's established idiom for an offline editor: a real socket
   // disconnect, which is what a lost connection looks like to the client.
   await page.evaluate(() => window.liveSocket.disconnect());
@@ -629,6 +639,10 @@ test("a lost connection disables committing and reconnection announces recovery"
   await page.evaluate(() => window.liveSocket.connect());
   await expect(page.locator("#pattern-connectivity")).toBeHidden({ timeout: 20000 });
   await expect(page.locator("#status")).toContainText("Reconnected");
+
+  // Reconnecting starts a fresh editor, so stage a change again: committing is
+  // available once the connection is back.
+  await page.locator("#pattern-remove-stop-2").click();
   await expect(page.locator("#pattern-save-stops")).toBeEnabled();
 });
 

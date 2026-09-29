@@ -858,6 +858,38 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
              |> LazyHTML.attribute("disabled") == [""]
     end
 
+    test "planner chrome at xl is the 680px review panel whose footer stays in view" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          chrome="planner"
+          size="xl"
+          open={true}
+          title="Update 38 trips?"
+          confirm_label="Update 38 trips"
+          pending_label="Updating…"
+          on_confirm="confirm"
+          on_cancel="cancel"
+        >
+          <p>Review</p>
+        </.confirm_dialog>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      panel =
+        LazyHTML.query(doc, "dialog#test-confirm > div > div") |> LazyHTML.attribute("class")
+
+      body = LazyHTML.query(doc, "#test-confirm-body") |> LazyHTML.attribute("class")
+
+      assert hd(panel) =~ "w-[min(680px,calc(100vw-32px))]"
+      assert hd(body) =~ "overflow-y-auto"
+      assert Enum.count(LazyHTML.query(doc, "#test-confirm-confirm")) == 1
+    end
+
     test "lg primary dialog retains alertdialog dismiss and pending semantics" do
       # AC-2 + INV-1: the wide primary presentation is the same alertdialog;
       # cancel-first dismissal and pending lockout survive the new axes.
