@@ -1,7 +1,7 @@
 defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   @moduledoc """
   Turns resolved paste rows and the loaded scope into a review plan (rules
-  R10-R12, R13-plumbing, AC-12-AC-15).
+  R10-R13, AC-12-AC-17).
 
   Step 7 implements the Add-mode path of `build/6`: every accepted row
   becomes an `:add`, duplicates are detected against existing trips and
@@ -9,7 +9,10 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   Step 8 adds the Replace-mode path (`:replace`): rows pair with existing
   trips by pattern and exact start, then a unique equal trip number, then
   an explicit choice; unpaired scope trips are removed; unsafe scopes are
-  refused.
+  refused. Step 9 computes per-change metadata (R13 blank-cell rules and
+  the XC-11 headsign rule), refines exact pairs to `:unchanged`, emits the
+  non-blocking warnings and validates decisions against the rebuilt
+  candidates (`discarded_decisions`).
 
   ## Add-mode rules
 
@@ -39,21 +42,27 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   The scope is server-built with atom keys; this module also tolerates
   string keys on the fields it reads. Only these fields are read:
 
-    * `scope.patterns` — `[%{id:, route_pattern_id:, timings: [%{id:,
-      name:, rows:, trip_count:}]}]`; timing `rows` align positionally with
-      the pattern's occurrences (the shape step 16 `load_paste_scope/5`
-      must provide): `%{arrival_offset:, departure_offset:, timepoint:,
-      pickup_type:, drop_off_type:, stop_headsign:}`. A `nil` timepoint on
-      a stored row reads as `1`: a missing value is exact, matching the
-      GTFS semantics the paste relies on elsewhere.
+    * `scope.patterns` — `[%{id:, route_pattern_id:, headsign:, timings:
+      [%{id:, name:, headsign:, rows:, trip_count:}]}]`; timing `rows`
+      align positionally with the pattern's occurrences (the shape step 16
+      `load_paste_scope/5` must provide): `%{arrival_offset:,
+      departure_offset:, timepoint:, pickup_type:, drop_off_type:,
+      stop_headsign:}`. A `nil` timepoint on a stored row reads as `1`:
+      a missing value is exact, matching the GTFS semantics the paste
+      relies on elsewhere. Pattern and timing headsigns drive the XC-11
+      rule; scopes without them read every default as `nil`.
     * `scope.trips` — every trip of the route on the calendar (both
       directions): `%{route_pattern_id:, start_secs:, ...}`. The whole
       trip map is carried onto a `:duplicate` change so the review can
       name the conflicting trip; in-paste-only duplicates carry `nil`.
       Replace additionally reads `trip_short_name` (R11 trip-number
-      pairing), `frequencies`/`frequency_rows`/`frequency?` (R12), the
-      `pattern_derivation_state` plus `stops_differ?` (R12 and the
-      `:custom_replaced` warning) and `transfer_ids`/`transfers` (the
+      pairing), `timed_pattern_id`/`timing_id` plus `trip_headsign` (R13
+      and `diffs`), `frequencies`/`frequency_rows`/`frequency?` (R12),
+      the `pattern_derivation_state` plus `stops_differ?` (R12 and the
+      `:custom_replaced` warning), an in-seat transfer flag
+      (`:in_seat_transfer`/`:in_seat`/`:has_in_seat_transfer`, or a
+      non-empty `:in_seat_transfer_ids`/`:in_seat_transfers` list) for
+      `:in_seat_retimed`, and `transfer_ids`/`transfers` (the
       `transfers_removed` sum); every field tolerates atom or string keys.
 
   The fourth argument accepts either the review input (a map holding
@@ -65,8 +74,11 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   `RowResolver` already tolerates. Replace rows read a pairing choice at
   `decisions[row].pair` (aliases `:trip_id`/`:choice`/`:pairing`/`:trip`):
   a candidate trip's `id` or `trip_id`, or `"neither"` to add the row
-  instead; anything else (or nothing) leaves an ambiguous group undecided.
-  The `stamp` is a display string such as
+  instead; anything else (or nothing) leaves an ambiguous group undecided
+  and step 9 reports the stale choice in `discarded_decisions`. Pattern
+  choices arrive at `decisions[row].pattern_id` (the `RowResolver` key,
+  alias `:pattern`); a choice the row no longer fits is discarded and the
+  row is withheld. The `stamp` is a display string such as
   `"Sep 28"` (built by the caller with `Calendar.strftime/2`); block rows
   arrive as the sixth argument and are ignored until step 10 owns
   block-overlap warnings.
@@ -74,12 +86,51 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   Pure: no Repo, clock or process state (INV-3). `vehicles` stays a
   `%{before: nil, after: nil}` placeholder for step 10, which computes it
   with `Summary.peak_vehicles/1`; `trips` is counted directly because it
-  needs no outside data. Every paired Replace row is `:change` here and
-  carries its row and trip with empty `diffs`, so step 9 can compute
-  metadata (blank-cell rules, the `:unchanged` refinement,
-  `discarded_decisions`); the subspec's "`:unchanged` or `:change`"
-  allows the `:change`. Headsign/default and remaining warning rules belong
-  to steps 9-10, so row metadata otherwise passes through untouched here.
+  needs no outside data.
+
+  ## Metadata (R13, AC-16)
+
+  A present pasted value overrides the matched trip. A blank or absent
+  Trip number or Block keeps the matched trip's existing value. A blank
+  or absent Headsign follows the XC-11 default test: when the trip's
+  current headsign equals its old effective default (the old timing's
+  headsign, else the old pattern's headsign) the change takes the new
+  effective default (the new timing's headsign, else the new pattern's
+  headsign); a custom headsign is kept. New trips take the effective
+  default of their assigned timing. A blank headsign never writes an
+  empty string (blank normalizes to `nil`). `diffs` lists exactly what
+  changed against the matched trip (`:times` when the final vector or
+  start differs, plus `:trip_short_name`/`:block_id`/`:trip_headsign`),
+  and a paired trip whose final vector and metadata match exactly becomes
+  `:unchanged` (counted, never applied).
+
+  ## Warnings (AC-17)
+
+  Non-blocking atoms on `change.warnings`: `:custom_replaced` (step 8,
+  custom matching-stops trips), `:in_seat_retimed` (a retimed `:change`
+  whose trip carries an in-seat transfer flag), `:duplicate_trip_number`
+  (the final trip number equals another trip's on the same calendar,
+  whether kept or pasted) and `:custom_headsign_moved` (a kept custom
+  headsign on a trip whose timed pattern or last stop changed — the
+  route-pattern check is in place for pairing that spans patterns).
+  `:block_overlap` arrives in step 10 from the injected block rows (the
+  sixth `build/6` argument, ignored here); the warnings pass is where it
+  hooks in.
+
+  ## Decision validation (critique S2 / PM-10)
+
+  Pairing (`pair`), pattern (`pattern_id`) and keep (`keep`) decisions
+  are validated against the rebuilt candidates and stale ones are
+  reported in `plan.discarded_decisions` (`[]` when none) instead of
+  being applied: a pair naming no available candidate (`:unknown_trip`),
+  a superseded pair (`:superseded`), a pair where pairing does not apply
+  (`:not_applicable`, Add mode), a pattern choice naming no scope
+  pattern (`:unknown_pattern`), a scope pattern the row did not take
+  (`:not_applied`), a chosen pattern the row no longer fits
+  (`:pattern_misfit`, detected as estimates outside the pasted span —
+  the row is withheld as `:needs_decision`), a keep on a non-duplicate
+  (`:not_a_duplicate`) and any decision for a row that is gone
+  (`:unknown_row`). `"neither"` is always honoured silently.
   """
 
   @type change_op ::
@@ -107,6 +158,21 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
           key: binary()
         }
 
+  @type discarded_decision :: %{
+          row: pos_integer() | nil,
+          kind: :pair | :pattern | :keep,
+          value: term(),
+          reason:
+            :unknown_trip
+            | :unknown_pattern
+            | :unknown_row
+            | :superseded
+            | :not_applicable
+            | :not_applied
+            | :pattern_misfit
+            | :not_a_duplicate
+        }
+
   @type plan :: %{
           changes: [change()],
           counts: %{
@@ -125,13 +191,17 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
           trips: %{before: non_neg_integer(), after: non_neg_integer()},
           transfers_removed: non_neg_integer(),
           replace_patterns: [term()],
-          writes_blocks?: boolean()
+          writes_blocks?: boolean(),
+          discarded_decisions: [discarded_decision()]
         }
 
   @doc """
-  Builds the Add-mode plan for `resolved_rows` against `scope`.
+  Builds the review plan for `resolved_rows` against `scope` in `:add`
+  or `:replace` mode (pure; INV-3). See the moduledoc for the R13
+  metadata rules, the `:unchanged` refinement, the warnings and the
+  decision validation reported in `discarded_decisions`.
 
-  Raises `ArgumentError` for any mode other than `:add`/`:replace`.
+  Raises `ArgumentError` for any other mode.
   """
   @spec build([map()], map(), :add | :replace, map(), String.t(), [map()]) :: plan()
   def build(resolved_rows, scope, :add, input_or_decisions, stamp, _block_rows) do
@@ -144,21 +214,33 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
 
     by_pattern = Map.new(patterns, &{&1.id, &1})
     trips = normalize_trips(Map.get(scope_map, :trips, Map.get(scope_map, "trips", [])))
+    scope_trips = Enum.map(trips, & &1.trip)
 
-    {ranked, _accepted} = mark_rows(rows, by_pattern, trips, decisions)
+    {misfit, pattern_discards} = validate_patterns(decisions, rows, by_pattern)
+    {ranked, _accepted} = mark_rows(rows, by_pattern, trips, decisions, misfit)
     {changes, new_timings} = assign_timings(ranked, by_pattern, stamp)
 
+    final = changes |> apply_metadata(by_pattern) |> apply_warnings(by_pattern, scope_trips)
+
+    discards =
+      finalize_discards(
+        pattern_discards ++
+          keep_discards(:add, decisions, rows, by_pattern, trips) ++
+          add_pair_discards(decisions, rows)
+      )
+
     %{
-      changes: changes,
-      counts: count_ops(changes),
+      changes: final,
+      counts: count_ops(final),
       new_timings: new_timings,
       refusal: nil,
       warnings: [],
       vehicles: %{before: nil, after: nil},
-      trips: %{before: length(trips), after: length(trips) + count_op(changes, :add)},
+      trips: %{before: length(trips), after: length(trips) + count_op(final, :add)},
       transfers_removed: 0,
       replace_patterns: [],
-      writes_blocks?: writes_blocks?(changes)
+      writes_blocks?: writes_blocks?(final),
+      discarded_decisions: discards
     }
   end
 
@@ -172,8 +254,10 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
 
     by_pattern = Map.new(patterns, &{&1.id, &1})
     trips = normalize_trips(Map.get(scope_map, :trips, Map.get(scope_map, "trips", [])))
+    all_trip_maps = Enum.map(trips, & &1.trip)
 
-    accepted = replace_accepted(rows, by_pattern)
+    {misfit, pattern_discards} = validate_patterns(decisions, rows, by_pattern)
+    accepted = replace_accepted(rows, by_pattern, misfit)
     scope_ids = replace_scope_ids(patterns, accepted)
     scope_refs = replace_scope_refs(by_pattern, scope_ids)
 
@@ -184,31 +268,43 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
 
     refusal = replace_refusal(accepted, scope_trips)
 
-    {ranked, extras, paired, withheld} =
+    {ranked, extras, paired, withheld, pair_discards} =
       replace_ranked(rows, by_pattern, accepted, scope_trips, decisions)
 
     {row_changes, new_timings} = assign_timings(ranked, by_pattern, stamp, [:add, :change])
 
-    changes =
+    pre =
       row_changes
       |> Enum.zip(extras)
       |> Enum.map(fn {change, extra} -> replace_enrich(change, extra) end)
       |> Kernel.++(replace_removals(scope_trips, paired, withheld, refusal))
 
+    final =
+      pre |> apply_metadata(by_pattern) |> apply_warnings(by_pattern, all_trip_maps)
+
+    discards =
+      finalize_discards(
+        pattern_discards ++
+          pair_discards ++
+          keep_discards(:replace, decisions, rows, by_pattern, trips) ++
+          stray_pair_discards(decisions, rows, accepted)
+      )
+
     %{
-      changes: changes,
-      counts: count_ops(changes),
+      changes: final,
+      counts: count_ops(final),
       new_timings: new_timings,
       refusal: refusal,
       warnings: [],
       vehicles: %{before: nil, after: nil},
       trips: %{
         before: length(trips),
-        after: length(trips) + count_op(changes, :add) - count_op(changes, :remove)
+        after: length(trips) + count_op(final, :add) - count_op(final, :remove)
       },
-      transfers_removed: Enum.sum(Enum.map(changes, &replace_transfer_count/1)),
+      transfers_removed: Enum.sum(Enum.map(final, &replace_transfer_count/1)),
       replace_patterns: scope_ids,
-      writes_blocks?: writes_blocks?(changes)
+      writes_blocks?: writes_blocks?(final),
+      discarded_decisions: discards
     }
   end
 
@@ -265,29 +361,28 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   # Splits rows into applied (:add) and unapplied (:duplicate, :skipped,
   # :needs_decision) changes without timings. Returns the ranked list plus
   # the accepted {pattern_id, start_secs} set (used only while marking).
-  @spec mark_rows([map()], map(), [map()], map()) ::
+  # Rows in `misfit` carry a chosen pattern they no longer fit (step 9
+  # decision validation); they need an editor decision instead of applying.
+  @spec mark_rows([map()], map(), [map()], map(), MapSet.t()) ::
           {[{change_op(), map(), map() | nil}], MapSet.t()}
-  defp mark_rows(rows, by_pattern, trips, decisions) do
+  defp mark_rows(rows, by_pattern, trips, decisions, misfit) do
     {ranked_reversed, accepted} =
       Enum.reduce(rows, {[], MapSet.new()}, fn row, {ranked, accepted} ->
         row_map = if(is_map(row), do: row, else: %{})
         row_num = get(row_map, :row, "row")
         status = get(row_map, :status, "status")
 
-        case status do
-          :ready ->
-            mark_ready(row_map, row_num, by_pattern, trips, decisions, ranked, accepted)
-
-          "ready" ->
-            mark_ready(row_map, row_num, by_pattern, trips, decisions, ranked, accepted)
-
-          :decision ->
+        cond do
+          MapSet.member?(misfit, row_num) ->
             {[{:needs_decision, row_map, nil} | ranked], accepted}
 
-          "decision" ->
+          status == :ready or status == "ready" ->
+            mark_ready(row_map, row_num, by_pattern, trips, decisions, ranked, accepted)
+
+          status == :decision or status == "decision" ->
             {[{:needs_decision, row_map, nil} | ranked], accepted}
 
-          _skipped ->
+          true ->
             {[{:skipped, row_map, nil} | ranked], accepted}
         end
       end)
@@ -447,27 +542,30 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   # differ refuses the whole Replace instead (R12).
 
   # Accepted rows keyed by row number (or input position when a row has
-  # none, which RowResolver never emits).
-  @spec replace_accepted([map()], map()) :: [{term(), map()}]
-  defp replace_accepted(rows, by_pattern) do
+  # none, which RowResolver never emits). Rows in `misfit` carry a stale
+  # pattern choice (step 9); they are withheld from pairing, removal
+  # scope and timing assignment and surface as `:needs_decision`.
+  @spec replace_accepted([map()], map(), MapSet.t()) :: [{term(), map()}]
+  defp replace_accepted(rows, by_pattern, misfit) do
     rows
     |> Enum.with_index()
-    |> Enum.filter(fn {row, _i} -> replace_acceptable?(row, by_pattern) end)
+    |> Enum.filter(fn {row, _i} -> replace_acceptable?(row, by_pattern, misfit) end)
     |> Enum.map(fn {row, i} -> {replace_row_key(row, i), row} end)
   end
 
-  @spec replace_acceptable?(term(), map()) :: boolean()
-  defp replace_acceptable?(row, by_pattern) when is_map(row) do
+  @spec replace_acceptable?(term(), map(), MapSet.t()) :: boolean()
+  defp replace_acceptable?(row, by_pattern, misfit) when is_map(row) do
     status = get(row, :status, "status")
 
     (status == :ready or status == "ready") and
+      not MapSet.member?(misfit, get(row, :row, "row")) and
       not is_nil(get(row, :pattern_id, "pattern_id")) and
       Map.has_key?(by_pattern, get(row, :pattern_id, "pattern_id")) and
       not is_nil(get(row, :start_secs, "start_secs")) and
       not is_nil(get(row, :key, "key"))
   end
 
-  defp replace_acceptable?(_row, _by_pattern), do: false
+  defp replace_acceptable?(_row, _by_pattern, _misfit), do: false
 
   @spec replace_row_key(map(), non_neg_integer()) :: pos_integer() | {:pos, non_neg_integer()}
   defp replace_row_key(row, i) do
@@ -568,14 +666,21 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
 
   # Ranks every input row in order and returns the aligned per-row extras
   # ({candidate trips, custom?}) plus the globally paired/withheld
-  # scope-trip indexes that drive removals.
+  # scope-trip indexes that drive removals, plus the pair decisions that
+  # named no available candidate (step 9 `discarded_decisions`).
   @spec replace_ranked([map()], map(), [{term(), map()}], [{map(), non_neg_integer()}], map()) ::
-          {[{change_op(), map(), map() | nil}], [{[map()], boolean()}], MapSet.t(), MapSet.t()}
+          {
+            [{change_op(), map(), map() | nil}],
+            [{[map()], boolean()}],
+            MapSet.t(),
+            MapSet.t(),
+            [discarded_decision()]
+          }
   defp replace_ranked(rows, by_pattern, accepted, scope_trips, decisions) do
-    {resolutions, paired, withheld} =
+    {resolutions, paired, withheld, pair_discards} =
       Enum.reduce(
         replace_groups(accepted),
-        {%{}, MapSet.new(), MapSet.new()},
+        {%{}, MapSet.new(), MapSet.new(), []},
         fn {identity, grows}, acc ->
           resolve_identity_group(identity, grows, scope_trips, by_pattern, decisions, acc)
         end
@@ -589,7 +694,8 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
         {[entry | ranked], [extra | extras]}
       end)
 
-    {Enum.reverse(ranked_reversed), Enum.reverse(extras_reversed), paired, withheld}
+    {Enum.reverse(ranked_reversed), Enum.reverse(extras_reversed), paired, withheld,
+     Enum.reverse(pair_discards)}
   end
 
   # Groups in first-appearance order so resolutions — and therefore
@@ -616,8 +722,8 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
           [{map(), non_neg_integer()}],
           map(),
           map(),
-          {map(), MapSet.t(), MapSet.t()}
-        ) :: {map(), MapSet.t(), MapSet.t()}
+          {map(), MapSet.t(), MapSet.t(), [discarded_decision()]}
+        ) :: {map(), MapSet.t(), MapSet.t(), [discarded_decision()]}
   defp resolve_identity_group(
          {pattern_id, start_secs},
          grows,
@@ -643,28 +749,46 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   end
 
   @spec resolve_group_row(term(), map(), [{map(), non_neg_integer()}], map(), tuple()) :: tuple()
-  defp resolve_group_row(key, row, candidates, decisions, {resolutions, paired, withheld}) do
+  defp resolve_group_row(
+         key,
+         row,
+         candidates,
+         decisions,
+         {resolutions, paired, withheld, discards}
+       ) do
+    row_num = if(is_integer(key), do: key, else: nil)
+    full = Enum.map(candidates, fn {wrapper, _i} -> wrapper.trip end)
     available = Enum.reject(candidates, fn {_wrapper, i} -> MapSet.member?(paired, i) end)
+    raw = pair_raw(decisions, key)
 
     case available do
       [] ->
-        {Map.put(resolutions, key, {:added}), paired, withheld}
+        {Map.put(resolutions, key, {:added}), paired, withheld,
+         discard_pair(discards, row_num, raw, full)}
 
       [{wrapper, i}] ->
-        {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld}
+        if pair_names?(wrapper.trip, raw) or is_nil(raw) or neither_choice?(raw) do
+          {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld,
+           discards}
+        else
+          {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld,
+           discard_pair(discards, row_num, raw, full)}
+        end
 
       _many ->
         case unique_number_match(row, available) do
           {wrapper, i} ->
-            {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld}
+            {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld,
+             discard_pair_on_number(discards, row_num, raw, wrapper.trip, full)}
 
           nil ->
             case replace_pair_choice(decisions, key, available) do
               {:pair, {wrapper, i}} ->
-                {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld}
+                {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld,
+                 discards}
 
               :neither ->
-                {Map.put(resolutions, key, {:added}), paired, withheld}
+                {Map.put(resolutions, key, {:added}), paired, withheld, discards}
 
               :none ->
                 trips = Enum.map(available, fn {wrapper, _i} -> wrapper.trip end)
@@ -674,7 +798,8 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
                     MapSet.put(acc, i)
                   end)
 
-                {Map.put(resolutions, key, {:undecided, trips}), paired, withheld2}
+                {Map.put(resolutions, key, {:undecided, trips}), paired, withheld2,
+                 discard_pair(discards, row_num, raw, full)}
             end
         end
     end
@@ -713,11 +838,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   @spec replace_pair_choice(map(), term(), [{map(), non_neg_integer()}]) ::
           {:pair, {map(), non_neg_integer()}} | :neither | :none
   defp replace_pair_choice(decisions, key, available) do
-    raw =
-      case Map.get(decisions, key) do
-        %{pair: pair} -> pair
-        _decision -> nil
-      end
+    raw = pair_raw(decisions, key)
 
     cond do
       is_nil(raw) ->
@@ -760,6 +881,71 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   end
 
   defp trip_identity_match?(_trip, _raw), do: false
+
+  # The raw pairing choice for a resolution key (`nil` when the row
+  # carries no pair decision). Blank strings choose nothing.
+  @spec pair_raw(map(), term()) :: term()
+  defp pair_raw(decisions, key) do
+    case Map.get(decisions, key) do
+      %{pair: pair} when is_binary(pair) ->
+        if String.trim(pair) == "", do: nil, else: pair
+
+      %{pair: pair} ->
+        pair
+
+      _decision ->
+        nil
+    end
+  end
+
+  @spec pair_names?(map(), term()) :: boolean()
+  defp pair_names?(_trip, nil), do: false
+  defp pair_names?(trip, raw), do: trip_identity_match?(trip, raw)
+
+  # Records a stale pair decision for `discarded_decisions`: a choice
+  # that named no trip of the row's group (`:unknown_trip`), or named a
+  # group trip the row did not pair with (`:superseded` — taken by an
+  # earlier row or beaten by the trip-number rule). `"neither"` and an
+  # absent choice are never stale.
+  @spec discard_pair([discarded_decision()], pos_integer() | nil, term(), [map()]) :: [
+          discarded_decision()
+        ]
+  defp discard_pair(discards, _row_num, nil, _full), do: discards
+
+  defp discard_pair(discards, row_num, raw, full) do
+    if neither_choice?(raw) do
+      discards
+    else
+      reason =
+        if Enum.any?(full, &trip_identity_match?(&1, raw)), do: :superseded, else: :unknown_trip
+
+      [%{row: row_num, kind: :pair, value: raw, reason: reason} | discards]
+    end
+  end
+
+  # A trip-number auto-pair wins over a choice naming another candidate
+  # (R11 order); the choice is reported as superseded, otherwise as
+  # unknown when it names nothing in the group.
+  @spec discard_pair_on_number([discarded_decision()], pos_integer() | nil, term(), map(), [
+          map()
+        ]) :: [discarded_decision()]
+  defp discard_pair_on_number(discards, _row_num, nil, _paired_trip, _full), do: discards
+
+  defp discard_pair_on_number(discards, row_num, raw, paired_trip, full) do
+    cond do
+      neither_choice?(raw) ->
+        discards
+
+      trip_identity_match?(paired_trip, raw) ->
+        discards
+
+      Enum.any?(full, &trip_identity_match?(&1, raw)) ->
+        [%{row: row_num, kind: :pair, value: raw, reason: :superseded} | discards]
+
+      true ->
+        [%{row: row_num, kind: :pair, value: raw, reason: :unknown_trip} | discards]
+    end
+  end
 
   @spec replace_entry(term(), term(), map()) ::
           {{change_op(), map(), map() | nil}, {[map()], boolean()}}
@@ -882,6 +1068,664 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
 
   defp transfer_count(_trip), do: 0
 
+  # --- R13 metadata, warnings and decision validation (step 9, AC-16/AC-17) ---
+  #
+  # `apply_metadata/2` runs after timing assignment (the headsign default
+  # needs the assigned timing): `:add` changes take the pasted values with
+  # the effective default for a blank headsign; `:change` changes apply
+  # the blank-cell keep rules and the XC-11 headsign test, list `diffs`
+  # and refine exact pairs to `:unchanged` (an unchanged custom pair
+  # keeps no `:custom_replaced`: nothing was replaced). `apply_warnings/3`
+  # appends `:in_seat_retimed`, `:duplicate_trip_number` and
+  # `:custom_headsign_moved` after any `:custom_replaced` step 8 set.
+  # Step 10 hooks `:block_overlap` onto the same pass from the injected
+  # block rows.
+
+  @spec apply_metadata([change()], map()) :: [change()]
+  defp apply_metadata(changes, by_pattern) do
+    Enum.map(changes, fn
+      %{op: :add} = change -> add_metadata(change, by_pattern)
+      %{op: :change} = change -> change_metadata(change, by_pattern)
+      change -> change
+    end)
+  end
+
+  # New trips take the pasted values; a blank headsign takes the
+  # effective default of the assigned timing. Never an empty string:
+  # blanks normalize to `nil`.
+  @spec add_metadata(change(), map()) :: change()
+  defp add_metadata(change, by_pattern) do
+    row = change.row
+
+    headsign =
+      case clean_meta(get(row, :trip_headsign, "trip_headsign")) do
+        nil -> new_default(by_pattern, get(row, :pattern_id, "pattern_id"), change.timing)
+        present -> present
+      end
+
+    %{
+      change
+      | trip_short_name: clean_meta(get(row, :trip_short_name, "trip_short_name")),
+        block_id: clean_meta(get(row, :block_id, "block_id")),
+        trip_headsign: headsign
+    }
+  end
+
+  @spec change_metadata(change(), map()) :: change()
+  defp change_metadata(change, by_pattern) do
+    row = change.row
+    trip = change.trip
+    pattern_id = get(row, :pattern_id, "pattern_id")
+    new_def = new_default(by_pattern, pattern_id, change.timing)
+
+    number =
+      clean_meta(get(row, :trip_short_name, "trip_short_name")) ||
+        clean_meta(get(trip, :trip_short_name, "trip_short_name"))
+
+    block =
+      clean_meta(get(row, :block_id, "block_id")) ||
+        clean_meta(get(trip, :block_id, "block_id"))
+
+    headsign =
+      case clean_meta(get(row, :trip_headsign, "trip_headsign")) do
+        nil ->
+          old_h = clean_meta(get(trip, :trip_headsign, "trip_headsign"))
+          if old_h == old_default(by_pattern, trip), do: new_def, else: old_h
+
+        present ->
+          present
+      end
+
+    diffs = diff_list(row, trip, by_pattern, number, block, headsign)
+    op = if diffs == [], do: :unchanged, else: :change
+
+    warnings =
+      if op == :unchanged, do: change.warnings -- [:custom_replaced], else: change.warnings
+
+    %{
+      change
+      | op: op,
+        trip_short_name: number,
+        block_id: block,
+        trip_headsign: headsign,
+        diffs: diffs,
+        warnings: warnings
+    }
+  end
+
+  # Canonical order: `:times`, then the metadata fields.
+  @spec diff_list(map(), map(), map(), term(), term(), term()) :: [atom()]
+  defp diff_list(row, trip, by_pattern, number, block, headsign) do
+    checks = [
+      {:times, times_changed?(row, trip, by_pattern)},
+      {:trip_short_name, number != clean_meta(get(trip, :trip_short_name, "trip_short_name"))},
+      {:block_id, block != clean_meta(get(trip, :block_id, "block_id"))},
+      {:trip_headsign, headsign != clean_meta(get(trip, :trip_headsign, "trip_headsign"))}
+    ]
+
+    for {field, true} <- checks, do: field
+  end
+
+  # Times change when the start or the final vector differs from the
+  # trip's current timing. An unknown current timing (custom trips,
+  # minimal scopes) always counts as changed: the apply rematerializes
+  # the trip, so claiming `:unchanged` would be dishonest.
+  @spec times_changed?(map(), map(), map()) :: boolean()
+  defp times_changed?(row, trip, by_pattern) do
+    get(row, :start_secs, "start_secs") != get(trip, :start_secs, "start_secs") or
+      get(row, :key, "key") != old_timing_key(by_pattern, trip)
+  end
+
+  @spec apply_warnings([change()], map(), [map()]) :: [change()]
+  defp apply_warnings(changes, by_pattern, scope_trip_maps) do
+    fellows =
+      changes
+      |> Enum.with_index()
+      |> Enum.filter(fn {change, _i} ->
+        change.op in [:add, :change, :unchanged] and is_binary(change.trip_short_name)
+      end)
+      |> Enum.map(fn {change, i} -> {i, change.trip_short_name} end)
+
+    changes
+    |> Enum.with_index()
+    |> Enum.map(fn {change, i} ->
+      warn_change(change, i, by_pattern, scope_trip_maps, fellows)
+    end)
+  end
+
+  @spec warn_change(change(), non_neg_integer(), map(), [map()], [{non_neg_integer(), String.t()}]) ::
+          change()
+  defp warn_change(%{op: op} = change, i, by_pattern, scope_trip_maps, fellows)
+       when op in [:add, :change, :unchanged] do
+    warnings = change.warnings
+
+    warnings =
+      if op == :change and :times in change.diffs and in_seat_trip?(change.trip) do
+        warnings ++ [:in_seat_retimed]
+      else
+        warnings
+      end
+
+    warnings =
+      if duplicate_number?(change, i, scope_trip_maps, fellows) do
+        warnings ++ [:duplicate_trip_number]
+      else
+        warnings
+      end
+
+    warnings =
+      if op == :change and headsign_moved?(change, by_pattern) do
+        warnings ++ [:custom_headsign_moved]
+      else
+        warnings
+      end
+
+    %{change | warnings: warnings}
+  end
+
+  defp warn_change(change, _i, _by_pattern, _scope_trip_maps, _fellows), do: change
+
+  # A kept trip number that equals another trip's on the same calendar,
+  # whether the number was kept (blank cell, including `:unchanged`) or
+  # pasted. Scope trips are the calendar; fellow applied rows will join
+  # it. The matched trip itself never counts.
+  @spec duplicate_number?(change(), non_neg_integer(), [map()], [
+          {
+            non_neg_integer(),
+            String.t()
+          }
+        ]) :: boolean()
+  defp duplicate_number?(change, index, scope_trip_maps, fellows) do
+    number = change.trip_short_name
+
+    is_binary(number) and
+      (Enum.any?(scope_trip_maps, fn trip ->
+         not same_trip?(trip, change.trip) and
+           clean_meta(get(trip, :trip_short_name, "trip_short_name")) == number
+       end) or
+         Enum.any?(fellows, fn {j, other} -> j != index and other == number end))
+  end
+
+  # Two trip maps name the same trip when they share a non-nil `id` or
+  # natural `trip_id`; maps without identifiers only match themselves.
+  @spec same_trip?(term(), term()) :: boolean()
+  defp same_trip?(a, b) when is_map(a) and is_map(b) do
+    ids = fn trip ->
+      [get(trip, :id, "id"), get(trip, :trip_id, "trip_id")] |> Enum.reject(&is_nil/1)
+    end
+
+    ids.(a) -- ids.(b) != ids.(a) or a == b
+  end
+
+  defp same_trip?(_a, _b), do: false
+
+  @spec in_seat_trip?(term()) :: boolean()
+  defp in_seat_trip?(trip) when is_map(trip) do
+    flag =
+      first_present([
+        get(trip, :in_seat_transfer, "in_seat_transfer"),
+        get(trip, :in_seat, "in_seat"),
+        get(trip, :has_in_seat_transfer, "has_in_seat_transfer")
+      ])
+
+    ids =
+      first_present([
+        get(trip, :in_seat_transfer_ids, "in_seat_transfer_ids"),
+        get(trip, :in_seat_transfers, "in_seat_transfers")
+      ])
+
+    truthy?(flag) or (is_list(ids) and ids != [])
+  end
+
+  defp in_seat_trip?(_trip), do: false
+
+  # A kept custom headsign (blank pasted headsign, final equals the
+  # trip's own non-default value) on a trip whose route pattern, timed
+  # pattern or last stop changed. An explicit pasted headsign is an
+  # override, not a keep, and never warns here.
+  @spec headsign_moved?(change(), map()) :: boolean()
+  defp headsign_moved?(%{row: row, trip: trip, timing: timing, trip_headsign: final}, by_pattern)
+       when is_map(row) and is_map(trip) do
+    pattern_id = get(row, :pattern_id, "pattern_id")
+    new_def = new_default(by_pattern, pattern_id, timing)
+
+    kept? = is_nil(clean_meta(get(row, :trip_headsign, "trip_headsign")))
+    custom? = is_binary(final) and final != new_def
+
+    kept? and custom? and moved_pattern?(row, trip, timing, by_pattern)
+  end
+
+  defp headsign_moved?(_change, _by_pattern), do: false
+
+  @spec moved_pattern?(map(), map(), timing_ref(), map()) :: boolean()
+  defp moved_pattern?(row, trip, timing, by_pattern) do
+    route_changed?(row, trip, by_pattern) or timing_changed?(timing, trip) or
+      last_stop_changed?(row, trip, by_pattern)
+  end
+
+  @spec route_changed?(map(), map(), map()) :: boolean()
+  defp route_changed?(row, trip, by_pattern) do
+    case trip_pattern(by_pattern, trip) do
+      nil -> false
+      %{id: id} -> id != get(row, :pattern_id, "pattern_id")
+    end
+  end
+
+  # A pending timing is new by definition; an unknown old timing cannot
+  # be proven the same, so it counts as changed (as in `times_changed?`).
+  @spec timing_changed?(timing_ref(), map()) :: boolean()
+  defp timing_changed?(timing, trip) do
+    old_id =
+      get(trip, :timed_pattern_id, "timed_pattern_id") || get(trip, :timing_id, "timing_id")
+
+    case timing do
+      {:existing, id} -> id != old_id
+      {:new, _name} -> true
+      _timing -> false
+    end
+  end
+
+  @spec last_stop_changed?(map(), map(), map()) :: boolean()
+  defp last_stop_changed?(row, trip, by_pattern) do
+    new_rows = get(row, :timing_rows, "timing_rows") || []
+
+    case old_timing(by_pattern, trip) do
+      nil -> true
+      %{rows: old_rows} -> row_tuple(List.last(old_rows)) != row_tuple(List.last(new_rows))
+    end
+  end
+
+  @spec row_tuple(map() | nil) :: tuple() | nil
+  defp row_tuple(nil), do: nil
+
+  defp row_tuple(row) when is_map(row) do
+    {get(row, :arrival_offset, "arrival_offset"), get(row, :departure_offset, "departure_offset"),
+     get(row, :timepoint, "timepoint"), get(row, :pickup_type, "pickup_type"),
+     get(row, :drop_off_type, "drop_off_type"), get(row, :stop_headsign, "stop_headsign")}
+  end
+
+  # The new effective default: the assigned timing's headsign, else the
+  # row pattern's headsign. A pending timing has no headsign yet, so new
+  # trips fall through to the pattern default.
+  @spec new_default(map(), term(), timing_ref()) :: String.t() | nil
+  defp new_default(by_pattern, pattern_id, timing) do
+    timing_h =
+      case timing do
+        {:existing, id} -> existing_timing_headsign(by_pattern, pattern_id, id)
+        _timing -> nil
+      end
+
+    timing_h || pattern_headsign(by_pattern, pattern_id)
+  end
+
+  # The old effective default: the trip's timing headsign, else its
+  # pattern's headsign (XC-11). Blank stored headsigns read as `nil` so
+  # an empty default never shadows the pattern's.
+  @spec old_default(map(), term()) :: String.t() | nil
+  defp old_default(by_pattern, trip) when is_map(trip) do
+    old_timing_headsign(by_pattern, trip) || old_pattern_headsign(by_pattern, trip)
+  end
+
+  defp old_default(_by_pattern, _trip), do: nil
+
+  @spec pattern_headsign(map(), term()) :: String.t() | nil
+  defp pattern_headsign(by_pattern, pattern_id) do
+    case Map.get(by_pattern, pattern_id) do
+      %{headsign: headsign} -> clean_meta(headsign)
+      _pattern -> nil
+    end
+  end
+
+  @spec existing_timing_headsign(map(), term(), term()) :: String.t() | nil
+  defp existing_timing_headsign(by_pattern, pattern_id, timing_id) do
+    case Map.get(by_pattern, pattern_id) do
+      %{timings: timings} -> timing_headsign_in(timings, timing_id)
+      _pattern -> nil
+    end
+  end
+
+  @spec old_timing_headsign(map(), term()) :: String.t() | nil
+  defp old_timing_headsign(by_pattern, trip) when is_map(trip) do
+    case old_timing(by_pattern, trip) do
+      %{headsign: headsign} -> clean_meta(headsign)
+      nil -> nil
+    end
+  end
+
+  defp old_timing_headsign(_by_pattern, _trip), do: nil
+
+  @spec old_pattern_headsign(map(), map()) :: String.t() | nil
+  defp old_pattern_headsign(by_pattern, trip) do
+    case trip_pattern(by_pattern, trip) do
+      %{headsign: headsign} -> clean_meta(headsign)
+      nil -> nil
+    end
+  end
+
+  @spec old_timing_key(map(), term()) :: binary() | nil
+  defp old_timing_key(by_pattern, trip) do
+    case old_timing(by_pattern, trip) do
+      %{key: key} -> key
+      nil -> nil
+    end
+  end
+
+  @spec old_timing(map(), term()) :: map() | nil
+  defp old_timing(by_pattern, trip) when is_map(trip) do
+    timing_id =
+      get(trip, :timed_pattern_id, "timed_pattern_id") || get(trip, :timing_id, "timing_id")
+
+    if is_nil(timing_id) do
+      nil
+    else
+      by_pattern
+      |> Map.values()
+      |> Enum.find_value(fn %{timings: timings} ->
+        Enum.find(timings, &(&1.id == timing_id))
+      end)
+    end
+  end
+
+  defp old_timing(_by_pattern, _trip), do: nil
+
+  @spec timing_headsign_in([map()], term()) :: String.t() | nil
+  defp timing_headsign_in(timings, timing_id) do
+    case Enum.find(timings, &(&1.id == timing_id)) do
+      %{headsign: headsign} -> clean_meta(headsign)
+      nil -> nil
+    end
+  end
+
+  @spec trip_pattern(map(), term()) :: map() | nil
+  defp trip_pattern(by_pattern, trip) when is_map(trip) do
+    ref = get(trip, :route_pattern_id, "route_pattern_id") || get(trip, :pattern_id, "pattern_id")
+
+    if is_nil(ref) do
+      nil
+    else
+      Enum.find(Map.values(by_pattern), &MapSet.member?(&1.refs, ref))
+    end
+  end
+
+  defp trip_pattern(_by_pattern, _trip), do: nil
+
+  # Blank (nil, empty or whitespace-only) normalizes to `nil` so a
+  # blank cell never writes an empty value (INV-4); other binaries are
+  # trimmed, anything else passes through untouched.
+  @spec clean_meta(term()) :: term()
+  defp clean_meta(nil), do: nil
+
+  defp clean_meta(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp clean_meta(value), do: value
+
+  @spec blank_choice?(term()) :: boolean()
+  defp blank_choice?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_choice?(_value), do: false
+
+  # --- Decision validation (critique S2 / PM-10) ---
+  #
+  # Pattern choices are validated up front (a stale `:chosen` pattern
+  # withholds its row via the `misfit` set); pairing choices are
+  # validated while their group resolves; keeps and strays are validated
+  # afterwards. Every stale choice lands in `discarded_decisions` in
+  # `{row, kind}` order instead of being applied.
+
+  # Validates `pattern_id` choices: unknown patterns, choices for rows
+  # that resolved elsewhere and chosen patterns the row no longer fits
+  # (estimates outside the pasted span — only a forced choice can
+  # produce those, per `RowResolver`). Returns the withheld row numbers
+  # plus the discards.
+  @spec validate_patterns(map(), [map()], map()) :: {MapSet.t(), [discarded_decision()]}
+  defp validate_patterns(decisions, rows, by_pattern) do
+    row_by_num =
+      rows
+      |> Enum.filter(&is_map/1)
+      |> Map.new(fn row -> {to_row_num(get(row, :row, "row")), row} end)
+      |> Map.delete(nil)
+
+    {misfit, discards} =
+      Enum.reduce(decisions, {MapSet.new(), []}, fn {num, decision}, {misfit, discards} ->
+        case decision_pattern(decision) do
+          nil ->
+            {misfit, discards}
+
+          choice ->
+            case Map.get(row_by_num, num) do
+              nil ->
+                {misfit,
+                 [%{row: num, kind: :pattern, value: choice, reason: :unknown_row} | discards]}
+
+              row ->
+                if Map.has_key?(by_pattern, choice) do
+                  validate_pattern_choice(misfit, discards, num, row, choice)
+                else
+                  {misfit,
+                   [
+                     %{row: num, kind: :pattern, value: choice, reason: :unknown_pattern}
+                     | discards
+                   ]}
+                end
+            end
+        end
+      end)
+
+    {misfit, Enum.reverse(discards)}
+  end
+
+  @spec decision_pattern(term()) :: term()
+  defp decision_pattern(decision) when is_map(decision), do: Map.get(decision, :pattern)
+  defp decision_pattern(_decision), do: nil
+
+  @spec validate_pattern_choice(MapSet.t(), [discarded_decision()], pos_integer(), map(), term()) ::
+          {MapSet.t(), [discarded_decision()]}
+  defp validate_pattern_choice(misfit, discards, num, row, choice) do
+    how = get(row, :how, "how")
+
+    cond do
+      get(row, :pattern_id, "pattern_id") != choice ->
+        {misfit, [%{row: num, kind: :pattern, value: choice, reason: :not_applied} | discards]}
+
+      (how == :chosen or how == "chosen") and outside_span?(row) ->
+        {MapSet.put(misfit, num),
+         [%{row: num, kind: :pattern, value: choice, reason: :pattern_misfit} | discards]}
+
+      true ->
+        {misfit, discards}
+    end
+  end
+
+  # Estimates outside the pasted span can only come from a forced
+  # `:chosen` pattern that does not fit: the estimates stack on the
+  # nearest anchor instead of sitting between pasted times.
+  @spec outside_span?(map()) :: boolean()
+  defp outside_span?(row) do
+    rows = get(row, :timing_rows, "timing_rows")
+    indexed = if is_list(rows), do: Enum.with_index(rows), else: []
+    pasted = for {timing_row, i} <- indexed, pasted_stop?(timing_row), do: i
+
+    case pasted do
+      [] ->
+        true
+
+      _ ->
+        {first, last} = Enum.min_max(pasted)
+
+        Enum.any?(indexed, fn {timing_row, i} ->
+          not pasted_stop?(timing_row) and (i < first or i > last)
+        end)
+    end
+  end
+
+  @spec pasted_stop?(term()) :: boolean()
+  defp pasted_stop?(row) when is_map(row), do: get(row, :timepoint, "timepoint") in [1, "1", true]
+  defp pasted_stop?(_row), do: false
+
+  # A truthy `keep` ("Add anyway") only applies to a duplicate. In
+  # Replace nothing is a duplicate, so every keep is stale there; in
+  # Add the duplicate shape is recomputed without keeps so a keep that
+  # changed nothing is reported instead of silently kept.
+  @spec keep_discards(:add | :replace, map(), [map()], map(), [map()]) :: [discarded_decision()]
+  defp keep_discards(:replace, decisions, rows, _by_pattern, _trips) do
+    known = known_rows(rows)
+
+    Enum.reduce(decisions, [], fn {num, decision}, acc ->
+      if truthy?(Map.get(decision, :keep)) do
+        reason = if MapSet.member?(known, num), do: :not_a_duplicate, else: :unknown_row
+        [%{row: num, kind: :keep, value: Map.get(decision, :keep), reason: reason} | acc]
+      else
+        acc
+      end
+    end)
+  end
+
+  defp keep_discards(:add, decisions, rows, by_pattern, trips) do
+    known = known_rows(rows)
+    duplicates = duplicate_identities(rows, by_pattern, trips)
+
+    Enum.reduce(decisions, [], fn {num, decision}, acc ->
+      if truthy?(Map.get(decision, :keep)) do
+        cond do
+          not MapSet.member?(known, num) ->
+            [
+              %{row: num, kind: :keep, value: Map.get(decision, :keep), reason: :unknown_row}
+              | acc
+            ]
+
+          MapSet.member?(duplicates, num) ->
+            acc
+
+          true ->
+            [
+              %{row: num, kind: :keep, value: Map.get(decision, :keep), reason: :not_a_duplicate}
+              | acc
+            ]
+        end
+      else
+        acc
+      end
+    end)
+  end
+
+  # Row numbers the input actually carries (decision targets resolve
+  # against these).
+  @spec known_rows([term()]) :: MapSet.t()
+  defp known_rows(rows) do
+    rows
+    |> Enum.filter(&is_map/1)
+    |> Enum.map(&to_row_num(get(&1, :row, "row")))
+    |> Enum.reject(&is_nil/1)
+    |> MapSet.new()
+  end
+
+  # Rows that would be `:duplicate` with every keep ignored: the exact
+  # `mark_ready` duplicate test (existing trip or earlier accepted row
+  # at the same identity) walked in input order.
+  @spec duplicate_identities([term()], map(), [map()]) :: MapSet.t()
+  defp duplicate_identities(rows, by_pattern, trips) do
+    {duplicates, _accepted} =
+      Enum.reduce(rows, {MapSet.new(), MapSet.new()}, fn row, {duplicates, accepted} ->
+        row_map = if(is_map(row), do: row, else: %{})
+
+        if ready_complete?(row_map) do
+          pattern_id = get(row_map, :pattern_id, "pattern_id")
+          start_secs = get(row_map, :start_secs, "start_secs")
+          identity = {pattern_id, start_secs}
+
+          if not is_nil(find_trip(by_pattern, trips, pattern_id, start_secs)) or
+               MapSet.member?(accepted, identity) do
+            num = to_row_num(get(row_map, :row, "row"))
+            {if(is_nil(num), do: duplicates, else: MapSet.put(duplicates, num)), accepted}
+          else
+            {duplicates, MapSet.put(accepted, identity)}
+          end
+        else
+          {duplicates, accepted}
+        end
+      end)
+
+    duplicates
+  end
+
+  @spec ready_complete?(map()) :: boolean()
+  defp ready_complete?(row) do
+    status = get(row, :status, "status")
+
+    (status == :ready or status == "ready") and
+      not is_nil(get(row, :pattern_id, "pattern_id")) and
+      not is_nil(get(row, :start_secs, "start_secs")) and
+      not is_nil(get(row, :key, "key"))
+  end
+
+  # Pair decisions for rows that never entered a group (Replace): the
+  # row is skipped, undecided upstream or gone. Group members were
+  # validated while resolving.
+  @spec stray_pair_discards(map(), [term()], [{term(), map()}]) :: [discarded_decision()]
+  defp stray_pair_discards(decisions, rows, accepted) do
+    known = known_rows(rows)
+
+    accepted_nums =
+      accepted |> Enum.map(&elem(&1, 0)) |> Enum.filter(&is_integer/1) |> MapSet.new()
+
+    Enum.reduce(decisions, [], fn {num, decision}, acc ->
+      raw = Map.get(decision, :pair)
+
+      cond do
+        is_nil(raw) or blank_choice?(raw) or neither_choice?(raw) ->
+          acc
+
+        MapSet.member?(accepted_nums, num) ->
+          acc
+
+        not MapSet.member?(known, num) ->
+          [%{row: num, kind: :pair, value: raw, reason: :unknown_row} | acc]
+
+        true ->
+          [%{row: num, kind: :pair, value: raw, reason: :unknown_trip} | acc]
+      end
+    end)
+  end
+
+  # Pair decisions never pair in Add mode; `"neither"` stays silent
+  # everywhere and blanks choose nothing.
+  @spec add_pair_discards(map(), [term()]) :: [discarded_decision()]
+  defp add_pair_discards(decisions, rows) do
+    known = known_rows(rows)
+
+    Enum.reduce(decisions, [], fn {num, decision}, acc ->
+      raw = Map.get(decision, :pair)
+
+      cond do
+        is_nil(raw) or blank_choice?(raw) or neither_choice?(raw) ->
+          acc
+
+        not MapSet.member?(known, num) ->
+          [%{row: num, kind: :pair, value: raw, reason: :unknown_row} | acc]
+
+        true ->
+          [%{row: num, kind: :pair, value: raw, reason: :not_applicable} | acc]
+      end
+    end)
+  end
+
+  @spec finalize_discards([discarded_decision()]) :: [discarded_decision()]
+  defp finalize_discards(discards) do
+    Enum.sort_by(discards, fn discard ->
+      {discard.row || 1_000_000_000, kind_order(discard.kind)}
+    end)
+  end
+
+  @spec kind_order(:pair | :pattern | :keep) :: non_neg_integer()
+  defp kind_order(:pair), do: 0
+  defp kind_order(:pattern), do: 1
+  defp kind_order(:keep), do: 2
+  defp kind_order(_kind), do: 3
+
   # --- Counting ---
 
   @spec count_ops([change()]) :: map()
@@ -933,6 +1777,8 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
           %{
             id: id,
             refs: MapSet.new(Enum.reject([id, natural], &is_nil/1)),
+            headsign: get(pattern, :headsign, "headsign"),
+            name: get(pattern, :name, "name"),
             timings: normalize_timings(get(pattern, :timings, "timings"))
           }
         end
@@ -957,7 +1803,13 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
         else
           rows = normalize_timing_rows(get(timing, :rows, "rows"))
 
-          %{id: id, name: get(timing, :name, "name"), rows: rows, key: timing_key(rows)}
+          %{
+            id: id,
+            name: get(timing, :name, "name"),
+            headsign: get(timing, :headsign, "headsign"),
+            rows: rows,
+            key: timing_key(rows)
+          }
         end
 
       _timing ->
@@ -1082,10 +1934,31 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
 
   @spec normalize_decision(term()) :: map()
   defp normalize_decision(decision) when is_map(decision) do
-    %{keep: get(decision, :keep, "keep"), pair: replace_pair_value(decision)}
+    %{
+      keep: get(decision, :keep, "keep"),
+      pair: replace_pair_value(decision),
+      pattern: pattern_choice_value(decision)
+    }
   end
 
-  defp normalize_decision(_decision), do: %{keep: nil, pair: nil}
+  defp normalize_decision(_decision), do: %{keep: nil, pair: nil, pattern: nil}
+
+  # The RowResolver pattern choice (`pattern_id`, alias `:pattern`): a
+  # blank choice is no choice. Step 9 validates it against the scope
+  # patterns and the row it resolved to.
+  @spec pattern_choice_value(map()) :: term()
+  defp pattern_choice_value(decision) do
+    case first_present([
+           get(decision, :pattern_id, "pattern_id"),
+           get(decision, :pattern, "pattern")
+         ]) do
+      choice when is_binary(choice) ->
+        if String.trim(choice) == "", do: nil, else: choice
+
+      choice ->
+        choice
+    end
+  end
 
   # The Replace pairing choice lives beside the Add `keep` flag so one
   # decisions map serves both modes. Aliases cover the LiveView field
