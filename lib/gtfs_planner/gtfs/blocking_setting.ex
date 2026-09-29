@@ -67,6 +67,92 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
           updated_at: DateTime.t()
         }
 
+  # The five crew columns, as the one list the crew writer replaces. It sits with
+  # the schema rather than beside the writer so `crew_fields/0` and
+  # `crew_changeset/2` cannot drift apart.
+  @crew_fields [
+    :report_pull_out_minutes,
+    :report_relief_minutes,
+    :sign_off_minutes,
+    :paid_break_max_minutes,
+    :max_spread_minutes
+  ]
+
+  @doc """
+  The five crew rules, in the order the reader returns them.
+
+  They are deliberately not part of `settings_fields/0`: this is the one list the
+  crew writer replaces, and the eight Block rules above are the one list the Block
+  rules writer replaces, so neither save can rewrite the other's columns.
+  """
+  @spec crew_fields() :: [atom()]
+  def crew_fields, do: @crew_fields
+
+  # A value that must always be submitted: a blank string is not a valid number
+  # here, so it is left to `cast/4` as an "is invalid" field error rather than
+  # becoming the default. `empty_values: []` keeps the blank out of `nil`, so a
+  # cleared input reads as a mistake the user must fix and not as "unset" — a crew
+  # rule has no unset state, only a range (CR-3).
+  @doc """
+  Changeset for the five crew rules.
+
+  Only `crew_fields/0` is cast, so `organization_id` and `gtfs_version_id` in
+  submitted parameters are ignored; the caller sets those on the struct. Every
+  range from AC-1 is checked here and again by the named database constraint, so a
+  value that reaches the table outside this changeset still cannot store.
+  """
+  @spec crew_changeset(t(), map()) :: Ecto.Changeset.t()
+  def crew_changeset(setting, attrs) do
+    setting
+    |> cast(attrs, @crew_fields, empty_values: [])
+    |> validate_required(@crew_fields)
+    |> validate_number(:report_pull_out_minutes,
+      greater_than_or_equal_to: 0,
+      less_than_or_equal_to: 30,
+      message: "must be a whole number between 0 and 30"
+    )
+    |> validate_number(:report_relief_minutes,
+      greater_than_or_equal_to: 0,
+      less_than_or_equal_to: 15,
+      message: "must be a whole number between 0 and 15"
+    )
+    |> validate_number(:sign_off_minutes,
+      greater_than_or_equal_to: 0,
+      less_than_or_equal_to: 15,
+      message: "must be a whole number between 0 and 15"
+    )
+    |> validate_number(:paid_break_max_minutes,
+      greater_than_or_equal_to: 0,
+      less_than_or_equal_to: 90,
+      message: "must be a whole number between 0 and 90"
+    )
+    |> validate_number(:max_spread_minutes,
+      greater_than_or_equal_to: 240,
+      less_than_or_equal_to: 1080,
+      message: "must be a whole number between 240 and 1080"
+    )
+    |> check_constraint(:report_pull_out_minutes,
+      name: :report_pull_out_range,
+      message: "must be a whole number between 0 and 30"
+    )
+    |> check_constraint(:report_relief_minutes,
+      name: :report_relief_range,
+      message: "must be a whole number between 0 and 15"
+    )
+    |> check_constraint(:sign_off_minutes,
+      name: :sign_off_range,
+      message: "must be a whole number between 0 and 15"
+    )
+    |> check_constraint(:paid_break_max_minutes,
+      name: :paid_break_max_range,
+      message: "must be a whole number between 0 and 90"
+    )
+    |> check_constraint(:max_spread_minutes,
+      name: :max_spread_range,
+      message: "must be a whole number between 240 and 1080"
+    )
+  end
+
   @doc """
   The eight Block rules settings, in the order the reader returns them.
 
