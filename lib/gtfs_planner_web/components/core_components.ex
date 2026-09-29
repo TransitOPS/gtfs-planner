@@ -2521,7 +2521,13 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :id, :string, required: true
   attr :name, :string, required: true
   attr :legend, :string, required: true
-  attr :options, :list, required: true
+
+  attr :options, :list,
+    required: true,
+    doc:
+      "`{label, value}` tuples, or maps with :label and :value and optionally :disabled, " <>
+        ":disabled_reason and :icon (a hero icon name shown before the label)"
+
   attr :value, :any, required: true
   attr :event, :string, required: true
   attr :target, :any, default: nil
@@ -2644,6 +2650,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
               }
               class="sr-only"
             />
+            <.icon :if={option.icon} name={option.icon} class="mr-1.5 size-4 shrink-0" />
             {option.label}
             <span
               :if={option.disabled_reason}
@@ -2675,11 +2682,12 @@ defmodule GtfsPlannerWeb.CoreComponents do
       value,
       Map.get(option, :disabled, false),
       Map.get(option, :disabled_reason),
-      control_id
+      control_id,
+      Map.get(option, :icon)
     )
   end
 
-  defp segmented_option(label, value, disabled, disabled_reason, control_id) do
+  defp segmented_option(label, value, disabled, disabled_reason, control_id, icon \\ nil) do
     value = to_string(value)
 
     %{
@@ -2687,7 +2695,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
       label: to_string(label),
       value: value,
       disabled: disabled,
-      disabled_reason: disabled_reason
+      disabled_reason: disabled_reason,
+      icon: icon
     }
   end
 

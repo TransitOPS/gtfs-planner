@@ -550,55 +550,14 @@ body {
   background: white;
 }
 
-/* The diagram action strip is the last child of #sub-header-wrapper and carries
-   its own full-bleed bottom border (needed while it is sticky and the wrapper
-   has scrolled away). Drop the wrapper's own border-b in that case so the two
-   rules don't stack into a double line in mismatched colors. */
-#sub-header-wrapper:has(#diagram-action-strip) {
-  border-bottom-width: 0;
-}
-
-/* Page padding lives on the sub-header wrapper (mirroring the header and main
-   column), so slot content must not add its own. The diagram action strip is
-   the exception: it keeps its own padding and full-bleed border, so cancel the
-   wrapper's padding around it with negative margins at each breakpoint. */
-#sub-header-wrapper #diagram-action-strip {
-  margin-left: -1rem;
-  margin-right: -1rem;
-}
-@media (min-width: 640px) {
-  #sub-header-wrapper #diagram-action-strip {
-    margin-left: -1.5rem;
-    margin-right: -1.5rem;
-  }
-}
-@media (min-width: 1024px) {
-  #sub-header-wrapper #diagram-action-strip {
-    margin-left: -2rem;
-    margin-right: -2rem;
-  }
-}
-
-/* Immersive diagram modes lay out #sub-header-wrapper's children directly;
-   flatten the padding/column containers there so canvas sizing is unchanged,
-   and drop the negative margins (the flattened wrapper adds no padding). */
-#diagram-page[data-immersive="true"] #sub-header-wrapper > div,
-#diagram-page[data-immersive="true"] #sub-header-wrapper > div > div {
-  display: contents;
-}
-#diagram-page[data-immersive="true"] #sub-header-wrapper #diagram-action-strip {
-  margin-left: 0;
-  margin-right: 0;
-}
-
-/* ── Immersive editing modes (Add stop / Connect / Align) ──
-   Entering an editing mode hides the global header and station sub-nav so the
-   action strip + canvas fill the viewport. `display: none` (not an off-screen
-   transform) keeps the hidden chrome out of the tab order, so no invisible
-   element is tabbable (AC-19). Station, level, and mode context are preserved
-   in the sticky action strip; selecting View exits back to the full page. */
+/* ── Focus mode (Add point / Connect / Align) ──
+   Entering an editing mode hides the global header and station header so the
+   workspace fills the viewport. `display: none` (not an off-screen transform)
+   keeps the hidden chrome out of the tab order, so no invisible element is
+   tabbable (AC-19). Station, level, and mode context are preserved in the
+   toolbar; selecting Select exits back to the full page. */
 #diagram-page[data-immersive="true"] #app-header,
-#diagram-page[data-immersive="true"] #station-sub-nav {
+#diagram-page[data-immersive="true"] #station-header-band {
   display: none;
 }
 
@@ -630,69 +589,6 @@ body {
    click moves the panel. */
 #map-alignment-tools-toggle[data-collapsed="true"] span {
   transform: rotate(180deg);
-}
-
-/* Every immersive mode renders its workspace in the sub-header slot, so
-   #main-content is left holding nothing but closed dialogs. Its `py-8` and the
-   `space-y-4` margin on the zero-height candidate probe would still push the
-   page 80 px past the viewport and produce a scrollbar (AC-2). Collapse the
-   spacing rather than hiding the element: a `display: none` ancestor would also
-   hide the drawers that open from here. */
-#diagram-page[data-immersive="true"] #main-content {
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-#diagram-page[data-immersive="true"] #main-content > div > * {
-  margin-top: 0;
-}
-
-/* Align mode: the map fills the freed viewport height and its control bar
-   anchors to the bottom of the screen instead of sitting below a tall square
-   that forces a page scroll. The page is bounded at the viewport and the canvas
-   takes whatever the action strip leaves, rather than assuming a fixed strip
-   height — the strip is 67 px, so the previous `calc(100vh - 4rem)` overflowed
-   by 3 px. `:has()` scopes this to Align, the only immersive mode with a map
-   canvas; Add stop and Connect keep their own sizing below. */
-#diagram-page[data-immersive="true"]:has(#map-canvas-wrapper) {
-  height: 100vh;
-}
-
-#diagram-page[data-immersive="true"]:has(#map-canvas-wrapper) #sub-header-wrapper,
-#diagram-page[data-immersive="true"]:has(#map-canvas-wrapper) #floorplan-workspace {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-#diagram-page[data-immersive="true"] #map-canvas-wrapper {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding-top: 0.5rem;
-  padding-bottom: 0;
-}
-
-#diagram-page[data-immersive="true"] #map-canvas-wrapper > div {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-#diagram-page[data-immersive="true"] #map-canvas-wrapper .map-canvas {
-  flex: 1 1 auto;
-  min-height: 0;
-  aspect-ratio: auto;
-}
-
-/* Add stop / Connect: the floorplan workspace grows into the freed space. */
-@media (min-width: 768px) {
-  #diagram-page[data-immersive="true"] .diagram-workspace {
-    max-height: calc(100vh - 4.5rem);
-  }
 }
 
 /* ── Responsive data-view contracts ── */
@@ -1483,22 +1379,6 @@ body {
 }
 
 
-#diagram-page {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.diagram-workspace {
-  scroll-margin-top: 1rem;
-}
-
-/* The journal is a fixed-width work queue that participates in the floorplan
-   flex row. It never overlays the canvas, and each side owns its own overflow. */
-#diagram-page #diagram-canvas-wrapper {
-  min-width: 0;
-}
-
 #station-journal-panel {
   max-height: 100%;
   contain: inline-size;
@@ -1582,13 +1462,6 @@ body {
   }
 }
 
-@media (min-width: 768px) {
-  .diagram-workspace {
-    max-height: min(72rem, calc(100vh - 13rem));
-    overflow: hidden;
-  }
-}
-
 /* Design system flash containment (/design/feedback).
    <.flash> hardcodes daisyUI's `toast` on its root and `toast` is position: fixed, so
    no wrapper class can hold the examples inside their demo container — they would pin
@@ -1616,14 +1489,16 @@ body {
   outline: none;
 }
 
-/* Paired SVG-native focus indicator that stays visible over any floorplan color.
-   The dark stroke paints reliably on SVG geometry across browser engines; the
-   white halo traces that same hit-target geometry for dark imagery. */
+/* Paired SVG-native focus indicator that stays visible over any floorplan color:
+   the design system's focus stroke on the hit geometry, over a white halo. It is
+   drawn on the 44px hit target (or the pathway's own hit line), so the ring sits
+   on the item rather than on the group's zoom-inflated bounding box. */
 #diagram-overlay g[tabindex]:focus-visible > [data-stop-hit-target],
 #diagram-overlay g[tabindex]:focus-visible > [data-pathway-hit],
 #diagram-overlay g[tabindex]:focus-visible > [data-cross-level-badge-hit] {
-  stroke: oklch(0% 0 0);
+  stroke: var(--diagram-focus);
   stroke-width: 0.3px;
+  stroke-dasharray: 0.9 0.6;
   filter: drop-shadow(0 0 1px oklch(100% 0 0)) drop-shadow(0 0 1px oklch(100% 0 0));
 }
 
@@ -1639,12 +1514,12 @@ body {
   z-index: 30;
   max-width: 18rem;
   padding: 0.35rem 0.55rem;
-  border-radius: 0.375rem;
+  border-radius: var(--radius-control);
   border: 1px solid transparent;
-  background: var(--color-neutral);
-  color: var(--color-neutral-content);
+  background: var(--color-strong);
+  color: #fff;
   font-size: 0.75rem;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1.25;
   white-space: nowrap;
   pointer-events: none;
@@ -1708,11 +1583,27 @@ body {
 #diagram-page [data-ruler-line],
 #diagram-page [data-ruler-endpoint],
 #diagram-page [data-ruler-label] {
-  stroke: var(--diagram-ruler) !important;
+  stroke: var(--color-action) !important;
 }
 
 #diagram-page [data-ruler-label] {
+  fill: var(--color-action) !important;
+}
+
+/* The saved scale reference is a dashed navy line; only a scale being marked
+   takes the action colour. */
+#diagram-page [data-ruler-type="saved"] [data-ruler-line],
+#diagram-page [data-ruler-type="saved"] [data-ruler-endpoint],
+#diagram-page [data-ruler-type="saved"] [data-ruler-label] {
+  stroke: var(--diagram-ruler) !important;
+}
+
+#diagram-page [data-ruler-type="saved"] [data-ruler-label] {
   fill: var(--diagram-ruler) !important;
+}
+
+#diagram-page [data-ruler-type="saved"] [data-ruler-line] {
+  stroke-dasharray: 0.9 0.6;
 }
 
 #diagram-page [data-journal-pin-body],
@@ -1799,13 +1690,10 @@ dialog[role="alertdialog"][open] > div > div {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .diagram-workspace,
   #station-journal-panel,
   .journal-panel-motion,
   .journal-entry-motion,
-  .journal-loading-delay,
-  #diagram-page #diagram-canvas-wrapper,
-  #diagram-page #map-canvas-wrapper {
+  .journal-loading-delay {
     animation-duration: 0ms !important;
     transition-duration: 0ms;
   }
@@ -1840,6 +1728,195 @@ dialog[role="alertdialog"][open] > div > div {
     transition-duration: 0ms !important;
     animation-duration: 0ms !important;
   }
+}
+
+/* ── station-diagram (design system) ──
+   The Floorplans tab in the TransitOps application design system: a station
+   header capped to the app header's width, and a wide workspace under it that
+   holds the toolbar, the plan with its status bar, and the docked points,
+   pathways and journal panel. `#diagram-page` carries `ds-page` for the shared
+   field, button and focus grammar; everything below is specific to this screen.
+   Marker colours come from `DiagramPalette` (`--diagram-*` on `#diagram-page`). */
+
+/* Layouts.app renders the sub-header inside a padded, width-capped wrapper. The
+   station header and the workspace set their own widths, so the wrapper only
+   supplies the ground. */
+#diagram-page #sub-header-wrapper {
+  border-bottom-width: 0;
+  background: var(--color-base-100);
+}
+
+#diagram-page #sub-header-wrapper > div {
+  padding-inline: 0;
+}
+
+#diagram-page #sub-header-wrapper > div > div {
+  max-width: none;
+}
+
+/* <main> holds only closed dialogs and hook mount points on this page; without
+   its padding it adds no scroll below the workspace. */
+#diagram-page #main-content {
+  padding-block: 0;
+}
+
+#diagram-page #main-content > div > * {
+  margin-block: 0;
+}
+
+/* The compact station header names the station at 24px, 26px from sm. The
+   unlayered `.ds-page h1` size would beat a utility class, so it is set here. */
+#station-sub-nav[data-compact] h1 {
+  font-size: 24px;
+}
+
+@media (min-width: 640px) {
+  #station-sub-nav[data-compact] h1 {
+    font-size: 26px;
+  }
+}
+
+/* The workspace fills the viewport under the two headers (73px app header, 96px
+   station header, 28px of gutters); focus mode gives back the two headers. Below
+   1024px the plan and the panel stack and the page scrolls. */
+#diagram-page #diagram-workspace {
+  scroll-margin-top: 1rem;
+}
+
+#diagram-page #diagram-canvas-wrapper {
+  height: 62vw;
+  min-height: 300px;
+}
+
+#diagram-page #workspace-body {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 1024px) {
+  #diagram-page #diagram-workspace {
+    height: max(560px, calc(100dvh - 197px));
+  }
+
+  #diagram-page[data-immersive="true"] #diagram-workspace {
+    height: max(560px, calc(100dvh - 28px));
+  }
+
+  #diagram-page #workspace-body {
+    grid-template-columns: minmax(0, 1fr) 352px;
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  #diagram-page #diagram-canvas-wrapper {
+    height: auto;
+    min-height: 0;
+  }
+
+  #diagram-page #diagram-workspace[data-align="true"] #workspace-body,
+  #diagram-page #workspace-body:has(#no-level-state) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 1280px) {
+  #diagram-page #workspace-body {
+    grid-template-columns: minmax(0, 1fr) 376px;
+  }
+
+  #diagram-page #diagram-workspace[data-align="true"] #workspace-body,
+  #diagram-page #workspace-body:has(#no-level-state) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The pan buttons exist for keyboard operators: they appear once focus is inside
+   the plan, and mouse users pan with Shift-drag or the middle button. */
+#diagram-page #pan-cluster {
+  display: none;
+}
+
+#diagram-page #plan-wrap:focus-within #pan-cluster {
+  display: flex;
+}
+
+/* Align: the map fills the workspace instead of holding a square. */
+#diagram-page #map-canvas-wrapper .map-canvas {
+  aspect-ratio: auto;
+  min-height: 60vh;
+  border: 0;
+  border-radius: 0;
+}
+
+@media (min-width: 1024px) {
+  #diagram-page #map-canvas-wrapper .map-canvas {
+    min-height: 0;
+  }
+}
+
+#diagram-page #map-canvas-wrapper #map-alignment-workspace {
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+/* Markers and pathways: navy points and cyan pathways, with the action colour
+   for the item under the pointer and for the item being edited. Shape, label and
+   halo carry the meaning where colour cannot. */
+#diagram-page g[data-stop-id]:hover [data-stop-marker]:not([data-location-type="2"]) {
+  fill: var(--color-action) !important;
+}
+
+#diagram-page g[data-stop-id]:hover [data-stop-marker][data-location-type="2"],
+#diagram-page g[data-stop-state="selected"] [data-stop-marker][data-location-type="2"] {
+  stroke: var(--color-action) !important;
+}
+
+#diagram-page g[data-stop-state="selected"] [data-stop-marker][data-location-type="2"] {
+  fill: var(--diagram-label-halo) !important;
+}
+
+#diagram-page g[data-from-stop-id]:hover [data-pathway-line],
+#diagram-page g[data-from-stop-id]:hover [data-pathway-connector],
+#diagram-page g[data-from-stop-id]:hover [data-pathway-rail],
+#diagram-page g[data-from-stop-id]:hover [data-pathway-center-tick],
+#diagram-page g[data-from-stop-id]:hover [data-pathway-center-cross],
+#diagram-page g[data-from-stop-id]:hover [data-pathway-center-bar] {
+  stroke: var(--color-action) !important;
+}
+
+#diagram-page [data-stop-label],
+#diagram-page [data-pathway-label] {
+  font-family: var(--font-ds);
+  font-weight: 650;
+}
+
+/* Align keeps its own tools pad and commit bar; they take the design system's
+   card, control and action styling. */
+#diagram-page #map-alignment-tools {
+  border-color: var(--color-subtle);
+  border-radius: var(--radius-card);
+  background: #fff;
+  box-shadow: var(--shadow-float);
+}
+
+#diagram-page #map-alignment-commit-bar .btn:not(.btn-primary, .btn-ghost) {
+  border-color: var(--color-control);
+  background: #fff;
+  color: var(--color-strong);
+}
+
+#diagram-page #map-alignment-commit-bar .btn:not(.btn-primary, .btn-ghost):hover:not(:disabled) {
+  background: var(--color-canvas);
+}
+
+#diagram-page #map-alignment-commit-bar .btn:disabled {
+  border-color: var(--color-subtle);
+  background: var(--color-canvas);
+  color: var(--color-muted);
+}
+
+/* The point and pathway rows mark the item being edited with the selection
+   ground; the lists scroll inside the panel, so the search stays in view. */
+#diagram-page #side-panel [aria-current="true"] {
+  background-color: var(--color-selection);
 }
 
 /* ── Station report render modes ──

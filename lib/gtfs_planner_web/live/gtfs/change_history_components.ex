@@ -104,7 +104,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     ~H"""
     <div
       id={"#{@entity_type}-tabs"}
-      class="flex gap-1 mb-4 border-b border-base-300"
+      class="flex shrink-0 border-b border-subtle px-3"
       role="tablist"
       aria-orientation="horizontal"
       phx-hook="TablistHook"
@@ -152,7 +152,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         <span
           :if={@show_badge?}
           data-role="journal-tab-count"
-          class="border border-control-border bg-base-100 rounded-full px-1.5 text-xs leading-4 tabular-nums text-base-content/70"
+          class="rounded-badge bg-canvas px-1.5 text-[12px] tabular-nums text-default"
         >
           {@journal_count}
         </span>
@@ -166,13 +166,11 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
   # pointer cursor and a hover fill over their own hit area.
   defp tab_class(active?) do
     [
-      "px-3 py-3 text-sm bg-transparent border-0 -mb-px border-b-2 rounded-t-sm transition-colors",
-      "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:rounded-sm",
+      "-mb-px inline-flex min-h-11 items-center gap-1.5 border-b-2 px-3 text-sm font-semibold",
+      "focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus",
       if(active?,
-        do: "cursor-default text-base-content font-medium border-base-content",
-        else:
-          "cursor-pointer border-transparent text-base-content/70 " <>
-            "hover:bg-base-200 hover:text-base-content hover:border-base-content/30"
+        do: "cursor-default border-action text-action",
+        else: "cursor-pointer border-transparent text-muted hover:border-subtle hover:text-strong"
       )
     ]
   end
@@ -276,7 +274,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       <div
         :if={@state == :refreshing}
         id={"history-refreshing-#{@entity_type}"}
-        class="flex items-center gap-2 border border-base-300 bg-base-200 px-3 py-2 text-sm text-base-content"
+        class="flex items-center gap-2 border border-subtle bg-canvas px-3 py-2 text-sm text-default"
       >
         <.icon name="hero-arrow-path" class="size-4 motion-safe:animate-spin" />
         <span>Refreshing history…</span>
@@ -306,7 +304,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       <p
         :if={@state == :error and @entries != []}
         id={"history-stale-#{@entity_type}"}
-        class="text-sm text-base-content/70"
+        class="text-sm text-muted"
       >
         Showing the history loaded before that failure. It may be out of date.
       </p>
@@ -333,10 +331,10 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
       <%= if @state not in [:idle, :initial_loading] and @entries != [] do %>
         <div
           data-testid="history-summary"
-          class="flex flex-wrap items-end justify-between gap-3 px-3 py-2.5 bg-base-200 border border-base-300 rounded-md"
+          class="flex flex-wrap items-end justify-between gap-3 px-3 py-2.5 bg-canvas border border-subtle rounded-md"
         >
           <div class="min-w-0">
-            <div class="text-[13px] text-base-content">
+            <div class="text-[13px] text-default">
               Last modified
               <time datetime={DateTime.to_iso8601(@last_modified_entry.inserted_at)}>
                 {relative_time(@last_modified_local, @now)}
@@ -346,7 +344,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                 {display_name(@last_modified_entry.actor_email)}
               </span>
             </div>
-            <div class="text-xs text-base-content/70 mt-0.5">
+            <div class="text-xs text-muted mt-0.5">
               {@entry_count} {if @entry_count == 1, do: "change", else: "changes"}, {@reverted_count} reverted
             </div>
           </div>
@@ -373,7 +371,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
         <p
           :if={@zone_label && is_nil(@fallback_reason_text)}
           id={"history-timezone-#{@entity_type}"}
-          class="text-xs text-base-content/70"
+          class="text-xs text-muted"
         >
           Times shown in {@zone_label}.
         </p>
@@ -410,19 +408,19 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
           <div class="flex items-center gap-2">
             <h3
               data-testid="history-date-header"
-              class="text-xs font-medium text-base-content/70 tracking-wide uppercase m-0"
+              class="text-xs font-medium text-muted tracking-wide uppercase m-0"
             >
               <time datetime={Date.to_iso8601(date)}>
                 {format_date_header(date, @today)}
               </time>
             </h3>
-            <div aria-hidden="true" class="flex-1 h-px bg-base-content/20"></div>
+            <div aria-hidden="true" class="flex-1 h-px bg-subtle"></div>
           </div>
 
           <div class="relative pl-6">
             <div
               aria-hidden="true"
-              class="absolute left-[9px] top-2 bottom-2 w-0.5 bg-base-content/20"
+              class="absolute left-[9px] top-2 bottom-2 w-0.5 bg-subtle"
             >
             </div>
 
@@ -454,27 +452,27 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                 <div
                   aria-hidden="true"
                   class={[
-                    "absolute -left-[21px] top-2 w-3.5 h-3.5 rounded-full bg-base-100 border-2",
-                    if(current?, do: "border-success", else: "border-base-content/40")
+                    "absolute -left-[21px] top-2 w-3.5 h-3.5 rounded-full bg-white border-2",
+                    if(current?, do: "border-success-line", else: "border-control")
                   ]}
                 >
                 </div>
 
                 <div class={[
-                  "bg-base-100 border rounded-lg p-3.5",
+                  "bg-white border rounded-lg p-3.5",
                   if(current?,
                     do: "border-success/40 ring-2 ring-success/30",
-                    else: "border-base-300"
+                    else: "border-subtle"
                   )
                 ]}>
                   <div class="flex items-center gap-2 mb-2 flex-wrap">
                     <div
                       aria-hidden="true"
-                      class="w-[22px] h-[22px] rounded-full bg-base-300 text-base-content text-[10px] font-medium flex items-center justify-center shrink-0"
+                      class="w-[22px] h-[22px] rounded-full bg-navy-100 text-strong text-[10px] font-medium flex items-center justify-center shrink-0"
                     >
                       {display_initials(entry.actor_email)}
                     </div>
-                    <span class="text-[13px] font-medium text-base-content">
+                    <span class="text-[13px] font-medium text-default">
                       {display_name(entry.actor_email)}
                     </span>
                     <span
@@ -485,7 +483,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                     </span>
                     <time
                       datetime={DateTime.to_iso8601(entry.inserted_at)}
-                      class="ml-auto text-xs text-base-content/70 tabular-nums"
+                      class="ml-auto text-xs text-muted tabular-nums"
                     >
                       {format_time_short(local_time(entry, @local_times), @today)}
                     </time>
@@ -507,7 +505,7 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
                       <p
                         :if={variant == :original}
                         id={"history-entry-unavailable-#{entry.id}"}
-                        class="me-auto text-xs text-base-content/70"
+                        class="me-auto text-xs text-muted"
                       >
                         {unavailable_reason(@entity_type)}
                       </p>
@@ -532,12 +530,12 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
 
                   <div
                     :if={reverted?}
-                    class="mt-2.5 text-xs text-base-content/70 flex items-center gap-1.5"
+                    class="mt-2.5 text-xs text-muted flex items-center gap-1.5"
                   >
                     <span aria-hidden="true">↩</span>
                     <span>
                       Reverted by
-                      <span class="font-medium text-base-content">
+                      <span class="font-medium text-default">
                         {display_name(rollback_entry.actor_email)}
                       </span>
                       at
@@ -616,12 +614,12 @@ defmodule GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents do
     >
       <p
         id={"rollback-preview-heading-#{@entity_type}"}
-        class="text-sm font-medium text-base-content"
+        class="text-sm font-medium text-default"
       >
         Revert {entity_label(@entity_type)} {@entity_name}?
       </p>
 
-      <p id={"rollback-preview-consequence-#{@entity_type}"} class="text-sm text-base-content/80">
+      <p id={"rollback-preview-consequence-#{@entity_type}"} class="text-sm text-default">
         {consequence_sentence(@entity_type, @field_count)} {reapply_sentence(@entity_type)}
       </p>
 

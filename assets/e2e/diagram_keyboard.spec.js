@@ -136,7 +136,7 @@ test.describe("Diagram mode switching via keyboard", () => {
     await page.waitForTimeout(500);
 
     // The mode hint should explain how to place the child stop on the floorplan.
-    await expect(page.getByText("Click floorplan to add a child stop")).toBeVisible({
+    await expect(page.getByText("Click the floorplan where the point belongs.")).toBeVisible({
       timeout: 3000,
     });
 
@@ -165,7 +165,7 @@ test.describe("Diagram mode switching via keyboard", () => {
     await page.waitForTimeout(500);
 
     // Connect mode starts by asking the editor to choose a source stop.
-    await expect(page.getByText("Click a stop to start a connection")).toBeVisible({
+    await expect(page.getByText("Click the starting point.")).toBeVisible({
       timeout: 3000,
     });
 

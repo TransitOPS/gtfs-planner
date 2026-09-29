@@ -11,7 +11,7 @@ defmodule GtfsPlannerWeb.Components.DiagramPalette do
   @roles %{
     active_stop: %{
       css_variable: "--diagram-active-stop",
-      color: "#0B5FFF",
+      color: "#1A2654",
       cue: "filled circle and active label"
     },
     fallback_stop: %{
@@ -26,7 +26,7 @@ defmodule GtfsPlannerWeb.Components.DiagramPalette do
     },
     pathway_forward: %{
       css_variable: "--diagram-pathway-forward",
-      color: "#FF00FF",
+      color: "#1E6868",
       cue: "solid line with forward arrow"
     },
     pathway_inactive: %{
@@ -42,13 +42,13 @@ defmodule GtfsPlannerWeb.Components.DiagramPalette do
     },
     ruler: %{
       css_variable: "--diagram-ruler",
-      color: "#155E75",
+      color: "#2A3870",
       cue: "tick marks and distance text"
     },
-    focus: %{css_variable: "--diagram-focus", color: "#1D4ED8", cue: "two-pixel focus ring"},
+    focus: %{css_variable: "--diagram-focus", color: "#96305F", cue: "two-pixel focus ring"},
     selection: %{
       css_variable: "--diagram-selection",
-      color: "#BE123C",
+      color: "#C81870",
       cue: "selection outline and handle"
     },
     building_outline: %{

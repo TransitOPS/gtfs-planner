@@ -177,7 +177,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       assert has_element?(view, "#station-diagram-confirmation[data-open='true']")
-      assert has_element?(view, "#station-diagram-confirmation-confirm", "Delete stop")
+      assert has_element?(view, "#station-diagram-confirmation-confirm", "Delete point")
 
       assert has_element?(
                view,
@@ -488,7 +488,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "switch_mode", %{"mode" => "add"})
       render_hook(view, "canvas_click", %{"x" => "21", "y" => "31"})
 
-      assert has_element?(view, "#child-stop-form button[type='submit']", "Create Stop")
+      assert has_element?(view, "#child-stop-form button[type='submit']", "Create point")
       refute has_element?(view, "#child-stop-form input[name='stop_id'][readonly]")
       refute has_element?(view, "#child-stop-form button[phx-click='delete_child_stop']")
     end
@@ -602,7 +602,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> render_click()
 
       assert has_element?(view, "select#location_type[required]")
-      assert has_element?(view, "select#location_type option[value='']", "— Choose a type")
+      assert has_element?(view, "select#location_type option[value='']", "Choose a type")
       refute has_element?(view, "select#location_type option[value='1']")
       assert has_element?(view, "#location_type-help")
     end
@@ -1053,7 +1053,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(
                view,
                "#child-stop-form select[name='parent_platform'] option[value='']",
-               "— None (under station)"
+               "None (directly under the station)"
              )
 
       assert has_element?(
@@ -1317,11 +1317,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, _view, html} =
+      {:ok, view, html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       assert html =~ "Pan up"
-      assert html =~ "Show Key"
+      assert has_element?(view, "#diagram-legend-trigger", "Key")
+      assert has_element?(view, "#plan-view-controls [data-zoom-label]")
     end
 
     test "renders legend markup and keeps legend panel hidden by default", %{
@@ -1341,10 +1342,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
       assert html =~ "diagram-legend-panel"
-      assert html =~ "hidden"
-      assert html =~ "Child Stops"
+      assert html =~ "Points"
       assert html =~ "Pathways"
-      assert has_element?(view, "#diagram-legend-panel.hidden")
+      assert has_element?(view, "#diagram-legend-panel[style*='display: none']")
+      assert has_element?(view, "#diagram-legend-trigger[aria-expanded='false']")
     end
 
     test "stop renders a single hit-target rect that also triggers the tooltip", %{
@@ -1653,7 +1654,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       refute has_element?(view, "#child-stop-form")
       refute has_element?(view, "#child-stop-form input[name='stop_id'][readonly]")
       refute has_element?(view, "#child-stop-form button[phx-click='delete_child_stop']")
-      refute has_element?(view, "#diagram-action-strip", "From:")
+      refute has_element?(view, "#plan-hint", "From")
     end
 
     test "switching from add to connect keeps stop clicks available for connect selection", %{
@@ -1690,8 +1691,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> element("#child_stops-#{child_stop.id} [data-stop-hit-target]")
       |> render_click()
 
-      assert has_element?(view, "#diagram-action-strip", "Child Connect After Add")
-      assert has_element?(view, "#diagram-action-strip", "click the destination stop")
+      assert has_element?(view, "#plan-hint", "Child Connect After Add")
+      assert has_element?(view, "#plan-hint", "Click the destination.")
       refute has_element?(view, "#child-stop-form")
     end
 
@@ -1777,7 +1778,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       refute has_element?(view, "#pathways-#{pathway.id}[phx-click='edit_pathway']")
       refute has_element?(view, "#pathway-form")
-      refute has_element?(view, "#diagram-action-strip", "From:")
+      refute has_element?(view, "#plan-hint", "From")
     end
 
     test "view mode pathway click opens pathway drawer", %{
@@ -2321,7 +2322,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       render_hook(view, "stop_clicked", %{"id" => stop_a.id})
 
       # Verify from-stop selection feedback
-      assert has_element?(view, "#diagram-action-strip", "click the destination stop")
+      assert has_element?(view, "#plan-hint", "Click the destination.")
 
       # Click the destination stop — this completes the pathway
       render_hook(view, "stop_clicked", %{"id" => stop_b.id})
@@ -3803,7 +3804,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       }
     end
 
-    test "action strip has sticky positioning when diagram exists", %{
+    test "toolbar sits at the top of the workspace card when a diagram exists", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -3820,11 +3821,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      html = render(view)
-
-      # Assert the action strip contains sticky positioning classes
-      assert html =~ "sticky top-0 z-20"
-      assert html =~ "bg-blue-50"
+      assert has_element?(view, "#diagram-workspace > #diagram-action-strip")
+      assert has_element?(view, "#diagram-workspace #canvas-col #diagram-canvas-wrapper")
+      assert has_element?(view, "#diagram-workspace #side-panel")
     end
 
     test "upload form shows in empty state when no diagram exists", %{
@@ -3842,7 +3841,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       html = render(view)
 
       assert html =~ "Upload floorplan"
-      assert html =~ "No floorplan for this level"
+      assert has_element?(view, "#empty-diagram-state", "No floorplan for")
     end
 
     test "upload button shows 'Replace floorplan' when diagram exists", %{
@@ -4433,7 +4432,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, view, _html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
 
-      assert render(view) =~ "Choose a level to begin"
+      assert has_element?(view, "#no-level-state", "This station has no levels yet")
     end
   end
 
@@ -5830,9 +5829,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#pathway-row-#{cross_level_pathway.id}")
       assert has_element?(view, "#pathway-row-#{cross_level_pathway_mode_2.id}")
-      assert has_element?(view, "#pathway-row-#{cross_level_pathway.id}", level_2.level_id)
-      assert has_element?(view, "#pathway-row-#{cross_level_pathway_mode_2.id}", level_2.level_id)
-      assert has_element?(view, "#pathway-row-#{normal_pathway.id}", "—")
+
+      assert has_element?(
+               view,
+               "#pathway-row-#{cross_level_pathway.id}",
+               "to #{level_2.level_name || level_2.level_id}"
+             )
+
+      assert has_element?(
+               view,
+               "#pathway-row-#{cross_level_pathway_mode_2.id}",
+               "to #{level_2.level_name || level_2.level_id}"
+             )
+
+      refute has_element?(view, "#pathway-row-#{normal_pathway.id}", "· to ")
 
       assert has_element?(
                view,
@@ -5849,8 +5859,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "#child_stops-#{level_1_stop_b.id} [data-cross-level-pathway-badge]"
              )
 
-      assert has_element?(view, "#diagram-legend-panel", "Cross-level Stairs")
-      assert has_element?(view, "#diagram-legend-panel", "Cross-level Elevator")
+      assert has_element?(view, "#diagram-legend-panel", "Pathway to another level")
     end
 
     test "clicking a cross-level badge opens pathway drawer for that pathway only", %{
@@ -6490,7 +6499,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "flip_pathway", %{"id" => "not-a-uuid"})
 
-      assert has_element?(view, "#lists-section", "Pathway not found.")
+      assert has_element?(view, "#pathways-table-error", "Pathway not found.")
     end
 
     test "flip pathway with missing id shows not found error without crashing", %{
@@ -6507,7 +6516,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "flip_pathway", %{})
 
-      assert has_element?(view, "#lists-section", "Pathway not found.")
+      assert has_element?(view, "#pathways-table-error", "Pathway not found.")
     end
 
     test "flip pathway with stale valid id shows not found error without crashing", %{
@@ -6524,7 +6533,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_click(view, "flip_pathway", %{"id" => Ecto.UUID.generate()})
 
-      assert has_element?(view, "#lists-section", "Pathway not found.")
+      assert has_element?(view, "#pathways-table-error", "Pathway not found.")
     end
 
     test "flip pathway for pathway outside station shows unauthorized error without crashing", %{
@@ -6578,7 +6587,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "flip_pathway", %{"id" => unauthorized_pathway.id})
 
-      assert has_element?(view, "#lists-section", "Unauthorized pathway access.")
+      assert has_element?(view, "#pathways-table-error", "Unauthorized pathway access.")
     end
   end
 
@@ -6737,7 +6746,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert Decimal.equal?(updated_pathway.length, Decimal.new("12.50"))
       assert Decimal.equal?(updated_pathway.min_width, Decimal.new("1.25"))
       assert updated_pathway.signposted_as == "Updated Nested Sign"
-      refute has_element?(view, "#lists-section", "Unauthorized pathway access.")
+      refute has_element?(view, "#pathways-table-error", "Unauthorized pathway access.")
     end
 
     test "saving a single pathway closes the drawer and the row reflects saved fields", %{
@@ -6777,7 +6786,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert saved.signposted_as == "Single Saved Sign"
 
       assert has_element?(view, "#pathway-row-#{nested_pathway.id}")
-      assert has_element?(view, "#pathway-row-#{nested_pathway.id}", "Single Saved Sign")
+      assert has_element?(view, "#pathway-row-#{nested_pathway.id}", "63 s")
     end
 
     test "save_pathway authorization failure keeps submitted form values and shows drawer error",
@@ -7223,7 +7232,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(view, "#pathway-row-#{first.id}")
       assert has_element?(view, "#pathway-row-#{second.id}")
-      assert has_element?(view, "#pathway-row-#{second.id}", "Saved While Paired")
+      assert has_element?(view, "#pathway-row-#{second.id}", "87 s")
 
       reloaded_first = Gtfs.get_pathway!(first.id)
       reloaded_second = Gtfs.get_pathway!(second.id)
@@ -7352,7 +7361,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#lists-section .text-error",
+               "#pathways-table-error",
                "This stop pair already has two pathways"
              )
     end
@@ -7809,7 +7818,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       stop_level = Gtfs.get_stop_level(organization.id, gtfs_version.id, station.id, level.id)
       refute is_nil(stop_level.scale_point_a)
       refute is_nil(stop_level.scale_point_b)
-      assert has_element?(view, "button[phx-click='toggle_measurement']", "Scale")
+      assert has_element?(view, "#scale-actions-trigger", "Scale")
     end
 
     test "saved scale label uses top-node anchor attributes with right offset", %{
@@ -8360,7 +8369,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "span.text-error",
+               "#pathways-table-error",
                "Length calculation requires stops on the same level."
              )
     end
@@ -8740,7 +8749,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       {:ok, _view, html} =
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
-      assert html =~ "Apply naming"
+      assert html =~ "Standardize stop IDs"
     end
 
     test "clicking Apply naming opens drawer with name-based preview by default", %{
@@ -8771,7 +8780,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ "naming-drawer"
       assert html =~ "CHILD_N1"
       assert html =~ "child-n1-01"
-      assert html =~ "Apply naming convention"
+      assert html =~ "Standardize stop IDs"
       assert html =~ "kebab-case"
     end
 
@@ -8842,7 +8851,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_click(view, "open_naming_drawer")
       view |> element("button", "Name-based") |> render_click()
-      html = view |> element("button", "Apply naming convention") |> render_click()
+      html = view |> element("#apply-naming-convention") |> render_click()
 
       assert html =~ "Renamed 1 child stop"
       assert html =~ "updated 0 pathway references"
@@ -9013,8 +9022,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       html = render_click(view, "open_naming_drawer")
       refute has_element?(view, "#naming-row-RESET_CHILD.opacity-40")
       assert has_element?(view, "input[aria-label='Select RESET_CHILD for renaming'][checked]")
-      assert has_element?(view, "button.btn-primary", "Name-based")
-      refute has_element?(view, "button.btn-primary", "Structured")
+      assert has_element?(view, "#naming-style button[aria-pressed='true']", "Name-based")
+      refute has_element?(view, "#naming-style button[aria-pressed='true']", "Structured")
       assert html =~ "kebab-case"
       assert html =~ "reset-child-01"
       refute html =~ "deterministic convention"
@@ -9068,7 +9077,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       |> element("input[aria-label='Select SUBSET_UNSELECTED for renaming']")
       |> render_click()
 
-      html = view |> element("button", "Apply naming convention") |> render_click()
+      html = view |> element("#apply-naming-convention") |> render_click()
 
       assert html =~ "Renamed 1 child stop"
 
@@ -9086,8 +9095,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       html = render_click(view, "open_naming_drawer")
 
-      assert has_element?(view, "button.btn-primary", "Name-based")
-      refute has_element?(view, "button.btn-primary", "Structured")
+      assert has_element?(view, "#naming-style button[aria-pressed='true']", "Name-based")
+      refute has_element?(view, "#naming-style button[aria-pressed='true']", "Structured")
       assert html =~ "kebab-case"
       assert html =~ "subset-unselected-01"
       refute html =~ "deterministic convention"
@@ -9217,9 +9226,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
         live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram")
 
       render_click(view, "open_naming_drawer")
-      view |> element("button", "Apply naming convention") |> render_click()
+      view |> element("#apply-naming-convention") |> render_click()
 
-      html = view |> element("button", "Dismiss") |> render_click()
+      html = view |> element("#naming-status button", "Dismiss") |> render_click()
       refute html =~ "Renamed"
     end
   end
@@ -10035,7 +10044,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "form[phx-change='switch_level'] button[name='level_id'][value='#{level_2.id}'][aria-current='true']"
+               "#level-option-#{level_2.id}[aria-current='true']"
              )
 
       state = :sys.get_state(view.pid)

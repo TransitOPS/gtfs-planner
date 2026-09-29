@@ -108,10 +108,7 @@ async function openDiagram(page) {
   await page.waitForSelector("#child-stops-table", { timeout: 20000 });
   await selectSeededDiagramLevel(page);
   await expect(
-    page.locator("#child-stops-table").getByRole("button", {
-      name: CHILD_STOP,
-      exact: true,
-    }),
+    page.locator("#child-stops-table").getByRole("button", { name: CHILD_STOP }),
   ).toBeVisible();
   return versionId;
 }
@@ -782,10 +779,11 @@ test.describe("History tab keyboard contracts", () => {
   }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await openDiagram(page);
+    await page.locator("#panel-tab-pathways").click();
 
     await openDrawer(
       page,
-      page.locator("#pathways-table button[phx-click='edit_pathway']").first(),
+      page.locator("#pathways-panel button[phx-click='edit_pathway']").first(),
       "pathway-drawer-overlay",
     );
 
@@ -798,7 +796,7 @@ test.describe("History tab keyboard contracts", () => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await openDiagram(page);
 
-    await page.locator("#level-control-trigger").click();
+    await page.locator("#diagram-more-trigger").click();
     await page.waitForSelector("#edit-level-action", {
       state: "visible",
       timeout: 10000,

@@ -40,7 +40,7 @@ defmodule GtfsPlannerWeb.Components.DiagramPaletteTest do
     declarations = DiagramPalette.css_custom_properties()
 
     assert declarations == DiagramPalette.css_custom_properties()
-    assert declarations =~ "--diagram-active-stop: #0B5FFF"
+    assert declarations =~ "--diagram-active-stop: #1A2654"
     assert declarations =~ "--diagram-label-halo: #FFFFFF"
     assert declarations =~ "--diagram-degraded: #6B7280"
     assert declarations =~ "--diagram-journal-open: #B45309"

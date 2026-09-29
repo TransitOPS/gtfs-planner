@@ -127,48 +127,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalComponentsTest do
     end
   end
 
-  describe "journal_trigger/1" do
-    test "exposes the panel relationship, state, and count as a compact link-style trigger" do
-      html =
-        render_component(&StationJournalComponents.journal_trigger/1,
-          entry_count: 3,
-          panel_open?: false
-        )
-
-      d = doc(html)
-      trigger = LazyHTML.query(d, "#journal-trigger")
-
-      assert LazyHTML.attribute(trigger, "aria-controls") == ["station-journal-panel"]
-      assert LazyHTML.attribute(trigger, "aria-expanded") == ["false"]
-      assert LazyHTML.attribute(trigger, "phx-click") == ["open_journal"]
-      assert LazyHTML.attribute(trigger, "class") |> List.first() =~ "py-1.5"
-
-      assert LazyHTML.query(d, "#journal-trigger-count") |> LazyHTML.text() |> String.trim() ==
-               "3"
-    end
-
-    test "acts as the close control when the panel is already open" do
-      html =
-        render_component(&StationJournalComponents.journal_trigger/1,
-          entry_count: 0,
-          panel_open?: true
-        )
-
-      trigger = html |> doc() |> LazyHTML.query("#journal-trigger")
-
-      assert LazyHTML.attribute(trigger, "aria-expanded") == ["true"]
-      assert LazyHTML.attribute(trigger, "phx-click") == ["close_journal"]
-    end
-  end
-
   describe "journal_panel/1 ready presentation" do
-    test "renders the 340px panel hierarchy, close control, entry count, and polite status" do
+    test "renders the panel hierarchy, close control, entry count, and polite status" do
       html = render_panel()
       d = doc(html)
       panel = LazyHTML.query(d, "aside#station-journal-panel")
 
       assert LazyHTML.attribute(panel, "aria-label") == ["Station journal"]
-      assert LazyHTML.attribute(panel, "class") |> List.first() =~ "w-[340px]"
+      assert LazyHTML.attribute(panel, "class") |> List.first() =~ "w-full"
       assert Enum.count(LazyHTML.query(d, "#journal-panel-close[phx-click='close_journal']")) == 1
 
       assert LazyHTML.query(d, "#journal-count-summary") |> LazyHTML.text() |> String.trim() ==

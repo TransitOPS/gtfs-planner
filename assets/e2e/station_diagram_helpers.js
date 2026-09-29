@@ -39,18 +39,13 @@ export async function loginAndGoToDiagram(page) {
 }
 
 export async function selectSeededDiagramLevel(page, levelId = "BROWSER_L1") {
-  const trigger = page.locator("#level-control-trigger");
-  const option = page.locator(
-    `#level-control-panel [data-level-id="${levelId}"]`,
-  );
+  const tab = page.locator(`#level-control [data-level-id="${levelId}"]`);
 
-  if ((await option.getAttribute("aria-current")) === "true") return;
+  if ((await tab.getAttribute("aria-current")) === "true") return;
 
-  await trigger.click();
-  await expect(page.locator("#level-control-panel")).toBeVisible();
-  await option.click();
-  await expect(option).toHaveAttribute("aria-current", "true");
-  await expect(trigger).toBeFocused();
+  await tab.click();
+  await expect(tab).toHaveAttribute("aria-current", "true");
+  await expect(tab).toBeFocused();
 }
 
 export async function selectDiagramMode(page, mode) {

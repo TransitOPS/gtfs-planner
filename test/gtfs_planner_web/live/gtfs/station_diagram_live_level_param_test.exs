@@ -103,15 +103,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveLevelParamTest do
 
     assert has_element?(
              view,
-             "form[phx-change='switch_level'] button[data-level-id='L2'][aria-current='true']"
+             "#level-control button[data-level-id='L2'][aria-current='true']"
            )
 
     refute has_element?(
              view,
-             "form[phx-change='switch_level'] button[data-level-id='L1'][aria-current='true']"
+             "#level-control button[data-level-id='L1'][aria-current='true']"
            )
 
-    assert has_element?(view, "#level-control-trigger[aria-label='Level, Upper']")
+    assert has_element?(
+             view,
+             "#level-control button[data-level-id='L2'][aria-current='true']",
+             "Upper"
+           )
   end
 
   test "an unknown level query parameter keeps the default level without an error flash", %{
@@ -128,7 +132,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveLevelParamTest do
 
     assert has_element?(
              view,
-             "form[phx-change='switch_level'] button[data-level-id='L1'][aria-current='true']"
+             "#level-control button[data-level-id='L1'][aria-current='true']"
            )
 
     refute has_element?(view, "#flash-error")
@@ -148,7 +152,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveLevelParamTest do
 
     assert has_element?(
              view,
-             "form[phx-change='switch_level'] button[data-level-id='L1'][aria-current='true']"
+             "#level-control button[data-level-id='L1'][aria-current='true']"
            )
 
     refute has_element?(view, "#flash-error")
@@ -168,19 +172,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveLevelParamTest do
 
     assert has_element?(
              view,
-             "form[phx-change='switch_level'] button[data-level-id='L1'][aria-current='true']"
+             "#level-control button[data-level-id='L1'][aria-current='true']"
            )
 
     render_patch(view, "#{base_path}?level=L2")
 
     assert has_element?(
              view,
-             "form[phx-change='switch_level'] button[data-level-id='L2'][aria-current='true']"
+             "#level-control button[data-level-id='L2'][aria-current='true']"
            )
 
     refute has_element?(
              view,
-             "form[phx-change='switch_level'] button[data-level-id='L1'][aria-current='true']"
+             "#level-control button[data-level-id='L1'][aria-current='true']"
            )
   end
 end

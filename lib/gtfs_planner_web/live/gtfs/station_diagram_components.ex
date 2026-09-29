@@ -7,8 +7,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   import GtfsPlannerWeb.CoreComponents
 
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [drawer_footer: 1, drawer_scroll: 1, form_section: 1, message: 1, unsaved_badge: 1]
+
   import GtfsPlannerWeb.Gtfs.StationJournalComponents,
-    only: [journal_trigger: 1, journal_context_box: 1, entity_journal_panel: 1]
+    only: [journal_context_box: 1, entity_journal_panel: 1]
 
   import GtfsPlannerWeb.Live.Gtfs.ChangeHistoryComponents
 
@@ -46,34 +49,35 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <%= cond do %>
       <% is_nil(@station_editing_status) -> %>
-        <.button
+        <button
           id="mark-editing-button"
           type="button"
-          variant="quiet"
-          class="border border-transparent text-base-content hover:bg-base-200"
+          title="Tell others you're working on this station"
+          class="inline-flex min-h-11 items-center gap-1.5 rounded-control px-2.5 text-[13px] font-[650] text-muted hover:bg-canvas hover:text-strong"
           phx-click="set_station_editing_status"
         >
-          Mark as editing
-        </.button>
+          <.icon name="hero-pencil" class="size-4" /> Mark as editing
+        </button>
       <% @is_owner -> %>
-        <div class="inline-flex items-center gap-2 rounded-full border border-info/40 bg-base-100 px-3 py-1.5 text-sm">
-          <span id="editing-status-text" role="status" class="text-info">
+        <div class="inline-flex items-center gap-1 rounded-control bg-info-bg pl-3 text-[13px] text-info-fg">
+          <span id="editing-status-text" role="status" class="font-[650]">
             You're editing
           </span>
-          <.button
+          <button
             id="done-editing-button"
             type="button"
-            variant="quiet"
-            size="sm"
+            class="inline-flex min-h-11 items-center rounded-control px-3 text-[13px] font-[650] text-info-fg underline underline-offset-4 hover:bg-white/50"
             phx-click="clear_station_editing_status"
           >
             I'm done
-          </.button>
+          </button>
         </div>
       <% true -> %>
-        <div class="inline-flex items-center gap-2 rounded-full border border-info/40 bg-base-100 px-3 py-1.5 text-sm">
-          <span id="editing-status-text" role="status" class="text-info">
-            {@station_editing_status.user.email} is editing
+        <div class="inline-flex min-h-11 items-center gap-2 rounded-control bg-warning-bg px-3 text-[13px] text-warning-fg">
+          <.icon name="hero-users" class="size-4" />
+          <span id="editing-status-text" role="status">
+            <span class="font-[650]">{@station_editing_status.user.email}</span>
+            is editing
             <time
               datetime={DateTime.to_iso8601(@station_editing_status.started_at)}
               class="sr-only"
@@ -88,17 +92,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   end
 
   # ============================================================================
-  # Diagram Action Strip
+  # Diagram Action Strip (the workspace toolbar)
   # ============================================================================
 
+  # One 56px row that holds what a mapper changes every few minutes, which
+  # level and what a click does, and the rare per-level and per-station tasks
+  # behind More. Counts live once, on the side panel's tabs.
   attr :mode, :atom, required: true
-  attr :selected_from_stop, :any, default: nil
   attr :has_diagram, :boolean, required: true
-  attr :measurement_enabled, :boolean, default: false
-  attr :ruler_point_a, :any, default: nil
-  attr :ruler_point_b, :any, default: nil
   attr :has_scale, :boolean, default: false
-  attr :scale_status, :any, default: nil
   attr :active_stop_level, :any, default: nil
   attr :levels, :list, default: []
   attr :levels_with_floorplan, :any, default: nil
@@ -106,195 +108,101 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :active_level_name, :string, default: ""
   attr :other_levels, :list, default: []
   attr :enabled_count, :integer, default: 0
-  attr :child_stops_list, :list, default: []
-  attr :stop_search_form, :any, required: true
   attr :station, :any, required: true
-  attr :journal_scope, :any, default: nil
-  attr :journal_entry_count, :integer, default: 0
-  attr :journal_panel_open?, :boolean, default: false
 
   def diagram_action_strip(assigns) do
     open_panel =
-      JS.toggle(to: "#level-control-panel")
-      |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: "#level-control-trigger")
+      JS.toggle(to: "#diagram-more-panel")
+      |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: "#diagram-more-trigger")
 
     close_panel =
-      JS.hide(to: "#level-control-panel")
-      |> JS.set_attribute({"aria-expanded", "false"}, to: "#level-control-trigger")
-
-    scale_open =
-      JS.toggle(to: "#scale-actions-panel")
-      |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: "#scale-actions-trigger")
-
-    scale_close =
-      JS.hide(to: "#scale-actions-panel")
-      |> JS.set_attribute({"aria-expanded", "false"}, to: "#scale-actions-trigger")
+      JS.hide(to: "#diagram-more-panel")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "#diagram-more-trigger")
 
     mode_options = [
-      {"View", "view"},
+      %{label: "Select", value: "view", icon: "hero-cursor-arrow-rays"},
       %{
-        label: "Add stop",
+        label: "Add point",
         value: "add",
+        icon: "hero-map-pin",
         disabled: not assigns.has_diagram
       },
       %{
         label: "Connect",
         value: "connect",
+        icon: "hero-link",
         disabled: not assigns.has_diagram
       },
-      %{
-        label: "Align",
-        value: "map",
-        disabled: not assigns.has_diagram
-      }
+      %{label: "Align", value: "map", icon: "hero-map", disabled: not assigns.has_diagram}
     ]
-
-    scale_value =
-      case assigns[:active_stop_level] do
-        %{scale_meters_per_unit: %Decimal{} = mpu} ->
-          mpu
-          |> Decimal.round(3)
-          |> Decimal.normalize()
-          |> Decimal.to_string()
-
-        _ ->
-          nil
-      end
 
     assigns =
       assigns
       |> assign(:open_panel, open_panel)
       |> assign(:close_panel, close_panel)
-      |> assign(:scale_open, scale_open)
-      |> assign(:scale_close, scale_close)
       |> assign(:mode_options, mode_options)
-      |> assign(:scale_value, scale_value)
-      |> assign(:group_disabled_reason, nil)
+      |> assign(:level_tabs, sort_levels(assigns.levels))
 
     ~H"""
     <div
       id="diagram-action-strip"
-      class="sticky top-0 z-20 relative border-b border-blue-200 bg-blue-50 px-4 sm:px-6 lg:px-8 py-2"
+      class="relative z-20 flex min-h-[56px] flex-wrap items-stretch gap-x-3 border-b border-subtle px-2 sm:px-3"
     >
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <a
-          id="skip-to-floorplan"
-          href="#floorplan-workspace"
-          phx-click={JS.focus(to: "#floorplan-workspace")}
-          class="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-2 focus:z-40 focus:bg-primary focus:text-primary-content focus:text-sm focus:font-medium focus:rounded-md focus:px-3 focus:py-1.5 focus:shadow-lg"
+      <a
+        id="skip-to-floorplan"
+        href="#floorplan-workspace"
+        phx-click={JS.focus(to: "#floorplan-workspace")}
+        class="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-2 focus:z-40 focus:rounded-control focus:bg-action focus:px-3 focus:py-1.5 focus:text-sm focus:font-[650] focus:text-white focus:shadow-float"
+      >
+        Skip to floorplan
+      </a>
+
+      <span
+        :if={@mode in [:add, :connect, :map]}
+        id="diagram-station-name"
+        class="my-1.5 mr-1 inline-flex min-h-11 max-w-[14rem] items-center self-center text-[13px] font-semibold text-muted"
+      >
+        <span class="truncate">{@station.stop_name || @station.stop_id}</span>
+      </span>
+
+      <nav
+        id="level-control"
+        aria-label="Levels"
+        class="-mb-px flex min-w-0 max-w-full items-stretch overflow-x-auto"
+      >
+        <span class="flex shrink-0 items-center pr-2 text-[13px] text-muted">Level</span>
+        <button
+          :for={level <- @level_tabs}
+          id={"level-option-#{level.id}"}
+          type="button"
+          data-level-id={level.level_id}
+          aria-current={@active_level && level.id == @active_level.id && "true"}
+          phx-click={JS.push("switch_level", value: %{level_id: level.id})}
+          class={[
+            "-mb-px inline-flex min-h-[55px] shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-3 text-sm font-semibold",
+            "focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus",
+            if(@active_level && level.id == @active_level.id,
+              do: "border-action text-action",
+              else: "border-transparent text-default hover:border-subtle hover:text-strong"
+            )
+          ]}
         >
-          Skip to floorplan
-        </a>
+          {level.level_name || level.level_id}
+          <span
+            :if={not level_has_floorplan?(@levels_with_floorplan, level)}
+            class={[
+              "text-[12px] font-normal",
+              if(@active_level && level.id == @active_level.id, do: "text-action", else: "text-muted")
+            ]}
+          >
+            · No floorplan
+          </span>
+        </button>
+      </nav>
 
-        <span
-          :if={@mode in [:add, :connect, :map]}
-          class="text-sm font-medium text-base-content shrink-0"
-        >
-          {@station.stop_name || @station.stop_id}
-        </span>
+      <div class="mx-1 hidden h-6 w-px shrink-0 self-center bg-subtle sm:block"></div>
 
-        <.level_disclosure
-          levels={@levels}
-          levels_with_floorplan={@levels_with_floorplan}
-          active_level={@active_level}
-          active_level_name={@active_level_name}
-          has_diagram={@has_diagram}
-          open_panel={@open_panel}
-          close_panel={@close_panel}
-        />
-
-        <div :if={@mode == :view} id="scale-control">
-          <.scale_control
-            active_stop_level={@active_stop_level}
-            measurement_enabled={@measurement_enabled}
-            has_scale={@has_scale}
-            scale_value={@scale_value}
-            scale_open={@scale_open}
-            scale_close={@scale_close}
-          />
-        </div>
-
-        <.journal_trigger
-          :if={@journal_scope && @mode in [:view, :add, :connect]}
-          entry_count={@journal_entry_count}
-          panel_open?={@journal_panel_open?}
-        />
-
-        <%= cond do %>
-          <% @mode == :view -> %>
-            <span :if={@measurement_enabled} class="text-sm text-base-content/70 mx-auto">
-              {view_mode_instruction(@measurement_enabled, @ruler_point_a, @ruler_point_b)}
-            </span>
-            <.form
-              :if={not @measurement_enabled}
-              for={@stop_search_form}
-              id="stop-search-form"
-              phx-submit="search_stop"
-              class="ml-auto flex items-center"
-            >
-              <div class="flex h-11 w-full items-center gap-2 rounded-md border border-control-border bg-base-100 px-3 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20 sm:w-52">
-                <span
-                  class="hero-magnifying-glass size-4 shrink-0 text-base-content/70"
-                  aria-hidden="true"
-                >
-                </span>
-                <input
-                  type="search"
-                  id="stop-id-search"
-                  name="stop_id_query"
-                  value={@stop_search_form[:stop_id_query].value}
-                  aria-label="Search stops by ID"
-                  placeholder="Search stops"
-                  autocomplete="off"
-                  class="w-full min-w-0 bg-transparent text-sm focus:outline-none"
-                />
-              </div>
-            </.form>
-          <% @mode == :add -> %>
-            <span class="text-sm text-base-content/70 mx-auto">
-              Click floorplan to add a child stop
-            </span>
-            <button
-              id="keyboard-create-stop"
-              type="button"
-              class="btn btn-sm btn-ghost min-h-11"
-              phx-click="open_create_form"
-            >
-              Enter coordinates
-            </button>
-          <% @mode == :connect && @selected_from_stop == nil -> %>
-            <span class="text-sm text-base-content/70 mx-auto">
-              Click a stop to start a connection
-            </span>
-          <% @mode == :connect && @selected_from_stop != nil -> %>
-            <div class="mx-auto flex items-center gap-2">
-              <span class="text-sm text-base-content/70">
-                From
-                <span class="font-medium text-base-content">
-                  {@selected_from_stop.stop_name || @selected_from_stop.stop_id}
-                </span>
-                · click the destination stop
-              </span>
-              <button
-                type="button"
-                class="btn btn-sm btn-ghost min-h-11 min-w-11"
-                phx-click="clear_from_selection"
-                aria-label="Clear starting stop"
-              >
-                <.icon name="hero-x-mark" class="size-4" />
-              </button>
-            </div>
-          <% @mode == :map -> %>
-            <span class="text-sm text-base-content/70 mx-auto">
-              Align the floorplan over real-world imagery
-            </span>
-            <.other_levels_panel
-              :if={@has_diagram}
-              other_levels={@other_levels}
-              enabled_count={@enabled_count}
-            />
-        <% end %>
-
+      <div class="my-1.5 self-center max-sm:hidden">
         <.segmented_control
           id="diagram-mode"
           name="mode"
@@ -304,149 +212,117 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           value={Atom.to_string(@mode)}
           event="switch_mode"
           appearance={:joined}
-          disabled_reason={@group_disabled_reason}
+          emphasis={:selection}
         />
       </div>
 
-      <div
-        :if={@scale_status}
-        id="scale-status"
-        role="status"
-        aria-live="polite"
-        class="flex items-center gap-2 pt-2 text-sm text-base-content/70"
+      <p
+        :if={not @has_diagram}
+        id="diagram-mode-reason"
+        class="max-w-[22rem] self-center text-[12.5px] leading-snug text-muted max-sm:hidden"
       >
-        <span>{@scale_status}</span>
-        <button
-          type="button"
-          class="btn btn-ghost btn-xs min-h-11 min-w-11"
-          phx-click="dismiss_scale_status"
-          aria-label="Dismiss status"
-        >
-          <.icon name="hero-x-mark" class="size-4" />
-        </button>
+        Add point, Connect and Align need a floorplan on {@active_level_name}.
+      </p>
+
+      <div class="ml-auto flex items-center gap-1 self-center">
+        <.other_levels_panel
+          :if={@mode == :map and @has_diagram}
+          other_levels={@other_levels}
+          enabled_count={@enabled_count}
+        />
+
+        <div class="relative">
+          <button
+            id="diagram-more-trigger"
+            type="button"
+            class="flex min-h-11 items-center gap-1 rounded-control px-2.5 text-sm font-[650] text-strong hover:bg-canvas"
+            aria-expanded="false"
+            aria-controls="diagram-more-panel"
+            phx-click={@open_panel}
+          >
+            <.icon name="hero-ellipsis-horizontal" class="size-4" /> More
+            <.icon name="hero-chevron-down" class="size-3.5 text-muted" />
+          </button>
+
+          <div
+            id="diagram-more-panel"
+            phx-click-away={@close_panel}
+            phx-window-keydown={@close_panel}
+            phx-key="escape"
+            style="display: none;"
+            class="absolute right-0 top-full z-40 mt-1 w-64 rounded-card border border-subtle bg-white p-1.5 shadow-float"
+          >
+            <p
+              :if={@active_level}
+              class="px-3 pb-1 pt-1.5 text-[12.5px] font-[650] text-muted"
+            >
+              {@active_level_name}
+            </p>
+            <button
+              :if={@active_level}
+              id="edit-level-action"
+              type="button"
+              class={menu_item_class()}
+              phx-click={@close_panel |> JS.push("open_edit_level")}
+            >
+              Edit level…
+            </button>
+            <button
+              :if={@active_level && @has_diagram}
+              id="replace-floorplan-action"
+              type="button"
+              class={menu_item_class()}
+              phx-click={@close_panel |> JS.push("open_diagram_upload_drawer")}
+            >
+              Replace floorplan…
+            </button>
+            <button
+              :if={@active_level && @has_diagram && @mode == :view}
+              id="set-scale-action"
+              type="button"
+              class={menu_item_class()}
+              phx-click={@close_panel |> JS.push("toggle_measurement")}
+            >
+              {if @has_scale, do: "Recalibrate scale", else: "Set scale"}
+            </button>
+            <div :if={@active_level} class="my-1 border-t border-subtle"></div>
+            <p class="px-3 pb-1 pt-1.5 text-[12.5px] font-[650] text-muted">Station</p>
+            <button
+              id="add-level-action"
+              type="button"
+              class={menu_item_class()}
+              phx-click={@close_panel |> JS.push("open_add_level")}
+            >
+              Add level…
+            </button>
+            <button
+              id="apply-naming-action"
+              type="button"
+              class={menu_item_class()}
+              phx-click={@close_panel |> JS.push("open_naming_drawer")}
+            >
+              Standardize stop IDs…
+            </button>
+          </div>
+        </div>
       </div>
     </div>
     """
   end
 
-  # ============================================================================
-  # Level Disclosure
-  # ============================================================================
+  defp menu_item_class,
+    do:
+      "flex min-h-11 w-full items-center rounded-control px-3 text-left text-sm text-strong hover:bg-canvas"
 
-  attr :levels, :list, required: true
-  attr :levels_with_floorplan, :any, default: nil
-  attr :active_level, :any, default: nil
-  attr :active_level_name, :string, default: ""
-  attr :has_diagram, :boolean, required: true
-  attr :open_panel, :any, required: true
-  attr :close_panel, :any, required: true
-
-  defp level_disclosure(assigns) do
-    ~H"""
-    <div id="level-control" class="relative">
-      <button
-        id="level-control-trigger"
-        type="button"
-        class="inline-flex items-center gap-2 bg-base-100 border border-control-border rounded-md pl-3 pr-2 min-h-11 text-sm font-medium hover:bg-base-200"
-        aria-expanded="false"
-        aria-controls="level-control-panel"
-        aria-label={"Level, #{@active_level_name}"}
-        phx-click={@open_panel}
-      >
-        <span class="text-base-content/70 font-normal">Level</span>
-        <span class="text-base-content">{@active_level_name}</span>
-        <.icon name="hero-chevron-down" class="size-3.5 text-base-content/70" />
-      </button>
-
-      <div
-        id="level-control-panel"
-        phx-click-away={@close_panel}
-        phx-window-keydown={@close_panel}
-        phx-key="escape"
-        style="display: none;"
-        class="absolute left-0 top-full mt-1 w-60 border border-base-300 bg-base-100 rounded-box shadow-lg z-30 text-sm"
-      >
-        <div class="px-3 py-1.5 text-[11px] font-medium text-base-content/40 uppercase tracking-wide">
-          Switch level
-        </div>
-        <form phx-change="switch_level">
-          <button
-            :for={level <- @levels}
-            id={"level-option-#{level.id}"}
-            type="button"
-            name="level_id"
-            value={level.id}
-            data-level-id={level.level_id}
-            class={[
-              "flex items-center justify-between w-full px-3 py-2 min-h-11 hover:bg-base-200",
-              @active_level && level.id == @active_level.id &&
-                "bg-primary/10 text-primary font-medium",
-              @active_level && level.id == @active_level.id && "aria-current-true"
-            ]}
-            aria-current={@active_level && level.id == @active_level.id && "true"}
-            phx-click={
-              @close_panel
-              |> JS.push("switch_level", value: %{level_id: level.id})
-              |> JS.focus(to: "#level-control-trigger")
-            }
-          >
-            <span class="flex items-center gap-2">
-              {level.level_name || level.level_id}
-              <span
-                :if={not level_has_floorplan?(@levels_with_floorplan, level)}
-                class="text-[11px] text-warning"
-              >
-                No floorplan
-              </span>
-            </span>
-            <span :if={@active_level && level.id == @active_level.id} aria-hidden="true">
-              <.icon name="hero-check" class="size-4" />
-            </span>
-          </button>
-        </form>
-        <div class="border-t border-base-300 my-1"></div>
-        <button
-          id="add-level-action"
-          type="button"
-          class="block w-full text-left px-3 py-2 min-h-11 hover:bg-base-200"
-          phx-click={@close_panel |> JS.push("open_add_level")}
-        >
-          Add level…
-        </button>
-        <button
-          :if={@active_level}
-          id="edit-level-action"
-          type="button"
-          class="block w-full text-left px-3 py-2 min-h-11 hover:bg-base-200"
-          phx-click={@close_panel |> JS.push("open_edit_level")}
-        >
-          Edit {@active_level_name}…
-        </button>
-        <button
-          :if={@active_level && @has_diagram}
-          id="replace-floorplan-action"
-          type="button"
-          class="block w-full text-left px-3 py-2 min-h-11 hover:bg-base-200"
-          phx-click={@close_panel |> JS.push("open_diagram_upload_drawer")}
-        >
-          Replace floorplan…
-        </button>
-
-        <div class="border-t border-base-300 my-1"></div>
-        <div class="px-3 py-1.5 text-[11px] font-medium text-base-content/40 uppercase tracking-wide">
-          Station
-        </div>
-        <button
-          id="apply-naming-action"
-          type="button"
-          class="block w-full text-left px-3 py-2 min-h-11 hover:bg-base-200"
-          phx-click={@close_panel |> JS.push("open_naming_drawer")}
-        >
-          Apply naming…
-        </button>
-      </div>
-    </div>
-    """
+  # Top floor first, the way a rider reads a station. A level without an index
+  # sorts last so it never hides between two real floors.
+  defp sort_levels(levels) do
+    Enum.sort_by(levels, fn level ->
+      case level.level_index do
+        index when is_number(index) -> {0, -index}
+        _ -> {1, 0}
+      end
+    end)
   end
 
   # Membership of the set the LiveView derives from `list_levels_for_station/3`,
@@ -462,91 +338,227 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp level_has_floorplan?(_, _), do: true
 
   # ============================================================================
-  # Scale Control
+  # Workspace status bar and scale status
   # ============================================================================
 
+  # One message on the left, the level's scale on the right. The outcome of the
+  # last action replaces the mode hint; the canvas chip carries the instruction
+  # for Add point, Connect and setting the scale, so the line never repeats it.
+  attr :mode, :atom, required: true
+  attr :has_diagram, :boolean, required: true
+  attr :measurement_enabled, :boolean, default: false
+  attr :has_scale, :boolean, default: false
   attr :active_stop_level, :any, default: nil
+  attr :scale_status, :any, default: nil
+  attr :placement_status, :any, default: nil
+  attr :naming_status, :any, default: nil
+
+  def workspace_status(assigns) do
+    facts = scale_facts(assigns.active_stop_level)
+
+    assigns =
+      assigns
+      |> assign(:scale_value, facts.value)
+      |> assign(:scale_distance, facts.distance)
+      |> assign(:plan_width, facts.width)
+      |> assign(:hint, mode_hint(assigns))
+      |> assign(
+        :outcomes,
+        [
+          {"scale-status", "dismiss_scale_status", assigns.scale_status},
+          {"placement-status", "dismiss_placement_status", assigns.placement_status},
+          {"naming-status", "dismiss_naming_status", assigns.naming_status}
+        ]
+        |> Enum.filter(fn {_id, _event, message} -> message end)
+      )
+
+    ~H"""
+    <div
+      :if={@has_diagram or @outcomes != []}
+      id="diagram-status-bar"
+      class="flex min-h-11 flex-wrap items-center gap-x-4 gap-y-1 border-t border-subtle bg-white px-3 py-1 text-[13px]"
+    >
+      <p
+        :for={{id, event, message} <- @outcomes}
+        id={id}
+        role="status"
+        aria-live="polite"
+        class="inline-flex min-w-0 items-center gap-1.5 font-[650] text-cyan-800"
+      >
+        <.icon name="hero-check" class="size-3.5 shrink-0" />
+        <span class="min-w-0">{message}</span>
+        <button
+          type="button"
+          class="inline-flex min-h-11 items-center rounded-control px-2 font-[650] text-cyan-800 underline underline-offset-4 hover:bg-canvas"
+          phx-click={event}
+        >
+          Dismiss
+        </button>
+      </p>
+      <p
+        :if={@outcomes == [] && @hint}
+        id="mode-hint"
+        class="min-w-0 text-muted max-sm:hidden sm:truncate"
+      >
+        {@hint}
+      </p>
+      <p
+        :if={@outcomes == [] && @has_diagram}
+        id="mode-hint-phone"
+        class="min-w-0 text-muted sm:hidden"
+      >
+        Placing points and drawing pathways needs a larger screen.
+      </p>
+
+      <div :if={@has_diagram} id="scale-control" class="ml-auto flex items-center gap-2">
+        <.scale_control
+          measurement_enabled={@measurement_enabled}
+          has_scale={@has_scale}
+          scale_value={@scale_value}
+          scale_distance={@scale_distance}
+          plan_width={@plan_width}
+          editable={@mode == :view}
+        />
+      </div>
+    </div>
+    """
+  end
+
+  defp scale_facts(%{scale_meters_per_unit: %Decimal{} = mpu} = stop_level) do
+    %{
+      value: mpu |> Decimal.round(3) |> Decimal.normalize() |> Decimal.to_string(:normal),
+      width: mpu |> Decimal.mult(100) |> Decimal.round(0) |> Decimal.to_string(:normal),
+      distance: measured_distance(stop_level)
+    }
+  end
+
+  defp scale_facts(_stop_level), do: %{value: nil, width: nil, distance: nil}
+
+  defp measured_distance(%{scale_distance_meters: %Decimal{} = meters}),
+    do: meters |> Decimal.round(1) |> Decimal.normalize() |> Decimal.to_string(:normal)
+
+  defp measured_distance(_stop_level), do: nil
+
+  defp mode_hint(%{has_diagram: false}), do: nil
+
+  defp mode_hint(%{mode: :view, measurement_enabled: true}),
+    do: "Mark two points a known distance apart, such as the width of a corridor."
+
+  defp mode_hint(%{mode: :view}),
+    do: "Click a point or pathway to edit it. Hold a point, then drag to move it."
+
+  defp mode_hint(_assigns), do: nil
+
   attr :measurement_enabled, :boolean, default: false
   attr :has_scale, :boolean, default: false
   attr :scale_value, :string, default: nil
-  attr :scale_open, :any, required: true
-  attr :scale_close, :any, required: true
+  attr :scale_distance, :string, default: nil
+  attr :plan_width, :string, default: nil
+  attr :editable, :boolean, default: true
 
   defp scale_control(assigns) do
+    scale_open =
+      JS.toggle(to: "#scale-actions-panel")
+      |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: "#scale-actions-trigger")
+
+    scale_close =
+      JS.hide(to: "#scale-actions-panel")
+      |> JS.set_attribute({"aria-expanded", "false"}, to: "#scale-actions-trigger")
+
+    assigns =
+      assigns
+      |> assign(:scale_open, scale_open)
+      |> assign(:scale_close, scale_close)
+
     ~H"""
     <%= cond do %>
       <% @measurement_enabled -> %>
-        <div class="inline-flex items-center gap-2">
-          <span class="inline-flex items-center gap-1.5 text-xs font-medium text-warning border border-warning/40 rounded-full px-2.5 py-1.5">
-            Setting scale
-          </span>
-          <button
-            type="button"
-            class="btn btn-ghost btn-sm min-h-11"
-            phx-click="toggle_measurement"
-          >
-            Cancel
-          </button>
-        </div>
+        <span class="inline-flex min-h-11 items-center gap-1.5 font-[650] text-info-fg">
+          <.ruler_icon class="size-4" /> Setting scale
+        </span>
+        <button
+          type="button"
+          class="inline-flex min-h-11 items-center rounded-control px-2 font-[650] text-action hover:bg-selection"
+          phx-click="toggle_measurement"
+        >
+          Cancel
+        </button>
+      <% @has_scale and not @editable -> %>
+        <span class="inline-flex min-h-11 items-center gap-1.5 text-muted">
+          <.ruler_icon class="size-4" /> Scale {@scale_value} m per unit
+        </span>
       <% @has_scale -> %>
         <div class="relative">
-          <div class="inline-flex items-stretch overflow-hidden rounded-full border border-success/60 text-xs font-medium text-success">
-            <button
-              type="button"
-              class="inline-flex items-center gap-1.5 pl-3 pr-2 py-1.5 hover:bg-success/10"
-              phx-click="toggle_measurement"
-              aria-label={"Scale set to #{@scale_value} meters per diagram unit. Recalibrate."}
-            >
-              <span>Scale</span>
-              <span>·</span>
-              <span>{@scale_value} m/unit</span>
-            </button>
-            <button
-              id="scale-actions-trigger"
-              type="button"
-              class="inline-flex items-center justify-center border-l border-success/60 px-2 py-1.5 hover:bg-success/10"
-              aria-expanded="false"
-              aria-controls="scale-actions-panel"
-              aria-label="Scale options"
-              phx-click={@scale_open}
-            >
-              <.icon name="hero-chevron-down" class="size-3.5" />
-            </button>
-          </div>
+          <button
+            id="scale-actions-trigger"
+            type="button"
+            class="inline-flex min-h-11 items-center gap-1.5 rounded-control px-2 text-default hover:bg-canvas"
+            aria-expanded="false"
+            aria-controls="scale-actions-panel"
+            aria-label={"Scale #{@scale_value} meters per diagram unit. Scale options."}
+            phx-click={@scale_open}
+          >
+            <.ruler_icon class="size-4 text-muted" /> Scale {@scale_value} m per unit
+            <.icon name="hero-chevron-down" class="size-3.5 text-muted" />
+          </button>
           <div
             id="scale-actions-panel"
             phx-click-away={@scale_close}
             phx-window-keydown={@scale_close}
             phx-key="escape"
             style="display: none;"
-            class="absolute left-0 top-full mt-1 w-48 border border-base-300 bg-base-100 rounded-box shadow-lg z-30 text-sm"
+            class="absolute bottom-full right-0 z-30 mb-1 w-64 rounded-card border border-subtle bg-white p-1.5 shadow-float"
           >
+            <p :if={@scale_distance} class="px-3 pb-1 pt-1.5 text-[12.5px] text-muted">
+              Measured over {@scale_distance} m. The plan is about {@plan_width} m across.
+            </p>
             <button
               type="button"
-              class="block w-full text-left px-3 py-2 min-h-11 hover:bg-base-200"
+              class={menu_item_class()}
               phx-click={@scale_close |> JS.push("toggle_measurement")}
             >
               Recalibrate scale
             </button>
             <button
               type="button"
-              class="block w-full text-left px-3 py-2 min-h-11 hover:bg-base-200"
+              class={menu_item_class()}
               phx-click={@scale_close |> JS.push("clear_calibration")}
             >
               Clear scale
             </button>
           </div>
         </div>
-      <% true -> %>
+      <% @editable -> %>
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 text-xs font-medium text-warning border border-warning/60 rounded-full px-2.5 py-1.5 hover:border-warning"
+          title="Lengths can't be measured from the plan until you set a scale"
+          class="inline-flex min-h-11 items-center gap-1.5 rounded-control px-2 font-[650] text-warning-fg hover:bg-warning-bg"
           phx-click="toggle_measurement"
-          aria-label="No scale set. Set scale."
         >
-          No scale · Set scale
+          <.icon name="hero-exclamation-triangle" class="size-4" /> No scale · Set scale
         </button>
+      <% true -> %>
+        <span class="inline-flex min-h-11 items-center text-muted">No scale set</span>
     <% end %>
+    """
+  end
+
+  attr :class, :string, default: "size-4"
+
+  defp ruler_icon(assigns) do
+    ~H"""
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+      class={["shrink-0", @class]}
+    >
+      <path d="M3 17 17 3l4 4L7 21zM8 16l1.5 1.5M11 13l1.5 1.5M14 10l1.5 1.5M17 7l1.5 1.5" />
+    </svg>
     """
   end
 
@@ -566,32 +578,39 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <.drawer
       id="diagram-upload-drawer"
+      chrome="planner"
       open={@open}
       on_close="close_diagram_upload_drawer"
       title={"Replace floorplan for #{@active_level_name}"}
       initial_focus={:first_field}
-      return_focus_id="level-control-trigger"
-      class="max-w-[min(100vw,32rem)]"
+      return_focus_id="diagram-more-trigger"
+      class="max-w-[480px]"
     >
+      <:lede>Replacing it resets the scale. Placed points and pathways stay where they are.</:lede>
       <form
         :if={@has_diagram}
         id="diagram-upload-form-replace"
         phx-change="upload_diagram"
-        class="space-y-4"
+        class="flex min-h-0 flex-1 flex-col"
       >
-        <.upload_field
-          id="replace-floorplan-upload"
-          upload={@upload}
-          label="Floorplan image"
-          help="PNG or JPEG, up to 10 MB."
-          cancel_event="cancel_diagram_upload"
-          state={upload_phase_to_state(@upload_phase)}
-          disabled={@upload_phase in [:uploading, :validating, :probing_candidate, :committing]}
-          pending_label={upload_pending_label(@upload_phase)}
-        />
-        <p :if={@diagram_error} class="text-sm text-error">
-          {@diagram_error}
-        </p>
+        <.drawer_scroll>
+          <.upload_field
+            id="replace-floorplan-upload"
+            upload={@upload}
+            label="Floorplan image"
+            help="PNG or JPEG, up to 10 MB."
+            cancel_event="cancel_diagram_upload"
+            state={upload_phase_to_state(@upload_phase)}
+            disabled={@upload_phase in [:uploading, :validating, :probing_candidate, :committing]}
+            pending_label={upload_pending_label(@upload_phase)}
+          />
+          <.message
+            :if={@diagram_error}
+            id="diagram-upload-error"
+            kind="error"
+            title={@diagram_error}
+          />
+        </.drawer_scroll>
       </form>
     </.drawer>
     """
@@ -909,7 +928,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign_review_projection()
 
     ~H"""
-    <div>
+    <div class="flex min-h-0 flex-1 flex-col">
       <%!-- `tabindex="-1"` is what makes the keyboard bindings on this element
       reachable. The hook binds nudging and hold-to-hide here rather than on the
       ignored canvas, because the tools panel is a sibling of that canvas
@@ -1401,11 +1420,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           </div>
         </div>
       </div>
-      <div class="pt-3 pb-4">
+      <div class="shrink-0 border-t border-subtle bg-white py-2">
         <%!-- Read on the left, act on the right, and the three kinds of acting
         kept apart: view changes nothing, assist moves the floorplan, commit
         writes to the database. --%>
-        <div id="map-alignment-commit-bar" class="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div
+          id="map-alignment-commit-bar"
+          class="flex flex-wrap items-center gap-x-4 gap-y-2 px-3"
+        >
           <dl class="flex min-w-0 shrink flex-wrap items-center gap-x-5 gap-y-1 text-xs">
             <div
               id="map-alignment-residual"
@@ -2389,10 +2411,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :active_point_id, :any
   attr :pending_xy, :any
   attr :selected_stop_id, :any
+  attr :selected_from_stop, :any, default: nil
   attr :mode, :atom, required: true
-  attr :uploads, :any, required: true
   attr :cross_level_badges_by_stop, :map, default: %{}
-  attr :diagram_error, :string, default: nil
   attr :organization_id, :string, required: true
   attr :gtfs_version_id, :string, required: true
   attr :ruler_point_a, :any, default: nil
@@ -2403,6 +2424,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :has_diagram, :boolean, default: false
   attr :upload, :any, default: nil
   attr :upload_phase, :atom, default: :idle
+  attr :point_count, :integer, default: 0
 
   def diagram_canvas(assigns) do
     canvas_key = diagram_canvas_key(assigns.active_level, assigns.active_stop_level)
@@ -2421,7 +2443,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:image_href, image_href)
 
     ~H"""
-    <div class="relative bg-base-200 border border-base-300 rounded-lg overflow-hidden">
+    <div id="plan-wrap" class="relative size-full overflow-hidden bg-canvas">
       <%= cond do %>
         <% @active_stop_level && @active_stop_level.diagram_filename -> %>
           <svg
@@ -2431,7 +2453,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             viewBox="0 0 100 100"
             preserveAspectRatio="xMidYMid meet"
             class={[
-              "w-full block",
+              "absolute inset-0 block size-full",
               if(@mode == :view, do: "cursor-default", else: "cursor-crosshair")
             ]}
           >
@@ -2464,12 +2486,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             aria-hidden="true"
           >
           </div>
-          <.diagram_hints_and_legend has_scale={@scale_point_a != nil and @scale_point_b != nil} />
+          <.plan_hint
+            mode={@mode}
+            selected_from_stop={@selected_from_stop}
+            measurement_enabled={@measurement_enabled}
+            ruler_point_a={@ruler_point_a}
+            ruler_point_b={@ruler_point_b}
+          />
+          <.plan_controls />
         <% @active_level -> %>
           <.empty_diagram_state
             has_diagram={@has_diagram}
             upload={@upload}
             upload_phase={@upload_phase}
+            level_name={@active_level.level_name || @active_level.level_id}
+            point_count={@point_count}
           />
         <% true -> %>
           <.no_level_state />
@@ -3674,10 +3705,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     String.slice(line, 0, room) <> "..."
   end
 
-  defp view_mode_instruction(true, nil, _point_b), do: "Click first ruler point"
-  defp view_mode_instruction(true, _point_a, nil), do: "Click second ruler point"
-  defp view_mode_instruction(true, _point_a, _point_b), do: "Enter real-world distance and save"
-  defp view_mode_instruction(false, _point_a, _point_b), do: "Click a stop to view or edit"
+  defp view_mode_instruction(true, nil, _point_b), do: "Click the first end of a known distance."
+  defp view_mode_instruction(true, _point_a, nil), do: "Click the other end."
+
+  defp view_mode_instruction(true, _point_a, _point_b),
+    do: "Enter the real-world distance and save."
 
   defp stop_name_with_platform(stop) do
     name = present_text(stop.stop_name)
@@ -4047,309 +4079,382 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     end
   end
 
-  attr :has_scale, :boolean, default: false
+  # The one instruction a step in progress needs, on the plan where the eye is.
+  # The status bar never repeats it. Resting in Select, nothing sits on the plan.
+  attr :mode, :atom, required: true
+  attr :selected_from_stop, :any, default: nil
+  attr :measurement_enabled, :boolean, default: false
+  attr :ruler_point_a, :any, default: nil
+  attr :ruler_point_b, :any, default: nil
 
-  defp diagram_hints_and_legend(assigns) do
+  defp plan_hint(assigns) do
+    assigns = assign(assigns, :step, plan_hint_step(assigns))
+
     ~H"""
-    <div class="absolute bottom-2 left-2 z-10 flex items-center gap-0.5 bg-black/50 text-white rounded-lg px-2 py-1.5 backdrop-blur-sm">
-      <%!-- Pan controls --%>
-      <button
-        type="button"
-        data-pan="up"
-        aria-label="Pan up"
-        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
-      >
-        <.icon name="hero-chevron-up" class="w-4 h-4" />
-      </button>
-      <button
-        type="button"
-        data-pan="down"
-        aria-label="Pan down"
-        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
-      >
-        <.icon name="hero-chevron-down" class="w-4 h-4" />
-      </button>
-      <button
-        type="button"
-        data-pan="left"
-        aria-label="Pan left"
-        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
-      >
-        <.icon name="hero-chevron-left" class="w-4 h-4" />
-      </button>
-      <button
-        type="button"
-        data-pan="right"
-        aria-label="Pan right"
-        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
-      >
-        <.icon name="hero-chevron-right" class="w-4 h-4" />
-      </button>
-
-      <div class="w-px h-5 bg-white/30 mx-1"></div>
-
-      <%!-- Zoom controls --%>
-      <button
-        type="button"
-        data-zoom="out"
-        aria-label="Zoom out"
-        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
-      >
-        <.icon name="hero-minus" class="w-4 h-4" />
-      </button>
-      <span data-zoom-label class="text-xs font-mono w-10 text-center select-none">100%</span>
-      <button
-        type="button"
-        data-zoom="in"
-        aria-label="Zoom in"
-        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
-      >
-        <.icon name="hero-plus" class="w-4 h-4" />
-      </button>
-
-      <button
-        type="button"
-        data-reset="true"
-        aria-label="Reset view"
-        class="btn btn-ghost btn-square size-11 text-white hover:bg-white/20"
-      >
-        <.icon name="hero-arrows-pointing-out" class="w-4 h-4" />
-      </button>
-
-      <div class="w-px h-5 bg-white/30 mx-1"></div>
-
-      <span
-        :if={!@has_scale}
-        class="badge badge-xs border bg-amber-100 border-amber-300 text-amber-900"
-      >
-        No scale
-      </span>
-      <button
-        type="button"
-        phx-click={JS.toggle(to: "#diagram-legend-panel")}
-        class="btn btn-xs btn-ghost text-white border-white/30 hover:bg-white/20"
-      >
-        Show Key
-      </button>
-    </div>
     <div
-      id="diagram-legend-panel"
-      class="hidden absolute bottom-12 left-2 z-10 bg-base-100 border border-base-300 rounded-box shadow-lg p-4 max-h-[70vh] overflow-y-auto w-72"
+      :if={@step}
+      id="plan-hint"
+      class="pointer-events-none absolute left-3 top-3 z-10 max-w-[calc(100%-24px)]"
     >
-      <div class="flex items-center justify-between mb-3">
-        <h3 class="font-semibold text-sm">Key</h3>
-        <button
-          type="button"
-          phx-click={JS.toggle(to: "#diagram-legend-panel")}
-          class="btn btn-ghost btn-xs"
-          aria-label="Close legend"
+      <div class="pointer-events-auto inline-flex items-center gap-2.5 rounded-control border border-subtle bg-white/95 py-1 pl-2 pr-2 text-[13px] text-strong shadow-card">
+        <span
+          :if={@step != ""}
+          class="grid size-6 shrink-0 place-items-center rounded-full bg-selection text-[12.5px] font-bold text-action"
         >
-          <.icon name="hero-x-mark" class="w-4 h-4" />
-        </button>
+          {@step}
+        </span>
+        <%= cond do %>
+          <% @mode == :view and @measurement_enabled -> %>
+            <span>{view_mode_instruction(true, @ruler_point_a, @ruler_point_b)}</span>
+            <button
+              type="button"
+              class="-my-1 inline-flex min-h-9 items-center rounded-control px-2.5 text-sm font-[650] text-action hover:bg-selection"
+              phx-click="toggle_measurement"
+            >
+              Cancel
+            </button>
+          <% @mode == :add -> %>
+            <span>Click the floorplan where the point belongs.</span>
+          <% @mode == :connect and @selected_from_stop == nil -> %>
+            <span>Click the starting point.</span>
+          <% @mode == :connect -> %>
+            <span>
+              From <strong class="font-[650]">{stop_display_name(@selected_from_stop)}</strong>.
+              Click the destination.
+            </span>
+            <button
+              type="button"
+              class="-my-1 inline-flex min-h-9 items-center rounded-control px-2.5 text-sm font-[650] text-action hover:bg-selection"
+              phx-click="clear_from_selection"
+              aria-label="Clear starting stop"
+            >
+              Clear start
+            </button>
+          <% true -> %>
+        <% end %>
       </div>
+    </div>
+    """
+  end
 
-      <div class="mb-4">
-        <h4 class="text-xs font-semibold text-base-content/70 uppercase tracking-wide mb-2">
-          Child Stops
-        </h4>
-        <div class="space-y-1.5">
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="14" height="22" class="shrink-0">
-              <rect x="2" y="2" width="10" height="18" rx="1" fill="#0080FF" />
-            </svg>
-            <span>Platform</span>
-          </div>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="14" height="22" class="shrink-0">
-              <rect
-                x="2"
-                y="2"
-                width="10"
-                height="18"
-                rx="1"
-                fill="#fff"
-                stroke="#0080FF"
-                stroke-width="1.5"
-              />
-            </svg>
-            <span>Entrance / Exit</span>
-          </div>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="14" height="14" class="shrink-0">
-              <circle cx="7" cy="7" r="6" fill="#0080FF" />
-            </svg>
-            <span>Generic Node</span>
-          </div>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="14" height="14" class="shrink-0">
-              <rect x="1" y="1" width="12" height="12" rx="1" fill="#0080FF" />
-            </svg>
-            <span>Boarding Area</span>
-          </div>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="16" height="16" class="shrink-0">
-              <path d="M 3 14 L 3 10 L 6 10 L 6 6 L 9 6 L 9 2 L 13 2 L 13 14 Z" fill="#FF00FF" />
-            </svg>
-            <span>Cross-level Stairs</span>
-          </div>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="16" height="16" class="shrink-0">
-              <path d="M 8 2 L 12 7 L 4 7 Z M 8 14 L 12 9 L 4 9 Z" fill="#FF00FF" />
-            </svg>
-            <span>Cross-level Elevator</span>
-          </div>
+  # The numbered step a chip shows: measuring counts its two points, Connect
+  # its start and destination, and Add point is one click, so it has no number.
+  defp plan_hint_step(%{mode: :view, measurement_enabled: true, ruler_point_a: nil}), do: 1
+  defp plan_hint_step(%{mode: :view, measurement_enabled: true}), do: 2
+  defp plan_hint_step(%{mode: :add}), do: ""
+  defp plan_hint_step(%{mode: :connect, selected_from_stop: nil}), do: 1
+  defp plan_hint_step(%{mode: :connect}), do: 2
+  defp plan_hint_step(_assigns), do: nil
+
+  defp stop_display_name(nil), do: ""
+  defp stop_display_name(stop), do: stop.stop_name || stop.stop_id
+
+  # Key at the lower left, view controls at the lower right, on the plan and
+  # nowhere else. The pan buttons exist for keyboard operators, so they appear
+  # once focus is inside the plan (`#plan-wrap:focus-within`, in the page CSS);
+  # mouse users pan with Shift-drag or the middle button.
+  defp plan_controls(assigns) do
+    ~H"""
+    <div
+      id="plan-key"
+      class="pointer-events-none absolute inset-y-3 left-3 z-20 flex flex-col justify-end"
+    >
+      <div
+        id="diagram-legend-panel"
+        role="dialog"
+        aria-label="Key"
+        phx-click-away={close_key()}
+        phx-window-keydown={close_key(JS.focus(to: "#diagram-legend-trigger[aria-expanded='true']"))}
+        phx-key="escape"
+        style="display: none;"
+        class="pointer-events-auto mb-2 min-h-0 w-[300px] max-w-[calc(100vw-48px)] overflow-y-auto rounded-card border border-subtle bg-white p-4 shadow-float"
+      >
+        <div class="flex items-center justify-between">
+          <h3 class="text-[15px] font-bold text-strong">Key</h3>
+          <button
+            type="button"
+            id="diagram-legend-close"
+            aria-label="Close key"
+            class="-mr-2 -mt-2 grid size-11 place-items-center rounded-control text-muted hover:bg-canvas hover:text-strong"
+            phx-click={close_key() |> JS.focus(to: "#diagram-legend-trigger")}
+          >
+            <.icon name="hero-x-mark" class="size-4" />
+          </button>
         </div>
-      </div>
 
-      <div>
-        <h4 class="text-xs font-semibold text-base-content/70 uppercase tracking-wide mb-2">
-          Pathways
-        </h4>
-        <div class="space-y-1.5">
-          <%!-- Mode 1: Walkway — solid line, bidirectional arrows --%>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="40" height="10" class="shrink-0">
-              <polygon points="3,1 0,5 3,9" fill="#FF00FF" />
-              <line x1="3" y1="5" x2="37" y2="5" stroke="#FF00FF" stroke-width="2" />
-              <polygon points="37,1 40,5 37,9" fill="#FF00FF" />
-            </svg>
-            <span>Walkway</span>
-          </div>
-          <%!-- Mode 2: Stairs — solid line, one center tick, bidirectional arrows --%>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="40" height="12" class="shrink-0">
-              <polygon points="3,2 0,6 3,10" fill="#FF00FF" />
-              <line x1="3" y1="6" x2="37" y2="6" stroke="#FF00FF" stroke-width="2" />
-              <line x1="20" y1="1" x2="20" y2="11" stroke="#FF00FF" stroke-width="1.2" />
-              <polygon points="37,2 40,6 37,10" fill="#FF00FF" />
-            </svg>
-            <span>Stairs</span>
-          </div>
-          <%!-- Mode 3: Moving Sidewalk — solid line, center X, forward arrow --%>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="40" height="12" class="shrink-0">
-              <line x1="0" y1="6" x2="37" y2="6" stroke="#FF00FF" stroke-width="2" />
-              <line x1="16" y1="1" x2="24" y2="11" stroke="#FF00FF" stroke-width="1.2" />
-              <line x1="24" y1="1" x2="16" y2="11" stroke="#FF00FF" stroke-width="1.2" />
-              <polygon points="37,2 40,6 37,10" fill="#FF00FF" />
-            </svg>
-            <span>Moving Sidewalk</span>
-          </div>
-          <%!-- Mode 4: Escalator — solid line, three center bars, forward arrow --%>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="40" height="12" class="shrink-0">
-              <line x1="0" y1="6" x2="37" y2="6" stroke="#FF00FF" stroke-width="2" />
-              <line x1="16" y1="1" x2="16" y2="11" stroke="#FF00FF" stroke-width="1.2" />
-              <line x1="20" y1="1" x2="20" y2="11" stroke="#FF00FF" stroke-width="1.2" />
-              <line x1="24" y1="1" x2="24" y2="11" stroke="#FF00FF" stroke-width="1.2" />
-              <polygon points="37,2 40,6 37,10" fill="#FF00FF" />
-            </svg>
-            <span>Escalator</span>
-          </div>
-          <%!-- Mode 5: Elevator — solid line, center box with ↕, bidirectional arrows --%>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="40" height="16" class="shrink-0">
-              <polygon points="3,4 0,8 3,12" fill="#FF00FF" />
-              <line x1="3" y1="8" x2="13" y2="8" stroke="#FF00FF" stroke-width="2" />
-              <rect
-                x="13"
-                y="1"
-                width="14"
-                height="14"
-                rx="2"
-                fill="#fff"
-                stroke="#FF00FF"
-                stroke-width="1.5"
-              />
-              <text
-                x="20"
-                y="8"
-                text-anchor="middle"
-                dominant-baseline="central"
-                font-family="Inter, sans-serif"
-                font-size="9"
-                fill="#FF00FF"
-              >
-                ↕
-              </text>
-              <line x1="27" y1="8" x2="37" y2="8" stroke="#FF00FF" stroke-width="2" />
-              <polygon points="37,4 40,8 37,12" fill="#FF00FF" />
-            </svg>
-            <span>Elevator</span>
-          </div>
-          <%!-- Mode 6: Fare Gate — two parallel rails, forward arrow --%>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="40" height="12" class="shrink-0">
-              <line x1="0" y1="4" x2="33" y2="4" stroke="#FF00FF" stroke-width="1.5" />
-              <line x1="0" y1="8" x2="33" y2="8" stroke="#FF00FF" stroke-width="1.5" />
-              <polygon points="35,2 40,6 35,10" fill="#FF00FF" />
-            </svg>
-            <span>Fare Gate</span>
-          </div>
-          <%!-- Mode 7: Exit Gate — two parallel rails, forward arrow --%>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="40" height="12" class="shrink-0">
-              <line x1="0" y1="4" x2="33" y2="4" stroke="#FF00FF" stroke-width="1.5" />
-              <line x1="0" y1="8" x2="33" y2="8" stroke="#FF00FF" stroke-width="1.5" />
-              <polygon points="35,2 40,6 35,10" fill="#FF00FF" />
-            </svg>
-            <span>Exit Gate</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="mt-4 pt-3 border-t border-base-200">
-        <h4 class="text-xs font-semibold text-base-content/70 uppercase tracking-wide mb-2">
-          Journal
-        </h4>
-        <div class="space-y-1.5">
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="14" height="20" class="shrink-0" viewBox="-8 -20 16 22">
+        <p class="mt-1 text-[12.5px] font-[650] text-muted">Points</p>
+        <ul class="mt-1.5 grid gap-1.5">
+          <li
+            :for={
+              {type, label} <- [
+                {0, "Platform"},
+                {2, "Entrance or exit"},
+                {3, "Junction"},
+                {4, "Boarding spot"}
+              ]
+            }
+            class="flex items-center gap-3 text-sm"
+          >
+            <.point_symbol type={type} class="size-5" /> <span>{label}</span>
+          </li>
+          <li class="flex items-center gap-3 text-sm">
+            <span class="grid size-5 shrink-0 place-items-center rounded-full border-2 border-(--diagram-active-stop) bg-white text-(--diagram-active-stop)">
+              <.icon name="hero-arrows-up-down" class="size-3" />
+            </span>
+            <span>Pathway to another level</span>
+          </li>
+          <li class="flex items-center gap-3 text-sm">
+            <svg viewBox="-8 -20 16 22" class="h-5 w-4 shrink-0" aria-hidden="true">
               <path
                 d="M 0 0 C -4 -5.6 -7.2 -8.8 -7.2 -12.8 A 7.2 7.2 0 1 1 7.2 -12.8 C 7.2 -8.8 4 -5.6 0 0 Z"
-                fill="var(--diagram-journal-open)"
-                stroke="var(--diagram-label-halo)"
                 stroke-width="1.2"
+                class="fill-(--diagram-journal-open) stroke-white"
               />
-              <circle cx="0" cy="-12.8" r="2.4" fill="var(--diagram-label-halo)" />
+              <circle cx="0" cy="-12.8" r="2.4" class="fill-white" />
             </svg>
-            <span>Entry Pin</span>
-          </div>
-          <div class="flex items-center gap-2 text-sm">
-            <svg width="14" height="14" class="shrink-0">
+            <span>Journal note placed on the plan</span>
+          </li>
+          <li class="flex items-center gap-3 text-sm">
+            <svg viewBox="0 0 16 16" class="size-5 shrink-0" aria-hidden="true">
               <circle
-                cx="7"
-                cy="7"
-                r="5"
-                fill="var(--diagram-journal-open)"
-                stroke="var(--diagram-label-halo)"
+                cx="8"
+                cy="8"
+                r="4.5"
                 stroke-width="1.5"
+                class="fill-(--diagram-journal-open) stroke-white"
               />
             </svg>
-            <span>Entity Dot</span>
-          </div>
-        </div>
+            <span>Journal note on a point or pathway</span>
+          </li>
+        </ul>
+
+        <p class="mt-3 text-[12.5px] font-[650] text-muted">Pathways</p>
+        <ul class="mt-1.5 grid gap-1.5">
+          <li :for={mode <- 1..7} class="flex items-center gap-3 text-sm">
+            <.pathway_symbol mode={mode} class="h-5 w-9" /> <span>{key_pathway_label(mode)}</span>
+          </li>
+          <li class="text-[12.5px] text-muted">An arrowhead marks a one-way pathway.</li>
+        </ul>
+
+        <p class="mt-3 text-[12.5px] font-[650] text-muted">Moving around</p>
+        <ul class="mt-1.5 grid gap-1 text-[12.5px] text-default">
+          <li>
+            Click a point or pathway to edit it. Hold a point, then drag to move it; Esc cancels.
+          </li>
+          <li>
+            Shift-drag or middle-drag pans. Ctrl or Cmd + scroll zooms; scroll pans when zoomed in.
+          </li>
+          <li>Tab reaches the plan; Enter opens the focused point or pathway.</li>
+        </ul>
+      </div>
+      <button
+        id="diagram-legend-trigger"
+        type="button"
+        aria-expanded="false"
+        aria-controls="diagram-legend-panel"
+        class="pointer-events-auto inline-flex min-h-11 items-center gap-1.5 self-start rounded-control border border-subtle bg-white px-3 text-[13px] font-[650] text-strong shadow-card hover:bg-canvas"
+        phx-click={
+          JS.toggle(to: "#diagram-legend-panel")
+          |> JS.toggle_attribute({"aria-expanded", "true", "false"}, to: "#diagram-legend-trigger")
+        }
+      >
+        <.icon name="hero-list-bullet" class="size-4" /> Key
+      </button>
+    </div>
+
+    <div id="plan-view-controls" class="absolute bottom-3 right-3 z-10 flex items-end gap-2">
+      <div
+        id="pan-cluster"
+        class="items-stretch overflow-clip rounded-control border border-subtle bg-white shadow-card"
+      >
+        <button
+          :for={
+            {direction, label, icon} <- [
+              {"up", "Pan up", "hero-arrow-up"},
+              {"down", "Pan down", "hero-arrow-down"},
+              {"left", "Pan left", "hero-arrow-left"},
+              {"right", "Pan right", "hero-arrow-right"}
+            ]
+          }
+          type="button"
+          data-pan={direction}
+          aria-label={label}
+          title={label}
+          class="grid size-11 place-items-center text-strong hover:bg-canvas [&:not(:first-child)]:border-l [&:not(:first-child)]:border-subtle"
+        >
+          <.icon name={icon} class="size-4" />
+        </button>
+      </div>
+      <div class="flex items-stretch overflow-clip rounded-control border border-subtle bg-white shadow-card">
+        <button
+          type="button"
+          data-zoom="out"
+          aria-label="Zoom out"
+          title="Zoom out"
+          class="grid size-11 place-items-center text-strong hover:bg-canvas"
+        >
+          <.icon name="hero-minus" class="size-4" />
+        </button>
+        <span
+          data-zoom-label
+          class="grid min-w-[52px] select-none place-items-center border-x border-subtle text-[12.5px] font-[650] tabular-nums text-default"
+        >
+          100%
+        </span>
+        <button
+          type="button"
+          data-zoom="in"
+          aria-label="Zoom in"
+          title="Zoom in"
+          class="grid size-11 place-items-center text-strong hover:bg-canvas"
+        >
+          <.icon name="hero-plus" class="size-4" />
+        </button>
+        <button
+          type="button"
+          data-reset="true"
+          aria-label="Reset view"
+          title="Fit the whole floorplan"
+          class="grid size-11 place-items-center border-l border-subtle text-strong hover:bg-canvas"
+        >
+          <.icon name="hero-arrows-pointing-out" class="size-4" />
+        </button>
       </div>
     </div>
+    """
+  end
+
+  defp close_key(js \\ %JS{}) do
+    js
+    |> JS.hide(to: "#diagram-legend-panel")
+    |> JS.set_attribute({"aria-expanded", "false"}, to: "#diagram-legend-trigger")
+  end
+
+  defp key_pathway_label(1), do: "Walkway"
+  defp key_pathway_label(2), do: "Stairs"
+  defp key_pathway_label(3), do: "Moving sidewalk"
+  defp key_pathway_label(4), do: "Escalator"
+  defp key_pathway_label(5), do: "Elevator"
+  defp key_pathway_label(6), do: "Fare gate"
+  defp key_pathway_label(7), do: "Exit gate"
+
+  # The marker a point type draws on the plan, at list and key size. Shape
+  # carries the type, so it reads without the colour.
+  attr :type, :integer, default: 3
+  attr :class, :string, default: "size-4"
+
+  defp point_symbol(assigns) do
+    ~H"""
+    <svg viewBox="0 0 16 16" class={["shrink-0", @class]} aria-hidden="true">
+      <%= case @type do %>
+        <% 0 -> %>
+          <rect x="4.5" y="1.5" width="7" height="13" rx="1.2" class="fill-(--diagram-active-stop)" />
+        <% 2 -> %>
+          <rect
+            x="4.5"
+            y="1.5"
+            width="7"
+            height="13"
+            rx="1.2"
+            stroke-width="1.8"
+            class="fill-white stroke-(--diagram-active-stop)"
+          />
+        <% 4 -> %>
+          <rect
+            x="3.5"
+            y="3.5"
+            width="9"
+            height="9"
+            rx="1.2"
+            class="fill-(--diagram-active-stop)"
+          />
+        <% 1 -> %>
+          <rect
+            x="2.5"
+            y="2.5"
+            width="11"
+            height="11"
+            rx="2"
+            stroke-width="1.8"
+            class="fill-white stroke-(--diagram-active-stop)"
+          />
+        <% _ -> %>
+          <circle cx="8" cy="8" r="5" class="fill-(--diagram-active-stop)" />
+      <% end %>
+    </svg>
+    """
+  end
+
+  # The mark a pathway mode draws on the plan, at list and key size.
+  attr :mode, :integer, default: 1
+  attr :one_way?, :boolean, default: nil
+  attr :class, :string, default: "h-4 w-7"
+
+  defp pathway_symbol(assigns) do
+    one_way? =
+      case assigns.one_way? do
+        nil -> assigns.mode in [3, 4, 6, 7]
+        value -> value
+      end
+
+    assigns = assign(assigns, :arrow?, one_way?)
+
+    ~H"""
+    <svg viewBox="0 0 28 16" class={["shrink-0", @class]} aria-hidden="true">
+      <g
+        fill="none"
+        stroke-linecap="round"
+        class="stroke-(--diagram-pathway-forward)"
+      >
+        <path :if={@mode not in [6, 7]} d="M2 8h24" stroke-width="2.2" />
+        <path :if={@mode == 2} d="M14 3.5v9" stroke-width="1.8" />
+        <path :if={@mode == 3} d="M11 4.5l6 7M17 4.5l-6 7" stroke-width="1.6" />
+        <path :if={@mode == 4} d="M11 3.5v9M14 3.5v9M17 3.5v9" stroke-width="1.6" />
+        <path :if={@mode in [6, 7]} d="M2 5.5h22M2 10.5h22" stroke-width="1.6" />
+        <rect
+          :if={@mode == 5}
+          x="9"
+          y="2.5"
+          width="10"
+          height="11"
+          rx="2"
+          stroke-width="1.8"
+          class="fill-white"
+        />
+        <path :if={@mode == 5} d="M14 5v6M12 6.5l2-2 2 2M12 9.5l2 2 2-2" stroke-width="1.2" />
+      </g>
+      <path :if={@arrow?} d="M22 4.5 27 8l-5 3.5z" class="fill-(--diagram-pathway-forward)" />
+    </svg>
     """
   end
 
   attr :has_diagram, :boolean, default: false
   attr :upload, :any, default: nil
   attr :upload_phase, :atom, default: :idle
+  attr :level_name, :string, required: true
+  attr :point_count, :integer, default: 0
 
   defp empty_diagram_state(assigns) do
     ~H"""
-    <.empty_state
+    <div
       id="empty-diagram-state"
-      title="No floorplan for this level"
-      class="mx-auto my-12 max-w-xl"
+      class="absolute inset-0 grid place-items-center overflow-y-auto bg-canvas p-6"
     >
-      <p>
-        Upload a floorplan image to place stops and pathways on it.
-      </p>
-      <:action>
-        <form id="diagram-upload-form-empty" phx-change="upload_diagram" class="space-y-2">
+      <div class="mx-auto max-w-[520px] text-center">
+        <span class="mx-auto mb-4 grid size-12 place-items-center rounded-full bg-white text-cyan-700">
+          <.icon name="hero-photo" class="size-6" />
+        </span>
+        <h2 class="font-display text-[20px] font-semibold tracking-[-0.02em] text-strong">
+          No floorplan for {@level_name}
+        </h2>
+        <p class="mt-2 text-sm text-muted">
+          Upload an image of this level's floor plan, then place points and pathways on it.
+          <span :if={@point_count > 0}>
+            The {@point_count} {if @point_count == 1, do: "point", else: "points"} already on {@level_name}
+            {if @point_count == 1, do: "is", else: "are"} listed at right.
+          </span>
+        </p>
+        <form id="diagram-upload-form-empty" phx-change="upload_diagram" class="mt-6 space-y-2">
           <.upload_field
             :if={@upload}
             id="empty-floorplan-upload"
@@ -4364,34 +4469,40 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             pending_label={upload_pending_label(@upload_phase)}
           />
         </form>
-      </:action>
-    </.empty_state>
+      </div>
+    </div>
     """
   end
 
   defp no_level_state(assigns) do
     ~H"""
-    <.empty_state
+    <div
       id="no-level-state"
-      title="Choose a level to begin"
-      class="mx-auto my-12 max-w-xl"
+      class="absolute inset-0 grid place-items-center overflow-y-auto bg-canvas p-6"
     >
-      <p>
-        Add a level before uploading a floorplan.
-      </p>
-      <:action>
-        <.button type="button" phx-click="open_add_level">Add level</.button>
-      </:action>
-    </.empty_state>
+      <div class="mx-auto max-w-[520px] text-center">
+        <h2 class="font-display text-[22px] font-semibold tracking-[-0.02em] text-strong">
+          This station has no levels yet
+        </h2>
+        <p class="mt-2 text-sm text-muted">
+          A level is a floor or storey of the station, like Street, Concourse or Platform. Add a
+          level, then upload a floorplan to place points and pathways.
+        </p>
+        <div class="mt-6">
+          <.button type="button" phx-click="open_add_level" class="min-h-11">Add level</.button>
+        </div>
+      </div>
+    </div>
     """
   end
 
   # ============================================================================
-  # Child Stop Drawer
+  # Child Stop Drawer (the point editor)
   # ============================================================================
 
   attr :pending_xy, :any
   attr :selected_stop_id, :any
+  attr :editing_stop, :any, default: nil
   attr :child_stop_form, :any, required: true
   attr :mode, :atom, required: true
   attr :all_levels, :list, required: true
@@ -4433,17 +4544,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     show_toggle =
       assigns.mode == :add && assigns.pending_xy != nil && assigns.selected_stop_id == nil
 
-    drawer_title =
-      cond do
-        assigns.reposition_mode && is_nil(assigns.selected_stop_id) ->
-          "Re-Position Child Stop"
+    reposition? = assigns.reposition_mode && is_nil(assigns.selected_stop_id)
 
-        assigns.selected_stop_id ->
-          "Edit Child Stop"
-
-        true ->
-          "Child Stop"
-      end
+    {drawer_title, drawer_lede} = point_drawer_heading(assigns, reposition?)
 
     show_history_tabs = assigns.selected_stop_id != nil
 
@@ -4458,6 +4561,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     assigns =
       assigns
       |> assign(:drawer_title, drawer_title)
+      |> assign(:drawer_lede, drawer_lede)
+      |> assign(:reposition?, reposition?)
       |> assign(:show_toggle, show_toggle)
       |> assign(:show_history_tabs, show_history_tabs)
       |> assign(:history_active, history_active)
@@ -4475,36 +4580,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <.drawer
       id="child-stop-drawer"
+      chrome="planner"
       open={@pending_xy != nil && (@mode == :add || (@mode == :view && @selected_stop_id != nil))}
       on_close="close_drawer"
       title={@drawer_title}
-      class="max-w-lg"
+      class="max-w-[440px]"
     >
+      <:lede :if={@drawer_lede}>{@drawer_lede}</:lede>
       <:header_actions>
-        <div :if={@show_toggle} class="join">
+        <div :if={@show_toggle} class="inline-flex rounded-control border border-control p-0.5">
           <button
             id="enter-new-stop-mode"
             type="button"
-            class={[
-              "btn btn-sm join-item shadow-none",
-              !@reposition_mode && "bg-emerald-700 text-white border-emerald-700 hover:bg-emerald-800",
-              @reposition_mode && "bg-white text-emerald-800 border-emerald-300 hover:bg-emerald-100"
-            ]}
+            aria-pressed={to_string(!@reposition_mode)}
+            class="inline-flex min-h-10 items-center whitespace-nowrap rounded-[5px] px-3 text-sm font-[650] text-default hover:bg-canvas aria-[pressed=true]:bg-selection aria-[pressed=true]:text-action"
             phx-click="exit_reposition_mode"
           >
-            New Stop
+            New point
           </button>
           <button
             id="enter-reposition-mode"
             type="button"
-            class={[
-              "btn btn-sm join-item shadow-none",
-              @reposition_mode && "bg-emerald-700 text-white border-emerald-700 hover:bg-emerald-800",
-              !@reposition_mode && "bg-white text-emerald-800 border-emerald-300 hover:bg-emerald-100"
-            ]}
+            aria-pressed={to_string(@reposition_mode)}
+            class="inline-flex min-h-10 items-center whitespace-nowrap rounded-[5px] px-3 text-sm font-[650] text-default hover:bg-canvas aria-[pressed=true]:bg-selection aria-[pressed=true]:text-action"
             phx-click="enter_reposition_mode"
           >
-            Re-Position
+            Move an existing point here
           </button>
         </div>
       </:header_actions>
@@ -4524,11 +4625,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         role={if @show_history_tabs, do: "tabpanel"}
         aria-labelledby={if @show_history_tabs, do: "stop-tab-details"}
         hidden={@history_active || @journal_active}
+        class="flex min-h-0 flex-1 flex-col"
       >
-        <.journal_context_box context={@journal_context} />
+        <div :if={@journal_context} class="border-b border-subtle px-5 pt-4 sm:px-6">
+          <.journal_context_box context={@journal_context} />
+        </div>
 
         <.reposition_stop_view
-          :if={@reposition_mode && @selected_stop_id == nil}
+          :if={@reposition?}
           reposition_stops={@reposition_stops}
           reposition_search={@reposition_search}
           active_level={@active_level}
@@ -4537,7 +4641,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         />
 
         <.child_stop_form
-          :if={@pending_xy && !(@reposition_mode && @selected_stop_id == nil)}
+          :if={@pending_xy && !@reposition?}
           child_stop_form={@child_stop_form}
           platform_options={@platform_options}
           selected_stop_id={@selected_stop_id}
@@ -4554,6 +4658,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         role={if @show_history_tabs, do: "tabpanel"}
         aria-labelledby={if @show_history_tabs, do: "stop-tab-history"}
         hidden={!@history_active}
+        class="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6"
       >
         <.change_log_list
           :if={@history_active}
@@ -4576,12 +4681,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         role="tabpanel"
         aria-labelledby="stop-tab-journal"
         hidden={!@journal_active}
+        class="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6"
       >
         <.entity_journal_panel
           :if={@journal_active}
           entity_type="stop"
           entity_id={@selected_stop_id}
-          entity_label="stop"
+          entity_label="point"
           journal_entries={@drawer_journal_entries}
           journal_state={@drawer_journal_state}
           journal_entries_exist?={@drawer_journal_total_count > 0}
@@ -4595,6 +4701,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     </.drawer>
     """
   end
+
+  defp point_drawer_heading(_assigns, true),
+    do: {"Move an existing point here", "Choose the point that belongs at this spot."}
+
+  defp point_drawer_heading(%{selected_stop_id: nil} = assigns, false),
+    do: {"Add a point", "On #{level_display_name(assigns.all_levels, active_level_id(assigns))}."}
+
+  defp point_drawer_heading(%{editing_stop: nil}, false), do: {"Edit point", nil}
+
+  defp point_drawer_heading(%{editing_stop: stop}, false) do
+    {stop.stop_name || stop.stop_id, "#{point_type_label(stop.location_type)} · #{stop.stop_id}"}
+  end
+
+  defp active_level_id(%{active_level: %{level_id: level_id}}), do: level_id
+  defp active_level_id(_assigns), do: nil
 
   attr :reposition_stops, :list, default: []
   attr :reposition_search, :string, default: ""
@@ -4634,41 +4755,37 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       end)
 
     search_form = to_form(%{"query" => assigns.reposition_search}, as: :search)
+    coordinate_form = to_form(%{"x" => assigns.reposition_x, "y" => assigns.reposition_y})
 
     assigns =
       assigns
       |> assign(:search_form, search_form)
+      |> assign(:coordinate_form, coordinate_form)
       |> assign(:unpositioned_stops, unpositioned_stops)
       |> assign(:positioned_stops, positioned_stops)
 
-    coordinate_form = to_form(%{"x" => assigns.reposition_x, "y" => assigns.reposition_y})
-
-    assigns = assign(assigns, :coordinate_form, coordinate_form)
-
     ~H"""
-    <div class="space-y-6">
+    <.drawer_scroll>
       <.form
         for={@coordinate_form}
         id="reposition-coordinate-form"
         phx-change="validate_reposition_coordinates"
       >
-        <fieldset class="space-y-3">
-          <legend class="text-sm font-semibold text-base-content/70">
-            Target diagram coordinate (x, y)
-          </legend>
-          <div class="flex gap-4">
+        <fieldset class="grid gap-1.5">
+          <legend class="text-[13px] font-[650] text-default">Spot on the floorplan</legend>
+          <div class="grid grid-cols-2 gap-3">
             <.input
               field={@coordinate_form[:x]}
               id="reposition-x-input"
               type="number"
-              label="X"
+              label="X, across"
               step="any"
             />
             <.input
               field={@coordinate_form[:y]}
               id="reposition-y-input"
               type="number"
-              label="Y"
+              label="Y, down"
               step="any"
             />
           </div>
@@ -4685,97 +4802,82 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           field={@search_form[:query]}
           id="reposition-search-input"
           type="text"
-          label="Search Child Stops"
-          placeholder="Search by stop ID or name"
+          label="Find a point"
+          placeholder="Find by name or ID"
           phx-debounce="200"
         />
       </.form>
 
-      <section class="space-y-2">
-        <h3 class="text-sm font-semibold text-base-content/70">
-          Unpositioned child stops
-        </h3>
-        <div class="overflow-x-auto">
-          <table id="unpositioned-stops-table" class="table table-sm">
-            <thead class="bg-gray-200">
-              <tr>
-                <th>Stop ID</th>
-                <th>Name</th>
-                <th>Type</th>
-                <th class="text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <%= for stop <- @unpositioned_stops do %>
-                <tr id={"unpositioned-stop-row-#{stop.id}"}>
-                  <td>{stop.stop_id}</td>
-                  <td>{stop.stop_name || "—"}</td>
-                  <td>{Stop.location_type_label(stop.location_type)}</td>
-                  <td class="text-right">
-                    <button
-                      type="button"
-                      class="btn btn-primary btn-xs"
-                      phx-click="reposition_stop"
-                      phx-value-id={stop.id}
-                      aria-label={reposition_row_label("Place here", stop)}
-                    >
-                      Place here
-                    </button>
-                  </td>
-                </tr>
-              <% end %>
-              <tr :if={@unpositioned_stops == []}>
-                <td colspan="4" class="text-sm text-base-content/70">
-                  No matching unpositioned stops.
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+      <section class="grid gap-2">
+        <h3 class="text-[13px] font-[650] text-default">Not placed on this level</h3>
+        <ul
+          id="unpositioned-stops-table"
+          class="divide-y divide-subtle border-y border-subtle"
+        >
+          <li
+            :for={stop <- @unpositioned_stops}
+            id={"unpositioned-stop-row-#{stop.id}"}
+            class="flex items-center justify-between gap-3 py-1.5"
+          >
+            <.reposition_row stop={stop} />
+            <.button
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="reposition_stop"
+              phx-value-id={stop.id}
+              aria-label={reposition_row_label("Place here", stop)}
+            >
+              Place here
+            </.button>
+          </li>
+          <li :if={@unpositioned_stops == []} class="py-3 text-sm text-muted">
+            No matching points to place.
+          </li>
+        </ul>
       </section>
 
-      <section class="space-y-2">
-        <h3 class="text-sm font-semibold text-base-content/70">
-          Positioned stops on this level
-        </h3>
-        <div class="overflow-x-auto">
-          <table id="positioned-stops-table" class="table table-sm">
-            <thead class="bg-gray-200">
-              <tr>
-                <th>Stop ID</th>
-                <th>Name</th>
-                <th>Type</th>
-                <th class="text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <%= for stop <- @positioned_stops do %>
-                <tr id={"positioned-stop-row-#{stop.id}"}>
-                  <td>{stop.stop_id}</td>
-                  <td>{stop.stop_name || "—"}</td>
-                  <td>{Stop.location_type_label(stop.location_type)}</td>
-                  <td class="text-right">
-                    <button
-                      type="button"
-                      class="btn btn-outline btn-xs"
-                      phx-click="reposition_stop"
-                      phx-value-id={stop.id}
-                      aria-label={reposition_row_label("Move here", stop)}
-                    >
-                      Move here
-                    </button>
-                  </td>
-                </tr>
-              <% end %>
-              <tr :if={@positioned_stops == []}>
-                <td colspan="4" class="text-sm text-base-content/70">
-                  No matching positioned stops on this level.
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+      <section class="grid gap-2">
+        <h3 class="text-[13px] font-[650] text-default">Already on this level</h3>
+        <ul id="positioned-stops-table" class="divide-y divide-subtle border-y border-subtle">
+          <li
+            :for={stop <- @positioned_stops}
+            id={"positioned-stop-row-#{stop.id}"}
+            class="flex items-center justify-between gap-3 py-1.5"
+          >
+            <.reposition_row stop={stop} />
+            <.button
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="reposition_stop"
+              phx-value-id={stop.id}
+              aria-label={reposition_row_label("Move here", stop)}
+            >
+              Move here
+            </.button>
+          </li>
+          <li :if={@positioned_stops == []} class="py-3 text-sm text-muted">
+            No matching points on this level.
+          </li>
+        </ul>
       </section>
+    </.drawer_scroll>
+    """
+  end
+
+  attr :stop, :any, required: true
+
+  defp reposition_row(assigns) do
+    ~H"""
+    <div class="flex min-w-0 items-center gap-3">
+      <.point_symbol type={@stop.location_type} />
+      <div class="min-w-0">
+        <p class="truncate text-sm font-[650] text-strong">{@stop.stop_name || @stop.stop_id}</p>
+        <p class="truncate text-[12.5px] text-muted">
+          {point_type_label(@stop.location_type)} · <span class="font-mono">{@stop.stop_id}</span>
+        </p>
+      </div>
     </div>
     """
   end
@@ -4799,20 +4901,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :platform_options, :list, default: []
 
   defp child_stop_form(assigns) do
-    # Location type options for select. GTFS allows 0, 2, 3 and 4 for a point inside a
-    # station; type 1 (Station) must not have a parent station, so it is not offered.
+    # A point inside a station can be a platform, entrance, junction or boarding spot.
+    # Type 1 (Station) must not have a parent station, so it is not offered.
     location_type_options = [
-      {"0 - Stop/Platform", "0"},
-      {"2 - Entrance/Exit", "2"},
-      {"3 - Generic Node", "3"},
-      {"4 - Boarding Area", "4"}
+      {"Platform", "0"},
+      {"Entrance or exit", "2"},
+      {"Junction", "3"},
+      {"Boarding spot", "4"}
     ]
 
     wheelchair_boarding_options = [
-      {"— Unspecified", ""},
-      {"0 - No info", "0"},
-      {"1 - Accessible", "1"},
-      {"2 - Not accessible", "2"}
+      {"Not specified", ""},
+      {"Same as the station", "0"},
+      {"Accessible", "1"},
+      {"Not accessible", "2"}
     ]
 
     current_level_id =
@@ -4830,257 +4932,265 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:current_level_display, current_level_display)
       |> assign(:is_new_stop, assigns.selected_stop_id == nil)
       |> assign(:location_type, location_type)
+      |> assign(:type_hint, point_type_hint(location_type))
       |> assign(:show_platform_code, location_type in [0, 4])
 
     ~H"""
-    <.simple_form
+    <.form
       for={@child_stop_form}
       id="child-stop-form"
       phx-submit="save_child_stop"
       phx-change="validate_child_stop"
+      class="flex min-h-0 flex-1 flex-col"
     >
-      <.input
-        field={@child_stop_form[:stop_name]}
-        type="text"
-        label="Stop Name"
-        placeholder="e.g., Platform A"
-        required
-      />
-
-      <%!--
-        A stop already stored as type 1 has no matching option. The prompt and
-        `required` keep the browser from silently submitting the first option.
-      --%>
-      <.input
-        field={@child_stop_form[:location_type]}
-        type="select"
-        label="Location Type"
-        options={@location_type_options}
-        prompt={if @location_type == 1, do: "— Choose a type"}
-        required={@location_type == 1}
-        help={
-          if @location_type == 1,
-            do: "This point is stored as a station, which can't be inside a station."
-        }
-      />
-
-      <%= if @stop_id_mode == :auto && @is_new_stop do %>
-        <div class="space-y-2">
-          <label class="text-sm font-medium leading-6 text-zinc-800">
-            Stop ID
-          </label>
-          <p class="w-full input input-lg bg-base-200 flex items-center font-mono text-sm">
-            {if @child_stop_form[:stop_id].value in [nil, ""],
-              do: "Type a name above",
-              else: @child_stop_form[:stop_id].value}
-          </p>
-          <.input field={@child_stop_form[:stop_id]} type="hidden" />
-          <button
-            type="button"
-            class="link link-primary text-xs"
-            phx-click="toggle_stop_id_mode"
-          >
-            Set manually
-          </button>
-        </div>
-      <% else %>
-        <div class="space-y-2">
-          <.input
-            field={@child_stop_form[:stop_id]}
-            type="text"
-            label="Stop ID"
-            placeholder="e.g., platform-2-01"
-            required={@is_new_stop && @stop_id_mode == :manual}
-            class="w-full input input-lg"
-          />
-          <p :if={!@is_new_stop} class="text-xs text-base-content/70">
-            Leave blank to auto-generate from stop name
-          </p>
-          <button
-            :if={@is_new_stop}
-            type="button"
-            class="link link-primary text-xs"
-            phx-click="toggle_stop_id_mode"
-          >
-            Auto-generate
-          </button>
-        </div>
-      <% end %>
-
-      <.input
-        field={@child_stop_form[:wheelchair_boarding]}
-        type="select"
-        label="Accessible"
-        options={@wheelchair_boarding_options}
-        help="Optional"
-      />
-
-      <.input
-        :if={@show_platform_code}
-        field={@child_stop_form[:platform_code]}
-        type="text"
-        label="Platform"
-        placeholder="e.g., 2A"
-        help="Optional"
-      />
-
-      <.input
-        :if={@location_type == 4 && @platform_options != []}
-        field={@child_stop_form[:parent_platform]}
-        type="select"
-        label="Parent Platform"
-        options={[{"— None (under station)", ""} | @platform_options]}
-        help="Optional"
-      />
-
-      <p
-        :if={@location_type == 4 && @platform_options == []}
-        id="parent-platform-info"
-        class="text-sm text-base-content/70"
-      >
-        No platforms defined for this station yet.
-      </p>
-
-      <div class="grid grid-cols-2 gap-4">
+      <.drawer_scroll>
         <.input
-          field={@child_stop_form[:stop_lat]}
-          type="number"
-          label="Latitude"
-          placeholder="e.g., 40.046627198009965"
-          step="any"
-          min="-90"
-          max="90"
-          help="Optional"
+          field={@child_stop_form[:stop_name]}
+          type="text"
+          label="Name"
+          placeholder="e.g., Elevator A lobby"
+          help="How riders see this place."
+          required
         />
-        <.input
-          field={@child_stop_form[:stop_lon]}
-          type="number"
-          label="Longitude"
-          placeholder="e.g., -73.987654321098765"
-          step="any"
-          min="-180"
-          max="180"
-          help="Optional"
-        />
-      </div>
 
-      <div class="grid grid-cols-2 gap-4 pt-2 border-t border-base-200">
         <.input
-          field={@child_stop_form[:x]}
-          type="number"
-          label="Diagram X"
-          placeholder="e.g., 42.5"
-          step="any"
-          help="Position on the floorplan (required)"
-        />
-        <.input
-          field={@child_stop_form[:y]}
-          type="number"
-          label="Diagram Y"
-          placeholder="e.g., 78.3"
-          step="any"
-          help="Position on the floorplan (required)"
-        />
-      </div>
-
-      <%= if @selected_stop_id != nil && @editing_level do %>
-        <.input
-          field={@child_stop_form[:level_id]}
-          id="child-stop-level-id-select"
+          field={@child_stop_form[:location_type]}
           type="select"
-          label="Level"
-          options={
-            Enum.map(@all_levels, fn level ->
-              {"#{level.level_name || level.level_id} (#{trunc(level.level_index)})", level.level_id}
-            end)
+          label="Type"
+          options={@location_type_options}
+          prompt={if @location_type == 1, do: "Choose a type"}
+          required={@location_type == 1}
+          help={
+            if @location_type == 1,
+              do: "This point is stored as a station, which can't be inside a station.",
+              else: @type_hint
           }
-          help="GTFS level for this child stop"
         />
-      <% else %>
+
         <.input
-          field={@child_stop_form[:level_id]}
-          id="child-stop-level-id-hidden"
-          type="hidden"
-          value={@current_level_id}
+          field={@child_stop_form[:wheelchair_boarding]}
+          type="select"
+          label="Wheelchair access"
+          options={@wheelchair_boarding_options}
         />
-        <div class="space-y-2">
-          <label class="text-sm font-medium leading-6 text-zinc-800">
-            {if @selected_stop_id == nil, do: "Current Level", else: "Level"}
-          </label>
-          <p class="w-full input input-lg bg-base-200 flex items-center">
-            {@current_level_display}
-          </p>
 
-          <button
-            :if={@selected_stop_id != nil}
-            type="button"
-            class="link link-primary text-xs"
-            phx-click="toggle_level_edit"
-          >
-            Change
-          </button>
-        </div>
-      <% end %>
+        <.input
+          :if={@show_platform_code}
+          field={@child_stop_form[:platform_code]}
+          type="text"
+          label="Platform code (optional)"
+          placeholder="e.g., 2A"
+        />
 
-      <:actions>
-        <div class="flex-1"></div>
-        <button type="button" class="btn btn-ghost" phx-click="close_drawer">
-          Cancel
-        </button>
-        <button type="submit" class="btn btn-primary btn-active">
-          {if @selected_stop_id, do: "Update Stop", else: "Create Stop"}
-        </button>
-      </:actions>
-    </.simple_form>
+        <.input
+          :if={@location_type == 4 && @platform_options != []}
+          field={@child_stop_form[:parent_platform]}
+          type="select"
+          label="On platform (optional)"
+          options={[{"None (directly under the station)", ""} | @platform_options]}
+        />
 
-    <div
-      :if={@selected_stop_id}
-      id="remove-from-diagram-section"
-      class="mt-8 pt-6 border-t border-base-200"
-    >
-      <div class="bg-warning/5 border border-warning/20 rounded-lg p-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <h3 class="text-zinc-700 font-medium">Remove from Diagram</h3>
-            <p class="text-xs text-zinc-500 mt-1">
-              Clears placement. The stop record is kept, but connected pathways are deleted.
-            </p>
+        <p
+          :if={@location_type == 4 && @platform_options == []}
+          id="parent-platform-info"
+          class="text-[13px] text-muted"
+        >
+          No platforms defined for this station yet.
+        </p>
+
+        <fieldset class="grid gap-1.5">
+          <legend class="text-[13px] font-[650] text-default">Position on the floorplan</legend>
+          <div class="grid grid-cols-2 gap-3">
+            <.input
+              field={@child_stop_form[:x]}
+              type="number"
+              label="X, across"
+              placeholder="e.g., 42.5"
+              step="any"
+            />
+            <.input
+              field={@child_stop_form[:y]}
+              type="number"
+              label="Y, down"
+              placeholder="e.g., 78.3"
+              step="any"
+            />
           </div>
-          <button
+          <p class="text-[13px] text-muted">
+            Click or drag on the plan to set it, or type the numbers here.
+          </p>
+        </fieldset>
+
+        <%= if @selected_stop_id != nil && @editing_level do %>
+          <.input
+            field={@child_stop_form[:level_id]}
+            id="child-stop-level-id-select"
+            type="select"
+            label="Level"
+            options={
+              Enum.map(@all_levels, fn level ->
+                {"#{level.level_name || level.level_id} (#{trunc(level.level_index)})",
+                 level.level_id}
+              end)
+            }
+          />
+        <% else %>
+          <.input
+            field={@child_stop_form[:level_id]}
+            id="child-stop-level-id-hidden"
+            type="hidden"
+            value={@current_level_id}
+          />
+          <div class="grid gap-1.5">
+            <span class="text-[13px] font-[650] text-default">Level</span>
+            <div class="flex min-h-11 items-center justify-between gap-3 rounded-control bg-canvas px-3 text-sm">
+              <span>{@current_level_display}</span>
+              <button
+                :if={@selected_stop_id != nil}
+                type="button"
+                class="inline-flex min-h-11 items-center px-1 text-[13px] font-[650] text-action hover:underline"
+                phx-click="toggle_level_edit"
+              >
+                Change
+              </button>
+            </div>
+          </div>
+        <% end %>
+
+        <.form_section title="GTFS details">
+          <%= if @stop_id_mode == :auto && @is_new_stop do %>
+            <div class="grid gap-1.5">
+              <span class="text-[13px] font-[650] text-default">Stop ID</span>
+              <p class="flex min-h-11 items-center rounded-control bg-canvas px-3 font-mono text-[13px]">
+                {if @child_stop_form[:stop_id].value in [nil, ""],
+                  do: "Type a name above",
+                  else: @child_stop_form[:stop_id].value}
+              </p>
+              <.input field={@child_stop_form[:stop_id]} type="hidden" />
+              <p class="text-[13px] text-muted">
+                Made from the type and name.
+                <button
+                  type="button"
+                  class="inline-flex min-h-11 items-center px-1 font-[650] text-action hover:underline"
+                  phx-click="toggle_stop_id_mode"
+                >
+                  Set manually
+                </button>
+              </p>
+            </div>
+          <% else %>
+            <div class="grid gap-1.5">
+              <.input
+                field={@child_stop_form[:stop_id]}
+                type="text"
+                label="Stop ID"
+                placeholder="e.g., platform-2-01"
+                required={@is_new_stop && @stop_id_mode == :manual}
+                help={if(!@is_new_stop, do: "Leave blank to make it from the name.")}
+              />
+              <button
+                :if={@is_new_stop}
+                type="button"
+                class="inline-flex min-h-11 items-center justify-self-start px-1 text-[13px] font-[650] text-action hover:underline"
+                phx-click="toggle_stop_id_mode"
+              >
+                Make it from the name
+              </button>
+            </div>
+          <% end %>
+
+          <div class="grid grid-cols-2 gap-3">
+            <.input
+              field={@child_stop_form[:stop_lat]}
+              type="number"
+              label="Latitude (optional)"
+              placeholder="e.g., 40.0466"
+              step="any"
+              min="-90"
+              max="90"
+            />
+            <.input
+              field={@child_stop_form[:stop_lon]}
+              type="number"
+              label="Longitude (optional)"
+              placeholder="e.g., -73.9877"
+              step="any"
+              min="-180"
+              max="180"
+            />
+          </div>
+        </.form_section>
+
+        <div
+          :if={@selected_stop_id}
+          id="remove-from-diagram-section"
+          class="grid gap-2 border-t border-subtle pt-5"
+        >
+          <h3 class="text-base font-bold text-strong">Remove from the plan</h3>
+          <p class="text-[13px] text-muted">
+            Clears the point's position. The point is kept, but pathways connected to it are deleted.
+          </p>
+          <.button
             id="remove-from-diagram-button"
             type="button"
-            class="btn btn-warning btn-sm btn-active text-white"
+            variant="secondary"
+            class="min-h-11 justify-self-start"
             phx-click="request_confirmation"
             phx-value-action="remove_from_diagram"
             phx-value-id={@selected_stop_id}
             phx-value-origin="remove-from-diagram-button"
           >
-            Remove
-          </button>
+            Remove from plan
+          </.button>
         </div>
-      </div>
-    </div>
 
-    <div :if={@selected_stop_id} class="mt-4">
-      <.callout kind="error" title="Delete Child Stop">
-        <div class="flex items-center justify-between gap-4">
-          <p>This will also delete any pathways connected to this stop.</p>
-          <button
+        <div
+          :if={@selected_stop_id}
+          id="delete-child-stop-section"
+          class="grid gap-2 border-t border-subtle pt-5"
+        >
+          <h3 class="text-base font-bold text-error-fg">Delete point</h3>
+          <p class="text-[13px] text-muted">
+            Deletes the point and any pathways connected to it. This can't be undone.
+          </p>
+          <.button
             id="delete-child-stop-button"
             type="button"
-            class="btn btn-error btn-sm btn-active text-white"
+            variant="danger"
+            class="min-h-11 justify-self-start"
             phx-click="request_confirmation"
             phx-value-action="delete_child_stop"
             phx-value-id={@selected_stop_id}
             phx-value-origin="delete-child-stop-button"
           >
-            Delete Stop
-          </button>
+            Delete point
+          </.button>
         </div>
-      </.callout>
-    </div>
+      </.drawer_scroll>
+
+      <.drawer_footer>
+        <.button
+          id="child-stop-cancel"
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="close_drawer"
+        >
+          Cancel
+        </.button>
+        <.button id="child-stop-submit" type="submit" class="min-h-11">
+          {if @selected_stop_id, do: "Save changes", else: "Create point"}
+        </.button>
+      </.drawer_footer>
+    </.form>
     """
   end
+
+  defp point_type_hint(0), do: "Where riders board a vehicle."
+  defp point_type_hint(1), do: "A station inside this station. Rarely needed."
+  defp point_type_hint(2), do: "Where riders enter or leave the station."
+  defp point_type_hint(4), do: "A spot along a platform where a vehicle stops."
+  defp point_type_hint(_), do: "A landing, hallway or other place where paths meet."
 
   defp level_display_name(_levels, nil), do: "Unassigned"
   defp level_display_name(_levels, ""), do: "Unassigned"
@@ -5231,7 +5341,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp pathway_label_rotation(angle), do: angle
 
   # ============================================================================
-  # Ruler Drawer
+  # Ruler Drawer (the scale)
   # ============================================================================
 
   attr :open, :boolean, required: true
@@ -5241,29 +5351,44 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <.drawer
       id="ruler-drawer"
+      chrome="planner"
       open={@open}
       on_close="close_ruler_drawer"
-      title="Diagram Scale"
-      class="max-w-xl"
+      title="Set the scale"
+      initial_focus={:first_field}
+      class="max-w-[440px]"
     >
-      <.simple_form for={@ruler_form} id="ruler-form" phx-submit="save_ruler">
-        <.input
-          field={@ruler_form[:distance_meters]}
-          type="number"
-          label="Distance (meters)"
-          step="0.01"
-          min="0.01"
-          required
-          help="Enter the real-world distance between the two selected points."
-        />
-
-        <:actions>
-          <div class="flex-1"></div>
-          <button type="submit" class="btn btn-primary btn-active">
-            Save Scale
-          </button>
-        </:actions>
-      </.simple_form>
+      <:lede>Lengths are measured from the plan once it has a scale.</:lede>
+      <.form
+        for={@ruler_form}
+        id="ruler-form"
+        phx-submit="save_ruler"
+        class="flex min-h-0 flex-1 flex-col"
+      >
+        <.drawer_scroll>
+          <.input
+            field={@ruler_form[:distance_meters]}
+            type="number"
+            label="Distance between the two points (meters)"
+            step="0.01"
+            min="0.01"
+            required
+            help="Measure something you know, such as the width of a corridor. Saving recalculates the length of every pathway on this level."
+          />
+        </.drawer_scroll>
+        <.drawer_footer>
+          <.button
+            id="ruler-cancel"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="close_ruler_drawer"
+          >
+            Cancel
+          </.button>
+          <.button id="ruler-submit" type="submit" class="min-h-11">Save scale</.button>
+        </.drawer_footer>
+      </.form>
     </.drawer>
     """
   end
@@ -5315,12 +5440,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     journal_active =
       show_history_tabs and assigns.drawer_journal_open_for == {"pathway", pathway_id}
 
+    {drawer_title, drawer_lede} =
+      case assigns.editing_pathway do
+        %{from_stop: _, to_stop: _} = pathway ->
+          {pathway_row_label(pathway),
+           "#{Pathway.mode_label(pathway.pathway_mode)} · #{pathway.pathway_id}"}
+
+        _ ->
+          {"Edit pathway", nil}
+      end
+
     assigns =
       assigns
       |> assign(:show_history_tabs, show_history_tabs)
       |> assign(:history_active, history_active)
       |> assign(:journal_active, journal_active)
       |> assign(:pathway_id, pathway_id)
+      |> assign(:drawer_title, drawer_title)
+      |> assign(:drawer_lede, drawer_lede)
       |> assign(
         :journal_count,
         entity_journal_count(
@@ -5334,68 +5471,58 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <.drawer
       id="pathway-drawer"
+      chrome="planner"
       open={@open}
       on_close="close_pathway_drawer"
-      title="Edit Pathway"
-      class="max-w-4xl"
+      title={@drawer_title}
+      class="max-w-[560px]"
     >
+      <:lede :if={@drawer_lede}>{@drawer_lede}</:lede>
       <:header_actions>
-        <div class="flex items-center gap-2">
-          <span
-            :if={@pathway_form_dirty}
-            id="pathway-dirty-indicator"
-            class="badge badge-warning badge-sm"
-          >
-            Unsaved changes
-          </span>
-          <div
-            :if={@open and length(@editing_pathway_pair) == 2}
-            id="pathway-pair-tabs"
-            class="flex gap-1"
-          >
-            <button
-              id="pathway-tab-first"
-              type="button"
-              phx-click="switch_pathway_tab"
-              phx-value-tab="first"
-              data-confirm={if @pathway_form_dirty, do: "Discard unsaved pathway changes?"}
-              aria-selected={if @active_pathway_tab == :first, do: "true", else: "false"}
-              class={[
-                "btn btn-xs",
-                if(@active_pathway_tab == :first, do: "btn-primary btn-active", else: "btn-ghost")
-              ]}
-            >
-              First Pathway
-            </button>
-            <button
-              id="pathway-tab-second"
-              type="button"
-              phx-click="switch_pathway_tab"
-              phx-value-tab="second"
-              data-confirm={if @pathway_form_dirty, do: "Discard unsaved pathway changes?"}
-              aria-selected={if @active_pathway_tab == :second, do: "true", else: "false"}
-              class={[
-                "btn btn-xs",
-                if(@active_pathway_tab == :second, do: "btn-primary btn-active", else: "btn-ghost")
-              ]}
-            >
-              Second Pathway
-            </button>
-          </div>
+        <.unsaved_badge :if={@pathway_form_dirty} id="pathway-dirty-indicator" />
+        <div
+          :if={@open and length(@editing_pathway_pair) == 2}
+          id="pathway-pair-tabs"
+          class="inline-flex rounded-control border border-control p-0.5"
+        >
           <button
-            :if={
-              (length(@editing_pathway_pair) == 1 and @editing_pathway) &&
-                not Map.get(@editing_pathway, :is_cross_level, false)
-            }
-            id="add-second-pathway-btn"
+            id="pathway-tab-first"
             type="button"
-            class="btn btn-xs btn-outline"
-            phx-click="add_second_pathway"
+            phx-click="switch_pathway_tab"
+            phx-value-tab="first"
             data-confirm={if @pathway_form_dirty, do: "Discard unsaved pathway changes?"}
+            aria-selected={if @active_pathway_tab == :first, do: "true", else: "false"}
+            class="inline-flex min-h-10 items-center whitespace-nowrap rounded-[5px] px-3 text-sm font-[650] text-default hover:bg-canvas aria-[selected=true]:bg-selection aria-[selected=true]:text-action"
           >
-            Add Second Pathway
+            First pathway
+          </button>
+          <button
+            id="pathway-tab-second"
+            type="button"
+            phx-click="switch_pathway_tab"
+            phx-value-tab="second"
+            data-confirm={if @pathway_form_dirty, do: "Discard unsaved pathway changes?"}
+            aria-selected={if @active_pathway_tab == :second, do: "true", else: "false"}
+            class="inline-flex min-h-10 items-center whitespace-nowrap rounded-[5px] px-3 text-sm font-[650] text-default hover:bg-canvas aria-[selected=true]:bg-selection aria-[selected=true]:text-action"
+          >
+            Second pathway
           </button>
         </div>
+        <.button
+          :if={
+            (length(@editing_pathway_pair) == 1 and @editing_pathway) &&
+              not Map.get(@editing_pathway, :is_cross_level, false)
+          }
+          id="add-second-pathway-btn"
+          type="button"
+          variant="secondary"
+          size="sm"
+          class="min-h-11"
+          phx-click="add_second_pathway"
+          data-confirm={if @pathway_form_dirty, do: "Discard unsaved pathway changes?"}
+        >
+          Add second pathway
+        </.button>
       </:header_actions>
 
       <.history_tab_strip
@@ -5413,16 +5540,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         role={if @show_history_tabs, do: "tabpanel"}
         aria-labelledby={if @show_history_tabs, do: "pathway-tab-details"}
         hidden={@history_active || @journal_active}
+        class="flex min-h-0 flex-1 flex-col"
       >
-        <.journal_context_box :if={@open} context={@journal_context} />
-
-        <.pathway_preview
-          :if={@open and @editing_pathway}
-          editing_pathway={@editing_pathway}
-          pathway_form={@pathway_form}
-        />
-
-        <div :if={@open and @editing_pathway} class="mt-6"></div>
+        <div :if={@open and @journal_context} class="border-b border-subtle px-5 pt-4 sm:px-6">
+          <.journal_context_box context={@journal_context} />
+        </div>
 
         <.pathway_form
           :if={@open}
@@ -5438,6 +5560,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         role={if @show_history_tabs, do: "tabpanel"}
         aria-labelledby={if @show_history_tabs, do: "pathway-tab-history"}
         hidden={!@history_active}
+        class="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6"
       >
         <.change_log_list
           :if={@history_active}
@@ -5460,6 +5583,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         role="tabpanel"
         aria-labelledby="pathway-tab-journal"
         hidden={!@journal_active}
+        class="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6"
       >
         <.entity_journal_panel
           :if={@journal_active}
@@ -5552,10 +5676,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:has_reverse_sign?, has_reverse_sign?)
 
     ~H"""
-    <div class="bg-base-200 rounded-lg px-3 py-2 -mx-2">
-      <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/70 mb-0.5">
-        Pathway Diagram
-      </h4>
+    <div id="pathway-preview" class="rounded-control border border-subtle bg-canvas px-3 py-2">
+      <h4 class="mb-0.5 text-[12.5px] font-[650] text-muted">Preview</h4>
       <TransitPresentation.pathway_summary pathway={@editing_pathway} class="mb-2" />
       <svg
         data-pathway-preview="true"
@@ -5573,21 +5695,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             markerHeight="5"
             orient="auto-start-reverse"
           >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#FF00FF" />
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--diagram-pathway-forward)" />
           </marker>
         </defs>
 
         <%!-- From node --%>
         <g>
           <title>{@from_name}</title>
-          <circle cx="14" cy="16" r="5" fill="#0080FF" />
+          <circle cx="14" cy="16" r="5" fill="var(--diagram-active-stop)" />
           <text
             x="0"
             y="32"
             text-anchor="start"
-            font-family="Inter, sans-serif"
+            font-family="Figtree, sans-serif"
             font-size="7"
-            fill="#0080FF"
+            fill="var(--diagram-active-stop)"
             font-weight="600"
           >
             {@from_id}
@@ -5597,14 +5719,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         <%!-- To node --%>
         <g>
           <title>{@to_name}</title>
-          <circle cx="466" cy="16" r="5" fill="#0080FF" />
+          <circle cx="466" cy="16" r="5" fill="var(--diagram-active-stop)" />
           <text
             x="480"
             y="32"
             text-anchor="end"
-            font-family="Inter, sans-serif"
+            font-family="Figtree, sans-serif"
             font-size="7"
-            fill="#0080FF"
+            fill="var(--diagram-active-stop)"
             font-weight="600"
           >
             {@to_id}
@@ -5617,9 +5739,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           x="240"
           y="8"
           text-anchor="middle"
-          font-family="Inter, sans-serif"
+          font-family="Figtree, sans-serif"
           font-size="7"
-          fill="#888"
+          fill="var(--color-muted)"
         >
           {@signposted_as} →
         </text>
@@ -5633,23 +5755,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           x="240"
           y="26"
           text-anchor="middle"
-          font-family="Inter, sans-serif"
+          font-family="Figtree, sans-serif"
           font-size="7"
-          fill="#888"
+          fill="var(--color-muted)"
         >
           ← {@reversed_signposted_as}
         </text>
       </svg>
 
       <div class="flex justify-center">
-        <button
+        <.button
           type="button"
-          class="btn btn-xs btn-outline bg-white"
+          variant="secondary"
+          class="min-h-11"
           phx-click="flip_pathway"
           phx-value-id={@editing_pathway.id}
         >
           Flip direction
-        </button>
+        </.button>
       </div>
     </div>
     """
@@ -5667,10 +5790,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   defp parse_preview_int(val, _fallback) when is_integer(val), do: val
   defp parse_preview_int(_val, fallback), do: fallback
 
-  defp accessibility_status(1), do: :accessible
-  defp accessibility_status(2), do: :not_accessible
-  defp accessibility_status(_), do: :unknown
-
   defp pathway_preview_line(%{mode: 1} = assigns) do
     ~H"""
     <line
@@ -5678,7 +5797,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1="16"
       x2="458"
       y2="16"
-      stroke="#FF00FF"
+      stroke="var(--diagram-pathway-forward)"
       stroke-width="1.2"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
       marker-end="url(#preview-arrow)"
@@ -5693,12 +5812,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1="16"
       x2="458"
       y2="16"
-      stroke="#FF00FF"
+      stroke="var(--diagram-pathway-forward)"
       stroke-width="1.2"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
       marker-end="url(#preview-arrow)"
     />
-    <line x1="240" y1="11" x2="240" y2="21" stroke="#FF00FF" stroke-width="1" />
+    <line x1="240" y1="11" x2="240" y2="21" stroke="var(--diagram-pathway-forward)" stroke-width="1" />
     """
   end
 
@@ -5709,13 +5828,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1="16"
       x2="458"
       y2="16"
-      stroke="#FF00FF"
+      stroke="var(--diagram-pathway-forward)"
       stroke-width="1.2"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
       marker-end="url(#preview-arrow)"
     />
-    <line x1="236" y1="11" x2="244" y2="21" stroke="#FF00FF" stroke-width="1" />
-    <line x1="244" y1="11" x2="236" y2="21" stroke="#FF00FF" stroke-width="1" />
+    <line x1="236" y1="11" x2="244" y2="21" stroke="var(--diagram-pathway-forward)" stroke-width="1" />
+    <line x1="244" y1="11" x2="236" y2="21" stroke="var(--diagram-pathway-forward)" stroke-width="1" />
     """
   end
 
@@ -5726,14 +5845,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1="16"
       x2="458"
       y2="16"
-      stroke="#FF00FF"
+      stroke="var(--diagram-pathway-forward)"
       stroke-width="1.2"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
       marker-end="url(#preview-arrow)"
     />
-    <line x1="234" y1="11" x2="234" y2="21" stroke="#FF00FF" stroke-width="1" />
-    <line x1="240" y1="11" x2="240" y2="21" stroke="#FF00FF" stroke-width="1" />
-    <line x1="246" y1="11" x2="246" y2="21" stroke="#FF00FF" stroke-width="1" />
+    <line x1="234" y1="11" x2="234" y2="21" stroke="var(--diagram-pathway-forward)" stroke-width="1" />
+    <line x1="240" y1="11" x2="240" y2="21" stroke="var(--diagram-pathway-forward)" stroke-width="1" />
+    <line x1="246" y1="11" x2="246" y2="21" stroke="var(--diagram-pathway-forward)" stroke-width="1" />
     """
   end
 
@@ -5744,11 +5863,20 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1="16"
       x2="215"
       y2="16"
-      stroke="#FF00FF"
+      stroke="var(--diagram-pathway-forward)"
       stroke-width="1.2"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
     />
-    <rect x="215" y="8" width="50" height="16" rx="2" fill="white" stroke="#FF00FF" stroke-width="1" />
+    <rect
+      x="215"
+      y="8"
+      width="50"
+      height="16"
+      rx="2"
+      fill="white"
+      stroke="var(--diagram-pathway-forward)"
+      stroke-width="1"
+    />
     <text
       x="240"
       y="16"
@@ -5756,7 +5884,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       dominant-baseline="central"
       font-family="Inter, sans-serif"
       font-size="10"
-      fill="#FF00FF"
+      fill="var(--diagram-pathway-forward)"
     >
       &#x2195;
     </text>
@@ -5765,7 +5893,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1="16"
       x2="458"
       y2="16"
-      stroke="#FF00FF"
+      stroke="var(--diagram-pathway-forward)"
       stroke-width="1.2"
       marker-end="url(#preview-arrow)"
     />
@@ -5779,12 +5907,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1="14"
       x2="458"
       y2="14"
-      stroke="#FF00FF"
+      stroke="var(--diagram-pathway-forward)"
       stroke-width="1"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
       marker-end="url(#preview-arrow)"
     />
-    <line x1="22" y1="18" x2="458" y2="18" stroke="#FF00FF" stroke-width="1" />
+    <line x1="22" y1="18" x2="458" y2="18" stroke="var(--diagram-pathway-forward)" stroke-width="1" />
     """
   end
 
@@ -5795,12 +5923,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1="14"
       x2="458"
       y2="14"
-      stroke="#FF00FF"
+      stroke="var(--diagram-pathway-forward)"
       stroke-width="1"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
       marker-end="url(#preview-arrow)"
     />
-    <line x1="22" y1="18" x2="458" y2="18" stroke="#FF00FF" stroke-width="1" />
+    <line x1="22" y1="18" x2="458" y2="18" stroke="var(--diagram-pathway-forward)" stroke-width="1" />
     """
   end
 
@@ -5811,7 +5939,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       y1="16"
       x2="458"
       y2="16"
-      stroke="#FF00FF"
+      stroke="var(--diagram-pathway-forward)"
       stroke-width="1.2"
       marker-start={if @bidirectional?, do: "url(#preview-arrow)", else: nil}
       marker-end="url(#preview-arrow)"
@@ -5833,163 +5961,158 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         {Pathway.mode_label(mode_value), to_string(mode_value)}
       end)
 
+    {from_name, to_name} =
+      case assigns.editing_pathway do
+        %{from_stop: from, to_stop: to} -> {pathway_stop_display(from), pathway_stop_display(to)}
+        _ -> {"the start", "the destination"}
+      end
+
     assigns =
       assigns
       |> assign(:pathway_mode_options, pathway_mode_options)
+      |> assign(:from_name, from_name)
+      |> assign(:to_name, to_name)
       |> assign(:exit_gate?, to_string(assigns.pathway_form[:pathway_mode].value) == "7")
 
     ~H"""
-    <.simple_form
+    <.form
       for={@pathway_form}
       id="pathway-form"
       phx-submit="save_pathway"
       phx-change="pathway_form_changed"
+      class="flex min-h-0 flex-1 flex-col"
     >
-      <%!-- ID is hidden as it's auto-managed or readonly --%>
-      <.input field={@pathway_form[:pathway_id]} type="hidden" />
-      <p :if={@pathway_error} id="pathway-form-error" class="mb-4 text-error text-sm">
-        {@pathway_error}
-      </p>
+      <.drawer_scroll>
+        <%!-- ID is hidden as it's auto-managed or readonly --%>
+        <.input field={@pathway_form[:pathway_id]} type="hidden" />
+        <.message :if={@pathway_error} id="pathway-form-error" kind="error" title={@pathway_error} />
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <.pathway_preview
+          :if={@editing_pathway}
+          editing_pathway={@editing_pathway}
+          pathway_form={@pathway_form}
+        />
+
         <.input
           field={@pathway_form[:pathway_mode]}
           type="select"
-          label="Pathway Mode"
+          label="Type"
           options={@pathway_mode_options}
           required
-          help="Type of connection (e.g., walkway, stairs, elevator)."
+          help="Walkway, stairs, elevator, gate or another way through."
         />
 
-        <div>
-          <label class="text-sm font-medium leading-6 text-zinc-800">
-            Bidirectional
-          </label>
-          <div class="mt-2">
-            <.input
-              field={@pathway_form[:is_bidirectional]}
-              type="checkbox"
-              label="Can be traversed in both directions?"
-              disabled={@exit_gate?}
-              help={if @exit_gate?, do: "Exit gates are one-way."}
-            />
-          </div>
-        </div>
-      </div>
-
-      <div class="mt-10 mb-3 uppercase text-base font-semibold text-base-content">
-        Metrics
-      </div>
-
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <.input
-          field={@pathway_form[:traversal_time]}
-          type="number"
-          label="Traversal Time (s)"
-          step="1"
-          min="0"
-          help="Average time to traverse in seconds."
+          field={@pathway_form[:is_bidirectional]}
+          type="checkbox"
+          label="Both ways: riders can use it in either direction"
+          disabled={@exit_gate?}
+          help={if @exit_gate?, do: "Exit gates are one-way."}
         />
 
-        <div>
+        <.form_section title="Measurements" first?>
+          <div class="grid gap-5 sm:grid-cols-2">
+            <.input
+              field={@pathway_form[:traversal_time]}
+              type="number"
+              label="Travel time (seconds)"
+              step="1"
+              min="0"
+              help="Average time to get through."
+            />
+
+            <div class="grid content-start gap-1">
+              <.input
+                field={@pathway_form[:length]}
+                type="number"
+                label="Length (meters)"
+                step="0.01"
+                min="0"
+                help="Horizontal length."
+              />
+              <button
+                :if={
+                  @has_scale and @editing_pathway != nil and
+                    blank_pathway_length_value?(@pathway_form[:length].value)
+                }
+                type="button"
+                class="inline-flex min-h-11 items-center justify-self-start text-[13px] font-[650] text-action hover:underline"
+                phx-click="calculate_pathway_length"
+              >
+                Calculate length?
+              </button>
+            </div>
+          </div>
+
           <.input
-            field={@pathway_form[:length]}
+            field={@pathway_form[:min_width]}
             type="number"
-            label="Length (m)"
+            label="Minimum width (meters, optional)"
             step="0.01"
             min="0"
-            help="Horizontal length in meters."
+            placeholder="Not specified"
+            help="Recommended if narrower than 1 meter."
           />
-          <button
-            :if={
-              @has_scale and @editing_pathway != nil and
-                blank_pathway_length_value?(@pathway_form[:length].value)
-            }
-            type="button"
-            class="mt-1 text-sm font-medium link link-primary justify-start"
-            phx-click="calculate_pathway_length"
-          >
-            Calculate length?
-          </button>
-        </div>
 
-        <.input
-          field={@pathway_form[:min_width]}
-          type="number"
-          label="Min Width (m)"
-          step="0.01"
-          min="0"
-          placeholder="Not specified"
-          help="Optional. Recommended if narrower than 1 meter."
-        />
-      </div>
-
-      <%= if @pathway_form[:pathway_mode].value == "2" do %>
-        <div class="mt-4">
           <.input
+            :if={@pathway_form[:pathway_mode].value == "2"}
             field={@pathway_form[:stair_count]}
             type="number"
-            label="Stair Count"
+            label="Number of steps"
             step="1"
             min="0"
-            help="Total number of steps (up is positive)."
+            help="Up is positive."
           />
-        </div>
-      <% end %>
+        </.form_section>
 
-      <div class="mt-10 mb-3 uppercase text-base font-semibold text-base-content">
-        Signage
-      </div>
+        <.form_section title="Signs">
+          <.input
+            field={@pathway_form[:signposted_as]}
+            type="text"
+            label={"Sign text toward #{@to_name}"}
+            help="What signs say on the way there."
+          />
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <.input
-          field={@pathway_form[:signposted_as]}
-          type="text"
-          label="Signposted As"
-          help="Text on signs guiding to this pathway."
-        />
+          <.input
+            :if={truthy_input_value?(@pathway_form[:is_bidirectional].value)}
+            field={@pathway_form[:reversed_signposted_as]}
+            type="text"
+            label={"Sign text toward #{@from_name}"}
+            help="What signs say on the way back."
+          />
+        </.form_section>
 
-        <.input
-          :if={truthy_input_value?(@pathway_form[:is_bidirectional].value)}
-          field={@pathway_form[:reversed_signposted_as]}
-          type="text"
-          label="Reversed Signposted As"
-          help="Text on signs for the reverse direction."
-        />
-      </div>
-
-      <:actions>
-        <button type="button" class="btn btn-ghost" phx-click="close_pathway_drawer">
-          Cancel
-        </button>
-        <div class="flex-1"></div>
-        <button type="submit" class="btn btn-primary btn-active">
-          Update Pathway
-        </button>
-      </:actions>
-    </.simple_form>
-
-    <div :if={@editing_pathway} class="mt-8 pt-6 border-t border-base-200">
-      <div class="bg-error/5 border border-error/20 rounded-lg p-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <h3 class="text-error font-medium">Delete Pathway</h3>
-            <p class="text-xs text-error/70 mt-1">This action cannot be undone.</p>
-          </div>
-          <button
+        <div :if={@editing_pathway} class="grid gap-2 border-t border-subtle pt-5">
+          <h3 class="text-base font-bold text-error-fg">Delete pathway</h3>
+          <p class="text-[13px] text-muted">This can't be undone.</p>
+          <.button
             id="delete-pathway-button"
             type="button"
-            class="btn btn-error btn-sm btn-active text-white"
+            variant="danger"
+            class="min-h-11 justify-self-start"
             phx-click="request_confirmation"
             phx-value-action="delete_pathway"
             phx-value-id={@editing_pathway.id}
             phx-value-origin="delete-pathway-button"
           >
-            Delete Pathway
-          </button>
+            Delete pathway
+          </.button>
         </div>
-      </div>
-    </div>
+      </.drawer_scroll>
+
+      <.drawer_footer>
+        <.button
+          id="pathway-cancel"
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="close_pathway_drawer"
+        >
+          Cancel
+        </.button>
+        <.button id="pathway-submit" type="submit" class="min-h-11">Save changes</.button>
+      </.drawer_footer>
+    </.form>
     """
   end
 
@@ -6041,11 +6164,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <.drawer
       id="level-sidebar"
+      chrome="planner"
       open={@show_level_modal != nil}
       on_close="close_level_modal"
-      title={if @show_level_modal == :add, do: "Add Level", else: "Edit Level"}
-      class="max-w-3xl"
+      title={if @show_level_modal == :add, do: "Add level", else: "Edit level"}
+      class="max-w-[480px]"
     >
+      <:lede>A level is a floor of the station, such as Street, Concourse or Platform.</:lede>
       <.history_tab_strip
         :if={@show_history_tabs}
         entity_type="level"
@@ -6058,6 +6183,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         role={if @show_history_tabs, do: "tabpanel"}
         aria-labelledby={if @show_history_tabs, do: "level-tab-details"}
         hidden={@history_active}
+        class="flex min-h-0 flex-1 flex-col"
       >
         <.level_form
           :if={@show_level_modal}
@@ -6075,6 +6201,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         role={if @show_history_tabs, do: "tabpanel"}
         aria-labelledby={if @show_history_tabs, do: "level-tab-history"}
         hidden={!@history_active}
+        class="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6"
       >
         <.change_log_list
           :if={@history_active}
@@ -6103,146 +6230,152 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp level_form(assigns) do
     ~H"""
-    <div :if={@show_level_modal == :add} class="mb-6">
-      <div class="form-control">
-        <label class="label cursor-pointer justify-start gap-4">
+    <div :if={@show_level_modal == :add} class="border-b border-subtle px-5 py-4 sm:px-6">
+      <fieldset id="level-mode-choice" class="grid min-w-0 gap-2">
+        <legend class="mb-1 text-[13px] font-[650] text-default">Which level</legend>
+        <label
+          :for={
+            {mode, label, description} <- [
+              {"existing", "Use an existing level", "A level that is already in this feed."},
+              {"new", "Create a new level", "Name a new floor of this station."}
+            ]
+          }
+          class={[
+            "flex cursor-pointer items-start gap-3 rounded-control border border-control bg-white px-4 py-3",
+            "has-[:checked]:border-action has-[:checked]:bg-selection",
+            "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus"
+          ]}
+        >
           <input
             type="radio"
             name="mode"
-            class="radio radio-primary"
-            checked={@level_mode == :existing}
+            class="mt-0.5 size-5 shrink-0 accent-action focus-visible:outline-0"
+            checked={@level_mode == String.to_existing_atom(mode)}
             phx-click="level_mode_changed"
-            phx-value-mode="existing"
+            phx-value-mode={mode}
           />
-          <span class="label-text">Use existing level</span>
+          <span class="min-w-0">
+            <span class="block text-sm font-bold text-strong">{label}</span>
+            <span class="mt-0.5 block text-[13px] leading-snug text-muted">{description}</span>
+          </span>
         </label>
-      </div>
-      <div class="form-control">
-        <label class="label cursor-pointer justify-start gap-4">
-          <input
-            type="radio"
-            name="mode"
-            class="radio radio-primary"
-            checked={@level_mode == :new}
-            phx-click="level_mode_changed"
-            phx-value-mode="new"
-          />
-          <span class="label-text">Create new level</span>
-        </label>
-      </div>
+      </fieldset>
     </div>
 
-    <.simple_form
+    <.form
       for={@level_form}
       id="level-form"
       phx-submit="save_level"
+      class="flex min-h-0 flex-1 flex-col"
     >
-      <div
-        :if={@show_level_modal == :edit && @level_shared}
-        class="bg-info/10 border border-info/30 rounded-lg p-3 flex items-start gap-2"
-      >
-        <.icon name="hero-information-circle" class="w-5 h-5 text-info shrink-0 mt-0.5" />
-        <p class="text-sm text-info-content">
-          This level is shared. Changes here will apply everywhere it's used, not just this station.
-        </p>
-      </div>
+      <.drawer_scroll>
+        <.message
+          :if={@show_level_modal == :edit && @level_shared}
+          kind="info"
+          title="This level is shared"
+        >
+          Changes here apply everywhere it's used, not just this station.
+        </.message>
 
-      <%= if @show_level_modal == :add && @level_mode == :existing do %>
-        <%= if @available_levels == [] do %>
-          <div class="p-4 bg-base-200 rounded-lg text-center">
-            <p class="text-base-content/70 mb-2">All levels are already assigned to this station</p>
-            <p class="text-sm text-base-content/40">Switch to "Create new level" to add a new one</p>
-          </div>
+        <%= if @show_level_modal == :add && @level_mode == :existing do %>
+          <%= if @available_levels == [] do %>
+            <div id="no-available-levels" class="rounded-control bg-canvas p-4 text-center">
+              <p class="text-sm font-bold text-strong">
+                All levels are already assigned to this station
+              </p>
+              <p class="mt-1 text-[13px] text-muted">
+                Choose "Create a new level" to add a new one.
+              </p>
+            </div>
+          <% else %>
+            <.input
+              field={@level_form[:existing_level_id]}
+              type="select"
+              label="Level"
+              options={
+                Enum.map(
+                  @available_levels,
+                  &{"#{&1.level_name || &1.level_id} (#{trunc(&1.level_index)})", &1.id}
+                )
+              }
+              prompt="Choose a level…"
+              required
+            />
+          <% end %>
         <% else %>
           <.input
-            field={@level_form[:existing_level_id]}
-            type="select"
-            label="Select Level"
-            options={
-              Enum.map(
-                @available_levels,
-                &{"#{&1.level_name || &1.level_id} (#{trunc(&1.level_index)})", &1.id}
-              )
-            }
-            prompt="Choose a level..."
-            required
+            field={@level_form[:level_name]}
+            type="text"
+            label="Name (optional)"
+            placeholder="e.g., Ground floor"
+            phx-change="level_name_changed"
+            help="How riders see this floor."
           />
+
+          <.input
+            field={@level_form[:level_index]}
+            type="number"
+            label="Floor number"
+            step="1"
+            required
+            help="0 is ground, negative is below it, positive is above it."
+          />
+
+          <.form_section title="GTFS details">
+            <.input
+              field={@level_form[:level_id]}
+              type="text"
+              label="Level ID"
+              placeholder="e.g., STATION_GROUND_FLOOR"
+              phx-blur="level_id_changed"
+              help="Made from the name unless you enter one."
+            />
+          </.form_section>
         <% end %>
-      <% else %>
-        <.input
-          field={@level_form[:level_name]}
-          type="text"
-          label="Level Name"
-          placeholder="e.g., Ground Floor"
-          phx-change="level_name_changed"
-          help="Optional display name"
-        />
 
-        <.input
-          field={@level_form[:level_id]}
-          type="text"
-          label="Level ID"
-          placeholder="e.g., STATION_GROUND_FLOOR"
-          phx-blur="level_id_changed"
-          help="Auto-generated from level name, or enter a custom ID"
-        />
-
-        <.input
-          field={@level_form[:level_index]}
-          type="number"
-          label="Level Index"
-          step="1"
-          required
-          help="Floor number (0 = ground, negative = below, positive = above)"
-        />
-      <% end %>
-
-      <:actions>
-        <div class="flex-1"></div>
-        <button type="button" class="btn btn-ghost" phx-click="close_level_modal">
-          Cancel
-        </button>
-        <button type="submit" class="btn btn-primary btn-active">
-          {if @show_level_modal == :add, do: "Save", else: "Update Level"}
-        </button>
-      </:actions>
-    </.simple_form>
-
-    <div
-      :if={@show_level_modal == :edit && @editing_level_uuid}
-      class="mt-8 pt-6 border-t border-base-200"
-    >
-      <div class="bg-error/5 border border-error/20 rounded-lg p-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <h3 class="text-error font-medium">Remove from this station</h3>
-            <p class="text-xs text-error/70 mt-1">
-              Unassigns all child stops on this level and removes the diagram. The level itself won't be deleted.
-            </p>
-          </div>
-          <button
+        <div
+          :if={@show_level_modal == :edit && @editing_level_uuid}
+          class="grid gap-2 border-t border-subtle pt-5"
+        >
+          <h3 class="text-base font-bold text-strong">Remove from this station</h3>
+          <p class="text-[13px] text-muted">
+            Unassigns every point on this level and removes its floorplan. The level itself is not deleted.
+          </p>
+          <.button
             id="remove-level-from-station-button"
             type="button"
-            class="btn btn-error btn-sm btn-active text-white"
+            variant="secondary"
+            class="min-h-11 justify-self-start"
             phx-click="request_confirmation"
             phx-value-action="remove_level_from_station"
             phx-value-id={@editing_level_uuid}
             phx-value-origin="remove-level-from-station-button"
           >
-            Remove Level
-          </button>
+            Remove level
+          </.button>
         </div>
-      </div>
-    </div>
+      </.drawer_scroll>
+
+      <.drawer_footer>
+        <.button
+          id="level-cancel"
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="close_level_modal"
+        >
+          Cancel
+        </.button>
+        <.button id="level-submit" type="submit" class="min-h-11">
+          {if @show_level_modal == :add, do: "Add level", else: "Save changes"}
+        </.button>
+      </.drawer_footer>
+    </.form>
     """
   end
 
   # ============================================================================
-  # Lists Section
-  # ============================================================================
-
-  # ============================================================================
-  # Naming Drawer
+  # Naming Drawer (Standardize stop IDs)
   # ============================================================================
 
   attr :open, :boolean, default: false
@@ -6258,374 +6391,770 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     ~H"""
     <.drawer
       id="naming-drawer"
+      chrome="planner"
       open={@open}
       on_close="close_naming_drawer"
-      title="Apply naming convention"
+      title="Standardize stop IDs"
+      return_focus_id="diagram-more-trigger"
+      class="max-w-[560px]"
     >
-      <div class="space-y-6">
-        <div :if={@style == :kebab} class="prose prose-sm max-w-none">
-          <p>
-            Renames child stops using a kebab-case version of each stop's name
-            with a sequence number:
-          </p>
-          <code class="block bg-base-200 px-3 py-2 rounded text-sm">
-            {"{name}-{seq}"}
-          </code>
-          <dl class="mt-3 text-sm space-y-1 not-prose">
-            <div class="flex gap-2">
-              <dt class="font-medium min-w-[5rem]">name</dt>
-              <dd class="text-base-content/70">Stop name, lowercased and hyphenated</dd>
-            </div>
-            <div class="flex gap-2">
-              <dt class="font-medium min-w-[5rem]">seq</dt>
-              <dd class="text-base-content/70">Two-digit sequence for stops with the same name</dd>
-            </div>
-          </dl>
-        </div>
-
-        <div :if={@style == :structured} class="prose prose-sm max-w-none">
-          <p>
-            Renames child stops using a deterministic convention based on each stop's
-            type, highest-priority connected pathway, and level:
-          </p>
-          <code class="block bg-base-200 px-3 py-2 rounded text-sm">
-            {"{station}_{type}_{feature}_{level}_{seq}"}
-          </code>
-          <dl class="mt-3 text-sm space-y-1 not-prose">
-            <div class="flex gap-2">
-              <dt class="font-medium min-w-[5rem]">station</dt>
-              <dd class="text-base-content/70">Parent station stop_id, slugified</dd>
-            </div>
-            <div class="flex gap-2">
-              <dt class="font-medium min-w-[5rem]">type</dt>
-              <dd class="text-base-content/70">platform, entrance, node, or boarding</dd>
-            </div>
-            <div class="flex gap-2">
-              <dt class="font-medium min-w-[5rem]">feature</dt>
-              <dd class="text-base-content/70">
-                Highest-priority pathway mode (elevator, escalator, stairs, etc.) or general
-              </dd>
-            </div>
-            <div class="flex gap-2">
-              <dt class="font-medium min-w-[5rem]">level</dt>
-              <dd class="text-base-content/70">Level ID, slugified (or nolvl)</dd>
-            </div>
-            <div class="flex gap-2">
-              <dt class="font-medium min-w-[5rem]">seq</dt>
-              <dd class="text-base-content/70">Two-digit sequence within each group</dd>
-            </div>
-          </dl>
-        </div>
-
-        <div class="flex gap-1">
-          <button
-            type="button"
-            class={[
-              "btn btn-sm flex-1",
-              @style == :kebab && "btn-primary",
-              @style != :kebab && "btn-ghost"
-            ]}
-            phx-click="change_naming_style"
-            phx-value-style="kebab"
+      <:lede>Rename this station's stops to follow one convention. Pathways update to match.</:lede>
+      <div class="flex min-h-0 flex-1 flex-col">
+        <.drawer_scroll>
+          <div
+            id="naming-style"
+            role="group"
+            aria-label="Naming convention"
+            class="inline-flex justify-self-start rounded-control border border-control p-0.5"
           >
-            Name-based
-          </button>
-          <button
-            type="button"
-            class={[
-              "btn btn-sm flex-1",
-              @style == :structured && "btn-primary",
-              @style != :structured && "btn-ghost"
-            ]}
-            phx-click="change_naming_style"
-            phx-value-style="structured"
-          >
-            Structured
-          </button>
-        </div>
-
-        <div :if={@error} class="alert alert-error text-sm">
-          {@error}
-        </div>
-
-        <div :if={@preview_rows == [] and is_nil(@error)} class="text-sm text-base-content/70">
-          No child stops to rename for this station.
-        </div>
-
-        <div :if={@preview_rows != []}>
-          <h3 class="text-sm font-medium mb-2">Preview</h3>
-          <div class="overflow-x-auto max-h-64 border border-base-200 rounded">
-            <table class="table table-xs table-pin-rows">
-              <thead>
-                <tr>
-                  <th class="w-8">
-                    <input
-                      type="checkbox"
-                      class="checkbox checkbox-xs"
-                      checked={MapSet.size(@excluded_ids) == 0}
-                      aria-label="Select all child stops for renaming"
-                      phx-click="toggle_naming_select_all"
-                    />
-                  </th>
-                  <th>Current stop_id</th>
-                  <th>New stop_id</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  :for={row <- @preview_rows}
-                  id={"naming-row-#{row.old_id}"}
-                  class={MapSet.member?(@excluded_ids, row.old_id) && "opacity-40"}
-                >
-                  <td class="w-8">
-                    <input
-                      type="checkbox"
-                      class="checkbox checkbox-xs"
-                      checked={not MapSet.member?(@excluded_ids, row.old_id)}
-                      aria-label={"Select #{row.old_id} for renaming"}
-                      phx-click="toggle_naming_row"
-                      phx-value-id={row.old_id}
-                    />
-                  </td>
-                  <td class="font-mono text-xs">{row.old_id}</td>
-                  <td class="font-mono text-xs">{row.new_id}</td>
-                </tr>
-              </tbody>
-            </table>
+            <button
+              :for={{style, label} <- [{:kebab, "Name-based"}, {:structured, "Structured"}]}
+              type="button"
+              aria-pressed={to_string(@style == style)}
+              phx-click="change_naming_style"
+              phx-value-style={style}
+              class="inline-flex min-h-10 items-center whitespace-nowrap rounded-[5px] px-3 text-sm font-[650] text-default hover:bg-canvas aria-[pressed=true]:bg-selection aria-[pressed=true]:text-action"
+            >
+              {label}
+            </button>
           </div>
 
-          <p class="text-sm text-base-content/70 mt-3">
-            <span :if={MapSet.size(@excluded_ids) > 0}>
-              <span class="font-medium">{@renamed_stops_count}</span>
-              of <span class="font-medium">{length(@preview_rows)}</span>
-              child stops selected for renaming.
-            </span>
-            <span :if={MapSet.size(@excluded_ids) == 0}>
-              <span class="font-medium">{@renamed_stops_count}</span>
-              {if(@renamed_stops_count == 1, do: "child stop", else: "child stops")} will be renamed.
-            </span>
-            <span class="font-medium">{@updated_pathways_count}</span>
-            {if(@updated_pathways_count == 1, do: "pathway reference", else: "pathway references")}
-            {if(MapSet.size(@excluded_ids) > 0,
-              do: " will be updated for the selected stops.",
-              else: " will be updated."
-            )}
-          </p>
-        </div>
+          <div :if={@style == :kebab} class="grid gap-3 text-sm text-default">
+            <p>
+              Renames child stops using a kebab-case version of each stop's name with a sequence
+              number:
+            </p>
+            <code class="block rounded-control bg-canvas px-3 py-2 font-mono text-[13px]">
+              {"{name}-{seq}"}
+            </code>
+            <dl class="grid gap-1 text-[13px]">
+              <div class="flex gap-2">
+                <dt class="min-w-[5rem] font-[650] text-strong">name</dt>
+                <dd class="text-muted">Stop name, lowercased and hyphenated</dd>
+              </div>
+              <div class="flex gap-2">
+                <dt class="min-w-[5rem] font-[650] text-strong">seq</dt>
+                <dd class="text-muted">Two-digit sequence for stops with the same name</dd>
+              </div>
+            </dl>
+          </div>
 
-        <div class="flex justify-end gap-2 pt-2 border-t border-base-200">
-          <button type="button" class="btn btn-ghost btn-sm" phx-click="close_naming_drawer">
-            Cancel
-          </button>
-          <button
+          <div :if={@style == :structured} class="grid gap-3 text-sm text-default">
+            <p>
+              Renames child stops using a deterministic convention based on each stop's type,
+              highest-priority connected pathway, and level:
+            </p>
+            <code class="block rounded-control bg-canvas px-3 py-2 font-mono text-[13px]">
+              {"{station}_{type}_{feature}_{level}_{seq}"}
+            </code>
+            <dl class="grid gap-1 text-[13px]">
+              <div class="flex gap-2">
+                <dt class="min-w-[5rem] font-[650] text-strong">station</dt>
+                <dd class="text-muted">Parent station stop_id, slugified</dd>
+              </div>
+              <div class="flex gap-2">
+                <dt class="min-w-[5rem] font-[650] text-strong">type</dt>
+                <dd class="text-muted">platform, entrance, node, or boarding</dd>
+              </div>
+              <div class="flex gap-2">
+                <dt class="min-w-[5rem] font-[650] text-strong">feature</dt>
+                <dd class="text-muted">
+                  Highest-priority pathway mode (elevator, escalator, stairs, etc.) or general
+                </dd>
+              </div>
+              <div class="flex gap-2">
+                <dt class="min-w-[5rem] font-[650] text-strong">level</dt>
+                <dd class="text-muted">Level ID, slugified (or nolvl)</dd>
+              </div>
+              <div class="flex gap-2">
+                <dt class="min-w-[5rem] font-[650] text-strong">seq</dt>
+                <dd class="text-muted">Two-digit sequence within each group</dd>
+              </div>
+            </dl>
+          </div>
+
+          <.message :if={@error} id="naming-error" kind="error" title={@error} />
+
+          <p :if={@preview_rows == [] and is_nil(@error)} class="text-sm text-muted">
+            No child stops to rename for this station.
+          </p>
+
+          <div :if={@preview_rows != []} class="grid gap-2">
+            <h3 class="text-[13px] font-[650] text-default">Preview</h3>
+            <div class="max-h-72 overflow-auto rounded-control border border-subtle">
+              <table class="w-full table-fixed border-collapse text-left text-[13px]">
+                <colgroup>
+                  <col class="w-11" />
+                  <col class="w-[45%]" />
+                  <col />
+                </colgroup>
+                <thead class="sticky top-0 bg-canvas">
+                  <tr>
+                    <th scope="col" class="w-11 px-2 py-1.5">
+                      <input
+                        type="checkbox"
+                        class="size-5 accent-action"
+                        checked={MapSet.size(@excluded_ids) == 0}
+                        aria-label="Select all child stops for renaming"
+                        phx-click="toggle_naming_select_all"
+                      />
+                    </th>
+                    <th scope="col" class="px-2 py-1.5 font-[650] text-default">Current ID</th>
+                    <th scope="col" class="px-2 py-1.5 font-[650] text-default">New ID</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-subtle">
+                  <tr
+                    :for={row <- @preview_rows}
+                    id={"naming-row-#{row.old_id}"}
+                    class={MapSet.member?(@excluded_ids, row.old_id) && "opacity-40"}
+                  >
+                    <td class="w-11 px-2 py-1">
+                      <input
+                        type="checkbox"
+                        class="size-5 accent-action"
+                        checked={not MapSet.member?(@excluded_ids, row.old_id)}
+                        aria-label={"Select #{row.old_id} for renaming"}
+                        phx-click="toggle_naming_row"
+                        phx-value-id={row.old_id}
+                      />
+                    </td>
+                    <td class="break-all px-2 py-1 font-mono text-xs">{row.old_id}</td>
+                    <td class="break-all px-2 py-1 font-mono text-xs">{row.new_id}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <p class="text-sm text-default">
+              <span :if={MapSet.size(@excluded_ids) > 0}>
+                <span class="font-medium">{@renamed_stops_count}</span>
+                of <span class="font-medium">{length(@preview_rows)}</span>
+                child stops selected for renaming.
+              </span>
+              <span :if={MapSet.size(@excluded_ids) == 0}>
+                <span class="font-medium">{@renamed_stops_count}</span>
+                {if(@renamed_stops_count == 1, do: "child stop", else: "child stops")} will be renamed.
+              </span>
+              <span class="font-medium">{@updated_pathways_count}</span>
+              {if(@updated_pathways_count == 1, do: "pathway reference", else: "pathway references")}
+              {if(MapSet.size(@excluded_ids) > 0,
+                do: " will be updated for the selected stops.",
+                else: " will be updated."
+              )}
+            </p>
+          </div>
+        </.drawer_scroll>
+
+        <.drawer_footer>
+          <.button
+            id="naming-cancel"
             type="button"
-            class="btn btn-primary btn-sm"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="close_naming_drawer"
+          >
+            Cancel
+          </.button>
+          <.button
+            id="apply-naming-convention"
+            type="button"
+            class="min-h-11"
             phx-click="apply_naming_convention"
-            phx-disable-with="Applying…"
+            phx-disable-with="Renaming…"
             disabled={
               @preview_rows == [] || @applying? || @error ||
                 MapSet.size(@excluded_ids) == length(@preview_rows)
             }
           >
-            Apply naming convention
-          </button>
-        </div>
+            Rename {@renamed_stops_count} {if @renamed_stops_count == 1, do: "point", else: "points"}
+          </.button>
+        </.drawer_footer>
       </div>
     </.drawer>
     """
   end
 
   # ============================================================================
-  # Lists Section
+  # Side Panel
   # ============================================================================
 
+  # The docked panel beside the plan: the level's points and pathways as lists,
+  # and the station journal, under one row of tabs. The tabs carry the only
+  # counts on the page. Add point and Connect put a short card of instructions
+  # above the lists; Align has no panel.
+  attr :mode, :atom, required: true
   attr :active_level, :any, default: nil
+  attr :active_level_name, :string, default: ""
+  attr :has_diagram, :boolean, default: false
+  attr :levels, :list, default: []
   attr :child_stops_list, :list, required: true
   attr :unassigned_child_stops, :list, required: true
   attr :pathways_list, :list, required: true
-  attr :pathway_error, :string
+  attr :active_point_id, :any, default: nil
+  attr :panel_tab, :atom, values: [:points, :pathways], default: :points
+  attr :list_query, :string, default: ""
+  attr :stop_search_form, :any, required: true
+  attr :selected_from_stop, :any, default: nil
+  attr :journal_scope, :any, default: nil
+  attr :journal_entry_count, :integer, default: 0
+  attr :journal_panel_open?, :boolean, default: false
+  slot :journal, doc: "the station journal, shown while its tab is open"
 
-  def lists_section(assigns) do
+  def side_panel(assigns) do
+    query = assigns.list_query |> to_string() |> String.trim() |> String.downcase()
+
+    points = filter_points(assigns.child_stops_list, query)
+    unassigned = filter_points(assigns.unassigned_child_stops, query)
+    pathways = filter_pathways(assigns.pathways_list, query)
+
+    selected_tab = if assigns.journal_panel_open?, do: :journal, else: assigns.panel_tab
+
+    assigns =
+      assigns
+      |> assign(:query, query)
+      |> assign(:points, points)
+      |> assign(:unassigned, unassigned)
+      |> assign(:pathways, pathways)
+      |> assign(:selected_tab, selected_tab)
+      |> assign(
+        :pathway_search_form,
+        to_form(%{"list_query" => assigns.list_query}, as: :pathway_search)
+      )
+
     ~H"""
-    <div id="lists-section" class="mt-4 space-y-8">
-      <.child_stops_table child_stops_list={@child_stops_list} />
-      <.unassigned_stops_table
-        :if={@unassigned_child_stops != []}
-        child_stops_list={@unassigned_child_stops}
-      />
-      <.pathways_table
-        pathways_list={@pathways_list}
-        pathway_error={@pathway_error}
-        active_level={@active_level}
-      />
-    </div>
-    """
-  end
-
-  attr :child_stops_list, :list, required: true
-
-  defp child_stops_table(assigns) do
-    ~H"""
-    <div>
-      <h2 class="text-base font-semibold mb-2">Child Stops on Level</h2>
-      <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
-        <%= if @child_stops_list == [] do %>
-          <p class="px-4 py-3 text-sm text-base-content/70">No child stops on this level.</p>
-        <% else %>
-          <.table
-            id="child-stops-table"
-            responsive="stack"
-            rows={@child_stops_list}
-            row_id={&"child-stop-row-#{&1.id}"}
-          >
-            <:col :let={stop} label="Stop ID">
-              <button
-                type="button"
-                class="link link-primary font-medium"
-                phx-click="edit_child_stop"
-                phx-value-id={stop.id}
-              >
-                {stop.stop_id}
-              </button>
-            </:col>
-            <:col :let={stop} label="Name">{stop.stop_name || "—"}</:col>
-            <:col :let={stop} label="Type">
-              <span class="badge badge-ghost badge-sm">
-                {Stop.location_type_label(stop.location_type)}
-              </span>
-            </:col>
-            <:col :let={stop} label="Platform">{stop.platform_code || "—"}</:col>
-            <:col :let={stop} label="Accessible">
-              <TransitPresentation.accessibility_status status={
-                accessibility_status(stop.wheelchair_boarding)
-              } />
-            </:col>
-          </.table>
-        <% end %>
+    <aside
+      id="side-panel"
+      aria-label="Points, pathways and journal"
+      class="flex min-h-0 min-w-0 flex-col border-t border-subtle bg-white lg:border-l lg:border-t-0"
+    >
+      <div
+        id="side-panel-tabs"
+        role="tablist"
+        aria-label={"On #{@active_level_name}"}
+        aria-orientation="horizontal"
+        phx-hook="TablistHook"
+        class="flex shrink-0 border-b border-subtle px-1"
+      >
+        <.panel_tab
+          id="panel-tab-points"
+          controls="points-panel"
+          label="Points"
+          count={length(@child_stops_list)}
+          selected?={@selected_tab == :points}
+          click="select_panel_tab"
+          value="points"
+        />
+        <.panel_tab
+          id="panel-tab-pathways"
+          controls="pathways-panel"
+          label="Pathways"
+          count={length(@pathways_list)}
+          selected?={@selected_tab == :pathways}
+          click="select_panel_tab"
+          value="pathways"
+        />
+        <.panel_tab
+          :if={@journal_scope}
+          id="journal-trigger"
+          count_id="journal-trigger-count"
+          controls="station-journal-panel"
+          label="Journal"
+          count={@journal_entry_count}
+          selected?={@selected_tab == :journal}
+          expanded={to_string(@journal_panel_open?)}
+          click={if @journal_panel_open?, do: "close_journal", else: "open_journal"}
+        />
       </div>
+
+      <.add_point_card :if={@mode == :add} active_level_name={@active_level_name} />
+      <.connect_card :if={@mode == :connect} selected_from_stop={@selected_from_stop} />
+
+      <div :if={@journal_panel_open?} class="flex min-h-0 flex-1 flex-col">
+        {render_slot(@journal)}
+      </div>
+
+      <div
+        id="lists-section"
+        hidden={@journal_panel_open?}
+        class="flex min-h-0 flex-1 flex-col"
+      >
+        <div
+          id="points-panel"
+          role="tabpanel"
+          aria-labelledby="panel-tab-points"
+          hidden={@panel_tab != :points}
+          class="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+        >
+          <.list_search
+            :if={@mode == :view}
+            id="stop-search-form"
+            form={@stop_search_form}
+            input_id="stop-id-search"
+            input_name="stop_id_query"
+            submit="search_stop"
+            query={@list_query}
+            what="point"
+          />
+          <.points_list
+            points={@points}
+            unassigned={@unassigned}
+            all_points={@child_stops_list}
+            unassigned_all={@unassigned_child_stops}
+            query={@list_query}
+            active_point_id={@active_point_id}
+            active_level_name={@active_level_name}
+            has_diagram={@has_diagram}
+            mode={@mode}
+          />
+        </div>
+        <div
+          id="pathways-panel"
+          role="tabpanel"
+          aria-labelledby="panel-tab-pathways"
+          hidden={@panel_tab != :pathways}
+          class="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+        >
+          <.list_search
+            :if={@mode == :view and (@pathways_list != [] or @query != "")}
+            id="pathway-search-form"
+            form={@pathway_search_form}
+            input_id="pathway-search"
+            input_name="list_query"
+            submit="filter_panel_list"
+            query={@list_query}
+            what="pathway"
+          />
+          <.pathways_list
+            pathways={@pathways}
+            all_pathways={@pathways_list}
+            query={@list_query}
+            active_level={@active_level}
+            active_level_name={@active_level_name}
+            levels={@levels}
+            has_diagram={@has_diagram}
+            mode={@mode}
+          />
+        </div>
+      </div>
+    </aside>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :count_id, :string, default: nil
+  attr :controls, :string, required: true
+  attr :label, :string, required: true
+  attr :count, :integer, required: true
+  attr :selected?, :boolean, required: true
+  attr :click, :string, required: true
+  attr :value, :string, default: nil
+
+  attr :expanded, :any,
+    default: nil,
+    doc: "aria-expanded, for a tab that opens and closes a panel"
+
+  defp panel_tab(assigns) do
+    ~H"""
+    <button
+      id={@id}
+      type="button"
+      role="tab"
+      phx-click={@click}
+      phx-value-tab={@value}
+      aria-selected={to_string(@selected?)}
+      aria-expanded={@expanded}
+      aria-controls={@controls}
+      tabindex={if @selected?, do: "0", else: "-1"}
+      class={[
+        "-mb-px inline-flex min-h-11 items-center gap-1.5 border-b-2 px-3 text-sm font-semibold",
+        "focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus",
+        if(@selected?,
+          do: "border-action text-action",
+          else: "border-transparent text-muted hover:border-subtle hover:text-strong"
+        )
+      ]}
+    >
+      {@label}
+      <span
+        id={@count_id}
+        class={[
+          "rounded-badge px-1.5 text-[12px] tabular-nums",
+          if(@selected?, do: "bg-selection text-action", else: "bg-canvas text-default")
+        ]}
+      >
+        {@count}
+      </span>
+    </button>
+    """
+  end
+
+  attr :active_level_name, :string, default: ""
+
+  defp add_point_card(assigns) do
+    ~H"""
+    <div id="add-point-card" class="shrink-0 border-b border-subtle px-3 py-3">
+      <h2 class="text-[15px] font-bold text-strong">Add a point</h2>
+      <p class="mt-0.5 text-[12.5px] text-muted">On {@active_level_name}. You can move it later.</p>
+      <p class="mt-2 text-sm text-default">
+        Click the floorplan, then name the point and choose its type.
+      </p>
+      <p class="mt-3 text-[12.5px] text-muted">
+        Can't click the plan? Enter the position instead.
+      </p>
+      <.button
+        id="keyboard-create-stop"
+        type="button"
+        variant="secondary"
+        class="mt-1.5 min-h-11"
+        phx-click="open_create_form"
+      >
+        Enter coordinates
+      </.button>
     </div>
     """
   end
 
-  attr :child_stops_list, :list, required: true
+  attr :selected_from_stop, :any, default: nil
 
-  defp unassigned_stops_table(assigns) do
+  defp connect_card(assigns) do
     ~H"""
-    <div>
-      <h2 class="text-base font-semibold mb-2">
-        Child Stops Not Assigned to a Level
-      </h2>
-      <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
-        <.table
-          id="unassigned-stops-table"
-          responsive="stack"
-          rows={@child_stops_list}
-          row_id={&"unassigned-stop-row-#{&1.id}"}
+    <div id="connect-card" class="shrink-0 border-b border-subtle px-3 py-3">
+      <h2 class="text-[15px] font-bold text-strong">Connect two points</h2>
+      <p class="mt-0.5 text-[12.5px] text-muted">
+        Click the start, then the destination. The pathway starts as a two-way walkway you can change.
+      </p>
+      <ol class="mt-3 divide-y divide-subtle">
+        <li class="flex min-h-11 items-center gap-3 py-1.5">
+          <span class={[
+            "grid size-6 shrink-0 place-items-center rounded-full text-[12.5px] font-bold",
+            if(@selected_from_stop,
+              do: "bg-cyan-700 text-white",
+              else: "bg-selection text-action"
+            )
+          ]}>
+            <.icon :if={@selected_from_stop} name="hero-check" class="size-3.5" />
+            <span :if={!@selected_from_stop}>1</span>
+          </span>
+          <div class="min-w-0 flex-1">
+            <p class="text-[12.5px] text-muted">Start</p>
+            <p class="truncate text-sm font-[650] text-strong">
+              {if @selected_from_stop,
+                do: stop_display_name(@selected_from_stop),
+                else: "Not chosen yet"}
+            </p>
+          </div>
+          <button
+            :if={@selected_from_stop}
+            type="button"
+            class="inline-flex min-h-11 items-center rounded-control px-2.5 text-sm font-[650] text-action hover:bg-selection"
+            phx-click="clear_from_selection"
+          >
+            Clear
+          </button>
+        </li>
+        <li class="flex min-h-11 items-center gap-3 py-1.5">
+          <span class="grid size-6 shrink-0 place-items-center rounded-full bg-selection text-[12.5px] font-bold text-action">
+            2
+          </span>
+          <div class="min-w-0 flex-1">
+            <p class="text-[12.5px] text-muted">Destination</p>
+            <p class="text-sm font-[650] text-strong">Not chosen yet</p>
+          </div>
+        </li>
+      </ol>
+      <p class="mt-2 text-[12.5px] text-muted">
+        Two points can have up to two pathways, such as a fare gate in and an exit gate out. The
+        new pathway opens for editing so you can set its details.
+      </p>
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :form, :any, required: true
+  attr :input_id, :string, required: true
+  attr :input_name, :string, required: true
+  attr :submit, :string, required: true
+  attr :query, :string, default: ""
+  attr :what, :string, required: true
+
+  defp list_search(assigns) do
+    ~H"""
+    <div class="sticky top-0 z-10 border-b border-subtle bg-white px-3 py-2">
+      <.form for={@form} id={@id} phx-change="filter_panel_list" phx-submit={@submit}>
+        <div class="relative">
+          <.icon
+            name="hero-magnifying-glass"
+            class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted"
+          />
+          <input
+            type="search"
+            id={@input_id}
+            name={@input_name}
+            value={@query}
+            phx-debounce="200"
+            autocomplete="off"
+            aria-label={"Find a #{@what} by name or ID"}
+            placeholder="Find by name or ID"
+            class="h-10 w-full rounded-control border border-control bg-white pl-9 pr-3 text-sm text-strong placeholder:text-muted"
+          />
+        </div>
+      </.form>
+    </div>
+    """
+  end
+
+  attr :points, :list, required: true
+  attr :unassigned, :list, required: true
+  attr :all_points, :list, required: true
+  attr :unassigned_all, :list, required: true
+  attr :query, :string, default: ""
+  attr :active_point_id, :any, default: nil
+  attr :active_level_name, :string, default: ""
+  attr :has_diagram, :boolean, default: false
+  attr :mode, :atom, required: true
+
+  defp points_list(assigns) do
+    ~H"""
+    <%= cond do %>
+      <% @all_points == [] and @unassigned_all == [] -> %>
+        <div id="child-stops-empty" class="px-6 py-10 text-center">
+          <h3 class="text-[15px] font-bold text-strong">No points on {@active_level_name} yet</h3>
+          <p class="mx-auto mt-1.5 max-w-[32ch] text-sm text-muted">
+            Points are the places riders pass through: entrances, platforms, and junctions where
+            paths meet. {if @has_diagram,
+              do: "Add the first point, then connect points with pathways.",
+              else: "Upload a floorplan to place them."}
+          </p>
+          <.button
+            :if={@has_diagram and @mode != :add}
+            id="empty-add-point"
+            type="button"
+            class="mt-4 min-h-11"
+            phx-click="switch_mode"
+            phx-value-mode="add"
+          >
+            <.icon name="hero-map-pin" class="size-4" /> Add point
+          </.button>
+        </div>
+      <% @points == [] and @unassigned == [] -> %>
+        <.no_match what="points" query={@query} />
+      <% true -> %>
+        <ul
+          :if={@points != []}
+          id="child-stops-table"
+          class="divide-y divide-subtle border-b border-subtle"
         >
-          <:col :let={stop} label="Stop ID">
+          <li :for={stop <- @points} id={"child-stop-row-#{stop.id}"}>
+            <.point_row stop={stop} current?={@active_point_id == stop.id} />
+          </li>
+        </ul>
+        <p :if={@points == [] and @query != ""} class="px-3 pt-3 text-sm text-muted">
+          No points on {@active_level_name} match "{@query}".
+        </p>
+        <div :if={@unassigned != []}>
+          <h3 class="px-3 pb-0.5 pt-4 text-[12.5px] font-[650] text-muted">
+            Not placed on any level
+          </h3>
+          <ul
+            id="unassigned-stops-table"
+            class="divide-y divide-subtle border-y border-subtle"
+          >
+            <li :for={stop <- @unassigned} id={"unassigned-stop-row-#{stop.id}"}>
+              <.point_row stop={stop} current?={@active_point_id == stop.id} />
+            </li>
+          </ul>
+        </div>
+    <% end %>
+    """
+  end
+
+  attr :stop, :any, required: true
+  attr :current?, :boolean, default: false
+
+  defp point_row(assigns) do
+    ~H"""
+    <button
+      type="button"
+      phx-click="edit_child_stop"
+      phx-value-id={@stop.id}
+      aria-current={@current? && "true"}
+      class={[
+        "flex min-h-[52px] w-full items-center gap-3 px-3 py-1.5 text-left hover:bg-canvas",
+        "focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus",
+        @current? && "bg-selection"
+      ]}
+    >
+      <.point_symbol type={@stop.location_type} />
+      <span class="min-w-0 flex-1">
+        <span class={[
+          "block truncate text-sm font-[650]",
+          if(@current?, do: "text-action", else: "text-strong")
+        ]}>
+          {@stop.stop_name || @stop.stop_id}
+        </span>
+        <span class="block truncate text-[12.5px] text-muted">
+          {point_type_label(@stop.location_type)} · <span class="font-mono">{@stop.stop_id}</span>
+        </span>
+      </span>
+      <span
+        :if={@stop.wheelchair_boarding == 2}
+        class="inline-flex shrink-0 items-center gap-1 text-[12px] font-[650] text-error-fg"
+      >
+        <.icon name="hero-x-mark" class="size-3.5" /> Not accessible
+      </span>
+    </button>
+    """
+  end
+
+  attr :pathways, :list, required: true
+  attr :all_pathways, :list, required: true
+  attr :query, :string, default: ""
+  attr :active_level, :any, default: nil
+  attr :active_level_name, :string, default: ""
+  attr :levels, :list, default: []
+  attr :has_diagram, :boolean, default: false
+  attr :mode, :atom, required: true
+
+  defp pathways_list(assigns) do
+    ~H"""
+    <%= cond do %>
+      <% @all_pathways == [] -> %>
+        <div id="pathways-empty" class="px-6 py-10 text-center">
+          <h3 class="text-[15px] font-bold text-strong">
+            No pathways on {@active_level_name} yet
+          </h3>
+          <p class="mx-auto mt-1.5 max-w-[32ch] text-sm text-muted">
+            A pathway is a walkable link between two points: a corridor, stairs, an elevator, a gate.
+          </p>
+          <.button
+            :if={@has_diagram and @mode != :connect}
+            id="empty-connect-points"
+            type="button"
+            class="mt-4 min-h-11"
+            phx-click="switch_mode"
+            phx-value-mode="connect"
+          >
+            <.icon name="hero-link" class="size-4" /> Connect points
+          </.button>
+        </div>
+      <% @pathways == [] -> %>
+        <.no_match what="pathways" query={@query} />
+      <% true -> %>
+        <ul id="pathways-table" class="divide-y divide-subtle border-b border-subtle">
+          <li :for={pathway <- @pathways} id={"pathway-row-#{pathway.id}"}>
             <button
               type="button"
-              class="link link-primary font-medium"
-              phx-click="edit_child_stop"
-              phx-value-id={stop.id}
+              phx-click="edit_pathway"
+              phx-value-id={pathway.id}
+              class={[
+                "flex min-h-[52px] w-full items-center gap-3 px-3 py-1.5 text-left hover:bg-canvas",
+                "focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
+              ]}
             >
-              {stop.stop_id}
+              <.pathway_symbol mode={pathway.pathway_mode} one_way?={!pathway.is_bidirectional} />
+              <span class="min-w-0 flex-1">
+                <span class="block truncate text-sm font-[650] text-strong">
+                  {pathway_row_label(pathway)}
+                </span>
+                <span class="block truncate text-[12.5px] text-muted">
+                  {pathway_meta(pathway, @active_level, @levels)} ·
+                  <span class="font-mono">{pathway.pathway_id}</span>
+                </span>
+              </span>
             </button>
-          </:col>
-          <:col :let={stop} label="Name">{stop.stop_name || "—"}</:col>
-          <:col :let={stop} label="Type">
-            <span class="badge badge-ghost badge-sm">
-              {Stop.location_type_label(stop.location_type)}
-            </span>
-          </:col>
-          <:col :let={stop} label="Platform">{stop.platform_code || "—"}</:col>
-          <:col :let={stop} label="Accessible">
-            <TransitPresentation.accessibility_status status={
-              accessibility_status(stop.wheelchair_boarding)
-            } />
-          </:col>
-        </.table>
-      </div>
-    </div>
+          </li>
+        </ul>
+    <% end %>
     """
   end
 
-  attr :pathways_list, :list, required: true
-  attr :pathway_error, :string
-  attr :active_level, :any, default: nil
+  attr :what, :string, required: true
+  attr :query, :string, required: true
 
-  defp pathways_table(assigns) do
+  defp no_match(assigns) do
     ~H"""
-    <div>
-      <div class="flex items-center gap-2 mb-2">
-        <h2 class="text-base font-semibold">Pathways on Level</h2>
-        <span :if={@pathway_error} id="pathways-table-error" class="text-error text-sm">
-          {@pathway_error}
-        </span>
-      </div>
-      <div class="bg-base-100 overflow-hidden [&_thead_th]:bg-base-300">
-        <%= if @pathways_list == [] do %>
-          <p class="px-4 py-3 text-sm text-base-content/70">No pathways on this level.</p>
-        <% else %>
-          <.table
-            id="pathways-table"
-            responsive="stack"
-            rows={@pathways_list}
-            row_id={&"pathway-row-#{&1.id}"}
-          >
-            <:col :let={pathway} label="From">
-              <button
-                type="button"
-                class="link link-primary font-medium"
-                phx-click="edit_pathway"
-                phx-value-id={pathway.id}
-              >
-                {pathway_stop_display(pathway.from_stop)}
-              </button>
-            </:col>
-            <:col :let={pathway} label="To">{pathway_stop_display(pathway.to_stop)}</:col>
-            <:col :let={pathway} label="Mode">
-              <span class="badge badge-ghost badge-sm">
-                {Pathway.mode_label(pathway.pathway_mode)}
-              </span>
-            </:col>
-            <:col :let={pathway} label="Bidirectional">
-              {if pathway.is_bidirectional, do: "Yes", else: "No"}
-            </:col>
-            <:col :let={pathway} label="Cross-Level">
-              {cross_level_target_level(pathway, @active_level)}
-            </:col>
-            <:col :let={pathway} label="Signage">
-              <div class="space-y-1">
-                <%= if !present_text?(pathway.signposted_as) && !present_text?(pathway.reversed_signposted_as) do %>
-                  <p class="text-sm leading-tight">—</p>
-                <% end %>
-
-                <div :if={present_text?(pathway.signposted_as)} class="space-y-0.5">
-                  <p class="text-xs font-medium text-base-content/70">Forward</p>
-                  <p class="text-sm leading-tight">{pathway.signposted_as}</p>
-                </div>
-
-                <div :if={present_text?(pathway.reversed_signposted_as)} class="space-y-0.5">
-                  <p class="text-xs font-medium text-base-content/70">Reverse</p>
-                  <p class="text-sm leading-tight">{pathway.reversed_signposted_as}</p>
-                </div>
-              </div>
-            </:col>
-            <:col :let={pathway} label="Time (s)">
-              <span class="tabular-nums text-right block">{pathway.traversal_time || "—"}</span>
-            </:col>
-            <:col :let={pathway} label="Length (m)">
-              <span class="tabular-nums text-right block">
-                {format_decimal(pathway.length) || "—"}
-              </span>
-            </:col>
-          </.table>
-        <% end %>
-      </div>
+    <div class="px-6 py-10 text-center">
+      <h3 class="text-[15px] font-bold text-strong">No {@what} match "{@query}"</h3>
+      <p class="mx-auto mt-1.5 max-w-[32ch] text-sm text-muted">
+        Check the spelling, or clear the search to see every {if @what == "points",
+          do: "point",
+          else: "pathway"} on this level.
+      </p>
+      <.button
+        type="button"
+        variant="secondary"
+        class="mt-4 min-h-11"
+        phx-click="filter_panel_list"
+        phx-value-list_query=""
+      >
+        Clear search
+      </.button>
     </div>
     """
   end
+
+  # What a point is called in the lists and the key: the terms a mapper uses,
+  # not the GTFS location types they map to.
+  defp point_type_label(0), do: "Platform"
+  defp point_type_label(1), do: "Station"
+  defp point_type_label(2), do: "Entrance or exit"
+  defp point_type_label(4), do: "Boarding spot"
+  defp point_type_label(_), do: "Junction"
+
+  defp pathway_row_label(pathway) do
+    arrow = if pathway.is_bidirectional, do: "↔", else: "→"
+    "#{pathway_stop_display(pathway.from_stop)} #{arrow} #{pathway_stop_display(pathway.to_stop)}"
+  end
+
+  defp pathway_meta(pathway, active_level, levels) do
+    [
+      Pathway.mode_label(pathway.pathway_mode),
+      if(pathway.is_bidirectional, do: "both ways", else: "one way"),
+      if(pathway.traversal_time, do: "#{pathway.traversal_time} s"),
+      if(pathway.length, do: "#{format_decimal(pathway.length)} m"),
+      cross_level_meta(pathway, active_level, levels)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  defp cross_level_meta(pathway, active_level, levels) do
+    case cross_level_target_level(pathway, active_level) do
+      "—" ->
+        nil
+
+      level_id ->
+        case Enum.find(levels, &(&1.level_id == level_id)) do
+          %{level_name: name} when is_binary(name) and name != "" -> "to #{name}"
+          _ -> "to #{level_id}"
+        end
+    end
+  end
+
+  defp filter_points(stops, ""), do: stops
+
+  defp filter_points(stops, query) do
+    Enum.filter(stops, fn stop ->
+      [stop.stop_name, stop.stop_id, point_type_label(stop.location_type)]
+      |> Enum.any?(&matches_query?(&1, query))
+    end)
+  end
+
+  defp filter_pathways(pathways, ""), do: pathways
+
+  defp filter_pathways(pathways, query) do
+    Enum.filter(pathways, fn pathway ->
+      [pathway_row_label(pathway), pathway.pathway_id, Pathway.mode_label(pathway.pathway_mode)]
+      |> Enum.any?(&matches_query?(&1, query))
+    end)
+  end
+
+  defp matches_query?(value, query) when is_binary(value),
+    do: value |> String.downcase() |> String.contains?(query)
+
+  defp matches_query?(_value, _query), do: false
 
   defp pathway_stop_display(%Stop{} = stop), do: stop.stop_name || stop.stop_id
   defp pathway_stop_display(_), do: "Unknown"

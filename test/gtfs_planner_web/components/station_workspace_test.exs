@@ -120,5 +120,31 @@ defmodule GtfsPlannerWeb.StationWorkspaceTest do
 
       assert Enum.count(doc(html) |> LazyHTML.query("#primary-action")) == 1
     end
+
+    test "puts the way back, the name and the identifier on one row when compact" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <StationWorkspace.station_header
+          compact
+          title="Central"
+          stop_id="CEN"
+          gtfs_version_id="v1"
+          active_tab={:diagram}
+        >
+          <:meta>Station · 2 levels</:meta>
+          <:actions><a id="primary-action" href="/go">Go</a></:actions>
+        </StationWorkspace.station_header>
+        """)
+
+      header = doc(html)
+
+      assert Enum.count(header |> LazyHTML.query("[data-compact] #station-back + h1 + p")) == 1
+      assert LazyHTML.text(header |> LazyHTML.query("h1 + p")) =~ "Station · 2 levels"
+      assert header |> LazyHTML.query("h1 + p span.font-mono") |> LazyHTML.text() == "CEN"
+      assert Enum.count(header |> LazyHTML.query("#primary-action")) == 1
+      assert Enum.count(header |> LazyHTML.query("nav[aria-label='Station views'] a")) == 5
+    end
   end
 end

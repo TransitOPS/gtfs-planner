@@ -75,7 +75,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
              "#diagram-page[style*='--diagram-journal-open'][phx-hook='JournalPanelHook']:not([phx-update='ignore'])"
            )
 
-    assert has_element?(view, "#diagram-action-strip #scale-control + #journal-trigger")
+    assert has_element?(view, "#side-panel-tabs #journal-trigger[role='tab']")
     assert has_element?(view, "#journal-trigger[aria-expanded='false']")
     refute has_element?(view, "#station-journal-panel")
 
@@ -92,15 +92,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationJournalPanelTest do
              "#station-journal-panel[phx-mounted][phx-remove][phx-window-keydown='close_journal'][phx-key='escape']:not([phx-update='ignore'])"
            )
 
-    assert has_element?(
-             view,
-             "#diagram-workspace > #station-journal-panel + #diagram-canvas-wrapper.min-w-0.flex-1"
-           )
-
-    assert has_element?(
-             view,
-             "#station-journal-panel[class~='w-[340px]'][class~='min-w-[340px]'][class~='max-w-[340px]']"
-           )
+    assert has_element?(view, "#diagram-workspace #side-panel > div > #station-journal-panel")
+    assert has_element?(view, "#diagram-workspace #canvas-col #diagram-canvas-wrapper")
+    assert has_element?(view, "#station-journal-panel[class~='w-full'][class~='min-w-0']")
 
     assert has_element?(view, "#journal-empty-first-use")
     refute has_element?(view, "#journal-filter")
