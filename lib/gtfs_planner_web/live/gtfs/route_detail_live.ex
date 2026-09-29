@@ -61,6 +61,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Gtfs.RouteFormComponents
@@ -112,6 +113,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
      |> assign(:mode_counts, [])
      |> assign(:warning_candidates, [])
      |> assign(:geometry_status, nil)
+     |> assign(:route_map_data, nil)
      |> assign(:last_saved, nil)
      |> assign(:draft_route, nil)
      |> assign(:route_text_mode, nil)
@@ -635,12 +637,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
       {:error, :unavailable} ->
         assign(socket, :route_state, :unavailable)
+        |> assign(:route_map_data, nil)
 
       {:ok, workspace} ->
-        geometry_status =
-          organization_id
-          |> Gtfs.route_map(gtfs_version_id, workspace.route.route_id)
-          |> geometry_status()
+        # The map read (R7, seam S-3) runs beside the editor read and fails
+        # independently: its classification drives the boarding advisory, and
+        # its payload drives the saved route map. Neither reaches the other.
+        route_map_data =
+          Gtfs.route_map(organization_id, gtfs_version_id, workspace.route.route_id)
 
         socket
         |> assign(:route, workspace.route)
@@ -648,7 +652,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         |> assign(:agencies, workspace.agencies)
         |> assign(:mode_counts, workspace.mode_counts)
         |> assign(:warning_candidates, workspace.warning_candidates)
-        |> assign(:geometry_status, geometry_status)
+        |> assign(:geometry_status, geometry_status(route_map_data))
+        |> assign(:route_map_data, route_map_data)
         |> assign(:last_saved, workspace.last_saved)
         |> assign(:route_form, route_form(workspace.route))
         |> assign(:draft_route, workspace.route)
@@ -660,7 +665,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
             workspace.route,
             workspace.agencies,
             workspace.warning_candidates,
-            geometry_status
+            geometry_status(route_map_data)
           )
         )
         |> assign(:merge, nil)
@@ -2205,29 +2210,25 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                       </div>
                     </div>
                   </dialog>
-
-                  <div class="mt-8 border-t border-subtle pt-4">
-                    <p class="text-[13px] text-muted">
-                      <.link
-                        id="route-transfers-link"
-                        navigate={
-                          ~p"/gtfs/#{@current_gtfs_version.id}/transfers?#{[route: @route.route_id]}"
-                        }
-                        class="font-[650] text-action underline underline-offset-2 hover:no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
-                      >
-                        Transfers here ({@transfer_count})
-                      </.link>
-                    </p>
-                  </div>
                 </div>
 
-                <%!-- Step 30 renders the saved route map and its pattern list in
-                       this sticky column. It is reserved here and deliberately
-                       empty rather than filled with invented geometry. --%>
+                <%!-- The saved route map (step 30): the step-17 projection drawn
+                       by the RouteDetailsMap hook beside the pattern list that
+                       is the map's text equivalent. The panel renders the
+                       truth the map read returned: real geometry, the empty
+                       state, or an honest failure. --%>
                 <aside
                   id="route-details-map-region"
                   class="min-w-0 lg:sticky lg:top-4 lg:self-start"
                 >
+                  <.route_map_panel
+                    route_map_data={@route_map_data}
+                    route={@route}
+                    draft_route={@draft_route}
+                    usage={@usage}
+                    transfer_count={@transfer_count}
+                    gtfs_version_id={@current_gtfs_version.id}
+                  />
                 </aside>
               </div>
             <% true -> %>
@@ -2239,4 +2240,477 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     </Layouts.app>
     """
   end
+
+  # -- Saved route map (spec 16, step 30) --------------------------------------
+
+  # The panel around the ignored `#route-map` container. Everything the map
+  # draws comes from the step-17 projection carried in `@route_map_data`; the
+  # panel itself renders the pattern list that is the map's text equivalent,
+  # the legend, the controls and the honest degraded states (R7, AC-25/26).
+  attr :route_map_data, :any, required: true
+  attr :route, :any, required: true
+  attr :draft_route, :any, required: true
+  attr :usage, :any, required: true
+  attr :transfer_count, :any, required: true
+  attr :gtfs_version_id, :string, required: true
+
+  def route_map_panel(assigns) do
+    ~H"""
+    <section
+      aria-labelledby="route-map-title"
+      class="overflow-hidden rounded-card border border-subtle bg-white"
+    >
+      <div class="flex flex-wrap items-center justify-between gap-x-4 px-4 py-1.5">
+        <h2 id="route-map-title" class="text-base font-bold tracking-normal text-strong">
+          Where it runs
+        </h2>
+      </div>
+
+      <%= case @route_map_data do %>
+        <% {:ok, map} -> %>
+          <%= if route_map_has_geometry?(map) do %>
+            <div
+              id="route-map-frame"
+              class="relative h-[clamp(300px,44vh,440px)] overflow-hidden border-y border-subtle bg-map-paper"
+            >
+              <div
+                id="route-map"
+                phx-hook="RouteDetailsMap"
+                phx-update="ignore"
+                data-map-payload={route_map_payload_json(map)}
+                data-map-colors={route_map_colors_json(@draft_route)}
+                class="absolute inset-0 z-0 bg-map-paper"
+              >
+              </div>
+              <p id="route-map-alt" class="sr-only">{route_map_alt_text(map, @route)}</p>
+              <%!-- 44px zoom/fit controls: the map itself is not a tab stop, so
+                     these and the pattern list are the keyboard equivalents. --%>
+              <div class="absolute right-3 top-3 z-10 grid overflow-hidden rounded-control border border-subtle bg-white shadow-float">
+                <button
+                  type="button"
+                  id="route-map-zoom-in"
+                  aria-label="Zoom in"
+                  title="Zoom in"
+                  class="inline-flex size-11 items-center justify-center text-strong hover:bg-canvas"
+                >
+                  <.icon name="hero-plus" class="size-5" />
+                </button>
+                <button
+                  type="button"
+                  id="route-map-zoom-out"
+                  aria-label="Zoom out"
+                  title="Zoom out"
+                  class="inline-flex size-11 items-center justify-center border-t border-subtle text-strong hover:bg-canvas"
+                >
+                  <.icon name="hero-minus" class="size-5" />
+                </button>
+                <button
+                  type="button"
+                  id="route-map-fit"
+                  aria-label="Fit route"
+                  title="Fit route"
+                  class="inline-flex size-11 items-center justify-center border-t border-subtle text-strong hover:bg-canvas"
+                >
+                  <.icon name="hero-arrows-pointing-out" class="size-5" />
+                </button>
+              </div>
+
+              <%!-- The highlighted pattern's card; the hook fills and shows it. --%>
+              <div
+                id="route-map-card"
+                hidden
+                class="absolute left-3 top-3 z-10 max-w-[300px] rounded-control border border-subtle bg-white px-3 py-2 text-[13px] shadow-float"
+              >
+              </div>
+
+              <%!-- Cooperative wheel zoom: plain wheel scrolls the page behind this
+                     hint; Ctrl/Cmd + wheel zooms the map. --%>
+              <p
+                id="route-map-hint"
+                hidden
+                class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-navy-800/45 text-sm font-[650] text-white"
+              >
+                Hold Ctrl or ⌘ and scroll to zoom the map
+              </p>
+
+              <%!-- Tile failure: the vectors and this list stay; the hook shows and
+                     clears this banner around its own tile retry. --%>
+              <div
+                id="route-map-tiles-unavailable"
+                hidden
+                role="status"
+                class="absolute inset-x-3 bottom-10 z-10 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-control border border-warning-line bg-warning-bg px-3 py-2 text-[13px] text-warning-fg shadow-float"
+              >
+                <.icon name="hero-exclamation-triangle" class="size-4 shrink-0" />
+                <span class="min-w-0 flex-1">
+                  Street map unavailable. Route lines and stops are drawn on a plain
+                  background.
+                </span>
+                <button
+                  type="button"
+                  id="route-map-tiles-retry"
+                  class="inline-flex min-h-11 items-center font-[650] underline"
+                >
+                  Retry map
+                </button>
+              </div>
+
+              <p class="pointer-events-none absolute bottom-1.5 right-3 z-10 rounded-badge bg-white/85 px-1.5 text-[11px] text-map-label">
+                © OpenStreetMap contributors · Geoapify
+              </p>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-x-5 gap-y-1 border-b border-subtle px-4 py-2 text-[13px] text-default">
+              <span class="inline-flex items-center gap-2">
+                <svg width="26" height="8" aria-hidden="true">
+                  <line
+                    class="route-map-swatch"
+                    x1="1"
+                    y1="4"
+                    x2="25"
+                    y2="4"
+                    stroke={route_map_swatch_stroke(@draft_route)}
+                    stroke-width="3.5"
+                    stroke-linecap="round"
+                  />
+                </svg>
+                Path saved
+              </span>
+              <span class="inline-flex items-center gap-2">
+                <svg width="26" height="8" aria-hidden="true">
+                  <line
+                    class="route-map-swatch"
+                    x1="1"
+                    y1="4"
+                    x2="25"
+                    y2="4"
+                    stroke={route_map_swatch_stroke(@draft_route)}
+                    stroke-width="3.5"
+                    stroke-dasharray="4 4"
+                  />
+                </svg>
+                Straight between stops, no path yet
+              </span>
+            </div>
+
+            <div class="flex items-baseline justify-between gap-3 px-4 pb-1 pt-3">
+              <h3 class="text-[13px] font-[650] text-default">Patterns</h3>
+              <p :if={route_map_trips(@usage)} class="text-[13px] tabular-nums text-muted">
+                {route_map_trips(@usage)} {if route_map_trips(@usage) == 1,
+                  do: "trip",
+                  else: "trips"}
+              </p>
+            </div>
+            <ul id="route-map-pattern-list" class="pb-1">
+              <li :for={pattern <- map.patterns}>
+                <% metrics = route_map_pattern_metrics(pattern) %>
+                <.link
+                  navigate={
+                    ~p"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/patterns/#{pattern.route_pattern_id}"
+                  }
+                  data-map-highlight={pattern.route_pattern_id}
+                  data-map-kind="pattern"
+                  data-on="false"
+                  class="group flex min-h-[52px] items-center gap-3 px-4 py-1.5 text-default no-underline hover:bg-canvas focus-visible:bg-canvas data-[on=true]:bg-selection"
+                >
+                  <svg width="28" height="10" class="shrink-0" aria-hidden="true">
+                    <line
+                      class="route-map-swatch"
+                      x1="2"
+                      y1="5"
+                      x2="26"
+                      y2="5"
+                      stroke={route_map_swatch_stroke(@draft_route)}
+                      stroke-width="4"
+                      stroke-linecap={if metrics.dashed > 0, do: "butt", else: "round"}
+                      stroke-dasharray={if metrics.dashed > 0, do: "5 4", else: nil}
+                    />
+                  </svg>
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate text-sm font-[650] text-strong group-hover:underline">
+                      {pattern.route_pattern_name || pattern.route_pattern_id}
+                    </span>
+                    <span class="block text-[13px] text-muted">
+                      {RoutePattern.direction_label(pattern.direction_id)} · {metrics.stops}
+                      {if metrics.stops == 1, do: "stop", else: "stops"}{route_map_gap_text(metrics)}
+                    </span>
+                  </span>
+                </.link>
+              </li>
+            </ul>
+            <div :if={map.imported_shape_variants != []} class="border-t border-subtle px-4 pb-1 pt-3">
+              <h3 class="text-[13px] font-[650] text-default">Imported shapes</h3>
+            </div>
+            <ul id="route-map-variant-list" class="pb-1">
+              <li :for={variant <- map.imported_shape_variants}>
+                <% vmetrics = route_map_variant_metrics(variant) %>
+                <button
+                  type="button"
+                  data-map-highlight={variant.shape_id}
+                  data-map-kind="variant"
+                  data-on="false"
+                  title="Highlight this shape on the map"
+                  class="flex min-h-[52px] w-full items-center gap-3 px-4 py-1.5 text-left text-default hover:bg-canvas focus-visible:bg-canvas data-[on=true]:bg-selection"
+                >
+                  <svg width="28" height="10" class="shrink-0" aria-hidden="true">
+                    <line
+                      class="route-map-swatch"
+                      x1="2"
+                      y1="5"
+                      x2="26"
+                      y2="5"
+                      stroke={route_map_swatch_stroke(@draft_route)}
+                      stroke-width="4"
+                      stroke-linecap="round"
+                      stroke-dasharray={if vmetrics.saved, do: nil, else: "5 4"}
+                    />
+                  </svg>
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate text-sm font-[650] text-strong">{variant.label}</span>
+                    <span class="block text-[13px] text-muted">
+                      {length(variant.route_pattern_ids)}
+                      {if length(variant.route_pattern_ids) == 1, do: "pattern", else: "patterns"} ·
+                      shape {variant.shape_id}{route_map_variant_gap_text(vmetrics)}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            </ul>
+          <% else %>
+            <div class="border-y border-subtle bg-map-paper">
+              <div class="flex items-center justify-center p-6">
+                <div class="max-w-[340px] rounded-card border border-subtle bg-white p-5 text-center shadow-float">
+                  <h3 class="text-base font-bold tracking-normal text-strong">No patterns yet</h3>
+                  <p class="mt-1.5 text-sm text-default">
+                    A pattern is the list of stops a trip serves, in order. The map draws the
+                    route once it has one.
+                  </p>
+                  <.link
+                    id="route-map-first-pattern"
+                    navigate={~p"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/patterns"}
+                    class="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-control bg-action px-4 text-sm font-[650] text-white hover:bg-action-hover"
+                  >
+                    <.icon name="hero-plus" class="size-4" />Create pattern
+                  </.link>
+                </div>
+              </div>
+            </div>
+          <% end %>
+        <% _ -> %>
+          <div class="border-y border-subtle bg-map-paper px-4 py-6">
+            <div
+              id="route-map-unavailable"
+              role="status"
+              class="mx-auto max-w-[340px] rounded-card border border-warning-line bg-warning-bg p-5 text-center text-warning-fg"
+            >
+              <p class="text-sm font-[650]">Map geometry unavailable</p>
+              <p class="mt-1.5 text-sm">
+                We couldn't load what to draw. Nothing is invented in its place, and the editor
+                is unaffected.
+              </p>
+              <button
+                id="route-map-retry"
+                type="button"
+                phx-click="retry"
+                class="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-control border border-control-border bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
+              >
+                Reload map
+              </button>
+            </div>
+          </div>
+      <% end %>
+
+      <div class="flex flex-wrap gap-x-6 gap-y-0 border-t border-subtle px-4 py-1">
+        <p class="text-[13px] text-muted">
+          <.link
+            id="route-transfers-link"
+            navigate={~p"/gtfs/#{@gtfs_version_id}/transfers?#{[route: @route.route_id]}"}
+            class="font-[650] text-action underline underline-offset-2 hover:no-underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+          >
+            Transfers here ({@transfer_count})
+          </.link>
+        </p>
+      </div>
+    </section>
+    """
+  end
+
+  defp route_map_has_geometry?(map),
+    do: map.patterns != [] or map.imported_shape_variants != []
+
+  defp route_map_trips(usage) when is_map(usage), do: Map.get(usage, :trips)
+  defp route_map_trips(_usage), do: nil
+
+  # The map payload as JSON. The projection's coordinates already are JSON
+  # numbers in `[lon, lat]` order and pass through untouched; the status,
+  # source and unlocated-reason atoms become the strings the hook keys on.
+  # Nothing else is added: the hook draws what the read returned or nothing.
+  defp route_map_payload_json(map) do
+    %{
+      route_uuid: map.route_uuid,
+      route_id: map.route_id,
+      status: Atom.to_string(map.status),
+      saved_alignment: Atom.to_string(map.saved_alignment),
+      patterns:
+        Enum.map(map.patterns, fn pattern ->
+          %{
+            route_pattern_id: pattern.route_pattern_id,
+            direction_id: pattern.direction_id,
+            route_pattern_name: pattern.route_pattern_name,
+            visits: Enum.map(pattern.visits, &route_map_geometry_json/1),
+            sections: Enum.map(pattern.sections, &route_map_geometry_json/1)
+          }
+        end),
+      imported_shape_variants:
+        Enum.map(map.imported_shape_variants, fn variant ->
+          variant
+          |> route_map_geometry_json()
+          |> Map.merge(%{
+            shape_id: variant.shape_id,
+            variant: variant.variant,
+            label: variant.label,
+            route_pattern_ids: variant.route_pattern_ids
+          })
+        end)
+    }
+    |> Jason.encode!()
+  end
+
+  defp route_map_geometry_json(entry) do
+    scalars =
+      entry
+      |> Map.take([:source, :status, :position, :stop_id, :from_position, :to_position])
+      |> Enum.into(%{}, fn
+        {key, value} when is_atom(value) and not is_nil(value) -> {key, Atom.to_string(value)}
+        {key, value} -> {key, value}
+      end)
+
+    scalars =
+      case Map.fetch(entry, :coordinates) do
+        {:ok, coordinates} -> Map.put(scalars, :coordinates, coordinates)
+        :error -> scalars
+      end
+
+    reasons =
+      entry
+      |> Map.get(:unlocated, [])
+      |> Enum.map(fn unlocated ->
+        %{ref: unlocated.ref, reason: Atom.to_string(unlocated.reason)}
+      end)
+
+    Map.put(scalars, :unlocated, reasons)
+  end
+
+  defp route_map_colors_json(route) do
+    Jason.encode!(%{
+      route_color: route.route_color || "",
+      route_text_color: route.route_text_color || ""
+    })
+  end
+
+  defp route_map_alt_text(map, route) do
+    case map.patterns do
+      [] ->
+        "Route #{route.route_id} has no patterns to map yet."
+
+      patterns ->
+        first = List.first(patterns)
+        from = (List.first(first.visits) || %{})[:stop_id] || "its first stop"
+        to = (List.last(first.visits) || %{})[:stop_id] || "its last stop"
+
+        count = length(patterns)
+
+        "Map of #{route_display_name(route)} (#{route.route_id}): #{count} " <>
+          if(count == 1, do: "pattern", else: "patterns") <>
+          " from #{from} to #{to}. The pattern list below the map has the same information."
+    end
+  end
+
+  defp route_map_swatch_stroke(draft_route) do
+    hex =
+      case RouteIdentity.normalize_hex(draft_route && draft_route.route_color) do
+        {:ok, hex} -> hex
+        :error -> "FFFFFF"
+      end
+
+    if hex == "FFFFFF", do: "#7A8698", else: "##{hex}"
+  end
+
+  # The row metrics mirror the hook's draw rule exactly: a missing section is
+  # "without a path yet" (drawn dashed) only when both endpoint visits have
+  # coordinates; anything else is not shown, with its unlocated reason named
+  # instead of invented geometry (INV-5).
+  defp route_map_pattern_metrics(pattern) do
+    located =
+      for visit <- pattern.visits, Map.has_key?(visit, :coordinates), into: MapSet.new() do
+        visit.position
+      end
+
+    problem_sections =
+      Enum.filter(pattern.sections, &(&1.status in [:missing, :unavailable]))
+
+    {dashed, hidden} =
+      Enum.split_with(problem_sections, fn section ->
+        section.status == :missing and
+          MapSet.member?(located, section.from_position) and
+          MapSet.member?(located, section.to_position)
+      end)
+
+    reasons =
+      hidden
+      |> Enum.flat_map(&route_map_unlocated_reasons/1)
+      |> Enum.uniq()
+      |> Enum.map(&route_map_unlocated_phrase/1)
+
+    %{
+      stops: length(pattern.visits),
+      dashed: length(dashed),
+      hidden: length(hidden),
+      reasons: reasons
+    }
+  end
+
+  defp route_map_variant_metrics(variant) do
+    reasons =
+      variant
+      |> route_map_unlocated_reasons()
+      |> Enum.uniq()
+      |> Enum.map(&route_map_unlocated_phrase/1)
+
+    %{saved: variant.status == :saved, reasons: reasons}
+  end
+
+  defp route_map_unlocated_reasons(entry),
+    do: Enum.map(Map.get(entry, :unlocated, []), & &1.reason)
+
+  defp route_map_unlocated_phrase(:coordinates_absent), do: "a stop has no coordinates"
+  defp route_map_unlocated_phrase(:stop_not_found), do: "a referenced stop is missing"
+  defp route_map_unlocated_phrase(:shape_points_absent), do: "the shape has no points"
+  defp route_map_unlocated_phrase(_other), do: "the path is unknown"
+
+  defp route_map_gap_text(%{dashed: 0, hidden: 0}), do: ""
+
+  defp route_map_gap_text(%{dashed: dashed, hidden: hidden, reasons: reasons}) do
+    parts =
+      Enum.concat([
+        if(dashed > 0,
+          do: ["#{count_phrase(dashed, "section")} without a path yet"],
+          else: []
+        ),
+        if(hidden > 0,
+          do: [
+            "#{count_phrase(hidden, "section")} not shown: #{Enum.join(reasons, ", ")}"
+          ],
+          else: []
+        )
+      ])
+
+    " · " <> Enum.join(parts, " · ")
+  end
+
+  defp route_map_variant_gap_text(%{saved: true}), do: ""
+  defp route_map_variant_gap_text(%{reasons: []}), do: " · not shown"
+
+  defp route_map_variant_gap_text(%{reasons: reasons}),
+    do: " · not shown: #{Enum.join(reasons, ", ")}"
 end

@@ -14,7 +14,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.CatalogReadAdapter
   alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
+  alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Repo
+  alias GtfsPlannerWeb.Gtfs.RouteDetailLive
 
   @adapter_key :gtfs_catalog_read_adapter
 
@@ -1609,6 +1611,240 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
     end
   end
 
+  describe "saved route map" do
+    setup :shared_setup
+
+    # The first scenario runs through the ordinary public entrypoint: an
+    # authenticated mount whose workspace read also loads the step-17 map
+    # projection (RouteDetailLive -> Gtfs.route_map/3 ->
+    # GtfsPlanner.Gtfs.Routes.Map.route_map/3) over real pattern, stop, trip
+    # and shape rows. No private assigns, no substituted adapter.
+    test "the payload, the pattern list and the panel state the saved sections and imported variants",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      route =
+        details_route(organization.id, version.id, %{route_id: "MAP1", route_short_name: "M1"})
+
+      outbound =
+        route_pattern_fixture(organization.id, version.id, %{
+          route_pattern_id: "BP1",
+          route_id: "MAP1",
+          route_pattern_name: "Central to Valley",
+          direction_id: 0
+        })
+
+      inbound =
+        route_pattern_fixture(organization.id, version.id, %{
+          route_pattern_id: "BP2",
+          route_id: "MAP1",
+          route_pattern_name: "Valley to Central",
+          direction_id: 1
+        })
+
+      located_stop(organization.id, version.id, "MS1", "40.0", "-75.0")
+      located_stop(organization.id, version.id, "MS2", "40.1", "-75.1")
+      located_stop(organization.id, version.id, "MS3", "40.2", "-75.2")
+      located_stop(organization.id, version.id, "MS4", "40.3", "-75.3")
+
+      route_pattern_stop_fixture(outbound, "MS1", 1)
+      route_pattern_stop_fixture(outbound, "MS2", 2)
+      route_pattern_stop_fixture(outbound, "MS3", 3)
+      route_pattern_stop_fixture(inbound, "MS4", 1)
+      route_pattern_stop_fixture(inbound, "MS2", 2)
+
+      trip_with_shape(organization.id, version.id, "MAP1", outbound, "SHAPE_A")
+      trip_with_shape(organization.id, version.id, "MAP1", inbound, "SHAPE_B")
+
+      shape_points(organization.id, version.id, "SHAPE_A", [
+        ["40.05", "-75.05"],
+        ["40.15", "-75.15"]
+      ])
+
+      shape_points(organization.id, version.id, "SHAPE_B", [
+        ["40.35", "-75.35"],
+        ["40.05", "-75.05"]
+      ])
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/MAP1")
+
+      # The ignored hook container carries the projection verbatim: every
+      # section with its source/status, the [lon, lat] coordinates and the
+      # labelled variants the two distinct shapes produce.
+      assert has_element?(view, "#route-map[phx-hook='RouteDetailsMap'][phx-update='ignore']")
+      payload = map_payload(view)
+
+      assert payload["route_uuid"] == route.id
+      assert length(payload["patterns"]) == 2
+
+      [outbound_json, _inbound_json] = payload["patterns"]
+      assert outbound_json["route_pattern_id"] == "BP1"
+      assert length(outbound_json["visits"]) == 3
+
+      assert [section, _closing_section] = outbound_json["sections"]
+      assert section["source"] == "stop_pair"
+      assert section["status"] == "saved"
+      assert section["coordinates"] == [[-75.0, 40.0], [-75.1, 40.1]]
+
+      assert length(payload["imported_shape_variants"]) == 2
+      assert [variant_a, variant_b] = payload["imported_shape_variants"]
+      assert variant_a["label"] == "Variant 1"
+      assert variant_a["shape_id"] == "SHAPE_A"
+      assert variant_a["status"] == "saved"
+      assert variant_b["label"] == "Variant 2"
+
+      # The panel names what the projection returned, and the lists are the
+      # map's text equivalent (AC-25/AC-26).
+      assert has_element?(view, "#route-map-pattern-list [data-map-highlight='BP1']")
+
+      assert has_element?(
+               view,
+               "#route-map-pattern-list [data-map-highlight='BP1']",
+               "Central to Valley"
+             )
+
+      assert has_element?(
+               view,
+               "#route-map-pattern-list [data-map-highlight='BP1']",
+               "Direction 0 · 3 stops"
+             )
+
+      assert has_element?(
+               view,
+               "#route-map-pattern-list [data-map-highlight='BP2']",
+               "Direction 1 · 2 stops"
+             )
+
+      assert has_element?(
+               view,
+               "#route-map-variant-list [data-map-kind='variant'][data-map-highlight='SHAPE_A']"
+             )
+
+      assert has_element?(view, "#route-map-variant-list", "Variant 1")
+      assert has_element?(view, "#route-map-variant-list", "shape SHAPE_A")
+
+      assert has_element?(view, "#route-map-alt", "2 patterns from MS1 to MS3")
+      assert has_element?(view, "#route-details-map-region", "Path saved")
+
+      assert has_element?(
+               view,
+               "#route-details-map-region",
+               "Straight between stops, no path yet"
+             )
+
+      assert has_element?(view, "#route-map-title", "Where it runs")
+      assert has_element?(view, "#route-map-zoom-in")
+      assert has_element?(view, "#route-map-zoom-out")
+      assert has_element?(view, "#route-map-fit")
+      assert has_element?(view, "#route-map-tiles-unavailable")
+      assert has_element?(view, "#route-map-tiles-retry")
+      assert has_element?(view, "#route-map-card")
+
+      assert has_element?(
+               view,
+               "#route-details-map-region",
+               "© OpenStreetMap contributors · Geoapify"
+             )
+
+      # The transfers link lives in the map panel footer, the reference's place
+      # for it (one link, moved — not a second one).
+      assert has_element?(view, "#route-details-map-region #route-transfers-link")
+
+      # The editor is untouched beside the map (AC-26's availability claim in
+      # the ordinary load).
+      assert has_element?(view, "#route-details-form")
+    end
+
+    test "missing coordinates stay explained in the payload and the list, never fabricated",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      _route = details_route(organization.id, version.id, %{route_id: "MAPGAP1"})
+
+      pattern =
+        route_pattern_fixture(organization.id, version.id, %{
+          route_pattern_id: "BGAP1",
+          route_id: "MAPGAP1",
+          route_pattern_name: "Gappy"
+        })
+
+      located_stop(organization.id, version.id, "GS1", "40.0", "-75.0")
+
+      # A stored stop without coordinates is known missing; an occurrence
+      # naming a stop with no row is unknown instead.
+      Repo.insert!(%GtfsPlanner.Gtfs.Stop{
+        organization_id: organization.id,
+        gtfs_version_id: version.id,
+        stop_id: "GS2",
+        stop_name: "Stored without coordinates"
+      })
+
+      route_pattern_stop_fixture(pattern, "GS1", 1)
+      route_pattern_stop_fixture(pattern, "GS2", 2)
+      route_pattern_stop_fixture(pattern, "GHOST", 3)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/MAPGAP1")
+
+      payload = map_payload(view)
+      assert [pattern_json] = payload["patterns"]
+
+      assert [%{"stop_id" => "GS1", "coordinates" => [-75.0, 40.0]}, gap_visit, ghost_visit] =
+               pattern_json["visits"]
+
+      refute Map.has_key?(gap_visit, "coordinates")
+      assert gap_visit["unlocated"] == [%{"ref" => "GS2", "reason" => "coordinates_absent"}]
+      assert ghost_visit["unlocated"] == [%{"ref" => "GHOST", "reason" => "stop_not_found"}]
+
+      assert [first_section, second_section] = pattern_json["sections"]
+      assert first_section["status"] == "missing"
+      refute Map.has_key?(first_section, "coordinates")
+      assert second_section["status"] == "unavailable"
+      refute Map.has_key?(second_section, "coordinates")
+
+      # The row explains both gaps with their reasons; nothing is drawn that
+      # the read did not return.
+      assert has_element?(view, "#route-map-pattern-list", "2 sections not shown")
+      assert has_element?(view, "#route-map-pattern-list", "a stop has no coordinates")
+      assert has_element?(view, "#route-map-pattern-list", "a referenced stop is missing")
+      assert has_element?(view, "#route-details-form")
+    end
+
+    test "a route with no patterns or shapes renders the empty state without a map hook",
+         %{conn: conn, organization: organization, gtfs_version: version} do
+      details_route(organization.id, version.id, %{route_id: "MAPEMPTY1"})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/MAPEMPTY1")
+
+      assert has_element?(view, "#route-details-map-region", "No patterns yet")
+      assert has_element?(view, "#route-map-first-pattern", "Create pattern")
+      assert String.contains?(link_href(view, "#route-map-first-pattern"), "/patterns")
+      refute has_element?(view, "#route-map")
+    end
+
+    # The map read fails independently of the editor read (R7); the LiveView
+    # consumes the failure as a rendered branch, asserted here at the panel's
+    # own public boundary with the error tuple route_map/3 returns.
+    test "an unavailable map read renders the honest panel, never invented geometry" do
+      html =
+        render_component(&RouteDetailLive.route_map_panel/1, %{
+          route_map_data: {:error, :unavailable},
+          route: %GtfsPlanner.Gtfs.Route{
+            route_id: "MAPDOWN1",
+            route_short_name: "MD1",
+            route_long_name: "Map down"
+          },
+          draft_route: nil,
+          usage: %{trips: 2},
+          transfer_count: 1,
+          gtfs_version_id: Ecto.UUID.generate()
+        })
+
+      assert html =~ "Map geometry unavailable"
+      assert html =~ "Nothing is invented in its place"
+      assert html =~ "Reload map"
+      assert html =~ "Transfers here (1)"
+      refute html =~ ~s(id="route-map")
+      refute html =~ "data-map-payload"
+      refute html =~ "No patterns yet"
+    end
+  end
+
   describe "route status actions" do
     setup :shared_setup
 
@@ -2306,6 +2542,51 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
     membership
     |> Ecto.Changeset.change(roles: ["pathways_studio_viewer"])
     |> Repo.update!()
+  end
+
+  # -- saved route map fixtures -------------------------------------------------
+
+  defp located_stop(organization_id, gtfs_version_id, stop_id, lat, lon) do
+    stop_fixture(organization_id, gtfs_version_id, %{
+      stop_id: stop_id,
+      stop_lat: Decimal.new(lat),
+      stop_lon: Decimal.new(lon)
+    })
+  end
+
+  defp trip_with_shape(organization_id, gtfs_version_id, route_id, pattern, shape_id) do
+    trip =
+      trip_fixture(organization_id, gtfs_version_id, route_id, %{
+        trip_id: "trip_#{System.unique_integer([:positive])}",
+        shape_id: shape_id
+      })
+
+    Repo.update!(Ecto.Changeset.change(trip, route_pattern_id: pattern.id))
+  end
+
+  defp shape_points(organization_id, gtfs_version_id, shape_id, points) do
+    points
+    |> Enum.with_index(1)
+    |> Enum.each(fn {[lat, lon], sequence} ->
+      Repo.insert!(%Shape{
+        organization_id: organization_id,
+        gtfs_version_id: gtfs_version_id,
+        shape_id: shape_id,
+        shape_pt_lat: Decimal.new(lat),
+        shape_pt_lon: Decimal.new(lon),
+        shape_pt_sequence: sequence
+      })
+    end)
+  end
+
+  defp map_payload(view) do
+    view
+    |> element("#route-map")
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.attribute("data-map-payload")
+    |> List.first()
+    |> Jason.decode!()
   end
 
   defp link_href(view, selector) do

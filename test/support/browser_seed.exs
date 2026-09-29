@@ -901,11 +901,27 @@ case Accounts.register_first_admin(%{
     # has ungrouped trips with stop times but no patterns.
     pattern_stops =
       Enum.map(1..4, fn index ->
+        # Coordinates for the saved route map (spec 16, step 30): the Details
+        # page draws the patterns' saved connectors and the seeded imported
+        # shape from these rows.
+        coordinates =
+          Enum.at(
+            [
+              {"39.9515", "-75.1640"},
+              {"39.9560", "-75.1550"},
+              {"39.9600", "-75.1470"},
+              {"39.9640", "-75.1400"}
+            ],
+            index - 1
+          )
+
         {:ok, stop} =
           Gtfs.create_stop(%{
             stop_id: "BROWSER_PATTERN_STOP_#{index}",
             stop_name: "Pattern Stop #{index}",
             location_type: 0,
+            stop_lat: Decimal.new(elem(coordinates, 0)),
+            stop_lon: Decimal.new(elem(coordinates, 1)),
             organization_id: org.id,
             gtfs_version_id: diagram_version.id
           })
@@ -997,13 +1013,32 @@ case Accounts.register_first_admin(%{
           trip_id: trip_id,
           service_id: "BROWSER_PATTERN_SERVICE",
           trip_headsign: "Valley Hospital",
-          direction_id: 0
+          direction_id: 0,
+          # The saved route map's labelled variant (spec 16, step 30): one
+          # distinct imported shape on the first trip only, so the route shows
+          # one variant whose geometry differs from the stop connectors.
+          shape_id: if(trip_id == "BROWSER_PT1", do: "BROWSER_SHAPE_1", else: nil)
         })
 
       GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(trip, %{
         route_pattern_id: "BROWSER-P1",
         timed_pattern_id: outbound_timing.id,
         pattern_derivation_state: "linked"
+      })
+    end)
+
+    Enum.with_index(
+      [{"39.9520", "-75.1630"}, {"39.9575", "-75.1520"}, {"39.9630", "-75.1420"}],
+      1
+    )
+    |> Enum.each(fn {{lat, lon}, sequence} ->
+      Repo.insert!(%GtfsPlanner.Gtfs.Shape{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        shape_id: "BROWSER_SHAPE_1",
+        shape_pt_lat: Decimal.new(lat),
+        shape_pt_lon: Decimal.new(lon),
+        shape_pt_sequence: sequence
       })
     end)
 

@@ -119,6 +119,16 @@
   --color-info-fg: #0e5c73;
   --color-info-line: #2c8faa;
 
+  /* Warning and map tokens for the route surfaces (spec 16). The route form
+     warnings and the saved-route map have referenced these since their steps;
+     without the tokens the utilities emitted nothing, so the same values the
+     prototype's design-system theme defines are recorded here. */
+  --color-warning-bg: #fcf1db;
+  --color-warning-fg: #8a5a0e;
+  --color-warning-line: #d69822;
+  --color-map-paper: #f0f3f6;
+  --color-map-label: #536276;
+
   --radius-badge: 4px;
   --radius-control: 6px;
   --radius-card: 8px;
