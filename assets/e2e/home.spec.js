@@ -197,7 +197,8 @@ async function assertTabFocusOutlines(page, max = 60) {
 
     const label = focused.id || focused.tag;
     const ringVisible = focused.boxShadow !== "none" && focused.boxShadow.includes("rgb");
-    const outlineVisible = focused.outlineStyle !== "none" && focused.outlineWidth > 0;
+    // AC-34: a visible 2 px outline, which `#home-page`'s focus rule draws.
+    const outlineVisible = focused.outlineStyle !== "none" && focused.outlineWidth >= 2;
     expect(outlineVisible || ringVisible, `focus indicator on ${label}`).toBe(true);
     checked.push(label);
   }

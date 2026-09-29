@@ -5021,8 +5021,10 @@ case Accounts.register_first_admin(%{
 
     # Nine trips retimed in three operations on one destination. The resume's
     # featured item is this destination: "9 trips changed on Weekday" and
-    # "3 changes that day".
-    for {operation_id, first_index, last_index, hours_ago} <- [
+    # "3 changes that day". The operations are minutes apart, so they share one
+    # local day whatever hour the seed runs; the reviewed screenshot shows the
+    # count unmasked.
+    for {operation_id, first_index, last_index, minutes_ago} <- [
           {"HOME-OP-RETIME-A", 1, 6, 3},
           {"HOME-OP-RETIME-B", 7, 8, 2},
           {"HOME-OP-RETIME-C", 9, 9, 1}
@@ -5046,7 +5048,7 @@ case Accounts.register_first_admin(%{
             "after" => %{"route_id" => "H12", "service_id" => "WKDY"},
             "operation_id" => operation_id
           },
-          inserted_at: DateTime.add(DateTime.utc_now(), -hours_ago, :hour)
+          inserted_at: DateTime.add(DateTime.utc_now(), -minutes_ago, :minute)
         })
       end
     end

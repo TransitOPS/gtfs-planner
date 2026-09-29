@@ -2293,7 +2293,7 @@ tbody#calendars-list tr:has(input[data-calendar-selected="true"]) {
    the focus outline is the one rule the utilities cannot express once for the
    whole page, and it gives every page control the same 2 px indicator the
    reference draws (AC-34). */
-#home-page :is(a, button, summary, [tabindex]):focus-visible {
+#home-page :is(a, button, input, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }

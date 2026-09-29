@@ -467,6 +467,7 @@ test.describe("dashboard", () => {
     await expect(page.locator("#dashboard-no-version")).toContainText(
       "There is no service data to work on yet",
     );
+    await expect(page.locator("#dashboard-no-version .bg-warning-bg")).toHaveCount(1);
     await expect(page.locator("#home-page .bg-action")).toHaveCount(0);
 
     // Organization admin without editor: Manage users is the only primary.
@@ -644,10 +645,6 @@ test.describe("dashboard", () => {
       "home-planner-1280.png",
       {
         animations: "disabled",
-        // The seeded clock text moves with the seed run, and a mask's box
-        // follows the masked text's width in a proportional font: the small
-        // tolerance covers those one- to two-digit jitters, not layout.
-        maxDiffPixels: 400,
         mask: [
           page.locator("#home-lede"),
           page.locator("#attention h3"),
@@ -672,8 +669,6 @@ test.describe("dashboard", () => {
       "home-pathways-1280.png",
       {
         animations: "disabled",
-        // Same seeded-clock jitter as the planner screenshot above.
-        maxDiffPixels: 300,
         mask: [
           page.locator(
             "#board-table tbody td:last-child span.block:not(.truncate)",
