@@ -1264,6 +1264,75 @@ body {
   }
 }
 
+/* ── validation-result (design system) ──
+   `#validation-result-page` is a `.ds-page`, so fonts, heading and focus come
+   from that scope. What is left is what utilities cannot say: an evidence
+   table that becomes a stack of labelled records on a phone, and the
+   indeterminate bar of a check that is still running. The table's headers stay
+   in the DOM for assistive technology; CSS only hides them visually. */
+@media (max-width: 639px) {
+  #validation-result-page .vr-stack thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  #validation-result-page .vr-stack tr {
+    display: block;
+    padding: 12px 16px;
+  }
+
+  #validation-result-page .vr-stack th,
+  #validation-result-page .vr-stack td {
+    display: block;
+    padding: 0;
+    overflow-wrap: anywhere;
+  }
+
+  #validation-result-page .vr-stack td {
+    margin-top: 4px;
+  }
+
+  #validation-result-page .vr-stack td[data-label]::before {
+    content: attr(data-label) ": ";
+    color: var(--color-muted);
+    font-size: 13px;
+  }
+}
+
+/* The bar is a decoration of "still running", so it holds still under reduced
+   motion (the global rule zeroes the animation) and the page says so in words. */
+#validation-result-page .vr-indeterminate {
+  position: relative;
+  height: 8px;
+  overflow: hidden;
+  border-radius: var(--radius-badge);
+  background: var(--color-soft);
+}
+
+#validation-result-page .vr-indeterminate::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  border-radius: var(--radius-badge);
+  background: var(--color-cyan-700);
+  animation: vr-indeterminate 1.4s ease-in-out infinite;
+}
+
+@keyframes vr-indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(300%);
+  }
+}
+
 /* ── Signed-out form fields ──
    The password-recovery pages keep `<.input>`, the app's one input
    implementation, and restyle its daisyUI `fieldset` / `label` / `input`

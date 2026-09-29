@@ -65,18 +65,22 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       {:ok, run} = Validations.mark_completed(run, result)
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, _view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
-      # Should display summary counts
-      assert html =~ "5"
-      assert html =~ "10"
-      assert html =~ "3"
-      assert html =~ "Errors"
-      assert html =~ "Warnings"
-      assert html =~ "Info"
+      # The three severities read as problems, suggestions and notes
+      assert has_element?(view, "#validation-count-errors", "Problems")
+      assert has_element?(view, "#validation-count-errors-value", "5")
+      assert has_element?(view, "#validation-count-warnings", "Suggestions")
+      assert has_element?(view, "#validation-count-warnings-value", "10")
+      assert has_element?(view, "#validation-count-infos", "Notes")
+      assert has_element?(view, "#validation-count-infos-value", "3")
 
-      # Should display status badge
-      assert html =~ "COMPLETED"
+      # The headline carries the error tone and states the count
+      assert has_element?(view, "#validation-summary [data-tone='error']")
+      assert has_element?(view, "#validation-summary-title", "5 problems to fix.")
+
+      # The run's lifecycle status stays available under its details
+      assert has_element?(view, "#validation-run-details", "Completed")
     end
 
     test "displays error details for failed validation run", %{
@@ -92,14 +96,20 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       {:ok, run} = Validations.mark_failed(run, error_reason)
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, _view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+      {:ok, view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
-      # Should display failed status
-      assert html =~ "FAILED"
-      assert html =~ "Validation Failed"
+      # A failed run says the feed wasn't judged instead of posing as a result
+      assert html =~ "The check stopped before it could judge your feed."
+      assert has_element?(view, "#validation-failure[role='alert']")
 
-      # Should display error details
-      assert html =~ "RuntimeError"
+      # The stored error is kept under the technical details
+      assert has_element?(
+               view,
+               "#validation-failure-details #validation-failure-raw",
+               "RuntimeError"
+             )
+
+      assert has_element?(view, "#validation-failure-details", run.id)
     end
 
     test "displays loading state for started validation run", %{
@@ -112,11 +122,12 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       {:ok, run} = Validations.create_validation_run(organization.id, version.id, "mobility_data")
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, _view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
       # Should display loading state
-      assert html =~ "STARTED"
-      assert html =~ "Validation starting..."
+      assert has_element?(view, "#validation-progress-title", "Starting the check.")
+      assert has_element?(view, "#validation-progress [role='progressbar']")
+      assert has_element?(view, "#validation-progress", "reload it")
     end
 
     test "displays loading state for running validation run", %{
@@ -130,11 +141,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       {:ok, run} = Validations.mark_running(run)
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, _view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
       # Should display loading state
-      assert html =~ "RUNNING"
-      assert html =~ "Validation in progress..."
+      assert has_element?(view, "#validation-progress-title", "Checking your feed.")
+      assert has_element?(view, "#validation-progress [role='progressbar']")
     end
 
     test "displays notice details when validation has notices", %{
@@ -159,10 +170,15 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
             "totalNotices" => 1,
             "notices" => [
               %{
-                "filename" => "stops.txt",
-                "csvRowNumber" => 10,
-                "csvFieldName" => "stop_name",
-                "message" => "Missing required field"
+                "totalNotices" => 1,
+                "sampleNotices" => [
+                  %{
+                    "filename" => "stops.txt",
+                    "csvRowNumber" => 10,
+                    "csvFieldName" => "stop_name",
+                    "message" => "Missing required field"
+                  }
+                ]
               }
             ]
           }
@@ -175,11 +191,21 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
-      # Should display notice code
-      assert has_element?(view, "span.font-mono", "missing_required_field")
+      # The finding sits in the Problems section, which starts open
+      assert has_element?(view, "#findings-error #finding-missing_required_field[open]")
 
-      # Should display severity badge
-      assert has_element?(view, ".text-error", "ERROR")
+      # The validator code stays available as a technical line
+      assert has_element?(view, "#finding-code-missing_required_field", "missing_required_field")
+
+      # Its example rows keep the file, line, column and message
+      assert has_element?(view, "#finding-samples-missing_required_field td", "stops.txt")
+      assert has_element?(view, "#finding-samples-missing_required_field td", "stop_name")
+
+      assert has_element?(
+               view,
+               "#finding-samples-missing_required_field td",
+               "Missing required field"
+             )
     end
 
     test "displays no issues message when validation has no notices", %{
@@ -204,11 +230,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       {:ok, run} = Validations.mark_completed(run, result)
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, _view, html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
       # Should display success message
-      assert html =~ "No validation issues found!"
-      assert html =~ "Your GTFS data passed all checks."
+      assert has_element?(view, "#validation-summary [data-tone='success']")
+      assert has_element?(view, "#validation-summary-title", "No validation issues found!")
+      assert has_element?(view, "#validation-summary", "Your GTFS data passed all checks.")
+      refute has_element?(view, "#validation-findings section")
     end
 
     test "renders pathways report summary for pathways run type", %{
@@ -304,12 +332,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
 
       assert has_element?(view, "#pathways-criteria-comparison-overview")
       assert has_element?(view, "#pathways-trip-visualization-overview")
-      assert render(view) =~ "Issue"
-      assert has_element?(view, "#pathways-case-results")
-      assert render(view) =~ "Origin"
-      assert render(view) =~ "Destination"
-      assert render(view) =~ "Start Time"
-      assert render(view) =~ "End Time"
+      assert has_element?(view, "#pathways-case-results-title", "Each walk test")
       assert has_element?(view, "#pathways-trip-overview-total-tests-value", "2")
       assert has_element?(view, "#pathways-trip-overview-pass-count-value", "1")
       assert has_element?(view, "#pathways-trip-overview-fail-count-value", "1")
@@ -317,16 +340,16 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert has_element?(view, "#pathways-trip-overview-duration-available", "1")
       assert has_element?(view, "#pathways-trip-overview-duration-unavailable", "1")
       assert has_element?(view, "#pathways-trip-overview-duration-availability-rate", "50.0%")
-      assert has_element?(view, "#pathways-trip-overview-duration-min", "180.0")
-      assert has_element?(view, "#pathways-trip-overview-duration-max", "180.0")
-      assert has_element?(view, "#pathways-trip-overview-duration-average", "180.0")
+      assert has_element?(view, "#pathways-trip-overview-duration-min", "3 min 0 s")
+      assert has_element?(view, "#pathways-trip-overview-duration-max", "3 min 0 s")
+      assert has_element?(view, "#pathways-trip-overview-duration-average", "3 min 0 s")
       assert has_element?(view, "#pathways-trip-overview-distance-available", "1")
       assert has_element?(view, "#pathways-trip-overview-distance-unavailable", "1")
       assert has_element?(view, "#pathways-trip-overview-distance-availability-rate", "50.0%")
-      assert has_element?(view, "#pathways-trip-overview-distance-min", "320.0")
-      assert has_element?(view, "#pathways-trip-overview-distance-max", "320.0")
-      assert has_element?(view, "#pathways-trip-overview-distance-average", "320.0")
-      assert render(view) =~ "Pass Rate"
+      assert has_element?(view, "#pathways-trip-overview-distance-min", "320.0 m")
+      assert has_element?(view, "#pathways-trip-overview-distance-max", "320.0 m")
+      assert has_element?(view, "#pathways-trip-overview-distance-average", "320.0 m")
+      assert render(view) =~ "Pass rate"
       assert render(view) =~ "50.0%"
       assert has_element?(view, "#pathways-case-row-0", walkability_test_1.id)
       assert has_element?(view, "#pathways-case-row-1", walkability_test_2.id)
@@ -342,15 +365,15 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
 
       assert has_element?(
                view,
-               "#pathways-case-itinerary-details-0 summary",
-               "Step-by-step itinerary"
+               "#pathways-case-itinerary-heading-0",
+               "Walking directions"
              )
 
       assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Step")
-      assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Leg Mode")
+      assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Mode")
       assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Street")
-      assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Relative")
-      assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Absolute")
+      assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Turn")
+      assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Heading")
       assert has_element?(view, "#pathways-case-itinerary-table-0 th", "Distance (m)")
 
       assert render(view |> element("#pathways-case-itinerary-step-0-0-0")) =~ "Main St"
@@ -435,9 +458,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert has_element?(view, "#pathways-case-criteria-table-0 th", "Actual")
       assert has_element?(view, "#pathways-case-criteria-table-0 th", "Status")
 
-      assert has_element?(view, "#pathways-case-criteria-check-0-expected_traversable", "FAIL")
+      assert has_element?(view, "#pathways-case-criteria-check-0-expected_traversable", "Failed")
 
-      assert has_element?(view, "#pathways-case-criteria-check-0-duration_seconds_range", "FAIL")
+      assert has_element?(
+               view,
+               "#pathways-case-criteria-check-0-duration_seconds_range",
+               "Failed"
+             )
 
       assert has_element?(
                view,
@@ -445,7 +472,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
                "100 - 300"
              )
 
-      assert has_element?(view, "#pathways-case-criteria-check-0-distance_meters_range", "PASS")
+      assert has_element?(view, "#pathways-case-criteria-check-0-distance_meters_range", "Passed")
 
       assert has_element?(
                view,
@@ -456,10 +483,15 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert has_element?(
                view,
                "#pathways-case-criteria-check-0-expected_wheelchair_accessible",
-               "FAIL"
+               "Failed"
              )
 
-      assert has_element?(view, "#pathways-case-row-0 .text-error", "FAILED")
+      assert has_element?(
+               view,
+               "#pathways-case-row-0[data-result='failed'] [data-tone='error']",
+               "Failed"
+             )
+
       assert render(view |> element("#pathways-case-row-0")) =~ "Traversability check failed"
     end
 
@@ -532,7 +564,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert has_element?(
                view,
                "#pathways-criteria-comparison-label-expected_traversable",
-               "Traversable"
+               "Can be walked"
              )
 
       assert has_element?(
@@ -674,6 +706,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert has_element?(view, "#pathways-trip-overview-duration-min", "-")
       assert has_element?(view, "#pathways-trip-overview-distance-min", "-")
       refute has_element?(view, "#pathways-case-row-0")
+      refute has_element?(view, "#pathways-case-results")
+
+      assert has_element?(
+               view,
+               "#pathways-trip-visualization-overview-title",
+               "This run has no walk test results."
+             )
     end
 
     test "renders per-test status as FAILED when traversable fails", %{
@@ -716,7 +755,11 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
-      assert has_element?(view, "#pathways-case-row-0 .text-error", "FAILED")
+      assert has_element?(
+               view,
+               "#pathways-case-row-0[data-result='failed'] [data-tone='error']",
+               "Failed"
+             )
     end
 
     test "renders per-test status as PASS when no criteria fail", %{
@@ -754,8 +797,13 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
-      assert has_element?(view, "#pathways-case-row-0 .text-success", "PASS")
-      assert render(view |> element("#pathways-case-row-0")) =~ "All criteria passed"
+      assert has_element?(
+               view,
+               "#pathways-case-row-0[data-result='pass'] [data-tone='success']",
+               "Passed"
+             )
+
+      refute render(view |> element("#pathways-case-row-0")) =~ "Criteria checks failed"
     end
 
     test "renders per-test status as WARNING when traversable passes but other criteria fail", %{
@@ -799,7 +847,12 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
-      assert has_element?(view, "#pathways-case-row-0 .text-warning", "WARNING")
+      assert has_element?(
+               view,
+               "#pathways-case-row-0[data-result='warning'] [data-tone='warning']",
+               "Needs review"
+             )
+
       assert render(view |> element("#pathways-case-row-0")) =~ "Duration outside expected range"
     end
 
@@ -837,19 +890,20 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run3.id}")
 
-      # Check that View History button exists
-      assert has_element?(view, "label[for='validation-history-drawer']", "View History")
+      # Check that View history button exists
+      assert has_element?(view, "button#open-history", "View history")
 
-      # Check that history drawer contains past runs
-      html = render(view)
+      # The drawer is closed until asked for
+      assert has_element?(view, "#validation-history-overlay[data-open='false']")
 
-      # Should contain the history drawer
-      assert html =~ "Validation History"
+      # Should contain the history drawer and a status for each run
+      assert has_element?(view, "#validation-history-title", "Validation history")
+      assert has_element?(view, "#validation-runs-list", "Completed")
+      assert has_element?(view, "#validation-runs-list", "Running")
+      assert has_element?(view, "#validation-runs-list", "Starting")
 
-      # Should contain status badges for each run
-      assert html =~ "completed"
-      assert html =~ "running"
-      assert html =~ "started"
+      # A completed run shows its counts in the plain severity words
+      assert has_element?(view, "#validation-runs-list", "1 problem · 2 suggestions · 3 notes")
     end
 
     test "clicking history item navigates to that validation run", %{
@@ -895,8 +949,12 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
 
-      # Should have Back to Export button
-      assert has_element?(view, "a[href='/gtfs/#{version.id}/export']", "Back to Export")
+      # Should have Back to export link
+      assert has_element?(
+               view,
+               "a#back-to-export[href='/gtfs/#{version.id}/export']",
+               "Back to export"
+             )
     end
 
     test "denies access to validation run from different organization", %{
@@ -945,6 +1003,371 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLiveTest do
       assert path == "/gtfs/#{version.id}/export"
       assert flash["error"] == "Unauthorized access to validation run"
     end
+
+    test "opens Problems and closes Suggestions and Notes on first load", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      run =
+        completed_run(organization, version, [
+          notice_group("stop_without_location", "error", 4),
+          notice_group("stop_too_far_from_shape", "warning", 11),
+          notice_group("unknown_column", "info", 2)
+        ])
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#findings-error #finding-stop_without_location[open]")
+      assert has_element?(view, "#findings-warning #finding-stop_too_far_from_shape")
+      refute has_element?(view, "#finding-stop_too_far_from_shape[open]")
+      assert has_element?(view, "#findings-info #finding-unknown_column")
+      refute has_element?(view, "#finding-unknown_column[open]")
+    end
+
+    test "names a finding by its humanized code and counts its occurrences", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      run =
+        completed_run(organization, version, [
+          notice_group("stop_without_location", "error", 4, [%{"filename" => "stops.txt"}]),
+          notice_group("route_color_contrast", "warning", 1)
+        ])
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#finding-stop_without_location summary", "Stop without location")
+      assert has_element?(view, "#finding-stop_without_location summary", "4 occurrences")
+      assert has_element?(view, "#finding-stop_without_location summary", "stops.txt")
+      assert has_element?(view, "#finding-route_color_contrast summary", "1 occurrence")
+      refute has_element?(view, "#finding-route_color_contrast summary", "1 occurrences")
+    end
+
+    test "lists the finding with the most occurrences first inside a severity", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      run =
+        completed_run(organization, version, [
+          notice_group("few_places", "error", 2),
+          notice_group("many_places", "error", 9)
+        ])
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      html = render(view)
+      {many_position, _} = :binary.match(html, "finding-many_places")
+      {few_position, _} = :binary.match(html, "finding-few_places")
+
+      assert many_position < few_position
+    end
+
+    test "places upper-case validator severities in their sections", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      run =
+        completed_run(organization, version, [
+          notice_group("a_problem", "ERROR", 1),
+          notice_group("a_suggestion", "WARNING", 1),
+          notice_group("a_note", "INFO", 1)
+        ])
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#findings-error #finding-a_problem")
+      assert has_element?(view, "#findings-warning #finding-a_suggestion")
+      assert has_element?(view, "#findings-info #finding-a_note")
+      refute has_element?(view, "#findings-other")
+    end
+
+    test "keeps a finding with an unrecognized severity under Other findings", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      run = completed_run(organization, version, [notice_group("odd_finding", "critical", 1)])
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#findings-other-title", "Other findings")
+      assert has_element?(view, "#findings-other #finding-odd_finding")
+    end
+
+    test "leaves out a severity section that has no findings and never claims success", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      run =
+        completed_run(
+          organization,
+          version,
+          [
+            notice_group("stop_too_far_from_shape", "warning", 3),
+            notice_group("unknown_column", "info", 1)
+          ],
+          %{errors: 0, warnings: 2, infos: 1}
+        )
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      refute has_element?(view, "#findings-error")
+
+      assert has_element?(view, "#validation-summary [data-tone='warning']")
+
+      assert has_element?(
+               view,
+               "#validation-summary-title",
+               "No problems. 2 suggestions to review."
+             )
+
+      refute has_element?(view, "#validation-summary [data-tone='success']")
+    end
+
+    test "opens and closes one finding from its summary", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      run = completed_run(organization, version, [notice_group("unknown_column", "info", 2)])
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      view |> element("#finding-unknown_column summary") |> render_click()
+      assert has_element?(view, "#finding-unknown_column[open]")
+
+      view |> element("#finding-unknown_column summary") |> render_click()
+      refute has_element?(view, "#finding-unknown_column[open]")
+    end
+
+    test "expands and collapses every finding in a section at once", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      run =
+        completed_run(organization, version, [
+          notice_group("first_suggestion", "warning", 3),
+          notice_group("second_suggestion", "warning", 1)
+        ])
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#toggle-findings-warning", "Expand all")
+
+      view |> element("#toggle-findings-warning") |> render_click()
+
+      assert has_element?(view, "#finding-first_suggestion[open]")
+      assert has_element?(view, "#finding-second_suggestion[open]")
+      assert has_element?(view, "#toggle-findings-warning", "Collapse all")
+
+      view |> element("#toggle-findings-warning") |> render_click()
+
+      refute has_element?(view, "#finding-first_suggestion[open]")
+      refute has_element?(view, "#finding-second_suggestion[open]")
+      assert has_element?(view, "#toggle-findings-warning", "Expand all")
+    end
+
+    test "reports when the check ran and how long it took in UTC", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      run = completed_run(organization, version, [], %{errors: 0, warnings: 0, infos: 0})
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#validation-run-meta", "Checked")
+      assert has_element?(view, "#validation-run-meta", "UTC")
+      assert has_element?(view, "#validation-run-meta", "Took 1 min 1 s")
+
+      # The link to Export carries no stray space inside its underline
+      assert view
+             |> element("#validation-summary a[href='/gtfs/#{version.id}/export']")
+             |> render() =~ ">Run validation again from Export</a>"
+    end
+
+    test "opens the history drawer from View history and closes it with Close", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      run = completed_run(organization, version, [])
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      view |> element("#open-history") |> render_click()
+      assert has_element?(view, "#validation-history-overlay[data-open='true']")
+
+      view |> element("#validation-history-close") |> render_click()
+      assert has_element?(view, "#validation-history-overlay[data-open='false']")
+    end
+
+    test "marks the run being viewed in history and words a failed run as not finished", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      {:ok, failed_run} =
+        Validations.create_validation_run(organization.id, version.id, "mobility_data")
+
+      {:ok, failed_run} = Validations.mark_failed(failed_run, :validator_path_not_configured)
+      run = completed_run(organization, version, [])
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(
+               view,
+               "a[aria-current='page'][href='/gtfs/#{version.id}/validation/#{run.id}']"
+             )
+
+      refute has_element?(
+               view,
+               "a[aria-current='page'][href='/gtfs/#{version.id}/validation/#{failed_run.id}']"
+             )
+
+      assert has_element?(
+               view,
+               "a[href='/gtfs/#{version.id}/validation/#{failed_run.id}']",
+               "Didn't finish"
+             )
+    end
+
+    test "shows the plain reason and mapped message for a failed walk-test run", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version
+    } do
+      run =
+        failed_pathways_run(organization, version, %{
+          "message" => "Pathways validation failed",
+          "reason" => "query_failure"
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#pathways-failure-title", "The walk tests didn't finish.")
+
+      assert has_element?(
+               view,
+               "#pathways-failure-status-message",
+               "Some walk tests couldn't get a route from the routing engine."
+             )
+
+      assert has_element?(view, "#pathways-failure-summary", "Pathways validation failed")
+      refute has_element?(view, "#pathways-failure-checks")
+      refute has_element?(view, "#pathways-failure-diagnostics")
+    end
+
+    @tag :tmp_dir
+    test "lists build diagnostics for a walk-test run whose graph build failed", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: version,
+      tmp_dir: tmp_dir
+    } do
+      build_log = Path.join(tmp_dir, "build.log")
+
+      File.write!(
+        build_log,
+        "ERROR Graph build failed\nCaused by: java.lang.NullPointerException at stops.txt row 4\n"
+      )
+
+      run =
+        failed_pathways_run(organization, version, %{
+          "message" => "Graph build failed",
+          "issues" => [
+            %{
+              "details" => %{
+                "reason_code" => "build_command_failed",
+                "exit_status" => 1,
+                "build_log_path" => build_log
+              }
+            }
+          ]
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/validation/#{run.id}")
+
+      assert has_element?(view, "#pathways-failure-diagnostics", "Exit status")
+      assert has_element?(view, "#pathways-failure-diagnostics", build_log)
+
+      assert has_element?(
+               view,
+               "#pathways-failure-diagnostics",
+               "Caused by: java.lang.NullPointerException"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-failure-diagnostics",
+               "Issue appears to come from stops.txt."
+             )
+
+      assert has_element?(view, "#pathways-failure-diagnostics", "parent_station")
+    end
+  end
+
+  defp notice_group(code, severity, total, samples \\ []) do
+    %{
+      "code" => code,
+      "severity" => severity,
+      "notices" => [%{"totalNotices" => total, "sampleNotices" => samples}]
+    }
+  end
+
+  defp completed_run(
+         organization,
+         version,
+         notices,
+         summary \\ %{errors: 0, warnings: 0, infos: 0}
+       ) do
+    {:ok, run} = Validations.create_validation_run(organization.id, version.id, "mobility_data")
+
+    {:ok, run} =
+      Validations.mark_completed(run, %{summary: summary, notices: notices, duration_ms: 61_000})
+
+    run
+  end
+
+  defp failed_pathways_run(organization, version, error_payload) do
+    {:ok, run} =
+      Validations.create_validation_run(organization.id, version.id, "pathways_tests")
+
+    run
+    |> ValidationRun.changeset(%{status: "failed", error_details: Jason.encode!(error_payload)})
+    |> Repo.update!()
   end
 
   defp persist_legacy_pathways_run(run, run_result, duration_ms) do

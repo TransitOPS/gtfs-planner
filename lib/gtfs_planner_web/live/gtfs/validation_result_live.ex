@@ -1,22 +1,45 @@
 defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
+  @moduledoc """
+  LiveView for one validation run at `/gtfs/:version/validation/:validation_id`.
+
+  The same route serves three kinds of run, so the page has one branch per state:
+
+    * a MobilityData run that completed: a summary, then the findings grouped by
+      severity as disclosures (Problems open, the rest closed);
+    * an older OpenTripPlanner walk-test run (`pathways_tests`), which is
+      read-only history: summary, coverage and per-check roll-ups, and one
+      disclosure per test;
+    * a run that is starting or running, has failed, or has no report yet.
+
+  A run that belongs to another organization or version is redirected to Export
+  before anything renders. Which findings are open lives on the server
+  (`expanded_codes`), so the disclosures survive a re-render.
+  """
   use GtfsPlannerWeb, :live_view
+
+  import GtfsPlannerWeb.PlannerComponents, only: [back_link: 1]
+
+  import GtfsPlannerWeb.ResultComponents,
+    only: [result_details: 1, result_section: 1, result_summary: 1, tone_badge: 1]
+
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Layouts
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @pathways_failure_messages %{
-    no_walkability_tests: "No pathways tests are configured for this GTFS version.",
-    query_failure: "Pathways validation failed due to route query errors.",
-    scoring_failure: "Pathways validation failed due to scoring errors.",
-    pathways_runner_spawn_failed: "Pathways validation could not start.",
-    pathways_persistence_failed: "Pathways validation could not save run results.",
-    pathways_export_prep_failed: "Pathways export preparation failed before runtime checks.",
-    pathways_task_crashed: "Pathways validation task crashed unexpectedly.",
-    pathways_status_unavailable: "Pathways validation status was unavailable.",
-    pathways_run_not_found: "Pathways validation run was not found.",
-    pathways_invalid_run_type: "Pathways validation run type was invalid.",
-    pathways_results_unavailable: "Pathways validation results were unavailable."
+    no_walkability_tests: "No walk tests are set up for this version.",
+    query_failure: "Some walk tests couldn't get a route from the routing engine.",
+    scoring_failure: "Results couldn't be scored against the expected times and distances.",
+    pathways_runner_spawn_failed: "The walk tests couldn't start.",
+    pathways_persistence_failed: "The walk tests ran, but their results couldn't be saved.",
+    pathways_export_prep_failed:
+      "This version's data couldn't be prepared for the routing engine.",
+    pathways_task_crashed: "The walk tests stopped unexpectedly.",
+    pathways_status_unavailable: "The walk tests' progress couldn't be read.",
+    pathways_run_not_found: "This walk test run no longer exists.",
+    pathways_invalid_run_type: "This run isn't a walk test run.",
+    pathways_results_unavailable: "The results couldn't be loaded."
   }
 
   @pathways_failure_codes %{
@@ -34,10 +57,41 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   }
 
   @pathways_criteria_overview_definitions [
-    %{kind: "expected_traversable", label: "Traversable"},
-    %{kind: "duration_seconds_range", label: "Duration range"},
-    %{kind: "distance_meters_range", label: "Distance range"},
+    %{kind: "expected_traversable", label: "Can be walked"},
+    %{kind: "duration_seconds_range", label: "Walk time"},
+    %{kind: "distance_meters_range", label: "Distance"},
     %{kind: "expected_wheelchair_accessible", label: "Wheelchair accessible"}
+  ]
+
+  # The validator's three severities, in the plain words the page uses for them.
+  # `other` catches a severity this page doesn't recognize, so no finding is hidden.
+  @finding_sections [
+    %{
+      key: "error",
+      tone: "error",
+      title: "Problems to fix before publishing",
+      lede:
+        "These break the GTFS standard. Trip planners may reject the feed or show riders the wrong trips."
+    },
+    %{
+      key: "warning",
+      tone: "warning",
+      title: "Suggestions",
+      lede:
+        "These won't block publishing. They improve what riders see, so fix them when you can."
+    },
+    %{
+      key: "info",
+      tone: "info",
+      title: "Notes",
+      lede: "For your information. No action is needed unless something looks wrong."
+    },
+    %{
+      key: "other",
+      tone: "neutral",
+      title: "Other findings",
+      lede: "The validator reported these with a severity this page doesn't recognize."
+    }
   ]
 
   @impl Phoenix.LiveView
@@ -46,8 +100,9 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
     {:ok,
      socket
-     |> assign(:page_title, "Validation Results")
+     |> assign(:page_title, "Validation results")
      |> assign(:user_roles, user_roles)
+     |> assign(:history_open, false)
      |> assign(:expanded_codes, MapSet.new())
      |> assign(:pathways_failure, nil)
      |> assign(:pathways_failure_message, nil)
@@ -80,6 +135,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
        socket
        |> assign(:validation_id, validation_id)
        |> assign(:run, run)
+       |> assign(:expanded_codes, default_expanded_codes(run))
        |> assign(:pathways_failure, pathways_failure)
        |> assign(:pathways_failure_message, pathways_failure_message)
        |> assign(:pathways_failure_diagnostics, pathways_failure_diagnostics)
@@ -121,562 +177,1273 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     {:noreply, assign(socket, :expanded_codes, updated_codes)}
   end
 
+  # Expand all / Collapse all for one severity section: collapse when every
+  # finding in it is open, otherwise open them all.
+  @impl Phoenix.LiveView
+  def handle_event("toggle_section", %{"section" => key}, socket) do
+    expanded_codes = socket.assigns.expanded_codes
+    codes = socket.assigns.run |> notices() |> section_codes(key)
+
+    updated_codes =
+      if all_expanded?(codes, expanded_codes) do
+        MapSet.difference(expanded_codes, MapSet.new(codes))
+      else
+        MapSet.union(expanded_codes, MapSet.new(codes))
+      end
+
+    {:noreply, assign(socket, :expanded_codes, updated_codes)}
+  end
+
+  @impl Phoenix.LiveView
+  def handle_event("open_history", _params, socket) do
+    {:noreply, assign(socket, :history_open, true)}
+  end
+
+  @impl Phoenix.LiveView
+  def handle_event("close_history", _params, socket) do
+    {:noreply, assign(socket, :history_open, false)}
+  end
+
   @impl Phoenix.LiveView
   def render(assigns) do
     ~H"""
-    <div class="drawer drawer-end">
-      <input id="validation-history-drawer" type="checkbox" class="drawer-toggle" />
-      <div class="drawer-content">
-        <Layouts.app
-          flash={@flash}
-          current_user={@current_user}
-          current_organization={@current_organization}
-          user_roles={@user_roles}
-          current_path={@current_path}
-          current_gtfs_version={assigns[:current_gtfs_version]}
-          available_versions={assigns[:available_versions] || []}
+    <Layouts.app
+      flash={@flash}
+      current_user={@current_user}
+      current_organization={@current_organization}
+      user_roles={@user_roles}
+      current_path={@current_path}
+      current_gtfs_version={assigns[:current_gtfs_version]}
+      available_versions={assigns[:available_versions] || []}
+    >
+      <div id="validation-result-page" class="ds-page pb-16">
+        <.back_link id="back-to-export" navigate={~p"/gtfs/#{@current_gtfs_version.id}/export"}>
+          Back to export
+        </.back_link>
+
+        <.header>
+          Validation results
+          <:subtitle>
+            {validation_lede(@run, @current_gtfs_version)}
+            <span id="validation-run-meta" class="mt-2 block tabular-nums">{run_meta(@run)}</span>
+          </:subtitle>
+          <:actions>
+            <.button id="open-history" variant="secondary" class="min-h-11" phx-click="open_history">
+              <.icon name="hero-list-bullet" class="size-4" /> View history
+            </.button>
+          </:actions>
+        </.header>
+
+        <%= cond do %>
+          <% @run.status == "failed" and @pathways_failure -> %>
+            <.pathways_failure_card
+              failure={@pathways_failure}
+              message={@pathways_failure_message}
+              diagnostics={@pathways_failure_diagnostics}
+              version={@current_gtfs_version}
+            />
+          <% @run.status == "failed" -> %>
+            <.validation_failure_card run={@run} version={@current_gtfs_version} />
+          <% @run.status in ["started", "running"] -> %>
+            <.checking_card status={@run.status} />
+          <% @run.status == "completed" and not is_nil(@run.result_json) and @run.run_type == "pathways_tests" -> %>
+            <.walk_results
+              run={@run}
+              cases={@pathways_case_results}
+              version={@current_gtfs_version}
+            />
+          <% @run.status == "completed" and not is_nil(@run.result_json) -> %>
+            <.mobility_results
+              run={@run}
+              expanded_codes={@expanded_codes}
+              version={@current_gtfs_version}
+            />
+          <% true -> %>
+            <.no_result_card version={@current_gtfs_version} />
+        <% end %>
+      </div>
+
+      <.drawer
+        id="validation-history"
+        chrome="planner"
+        title="Validation history"
+        open={@history_open}
+        on_close="close_history"
+        return_focus_id="open-history"
+        class="max-w-[440px]"
+      >
+        <:lede>{@current_gtfs_version.name} · most recent checks first</:lede>
+        <ol
+          id="validation-runs-list"
+          phx-update="stream"
+          class="min-h-0 flex-1 divide-y divide-subtle overflow-y-auto"
         >
-          <.header>
-            Validation Results
-            <:subtitle>
-              {validation_subtitle(@run)}
-            </:subtitle>
-            <:actions>
-              <label for="validation-history-drawer" class="btn btn-outline btn-sm">
-                View History
-              </label>
-              <.link
-                navigate={~p"/gtfs/#{@current_gtfs_version.id}/export"}
-                class="btn btn-outline btn-sm"
-              >
-                Back to Export
-              </.link>
-            </:actions>
-          </.header>
-
-          <%!-- Status Badge --%>
-          <div class="mt-6">
-            <.status_badge status={@run.status} label={String.upcase(@run.status)} class="text-base" />
-          </div>
-
-          <%= cond do %>
-            <% @run.status == "failed" -> %>
-              <%!-- Failed State --%>
-              <section class="mt-6 rounded-box border border-error/40 bg-base-100" role="alert">
-                <div class="flex items-start gap-3 border-b border-error/20 px-4 py-3">
-                  <.icon name="hero-exclamation-triangle" class="mt-0.5 h-5 w-5 shrink-0 text-error" />
-                  <div class="min-w-0 flex-1">
-                    <%= if @pathways_failure do %>
-                      <h3 class="text-base font-semibold leading-6" id="pathways-failure-title">
-                        {@pathways_failure.title}
-                      </h3>
-                      <p
-                        class="mt-1 text-sm leading-5 text-base-content/85"
-                        id="pathways-failure-summary"
-                      >
-                        {@pathways_failure.summary}
-                      </p>
-                      <p
-                        class="mt-2 text-sm leading-5 text-base-content/80"
-                        id="pathways-failure-status-message"
-                      >
-                        {@pathways_failure_message}
-                      </p>
-                    <% else %>
-                      <h3 class="text-base font-semibold leading-6">Validation Failed</h3>
-                      <p class="mt-1 text-sm leading-5 text-base-content/85">
-                        {failure_summary(@run)}
-                      </p>
-                    <% end %>
-                  </div>
-                </div>
-
-                <div class="space-y-4 px-4 py-4">
-                  <%= if @pathways_failure && @pathways_failure.blocking_issues != [] do %>
-                    <section id="pathways-failure-blocking-issues" class="space-y-2">
-                      <h4 class="text-xs font-semibold uppercase tracking-wide text-error">
-                        Blocking issues
-                      </h4>
-                      <ul class="space-y-2 text-sm">
-                        <li
-                          :for={issue <- @pathways_failure.blocking_issues}
-                          class="border-l-2 border-error/60 pl-3"
-                        >
-                          <p class="leading-5 text-base-content">{issue.message}</p>
-                          <p
-                            :if={issue.context_summary}
-                            class="mt-1 font-mono text-xs leading-5 text-base-content/70"
-                          >
-                            {issue.context_summary}
-                          </p>
-                        </li>
-                      </ul>
-                    </section>
-                  <% end %>
-
-                  <%= if @pathways_failure do %>
-                    <section
-                      id="pathways-failure-checks"
-                      class="space-y-2 border-t border-base-300 pt-3"
-                    >
-                      <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
-                        Recommended checks
-                      </h4>
-                      <ul class="list-disc space-y-1 pl-5 text-base-content/85 text-sm">
-                        <li :for={check <- @pathways_failure.checks}>{check}</li>
-                      </ul>
-                    </section>
-                  <% end %>
-
-                  <%= if @pathways_failure_diagnostics != [] do %>
-                    <section
-                      id="pathways-failure-diagnostics"
-                      class="space-y-2 border-t border-base-300 pt-3"
-                    >
-                      <h4 class="text-xs font-semibold uppercase tracking-wide text-base-content/70">
-                        Technical diagnostics
-                      </h4>
-                      <dl class="divide-y divide-base-300 text-sm text-base-content/85">
-                        <div
-                          :for={detail <- @pathways_failure_diagnostics}
-                          class="grid grid-cols-1 gap-1 py-2 sm:grid-cols-[12rem,1fr] sm:gap-3"
-                        >
-                          <dt class="font-medium text-base-content/80">{detail.label}:</dt>
-                          <%= if detail.label == "Build log excerpt" do %>
-                            <dd class="rounded border border-base-300 bg-base-200 p-2 font-mono text-xs whitespace-pre-wrap break-words">
-                              {detail.value}
-                            </dd>
-                          <% else %>
-                            <dd class="break-all font-mono text-xs sm:text-sm">{detail.value}</dd>
-                          <% end %>
-                        </div>
-                      </dl>
-                    </section>
-                  <% end %>
-                </div>
-              </section>
-            <% @run.status in ["started", "running"] -> %>
-              <%!-- Loading State --%>
-              <div class="flex items-center justify-center min-h-[400px] mt-6">
-                <div class="text-center">
-                  <div class="loading loading-spinner loading-lg"></div>
-                  <p class="mt-4 text-base-content/70">
-                    <%= if @run.status == "started" do %>
-                      Validation starting...
-                    <% else %>
-                      Validation in progress...
-                    <% end %>
-                  </p>
-                </div>
-              </div>
-            <% @run.status == "completed" and not is_nil(@run.result_json) and @run.run_type == "pathways_tests" -> %>
-              <% pathways_trip_overview = pathways_trip_overview(@pathways_case_results) %>
-              <% pathways_case_criteria_checks =
-                pathways_case_criteria_checks(@pathways_case_results) %>
-              <% pathways_criteria_overview_rows = pathways_criteria_overview(@pathways_case_results) %>
-
-              <.pathways_trip_visualization_overview_section trip_overview={pathways_trip_overview} />
-
-              <.pathways_criteria_comparison_section criteria_overview_rows={
-                pathways_criteria_overview_rows
-              } />
-
-              <section
-                id="pathways-case-results"
-                class="mt-8 rounded-box border border-base-300 bg-base-100"
-              >
-                <div class="px-4 py-3 border-b border-base-content/15">
-                  <h3 class="text-sm font-semibold">Per-Test Results</h3>
-                </div>
-                <div class="overflow-x-auto">
-                  <table class="table table-sm">
-                    <thead>
-                      <tr>
-                        <th>Test Case</th>
-                        <th>Status</th>
-                        <th>Issue</th>
-                        <th>Duration (s)</th>
-                        <th>Distance (m)</th>
-                        <th>Origin</th>
-                        <th>Destination</th>
-                        <th>Start Time</th>
-                        <th>End Time</th>
-                      </tr>
-                    </thead>
-                    <%= for row <- @pathways_case_results do %>
-                      <% itinerary_step_rows =
-                        pathways_itinerary_step_rows(row.itinerary_steps_json) %>
-
-                      <tbody
-                        id={"pathways-case-group-#{row.order_index}"}
-                        class="border-t-2 border-base-content/15"
-                      >
-                        <tr id={"pathways-case-row-#{row.order_index}"} class="bg-base-100">
-                          <td class="font-mono text-xs">{row.walkability_test_id}</td>
-                          <td>
-                            <.status_badge
-                              status={pathways_case_display_status(row)}
-                              label={String.upcase(to_string(pathways_case_display_status(row)))}
-                            />
-                          </td>
-                          <td>
-                            <ol class="list-decimal list-inside text-xs leading-5 space-y-0.5 marker:text-base-content/70">
-                              <li :for={issue <- pathways_case_issues(row)}>{issue}</li>
-                            </ol>
-                          </td>
-                          <td>{row.duration_seconds || "-"}</td>
-                          <td>{format_pathways_distance(row.distance_meters)}</td>
-                          <td>{pathways_case_origin(row)}</td>
-                          <td>{pathways_case_destination(row)}</td>
-                          <td>{format_pathways_time(row.itinerary_start_time)}</td>
-                          <td>{format_pathways_time(row.itinerary_end_time)}</td>
-                        </tr>
-
-                        <tr id={"pathways-case-criteria-row-#{row.order_index}"} class="bg-base-100">
-                          <td colspan="9" class="p-0 border-t border-base-content/10">
-                            <details
-                              id={"pathways-case-criteria-details-#{row.order_index}"}
-                              class="border-t border-base-300"
-                            >
-                              <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-base-content/80">
-                                Criteria checks
-                              </summary>
-
-                              <div class="px-3 pb-3">
-                                <% criteria_checks =
-                                  Map.get(pathways_case_criteria_checks, row.order_index, []) %>
-
-                                <div class="mb-3" id={"pathways-case-criteria-#{row.order_index}"}>
-                                  <%= if criteria_checks == [] do %>
-                                    <p
-                                      id={"pathways-case-criteria-empty-#{row.order_index}"}
-                                      class="text-xs text-base-content/70"
-                                    >
-                                      No expected criteria configured.
-                                    </p>
-                                  <% else %>
-                                    <div class="overflow-x-auto">
-                                      <table
-                                        id={"pathways-case-criteria-table-#{row.order_index}"}
-                                        class="table table-xs"
-                                      >
-                                        <thead>
-                                          <tr>
-                                            <th>Criterion</th>
-                                            <th>Expected</th>
-                                            <th>Actual</th>
-                                            <th>Status</th>
-                                          </tr>
-                                        </thead>
-                                        <tbody>
-                                          <tr
-                                            :for={check <- criteria_checks}
-                                            id={
-                                              "pathways-case-criteria-check-#{row.order_index}-#{check.kind}"
-                                            }
-                                          >
-                                            <td>{check.label}</td>
-                                            <td class="font-mono">
-                                              {format_pathways_criteria_value(check.expected)}
-                                            </td>
-                                            <td class="font-mono">
-                                              {format_pathways_criteria_value(check.actual)}
-                                            </td>
-                                            <td>
-                                              <span class={[
-                                                "inline-flex items-center gap-1 font-semibold",
-                                                pathways_criteria_status_class(check.status)
-                                              ]}>
-                                                <.icon
-                                                  name={pathways_criteria_status_icon(check.status)}
-                                                  class="w-4 h-4"
-                                                />
-                                                {pathways_criteria_status_label(check.status)}
-                                              </span>
-                                            </td>
-                                          </tr>
-                                        </tbody>
-                                      </table>
-                                    </div>
-                                  <% end %>
-                                </div>
-                              </div>
-                            </details>
-                          </td>
-                        </tr>
-
-                        <tr id={"pathways-case-itinerary-row-#{row.order_index}"} class="bg-base-100">
-                          <td colspan="9" class="p-0 border-t border-base-content/10">
-                            <details
-                              id={"pathways-case-itinerary-details-#{row.order_index}"}
-                              class="border-t border-base-300"
-                            >
-                              <summary class="cursor-pointer px-3 py-2 text-xs font-semibold text-base-content/80">
-                                Step-by-step itinerary
-                              </summary>
-
-                              <div class="px-3 pb-3">
-                                <%= if pathways_empty_itinerary?(itinerary_step_rows) do %>
-                                  <p
-                                    id={"pathways-case-itinerary-empty-#{row.order_index}"}
-                                    class="text-xs text-base-content/70"
-                                  >
-                                    {pathways_empty_itinerary_text()}
-                                  </p>
-                                <% else %>
-                                  <div class="overflow-x-auto">
-                                    <table
-                                      id={"pathways-case-itinerary-table-#{row.order_index}"}
-                                      class="table table-xs"
-                                    >
-                                      <thead>
-                                        <tr>
-                                          <th>Step</th>
-                                          <th>Leg Mode</th>
-                                          <th>Street</th>
-                                          <th>Relative</th>
-                                          <th>Absolute</th>
-                                          <th>Distance (m)</th>
-                                        </tr>
-                                      </thead>
-                                      <tbody>
-                                        <tr
-                                          :for={step <- itinerary_step_rows}
-                                          id={
-                                            "pathways-case-itinerary-step-#{row.order_index}-#{step.leg_index}-#{step.step_index}"
-                                          }
-                                        >
-                                          <td>{step.step_index}</td>
-                                          <td>{step.mode}</td>
-                                          <td>{step.street_name}</td>
-                                          <td>{step.relative_direction}</td>
-                                          <td>{step.absolute_direction}</td>
-                                          <td>{format_pathways_distance(step.distance_meters)}</td>
-                                        </tr>
-                                      </tbody>
-                                    </table>
-                                  </div>
-                                <% end %>
-                              </div>
-                            </details>
-                          </td>
-                        </tr>
-                      </tbody>
-                    <% end %>
-                  </table>
-                </div>
-              </section>
-            <% @run.status == "completed" and not is_nil(@run.result_json) -> %>
-              <%!-- Completed State with Results --%>
-              <%!-- Summary Stats --%>
-              <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
-                <div class="stats bg-base-100 border border-base-300">
-                  <div class="stat">
-                    <div class="stat-figure text-error">
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        class="inline-block w-8 h-8 stroke-current"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                        >
-                        </path>
-                      </svg>
-                    </div>
-                    <div class="stat-title">Errors</div>
-                    <div class="stat-value text-error">{@run.errors_count}</div>
-                    <div class="stat-desc">Blocking issues</div>
-                  </div>
-                </div>
-
-                <div class="stats bg-base-100 border border-base-300">
-                  <div class="stat">
-                    <div class="stat-figure text-warning">
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        class="inline-block w-8 h-8 stroke-current"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                        >
-                        </path>
-                      </svg>
-                    </div>
-                    <div class="stat-title">Warnings</div>
-                    <div class="stat-value text-warning">{@run.warnings_count}</div>
-                    <div class="stat-desc">Potential issues</div>
-                  </div>
-                </div>
-
-                <div class="stats bg-base-100 border border-base-300">
-                  <div class="stat">
-                    <div class="stat-figure text-info">
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        class="inline-block w-8 h-8 stroke-current"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                        >
-                        </path>
-                      </svg>
-                    </div>
-                    <div class="stat-title">Info</div>
-                    <div class="stat-value text-info">{@run.infos_count}</div>
-                    <div class="stat-desc">Informational notices</div>
-                  </div>
-                </div>
-              </div>
-
-              <%!-- Notices List --%>
-              <div class="mt-8 space-y-3">
-                <%= for notice_group <- sorted_notices(@run.result_json["notices"] || []) do %>
-                  <div class={[
-                    "collapse collapse-arrow bg-base-100 border-l-4",
-                    severity_border_class(notice_group["severity"])
-                  ]}>
-                    <input
-                      type="checkbox"
-                      checked={MapSet.member?(@expanded_codes, notice_group["code"])}
-                      phx-click="toggle_notice"
-                      phx-value-code={notice_group["code"]}
-                    />
-                    <div class="collapse-title pr-12">
-                      <div class="flex items-center gap-3">
-                        <.status_badge
-                          status={notice_group["severity"]}
-                          label={String.upcase(notice_group["severity"])}
-                        />
-                        <span class="font-mono text-sm font-medium">{notice_group["code"]}</span>
-                      </div>
-                      <div class="mt-1 text-sm text-base-content/70 flex items-center gap-2 flex-wrap">
-                        <%= if filename = extract_filename(notice_group) do %>
-                          <span class="font-medium text-base-content">{filename}</span>
-                          <span>·</span>
-                        <% end %>
-                        <span>{format_count(get_total_notices(notice_group))} occurrences</span>
-                        <%= if sample = extract_sample_context(notice_group) do %>
-                          <span>·</span>
-                          <span class="truncate max-w-md font-mono text-xs">{sample}</span>
-                        <% end %>
-                      </div>
-                    </div>
-                    <div class="collapse-content">
-                      <div class="overflow-x-auto mt-2">
-                        <table class="table table-zebra table-xs w-full">
-                          <thead>
-                            <tr>
-                              <th>File</th>
-                              <th>Line</th>
-                              <th>Column</th>
-                              <th>Message</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <%= for sample <- get_sample_notices(notice_group) do %>
-                              <tr>
-                                <td>{sample["filename"] || "-"}</td>
-                                <td>{sample["csvRowNumber"] || "-"}</td>
-                                <td>{sample["csvFieldName"] || "-"}</td>
-                                <td class="whitespace-pre-wrap">{sample["message"] || "-"}</td>
-                              </tr>
-                            <% end %>
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </div>
-                <% end %>
-
-                <%= if Enum.empty?(@run.result_json["notices"] || []) do %>
-                  <div class="text-center py-12 rounded-box border border-base-300 bg-base-100">
-                    <div class="text-success text-lg font-medium">
-                      No validation issues found!
-                    </div>
-                    <p class="text-base-content/70 mt-2">Your GTFS data passed all checks.</p>
-                  </div>
-                <% end %>
-              </div>
-            <% true -> %>
-              <%!-- Fallback State --%>
-              <div class="hero min-h-[400px] bg-base-200 rounded-lg mt-6">
-                <div class="hero-content text-center">
-                  <div class="max-w-md">
-                    <h1 class="text-3xl font-bold">Validation Results</h1>
-                    <p class="py-6">Results not yet available.</p>
-                  </div>
-                </div>
-              </div>
-          <% end %>
-        </Layouts.app>
-      </div>
-      <div class="drawer-side">
-        <label for="validation-history-drawer" class="drawer-overlay"></label>
-        <div class="menu p-4 w-96 min-h-full bg-base-200">
-          <h2 class="text-xl font-bold mb-4">Validation History</h2>
-          <div id="validation-runs-list" phx-update="stream" class="space-y-2">
-            <div
-              :for={{dom_id, run} <- @streams.validation_runs}
-              id={dom_id}
-              class="rounded-box border border-base-300 bg-base-100"
+          <li :for={{dom_id, run} <- @streams.validation_runs} id={dom_id}>
+            <.link
+              navigate={~p"/gtfs/#{@current_gtfs_version.id}/validation/#{run.id}"}
+              aria-current={if run.id == @run.id, do: "page"}
+              class="block px-5 py-4 text-default no-underline hover:bg-canvas aria-[current=page]:bg-selection"
             >
-              <div class="card-body p-4">
-                <.link
-                  navigate={~p"/gtfs/#{@current_gtfs_version.id}/validation/#{run.id}"}
-                  class="block hover:bg-base-200 -m-4 p-4 rounded-lg transition-colors"
-                >
-                  <div class="flex items-center justify-between mb-2">
-                    <div class="text-sm text-base-content/70">
-                      {Calendar.strftime(run.started_at, "%Y-%m-%d %H:%M:%S")}
-                    </div>
-                    <.status_badge status={run.status} label={run.status} />
-                  </div>
-                  <%= if run.status == "completed" do %>
-                    <div class="flex gap-4 text-xs">
-                      <span class="text-error">E: {run.errors_count}</span>
-                      <span class="text-warning">W: {run.warnings_count}</span>
-                      <span class="text-info">I: {run.infos_count}</span>
-                    </div>
-                  <% end %>
-                </.link>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+              <span class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                <span class="text-sm font-bold tabular-nums text-strong">
+                  {format_run_time(run.started_at)}
+                </span>
+                <.tone_badge tone={history_tone(run.status)}>
+                  {history_status(run.status)}
+                </.tone_badge>
+              </span>
+              <span class="mt-1 block text-[13px] text-muted">
+                {history_type(run.run_type)}<span :if={run.id == @run.id}> · You're viewing this one</span>
+              </span>
+              <span
+                :if={history_counts(run)}
+                class="mt-0.5 block text-[13px] tabular-nums text-default"
+              >
+                {history_counts(run)}
+              </span>
+            </.link>
+          </li>
+        </ol>
+        <p class="border-t border-subtle px-5 py-3 text-[13px] text-muted">
+          Shows the last 20 checks for this version.
+        </p>
+      </.drawer>
+    </Layouts.app>
     """
   end
 
-  defp sorted_notices(notices) do
-    severity_order = %{
-      "ERROR" => 0,
-      "error" => 0,
-      "WARNING" => 1,
-      "warning" => 1,
-      "INFO" => 2,
-      "info" => 2
-    }
+  # ── Completed MobilityData run ──
 
-    Enum.sort_by(notices, fn notice ->
-      Map.get(severity_order, notice["severity"], 3)
-    end)
+  attr :run, :map, required: true
+  attr :expanded_codes, :any, required: true
+  attr :version, :map, required: true
+
+  defp mobility_results(assigns) do
+    notices = notices(assigns.run)
+
+    assigns =
+      assigns
+      |> assign(:summary, mobility_summary(assigns.run, notices))
+      |> assign(:sections, finding_sections(notices))
+
+    ~H"""
+    <.result_summary
+      id="validation-summary"
+      tone={@summary.tone}
+      badge={@summary.badge}
+      title={@summary.title}
+    >
+      {@summary.body}
+      <:metric
+        id="validation-count-errors"
+        value_id="validation-count-errors-value"
+        label="Problems"
+        value={@run.errors_count}
+        tone="error"
+      >
+        Blocking issues
+      </:metric>
+      <:metric
+        id="validation-count-warnings"
+        value_id="validation-count-warnings-value"
+        label="Suggestions"
+        value={@run.warnings_count}
+        tone="warning"
+      >
+        Potential issues
+      </:metric>
+      <:metric
+        id="validation-count-infos"
+        value_id="validation-count-infos-value"
+        label="Notes"
+        value={@run.infos_count}
+        tone="info"
+      >
+        Informational notices
+      </:metric>
+      <:foot>
+        This page shows the check from {format_run_time(@run.completed_at || @run.started_at)}. Fixed something?
+        <.export_link version={@version}>Run validation again from Export</.export_link>
+        to update these results.
+      </:foot>
+    </.result_summary>
+
+    <div id="validation-findings" class="mt-8 grid gap-8">
+      <.result_section
+        :for={section <- @sections}
+        id={"findings-#{section.key}"}
+        tone={section.tone}
+        title={section.title}
+        count={length(section.findings)}
+        lede={section.lede}
+      >
+        <:action>
+          <button
+            type="button"
+            id={"toggle-findings-#{section.key}"}
+            phx-click="toggle_section"
+            phx-value-section={section.key}
+            aria-label={
+              if section_expanded?(section, @expanded_codes),
+                do: "Collapse all #{section_noun(section)}",
+                else: "Expand all #{section_noun(section)}"
+            }
+            class="inline-flex min-h-11 items-center rounded-control px-2 text-sm font-semibold text-action hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+          >
+            {if section_expanded?(section, @expanded_codes), do: "Collapse all", else: "Expand all"}
+          </button>
+        </:action>
+        <div class="hidden grid-cols-[1.25rem_minmax(0,1fr)_9rem] gap-x-4 border-b border-subtle px-5 py-2 text-[13px] font-semibold text-muted sm:grid">
+          <span></span><span>Finding</span><span class="text-right">Occurrences</span>
+        </div>
+        <div class="divide-y divide-subtle">
+          <.finding
+            :for={group <- section.findings}
+            group={group}
+            open?={MapSet.member?(@expanded_codes, group["code"])}
+          />
+        </div>
+      </.result_section>
+    </div>
+
+    <.result_details id="validation-run-details" title="Details about this check">
+      <.run_facts rows={mobility_facts(@run, @version)} />
+    </.result_details>
+    """
   end
+
+  attr :group, :map, required: true
+  attr :open?, :boolean, required: true
+
+  defp finding(assigns) do
+    group = assigns.group
+    code = group["code"]
+    total = get_total_notices(group)
+
+    assigns =
+      assigns
+      |> assign(:code, code)
+      |> assign(:dom, dom_token(code))
+      |> assign(:title, humanize_code(code))
+      |> assign(:total, total)
+      |> assign(
+        :context,
+        [extract_filename(group), extract_sample_context(group)]
+        |> Enum.reject(&is_nil/1)
+        |> Enum.join(" · ")
+        |> case do
+          "" -> nil
+          text -> text
+        end
+      )
+      |> assign(:samples, get_sample_notices(group))
+
+    ~H"""
+    <details id={"finding-#{@dom}"} class="group" open={@open?}>
+      <summary
+        phx-click="toggle_notice"
+        phx-value-code={@code}
+        class="grid min-h-14 cursor-pointer list-none grid-cols-[1.25rem_minmax(0,1fr)] items-start gap-x-4 gap-y-1 px-5 py-3.5 hover:bg-canvas sm:grid-cols-[1.25rem_minmax(0,1fr)_9rem] sm:items-center [&::-webkit-details-marker]:hidden"
+      >
+        <.icon
+          name="hero-chevron-right"
+          class="mt-0.5 size-5 text-muted transition-transform group-open:rotate-90 sm:mt-0"
+        />
+        <span class="min-w-0">
+          <span class="block text-[15px] font-bold leading-snug text-strong">{@title}</span>
+          <span :if={@context} class="mt-0.5 block truncate text-[13px] leading-snug text-muted">
+            {@context}
+          </span>
+        </span>
+        <span class="col-start-2 text-[13px] tabular-nums sm:col-start-auto sm:text-right">
+          <strong class="font-semibold text-strong">{format_count(@total)}</strong>
+          {if @total == 1, do: "occurrence", else: "occurrences"}
+        </span>
+      </summary>
+      <div class="px-5 pb-7 pt-2 sm:pl-14">
+        <div :if={@samples != []} class="overflow-hidden rounded-card border border-subtle">
+          <table
+            id={"finding-samples-#{@dom}"}
+            class="vr-stack w-full border-collapse text-left text-sm"
+          >
+            <caption class="sr-only">Example places the validator found: {@title}</caption>
+            <thead>
+              <tr class="bg-canvas text-[13px] font-semibold text-strong">
+                <th scope="col" class="px-4 py-2.5 text-left">File</th>
+                <th scope="col" class="px-4 py-2.5 text-left">Line</th>
+                <th scope="col" class="px-4 py-2.5 text-left">Column</th>
+                <th scope="col" class="px-4 py-2.5 text-left">Message</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={sample <- @samples} class="border-t border-subtle align-top">
+                <td data-label="File" class="px-4 py-2.5">{sample["filename"] || "-"}</td>
+                <td data-label="Line" class="px-4 py-2.5 tabular-nums">
+                  {sample["csvRowNumber"] || "-"}
+                </td>
+                <td data-label="Column" class="px-4 py-2.5">{sample["csvFieldName"] || "-"}</td>
+                <td data-label="Message" class="px-4 py-2.5">
+                  <span class="whitespace-pre-wrap">{sample["message"] || "-"}</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p :if={@samples == []} class="text-sm text-muted">
+          The validator gave no example rows for this finding.
+        </p>
+        <p class="mt-3 break-words text-[13px] text-muted">
+          Validator code
+          <code id={"finding-code-#{@dom}"} class="break-all font-mono text-[12px] text-default">
+            {@code}
+          </code>
+        </p>
+      </div>
+    </details>
+    """
+  end
+
+  # ── Run states that are not a report ──
+
+  attr :status, :string, required: true
+
+  defp checking_card(assigns) do
+    ~H"""
+    <.result_summary
+      id="validation-progress"
+      role="status"
+      tone="info"
+      badge={if @status == "started", do: "Starting", else: "Checking"}
+      title={if @status == "started", do: "Starting the check.", else: "Checking your feed."}
+    >
+      Results appear on this page when the check finishes. This page doesn't update by itself:
+      reload it to see the latest.
+      <:extra>
+        <div
+          class="vr-indeterminate mt-5 max-w-[44rem]"
+          role="progressbar"
+          aria-label="Validation in progress"
+        >
+        </div>
+      </:extra>
+    </.result_summary>
+    """
+  end
+
+  attr :run, :map, required: true
+  attr :version, :map, required: true
+
+  defp validation_failure_card(assigns) do
+    ~H"""
+    <.result_summary
+      id="validation-failure"
+      role="alert"
+      tone="error"
+      badge="Check didn't finish"
+      title="The check stopped before it could judge your feed."
+    >
+      This isn't a clean result: the feed wasn't judged, and nothing in your data changed. <.export_link version={
+        @version
+      }>Run validation again from Export</.export_link>. If it stops again, send the technical details below to support.
+    </.result_summary>
+
+    <.result_details id="validation-failure-details" title="Technical details for support" open>
+      <dl class="grid grid-cols-[minmax(0,1fr)] gap-x-8 gap-y-2 text-sm sm:grid-cols-[10rem_minmax(0,1fr)]">
+        <dt class="text-muted">Run ID</dt>
+        <dd><code class="break-all font-mono text-[13px]">{@run.id}</code></dd>
+        <dt class="text-muted">Stopped</dt>
+        <dd class="tabular-nums">{format_run_time(@run.completed_at || @run.started_at)}</dd>
+        <dt class="text-muted">Reported</dt>
+        <dd>
+          <pre
+            id="validation-failure-raw"
+            class="whitespace-pre-wrap break-words rounded-control border border-subtle bg-canvas p-3 font-mono text-xs leading-relaxed text-default"
+          >{failure_summary(@run)}</pre>
+        </dd>
+      </dl>
+    </.result_details>
+    """
+  end
+
+  attr :version, :map, required: true
+
+  defp no_result_card(assigns) do
+    ~H"""
+    <.result_summary
+      id="validation-no-result"
+      tone="neutral"
+      badge="No results yet"
+      title="There are no results to show."
+    >
+      This check hasn't produced a report. It may still be queued. Reload in a moment, or <.export_link version={
+        @version
+      }>run validation again from Export</.export_link>.
+    </.result_summary>
+    """
+  end
+
+  attr :version, :map, required: true
+  slot :inner_block, required: true
+
+  defp export_link(assigns) do
+    ~H"""
+    <.link
+      phx-no-format
+      navigate={~p"/gtfs/#{@version.id}/export"}
+      class="font-semibold text-action underline underline-offset-4 hover:text-action-hover"
+    >{render_slot(@inner_block)}</.link>
+    """
+  end
+
+  attr :failure, :map, required: true
+  attr :message, :string, default: nil
+  attr :diagnostics, :list, default: []
+  attr :version, :map, required: true
+
+  defp pathways_failure_card(assigns) do
+    ~H"""
+    <.result_summary
+      id="pathways-failure"
+      role="alert"
+      tone="error"
+      badge="Walk tests didn't finish"
+      title={@failure.title}
+      title_id="pathways-failure-title"
+    >
+      This isn't a clean result, and nothing in your data changed.
+      <:extra>
+        <div class="mt-5 max-w-[44rem] rounded-card border border-subtle bg-canvas px-4 py-3 text-sm leading-relaxed">
+          <p id="pathways-failure-status-message">
+            <strong class="font-bold text-strong">What happened:</strong> {@message}
+          </p>
+          <p
+            :if={@failure.summary != @message}
+            id="pathways-failure-summary"
+            class="mt-1 text-muted"
+          >
+            {@failure.summary}
+          </p>
+        </div>
+
+        <section
+          :if={@failure.blocking_issues != []}
+          id="pathways-failure-blocking-issues"
+          class="mt-5"
+        >
+          <h3 class="text-[13px] font-bold text-strong">Blocking issues</h3>
+          <ul class="mt-2 grid gap-2 text-sm">
+            <li
+              :for={issue <- @failure.blocking_issues}
+              class="border-l-2 border-error-line pl-3"
+            >
+              <p>{issue.message}</p>
+              <p :if={issue.context_summary} class="mt-1 font-mono text-xs text-muted">
+                {issue.context_summary}
+              </p>
+            </li>
+          </ul>
+        </section>
+
+        <section :if={@failure.checks != []} id="pathways-failure-checks" class="mt-5">
+          <h3 class="text-[13px] font-bold text-strong">Recommended checks</h3>
+          <ul class="mt-2 list-disc pl-5 text-sm">
+            <li :for={check <- @failure.checks}>{check}</li>
+          </ul>
+        </section>
+      </:extra>
+      <:foot>
+        <.older_result_note version={@version} />
+      </:foot>
+    </.result_summary>
+
+    <.result_details
+      :if={@diagnostics != []}
+      id="pathways-failure-diagnostics"
+      title="Technical details for support"
+    >
+      <dl class="grid grid-cols-[minmax(0,1fr)] gap-x-8 gap-y-2 text-sm sm:grid-cols-[10rem_minmax(0,1fr)]">
+        <%= for detail <- @diagnostics do %>
+          <dt class="text-muted">{detail.label}</dt>
+          <%= cond do %>
+            <% detail.label == "Build log excerpt" -> %>
+              <dd class="min-w-0">
+                <pre class="whitespace-pre-wrap break-words rounded-control border border-subtle bg-canvas p-3 font-mono text-xs leading-relaxed text-default">{detail.value}</pre>
+              </dd>
+            <% detail.label in ["Likely GTFS source", "Likely cause"] -> %>
+              <dd class="min-w-0">{detail.value}</dd>
+            <% true -> %>
+              <dd class="min-w-0 break-all font-mono text-[13px]">{detail.value}</dd>
+          <% end %>
+        <% end %>
+      </dl>
+    </.result_details>
+    """
+  end
+
+  attr :version, :map, required: true
+
+  defp older_result_note(assigns) do
+    ~H"""
+    <.icon name="hero-information-circle" class="mr-1 size-3.5 align-[-2px]" />
+    This is an older result. Walk tests used OpenTripPlanner and are no longer run. New checks test the feed itself:
+    <.export_link version={@version}>run validation from Export</.export_link>.
+    """
+  end
+
+  # ── Older walk-test run ──
+
+  attr :run, :map, required: true
+  attr :cases, :list, required: true
+  attr :version, :map, required: true
+
+  defp walk_results(assigns) do
+    overview = pathways_trip_overview(assigns.cases)
+
+    assigns =
+      assigns
+      |> assign(:overview, overview)
+      |> assign(:summary, walk_summary(overview))
+      |> assign(:criteria_rows, pathways_criteria_overview(assigns.cases))
+      |> assign(:case_checks, pathways_case_criteria_checks(assigns.cases))
+
+    ~H"""
+    <.result_summary
+      id="pathways-trip-visualization-overview"
+      tone={@summary.tone}
+      badge={@summary.badge}
+      title={@summary.title}
+    >
+      {@summary.body}
+      <:metric
+        id="pathways-trip-overview-pass-count"
+        value_id="pathways-trip-overview-pass-count-value"
+        label="Passed"
+        value={format_pathways_overview_count(Map.get(@overview, :pass_count, 0))}
+        tone="success"
+      >
+        <span id="pathways-trip-overview-total-tests">
+          of
+          <span id="pathways-trip-overview-total-tests-value">
+            {format_pathways_overview_count(Map.get(@overview, :total_tests, 0))}
+          </span>
+          tests
+        </span>
+      </:metric>
+      <:metric
+        id="pathways-trip-overview-warning-count"
+        value_id="pathways-trip-overview-warning-count-value"
+        label="Need review"
+        value={format_pathways_overview_count(Map.get(@overview, :warning_count, 0))}
+        tone="warning"
+      >
+        Walkable, but outside expected range
+      </:metric>
+      <:metric
+        id="pathways-trip-overview-fail-count"
+        value_id="pathways-trip-overview-fail-count-value"
+        label="Failed"
+        value={format_pathways_overview_count(Map.get(@overview, :fail_count, 0))}
+        tone="error"
+      >
+        Not walkable, or no answer
+      </:metric>
+      <:foot>
+        <.older_result_note version={@version} />
+      </:foot>
+    </.result_summary>
+
+    <div class="mt-8 grid gap-6 lg:grid-cols-2">
+      <.pathways_trip_stats_section trip_overview={@overview} />
+      <.pathways_criteria_comparison_section criteria_overview_rows={@criteria_rows} />
+    </div>
+
+    <div :if={@cases != []} class="mt-8">
+      <.result_section
+        id="pathways-case-results"
+        title="Each walk test"
+        count={length(@cases)}
+        lede="Open a test to see what was checked and the walking directions."
+      >
+        <div class="hidden grid-cols-[1.25rem_minmax(0,1fr)_8.5rem_7rem_6rem] gap-x-4 border-b border-subtle px-5 py-2 text-[13px] font-semibold text-muted sm:grid">
+          <span></span><span>From address to stop</span><span>Result</span>
+          <span class="text-right">Walk time</span><span class="text-right">Distance</span>
+        </div>
+        <div class="divide-y divide-subtle">
+          <.walk_case
+            :for={row <- @cases}
+            row={row}
+            checks={Map.get(@case_checks, row.order_index, [])}
+          />
+        </div>
+      </.result_section>
+    </div>
+
+    <.result_details id="validation-run-details" title="Details about this run">
+      <.run_facts rows={walk_facts(@run, @version)} />
+    </.result_details>
+    """
+  end
+
+  attr :row, :map, required: true
+  attr :checks, :list, required: true
+
+  defp walk_case(assigns) do
+    row = assigns.row
+    status = pathways_case_display_status(row)
+    steps = pathways_itinerary_step_rows(row.itinerary_steps_json)
+    tone = walk_tone(status)
+
+    issues =
+      if status == "pass", do: [], else: pathways_case_issues(row)
+
+    assigns =
+      assigns
+      |> assign(:index, row.order_index)
+      |> assign(:status, status)
+      |> assign(:tone, tone)
+      |> assign(:steps, steps)
+      |> assign(:issues, issues)
+
+    ~H"""
+    <details id={"pathways-case-row-#{@index}"} class="group" data-result={@status}>
+      <summary class="grid min-h-14 cursor-pointer list-none grid-cols-[1.25rem_minmax(0,1fr)] items-start gap-x-4 gap-y-1 px-5 py-3.5 hover:bg-canvas sm:grid-cols-[1.25rem_minmax(0,1fr)_8.5rem_7rem_6rem] sm:items-center [&::-webkit-details-marker]:hidden">
+        <.icon
+          name="hero-chevron-right"
+          class="mt-0.5 size-5 text-muted transition-transform group-open:rotate-90 sm:mt-0"
+        />
+        <span class="min-w-0">
+          <span class="block break-words text-[15px] font-bold leading-snug text-strong">
+            {pathways_case_origin(@row)}
+          </span>
+          <span class="mt-0.5 block break-words text-[13px] leading-snug text-muted">
+            To stop {pathways_case_destination(@row)}<span :if={@issues != []}> · {Enum.join(@issues, ", ")}</span>
+          </span>
+        </span>
+        <span class="col-start-2 sm:col-start-auto">
+          <.tone_badge tone={@tone}>{walk_result_label(@status)}</.tone_badge>
+        </span>
+        <span class="col-start-2 text-[13px] tabular-nums sm:col-start-auto sm:text-right">
+          <span class="text-muted sm:hidden">Walk time: </span>{format_pathways_seconds(
+            @row.duration_seconds
+          )}
+        </span>
+        <span class="col-start-2 text-[13px] tabular-nums sm:col-start-auto sm:text-right">
+          <span class="text-muted sm:hidden">Distance: </span>{format_pathways_meters(
+            @row.distance_meters
+          )}
+        </span>
+      </summary>
+      <div class="grid gap-x-10 gap-y-6 px-5 pb-7 pt-2 lg:grid-cols-2 lg:pl-14">
+        <p class="text-[13px] text-muted lg:col-span-2">
+          Test ID
+          <code class="break-all font-mono text-[12px] text-default">{@row.walkability_test_id}</code>
+        </p>
+        <div id={"pathways-case-criteria-#{@index}"} class="min-w-0">
+          <h3 class="text-[13px] font-bold text-strong">What was checked</h3>
+          <%= if @checks == [] do %>
+            <p
+              id={"pathways-case-criteria-empty-#{@index}"}
+              class="mt-2 rounded-card border border-subtle bg-canvas px-4 py-3 text-sm text-muted"
+            >
+              No expected criteria configured.
+            </p>
+          <% else %>
+            <div class="mt-2 overflow-hidden rounded-card border border-subtle">
+              <table
+                id={"pathways-case-criteria-table-#{@index}"}
+                class="vr-stack w-full border-collapse text-left text-sm"
+              >
+                <caption class="sr-only">Checks for this walk test</caption>
+                <thead>
+                  <tr class="bg-canvas text-[13px] font-semibold text-strong">
+                    <th scope="col" class="px-4 py-2.5 text-left">Criterion</th>
+                    <th scope="col" class="px-4 py-2.5 text-left">Expected</th>
+                    <th scope="col" class="px-4 py-2.5 text-left">Actual</th>
+                    <th scope="col" class="px-4 py-2.5 text-left">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    :for={check <- @checks}
+                    id={"pathways-case-criteria-check-#{@index}-#{check.kind}"}
+                    class="border-t border-subtle"
+                  >
+                    <th scope="row" class="px-4 py-2.5 text-left font-normal text-strong">
+                      {check.label}
+                    </th>
+                    <td data-label="Expected" class="px-4 py-2.5 tabular-nums">
+                      {format_pathways_criteria_value(check.expected)}
+                    </td>
+                    <td data-label="Actual" class="px-4 py-2.5 tabular-nums">
+                      {format_pathways_criteria_value(check.actual)}
+                    </td>
+                    <td data-label="Status" class="px-4 py-2.5">
+                      <span class={[
+                        "inline-flex items-center gap-1.5 font-semibold",
+                        pathways_criteria_status_class(check.status)
+                      ]}>
+                        <.icon name={pathways_criteria_status_icon(check.status)} class="size-4" />
+                        {pathways_criteria_status_label(check.status)}
+                      </span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </div>
+        <div id={"pathways-case-itinerary-#{@index}"} class="min-w-0">
+          <h3
+            id={"pathways-case-itinerary-heading-#{@index}"}
+            class="text-[13px] font-bold text-strong"
+          >
+            Walking directions
+            <span class="font-normal text-muted">
+              · leaves {format_pathways_time(@row.itinerary_start_time)}, arrives {format_pathways_time(
+                @row.itinerary_end_time
+              )}
+            </span>
+          </h3>
+          <%= if pathways_empty_itinerary?(@steps) do %>
+            <p
+              id={"pathways-case-itinerary-empty-#{@index}"}
+              class="mt-2 rounded-card border border-subtle bg-canvas px-4 py-3 text-sm text-muted"
+            >
+              {pathways_empty_itinerary_text()}
+            </p>
+          <% else %>
+            <div class="mt-2 overflow-hidden rounded-card border border-subtle">
+              <table
+                id={"pathways-case-itinerary-table-#{@index}"}
+                class="vr-stack w-full border-collapse text-left text-sm"
+              >
+                <caption class="sr-only">Step-by-step walking directions</caption>
+                <thead>
+                  <tr class="bg-canvas text-[13px] font-semibold text-strong">
+                    <th scope="col" class="px-4 py-2.5 text-left">Step</th>
+                    <th scope="col" class="px-4 py-2.5 text-left">Mode</th>
+                    <th scope="col" class="px-4 py-2.5 text-left">Street</th>
+                    <th scope="col" class="px-4 py-2.5 text-left">Turn</th>
+                    <th scope="col" class="px-4 py-2.5 text-left">Heading</th>
+                    <th scope="col" class="px-4 py-2.5 text-right">Distance (m)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    :for={step <- @steps}
+                    id={"pathways-case-itinerary-step-#{@index}-#{step.leg_index}-#{step.step_index}"}
+                    class="border-t border-subtle"
+                  >
+                    <th scope="row" class="px-4 py-2.5 text-left font-normal tabular-nums">
+                      {step.step_index + 1}
+                    </th>
+                    <td data-label="Mode" class="px-4 py-2.5">{step.mode}</td>
+                    <td data-label="Street" class="px-4 py-2.5 text-strong">{step.street_name}</td>
+                    <td data-label="Turn" class="px-4 py-2.5">{step.relative_direction}</td>
+                    <td data-label="Heading" class="px-4 py-2.5">{step.absolute_direction}</td>
+                    <td data-label="Distance (m)" class="px-4 py-2.5 tabular-nums sm:text-right">
+                      {format_pathways_distance(step.distance_meters)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          <% end %>
+        </div>
+      </div>
+    </details>
+    """
+  end
+
+  attr :criteria_overview_rows, :list, default: []
+
+  def pathways_criteria_comparison_section(assigns) do
+    ~H"""
+    <.result_section
+      id="pathways-criteria-comparison-overview"
+      title="How each check did"
+      lede="Across every test that set an expectation."
+    >
+      <div>
+        <table class="vr-stack w-full border-collapse text-sm">
+          <thead>
+            <tr class="text-[13px] font-semibold text-muted">
+              <th scope="col" class="px-5 py-2.5 text-left">Check</th>
+              <th scope="col" class="whitespace-nowrap px-3 py-2.5 text-right">Set up</th>
+              <th scope="col" class="px-3 py-2.5 text-right">Checked</th>
+              <th scope="col" class="px-3 py-2.5 text-right">Passed</th>
+              <th scope="col" class="px-3 py-2.5 text-right">Failed</th>
+              <th scope="col" class="whitespace-nowrap px-3 py-2.5 text-right">Not checked</th>
+              <th scope="col" class="whitespace-nowrap px-5 py-2.5 text-right">Pass rate</th>
+            </tr>
+          </thead>
+          <tbody class="tabular-nums">
+            <tr :if={@criteria_overview_rows == []} id="pathways-criteria-comparison-empty">
+              <td colspan="7" class="border-t border-subtle px-5 py-3 text-muted">
+                No criteria checks available.
+              </td>
+            </tr>
+
+            <tr
+              :for={criterion <- @criteria_overview_rows}
+              id={"pathways-criteria-comparison-row-#{pathways_criteria_overview_kind(criterion)}"}
+              class="border-t border-subtle"
+            >
+              <th
+                scope="row"
+                id={"pathways-criteria-comparison-label-#{pathways_criteria_overview_kind(criterion)}"}
+                class="px-5 py-2.5 text-left font-normal text-strong sm:whitespace-nowrap"
+              >
+                {Map.get(criterion, :label)}
+              </th>
+              <td
+                id={
+                  "pathways-criteria-comparison-configured-#{pathways_criteria_overview_kind(criterion)}"
+                }
+                data-label="Set up"
+                class="px-3 py-2.5 sm:text-right"
+              >
+                {format_pathways_overview_count(Map.get(criterion, :configured_count, 0))}
+              </td>
+              <td
+                id={
+                  "pathways-criteria-comparison-evaluated-#{pathways_criteria_overview_kind(criterion)}"
+                }
+                data-label="Checked"
+                class="px-3 py-2.5 sm:text-right"
+              >
+                {format_pathways_overview_count(Map.get(criterion, :evaluated_count, 0))}
+              </td>
+              <td
+                id={"pathways-criteria-comparison-pass-#{pathways_criteria_overview_kind(criterion)}"}
+                data-label="Passed"
+                class="px-3 py-2.5 sm:text-right"
+              >
+                {format_pathways_overview_count(Map.get(criterion, :pass_count, 0))}
+              </td>
+              <td
+                id={"pathways-criteria-comparison-fail-#{pathways_criteria_overview_kind(criterion)}"}
+                data-label="Failed"
+                class="px-3 py-2.5 sm:text-right"
+              >
+                {format_pathways_overview_count(Map.get(criterion, :fail_count, 0))}
+              </td>
+              <td
+                id={
+                  "pathways-criteria-comparison-not-evaluated-#{pathways_criteria_overview_kind(criterion)}"
+                }
+                data-label="Not checked"
+                class="px-3 py-2.5 sm:text-right"
+              >
+                {format_pathways_overview_count(Map.get(criterion, :not_evaluated_count, 0))}
+              </td>
+              <td
+                id={"pathways-criteria-comparison-pass-rate-#{pathways_criteria_overview_kind(criterion)}"}
+                data-label="Pass rate"
+                class="px-5 py-2.5 font-semibold text-strong sm:text-right"
+              >
+                {format_pathways_overview_percentage(Map.get(criterion, :pass_rate, 0.0))}%
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </.result_section>
+    """
+  end
+
+  attr :trip_overview, :map, default: %{}
+
+  def pathways_trip_stats_section(assigns) do
+    assigns =
+      assigns
+      |> assign(:duration, Map.get(assigns.trip_overview, :duration_seconds, %{}))
+      |> assign(:distance, Map.get(assigns.trip_overview, :distance_meters, %{}))
+
+    ~H"""
+    <.result_section
+      id="pathways-trip-visualization-stats"
+      title="Walk time and distance"
+      lede="Only tests that returned a route have a time and distance."
+    >
+      <div class="overflow-x-auto" id="pathways-trip-visualization-comparison">
+        <table class="w-full border-collapse text-sm">
+          <thead>
+            <tr class="text-[13px] font-semibold text-muted">
+              <th scope="col" class="px-5 py-2.5 text-left"><span class="sr-only">Measure</span></th>
+              <th scope="col" class="px-3 py-2.5 text-right sm:px-5">Walk time</th>
+              <th scope="col" class="px-3 py-2.5 text-right sm:px-5">Distance</th>
+            </tr>
+          </thead>
+          <tbody class="tabular-nums">
+            <tr class="border-t border-subtle">
+              <th scope="row" class="px-5 py-2.5 text-left font-normal text-strong">
+                Tests with a result
+              </th>
+              <td
+                id="pathways-trip-overview-duration-available"
+                class="px-3 py-2.5 text-right sm:px-5"
+              >
+                {format_pathways_overview_count(Map.get(@duration, :available_count, 0))}
+              </td>
+              <td
+                id="pathways-trip-overview-distance-available"
+                class="px-3 py-2.5 text-right sm:px-5"
+              >
+                {format_pathways_overview_count(Map.get(@distance, :available_count, 0))}
+              </td>
+            </tr>
+            <tr class="border-t border-subtle">
+              <th scope="row" class="px-5 py-2.5 text-left font-normal text-strong">
+                Tests without one
+              </th>
+              <td
+                id="pathways-trip-overview-duration-unavailable"
+                class="px-3 py-2.5 text-right sm:px-5"
+              >
+                {format_pathways_overview_count(Map.get(@duration, :unavailable_count, 0))}
+              </td>
+              <td
+                id="pathways-trip-overview-distance-unavailable"
+                class="px-3 py-2.5 text-right sm:px-5"
+              >
+                {format_pathways_overview_count(Map.get(@distance, :unavailable_count, 0))}
+              </td>
+            </tr>
+            <tr class="border-t border-subtle">
+              <th scope="row" class="px-5 py-2.5 text-left font-normal text-strong">Coverage</th>
+              <td
+                id="pathways-trip-overview-duration-availability-rate"
+                class="px-3 py-2.5 text-right sm:px-5"
+              >
+                {format_pathways_overview_percentage(Map.get(@duration, :availability_rate, 0.0))}%
+              </td>
+              <td
+                id="pathways-trip-overview-distance-availability-rate"
+                class="px-3 py-2.5 text-right sm:px-5"
+              >
+                {format_pathways_overview_percentage(Map.get(@distance, :availability_rate, 0.0))}%
+              </td>
+            </tr>
+            <tr class="border-t border-subtle">
+              <th scope="row" class="px-5 py-2.5 text-left font-normal text-strong">Shortest</th>
+              <td id="pathways-trip-overview-duration-min" class="px-3 py-2.5 text-right sm:px-5">
+                {format_pathways_seconds(Map.get(@duration, :min))}
+              </td>
+              <td id="pathways-trip-overview-distance-min" class="px-3 py-2.5 text-right sm:px-5">
+                {format_pathways_meters(Map.get(@distance, :min))}
+              </td>
+            </tr>
+            <tr class="border-t border-subtle">
+              <th scope="row" class="px-5 py-2.5 text-left font-normal text-strong">Longest</th>
+              <td id="pathways-trip-overview-duration-max" class="px-3 py-2.5 text-right sm:px-5">
+                {format_pathways_seconds(Map.get(@duration, :max))}
+              </td>
+              <td id="pathways-trip-overview-distance-max" class="px-3 py-2.5 text-right sm:px-5">
+                {format_pathways_meters(Map.get(@distance, :max))}
+              </td>
+            </tr>
+            <tr class="border-t border-subtle">
+              <th scope="row" class="px-5 py-2.5 text-left font-normal text-strong">Average</th>
+              <td id="pathways-trip-overview-duration-average" class="px-3 py-2.5 text-right sm:px-5">
+                {format_pathways_seconds(Map.get(@duration, :average))}
+              </td>
+              <td id="pathways-trip-overview-distance-average" class="px-3 py-2.5 text-right sm:px-5">
+                {format_pathways_meters(Map.get(@distance, :average))}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </.result_section>
+    """
+  end
+
+  # Run facts shown under "Details about this check": a label, a value and
+  # whether the value is an identifier that reads in the monospace face.
+  attr :rows, :list, required: true
+
+  defp run_facts(assigns) do
+    ~H"""
+    <dl class="grid grid-cols-[minmax(0,1fr)] gap-x-8 gap-y-2 text-sm sm:grid-cols-[10rem_minmax(0,1fr)]">
+      <%= for {label, value, kind} <- @rows, value do %>
+        <dt class="text-muted">{label}</dt>
+        <dd class={["min-w-0 tabular-nums", kind == :id && "break-all font-mono text-[13px]"]}>
+          {value}
+        </dd>
+      <% end %>
+    </dl>
+    """
+  end
+
+  # ── Presentation helpers ──
+
+  defp validation_lede(%{run_type: "pathways_tests"}, version) do
+    "Older results: whether riders could walk from each test address to a stop in #{version.name}."
+  end
+
+  defp validation_lede(_run, version) do
+    "What the MobilityData GTFS validator found in #{version.name}."
+  end
+
+  defp run_meta(%{status: "completed", run_type: "pathways_tests"} = run) do
+    join_meta([
+      "Ran " <> format_run_time(run.completed_at || run.started_at),
+      duration_text(run.duration_ms)
+    ])
+  end
+
+  defp run_meta(%{status: "completed"} = run) do
+    join_meta([
+      "Checked " <> format_run_time(run.completed_at || run.started_at),
+      duration_text(run.duration_ms)
+    ])
+  end
+
+  defp run_meta(%{status: "failed"} = run) do
+    "Stopped " <> format_run_time(run.completed_at || run.started_at)
+  end
+
+  defp run_meta(run), do: "Started " <> format_run_time(run.started_at)
+
+  defp join_meta(parts), do: parts |> Enum.reject(&is_nil/1) |> Enum.join(" · ")
+
+  defp duration_text(nil), do: nil
+  defp duration_text(ms) when is_integer(ms) and ms < 1000, do: "Took under 1 s"
+  defp duration_text(ms) when is_integer(ms), do: "Took " <> format_pathways_seconds(ms / 1000)
+  defp duration_text(_ms), do: nil
+
+  # Run times are stored in UTC; the agency time zone isn't applied here.
+  defp format_run_time(%DateTime{} = time) do
+    Calendar.strftime(time, "%b %-d, %Y at %-I:%M %P") <> " UTC"
+  end
+
+  defp format_run_time(_time), do: "at an unknown time"
+
+  defp mobility_facts(run, version) do
+    [
+      {"Status", "Completed", :text},
+      {"Checked with", "MobilityData GTFS validator", :text},
+      {"Version", version.name, :text},
+      {"Started", format_run_time(run.started_at), :text},
+      {"Finished", run.completed_at && format_run_time(run.completed_at), :text},
+      {"Run ID", run.id, :id}
+    ]
+  end
+
+  defp walk_facts(run, version) do
+    [
+      {"Status", "Completed", :text},
+      {"Checked with", "Walk tests (OpenTripPlanner, retired)", :text},
+      {"Version", version.name, :text},
+      {"Started", format_run_time(run.started_at), :text},
+      {"Finished", run.completed_at && format_run_time(run.completed_at), :text},
+      {"Run ID", run.id, :id}
+    ]
+  end
+
+  # The headline counts the run's own numbers and claims no more than the
+  # severity names do: problems are blocking issues, suggestions are potential
+  # ones, notes are information.
+  defp mobility_summary(run, notices) do
+    cond do
+      notices == [] ->
+        %{
+          tone: "success",
+          badge: "No issues",
+          title: "No validation issues found!",
+          body: "Your GTFS data passed all checks."
+        }
+
+      run.errors_count > 0 ->
+        %{
+          tone: "error",
+          badge: "Problems found",
+          title: "#{pluralize(run.errors_count, "problem", "problems")} to fix.",
+          body: "Start with the problems. Suggestions and notes below matter less."
+        }
+
+      run.warnings_count > 0 ->
+        %{
+          tone: "warning",
+          badge: "Suggestions only",
+          title:
+            "No problems. #{pluralize(run.warnings_count, "suggestion", "suggestions")} to review.",
+          body: "Suggestions are potential issues. Notes are for your information."
+        }
+
+      true ->
+        %{
+          tone: "info",
+          badge: "Notes only",
+          title: "No problems or suggestions.",
+          body: "The notes below are for your information."
+        }
+    end
+  end
+
+  defp walk_summary(%{total_tests: 0}) do
+    %{
+      tone: "neutral",
+      badge: "No walk tests",
+      title: "This run has no walk test results.",
+      body:
+        "The run finished, but it didn't include any walk tests, so there is nothing to pass or fail."
+    }
+  end
+
+  defp walk_summary(%{fail_count: failed, total_tests: total}) when failed > 0 do
+    %{
+      tone: "error",
+      badge: "Some walk tests failed",
+      title: "#{failed} of #{total} walk tests failed.",
+      body: walk_summary_body()
+    }
+  end
+
+  defp walk_summary(%{warning_count: warned, total_tests: total}) when warned > 0 do
+    %{
+      tone: "warning",
+      badge: "Walk tests need review",
+      title: "#{warned} of #{total} walk tests need review.",
+      body: walk_summary_body()
+    }
+  end
+
+  defp walk_summary(%{total_tests: total}) do
+    %{
+      tone: "success",
+      badge: "Walk tests passed",
+      title: "All #{total} walk tests passed.",
+      body: walk_summary_body()
+    }
+  end
+
+  defp walk_summary_body do
+    "Each test checks that a rider can walk from an address to a stop, and that the walk takes about as long as expected."
+  end
+
+  defp walk_tone("pass"), do: "success"
+  defp walk_tone("warning"), do: "warning"
+  defp walk_tone(_failed), do: "error"
+
+  defp walk_result_label("pass"), do: "Passed"
+  defp walk_result_label("warning"), do: "Needs review"
+  defp walk_result_label(_failed), do: "Failed"
+
+  defp history_status("completed"), do: "Completed"
+  defp history_status("failed"), do: "Didn't finish"
+  defp history_status("running"), do: "Running"
+  defp history_status("started"), do: "Starting"
+  defp history_status(_pending), do: "Waiting"
+
+  defp history_tone("completed"), do: "success"
+  defp history_tone("failed"), do: "error"
+  defp history_tone("running"), do: "info"
+  defp history_tone(_other), do: "neutral"
+
+  defp history_type("mobility_data"), do: "Validation"
+  defp history_type("pathways_tests"), do: "Older walk tests"
+  defp history_type("station_reachability"), do: "Station reachability"
+  defp history_type(other), do: humanize_code(other)
+
+  # Problems, suggestions and notes name validator severities, so a walk-test
+  # run's history row shows its type and status without them.
+  defp history_counts(%{status: "completed", run_type: type} = run)
+       when type != "pathways_tests" do
+    Enum.join(
+      [
+        pluralize(run.errors_count, "problem", "problems"),
+        pluralize(run.warnings_count, "suggestion", "suggestions"),
+        pluralize(run.infos_count, "note", "notes")
+      ],
+      " · "
+    )
+  end
+
+  defp history_counts(_run), do: nil
+
+  defp pluralize(1, one, _many), do: "1 #{one}"
+  defp pluralize(count, _one, many), do: "#{format_count(count || 0)} #{many}"
+
+  # ── Findings ──
+
+  defp notices(%{result_json: %{"notices" => notices}}) when is_list(notices), do: notices
+  defp notices(_run), do: []
+
+  defp severity_key(group) do
+    case group["severity"] do
+      severity when is_binary(severity) ->
+        case String.downcase(severity) do
+          key when key in ["error", "warning", "info"] -> key
+          _other -> "other"
+        end
+
+      _other ->
+        "other"
+    end
+  end
+
+  # Only sections that have findings, biggest cleanup first inside each.
+  defp finding_sections(notices) do
+    by_key = Enum.group_by(notices, &severity_key/1)
+
+    for section <- @finding_sections,
+        findings = Map.get(by_key, section.key, []),
+        findings != [] do
+      Map.put(section, :findings, Enum.sort_by(findings, &notice_sort_key/1))
+    end
+  end
+
+  defp notice_sort_key(group) do
+    case get_total_notices(group) do
+      total when is_integer(total) -> -total
+      _other -> 0
+    end
+  end
+
+  defp section_codes(notices, key) do
+    notices
+    |> finding_sections()
+    |> Enum.find(&(&1.key == key))
+    |> case do
+      nil -> []
+      section -> Enum.map(section.findings, & &1["code"])
+    end
+  end
+
+  defp all_expanded?(codes, expanded_codes) do
+    Enum.all?(codes, &MapSet.member?(expanded_codes, &1))
+  end
+
+  defp section_expanded?(section, expanded_codes) do
+    section.findings |> Enum.map(& &1["code"]) |> all_expanded?(expanded_codes)
+  end
+
+  defp section_noun(%{key: "error"}), do: "problems"
+  defp section_noun(%{key: "warning"}), do: "suggestions"
+  defp section_noun(%{key: "info"}), do: "notes"
+  defp section_noun(_section), do: "other findings"
+
+  # Problems open by default: they are the work. The rest open on request.
+  defp default_expanded_codes(%{status: "completed", run_type: type} = run)
+       when type != "pathways_tests" do
+    run |> notices() |> section_codes("error") |> MapSet.new()
+  end
+
+  defp default_expanded_codes(_run), do: MapSet.new()
+
+  defp humanize_code(code) when is_binary(code) and code != "" do
+    text = String.replace(code, "_", " ")
+    String.upcase(String.first(text)) <> String.slice(text, 1..-1//1)
+  end
+
+  defp humanize_code(_code), do: "Unnamed finding"
+
+  # A validator code becomes part of a DOM id, so anything outside the id
+  # alphabet is replaced.
+  defp dom_token(code) when is_binary(code), do: String.replace(code, ~r/[^A-Za-z0-9_-]/, "-")
+  defp dom_token(_code), do: "unknown"
 
   defp get_sample_notices(notice_group) do
     notice_group
@@ -771,293 +1538,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
   defp format_pathways_overview_percentage(_value), do: "0.0"
 
-  attr :criteria_overview_rows, :list, default: []
-
-  def pathways_criteria_comparison_section(assigns) do
-    ~H"""
-    <section
-      id="pathways-criteria-comparison-overview"
-      class="mt-8 rounded-box border border-base-300 bg-base-100"
-    >
-      <div class="px-4 py-3 border-b border-base-content/15">
-        <h3 class="text-sm font-semibold">Criteria Comparison Overview</h3>
-      </div>
-      <div class="overflow-x-auto">
-        <table class="table table-sm">
-          <thead class="text-xs uppercase tracking-wide text-base-content/70">
-            <tr>
-              <th>Criterion</th>
-              <th>Configured</th>
-              <th>Evaluated</th>
-              <th>Pass</th>
-              <th>Fail</th>
-              <th>N/A</th>
-              <th>Pass Rate</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr :if={@criteria_overview_rows == []} id="pathways-criteria-comparison-empty">
-              <td colspan="7" class="text-sm text-base-content/70">
-                No criteria checks available.
-              </td>
-            </tr>
-
-            <tr
-              :for={criterion <- @criteria_overview_rows}
-              id={"pathways-criteria-comparison-row-#{pathways_criteria_overview_kind(criterion)}"}
-            >
-              <th
-                scope="row"
-                id={"pathways-criteria-comparison-label-#{pathways_criteria_overview_kind(criterion)}"}
-              >
-                {Map.get(criterion, :label)}
-              </th>
-              <td
-                id={
-                  "pathways-criteria-comparison-configured-#{pathways_criteria_overview_kind(criterion)}"
-                }
-                class="font-mono tabular-nums"
-              >
-                {format_pathways_overview_count(Map.get(criterion, :configured_count, 0))}
-              </td>
-              <td
-                id={
-                  "pathways-criteria-comparison-evaluated-#{pathways_criteria_overview_kind(criterion)}"
-                }
-                class="font-mono tabular-nums"
-              >
-                {format_pathways_overview_count(Map.get(criterion, :evaluated_count, 0))}
-              </td>
-              <td
-                id={"pathways-criteria-comparison-pass-#{pathways_criteria_overview_kind(criterion)}"}
-                class="font-mono tabular-nums text-success"
-              >
-                {format_pathways_overview_count(Map.get(criterion, :pass_count, 0))}
-              </td>
-              <td
-                id={"pathways-criteria-comparison-fail-#{pathways_criteria_overview_kind(criterion)}"}
-                class="font-mono tabular-nums text-error"
-              >
-                {format_pathways_overview_count(Map.get(criterion, :fail_count, 0))}
-              </td>
-              <td
-                id={
-                  "pathways-criteria-comparison-not-evaluated-#{pathways_criteria_overview_kind(criterion)}"
-                }
-                class="font-mono tabular-nums"
-              >
-                {format_pathways_overview_count(Map.get(criterion, :not_evaluated_count, 0))}
-              </td>
-              <td
-                id={"pathways-criteria-comparison-pass-rate-#{pathways_criteria_overview_kind(criterion)}"}
-                class="font-mono tabular-nums"
-              >
-                {format_pathways_overview_percentage(Map.get(criterion, :pass_rate, 0.0))}%
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-    """
-  end
-
-  attr :trip_overview, :map, default: %{}
-
-  def pathways_trip_visualization_overview_section(assigns) do
-    ~H"""
-    <section
-      id="pathways-trip-visualization-overview"
-      class="mt-8 rounded-box border border-base-300 bg-base-100"
-    >
-      <div class="px-4 py-3 border-b border-base-content/15">
-        <h3 class="text-sm font-semibold">Trip Reachability Summary</h3>
-      </div>
-
-      <div class="p-4">
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-3" id="pathways-trip-visualization-metrics">
-          <div
-            id="pathways-trip-overview-total-tests"
-            class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
-          >
-            <div class="text-xs uppercase tracking-wide text-base-content/70">Total Tests</div>
-            <div
-              id="pathways-trip-overview-total-tests-value"
-              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-base-content"
-            >
-              {format_pathways_overview_count(Map.get(@trip_overview, :total_tests, 0))}
-            </div>
-          </div>
-
-          <div
-            id="pathways-trip-overview-pass-count"
-            class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
-          >
-            <div class="text-xs uppercase tracking-wide text-base-content/70">Passed</div>
-            <div
-              id="pathways-trip-overview-pass-count-value"
-              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-success"
-            >
-              {format_pathways_overview_count(Map.get(@trip_overview, :pass_count, 0))}
-            </div>
-          </div>
-
-          <div
-            id="pathways-trip-overview-warning-count"
-            class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
-          >
-            <div class="text-xs uppercase tracking-wide text-base-content/70">Warnings</div>
-            <div
-              id="pathways-trip-overview-warning-count-value"
-              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-warning"
-            >
-              {format_pathways_overview_count(Map.get(@trip_overview, :warning_count, 0))}
-            </div>
-          </div>
-
-          <div
-            id="pathways-trip-overview-fail-count"
-            class="rounded-lg border border-base-content/15 bg-base-100 px-4 py-3"
-          >
-            <div class="text-xs uppercase tracking-wide text-base-content/70">Failed</div>
-            <div
-              id="pathways-trip-overview-fail-count-value"
-              class="mt-1 text-2xl font-semibold font-mono tabular-nums text-error"
-            >
-              {format_pathways_overview_count(Map.get(@trip_overview, :fail_count, 0))}
-            </div>
-          </div>
-        </div>
-
-        <% duration_stats = Map.get(@trip_overview, :duration_seconds, %{}) %>
-        <% distance_stats = Map.get(@trip_overview, :distance_meters, %{}) %>
-
-        <div
-          class="overflow-x-auto border border-base-content/15 bg-base-100 mt-4"
-          id="pathways-trip-visualization-comparison"
-        >
-          <table class="table table-sm">
-            <thead class="text-xs uppercase tracking-wide text-base-content/70">
-              <tr>
-                <th>Metric</th>
-                <th>Available</th>
-                <th>Unavailable</th>
-                <th>Availability</th>
-                <th>Min</th>
-                <th>Max</th>
-                <th>Avg</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr id="pathways-trip-visualization-row-duration-seconds">
-                <th scope="row">Duration (s)</th>
-                <td id="pathways-trip-overview-duration-available" class="font-mono tabular-nums">
-                  {format_pathways_overview_count(Map.get(duration_stats, :available_count, 0))}
-                </td>
-                <td id="pathways-trip-overview-duration-unavailable" class="font-mono tabular-nums">
-                  {format_pathways_overview_count(Map.get(duration_stats, :unavailable_count, 0))}
-                </td>
-                <td
-                  id="pathways-trip-overview-duration-availability-rate"
-                  class="font-mono tabular-nums"
-                >
-                  {format_pathways_overview_percentage(
-                    Map.get(duration_stats, :availability_rate, 0.0)
-                  )}%
-                </td>
-                <td id="pathways-trip-overview-duration-min" class="font-mono tabular-nums">
-                  {format_pathways_criteria_value(Map.get(duration_stats, :min))}
-                </td>
-                <td id="pathways-trip-overview-duration-max" class="font-mono tabular-nums">
-                  {format_pathways_criteria_value(Map.get(duration_stats, :max))}
-                </td>
-                <td id="pathways-trip-overview-duration-average" class="font-mono tabular-nums">
-                  {format_pathways_criteria_value(Map.get(duration_stats, :average))}
-                </td>
-              </tr>
-
-              <tr id="pathways-trip-visualization-row-distance-meters">
-                <th scope="row">Distance (m)</th>
-                <td id="pathways-trip-overview-distance-available" class="font-mono tabular-nums">
-                  {format_pathways_overview_count(Map.get(distance_stats, :available_count, 0))}
-                </td>
-                <td
-                  id="pathways-trip-overview-distance-unavailable"
-                  class="font-mono tabular-nums"
-                >
-                  {format_pathways_overview_count(Map.get(distance_stats, :unavailable_count, 0))}
-                </td>
-                <td
-                  id="pathways-trip-overview-distance-availability-rate"
-                  class="font-mono tabular-nums"
-                >
-                  {format_pathways_overview_percentage(
-                    Map.get(distance_stats, :availability_rate, 0.0)
-                  )}%
-                </td>
-                <td id="pathways-trip-overview-distance-min" class="font-mono tabular-nums">
-                  {format_pathways_criteria_value(Map.get(distance_stats, :min))}
-                </td>
-                <td id="pathways-trip-overview-distance-max" class="font-mono tabular-nums">
-                  {format_pathways_criteria_value(Map.get(distance_stats, :max))}
-                </td>
-                <td id="pathways-trip-overview-distance-average" class="font-mono tabular-nums">
-                  {format_pathways_criteria_value(Map.get(distance_stats, :average))}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div
-          class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3"
-          id="pathways-trip-visualization-strips"
-        >
-          <div
-            class="rounded-lg border border-base-content/15 bg-base-100 p-3"
-            id="pathways-trip-availability-strip-duration"
-          >
-            <div class="text-xs font-semibold mb-2">Duration data coverage</div>
-            <progress
-              id="pathways-trip-overview-duration-coverage-progress"
-              class="progress progress-info w-full"
-              value={Map.get(duration_stats, :availability_rate, 0.0)}
-              max="100"
-            >
-            </progress>
-            <div
-              id="pathways-trip-overview-duration-coverage-value"
-              class="text-xs mt-1 font-mono tabular-nums text-base-content/80"
-            >
-              {format_pathways_overview_percentage(Map.get(duration_stats, :availability_rate, 0.0))}%
-            </div>
-          </div>
-
-          <div
-            class="rounded-lg border border-base-content/15 bg-base-100 p-3"
-            id="pathways-trip-availability-strip-distance"
-          >
-            <div class="text-xs font-semibold mb-2">Distance data coverage</div>
-            <progress
-              id="pathways-trip-overview-distance-coverage-progress"
-              class="progress progress-success w-full"
-              value={Map.get(distance_stats, :availability_rate, 0.0)}
-              max="100"
-            >
-            </progress>
-            <div
-              id="pathways-trip-overview-distance-coverage-value"
-              class="text-xs mt-1 font-mono tabular-nums text-base-content/80"
-            >
-              {format_pathways_overview_percentage(Map.get(distance_stats, :availability_rate, 0.0))}%
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-    """
-  end
-
   defp pathways_criteria_overview_kind(criterion) when is_map(criterion) do
     criterion
     |> Map.get(:kind, Map.get(criterion, "kind", "criterion"))
@@ -1065,11 +1545,6 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   end
 
   defp pathways_criteria_overview_kind(_criterion), do: "criterion"
-
-  defp severity_border_class("error"), do: "border-error"
-  defp severity_border_class("warning"), do: "border-warning"
-  defp severity_border_class("info"), do: "border-info"
-  defp severity_border_class(_), do: "border-base-300"
 
   defp pathways_case_display_status(row) do
     mismatch_map = pathways_mismatch_map(row.details_json)
@@ -1269,6 +1744,24 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   defp format_pathways_distance(value) when is_integer(value), do: Integer.to_string(value)
   defp format_pathways_distance(_value), do: "-"
 
+  defp format_pathways_meters(value) do
+    case format_pathways_distance(value) do
+      "-" -> "-"
+      text -> text <> " m"
+    end
+  end
+
+  defp format_pathways_seconds(value) when is_number(value) do
+    total = round(value)
+
+    case {div(total, 60), rem(total, 60)} do
+      {0, seconds} -> "#{seconds} s"
+      {minutes, seconds} -> "#{minutes} min #{seconds} s"
+    end
+  end
+
+  defp format_pathways_seconds(_value), do: "-"
+
   defp pathways_criteria_checks(row) do
     mismatch_map = pathways_mismatch_map(row.details_json)
 
@@ -1277,7 +1770,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
         row,
         mismatch_map,
         :expected_traversable,
-        "Traversable",
+        "Can be walked",
         pathways_expected_value(row, :expected_traversable),
         row.route_exists
       ),
@@ -1504,7 +1997,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
       %{
         kind: "duration_seconds_range",
-        label: "Duration range (s)",
+        label: "Walk time (s)",
         expected: duration_range_expected_value(min_duration, max_duration),
         actual: duration_range_actual_value(row.duration_seconds, min_mismatch, max_mismatch),
         status: status
@@ -1559,7 +2052,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
       %{
         kind: "distance_meters_range",
-        label: "Distance range (m)",
+        label: "Distance (m)",
         expected: distance_range_expected_value(min_distance, max_distance),
         actual: distance_range_actual_value(row.distance_meters, min_mismatch, max_mismatch),
         status: status
@@ -1620,7 +2113,8 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
   defp format_pathways_criteria_value(nil), do: "-"
   defp format_pathways_criteria_value(value) when is_binary(value), do: value
-  defp format_pathways_criteria_value(value) when is_boolean(value), do: to_string(value)
+  defp format_pathways_criteria_value(true), do: "Yes"
+  defp format_pathways_criteria_value(false), do: "No"
   defp format_pathways_criteria_value(value) when is_integer(value), do: Integer.to_string(value)
 
   defp format_pathways_criteria_value(value) when is_float(value) do
@@ -1631,17 +2125,17 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
 
   defp format_pathways_criteria_value(value), do: inspect(value)
 
-  defp pathways_criteria_status_label(:pass), do: "PASS"
-  defp pathways_criteria_status_label(:fail), do: "FAIL"
-  defp pathways_criteria_status_label(:not_evaluated), do: "N/A"
+  defp pathways_criteria_status_label(:pass), do: "Passed"
+  defp pathways_criteria_status_label(:fail), do: "Failed"
+  defp pathways_criteria_status_label(:not_evaluated), do: "Not checked"
 
   defp pathways_criteria_status_icon(:pass), do: "hero-check-circle"
   defp pathways_criteria_status_icon(:fail), do: "hero-x-circle"
   defp pathways_criteria_status_icon(:not_evaluated), do: "hero-minus-circle"
 
-  defp pathways_criteria_status_class(:pass), do: "text-success"
-  defp pathways_criteria_status_class(:fail), do: "text-error"
-  defp pathways_criteria_status_class(:not_evaluated), do: "text-base-content/70"
+  defp pathways_criteria_status_class(:pass), do: "text-success-fg"
+  defp pathways_criteria_status_class(:fail), do: "text-error-fg"
+  defp pathways_criteria_status_class(:not_evaluated), do: "text-muted"
 
   defp pathways_empty_itinerary?(rows) when is_list(rows), do: rows == []
   defp pathways_empty_itinerary?(_rows), do: true
@@ -1691,7 +2185,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
     case Jason.decode(error_details) do
       {:ok, payload} when is_map(payload) ->
         %{
-          title: "Pathways validation failed",
+          title: "The walk tests didn't finish.",
           summary: Map.get(payload, "message", failure_summary(%{error_details: error_details})),
           checks: [],
           details: [],
@@ -1718,7 +2212,7 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
         |> Enum.find_value(&normalize_pathways_failure_code/1)
         |> case do
           nil -> failure_summary(%{error_details: error_details, run_type: "pathways_tests"})
-          code -> Map.get(@pathways_failure_messages, code, "Pathways validation failed")
+          code -> Map.get(@pathways_failure_messages, code, "The walk tests didn't finish.")
         end
 
       _other ->
@@ -1967,12 +2461,4 @@ defmodule GtfsPlannerWeb.Gtfs.ValidationResultLive do
   end
 
   defp load_pathways_render_data(run), do: {run, []}
-
-  defp validation_subtitle(%{run_type: "pathways_tests"}) do
-    "Results of Open Trip Planner GTFS validation."
-  end
-
-  defp validation_subtitle(_run) do
-    "Results of MobilityData GTFS validation."
-  end
 end
