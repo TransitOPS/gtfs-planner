@@ -75,6 +75,16 @@ config :gtfs_planner,
        :map_buildings_req_plug,
        {Req.Test, GtfsPlannerWeb.MapBuildingsController}
 
+# Ordinary tests use dummy OpenRouter configuration and always route through a
+# Req.Test plug, so no test can reach the provider. Only the default-excluded
+# `:agent_scenarios` suite replaces these values, and it restores them.
+config :gtfs_planner, GtfsPlanner.Agents.Model, model: "test/model-a"
+
+config :gtfs_planner, :openrouter_api_key, "test-openrouter-key"
+
+config :gtfs_planner,
+       :agents_req_options, plug: {Req.Test, GtfsPlanner.Agents.Model}, retry_delay: 0
+
 # In test we don't send emails
 config :gtfs_planner, GtfsPlanner.Mailer, adapter: Swoosh.Adapters.Test
 
