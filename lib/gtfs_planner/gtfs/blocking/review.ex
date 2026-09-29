@@ -23,15 +23,28 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
   only on an unaffected date is unchanged by the command and is never `added`.
 
   The command is an `:assign` or `:unassign` of one trip that adds no error or
-  warning and every other command needs confirmation. The fingerprint is the
-  lowercase SHA-256 hex of the deterministic encoding of the resolved command, the
-  sorted changes, the sorted locked rows (block ID, service ID, the four times and
-  the ISO 8601 `updated_at`) and the sorted added finding keys, so a confirmation
-  whose inputs changed no longer matches (Mutation steps 8 and 9).
+  warning, every other block command needs confirmation, a plan always needs
+  confirmation, and an attribute save needs one when it touches a day type other
+  than the selected one or adds a problem. The fingerprint is the lowercase SHA-256
+  hex of the deterministic encoding of the resolved command, the sorted changes, the
+  sorted locked rows (block ID, service ID, the four times and the ISO 8601
+  `updated_at`) and the sorted added finding keys, so a confirmation whose inputs
+  changed no longer matches (Mutation steps 8 and 9). A caller that reviewed a
+  planning input adds `inputs_digest` and it is appended to that encoding, so a
+  write whose inputs were recomputed and found unchanged still matches (INV-7).
 
   The planning context is passed through, not unpacked: `Context.layover_only/1`
   reproduces spec 05's review and fingerprint exactly (CR-2), and a context with
   planning inputs produces the same added keys in the same order.
+
+  One review describes a many-target plan and an attribute save as well as a single
+  block command, so a plan or an attribute save is never reviewed by a second
+  implementation. Each change carries its own `to`, so a plan that moves trips into
+  several blocks is described block by block; the blocks a day type touches are
+  every change's `from` and `to` on that day type plus the caller's `:touched` list,
+  which is how an attribute save names the block whose attribute rows change while
+  no trip moves. `context_after` is the context the write will leave behind, so an
+  attribute row that would break a route requirement is reported as added (AC-19).
   """
 
   alias GtfsPlanner.Gtfs.Blocking
@@ -69,12 +82,20 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
 
   The input map carries:
 
-  - `:command` — the resolved command;
-  - `:target` — the resolved target block ID, or `nil` for an unassign;
+  - `:command` — the resolved command: a block command, `{:plan, mode}` or
+    `{:attributes, block_id, garage_id, vehicle_type_id}`;
+  - `:target` — the resolved target block ID, or `nil` for an unassign, a plan or
+    an attribute save;
   - `:selected_key` — the selected day type's key, whose effect is listed first;
   - `:affected` — the affected day types in list order;
   - `:rows` — the locked trip rows;
   - `:changes` — `%{trip: trip_row, from: block_id | nil, to: block_id | nil}`;
+  - `:touched` — optional block IDs to diff although no trip moves into or out of
+    them, the block of an attribute save;
+  - `:context_after` — optional `%Blocking.Context{}` the write leaves behind; the
+    before findings use `:context` (default);
+  - `:inputs_digest` — optional `Blocking.Context.digest/1` of the context this
+    review read, appended to the fingerprint when present (INV-7);
   - `:in_seat` — `%{rows: [in_seat_row()], context: InSeat.context()}`;
   - `:service_dates` — the canonical `%{service_id => MapSet.t(Date.t())}`;
   - `:context` — the version's `%Blocking.Context{}` planning inputs.
@@ -92,8 +113,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
     build_context = %{
       rows: rows,
       changes: changes,
+      to_by_row_id: Map.new(changes, &{&1.trip.id, &1.to}),
       target: target,
+      touched: List.wrap(Map.get(input, :touched)),
       context: context,
+      context_after: Map.get(input, :context_after, context),
       in_seat: Map.fetch!(input, :in_seat),
       service_dates: Map.fetch!(input, :service_dates)
     }
@@ -115,8 +139,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
       effects: effects,
       affected_date_count: Enum.sum(Enum.map(affected, & &1.date_count)),
       added_problem_count: added_problem_count,
-      needs_confirmation?: needs_confirmation?(command, changes, added_problem_count),
-      fingerprint: fingerprint(command, target, changes, rows, effects)
+      needs_confirmation?: needs_confirmation?(command, changes, added_problem_count, effects),
+      fingerprint:
+        fingerprint(command, target, changes, rows, effects, Map.get(input, :inputs_digest))
     }
   end
 
@@ -126,25 +151,42 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
     selected ++ rest
   end
 
-  # A command applies without confirmation only when it is an assign or unassign
-  # of exactly one trip that adds no error or warning (Mutation step 9).
-  defp needs_confirmation?(command, changes, added_problem_count) do
+  # A block command applies without confirmation only when it is an assign or
+  # unassign of exactly one trip that adds no error or warning (Mutation step 9).
+  # A plan always needs one: it rewrites many trips' blocks at once. An attribute
+  # save moves no trip, so it needs one only when it reaches a day type the operator
+  # is not looking at or when the saved row adds a problem.
+  defp needs_confirmation?({:plan, _mode}, _changes, _added_problem_count, _effects), do: true
+
+  defp needs_confirmation?(
+         {:attributes, _block_id, _garage_id, _vehicle_type_id},
+         _changes,
+         added,
+         effects
+       ) do
+    added > 0 or Enum.any?(effects, &(not &1.selected?))
+  end
+
+  defp needs_confirmation?(command, changes, added_problem_count, _effects) do
     direct = match?({:assign, _, _}, command) or match?({:unassign, _}, command)
     not (direct and length(changes) == 1 and added_problem_count == 0)
   end
 
   defp build_effect(day_type, selected_key, context) do
     active = Enum.filter(context.changes, &runs_on?(&1.trip, day_type))
-    active_ids = MapSet.new(active, & &1.trip.id)
 
     before_rows = rows_on(context.rows, day_type)
-    after_rows = Enum.map(before_rows, &apply_change(&1, active_ids, context.target))
+
+    # A change applies to the row of its own trip, on the day types its service
+    # runs in, and lands that change's own `to` block. A trip of another service is
+    # not in this day type's rows, so the change map needs no second day-type filter.
+    after_rows = Enum.map(before_rows, &apply_change(&1, context.to_by_row_id))
 
     from_blocks = active |> Enum.map(& &1.from) |> Enum.reject(&is_nil/1) |> Enum.uniq()
-    touched = Enum.uniq(from_blocks ++ List.wrap(context.target))
+    touched = touched_blocks(day_type, context)
 
     before_findings = findings_by_block(touched, before_rows, context.context)
-    after_findings = findings_by_block(touched, after_rows, context.context)
+    after_findings = findings_by_block(touched, after_rows, context.context_after)
     {added_checks, existing_checks} = diff_checks(touched, before_findings, after_findings)
     {added_in_seat, existing_in_seat} = diff_in_seat(day_type, context)
 
@@ -163,8 +205,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
 
   defp rows_on(rows, day_type), do: Enum.filter(rows, &runs_on?(&1, day_type))
 
-  defp apply_change(row, active_ids, target) do
-    if MapSet.member?(active_ids, row.id), do: %{row | block_id: target}, else: row
+  defp apply_change(row, to_by_row_id) do
+    case Map.fetch(to_by_row_id, row.id) do
+      {:ok, to} -> %{row | block_id: to}
+      :error -> row
+    end
   end
 
   defp findings_by_block(block_ids, rows, context) do
@@ -233,7 +278,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
     if after? do
       %{
         base
-        | trips: after_trips(base.trips, context),
+        | trips: after_trips(base.trips, context.changes),
           sequences: Map.merge(base.sequences, sequences(day_type, context, true))
       }
     else
@@ -244,30 +289,29 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
     end
   end
 
-  # The changed trips carry the target block ID in every day type their service
-  # runs in, so the after context reads them as the write will store them.
-  defp after_trips(trips, context) do
-    changes_by_trip_id = Map.new(context.changes, &{&1.trip.trip_id, &1})
+  # The changed trips carry their own target block ID in every day type their
+  # service runs in, so the after context reads them as the write will store them.
+  defp after_trips(trips, changes) do
+    to_by_trip_id = Map.new(changes, &{&1.trip.trip_id, &1.to})
 
     Map.new(trips, fn {trip_id, trip} ->
-      case Map.fetch(changes_by_trip_id, trip_id) do
-        {:ok, _change} -> {trip_id, %{trip | block_id: context.target}}
+      case Map.fetch(to_by_trip_id, trip_id) do
+        {:ok, to} -> {trip_id, %{trip | block_id: to}}
         :error -> {trip_id, trip}
       end
     end)
   end
 
   defp sequences(day_type, context, after?) do
-    {changes, target} = if after?, do: {context.changes, context.target}, else: {[], nil}
-    active_ids = changes |> Enum.filter(&runs_on?(&1.trip, day_type)) |> MapSet.new(& &1.trip.id)
+    to_by_row_id = if after?, do: context.to_by_row_id, else: %{}
     day_rows = rows_on(context.rows, day_type)
 
     day_type
-    |> touched_blocks(context.changes ++ List.wrap(context.target))
+    |> touched_blocks(context)
     |> Map.new(fn block_id ->
       order =
         day_rows
-        |> Enum.map(&apply_change(&1, active_ids, target))
+        |> Enum.map(&apply_change(&1, to_by_row_id))
         |> block_trips(block_id)
         |> Checks.sequence()
         |> Enum.map(& &1.id)
@@ -276,13 +320,15 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
     end)
   end
 
-  defp touched_blocks(day_type, candidates) do
-    candidates
-    |> Enum.flat_map(fn
-      nil -> []
-      %{from: from, trip: trip} -> if runs_on?(trip, day_type), do: [from], else: []
-      block_id -> [block_id]
-    end)
+  # The blocks a day type must diff: the resolved target, the blocks the caller
+  # names although no trip moves, and both ends of every change on that day type.
+  defp touched_blocks(day_type, context) do
+    moved =
+      Enum.flat_map(context.changes, fn %{trip: trip, from: from, to: to} ->
+        if runs_on?(trip, day_type), do: [from, to], else: []
+      end)
+
+    (List.wrap(context.target) ++ List.wrap(context.touched) ++ moved)
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
   end
@@ -316,13 +362,18 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
 
   defp sort_changes(changes), do: Enum.sort_by(changes, &{&1.trip.trip_id, &1.from, &1.to})
 
-  defp fingerprint(command, target, changes, rows, effects) do
-    canonical = {
-      resolved_command(command, target),
-      Enum.map(changes, &{&1.trip.trip_id, &1.from, &1.to}),
-      rows |> Enum.sort_by(&row_order/1) |> Enum.map(&row_tuple/1),
-      added_keys(effects)
-    }
+  defp fingerprint(command, target, changes, rows, effects, inputs_digest) do
+    # The digest is appended, not folded in, so a block command that passes none
+    # encodes the same four-element tuple it always did (CR-2).
+    canonical =
+      [
+        resolved_command(command, target),
+        Enum.map(changes, &{&1.trip.trip_id, &1.from, &1.to}),
+        rows |> Enum.sort_by(&row_order/1) |> Enum.map(&row_tuple/1),
+        added_keys(effects)
+      ]
+      |> Kernel.++(List.wrap(inputs_digest))
+      |> List.to_tuple()
 
     canonical
     |> :erlang.term_to_binary([:deterministic])
@@ -338,6 +389,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
 
   defp resolved_command({:merge, from, _target}, target), do: {:merge, from, target}
 
+  # A plan's mode and an attribute save's block and row are already the resolved
+  # command: there is no second target to substitute, and the generic clause
+  # encodes them unchanged.
   defp resolved_command(command, _target), do: command
 
   defp added_keys(effects) do
