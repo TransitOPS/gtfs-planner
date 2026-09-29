@@ -7665,6 +7665,18 @@ defmodule GtfsPlanner.Gtfs do
     |> put_trip_operation(attrs)
   end
 
+  # A pasted timing's "created" log belongs to the same paste batch as the
+  # trip logs, so it carries the caller's shared operation_id (AC-22) next to
+  # its timing snapshot; without this clause the structured-create clause
+  # below would drop the operation id.
+  defp build_changed_fields(entity_type, action, snapshot, attrs)
+       when entity_type in [:timed_pattern, "timed_pattern"] and action == "created" do
+    after_snapshot = Map.get(attrs, :after, Map.get(attrs, "after", snapshot))
+
+    %{"before" => nil, "after" => normalize_value(after_snapshot)}
+    |> put_shared_operation(attrs)
+  end
+
   # Transfers, like trips, diff two explicit snapshots supplied by the caller. The log
   # carries no transfer-column diff, and a bulk delete records its shared operation
   # UUID and affected transfer UUIDs alongside the snapshot.
