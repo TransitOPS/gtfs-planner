@@ -269,7 +269,9 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
         calendars: Flex.calendars_map(organization_id, gtfs_version_id),
         map: Flex.map_payload(organization_id, gtfs_version_id),
         routes: Flex.route_choices(organization_id, gtfs_version_id),
-        has_fixed_routes?: map_size(facts.routes) > 0,
+        # An inactive route is left out of the export, so only an active one
+        # is a fixed route the flex file sits beside (R15).
+        has_fixed_routes?: Enum.any?(facts.routes, fn {_id, route} -> route.active? end),
         include_flex: ExportDefaults.get(organization_id).include_flex
       }
     end)

@@ -393,14 +393,29 @@ describe("drawing a flex_map:load payload", () => {
 
     const [hub, core, plain] = circlesOn(map);
 
-    expect(hub.bindTooltip).toHaveBeenCalledWith("Newport City Center", {
+    expect(hub.bindTooltip).toHaveBeenCalledWith(expect.any(HTMLElement), {
       permanent: true,
       direction: "right",
       offset: [10, 0],
       className: "flex-map-stop-label",
     });
+    expect(hub.bindTooltip.mock.calls[0][0].textContent).toBe("Newport City Center");
     expect(core.bindTooltip).not.toHaveBeenCalled();
     expect(plain.bindTooltip).not.toHaveBeenCalled();
+  });
+
+  it("writes a connecting stop's imported name as text, never as markup", () => {
+    const { map, load } = mount();
+    const name = "<img src=x onerror=alert(1)>";
+
+    load({ ...LOAD, stops: [{ ...LOAD.stops[0], name }] });
+
+    const [hub] = circlesOn(map);
+    const label = hub.bindTooltip.mock.calls[0][0];
+
+    expect(label.textContent).toBe(name);
+    expect(label.querySelector("img")).toBeNull();
+    expect(label.innerHTML).toBe("&lt;img src=x onerror=alert(1)&gt;");
   });
 
   it("fits every area's bounds, with the map's own padding and zoom ceiling", () => {

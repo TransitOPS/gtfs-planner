@@ -398,7 +398,12 @@ const FlexAreaMap = {
         }),
       );
 
-      marker.bindTooltip(stop.name, {
+      // Stop names come from imported feeds; Leaflet writes a string tooltip
+      // as HTML, so the name goes in as a text node.
+      const label = document.createElement("span");
+      label.textContent = stop.name;
+
+      marker.bindTooltip(label, {
         permanent: true,
         direction: "right",
         offset: LABEL_OFFSET,

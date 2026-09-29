@@ -180,7 +180,7 @@ defmodule GtfsPlanner.Gtfs.FlexService do
     |> validate_format(:booking_url, @booking_url_format, message: @booking_url_message)
     |> validate_format(:band_start, @time_format, message: @time_message)
     |> validate_format(:band_end, @time_format, message: @time_message)
-    |> validate_number(:distance_m, greater_than: 0)
+    |> FlexArea.validate_distance(:distance_m)
     |> unique_constraint([:organization_id, :gtfs_version_id, :key],
       error_key: :key,
       message: @key_in_use_message

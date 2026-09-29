@@ -24,6 +24,12 @@ defmodule GtfsPlanner.Gtfs.FlexArea do
 
   @sources [:census, :route_distance, :drawn, :file]
 
+  # A distance feeds `ST_Buffer(geography, m)`, whose cost grows with it. No
+  # flex service reaches 50 km from its routes, so a larger value is refused
+  # before PostGIS sees it.
+  @max_distance_m 50_000
+  @distance_message "Choose a distance of 50 km or less."
+
   schema "flex_areas" do
     field :key, :string
     field :position, :integer
@@ -83,6 +89,22 @@ defmodule GtfsPlanner.Gtfs.FlexArea do
     ])
     |> ChangesetHelpers.trim_string_fields()
     |> validate_required([:key, :position, :name, :source])
+    |> validate_distance(:distance_m)
     |> unique_constraint([:flex_service_id, :key], error_key: :key)
+  end
+
+  @doc "The largest buffer distance, in metres, an area or a detour may use."
+  @spec max_distance_m() :: pos_integer()
+  def max_distance_m, do: @max_distance_m
+
+  @doc """
+  Validates a buffer distance field: a positive whole number of metres no
+  larger than `max_distance_m/0`.
+  """
+  @spec validate_distance(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
+  def validate_distance(changeset, field) do
+    changeset
+    |> validate_number(field, greater_than: 0)
+    |> validate_number(field, less_than_or_equal_to: @max_distance_m, message: @distance_message)
   end
 end

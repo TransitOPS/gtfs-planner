@@ -42,8 +42,11 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   `geom` never becomes an Elixir value.
   """
 
+  alias GtfsPlanner.Gtfs.FlexArea
   alias GtfsPlanner.Gtfs.FlexService
   alias GtfsPlanner.Repo
+
+  @max_distance_m FlexArea.max_distance_m()
 
   @max_vertices 5_000
 
@@ -200,9 +203,12 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   # Route-distance derivation (R8, AC-11) for `route_buffer/4`. $1 organization,
   # $2 version, $3 requested route IDs, $4 distance in metres. A shape is the
   # points of one `shape_id` in `shape_pt_sequence` order, and only the shapes of
-  # trips on the requested routes count. `ST_Buffer(geography, m)` keeps the
-  # buffer metric and is available in PostGIS 3.5. A shape with fewer than two
-  # points cannot make a line, and no shape at all leaves the union NULL.
+  # trips on the requested routes count. A route that is explicitly inactive is
+  # left out of the export with its trips, so its shapes do not count either
+  # (the exclusion `Export.StreamBuilder` applies). `ST_Buffer(geography, m)`
+  # keeps the buffer metric and is available in PostGIS 3.5. A shape with fewer
+  # than two points cannot make a line, and no shape at all leaves the union
+  # NULL.
   @route_buffer_cte """
   WITH
   requested AS (
@@ -222,6 +228,14 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
       AND t.gtfs_version_id = $2
       AND t.route_id IN (SELECT route_id FROM requested)
       AND t.shape_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM routes r
+        WHERE r.organization_id = $1
+          AND r.gtfs_version_id = $2
+          AND r.route_id = t.route_id
+          AND r.active = false
+      )
   ),
   shape_lines AS (
     SELECT ST_MakeLine(
@@ -347,6 +361,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
     FROM shapes sh
     WHERE sh.organization_id = $1
       AND sh.gtfs_version_id = $2
+      AND sh.shape_id IN (SELECT shape_id FROM patterns)
     GROUP BY sh.shape_id
     HAVING count(*) >= 2
   ),
@@ -435,6 +450,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
         WHERE r.organization_id = $1
           AND r.gtfs_version_id = $2
           AND r.route_id = $3
+          AND r.active IS DISTINCT FROM false
       ) AS route_exists,
       $4 IS NOT NULL
         AND $5 IS NOT NULL
@@ -925,7 +941,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
 
   Answers `{:error, {:missing_routes, ids}}` when a requested route is not in
   the version, before deriving anything, `{:error, :empty}` when the union is
-  empty (no route has a shape of at least two points, including a nil
+  empty (no active route has a shape of at least two points, including a nil
   `distance_m`), and `{:error, {:invalid, reason, [lon, lat]}}` with PostGIS's
   first problem when the union is invalid.
   """
@@ -977,7 +993,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
   without geometry is dropped, so `{:error, :empty}` answers a service that has
   no derivable geometry at all, including a nil `distance_m`. Answers
   `{:error, {:missing_routes, [route_id]}}` when the service's route is not in
-  the version, `:stretch_not_on_route` when no active pattern visits the named
+  the version or is inactive (the export leaves it out), `:stretch_not_on_route` when no active pattern visits the named
   stops, and `{:error, {:invalid, reason, [lon, lat]}}` when PostGIS rejects a
   zone.
   """
@@ -988,6 +1004,13 @@ defmodule GtfsPlanner.Gtfs.Flex.Geometry do
              | :stretch_not_on_route
              | {:missing_routes, [String.t()]}
              | {:invalid, String.t(), [float()]}}
+  # A saved service's distance is validated, but the editor previews an
+  # unvalidated draft; a distance past the cap is never buffered, so a tampered
+  # form event cannot ask PostGIS for a continent-sized buffer.
+  def detour_zones(_organization_id, _version_id, %FlexService{distance_m: distance_m})
+      when is_integer(distance_m) and distance_m > @max_distance_m,
+      do: {:error, :empty}
+
   def detour_zones(organization_id, version_id, %FlexService{} = service) do
     params = [
       Ecto.UUID.dump!(organization_id),

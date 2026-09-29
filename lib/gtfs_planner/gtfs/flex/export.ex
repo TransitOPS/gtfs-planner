@@ -25,12 +25,13 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
      `Flex.Export.Detours.rows/4` return, with the detour service's own booking
      rule.
 
-  It answers the rows the flex zip appends to `routes.txt`, `trips.txt` and
-  `stop_times.txt`, the extra file entries (`locations.geojson`, the three
-  CSVs), the number of services exported and the warnings: one
-  `flex_service_excluded` per service left out, the detour rows' own warnings,
-  the Transit hold risk (`transit_hold_risk`, AC-25) and
-  `main_feed_not_produced` when the version has no routes (R15).
+  It answers the rows the flex zip appends to `routes.txt`, `trips.txt`,
+  `stop_times.txt` and `booking_rules.txt`, the extra file entries
+  (`locations.geojson` and the two location group CSVs), the number of
+  services exported and the warnings: one `flex_service_excluded` per service
+  left out, the detour rows' own warnings, the Transit hold risk
+  (`transit_hold_risk`, AC-25) and `main_feed_not_produced` when the version
+  exports no routes (R15; an inactive route is not exported).
 
   Both the organization and the version are filters, never defaults (INV-4):
   another organization's or version's detour services never enter the set, so a
@@ -45,6 +46,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.CsvWriter
+  alias GtfsPlanner.Gtfs.Export.StreamBuilder
   alias GtfsPlanner.Gtfs.Flex
   alias GtfsPlanner.Gtfs.Flex.Checks
   alias GtfsPlanner.Gtfs.Flex.Export.Areas
@@ -85,7 +87,12 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
   @type entries :: %{
           services: non_neg_integer(),
           main_feed_not_produced: boolean(),
-          rows: %{routes: [map()], trips: [map()], stop_times: [map()]},
+          rows: %{
+            routes: [map()],
+            trips: [map()],
+            stop_times: [map()],
+            booking_rules: [map()]
+          },
           entries: [{charlist(), binary()}]
         }
 
@@ -123,8 +130,9 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
   Must run inside the export snapshot: it reads the version's services,
   readiness facts, calendars and geometry through the shared repository
   connection. Returns `{:ok, entries, warnings}`; the caller appends
-  `entries.rows` to the flex zip's `routes.txt`, `trips.txt` and
-  `stop_times.txt` and writes `entries.entries` as whole files.
+  `entries.rows` to the flex zip's `routes.txt`, `trips.txt`, `stop_times.txt`
+  and `booking_rules.txt`, after any stored rows, and writes `entries.entries`
+  as whole files.
   """
   @spec build_entries(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, entries(), [Export.warning()]}
   def build_entries(organization_id, version_id) do
@@ -168,7 +176,12 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
      %{
        services: length(included),
        main_feed_not_produced: main_feed_not_produced,
-       rows: %{routes: rows.routes, trips: rows.trips, stop_times: rows.stop_times},
+       rows: %{
+         routes: rows.routes,
+         trips: rows.trips,
+         stop_times: rows.stop_times,
+         booking_rules: rows.booking_rules
+       },
        entries: extra_entries(rows)
      }, warnings}
   end
@@ -207,14 +220,47 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
   Nothing here runs readiness or writes: a service whose geometry cannot be
   derived yet plans no zones, and the page decides what its own readiness
   findings mean. The reads are scoped to the organization and version (R10).
+
+  A detour plan derives its zones through `plan_zones/3` unless the caller
+  passes the list it already derived as `zones:`; the page does so while only
+  fields that do not move the zones change, so a keystroke does not repeat the
+  PostGIS derivation.
   """
-  @spec plan(Ecto.UUID.t(), Ecto.UUID.t(), FlexService.t(), [map()]) :: plan()
-  def plan(organization_id, version_id, %FlexService{} = service, areas) when is_list(areas) do
+  @spec plan(Ecto.UUID.t(), Ecto.UUID.t(), FlexService.t(), [map()], keyword()) :: plan()
+  def plan(organization_id, version_id, %FlexService{} = service, areas, opts \\ [])
+      when is_list(areas) do
     calendars = Flex.calendars_map(organization_id, version_id)
 
     case service.kind do
-      :area -> area_plan(service, areas, calendars, agency_id(organization_id, version_id))
-      :detour -> detour_plan(service, organization_id, version_id, calendars)
+      :area ->
+        area_plan(service, areas, calendars, agency_id(organization_id, version_id))
+
+      :detour ->
+        zones =
+          Keyword.get_lazy(opts, :zones, fn ->
+            plan_zones(organization_id, version_id, service)
+          end)
+
+        detour_plan(service, zones, organization_id, version_id, calendars)
+    end
+  end
+
+  @doc """
+  The derived detour zones of one service with the area each covers, measured
+  through the same `Geometry.stats/3` the editor's own summary uses; a service
+  whose geometry cannot be derived yet has none. `plan/5` takes this list as
+  its `zones:` option.
+  """
+  @spec plan_zones(Ecto.UUID.t(), Ecto.UUID.t(), FlexService.t()) :: [map()]
+  def plan_zones(organization_id, version_id, %FlexService{} = service) do
+    case Geometry.detour_zones(organization_id, version_id, service) do
+      {:ok, zones} ->
+        Enum.map(zones, fn zone ->
+          Map.put(zone, :km2, Geometry.stats(organization_id, version_id, zone.geojson).km2)
+        end)
+
+      {:error, _reason} ->
+        []
     end
   end
 
@@ -249,9 +295,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
     }
   end
 
-  defp detour_plan(service, organization_id, version_id, calendars) do
+  defp detour_plan(service, zones, organization_id, version_id, calendars) do
     rules = detour_booking_rules(service, calendars)
-    zones = detour_zones_with_area(organization_id, version_id, service)
     {rows, warnings} = detour_rows(service, zones, organization_id, version_id, rules)
     trips = rows.stop_times |> Enum.map(& &1.trip_id) |> Enum.uniq()
 
@@ -273,21 +318,6 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
       warnings: warnings,
       zones: Enum.map(zones, &Map.take(&1, [:zone_id, :stop_a, :stop_b, :km2]))
     }
-  end
-
-  # The derived zones with the area each covers, measured through the same
-  # `Geometry.stats/3` the editor's own summary uses; a service whose geometry
-  # cannot be derived yet has none.
-  defp detour_zones_with_area(organization_id, version_id, service) do
-    case Geometry.detour_zones(organization_id, version_id, service) do
-      {:ok, zones} ->
-        Enum.map(zones, fn zone ->
-          Map.put(zone, :km2, Geometry.stats(organization_id, version_id, zone.geojson).km2)
-        end)
-
-      {:error, _reason} ->
-        []
-    end
   end
 
   defp detour_rows(_service, [], _organization_id, _version_id, rules),
@@ -695,17 +725,21 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
 
   # --- detour trips -----------------------------------------------------------
 
-  # The trips the detour rows consider: the route's trips with their stored stop
-  # times in visit order, each flagged when `frequencies.txt` lists it (R2, R6).
+  # The trips the detour rows consider: the route's exported trips with their
+  # stored stop times in visit order, each flagged when `frequencies.txt` lists
+  # it (R2, R6). A trip the export leaves out with its inactive route gets no
+  # zone rows.
   defp detour_trip_times(organization_id, version_id, route_id) do
     trips =
       from(t in Trip,
+        as: :row,
         where:
           t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
             t.route_id == ^route_id,
         order_by: [asc: t.trip_id],
         select: %{trip_id: t.trip_id, service_id: t.service_id}
       )
+      |> StreamBuilder.exclude_inactive(Trip, organization_id, version_id)
       |> Repo.all()
 
     trip_ids = Enum.map(trips, & &1.trip_id)
@@ -770,11 +804,12 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
   end
 
   # The extra files of the flex zip: the FeatureCollection `Jason.encode!` and
-  # the three CSVs through `CsvWriter`, each only when it has content.
+  # the two location group CSVs through `CsvWriter`, each only when it has
+  # content. `booking_rules.txt` is a stored GTFS file, so its flex rows are
+  # appended to the stored rows like `routes.txt`'s rather than written here.
   defp extra_entries(rows) do
     [
       {~c"locations.geojson", locations_geojson(rows.locations)},
-      {~c"booking_rules.txt", csv(rows.booking_rules, FileSpecs.booking_rules_spec())},
       {~c"location_groups.txt", csv(rows.location_groups, FileSpecs.location_groups_spec())},
       {~c"location_group_stops.txt",
        csv(rows.location_group_stops, FileSpecs.location_group_stops_spec())}
@@ -934,21 +969,23 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
     |> Enum.max(fn -> 0 end)
   end
 
+  # The hold rule compares the routes and trips the feed actually carries, so
+  # an inactive route and its trips, which the export leaves out, do not count.
   defp main_route_ids(organization_id, version_id) do
-    from(r in Route,
-      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id,
-      select: r.route_id
-    )
+    exported_routes(organization_id, version_id)
+    |> select([r], r.route_id)
     |> Repo.all()
     |> MapSet.new()
   end
 
   defp main_route_trip_counts(organization_id, version_id) do
     from(t in Trip,
+      as: :row,
       where: t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id,
       group_by: [t.route_id, t.service_id],
       select: {t.route_id, t.service_id, count(t.id)}
     )
+    |> StreamBuilder.exclude_inactive(Trip, organization_id, version_id)
     |> Repo.all()
     |> Enum.group_by(fn {route_id, _service_id, _count} -> route_id end)
     |> Map.new(fn {route_id, rows} ->
@@ -1005,13 +1042,18 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
     |> Repo.one()
   end
 
+  # A version whose routes are all inactive exports no fixed route, so R15
+  # applies to it as to a version with none.
   defp version_has_routes?(organization_id, version_id) do
+    Repo.exists?(exported_routes(organization_id, version_id))
+  end
+
+  defp exported_routes(organization_id, version_id) do
     from(r in Route,
-      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id,
-      select: true,
-      limit: 1
+      as: :row,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^version_id
     )
-    |> Repo.exists?()
+    |> StreamBuilder.exclude_inactive(Route, organization_id, version_id)
   end
 
   # --- sequence mapper --------------------------------------------------------

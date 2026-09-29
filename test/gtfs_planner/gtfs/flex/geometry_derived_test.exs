@@ -470,6 +470,14 @@ defmodule GtfsPlanner.Gtfs.Flex.GeometryDerivedTest do
                  version.id,
                  %{service | distance_m: nil}
                )
+
+      # An unsaved draft can carry any distance; one past the cap is not buffered.
+      assert {:error, :empty} =
+               Geometry.detour_zones(
+                 organization.id,
+                 version.id,
+                 %{service | distance_m: 5_000_000}
+               )
     end
 
     test "keeps another version's and another organization's patterns out" do

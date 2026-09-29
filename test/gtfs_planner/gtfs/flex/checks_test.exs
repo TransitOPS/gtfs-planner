@@ -51,7 +51,11 @@ defmodule GtfsPlanner.Gtfs.Flex.ChecksTest do
       # A weekly calendar and a dates-only calendar are both service IDs.
       assert facts.service_ids == MapSet.new(["weekday", "special"])
       assert facts.stop_ids == MapSet.new(["S1"])
-      assert facts.routes == %{"R1" => %{continuous?: true}, "R2" => %{continuous?: false}}
+
+      assert facts.routes == %{
+               "R1" => %{continuous?: true, active?: true},
+               "R2" => %{continuous?: false, active?: true}
+             }
 
       assert facts.gtfs_ids == %{
                routes: MapSet.new(["R1", "R2"]),
@@ -312,6 +316,29 @@ defmodule GtfsPlanner.Gtfs.Flex.ChecksTest do
       assert [check] = checks_for(service, version, :where, :routes)
       assert check.level == :error
       assert check.text == "Route “R99” is not in this version. Choose a route this version has."
+    end
+
+    test "reports a detour route that is inactive" do
+      {service, version} = detour_service_fixture(route_id: "R20")
+      insert_route(version, "R20", active: false)
+
+      assert [check] = checks_for(service, version, :where, :route)
+      assert check.level == :error
+
+      assert check.text ==
+               "Route “R20” is inactive, so exports leave it out. Make the route active or " <>
+                 "choose another route."
+    end
+
+    test "reports an inactive route an area's route distance follows" do
+      {service, version} = area_service_fixture()
+      insert_area(service, "a1", 1, source: "route_distance", route_ids: ["R1", "R2"])
+      insert_route(version, "R1", active: false)
+      insert_route(version, "R2", active: nil)
+
+      assert [check] = checks_for(service, version, :where, :routes)
+      assert check.level == :error
+      assert check.text =~ "Route “R1” is inactive"
     end
 
     test "reports a detour service that has not chosen a distance" do
@@ -987,7 +1014,8 @@ defmodule GtfsPlanner.Gtfs.Flex.ChecksTest do
     route_fixture(version.organization_id, version.id, %{
       route_id: route_id,
       continuous_pickup: Keyword.get(opts, :continuous_pickup, 1),
-      continuous_drop_off: Keyword.get(opts, :continuous_drop_off, 1)
+      continuous_drop_off: Keyword.get(opts, :continuous_drop_off, 1),
+      active: Keyword.get(opts, :active, true)
     })
   end
 

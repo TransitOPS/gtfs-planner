@@ -6,8 +6,10 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerFlexTest do
   local test database with a per-test temporary artifact root: a flex run
   publishes the main and flex zips from one `build_zips/4` answer and records
   both with the build's bytes; the switch off and an R15 version leave the flex
-  slots empty; a pair over the run budget fails before writing; expiry and
-  corruption remove both files and clear both column sets.
+  slots empty; a main zip over the run budget fails before writing; expiry and
+  corruption remove both files and clear both column sets. A pair over the run
+  budget publishes the main zip alone with a warning, and a version without
+  flex services publishes no flex zip.
 
   ZIP bytes are compared with their build by entry content and size rather than
   whole-file bytes: `:zip.create/3` stamps every member with its creation time,
@@ -164,8 +166,27 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerFlexTest do
              "flex-only-feed-shuttle"
   end
 
-  test "a pair over the run budget fails before either file is written", %{root: root} do
+  test "a pair over the run budget publishes the main zip alone with a warning", %{root: root} do
     Application.put_env(:gtfs_planner, :gtfs_task_artifacts_max_run_bytes, 1_000)
+    with_export_module(TwoZipExport)
+
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    {run, claimed, generation, token} = claim_run(organization, version, :full)
+
+    assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))
+
+    ready = Repo.get!(Run, run.id)
+
+    assert ready.state == :ready
+    assert ready.artifact_size_bytes == 600
+    assert ready.flex_artifact_key == nil
+    assert length(published_files(root)) == 1
+    assert Enum.map(ready.warnings, & &1["code"]) == ["flex_artifact_too_large"]
+  end
+
+  test "a main zip over the run budget by itself still fails the run", %{root: root} do
+    Application.put_env(:gtfs_planner, :gtfs_task_artifacts_max_run_bytes, 500)
     with_export_module(TwoZipExport)
 
     organization = organization_fixture()
@@ -181,6 +202,26 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerFlexTest do
     assert failed.artifact_key == nil
     assert failed.flex_artifact_key == nil
     assert published_files(root) == []
+  end
+
+  test "a full run on a version without flex services publishes only the main zip", %{
+    root: root
+  } do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    flex_feed_fixture(organization, version)
+
+    {run, claimed, generation, token} = claim_run(organization, version, :full)
+    assert run.include_flex
+
+    assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))
+
+    ready = Repo.get!(Run, run.id)
+
+    assert ready.state == :ready
+    assert ready.artifact_filename == "gtfs-#{run.id}.zip"
+    assert ready.flex_artifact_key == nil
+    assert length(published_files(root)) == 1
   end
 
   test "expiry removes both files and clears both artifact sets", %{root: root} do
