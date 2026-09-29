@@ -2301,7 +2301,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsLive do
             id="calendar-combine-unavailable"
             class="text-sm text-base-content/70"
           >
-            Combining is unavailable until the unreadable calendar range is repaired.
+            Combining is unavailable until the calendar with an end date before its start date is fixed. Use Fix dates on that calendar.
           </p>
           <p
             :if={@combine_error}

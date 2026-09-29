@@ -796,6 +796,98 @@ defmodule GtfsPlanner.Gtfs.Calendars.MutationsTest do
     end
   end
 
+  describe "a calendar whose end date is before its start date" do
+    setup context do
+      organization_id = context.organization.id
+      version_id = context.version.id
+
+      calendar_fixture(organization_id, version_id, %{
+        service_id: "REVERSED",
+        start_date: ~D[2026-12-31],
+        end_date: ~D[2026-01-01]
+      })
+
+      calendar_attribute_fixture(organization_id, version_id, %{
+        service_id: "REVERSED",
+        service_description: "Reversed range"
+      })
+
+      calendar_date_fixture(organization_id, version_id, %{
+        service_id: "REVERSED",
+        date: ~D[2026-07-04],
+        exception_type: 1
+      })
+
+      :ok
+    end
+
+    test "deletes when no trip uses it and removes every one of its rows", context do
+      source = source!(context, "REVERSED")
+
+      assert {:ok, review} = review(context, {:delete, "REVERSED"}, source)
+      assert review.changes.active_date_count == 0
+      assert review.changes.exception_count == 1
+
+      assert {:ok, %{action: :deleted, service_id: "REVERSED"}} =
+               apply_change(context, {:delete, "REVERSED"}, review.fingerprint)
+
+      assert weekly_rows(context, "REVERSED") == []
+      assert attribute_rows(context, "REVERSED") == []
+      assert exception_rows(context, "REVERSED") == []
+
+      assert {:error, :not_found} =
+               Gtfs.get_calendar(context.organization.id, context.version.id, "REVERSED")
+    end
+
+    test "refuses deletion while trips use it, as for a readable calendar", context do
+      route = route_fixture(context.organization.id, context.version.id, %{route_id: "r_rev"})
+
+      for _ <- 1..2 do
+        trip_fixture(context.organization.id, context.version.id, route.route_id, %{
+          service_id: "REVERSED"
+        })
+      end
+
+      source = source!(context, "REVERSED")
+
+      assert {:error, {:in_use, 2, ["r_rev"]}} = review(context, {:delete, "REVERSED"}, source)
+
+      assert length(weekly_rows(context, "REVERSED")) == 1
+      assert length(attribute_rows(context, "REVERSED")) == 1
+      assert length(exception_rows(context, "REVERSED")) == 1
+    end
+
+    test "refuses every command that would read its dates and writes nothing", context do
+      source = source!(context, "REVERSED")
+      before = {weekly_rows(context, "REVERSED"), exception_rows(context, "REVERSED")}
+
+      commands = [
+        {:add_break, "REVERSED", ~D[2026-03-02], ~D[2026-03-06]},
+        {:convert, "REVERSED", :dates_only, %{}},
+        {:put_exceptions, "REVERSED", [~D[2026-08-01]], :added},
+        {:remove_exceptions, "REVERSED", [~D[2026-07-04]]},
+        {:save, "REVERSED", %{name: "Renamed"}}
+      ]
+
+      for command <- commands do
+        assert {:error, :reversed_range} = review(context, command, source)
+      end
+
+      assert {weekly_rows(context, "REVERSED"), exception_rows(context, "REVERSED")} == before
+      assert calendar_logs(context, "REVERSED") == []
+    end
+
+    test "still saves a corrected range", context do
+      source = source!(context, "REVERSED")
+      command = {:save, "REVERSED", %{start_date: ~D[2026-01-01], end_date: ~D[2026-12-31]}}
+
+      assert {:ok, review} = review(context, command, source)
+      assert {:ok, _result} = apply_change(context, command, review.fingerprint)
+
+      assert %{coverage_error: nil} = source!(context, "REVERSED")
+    end
+  end
+
   defp review(context, command, payload) do
     case payload do
       %{fingerprint: fingerprint} ->

@@ -993,6 +993,117 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
       assert {row.start_date, row.end_date} == {~D[2026-03-31], ~D[2026-03-02]}
       assert stored(context, "REVERSED").attributes.service_description == "Reversed range"
     end
+
+    test "does not offer a break, single-date changes or conversion to specific dates",
+         context do
+      calendar_date_fixture(context.organization.id, context.version.id, %{
+        service_id: "REVERSED",
+        date: ~D[2026-07-04],
+        exception_type: 1
+      })
+
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      refute has_element?(view, "#calendar-break-form")
+      refute has_element?(view, "#calendar-exception-form")
+      refute has_element?(view, "#calendar-exception-chips button")
+      assert has_element?(view, "#calendar-kind-dates-only[disabled]")
+      refute has_element?(view, "#calendar-kind-weekly[disabled]")
+    end
+
+    test "offers them again once a corrected range is saved", context do
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      view
+      |> form("#calendar-form", %{calendar: %{end_date: "2026-04-30"}})
+      |> render_submit()
+
+      assert has_element?(view, "#calendar-break-form")
+      assert has_element?(view, "#calendar-exception-form")
+      refute has_element?(view, "#calendar-kind-dates-only[disabled]")
+    end
+
+    test "refuses a forged break and keeps the view open", context do
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      render_submit(view, "add_break", %{
+        "break" => %{"first_date" => "2026-03-09", "last_date" => "2026-03-13"}
+      })
+
+      assert has_element?(view, "#calendar-error", "Correct this calendar’s dates first.")
+      refute has_element?(view, "#calendar-review-dialog[data-open=true]")
+      assert has_element?(view, "#calendar-range-error")
+      assert exception_rows(context, "REVERSED") == []
+    end
+
+    test "refuses a forged conversion to specific dates and keeps the view open", context do
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      render_click(view, "set_kind", %{"kind" => "dates_only"})
+
+      render_submit(view, "submit_form", %{
+        "calendar" => %{"kind" => "dates_only", "name" => "Reversed range"}
+      })
+
+      assert has_element?(view, "#calendar-error", "Correct this calendar’s dates first.")
+      refute has_element?(view, "#calendar-review-dialog[data-open=true]")
+      row = weekly_row(context, "REVERSED")
+      assert {row.start_date, row.end_date} == {~D[2026-03-31], ~D[2026-03-02]}
+      assert exception_rows(context, "REVERSED") == []
+    end
+
+    test "refuses forged single-date changes and keeps the view open", context do
+      calendar_date_fixture(context.organization.id, context.version.id, %{
+        service_id: "REVERSED",
+        date: ~D[2026-07-04],
+        exception_type: 1
+      })
+
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      render_submit(view, "add_dates", %{"exception" => %{"date" => "2026-08-01"}})
+      assert has_element?(view, "#calendar-error", "Correct this calendar’s dates first.")
+
+      render_click(view, "remove_date", %{"date" => "2026-07-04"})
+      assert has_element?(view, "#calendar-error", "Correct this calendar’s dates first.")
+
+      render_click(view, "remove_break", %{"dates" => "2026-07-04"})
+      assert has_element?(view, "#calendar-error", "Correct this calendar’s dates first.")
+
+      assert Enum.map(exception_rows(context, "REVERSED"), & &1.date) == [~D[2026-07-04]]
+    end
+
+    test "deletes after review when no trip uses it", context do
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      view |> element("#calendar-delete") |> render_click()
+      assert has_element?(view, "#calendar-review-dialog[data-open=true]", "Delete REVERSED?")
+
+      assert {:error, {:live_redirect, %{to: to}}} = render_click(view, "apply_review")
+      assert to == list_path(context.version)
+
+      assert weekly_row(context, "REVERSED") == nil
+
+      assert {:error, :not_found} =
+               Gtfs.fetch_calendar(context.organization.id, context.version.id, "REVERSED")
+    end
+
+    test "reports the trips that block its deletion", context do
+      route =
+        route_fixture(context.organization.id, context.version.id, %{route_id: "R_REVERSED"})
+
+      trip_fixture(context.organization.id, context.version.id, route.route_id, %{
+        service_id: "REVERSED"
+      })
+
+      {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
+
+      view |> element("#calendar-delete") |> render_click()
+
+      assert has_element?(view, "#calendar-delete-blocked", "1 trips use this calendar")
+      refute has_element?(view, "#calendar-review-dialog[data-open=true]")
+      assert weekly_row(context, "REVERSED") != nil
+    end
   end
 
   describe "dirty guards and independent actions" do

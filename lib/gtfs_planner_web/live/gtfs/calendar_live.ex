@@ -20,7 +20,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   the draft. A calendar whose imported metadata has no name shows its service ID
   as the fallback label and never invents a stored name. A calendar whose stored end
   date is before its start date opens with an error callout and its stored dates, and
-  only a corrected range can be saved.
+  only a corrected range can be saved; conversion, breaks and single-date changes wait
+  until it is.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -1136,6 +1137,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     "That change is not valid for this calendar."
   end
 
+  defp write_error_message(:reversed_range) do
+    "Correct this calendar’s dates first."
+  end
+
   defp write_error_message({:in_use, trip_count, _routes}) do
     "#{trip_count} trips use this calendar, so it cannot be deleted."
   end
@@ -1453,6 +1458,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                       name={@form[:kind].name}
                       value="dates_only"
                       checked={@params["kind"] == "dates_only"}
+                      disabled={reversed_range?(assigns)}
+                      aria-describedby={reversed_range?(assigns) && "calendar-range-error"}
                       class="radio radio-sm"
                     />
                     <span class="text-sm font-medium">Only on specific dates</span>
@@ -1670,7 +1677,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
             <CalendarComponents.warning_list id="periods-warnings" warnings={@warnings} />
 
-            <div :if={@kind == :weekly} class="mt-4 border border-base-300 bg-base-100 p-4">
+            <div
+              :if={@kind == :weekly and not reversed_range?(assigns)}
+              class="mt-4 border border-base-300 bg-base-100 p-4"
+            >
               <.form
                 for={@break_form}
                 id="calendar-break-form"
@@ -1774,7 +1784,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
               <CalendarComponents.date_chips
                 id="calendar-exception-chips"
                 entries={@source.exceptions}
-                editable={true}
+                editable={not reversed_range?(assigns)}
               />
 
               <p :if={@source.exceptions == []} class="mt-2 text-sm text-base-content/70">
@@ -1783,6 +1793,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
             </div>
 
             <.form
+              :if={not reversed_range?(assigns)}
               for={@exception_form}
               id="calendar-exception-form"
               phx-submit="add_dates"
@@ -1879,6 +1890,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     do: String.trim(name) == ""
 
   defp blank_name?(_source), do: true
+
+  # A stored range that ends before it starts has no service dates, so the commands
+  # that read them (conversion, breaks, single-date changes) are not offered until it
+  # is corrected.
+  defp reversed_range?(%{live_action: :show, source: %{coverage_error: error}}),
+    do: error != nil
+
+  defp reversed_range?(_assigns), do: false
 
   defp kind_label(:weekly), do: "Weekly schedule"
   defp kind_label(_kind), do: "Specific dates"

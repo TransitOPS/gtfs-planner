@@ -790,7 +790,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarCombinationLiveTest do
       # The whole version cannot combine while an identity is unreadable.
       render_click(view, "toggle_calendar_selection", %{"service-id" => "COMBINE_DEST"})
       render_click(view, "toggle_calendar_selection", %{"service-id" => "COMBINE_FALL"})
-      assert has_element?(view, "#calendar-combine-unavailable")
+
+      assert has_element?(
+               view,
+               "#calendar-combine-unavailable",
+               "Use Fix dates on that calendar."
+             )
+
       assert has_element?(view, "#calendar-combine-open[disabled]")
 
       render_click(view, "open_combine", %{})
