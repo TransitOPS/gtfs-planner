@@ -1,5 +1,6 @@
-// Scheduled pathway closures on the Evolutions station route (EV-21, step 15)
-// and the station-merge closure-file disclosure (EV-20, step 16).
+// Scheduled pathway closures on the Evolutions station route (EV-21, step 15),
+// the station-merge closure-file disclosure (EV-20, step 16), and the
+// fingerprinted delete confirmation (EV-31, step 20).
 //
 // Runs against the reset-and-seeded browser database the repository's Playwright
 // configuration already uses (`mise run prepare:browser`, workers: 1, retries: 0)
@@ -1012,6 +1013,238 @@ test.describe("authoring", () => {
           path: capturePath(testInfo, "step-018-reference-mobile.png"),
           fullPage: true,
         });
+      });
+    });
+  });
+});
+
+// Step 20 / EV-31. Deleting a closure is an explicit, fingerprinted action:
+// its confirmation names the saved row and says the calendar stays, cancelling
+// keeps a dirty form, and a row changed by another session is refused as stale
+// instead of being removed on an old fingerprint.
+test.describe("delete", () => {
+  test.beforeEach(async ({ page }) => {
+    await logIn(page);
+  });
+
+  test("a confirmed delete removes one row, keeps its calendar and pathway, and focuses the list", async ({
+    page,
+  }, testInfo) => {
+    const versionId = await seededVersionId(page);
+    await page.setViewportSize(DESKTOP);
+    await page.goto(evolutionsPath(versionId, STATION));
+    await waitForLiveView(page);
+
+    const lift = page
+      .locator("#closures-list tr[data-closure-id]")
+      .filter({ hasText: "BROWSER_EVO/PW LIFT 1" });
+    const rowsBefore = await page.locator("#closures-list tr[data-closure-id]").count();
+
+    await lift.locator("button").first().click();
+    await expect(page.locator("#closure-start")).toHaveValue("09:00");
+    await expect(page.locator("#closure-end")).toHaveValue("15:00");
+
+    // Delete is offered only for a persisted row, and the confirmation names
+    // the saved pathway, calendar and window before anything is removed.
+    await page.locator("#delete-closure").click();
+
+    await expect(page.locator("#closure-delete-dialog")).toBeVisible();
+    await expect(page.locator("#closure-delete-dialog-title")).toHaveText(
+      "Delete this closure?",
+    );
+    await expect(page.locator("#closure-delete-pathway")).toContainText(
+      "Elevator · Mezzanine hall ↔ Platform 1",
+    );
+    await expect(page.locator("#closure-delete-pathway")).toContainText(
+      "BROWSER_EVO/PW LIFT 1",
+    );
+    await expect(page.locator("#closure-delete-calendar")).toHaveText("Every day service");
+    await expect(page.locator("#closure-delete-window")).toContainText("09:00–15:00");
+    await expect(page.locator("#closure-delete-body")).toContainText(
+      "Every day service stays unchanged.",
+    );
+    await expect(page.locator("#closure-delete-dialog-cancel")).toHaveText("Keep closure");
+    await expect(page.locator("#closure-delete-dialog-confirm")).toHaveText("Delete closure");
+    // The shared dialog opens on its dismissal action.
+    await expect(page.locator("#closure-delete-dialog-cancel")).toBeFocused();
+
+    // A native modal dialog lives in the top layer, so the confirm state is
+    // captured from the viewport after the panel's own paint lands.
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    );
+    await page.waitForTimeout(300);
+    await page.screenshot({
+      path: capturePath(testInfo, "step-020-production-desktop.png"),
+    });
+
+    // The confirmation shows its own busy state and then removes exactly the
+    // one row, announcing the outcome and handing focus to the list.
+    await page.locator("#closure-delete-dialog-confirm").click();
+
+    await expect(page.locator("#evolutions-status")).toContainText(
+      "Closure deleted. Every day service is unchanged.",
+    );
+    await expect(page.locator("#closure-delete-dialog")).toBeHidden();
+    await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(
+      rowsBefore - 1,
+    );
+    await expect(lift).toHaveCount(0);
+    await expect(page.locator("#closures-list")).toBeFocused();
+    await expect(page.locator("#closure-idle")).toBeVisible();
+
+    // The delete survives a reload, and the row's pathway and calendar survive
+    // with it: the pathway is still listed and the calendar is still offered.
+    await page.reload();
+    await waitForLiveView(page);
+    await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(
+      rowsBefore - 1,
+    );
+    await expect(page.locator("#closures-list")).not.toContainText("BROWSER_EVO/PW LIFT 1");
+    await expect(page.locator("#closure-pathway-list")).toContainText(
+      "BROWSER_EVO/PW LIFT 1",
+    );
+
+    await page.locator("#new-closure").click();
+    await expect(page.locator("#closure-calendar option[value='CAL_DAILY']")).toHaveCount(1);
+  });
+
+  test("cancelling the delete keeps the closure and a dirty form's values", async ({
+    page,
+  }, testInfo) => {
+    const versionId = await seededVersionId(page);
+    await page.setViewportSize(DESKTOP);
+    await page.goto(evolutionsPath(versionId, STATION));
+    await waitForLiveView(page);
+
+    const stairs = page
+      .locator("#closures-list tr[data-closure-id]")
+      .filter({ hasText: "BROWSER_EVO_PW_STAIR" });
+    const rowsBefore = await page.locator("#closures-list tr[data-closure-id]").count();
+
+    await stairs.locator("button").first().click();
+    await expect(page.locator("#closure-start")).toHaveValue("22:00");
+    await page.fill("#closure-end", "27:00");
+    await page.locator("#closure-end").blur();
+    await expect(page.locator("#closure-dirty-chip")).toHaveText(/Unsaved changes/);
+
+    // A delete has its own explicit confirmation, so the dirty guard does not
+    // intercept it: the dialog names the saved window, not the unsaved one.
+    await page.locator("#delete-closure").click();
+    await expect(page.locator("#closure-delete-dialog")).toBeVisible();
+    await expect(page.locator("#closure-delete-window")).toContainText("22:00–");
+    await expect(page.locator("#closure-delete-window")).not.toContainText("27:00");
+
+    await page.locator("#closure-delete-dialog-cancel").click();
+
+    await expect(page.locator("#closure-delete-dialog")).toBeHidden();
+    await expect(page.locator("#closure-end")).toHaveValue("27:00");
+    await expect(page.locator("#closure-dirty-chip")).toHaveText(/Unsaved changes/);
+    await expect(page.locator("#delete-closure")).toBeFocused();
+    await expect(page.locator("#closures-list tr[data-closure-id]")).toHaveCount(rowsBefore);
+
+    // The dialog holds at the phone and narrow widths with no page overflow.
+    for (const [name, viewport] of [
+      ["mobile", MOBILE],
+      ["320", NARROW],
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.reload();
+      await waitForLiveView(page);
+      await stairs.locator("button").first().click();
+      await expect(page.locator("#closure-start")).toHaveValue("22:00");
+      await page.locator("#delete-closure").click();
+      await expect(page.locator("#closure-delete-dialog")).toBeVisible();
+      expect(await bodyFitsViewport(page)).toBe(true);
+      await page.evaluate(
+        () =>
+          new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+      );
+      await page.waitForTimeout(300);
+      await page.screenshot({
+        path: capturePath(testInfo, `step-020-production-${name}.png`),
+      });
+      await page.locator("#closure-delete-dialog-cancel").click();
+      await expect(page.locator("#closure-delete-dialog")).toBeHidden();
+    }
+  });
+
+  test("a stale fingerprint refuses the delete and preserves the row and entries", async ({
+    page,
+    context,
+  }) => {
+    const versionId = await seededVersionId(page);
+    await page.setViewportSize(DESKTOP);
+    await page.goto(evolutionsPath(versionId, STATION));
+    await waitForLiveView(page);
+
+    const stairs = page
+      .locator("#closures-list tr[data-closure-id]")
+      .filter({ hasText: "BROWSER_EVO_PW_STAIR" });
+
+    await stairs.locator("button").first().click();
+    await expect(page.locator("#closure-start")).toHaveValue("22:00");
+    await page.fill("#closure-end", "27:00");
+    await page.locator("#closure-end").blur();
+
+    // Another signed-in session changes the same row through the ordinary
+    // route while this editor still holds the row it loaded.
+    const other = await context.newPage();
+    await other.goto(evolutionsPath(versionId, STATION));
+    await waitForLiveView(other);
+    await other
+      .locator("#closures-list tr[data-closure-id]")
+      .filter({ hasText: "BROWSER_EVO_PW_STAIR" })
+      .locator("button")
+      .first()
+      .click();
+    await expect(other.locator("#closure-start")).toHaveValue("22:00");
+    await other.fill("#closure-end", "28:00");
+    await other.locator("#save-closure").click();
+    await expect(other.locator("#evolutions-status")).toContainText("Closure saved.");
+    await other.close();
+
+    // The confirmed delete presents the fingerprint this editor loaded, so it
+    // is refused and the row is not removed.
+    await page.locator("#delete-closure").click();
+    await expect(page.locator("#closure-delete-dialog")).toBeVisible();
+    await page.locator("#closure-delete-dialog-confirm").click();
+
+    await expect(page.locator("#evolutions-status")).toContainText("Delete refused");
+    await expect(page.locator("#closure-stale")).toContainText(
+      "Closure changed after you opened it",
+    );
+    await expect(page.locator("#closure-delete-dialog")).toBeHidden();
+    await expect(page.locator("#closure-end")).toHaveValue("27:00");
+
+    // The other session's row is what a reload shows; discarding first keeps
+    // the unload guard out of the way of the reload.
+    await page.locator("#discard-closure").click();
+    await expect(page.locator("#closure-dirty-chip")).toHaveCount(0);
+    await page.reload();
+    await waitForLiveView(page);
+    await stairs.locator("button").first().click();
+    await expect(page.locator("#closure-end")).toHaveValue("28:00");
+  });
+
+  test.describe("reference capture", () => {
+    test.skip(() => !fs.existsSync(REFERENCE_PATH), "reference file not present");
+
+    test("captures the reference delete confirmation at both widths", async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize(DESKTOP);
+      await page.goto(`${pathToFileURL(REFERENCE_PATH).href}?state=delete-confirm`);
+      await expect(page.locator("#closure-delete-dialog")).toBeVisible();
+      await page.screenshot({
+        path: capturePath(testInfo, "step-020-reference-desktop.png"),
+      });
+
+      await page.setViewportSize(MOBILE);
+      await page.goto(`${pathToFileURL(REFERENCE_PATH).href}?state=delete-confirm`);
+      await expect(page.locator("#closure-delete-dialog")).toBeVisible();
+      await page.screenshot({
+        path: capturePath(testInfo, "step-020-reference-mobile.png"),
       });
     });
   });

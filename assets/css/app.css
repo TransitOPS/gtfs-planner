@@ -3799,17 +3799,17 @@ body:has(#home-page) {
   margin-bottom: 0.375rem;
 }
 
-/* The unsaved-edits confirmation keeps the shared dialog's structure, focus and
-   dismissal, and dresses its own action in this region's action colour: the
-   primitive's primary variant is the navigation shell's indigo, while every
-   filled action of the closures editor (Create, Save, the empty-state actions)
-   is the DS action colour. Scoped to the one dialog so no other confirmation
-   changes. */
-#evolutions #closure-dirty-dialog-confirm {
+/* The unsaved-edits and delete confirmations keep the shared dialog's
+   structure, focus and dismissal, and dress their own action in this region's
+   action colour: the primitive's primary variant is the navigation shell's
+   indigo, while every filled action of the closures editor (Create, Save, the
+   empty-state actions) is the DS action colour. Scoped to these two dialogs so
+   no other confirmation changes. */
+#evolutions :is(#closure-dirty-dialog-confirm, #closure-delete-dialog-confirm) {
   background-color: var(--color-action);
 }
 
-#evolutions #closure-dirty-dialog-confirm:hover {
+#evolutions :is(#closure-dirty-dialog-confirm, #closure-delete-dialog-confirm):hover {
   background-color: var(--color-evo-action-hover);
 }
 
