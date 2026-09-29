@@ -33,6 +33,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   writes nothing and takes no blocking lock, so a suggestion is always a proposal
   the page can render and only `apply_block_plan/3` can write (AC-26).
 
+  `preview_day/2` draws the day one such plan would leave behind, as a day of
+  exactly the shape `load_day/3` returns. It is pure — the plan's moves and
+  attribute rows are applied to the loaded day and the day load's own per-block
+  assembly is re-run over them, with no read and no write — so a page can show the
+  suggestion on the page itself and the saved day is never mutated (AC-44, CR-4).
+
   `project_calendar_combination/2` is the pure batch producer a calendar combination
   review reads: it projects every proposed service-ID move and destination date change at
   once, decides which moved blocks must be cleared from that one projection, and reports
@@ -266,7 +272,16 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           },
           bins: [%{start_secs: integer(), count: non_neg_integer()}],
           axis: %{start_secs: integer(), end_secs: integer()} | nil,
-          mixed_timezones?: boolean()
+          mixed_timezones?: boolean(),
+          # The type 4/5 rows, the rows their block orders were read over and the
+          # context they were evaluated in, kept so `preview_day/2` can re-run R6
+          # over a plan without reading them again. Server-side state like
+          # `context` itself: the page never reads it.
+          in_seat_source: %{
+            rows: [InSeat.in_seat_row()],
+            block_rows: [Queries.trip_row()],
+            context: InSeat.context()
+          }
         }
 
   @type command ::
@@ -1619,6 +1634,106 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   @doc """
+  Draws the day a plan would leave behind, as a day of exactly the shape
+  `load_day/3` returns (AC-44).
+
+  The function is pure: it reads the loaded day and the plan it was built from
+  and makes no repository, clock, file or network call, so a page can draw a
+  suggestion without touching the database and without ever writing a row
+  (CR-1, CR-4). `day` is the day the plan was reviewed against — the one the
+  reader is looking at — and the answer is a new map: the saved day is never
+  mutated, and a plan that is never applied leaves nothing behind.
+
+  The plan is applied to the loaded day rather than re-read. Every move's trip
+  takes the block the move names, so a pool trip that the plan places joins a
+  block and a trip the plan moves between blocks leaves the one it was in, while
+  a trip no move names keeps the block it has. The plan's own attribute rows are
+  added to the context, so a new block resolves through `Context.resolve_block/3`
+  on the garage and vehicle type the generator gave it and not through a second
+  rule (INV-9, R4). The per-block assembly is then re-run over the moved trips by
+  the same `day_assemble/3` the day load uses, so a preview's blocks, resolution,
+  movements, relief stretches, findings, figures, fleet rows, counts, peak, bins
+  and axis are the day load's own answers rather than a second derivation
+  (CR-6). R6's in-seat states are re-evaluated too, over the rows and the block
+  orders the day load already read and the context it already built, which travel
+  with the day as `:in_seat_source`; nothing is read to do it.
+
+  A plan for another day type than the loaded one still answers, because the
+  moves name trip UUIDs and the loaded day holds a trip at most once.
+  """
+  @spec preview_day(day(), Plan.t()) :: day()
+  def preview_day(%{} = day, plan) do
+    to_by_trip_id = Map.new(plan.moves, &{&1.trip.id, &1.to})
+
+    trips =
+      day
+      |> day_trip_rows()
+      |> Enum.map(&moved_trip(&1, to_by_trip_id))
+
+    context = preview_context(day.context, plan.attribute_rows)
+    in_seat = preview_in_seat(day, trips, to_by_trip_id)
+
+    day
+    |> Map.merge(day_assemble(trips, context, in_seat))
+    |> Map.put(:in_seat_source, in_seat)
+  end
+
+  # Every trip the loaded day holds, exactly once: a block's trips, the pool and
+  # the untimed list between them are the day type's whole trip set.
+  defp day_trip_rows(day) do
+    (Enum.flat_map(day.blocks, & &1.trips) ++ day.pool ++ day.unplottable)
+    |> Enum.uniq_by(& &1.id)
+  end
+
+  defp moved_trip(row, to_by_trip_id) do
+    case Map.fetch(to_by_trip_id, row.id) do
+      {:ok, to} -> %{row | block_id: to}
+      :error -> row
+    end
+  end
+
+  # The plan's attribute rows are the rows an apply would write, keyed the way
+  # `Context.attributes` is keyed, so a new block resolves on the plan's own
+  # resolution rather than on nothing.
+  defp preview_context(context, attribute_rows) do
+    attributes =
+      Enum.reduce(attribute_rows, context.attributes, fn row, attributes ->
+        Map.put(attributes, {row.service_id, row.block_id}, %{
+          garage_id: row.garage_id,
+          vehicle_type_id: row.vehicle_type_id
+        })
+      end)
+
+    %{context | attributes: attributes}
+  end
+
+  # R6 over the moved trips. The records and the context are the day load's own;
+  # what the moves change is which block each trip is in, and therefore both the
+  # context's own trip rows and the block orders it was built from, so the
+  # sequences are rebuilt over the moved rows. The day's trips join the order's
+  # rows so a block a move fills — one no record named, and so one the day load
+  # never read orders for — is still ordered.
+  defp preview_in_seat(day, trips, to_by_trip_id) do
+    source = day.in_seat_source
+    context = source.context
+
+    block_rows =
+      (Enum.map(source.block_rows, &moved_trip(&1, to_by_trip_id)) ++ trips)
+      |> Enum.uniq_by(& &1.id)
+
+    context = %{
+      context
+      | trips:
+          Map.new(context.trips, fn {trip_id, row} ->
+            {trip_id, moved_trip(row, to_by_trip_id)}
+          end),
+        sequences: sequences(context.day_types, block_rows)
+    }
+
+    %{source | block_rows: block_rows, context: context}
+  end
+
+  @doc """
   Takes the version's blocking advisory lock for the rest of the transaction.
 
   `pg_advisory_xact_lock` on `hashtext('blocking:' <> version_id)` is the single
@@ -2961,9 +3076,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     end
   end
 
+  # The read the day load makes and the pure assembly it hands the result to. Only
+  # the in-seat context is read, and it is read once for the whole day: the
+  # per-block assembly, the figures and the counts are computed from the trips
+  # and the context alone, which is what lets `preview_day/2` re-run them over a
+  # plan without touching the database.
   defp assemble(organization_id, gtfs_version_id, day_types, service_dates, trips, context) do
-    {pool_trips, blocked_trips} = Enum.split_with(trips, &is_nil(&1.block_id))
-
     in_seat =
       in_seat_context(
         organization_id,
@@ -2972,6 +3090,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         service_dates,
         trips
       )
+
+    Map.put(day_assemble(trips, context, in_seat), :in_seat_source, in_seat)
+  end
+
+  defp day_assemble(trips, context, in_seat) do
+    {pool_trips, blocked_trips} = Enum.split_with(trips, &is_nil(&1.block_id))
 
     states = Enum.map(in_seat.rows, &{&1, InSeat.state(&1, in_seat.context)})
 
@@ -3291,6 +3415,9 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # the evaluation to the day types it is responsible for (step 12). Every record
   # whose two trips are both blocked is evaluated, whether or not the two share one
   # block ID: only the rule can decide that a cross-block pair is not next.
+  #
+  # The rows the orders were read over travel with the context, so `preview_day/2`
+  # can rebuild those orders over a moved trip without reading them again.
   defp in_seat_context(organization_id, gtfs_version_id, day_types, service_dates, trips) do
     rows =
       Queries.in_seat_rows(organization_id, gtfs_version_id, Enum.map(trips, & &1.trip_id))
@@ -3301,6 +3428,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
     %{
       rows: rows,
+      block_rows: block_rows,
       context: %{
         trips: trips,
         service_dates: service_dates,

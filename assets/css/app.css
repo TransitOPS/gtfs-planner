@@ -674,6 +674,35 @@ body {
   line-height: 1;
 }
 
+/* A row the previewed plan changes carries an edge, not only a colour: the edge
+   is visible to a reader who cannot separate the tint from the surface, and it
+   sits on the sticky meta cells so it stays put when the track scrolls. The
+   "Changed" label in the Status cell is the second signal. */
+#blocks-page .blocks-row-changed {
+  background-color: var(--color-selection);
+}
+
+/* Only the first meta cell carries the edge: the row is a run of sticky cells,
+   and a line between every column would read as a table grid rather than as
+   "this row changed". */
+#blocks-page .blocks-row-changed > .blocks-meta:first-child {
+  box-shadow: inset 4px 0 0 var(--color-action);
+}
+
+#blocks-page .blocks-legend-changed {
+  width: 4px;
+  border-radius: 0;
+  background-color: var(--color-action);
+}
+
+/* The panel's heading takes focus when the suggestion arrives, so it needs a
+   visible ring of its own: a programmatically focused heading is not
+   :focus-visible, and the page's focus is nowhere else to show. */
+#blocks-page #suggestion-title:focus {
+  outline: 2px solid var(--color-action);
+  outline-offset: 2px;
+}
+
 #station-sub-nav {
   overflow: visible;
 }
