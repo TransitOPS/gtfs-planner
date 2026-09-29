@@ -367,18 +367,20 @@ for (const { width, height, label } of VIEWPORTS) {
       await page.locator("#settings-entry-fares a").click();
       await page.waitForURL(/\/settings\/fares$/);
       await waitForLiveView(page);
-      await expect(page.locator("h1")).toHaveText("Fare zones");
+      await expect(page.locator("h1")).toHaveText("Fares");
       // The default seeded version carries no fare zone, so the workspace opens
       // on its first-use state rather than the zones panel.
       await expect(page.locator("#fare-zone-first-use")).toBeAttached();
       await expect(page.locator("#coming-soon")).toHaveCount(0);
-      await expect(
-        page.locator("#settings-nav a[aria-current='page']"),
-      ).toHaveText("Fares");
+      await expect(page.locator("#settings-nav")).toHaveCount(0);
+      await expect(page.locator("#settings-back")).toHaveText("Settings");
       await capture(page, testInfo, `settings-fares-${label}`);
 
       // ── Garages returns by the Settings link; Fleet leads back to Settings the same way ──
-      await page.locator("#settings-tab-garages").click();
+      await page.locator("#settings-back").click();
+      await page.waitForURL(new RegExp(`/gtfs/${versionId}/settings$`));
+      await waitForLiveView(page);
+      await page.locator("#settings-entry-garages a").click();
       await page.waitForURL(/\/settings\/garages$/);
       await waitForLiveView(page);
       await expect(page.locator("h1")).toHaveText("Garages");
@@ -560,7 +562,7 @@ test.describe("header presentation", () => {
     expect(failedFonts).toEqual([]);
   });
 
-  test("keyboard opens the account menu, follows Settings and scrolls an offscreen tab", async ({
+  test("keyboard opens the account menu, follows Settings to a page that leads back to it", async ({
     page,
   }) => {
     await logIn(page);
@@ -588,39 +590,22 @@ test.describe("header presentation", () => {
     await waitForLiveView(page);
     await expect(page.locator("#settings-overview")).toBeVisible();
 
-    // The overview has no tab bar; the pages that still carry one do.
+    // No Settings page carries a tab bar: a section leads back to the overview
+    // with its own link, and the keyboard reaches it.
     await page.locator("#settings-entry-fares a").click();
     await page.waitForURL(new RegExp(`/settings/fares$`));
     await waitForLiveView(page);
 
-    // The Settings bar scrolls locally: the last tab must be reachable and
-    // visible inside the bar without overflowing the document.
-    const bar = page.locator("#settings-nav");
-    const lastTab = page.locator("#settings-tab-fleet");
+    await expect(page.locator("#settings-nav")).toHaveCount(0);
 
-    await lastTab.scrollIntoViewIfNeeded();
-    await expect(lastTab).toBeVisible();
-
-    const barBox = await bar.boundingBox();
-    const tabBox = await lastTab.boundingBox();
-    expect(tabBox.x).toBeGreaterThanOrEqual(barBox.x - 1);
-    expect(tabBox.x + tabBox.width).toBeLessThanOrEqual(
-      barBox.x + barBox.width + 1,
-    );
-    await expectNoPageOverflow(page);
-
-    // Reaching it with the keyboard keeps it inside the bar as well.
-    let reachedLastTab = false;
-    for (let i = 0; i < 40 && !reachedLastTab; i += 1) {
+    let reachedBack = false;
+    for (let i = 0; i < 40 && !reachedBack; i += 1) {
       await page.keyboard.press("Tab");
-      reachedLastTab = await page.evaluate(() =>
-        document.activeElement?.matches("#settings-tab-fleet"),
+      reachedBack = await page.evaluate(() =>
+        document.activeElement?.matches("#settings-back"),
       );
     }
-    expect(reachedLastTab).toBe(true);
-
-    const focusedTabBox = await lastTab.boundingBox();
-    expect(focusedTabBox.x).toBeGreaterThanOrEqual(barBox.x - 1);
+    expect(reachedBack).toBe(true);
     await expectNoPageOverflow(page);
   });
 });

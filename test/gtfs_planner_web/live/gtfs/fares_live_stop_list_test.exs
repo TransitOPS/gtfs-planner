@@ -349,7 +349,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
              )
     end
 
-    test "each row names its zone with the zone's exact ID, name and color", %{
+    test "each row names its zone with the zone's name and color", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -366,16 +366,14 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       refute has_element?(view, "#stops-#{stop_ids["STOP_PAD"]}", "Central")
       refute has_element?(view, "#stops-#{stop_ids["HARBOR"]}", "Padded")
 
-      chip = zone_chip_html(view, stop_ids["STOP_PAD"])
+      # The name leads with a dot in the zone's own palette color.
+      assert zone_dot_html(view, stop_ids["STOP_PAD"]) =~ ~s(style="background-color: #4b1f78")
 
-      assert chip =~ " A"
-      assert chip =~ ~s(style="color: #4b1f78; background-color: #4b1f781a")
-
-      # A stop without a zone gets the neutral chip with the dash the reference
-      # draws, and the zone cell names it Unassigned.
-      assert has_element?(view, "#stops-#{stop_ids["DEPOT"]}", "Unassigned")
-      assert zone_chip_html(view, stop_ids["DEPOT"]) =~ "–"
-      refute zone_chip_html(view, stop_ids["DEPOT"]) =~ "color: #"
+      # A stop without a zone gets an outlined dot, painted in no zone's color, and
+      # the zone cell says No zone.
+      assert has_element?(view, "#stops-#{stop_ids["DEPOT"]}", "No zone")
+      refute zone_dot_html(view, stop_ids["DEPOT"]) =~ "background-color: #"
+      assert zone_dot_html(view, stop_ids["DEPOT"]) =~ "border-2"
     end
 
     test "a station, another version's stops and a trimmed zone filter never change the list", %{
@@ -408,12 +406,17 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       render_patch(view, row_href(view, "#fare-zone-row-1"))
 
       assert visible_stop_ids(view, stop_id_by_row_id) == ["STOP_PAD"]
-      assert render(view) =~ "1 stop · Zone ID  A"
+      assert render(view) =~ "1 stop · no fare rules use it · Zone ID  A"
 
       render_patch(view, row_href(view, "#fare-zone-row-2"))
 
       assert visible_stop_ids(view, stop_id_by_row_id) == ["PLATFORM_1", "HARBOR"]
-      assert has_element?(view, "#fare-zone-stage-subtitle", "2 stops · Zone ID A")
+
+      assert has_element?(
+               view,
+               "#fare-zone-stage-subtitle",
+               "2 stops · no fare rules use it · Zone ID A"
+             )
     end
   end
 
@@ -477,13 +480,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
       render_patch(view, "/gtfs/#{version.id}/settings/fares?filter=unassigned")
 
       refute has_element?(view, "#fare-zone-stops")
-      assert has_element?(view, "#fare-zone-stops-empty", "No unassigned stops")
-
-      assert has_element?(
-               view,
-               "#fare-zone-stops-empty",
-               "Every stop in this version has a fare zone."
-             )
+      assert has_element?(view, "#fare-zone-stops-empty", "Every stop has a fare zone")
+      assert has_element?(view, "#fare-zone-stops-empty", "No stops are waiting for a zone.")
 
       assert has_element?(view, "#fare-zone-stops-empty-action", "Show all stops")
       assert has_element?(view, "#fare-zone-without-location", "0 without map location")
@@ -552,7 +550,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveStopListTest do
     |> Enum.map(fn "stops-" <> uuid -> Map.fetch!(stop_id_by_row_id, uuid) end)
   end
 
-  defp zone_chip_html(view, stop_id) do
+  defp zone_dot_html(view, stop_id) do
     view
     |> render()
     |> LazyHTML.from_fragment()

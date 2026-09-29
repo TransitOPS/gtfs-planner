@@ -130,21 +130,25 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
       assert has_element?(
                view,
                "#fare-zone-first-use",
-               "A zone groups stops that share a fare area. Give it a name, then select its stops on the map or in a list."
+               "A fare zone groups stops that share a fare area"
              )
+
+      # Zones are optional: a flat fare or a fare that depends only on the route
+      # needs none, and the state says so.
+      assert has_element?(view, "#fare-zone-first-use", "Zones are optional.")
 
       assert has_element?(
                view,
                "#fare-zone-first-use",
-               "Already have a feed? Stop zone IDs from an imported feed appear here."
+               "Already have a feed? Stop zone IDs from an imported feed appear here on their own."
              )
 
       refute has_element?(view, "#fare-zones-panel")
       refute has_element?(view, "#fare-zone-inventory")
 
-      # The header action is present too, so the page has one create path while
-      # the workspace is replaced and one after it exists.
-      assert has_element?(view, "#fare-zone-create", "Create zone")
+      # The state carries the page's one primary, so the header's create action
+      # is gone while the workspace is replaced and returns once it exists.
+      refute has_element?(view, "#fare-zone-create")
 
       view |> element("#fare-zone-first-use-create") |> render_click()
 
@@ -202,7 +206,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
       assert has_element?(
                view,
                "#fare-zone-form",
-               "Unique in this version. Use letters, numbers, hyphens or underscores."
+               "A short code, unique in this version. It is written to your feed as zone_id. Use letters, numbers, hyphens or underscores."
              )
 
       assert has_element?(view, "#fare-zone-form", "Map color")
@@ -213,25 +217,21 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
                "Markers also show the zone ID, so color is never the only cue."
              )
 
-      # The palette's own labels are the options, keyed by the palette key.
-      assert option_labels(view, "#fare-zone-color") == [
-               "Ocean blue",
-               "Teal",
-               "Plum",
-               "Ochre",
-               "Green"
-             ]
+      # The palette's own labels are the swatches, keyed by the palette key.
+      assert color_labels(view) == ["Ocean blue", "Teal", "Plum", "Ochre", "Green"]
 
-      assert selected_option(view, "#fare-zone-color") == "ochre"
+      assert checked_color(view) == "ochre"
       assert attribute(view, "#fare-zone-name", "value") == nil
       assert attribute(view, "#fare-zone-id", "value") == nil
 
       # A create states that the zone starts empty; the edit summary belongs to
       # an edit.
+      assert has_element?(view, "#fare-zone-drawer-note", "A new zone starts empty.")
+
       assert has_element?(
                view,
                "#fare-zone-drawer-note",
-               "Your new zone starts empty. It remains available while you build its stop membership."
+               "It stays available while you choose its stops."
              )
 
       refute has_element?(view, "#fare-zone-drawer-summary")
@@ -245,7 +245,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
       view |> element("#fare-zone-create") |> render_click()
 
       assert attribute(view, "#fare-zone-name", "value") == nil
-      assert selected_option(view, "#fare-zone-color") == "ochre"
+      assert checked_color(view) == "ochre"
     end
 
     test "a new zone is trimmed, becomes the filter and reports what happened", %{
@@ -319,7 +319,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
       assert has_element?(view, "#fare-zone-id[aria-invalid='true']")
       assert has_element?(view, "#fare-zone-form", @in_use_message)
       assert attribute(view, "#fare-zone-name", "value") == "Waterfront"
-      assert selected_option(view, "#fare-zone-color") == "teal"
+      assert checked_color(view) == "teal"
       assert attribute(view, "#fare-zone-id", "value") == "A"
 
       # The hook takes focus to the invalid field, not to the submit button.
@@ -357,7 +357,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
              )
 
       assert attribute(view, "#fare-zone-name", "value") == "Waterfront"
-      assert selected_option(view, "#fare-zone-color") == "teal"
+      assert checked_color(view) == "teal"
 
       # Correcting the ID clears the error without submitting anything.
       view
@@ -402,7 +402,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
       # The form's ID value is the stored bytes, leading space included, and the
       # summary counts the zone's boardable stop.
       assert attribute(view, "#fare-zone-id", "value") == " A"
-      assert text_of(view, "#fare-zone-drawer-summary > p") == "1 stop · 0 related fare rules."
+      assert text_of(view, "#fare-zone-drawer-summary p") == "1 stop · 0 fare rules use this zone"
       refute has_element?(view, "#fare-zone-drawer-summary-others")
 
       # Submitting the form's own values sends the padded ID back untouched: a
@@ -449,10 +449,12 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
       # including the station that is not part of the boardable count.
       assert text_of(view, "#fare-zone-drawer-title") == "Edit Central"
       assert attribute(view, "#fare-zone-id", "value") == "A"
-      assert text_of(view, "#fare-zone-drawer-summary > p") == "2 stops · 1 related fare rule."
+
+      assert text_of(view, "#fare-zone-drawer-summary p") ==
+               "2 stops · 1 fare rule uses this zone"
 
       assert text_of(view, "#fare-zone-drawer-summary-updates") ==
-               "Changing this ID updates these references together."
+               "Changing the zone ID updates these references together."
 
       assert text_of(view, "#fare-zone-drawer-summary-others") ==
                "Also updates 1 station or entrance with this zone ID."
@@ -479,7 +481,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
       render_patch(view, zones_path(version) <> "?zone=AA")
 
       assert text_of(view, "#fare-zone-stage-title") == "Central"
-      assert text_of(view, "#fare-zone-stage-subtitle") == "2 stops · Zone ID AA"
+
+      assert text_of(view, "#fare-zone-stage-subtitle") ==
+               "2 stops · used by 1 fare rule · Zone ID AA"
     end
 
     test "a zone with no station member omits the station line", %{
@@ -494,10 +498,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
       view |> element("#fare-zone-edit") |> render_click()
 
       assert text_of(view, "#fare-zone-drawer-title") == "Edit Eastbank"
-      assert text_of(view, "#fare-zone-drawer-summary > p") == "1 stop · 1 related fare rule."
+      assert text_of(view, "#fare-zone-drawer-summary p") == "1 stop · 1 fare rule uses this zone"
 
       assert text_of(view, "#fare-zone-drawer-summary-updates") ==
-               "Changing this ID updates these references together."
+               "Changing the zone ID updates these references together."
 
       refute has_element?(view, "#fare-zone-drawer-summary-others")
     end
@@ -639,7 +643,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
       assert has_element?(view, "#fare-zones-panel")
       refute has_element?(view, "#fare-zone-first-use")
       assert has_element?(view, "#fare-zone-stops-empty", "No stops in this zone yet")
-      assert text_of(view, "#fare-zone-stage-subtitle") == "0 stops · Zone ID D"
+
+      assert text_of(view, "#fare-zone-stage-subtitle") ==
+               "0 stops · Empty zone · no fare rules use it · Zone ID D"
     end
   end
 
@@ -671,13 +677,16 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneEditorTest do
     Enum.find(FareZones.inventory(organization.id, version.id).zones, &(&1.zone_id == zone_id))
   end
 
-  defp option_labels(view, selector) do
-    view |> nodes("#{selector} option") |> Enum.map(&LazyHTML.text/1)
+  # The map color swatches: each is a radio inside a label that names the color.
+  defp color_labels(view) do
+    view
+    |> nodes("#fare-zone-color label")
+    |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
   end
 
-  defp selected_option(view, selector) do
+  defp checked_color(view) do
     view
-    |> nodes("#{selector} option[selected]")
+    |> nodes("#fare-zone-color input[type='radio'][checked]")
     |> LazyHTML.attribute("value")
     |> List.first()
   end

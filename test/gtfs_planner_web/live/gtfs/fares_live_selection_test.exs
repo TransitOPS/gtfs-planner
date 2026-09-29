@@ -102,6 +102,36 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
     }
   end
 
+  describe "the page's one primary" do
+    test "Create zone gives way to Assign zone while stops are selected", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version,
+      stop_ids: stop_ids
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
+
+      # Nothing selected: the header's action is the primary, and the bar carries
+      # no action to compete with it.
+      assert button_class(view, "#fare-zone-create") =~ "btn-primary"
+      refute has_element?(view, "#fare-zone-assign-selection")
+
+      toggle_stop(view, stop_ids["HARBOR"])
+
+      # A selection makes Assign zone the primary and Create zone a secondary.
+      assert button_class(view, "#fare-zone-assign-selection") =~ "btn-primary"
+      assert button_class(view, "#fare-zone-unassign-selection") =~ "btn-outline"
+      assert button_class(view, "#fare-zone-create") =~ "btn-outline"
+      refute button_class(view, "#fare-zone-create") =~ "btn-primary"
+
+      view |> element("#fare-zone-clear-selection") |> render_click()
+
+      assert button_class(view, "#fare-zone-create") =~ "btn-primary"
+    end
+  end
+
   describe "checkboxes" do
     test "a row's checkbox selects that stop and the bar counts one stop", %{
       conn: conn,
@@ -115,7 +145,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
 
       # Nothing selected: the reference's hint, and no count line.
-      assert bar_hint(view) == "Select stops to assign or remove a fare zone."
+      assert bar_hint(view) ==
+               "Select stops in the list or on the map to assign or remove a zone."
+
       refute has_element?(view, "#fare-zone-selection-count")
       refute has_element?(view, "#fare-zone-selection-outside")
 
@@ -307,7 +339,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       assert_patched(view, "/gtfs/#{version.id}/settings/fares?zone=A")
       assert visible_stop_ids(view, stop_id_by_row_id) == ["HARBOR"]
       assert bar_count(view) == "1 stop selected"
-      assert bar_outside(view) == "1 outside current filter"
+      assert bar_outside(view) == "1 outside this filter"
       assert checked_stop_ids(view, stop_id_by_row_id) == []
 
       # The unassigned filter hides it too, entered through the link the panel
@@ -315,7 +347,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       render_patch(view, row_href(view, "#fare-zone-row-unassigned"))
 
       assert_patched(view, "/gtfs/#{version.id}/settings/fares?filter=unassigned")
-      assert bar_outside(view) == "1 outside current filter"
+      assert bar_outside(view) == "1 outside this filter"
 
       # A search that no longer matches it does the same.
       render_patch(view, row_href(view, "#fare-zone-row-all"))
@@ -324,7 +356,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
 
       assert visible_stop_ids(view, stop_id_by_row_id) == ["STOP_B_002"]
       assert bar_count(view) == "1 stop selected"
-      assert bar_outside(view) == "1 outside current filter"
+      assert bar_outside(view) == "1 outside this filter"
 
       # A filter that holds the whole selection reports nothing hidden.
       view |> element("#fare-zone-clear-selection") |> render_click()
@@ -355,7 +387,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
 
       view |> element("#fare-zone-clear-selection") |> render_click()
 
-      assert bar_hint(view) == "Select stops to assign or remove a fare zone."
+      assert bar_hint(view) ==
+               "Select stops in the list or on the map to assign or remove a zone."
+
       refute has_element?(view, "#fare-zone-selection-count")
       refute has_element?(view, "#fare-zone-clear-selection")
       assert checked_stop_ids(view, stop_id_by_row_id) == []
@@ -403,7 +437,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
 
       for id <- [foreign_stop.id, other_version_stop.id, "not-a-uuid"] do
         render_click(view, "toggle_stop", %{"id" => id})
-        assert bar_hint(view) == "Select stops to assign or remove a fare zone."
+
+        assert bar_hint(view) ==
+                 "Select stops in the list or on the map to assign or remove a zone."
+
         assert checked_stop_ids(view, stop_id_by_row_id) == []
       end
 
@@ -413,7 +450,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
         live(conn, "/gtfs/#{version.id}/settings/fares?zone=A")
 
       render_click(other_view, "toggle_stop", %{"id" => foreign_stop.id})
-      assert bar_hint(other_view) == "Select stops to assign or remove a fare zone."
+
+      assert bar_hint(other_view) ==
+               "Select stops in the list or on the map to assign or remove a zone."
     end
 
     test "a stop that left the version cannot be toggled back in", %{
@@ -438,18 +477,21 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
       render_patch(view, row_href(view, "#fare-zone-row-1"))
 
       assert bar_count(view) == "1 stop selected"
-      assert bar_outside(view) == "1 outside current filter"
+      assert bar_outside(view) == "1 outside this filter"
       refute has_element?(view, "#stops-#{stop_ids["HARBOR"]}")
 
       # The vanished ID cannot enter the selection again - it is no longer a stop
       # of this version - while the operator can still dismiss what they selected.
       render_click(view, "toggle_stop", %{"id" => stop_ids["HARBOR"]})
 
-      assert bar_hint(view) == "Select stops to assign or remove a fare zone."
+      assert bar_hint(view) ==
+               "Select stops in the list or on the map to assign or remove a zone."
 
       render_click(view, "toggle_stop", %{"id" => stop_ids["HARBOR"]})
 
-      assert bar_hint(view) == "Select stops to assign or remove a fare zone."
+      assert bar_hint(view) ==
+               "Select stops in the list or on the map to assign or remove a zone."
+
       assert checked_stop_ids(view, stop_id_by_row_id) == []
     end
   end
@@ -517,6 +559,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveSelectionTest do
 
   # The bar's own lines, read one at a time: the bar also holds the Clear
   # button, which is not part of either count.
+  defp button_class(view, selector) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(selector)
+    |> LazyHTML.attribute("class")
+    |> List.first()
+  end
+
   defp bar_hint(view), do: text_of(view, "#fare-zone-selection-hint")
   defp bar_count(view), do: text_of(view, "#fare-zone-selection-count")
   defp bar_outside(view), do: text_of(view, "#fare-zone-selection-outside")

@@ -39,7 +39,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
   # Every DOM ID the Checks tab may render: the tab and its heading, one row per
   # index, and one link or disclosure inside a row. Nothing here is derived from
   # a zone ID.
-  @panel_id_pattern ~r/\Afare-check(s-(tab|heading|subtitle)|-(clean|unassigned|empty|source|stopless-\d+|combine-\d+)(-link|-detail)?)?\z/
+  @panel_id_pattern ~r/\Afare-check(s-(tab|heading|subtitle|counts|count-(repair|review|note|passed)|passed(-summary)?)|-(clean|unassigned|empty|source|stopless-\d+|combine-\d+)(-link|-detail|-zone-id|-export)?|-empty-\d+-link)?\z/
 
   setup do
     organization = organization_fixture()
@@ -100,23 +100,30 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
       assert has_element?(
                view,
                "#fare-check-stopless-0",
-               "Fare rules use C (C), which has no stops"
+               "Fare rules use C, which has no stops"
              )
 
       assert has_element?(
                view,
                "#fare-check-stopless-0",
-               "Exported fares for this zone won't match any stop. Assign stops to this zone or edit the rules that use it."
+               "Trip planners can’t match any stop to this zone, so the fares that use it never apply. Assign stops to the zone or change the rules that use it."
              )
 
       assert has_element?(view, "#fare-check-stopless-0", "Needs repair")
 
-      # A declared stopless zone is named by its record and carries its exact ID.
+      # An undeclared zone is named by its ID already, so the row states no second
+      # one.
+      refute has_element?(view, "#fare-check-stopless-0-zone-id")
+
+      # A declared stopless zone is named by its record, with its exact ID beside
+      # the name as the detail that travels with the feed.
       assert has_element?(
                view,
                "#fare-check-stopless-1",
-               "Fare rules use Southport (S), which has no stops"
+               "Fare rules use Southport, which has no stops"
              )
+
+      assert has_element?(view, "#fare-check-stopless-1-zone-id", "Zone ID S")
 
       # The action names the zone the way the row does.
       assert has_element?(view, "#fare-check-stopless-0-link", "Show C")
@@ -148,10 +155,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
       assert has_element?(
                view,
                "#fare-check-unassigned",
-               "Unassigned stops can be intentional, but zone-based fares may not apply to journeys using them."
+               "Journeys that use these stops won’t get a zone-based fare."
              )
 
-      assert has_element?(view, "#fare-check-unassigned-link", "Review unassigned stops")
+      assert has_element?(view, "#fare-check-unassigned-link", "Review stops with no zone")
 
       # The filter is its own query key: patching this link asks for unassigned
       # stops, not for a zone named "unassigned".
@@ -174,16 +181,20 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
       # "D" Airport is declared and has nothing in it; "S" is declared but a rule
       # references it, so it is a needs-repair row rather than a note.
       assert has_element?(view, "#fare-check-empty", "Note")
-      assert has_element?(view, "#fare-check-empty", "1 empty zone")
+      assert has_element?(view, "#fare-check-empty", "1 empty zone: Airport")
 
       assert has_element?(
                view,
                "#fare-check-empty",
-               "Empty zones stay in this workspace. Standard GTFS carries zone IDs on stops; a zone with no stops has no standalone export record."
+               "Empty zones stay in this workspace. Your feed records zones on stops, so a zone with no stops isn’t exported."
              )
 
-      # A note reports; it asks for nothing, so it carries no action.
-      refute has_element?(view, "#fare-check-empty-link")
+      # A note asks for nothing, but it names where the zone is: one link per empty
+      # zone, into that zone's own filter.
+      assert has_element?(view, "#fare-check-empty-0-link", "Show Airport")
+
+      assert row_href(view, "#fare-check-empty-0-link") ==
+               "/gtfs/#{version.id}#{@zones_path}?zone=D"
     end
 
     test "counts every empty declared zone when more than one has nothing in it", %{
@@ -201,7 +212,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
 
       {:ok, view, _html} = mount_checks(conn, user, organization, empty_version)
 
-      assert has_element?(view, "#fare-check-empty", "2 empty zones")
+      assert has_element?(view, "#fare-check-empty", "2 empty zones: Airport and Pier")
       refute has_element?(view, "#fare-check-empty", "1 empty zone")
     end
 
@@ -237,23 +248,23 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
       assert has_element?(
                view,
                "#fare-check-source",
-               "Verify assignments against your source feed"
+               "Compare zone assignments with your source feed"
              )
 
       assert has_element?(
                view,
                "#fare-check-source",
-               "If this version was imported before stop zone IDs were preserved, its stops may be missing their zones. Compare it with your original feed before publishing. Fare rules alone cannot tell you which stops belonged to a zone."
+               "If this version was imported before stop zone IDs were kept, some stops may have lost their zones. Fare rules alone can’t show which stops belonged to which zone."
              )
 
       # The disclosure states what to compare, and stays a native `<details>` so
       # it is keyboard-operable without new markup.
-      assert has_element?(view, "#fare-check-source-detail", "What must be checked?")
+      assert has_element?(view, "#fare-check-source-detail", "What to compare")
 
       assert has_element?(
                view,
                "#fare-check-source-detail",
-               "Check that each stop has the same zone as in your source feed. Re-importing the original feed creates a new version that keeps its stop zones."
+               "Check that each stop has the same zone as in your original feed. Importing the original feed again creates a new version that keeps its stop zones."
              )
 
       # A version whose only rule references no zone has nothing to check against
@@ -393,7 +404,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
       assert has_element?(
                view,
                "#fare-check-clean",
-               "Every zone used by a fare rule has stops, and every stop has a zone."
+               "Every zone used by a fare rule has stops, and every stop has a fare zone."
              )
 
       assert stopless_row_ids(view) == []
@@ -403,6 +414,31 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
       # Source check row still reports while rules reference zones.
       assert has_element?(view, "#fare-check-source")
       refute has_element?(view, "#fare-check-empty")
+
+      # The four counts read the same rows, and the checks that passed fold into
+      # one disclosure that names each of them.
+      assert has_element?(view, "#fare-checks-count-repair", "0")
+      assert has_element?(view, "#fare-checks-count-review", "0")
+      assert has_element?(view, "#fare-checks-count-passed", "4")
+      assert has_element?(view, "#fare-checks-passed-summary", "4 checks passed")
+
+      assert has_element?(
+               view,
+               "#fare-checks-passed",
+               "Every zone used by a fare rule has stops."
+             )
+
+      assert has_element?(view, "#fare-checks-passed", "Every stop has a fare zone.")
+      assert has_element?(view, "#fare-checks-passed", "No zone is empty.")
+
+      assert has_element?(
+               view,
+               "#fare-checks-passed",
+               "No fare has rules that disagree on route or pass-through zones."
+             )
+
+      # A clean version points on to export.
+      assert row_href(view, "#fare-check-clean-export") == "/gtfs/#{clean_version.id}/export"
     end
 
     test "is the whole Checks tab for a version with no zones, stops or rules", %{
@@ -417,7 +453,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
       assert has_element?(
                view,
                "#fare-check-clean",
-               "Every zone used by a fare rule has stops, and every stop has a zone."
+               "Every zone used by a fare rule has stops, and every stop has a fare zone."
              )
 
       assert stopless_row_ids(view) == []
@@ -445,9 +481,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
 
       assert badge_count(view) == rows + review
 
-      # A version with issues marks the count as a warning; a clean one reads as
-      # available rather than reusing the issue tone.
-      assert badge_class(view) =~ "text-warning"
+      # A zone fare rules use with no stops needs repair, so the count reads in the
+      # error tone; a clean one reads as available rather than reusing it.
+      assert badge_class(view) =~ "text-error-fg"
     end
 
     test "carries the same count on the other two tabs", %{
@@ -461,6 +497,32 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
 
       {:ok, rules_view, _html} = mount_rules(conn, user, organization, version)
       assert has_element?(rules_view, "#fares-tab-checks #fares-checks-count", "3")
+    end
+
+    test "reads as a warning while only stops with no zone need review", %{
+      conn: conn,
+      user: user,
+      organization: organization
+    } do
+      review_version = gtfs_version_fixture(organization.id, %{name: "Review only version"})
+
+      insert_zone(organization, review_version, "A", "Central", "ocean")
+
+      insert_stops(organization, review_version, [
+        {"STOP_CENTRAL_1", 0, "A"},
+        {"STOP_BAY_1", 0, nil}
+      ])
+
+      {:ok, view, _html} = mount_checks(conn, user, organization, review_version)
+
+      # Nothing needs repair, so the one finding is a review and the mark says so
+      # in the warning tone, not the error one.
+      assert has_element?(view, "#fares-checks-count", "1")
+      assert badge_class(view) =~ "text-warning-fg"
+      refute badge_class(view) =~ "text-error-fg"
+
+      assert has_element?(view, "#fare-checks-count-review", "1")
+      assert has_element?(view, "#fare-checks-count-repair", "0")
     end
 
     test "marks a clean version's zero as available", %{
@@ -504,12 +566,12 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
       # The two spaces the padded ID leaves are asserted from the element's own
       # text, because `has_element?/3` normalizes whitespace before matching.
       assert element_text(view, "#fare-check-stopless-0 h3") ==
-               "Fare rules use Z  (Z ), which has no stops"
+               "Fare rules use Z , which has no stops"
 
       assert has_element?(
                view,
                "#fare-check-stopless-1",
-               "Fare rules use unassigned (unassigned), which has no stops"
+               "Fare rules use unassigned, which has no stops"
              )
 
       # Both IDs survive into the query string unchanged; "unassigned" travels
@@ -526,16 +588,18 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
 
       assert has_element?(view, "#fare-zones-panel")
       refute has_element?(view, "#fare-checks-panel")
-      assert element_text(view, "#fare-zone-stage-subtitle") == "0 stops · Zone ID Z "
+
+      assert element_text(view, "#fare-zone-stage-subtitle") ==
+               "0 stops · Empty zone · used by 1 fare rule · Zone ID Z "
 
       # The zone literally named "unassigned" opens that zone, not the unassigned
       # stops filter (CR-7).
       render_patch(view, "/gtfs/#{exact_version.id}#{@zones_path}?zone=unassigned")
 
       assert element_text(view, "#fare-zone-stage-subtitle") ==
-               "0 stops · Zone ID unassigned"
+               "0 stops · Empty zone · used by 1 fare rule · Zone ID unassigned"
 
-      refute has_element?(view, "#fare-zone-stage-title", "Unassigned stops")
+      refute has_element?(view, "#fare-zone-stage-title", "Stops with no zone")
 
       # Every ID in the panel is the contract's own vocabulary, so no zone ID
       # names a DOM node: the set is exactly the rows this version renders.
@@ -547,12 +611,19 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
                "fare-checks-tab",
                "fare-checks-heading",
                "fare-checks-subtitle",
+               "fare-checks-counts",
+               "fare-checks-count-repair",
+               "fare-checks-count-review",
+               "fare-checks-count-note",
+               "fare-checks-count-passed",
                "fare-check-stopless-0",
                "fare-check-stopless-0-link",
                "fare-check-stopless-1",
                "fare-check-stopless-1-link",
                "fare-check-source",
-               "fare-check-source-detail"
+               "fare-check-source-detail",
+               "fare-checks-passed",
+               "fare-checks-passed-summary"
              ]
     end
 
@@ -568,8 +639,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
       {:ok, view, _html} = mount_checks(conn, user, organization, version)
 
       # The twin version's stopless referenced zone is not this version's.
-      refute has_element?(view, "#fare-checks-tab", "Fare rules use T (T)")
-      assert has_element?(view, "#fare-check-stopless-0", "Fare rules use C (C)")
+      refute has_element?(view, "#fare-checks-tab", "Fare rules use T,")
+      assert has_element?(view, "#fare-check-stopless-0", "Fare rules use C,")
     end
   end
 
@@ -638,7 +709,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveChecksTest do
       view
       |> render()
       |> LazyHTML.from_fragment()
-      |> LazyHTML.query("#fares-checks-count span:nth-child(2)")
+      |> LazyHTML.query("#fares-checks-count")
       |> LazyHTML.attribute("class")
 
     class

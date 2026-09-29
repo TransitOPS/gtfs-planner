@@ -1184,53 +1184,6 @@ defmodule GtfsPlannerWeb.NavigationComponentsTest do
     end
   end
 
-  describe "settings_nav" do
-    @settings_tabs [
-      {:index, "Overview", "/gtfs/42/settings", "settings-tab-index"},
-      {:feed_details, "Feed details", "/gtfs/42/settings/feed-details",
-       "settings-tab-feed_details"},
-      {:agencies, "Agencies", "/gtfs/42/settings/agencies", "settings-tab-agencies"},
-      {:fares, "Fares", "/gtfs/42/settings/fares", "settings-tab-fares"},
-      {:export_defaults, "Export defaults", "/gtfs/42/settings/export-defaults",
-       "settings-tab-export_defaults"},
-      {:feed_url, "Feed URL", "/gtfs/42/settings/feed-url", "settings-tab-feed_url"},
-      {:garages, "Garages", "/gtfs/42/settings/garages", "settings-tab-garages"},
-      {:fleet, "Fleet", "/gtfs/42/settings/fleet", "settings-tab-fleet"}
-    ]
-
-    defp render_settings_nav(active_tab) do
-      assigns = %{active_tab: active_tab}
-
-      rendered_to_string(~H"""
-      <.settings_nav gtfs_version_id={42} active_tab={@active_tab} />
-      """)
-    end
-
-    test "declares the eight Settings sections in order with exact destinations" do
-      html = render_settings_nav(:index)
-      links = sub_nav_links(html, "settings-nav")
-
-      assert sub_nav_texts(links) ==
-               Enum.map(@settings_tabs, fn {_key, label, _href, _id} -> label end)
-
-      assert sub_nav_attr(links, "href") ==
-               Enum.map(@settings_tabs, fn {_k, _l, href, _id} -> href end)
-
-      assert sub_nav_attr(links, "id") == Enum.map(@settings_tabs, fn {_k, _l, _h, id} -> id end)
-
-      assert_sub_nav_contract(html, "settings-nav")
-    end
-
-    for {active_tab, label, _href, _id} <- @settings_tabs do
-      test "#{active_tab} marks exactly one current link" do
-        links = sub_nav_links(render_settings_nav(unquote(active_tab)), "settings-nav")
-
-        assert sub_nav_attr(links, "aria-current") == ["page"]
-        assert sub_nav_texts(current_sub_nav_links(links)) == [unquote(label)]
-      end
-    end
-  end
-
   describe "header" do
     test "renders h1 with correct hierarchy class" do
       assigns = %{}

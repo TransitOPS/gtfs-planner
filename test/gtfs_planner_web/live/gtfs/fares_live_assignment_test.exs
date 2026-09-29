@@ -128,10 +128,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       view |> element("#fare-zone-assign-selection") |> render_click()
 
       assert dialog_open?(view)
-      assert has_element?(view, "#fare-zone-assignment-dialog-title", "Assign selected stops")
+      assert has_element?(view, "#fare-zone-assignment-dialog-title", "Assign 1 stop to a zone")
 
       assert text_of(view, "#fare-zone-assignment-intro") ==
-               "Review 1 selected stop before saving."
+               "Review what will change before you save."
 
       # The target defaults to the zone the operator is filtering by, and its ID
       # travels in the select's option value byte-for-byte.
@@ -140,7 +140,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       # The selected stop is already in B, so the review changes nothing and says
       # so instead of leaving its confirm button unexplained.
-      assert text_of(view, "#fare-zone-assignment-summary") =~ "0 assignments will change"
+      assert tile(view, "added") == "0 Newly assigned"
+      assert tile(view, "unchanged") == "1 Already in this zone"
       refute has_element?(view, "#fare-zone-assignment-moved")
       assert confirm_disabled?(view)
 
@@ -152,16 +153,17 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       choose_target(view, "A")
 
       assert selected_target(view) == "A"
-      assert text_of(view, "#fare-zone-assignment-summary") =~ "1 assignment will change"
-
-      assert text_of(view, "#fare-zone-assignment-summary-change") ==
-               "0 unassigned stops added · 1 moved from another zone"
+      assert tile(view, "added") == "0 Newly assigned"
+      assert tile(view, "moved") == "1 Moved from another zone"
+      assert tile(view, "unchanged") == "0 Already in this zone"
 
       assert text_of(view, "#fare-zone-assignment-moved") =~
-               "Moving stops can change which fares apply to their journeys."
+               "Moving stops can change which fares apply to journeys that use them."
 
       assert has_element?(view, "#fare-zone-assignment-row-1", "Riverside 001")
-      assert text_of(view, "#fare-zone-assignment-row-1") =~ "B → A"
+      assert text_of(view, "#fare-zone-assignment-row-1-from") == "Eastbank"
+      assert text_of(view, "#fare-zone-assignment-row-1-to") == "Central"
+      assert has_element?(view, "#fare-zone-assignment-dialog-confirm", "Assign 1 stop")
       refute confirm_disabled?(view)
       refute has_element?(view, "#fare-zone-assignment-reason")
 
@@ -171,15 +173,14 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       refute has_element?(view, "#fare-zone-assignment-dialog")
       assert text_of(view, "#fare-zone-selection-count") == "1 stop selected"
 
-      # Unassign is its own review: no target select, the danger confirm label and
-      # the unassign copy.
+      # Remove zone is its own review: no target select, and a confirm that repeats
+      # its verb and object.
       view |> element("#fare-zone-unassign-selection") |> render_click()
 
-      assert has_element?(view, "#fare-zone-assignment-dialog-title", "Remove zone assignments")
+      assert has_element?(view, "#fare-zone-assignment-dialog-title", "Remove zone from 1 stop")
       refute has_element?(view, "#fare-zone-assignment-target")
-      assert has_element?(view, "#fare-zone-assignment-dialog-confirm", "Remove assignments")
-      assert text_of(view, "#fare-zone-assignment-summary") =~ "1 assignment will change"
-      assert text_of(view, "#fare-zone-assignment-summary-change") == "1 stop become unassigned"
+      assert has_element?(view, "#fare-zone-assignment-dialog-confirm", "Remove zone")
+      assert tile(view, "changed") == "1 Stops lose their zone"
     end
 
     test "a review of 150 selected stops lists 100 rows and counts the rest", %{
@@ -196,11 +197,17 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       view |> element("#fare-zone-select-matching") |> render_click()
       view |> element("#fare-zone-assign-selection") |> render_click()
 
-      assert text_of(view, "#fare-zone-assignment-intro") ==
-               "Review 150 selected stops before saving."
+      assert has_element?(
+               view,
+               "#fare-zone-assignment-dialog-title",
+               "Assign 150 stops to a zone"
+             )
 
-      assert text_of(view, "#fare-zone-assignment-summary") =~ "0 assignments will change"
-      assert length(row_ids(view, "#fare-zone-assignment-rows > div")) == 100
+      assert has_element?(view, "#fare-zone-assignment-rows", "150 stops in this review")
+
+      assert tile(view, "added") == "0 Newly assigned"
+      assert tile(view, "unchanged") == "150 Already in this zone"
+      assert length(row_ids(view, "#fare-zone-assignment-rows li")) == 100
       assert has_element?(view, "#fare-zone-assignment-more", "and 50 more")
       assert has_element?(view, "#fare-zone-assignment-row-1", "Riverside 001")
       refute has_element?(view, "#fare-zone-assignment-row-101")
@@ -225,16 +232,16 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       view |> element("#fare-zone-assign-selection") |> render_click()
       choose_target(view, "B")
 
-      # Both stops are unassigned, so both are additions.
-      assert text_of(view, "#fare-zone-assignment-summary-change") ==
-               "2 unassigned stops added · 0 moved from another zone"
-
-      assert text_of(view, "#fare-zone-assignment-summary-unchanged") ==
-               "0 already in this zone · left unchanged"
+      # Both stops have no zone, so both are additions.
+      assert tile(view, "added") == "2 Newly assigned"
+      assert tile(view, "moved") == "0 Moved from another zone"
+      assert tile(view, "unchanged") == "0 Already in this zone"
 
       # The report is a statement about the rows the save will write.
-      assert text_of(view, "#fare-zone-assignment-row-1") =~ "None → B"
-      assert text_of(view, "#fare-zone-assignment-row-2") =~ "None → B"
+      assert text_of(view, "#fare-zone-assignment-row-1-from") == "No zone"
+      assert text_of(view, "#fare-zone-assignment-row-1-to") == "Eastbank"
+      assert text_of(view, "#fare-zone-assignment-row-2-from") == "No zone"
+      assert text_of(view, "#fare-zone-assignment-row-2-to") == "Eastbank"
 
       confirm_save(view)
 
@@ -272,8 +279,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       select_stop(view, stop_ids["WEST_2"])
       view |> element("#fare-zone-unassign-selection") |> render_click()
 
-      assert text_of(view, "#fare-zone-assignment-summary-change") == "2 stops become unassigned"
-      assert text_of(view, "#fare-zone-assignment-row-1") =~ "A → None"
+      assert tile(view, "changed") == "2 Stops lose their zone"
+      assert text_of(view, "#fare-zone-assignment-row-1-from") == "Central"
+      assert text_of(view, "#fare-zone-assignment-row-1-to") == "No zone"
 
       confirm_save(view)
 
@@ -302,8 +310,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       view |> element("#fare-zone-assign-selection") |> render_click()
 
-      assert text_of(view, "#fare-zone-assignment-siblings p") ==
-               "1 sibling platform is not selected. Each platform is assigned separately; station groups are never changed silently."
+      assert text_of(view, "#fare-zone-assignment-siblings") ==
+               "1 sibling platform is not selected. Each platform is assigned separately. Station groups are never changed silently."
     end
   end
 
@@ -323,8 +331,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       view |> element("#fare-zone-assign-selection") |> render_click()
       choose_target(view, "B")
 
-      assert text_of(view, "#fare-zone-assignment-summary-change") ==
-               "2 unassigned stops added · 0 moved from another zone"
+      assert tile(view, "added") == "2 Newly assigned"
+      assert tile(view, "moved") == "0 Moved from another zone"
 
       # Another editor assigns one of the reviewed stops while the dialog is open.
       {1, nil} =
@@ -356,10 +364,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       refute confirm_disabled?(view)
       assert selected_target(view) == "B"
 
-      assert text_of(view, "#fare-zone-assignment-summary-change") ==
-               "1 unassigned stop added · 1 moved from another zone"
+      assert tile(view, "added") == "1 Newly assigned"
+      assert tile(view, "moved") == "1 Moved from another zone"
 
-      assert text_of(view, "#fare-zone-assignment-row-1") =~ "A → B"
+      assert text_of(view, "#fare-zone-assignment-row-1-from") == "Central"
+      assert text_of(view, "#fare-zone-assignment-row-1-to") == "Eastbank"
 
       confirm_save(view)
 
@@ -600,7 +609,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       # `text_of/2` collapses whitespace, which would hide the padded ID's leading
       # space, so the row's own nodes are read without normalizing them.
-      assert raw_texts(view, "#fare-zone-assignment-row-1 span") == ["Last Stop", "Z →  A"]
+      assert exact_texts(view, "#fare-zone-assignment-row-1-from") == ["Z"]
+      assert exact_texts(view, "#fare-zone-assignment-row-1-to") == [" A"]
 
       assert has_element?(view, "#fare-zone-row-4", "Z")
 
@@ -645,8 +655,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
       view |> element("#fare-zone-assign-selection") |> render_click()
       choose_target(view, "B")
 
-      assert text_of(view, "#fare-zone-assignment-intro") ==
-               "Review 1 selected stop before saving."
+      assert has_element?(view, "#fare-zone-assignment-dialog-title", "Assign 1 stop to a zone")
 
       refute has_element?(view, "#fare-zone-assignment-row-2")
 
@@ -712,7 +721,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
       # Rows are numbered, options carry the exact IDs as values, and the zone IDs
       # never reach an id attribute (CR-7).
-      assert row_ids(view, "#fare-zone-assignment-rows > div") == [
+      assert row_ids(view, "#fare-zone-assignment-rows li") == [
                "fare-zone-assignment-row-1"
              ]
 
@@ -723,6 +732,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
 
   # The row is only rendered for the page it is on, so a stop that the current
   # page does not show is selected through the same event its checkbox sends.
+  defp tile(view, key), do: text_of(view, "#fare-zone-assignment-summary-#{key}")
+
   defp select_stop(view, uuid) do
     if has_element?(view, "#stops-#{uuid} input[type='checkbox']") do
       view |> element("#stops-#{uuid} input[type='checkbox']") |> render_click()
@@ -787,6 +798,12 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveAssignmentTest do
   # newlines the HEEx template leaves around the value are not part of the value.
   defp raw_texts(view, selector) do
     view |> nodes(selector) |> Enum.map(&(&1 |> LazyHTML.text() |> String.trim()))
+  end
+
+  # The text of the nodes exactly as rendered, leading and trailing spaces included:
+  # a stored ID's own bytes are what a review shows and what the save writes.
+  defp exact_texts(view, selector) do
+    view |> nodes(selector) |> Enum.map(&LazyHTML.text/1)
   end
 
   defp raw_text_of(view, selector), do: view |> raw_texts(selector) |> List.first()

@@ -7,8 +7,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
   adapter for the ordinary entry, so the shell's state machine is proved end to
   end instead of against a private test-only interface:
 
-  - Each of the three paths renders "Fare zones" with its own tab current and the
-    Settings bar's Fares tab current.
+  - Each of the three paths renders "Fares" with its own tab current and a way back
+    to Settings.
   - A member without the editor role is redirected like every other Settings
     page, and an unauthenticated visit goes to the login page.
   - The disconnected render ships the skeleton and no tab panel.
@@ -171,9 +171,18 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
       for {action, path} <- @paths do
         {:ok, view, html} = live(conn, "/gtfs/#{version.id}#{path}")
 
-        assert html =~ "Fare zones"
-        assert html =~ "Group stops into zones, then define when a fare applies."
-        assert has_element?(view, "#settings-tab-fares[aria-current='page']")
+        assert has_element?(view, "h1", "Fares")
+
+        assert html =~
+                 "Group stops into fare zones, then choose which fare riders pay for each journey."
+
+        assert has_element?(
+                 view,
+                 "#settings-back[href='/gtfs/#{version.id}/settings']",
+                 "Settings"
+               )
+
+        refute has_element?(view, "#settings-nav")
         assert has_element?(view, "#fares-tab-#{action}[aria-current='page']")
         assert has_element?(view, "#fare-#{action}-panel")
 
@@ -199,7 +208,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
         doc = LazyHTML.from_fragment(conn.resp_body)
 
         assert Enum.count(LazyHTML.query(doc, "#fare-zones-loading[aria-busy='true']")) == 1
-        assert LazyHTML.text(LazyHTML.query(doc, "#fare-zones-loading")) =~ "Loading fare zones…"
+        assert LazyHTML.text(LazyHTML.query(doc, "#fare-zones-loading")) =~ "Loading fares…"
         assert Enum.empty?(LazyHTML.query(doc, "#fare-zones-panel"))
         assert Enum.empty?(LazyHTML.query(doc, "#fare-rules-panel"))
         assert Enum.empty?(LazyHTML.query(doc, "#fare-checks-panel"))
@@ -226,9 +235,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
 
-      assert has_element?(view, "#fare-zones-error", "Fare zones couldn’t load")
-      assert has_element?(view, "#fare-zones-error", "Your saved zones haven’t changed.")
-      assert has_element?(view, "#fare-zones-reload", "Reload fare zones")
+      assert has_element?(view, "#fare-zones-error", "Fares couldn’t load")
+
+      assert has_element?(
+               view,
+               "#fare-zones-error",
+               "Your saved zones and rules haven’t changed."
+             )
+
+      assert has_element?(view, "#fare-zones-reload", "Reload fares")
       refute has_element?(view, "#fare-zones-panel")
       refute has_element?(view, "#fares-checks-count")
 

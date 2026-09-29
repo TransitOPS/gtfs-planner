@@ -133,53 +133,41 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRulesTest do
 
       assert card_ids(doc) |> length() == @group_count
 
-      # The fare's own line: the fare ID with the price its row holds.
-      assert has_element?(view, "##{cards.city_a_b}-fare", "CITY · $2.50")
-      assert has_element?(view, "##{cards.gone_fare}-fare", "Unknown fare GONE")
+      # The fare's own cells: the fare ID, and the price its row holds. A fare with
+      # no row has no price to show, and the row says so.
+      assert has_element?(view, "##{cards.city_a_b}-fare", "CITY")
+      assert has_element?(view, "##{cards.city_a_b}-price", "$2.50")
+      assert has_element?(view, "##{cards.gone_fare}-fare", "GONE")
+      assert has_element?(view, "##{cards.gone_fare}-price", "—")
+      assert has_element?(view, "##{cards.gone_fare}-unknown-fare", "Fare not in this version")
+      refute has_element?(view, "##{cards.city_a_b}-unknown-fare")
 
       # All four journey forms, plus a rule whose ends are the same zone.
-      assert has_element?(view, "##{cards.city_a_b}-journey", "From Central → Eastbank")
-
-      assert has_element?(
-               view,
-               "##{cards.city_from_only}-journey",
-               "From Central · Any destination"
-             )
-
-      assert has_element?(view, "##{cards.city_to_only}-journey", "Any origin → Eastbank")
+      assert has_element?(view, "##{cards.city_a_b}-journey", "Central → Eastbank")
+      assert has_element?(view, "##{cards.city_from_only}-journey", "Starting in Central")
+      assert has_element?(view, "##{cards.city_to_only}-journey", "Ending in Eastbank")
       assert has_element?(view, "##{cards.city_any_journey}-journey", "Any journey")
-      assert has_element?(view, "##{cards.city_within_a}-journey", "From Central → Central")
+      assert has_element?(view, "##{cards.city_within_a}-journey", "Within Central")
 
-      # The route's own line, then how the journey reads.
-      assert has_element?(view, "##{cards.city_a_b}-route", "All routes · One direction")
-      assert has_element?(view, "##{cards.city_route_10}-route", "10 · Crosstown · One direction")
+      # The route the rule is limited to: its short name beside the long one, the
+      # long name alone, or "All routes" when the rule is not limited.
+      assert has_element?(view, "##{cards.city_a_b}-route", "All routes")
+      assert has_element?(view, "##{cards.city_route_10}-route", "10 Crosstown")
+      assert has_element?(view, "##{cards.city_route_express}-route", "Airport Express")
 
-      assert has_element?(
-               view,
-               "##{cards.city_route_express}-route",
-               "Airport Express · One direction"
-             )
-
-      assert has_element?(
-               view,
-               "##{cards.city_unknown_route}-route",
-               "Unknown route ROUTE_MISSING · One direction"
-             )
+      # A route the version does not carry keeps its ID and is marked.
+      assert has_element?(view, "##{cards.city_unknown_route}-route", "Route ROUTE_MISSING")
 
       assert has_element?(
                view,
-               "##{cards.city_within_a}-route",
-               "One direction · within the same zone"
+               "##{cards.city_unknown_route}-unknown-route",
+               "Route ROUTE_MISSING not in this version"
              )
 
-      assert has_element?(
-               view,
-               "##{cards.cross_through}-route",
-               "Every listed zone must be visited"
-             )
+      refute has_element?(view, "##{cards.city_a_b}-unknown-route")
     end
 
-    test "renders a rule's rows as one card and keeps rules with different keys apart", %{
+    test "renders a rule's rows as one row and keeps rules with different keys apart", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -197,16 +185,20 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRulesTest do
       assert ids == Enum.uniq(ids)
 
       # The two-row rule renders once, with the zones it must visit named in the
-      # order the domain sorted them, appended to the journey the rule applies to.
-      assert has_element?(view, "##{cards.cross_through}-journey", "Through Central + Eastbank")
+      # order the domain sorted them, under the journey the rule applies to.
+      assert has_element?(view, "##{cards.cross_through}-journey", "Any journey")
 
-      assert LazyHTML.text(LazyHTML.query(doc, "##{cards.cross_through}-journey")) ==
-               "Any journey · Through Central + Eastbank"
+      assert has_element?(
+               view,
+               "##{cards.cross_through}-through",
+               "Passing through Central and Eastbank"
+             )
 
       # A through-zone rule and the same fare and route without one are two
       # rules, and the page renders both.
       refute cards.cross_through == cards.city_a_b
-      assert has_element?(view, "##{cards.city_a_b}-journey", "From Central → Eastbank")
+      assert has_element?(view, "##{cards.city_a_b}-journey", "Central → Eastbank")
+      refute has_element?(view, "##{cards.city_a_b}-through")
     end
 
     test "marks only the rules that reference a zone with no boardable stops", %{
@@ -220,9 +212,15 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRulesTest do
 
       # A declared zone with nothing in it, a zone carried only by a station
       # (CR-5: only location_type 0 counts), and a zone no record declares.
-      for card <- [cards.cross_airport, cards.cross_station_only, cards.city_undeclared_zone] do
-        assert has_element?(view, "##{card}-stopless", "Zone used without stops")
-      end
+      assert has_element?(view, "##{cards.cross_airport}-stopless", "Airport has no stops")
+
+      assert has_element?(
+               view,
+               "##{cards.cross_station_only}-stopless",
+               "Station only has no stops"
+             )
+
+      assert has_element?(view, "##{cards.city_undeclared_zone}-stopless", "has no stops")
 
       for card <- [cards.city_a_b, cards.cross_through, cards.city_padded] do
         refute has_element?(view, "##{card}-stopless")
@@ -242,10 +240,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRulesTest do
       # A declared zone takes its record's name; an undeclared one is named by its
       # exact stored ID, so "Z " is not trimmed to "Z".
       assert LazyHTML.text(LazyHTML.query(doc, "##{cards.city_padded}-journey")) ==
-               "From Padded → Eastbank"
+               "Padded → Eastbank"
 
       assert LazyHTML.text(LazyHTML.query(doc, "##{cards.city_undeclared_zone}-journey")) ==
-               "From Z  → Eastbank"
+               "Z  → Eastbank"
 
       # The padded declared zone keeps its own bytes in the badge's rule: it has
       # a boardable stop, so it is not the rule the warning marks.
@@ -271,10 +269,13 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRulesTest do
       assert MapSet.new(ids) == MapSet.new(Map.values(cards))
 
       panel_ids = LazyHTML.attribute(LazyHTML.query(doc, "#fare-rules-panel [id]"), "id")
-      inner_pattern = ~r/\Afare-rule-[0-9a-fA-F-]{36}-(fare|journey|route|stopless|edit)\z/
+
+      inner_pattern =
+        ~r/\Afare-rule-[0-9a-fA-F-]{36}-(fare|price|journey|through|route|stopless|unknown-fare|unknown-route|edit)\z/
+
       # The panel's own fixed anchors are part of the contract, not rule rows.
       static_ids =
-        ~w(fare-rules-tab fare-rules-intro fare-rules-empty fare-rule-list fare-rules-note)
+        ~w(fare-rules-tab fare-rules-intro fare-rules-table fare-rules-count fare-rule-list fare-rules-note)
 
       assert panel_ids != []
 
@@ -284,7 +285,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRulesTest do
              end)
     end
 
-    test "renders the intro callout and the footer note on the tab", %{
+    test "renders the intro and the footer note on the tab", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -293,18 +294,24 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRulesTest do
     } do
       {:ok, view, _html} = mount_rules(conn, user, organization, version)
 
-      assert has_element?(view, "#fare-rules-intro", "Define the journey, then choose the fare.")
-
       assert has_element?(
                view,
                "#fare-rules-intro",
-               "Use existing fares. Prices and payment settings are managed separately."
+               "Rules choose which fare applies to a journey."
              )
 
       assert has_element?(
                view,
+               "#fare-rules-intro",
+               "Fares and their prices come from your imported feed and can’t be edited here."
+             )
+
+      assert has_element?(view, "#fare-rules-count", "14 fare rules")
+
+      assert has_element?(
+               view,
                "#fare-rules-note",
-               "“Any origin” and “Any destination” leave that end of the journey unrestricted. A reverse journey needs its own rule."
+               "Each rule applies in one direction, so a return journey needs its own rule."
              )
 
       # The intro and the note are not rules: they render beside the cards.
@@ -317,11 +324,13 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRulesTest do
       user: user,
       organization: organization
     } do
-      # A version with a zone but no fare_rules row: the tab's own empty state,
-      # not the Zones tab's first use.
+      # A version with a zone and a fare but no fare_rules row: the tab's own empty
+      # state, not the Zones tab's first use. It carries the tab's one primary, so
+      # the header does not repeat it.
       empty_version = gtfs_version_fixture(organization.id, %{name: "No rules version"})
       insert_zone(organization, empty_version, "A", "Central", "ocean")
       insert_stops(organization, empty_version, [{"STOP_ONLY", 0, "A"}])
+      insert_fares(organization, empty_version, [%{fare_id: "CITY", price: "2.50"}])
 
       {:ok, view, _html} = mount_rules(conn, user, organization, empty_version)
 
@@ -330,10 +339,50 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRulesTest do
       assert has_element?(
                view,
                "#fare-rules-empty",
-               "Add a rule to charge a fare for journeys between zones."
+               "A fare rule says which fare riders pay for a journey"
              )
 
+      assert has_element?(view, "#fare-rules-empty", "Your feed has 1 fare ready to use.")
+      assert has_element?(view, "#fare-rules-empty #add-fare-rule", "Add first fare rule")
+
+      assert Enum.count(
+               view
+               |> render()
+               |> LazyHTML.from_fragment()
+               |> LazyHTML.query("#add-fare-rule")
+             ) == 1
+
+      refute has_element?(view, "#fare-rules-no-fares")
       refute has_element?(view, "#fare-rule-list")
+    end
+
+    test "says a version with no fares has nothing for a rule to choose", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      no_fares_version = gtfs_version_fixture(organization.id, %{name: "No fares version"})
+      insert_zone(organization, no_fares_version, "A", "Central", "ocean")
+      insert_stops(organization, no_fares_version, [{"STOP_ONLY", 0, "A"}])
+
+      {:ok, view, _html} = mount_rules(conn, user, organization, no_fares_version)
+
+      assert has_element?(view, "#fare-rules-no-fares", "No fares to choose from yet")
+      assert has_element?(view, "#fare-rules-no-fares", "This version has none.")
+
+      # A rule cannot be written without a fare, so the tab offers no add action;
+      # it sends the operator to import the feed the fares come from.
+      refute has_element?(view, "#add-fare-rule")
+      refute has_element?(view, "#fare-rules-empty")
+
+      assert view
+             |> render()
+             |> LazyHTML.from_fragment()
+             |> LazyHTML.query("#fare-rules-import")
+             |> LazyHTML.attribute("href") == ["/gtfs/#{no_fares_version.id}/import"]
+
+      assert version.id != no_fares_version.id
     end
 
     test "renders only this version's rules", %{
@@ -357,7 +406,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRulesTest do
       refute has_element?(view, "#fare-rule-list", "TWIN")
       refute has_element?(view, "##{card_id(twin_ids.twin)}")
       refute has_element?(view, "##{card_id(twin_ids.twin_only)}")
-      assert has_element?(view, "#fare-rule-list article")
+      assert has_element?(view, "#fare-rule-list tr")
     end
   end
 
@@ -391,7 +440,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRulesTest do
   end
 
   defp card_ids(doc) do
-    doc |> LazyHTML.query("#fare-rule-list article") |> LazyHTML.attribute("id")
+    doc |> LazyHTML.query("#fare-rule-list tr") |> LazyHTML.attribute("id")
   end
 
   defp card_id(row_ids), do: "fare-rule-" <> Enum.min(row_ids)

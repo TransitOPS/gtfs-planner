@@ -151,20 +151,32 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneDeleteTest do
       assert text_of(view, "#fare-zone-delete-others") ==
                "Also moves 1 station or entrance with this zone ID."
 
-      # A zone fare rules use can only move to another inventory zone, so
-      # Unassigned is not offered and the label names the references.
+      # A zone fare rules use can only move to another inventory zone, so No zone
+      # is not offered and the label names the references. Nothing is chosen for
+      # the operator: the select starts on its prompt.
       assert has_element?(view, "#fare-zone-delete-replacement-form", "Replace references with")
 
-      assert option_values(view, "#fare-zone-delete-replacement") == [" A", "B", "D", "E"]
+      assert option_values(view, "#fare-zone-delete-replacement") == ["", " A", "B", "D", "E"]
+      assert selected_replacement(view) == nil
 
       assert text_of(view, "#fare-zone-delete-warning") ==
                "Stops and fare rules will move together. This changes which journeys the related fares cover."
 
-      assert text_of(view, "#fare-zone-delete-dialog-confirm") == "Replace & delete"
+      assert text_of(view, "#fare-zone-delete-dialog-confirm") == "Delete zone"
       assert text_of(view, "#fare-zone-delete-dialog-cancel") == "Keep zone"
+      refute has_element?(view, "#fare-zone-delete-empty")
+
+      # Until a replacement is chosen the confirm is disabled and says why, so a
+      # zone's stops and rules can never move to a zone nobody picked.
+      assert confirm_disabled?(view)
+
+      assert text_of(view, "#fare-zone-delete-reason") ==
+               "Choose the zone that takes over this zone’s stops and fare rules."
+
+      choose_replacement(view, "B")
+
       refute confirm_disabled?(view)
       refute has_element?(view, "#fare-zone-delete-reason")
-      refute has_element?(view, "#fare-zone-delete-empty")
 
       # Keeping the zone closes the dialog and writes nothing.
       view |> element("#fare-zone-delete-dialog-cancel") |> render_click()
@@ -244,7 +256,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneDeleteTest do
   end
 
   describe "a zone fare rules do not use" do
-    test "offers Unassigned and unassigns its stops", %{
+    test "offers No zone and unassigns its stops", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -264,7 +276,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneDeleteTest do
       assert option_values(view, "#fare-zone-delete-replacement") == ["", " A", "A", "B", "D"]
 
       assert option_labels(view, "#fare-zone-delete-replacement") == [
-               "Unassigned",
+               "No zone",
                " A ·  A",
                "Central · A",
                "Eastbank · B",
@@ -276,7 +288,8 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneDeleteTest do
       assert text_of(view, "#fare-zone-delete-warning") ==
                "Stops are kept. Only their zone assignment changes."
 
-      assert text_of(view, "#fare-zone-delete-dialog-confirm") == "Replace & delete"
+      assert text_of(view, "#fare-zone-delete-dialog-confirm") == "Delete zone"
+      refute confirm_disabled?(view)
 
       view |> element("#fare-zone-delete-dialog-confirm") |> render_click()
 
@@ -309,12 +322,12 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneDeleteTest do
                "0 stops and 0 fare rules use this zone."
 
       assert text_of(view, "#fare-zone-delete-empty") ==
-               "This empty zone has no references. Deleting it will not change stops or fares."
+               "This empty zone has no references. Deleting it won’t change stops or fares."
 
       refute has_element?(view, "#fare-zone-delete-replacement-form")
       refute has_element?(view, "#fare-zone-delete-warning")
       refute has_element?(view, "#fare-zone-delete-others")
-      assert text_of(view, "#fare-zone-delete-dialog-confirm") == "Delete empty zone"
+      assert text_of(view, "#fare-zone-delete-dialog-confirm") == "Delete zone"
       refute confirm_disabled?(view)
 
       view |> element("#fare-zone-delete-dialog-confirm") |> render_click()
@@ -437,10 +450,11 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneDeleteTest do
       assert dialog_open?(view)
       assert text_of(view, "#fare-zone-delete-error") == @save_failed_message
 
-      # The select was re-read: E is gone and the dialog fell back to the first
-      # replacement that exists.
-      assert option_values(view, "#fare-zone-delete-replacement") == [" A", "B", "D"]
-      assert selected_replacement(view) == " A"
+      # The select was re-read: E is gone and the dialog fell back to no choice,
+      # so the operator names a replacement that exists.
+      assert option_values(view, "#fare-zone-delete-replacement") == ["", " A", "B", "D"]
+      assert selected_replacement(view) == nil
+      assert confirm_disabled?(view)
 
       # Nothing was written.
       assert zone_id_of(stop_ids, "CENTRAL_1") == "A"
@@ -459,6 +473,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneDeleteTest do
       {:ok, view, _html} = live(conn, zone_url(version, "A"))
 
       open_delete_dialog(view)
+      choose_replacement(view, "B")
 
       # Another editor removes the zone entirely: its stops of every location
       # type, its rule references and its record.
@@ -520,7 +535,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveZoneDeleteTest do
                "1 stop and 0 fare rules use this zone."
 
       assert option_labels(view, "#fare-zone-delete-replacement") == [
-               "Unassigned",
+               "No zone",
                "Central · A",
                "Eastbank · B",
                "Airport · D",

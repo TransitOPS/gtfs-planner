@@ -139,7 +139,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
   end
 
   describe "the header action" do
-    test "is disabled with its reason in a version with no fares", %{
+    test "gives way to the empty state in a version with no fares and no rules", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -147,6 +147,29 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
     } do
       {:ok, view, _html} = mount_rules(conn, user, organization, empty_version)
 
+      # A rule cannot be written without a fare, and there is no rule to read: the
+      # tab explains what is missing instead of offering an action that cannot run.
+      assert has_element?(view, "#fare-rules-no-fares")
+      refute has_element?(view, "#add-fare-rule")
+      refute has_element?(view, "#add-fare-rule-reason")
+    end
+
+    test "is disabled with its reason when rules exist but the version has no fares", %{
+      conn: conn,
+      user: user,
+      organization: organization
+    } do
+      no_fares_version = gtfs_version_fixture(organization.id)
+      insert_zone(organization, no_fares_version, "A", "Central", "ocean")
+      insert_stops(organization, no_fares_version, [{"NO_FARE_1", "No fare 1", 0, "A"}])
+      insert_rules(organization, no_fares_version, [{:orphan, {"GONE", nil, "A", "A", nil}}])
+
+      {:ok, view, _html} = mount_rules(conn, user, organization, no_fares_version)
+
+      # The rule is still listed and editable, so the header action stays and says
+      # why it cannot add another one.
+      assert has_element?(view, "#fare-rule-list tr")
+      refute has_element?(view, "#fare-rules-no-fares")
       assert has_element?(view, "#add-fare-rule[disabled]")
       assert text_exact(view, "#add-fare-rule-reason") == @no_fares_reason
     end
@@ -165,7 +188,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
       view |> element("#add-fare-rule") |> render_click()
 
       assert drawer_open?(view)
-      assert text_exact(view, "#fare-rule-drawer-title") == "Add a fare rule"
+      assert text_exact(view, "#fare-rule-drawer-title") == "Add fare rule"
       assert has_element?(view, "#fare-rule-form")
     end
   end
@@ -181,9 +204,17 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
 
       view |> element("#add-fare-rule") |> render_click()
 
-      assert option_labels(view, "#fare-rule-fare") == ["CITY · $2.50", "CROSS · $3.75"]
-      assert option_labels(view, "#fare-rule-origin") == ["Any origin" | @zone_labels]
-      assert option_labels(view, "#fare-rule-destination") == ["Any destination" | @zone_labels]
+      # No fare is chosen for the operator: the select starts on its prompt, so a
+      # rule cannot take the first fare in the list because nobody looked.
+      assert option_labels(view, "#fare-rule-fare") == [
+               "Choose a fare",
+               "CITY · $2.50",
+               "CROSS · $3.75"
+             ]
+
+      assert selected_option(view, "#fare-rule-fare") == nil
+      assert option_labels(view, "#fare-rule-origin") == ["Any zone" | @zone_labels]
+      assert option_labels(view, "#fare-rule-destination") == ["Any zone" | @zone_labels]
 
       assert option_labels(view, "#fare-rule-route") == [
                "All routes",
@@ -217,7 +248,26 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
       refute has_element?(view, "#fare-rule-contains-help", "must visit")
 
       assert text_exact(view, "#fare-rule-fare-help") ==
-               "Existing fares in this version. Prices are shown for context."
+               "Prices come from this version’s fare list."
+    end
+
+    test "refuses a save with no fare chosen and says what to do", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      {:ok, view, _html} = mount_rules(conn, user, organization, version)
+
+      before = all_rule_ids(organization, version)
+
+      view |> element("#add-fare-rule") |> render_click()
+      submit_rule(view, %{@form | "fare_id" => "", "origin_id" => "A", "destination_id" => "B"})
+
+      assert drawer_open?(view)
+      assert has_element?(view, "#fare-rule-fare[aria-invalid='true']")
+      assert text_exact(view, "#fare-rule-fare-error") == "Choose a fare."
+      assert all_rule_ids(organization, version) == before
     end
 
     test "saves the chosen journey, closes the drawer and shows the new card", %{
@@ -233,7 +283,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
 
       refute drawer_open?(view)
       assert text_exact(view, "#fare-zone-notice") == "Fare rule saved."
-      assert has_element?(view, "#fare-rule-list article", "From Central → Uplands")
+      assert has_element?(view, "#fare-rule-list tr", "Central → Uplands")
 
       assert [row] = rules(organization, version, "CITY", nil, "A", "B")
 
@@ -265,7 +315,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
       # The chosen journey is still the form's: the summary is rendered from the
       # form's own current values, so it cannot read right unless they survived.
       assert text_exact(view, "#fare-rule-summary") ==
-               "Use CITY · $2.50 for journeys from Central to Uplands on 10 · Crosstown."
+               "Riders pay CITY ($2.50) for journeys from Central to Uplands on route 10 · Crosstown."
 
       assert selected_option(view, "#fare-rule-fare") == "CITY"
       assert selected_option(view, "#fare-rule-route") == "ROUTE_10"
@@ -313,15 +363,25 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
 
       view |> element("#add-fare-rule") |> render_click()
 
-      # A create starts on the version's first fare, so the summary describes a
-      # rule that can actually be saved.
+      # A create starts with no fare chosen, and the summary says so instead of
+      # naming a fare nobody picked.
       assert text_exact(view, "#fare-rule-summary") ==
-               "Use CITY · $2.50 for journeys from any zone to any zone on all routes."
+               "Riders pay the selected fare for any journey on any route."
 
       change_rule(view, %{@form | "origin_id" => "A", "destination_id" => "B"})
 
       assert text_exact(view, "#fare-rule-summary") ==
-               "Use CITY · $2.50 for journeys from Central to Uplands on all routes."
+               "Riders pay CITY ($2.50) for journeys from Central to Uplands on any route."
+
+      change_rule(view, %{@form | "origin_id" => "A", "destination_id" => "A"})
+
+      assert text_exact(view, "#fare-rule-summary") ==
+               "Riders pay CITY ($2.50) for journeys within Central on any route."
+
+      change_rule(view, %{@form | "destination_id" => "B"})
+
+      assert text_exact(view, "#fare-rule-summary") ==
+               "Riders pay CITY ($2.50) for journeys ending in Uplands on any route."
 
       change_rule(view, %{
         @form
@@ -331,7 +391,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
       })
 
       assert text_exact(view, "#fare-rule-summary") ==
-               "Use CITY · $2.50 for journeys from Central to Uplands on 10 · Crosstown."
+               "Riders pay CITY ($2.50) for journeys from Central to Uplands on route 10 · Crosstown."
 
       change_rule(view, %{
         @form
@@ -342,7 +402,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
       })
 
       assert text_exact(view, "#fare-rule-summary") ==
-               "Use CITY · $2.50 for journeys from Central to Uplands on 10 · Crosstown, visiting Central and Uplands."
+               "Riders pay CITY ($2.50) for journeys from Central to Uplands on route 10 · Crosstown, passing through Central and Uplands."
 
       # The zone whose ID has a leading space keeps its bytes in the option and
       # is named by the inventory's own record.
@@ -351,7 +411,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
       assert selected_option(view, "#fare-rule-origin") == " A"
 
       assert text_exact(view, "#fare-rule-summary") ==
-               "Use CITY · $2.50 for journeys from Padded to any zone on all routes."
+               "Riders pay CITY ($2.50) for journeys starting in Padded on any route."
     end
   end
 
@@ -597,7 +657,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
       assert text_exact(view, "#fare-rule-remove-dialog-title") == "Remove this fare rule?"
 
       assert text_exact(view, "#fare-rule-remove-consequence") ==
-               "The fare itself will remain. Journeys covered by this rule may no longer receive that fare."
+               "CROSS will no longer apply to any journey, passing through Central and Uplands. The fare stays in this version’s fare list."
 
       assert text_exact(view, "#fare-rule-remove-dialog-confirm") == "Remove rule"
       assert text_exact(view, "#fare-rule-remove-dialog-cancel") == "Keep rule"
@@ -619,7 +679,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
       assert text_exact(view, "#fare-zone-notice") == "Fare rule removed."
 
       assert rules(organization, version, "CROSS", nil, nil, nil) == []
-      assert has_element?(view, "#fare-rule-list article", "From Central → Uplands")
+      assert has_element?(view, "#fare-rule-list tr", "Central → Uplands")
 
       # The fare attribute is untouched: only the rule's rows go.
       assert Repo.get_by(FareAttribute,
@@ -825,13 +885,14 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveRuleEditorTest do
       conn: conn,
       user: user,
       organization: organization,
-      version: version
+      version: version,
+      cards: cards
     } do
       {:ok, view, _html} = mount_rules(conn, user, organization, version)
 
-      # Closing resets the form to the first fare, CITY, whose rules disagree; the
-      # inert drawer must not keep announcing that.
-      view |> element("#add-fare-rule") |> render_click()
+      # Editing a CITY rule opens the drawer on a fare whose rules disagree; once
+      # the drawer closes, the inert form must not keep announcing that.
+      view |> element("##{cards.collision}-edit") |> render_click()
       assert has_element?(view, "#fare-rule-combine-warning")
 
       view |> element("#fare-rule-drawer button", "Cancel") |> render_click()

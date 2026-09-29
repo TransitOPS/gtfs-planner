@@ -327,18 +327,16 @@ defmodule GtfsPlannerWeb.Gtfs.SettingsLiveTest do
       doc = LazyHTML.from_fragment(render(view))
 
       # The literal route resolves before `/settings/:section`, so this is the
-      # workspace shell with the Settings bar's Fares tab current.
-      assert text_of(doc, "h1") == "Fare zones"
+      # workspace shell, which leads back to Settings instead of carrying its bar.
+      assert text_of(doc, "h1") == "Fares"
       # An empty inventory shows the workspace's first-use state instead of the panel.
       assert has_element?(view, "#fare-zone-first-use")
       refute has_element?(view, "#coming-soon")
 
-      assert LazyHTML.attribute(
-               LazyHTML.query(doc, "#settings-nav a[aria-current='page']"),
-               "href"
-             ) == [section_path(version.id, "fares")]
+      assert LazyHTML.attribute(LazyHTML.query(doc, "#settings-back"), "href") ==
+               [settings_path(version.id)]
 
-      assert Enum.count(LazyHTML.query(doc, "#settings-nav a[aria-current='page']")) == 1
+      refute has_element?(view, "#settings-nav")
     end
   end
 

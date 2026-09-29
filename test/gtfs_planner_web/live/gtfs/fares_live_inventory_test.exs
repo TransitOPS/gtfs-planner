@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
   @moduledoc """
-  Merge evidence (EV-14) for the Zones tab's inventory panel and its URL filters.
+  Merge evidence (EV-14) for the Zones tab's zone strip and its URL filters.
 
   Every case mounts the real route and reads the version's real data through the
   default `CatalogReadAdapter.Repo` adapter, so the rows, counts and colors come
@@ -10,9 +10,9 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
   a station, a zone a fare rule references with no stops at all, and a zone
   literally named `unassigned`.
 
-  The panel is the page's navigation, so each filter case reads the href the
-  panel rendered and patches through that exact href: the test cannot pass by
-  rebuilding a URL the panel never produced. That is also where the encoding rule
+  The strip is the page's navigation, so each filter case reads the href the
+  strip rendered and patches through that exact href: the test cannot pass by
+  rebuilding a URL the strip never produced. That is also where the encoding rule
   lives - `URI.encode_query/1` output, `filter` kept a separate key from `zone`,
   and no DOM ID derived from a zone ID. One case pins the unknown-zone fallback's
   second workspace read, which is what keeps the stop list below the header
@@ -105,55 +105,41 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/settings/fares")
       html = render(view)
 
-      assert has_element?(view, "#fare-zone-inventory-count", "8")
-
       assert has_element?(view, "#fare-zone-row-all", "All stops")
-      assert has_element?(view, "#fare-zone-row-all", "Every zone")
       assert has_element?(view, "#fare-zone-row-all-count", "8")
 
-      # A declared zone: its name, its ID and its boardable membership.
-      assert has_element?(view, "#fare-zone-row-2 strong", "Central")
-      assert has_element?(view, "#fare-zone-row-2 small", "ID A")
+      # A declared zone chip is its name and its boardable membership. The zone
+      # ID is detail for the stage line, not part of the chip.
+      assert has_element?(view, "#fare-zone-row-2-title", "Central")
       assert has_element?(view, "#fare-zone-row-2-count", "2")
 
-      # " A" and "A" are two zones with two rows: no path trims an existing ID.
-      # `has_element?/3` compares whitespace-normalized text, so the padded ID is
-      # read from the rendered nodes themselves: the bytes have to still be there,
-      # and the row beside it keeps its own unpadded ID.
-      assert untrimmed_texts(view, "#fare-zone-row-1 strong, #fare-zone-row-1 small") == [
-               " A",
-               "ID  A"
-             ]
-
-      assert untrimmed_texts(view, "#fare-zone-row-2 strong, #fare-zone-row-2 small") == [
-               "Central",
-               "ID A"
-             ]
-
+      # " A" and "A" are two zones with two chips: no path trims an existing ID.
+      # `has_element?/3` compares whitespace-normalized text, so an undeclared
+      # zone's name - its stored ID - is read from the rendered node itself: the
+      # padded bytes have to still be there, and the chip beside it keeps its own.
+      assert untrimmed_texts(view, "#fare-zone-row-1-title") == [" A"]
+      assert untrimmed_texts(view, "#fare-zone-row-2-title") == ["Central"]
       assert has_element?(view, "#fare-zone-row-1-count", "1")
 
       # A declared zone with no stops, and a rule-referenced zone with none.
-      assert has_element?(view, "#fare-zone-row-4 small", "ID D · Empty zone")
-      assert has_element?(view, "#fare-zone-row-5 small", "ID R · Empty zone")
+      assert has_element?(view, "#fare-zone-row-4-title", "Airport")
+      assert has_element?(view, "#fare-zone-row-4-count", "0")
+      assert has_element?(view, "#fare-zone-row-5-title", "R")
       assert has_element?(view, "#fare-zone-row-5-count", "0")
 
       # Counts are boardable stops only: a zone carried by a station alone reads
-      # 0 and keeps its row, and a zone with one platform counts the platform.
-      assert has_element?(view, "#fare-zone-row-6 small", "ID S · Empty zone")
+      # 0 and keeps its chip, and a zone with one platform counts the platform.
+      assert has_element?(view, "#fare-zone-row-6-title", "S")
       assert has_element?(view, "#fare-zone-row-6-count", "0")
       assert has_element?(view, "#fare-zone-row-7-count", "1")
 
-      assert has_element?(view, "#fare-zone-row-unassigned", "Unassigned")
-      assert has_element?(view, "#fare-zone-row-unassigned", "Needs assignment")
+      assert has_element?(view, "#fare-zone-row-unassigned", "No zone")
       assert has_element?(view, "#fare-zone-row-unassigned-count", "2")
 
-      assert html =~ "Each stop belongs to one zone."
-      assert html =~ "Zone names help your team. Zone IDs travel with your GTFS feed."
-
-      # The chip is drawn in the zone's own palette color, on a tinted square.
-      assert html =~ "color: #1f5fbf"
-      assert html =~ "background-color: #1f5fbf1a"
-      assert html =~ "color: #0d737d"
+      # The chip leads with a dot in the zone's own palette color, and the zone's
+      # name is always beside it, so the color is never the only cue.
+      assert dot_style(view, "#fare-zone-row-2") == "background-color: #1f5fbf"
+      assert dot_style(view, "#fare-zone-row-3") == "background-color: #0d737d"
 
       # No DOM ID derives from a zone ID, so an ID with spaces, "&" or a name
       # that collides with the fixed rows cannot break a selector.
@@ -188,7 +174,12 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
       assert has_element?(view, "#fare-zone-row-2[aria-current='page']")
       refute has_element?(view, "#fare-zone-row-all[aria-current='page']")
       assert has_element?(view, "#fare-zone-stage-title", "Central")
-      assert has_element?(view, "#fare-zone-stage-subtitle", "2 stops · Zone ID A")
+
+      assert has_element?(
+               view,
+               "#fare-zone-stage-subtitle",
+               "2 stops · used by 1 fare rule · Zone ID A"
+             )
     end
 
     test "a zone ID holding a space and an ampersand round-trips through its link", %{
@@ -207,7 +198,12 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
 
       assert has_element?(view, "#fare-zone-row-3[aria-current='page']")
       assert has_element?(view, "#fare-zone-stage-title", "Bayside & Central")
-      assert has_element?(view, "#fare-zone-stage-subtitle", "1 stop · Zone ID A&B 1")
+
+      assert has_element?(
+               view,
+               "#fare-zone-stage-subtitle",
+               "1 stop · no fare rules use it · Zone ID A&B 1"
+             )
 
       assert row_href(view, "#fare-zone-row-unassigned") ==
                "/gtfs/#{version.id}/settings/fares?filter=unassigned"
@@ -235,14 +231,19 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
       assert has_element?(view, "#fare-zone-row-8[aria-current='page']")
       refute has_element?(view, "#fare-zone-row-unassigned[aria-current='page']")
       assert has_element?(view, "#fare-zone-stage-title", "Unassigned Park")
-      assert has_element?(view, "#fare-zone-stage-subtitle", "1 stop · Zone ID unassigned")
+
+      assert has_element?(
+               view,
+               "#fare-zone-stage-subtitle",
+               "1 stop · no fare rules use it · Zone ID unassigned"
+             )
 
       render_patch(view, filter_href)
 
       assert has_element?(view, "#fare-zone-row-unassigned[aria-current='page']")
       refute has_element?(view, "#fare-zone-row-8[aria-current='page']")
-      assert has_element?(view, "#fare-zone-stage-title", "Unassigned stops")
-      assert has_element?(view, "#fare-zone-stage-subtitle", "2 stops")
+      assert has_element?(view, "#fare-zone-stage-title", "Stops with no zone")
+      assert has_element?(view, "#fare-zone-stage-subtitle", "2 stops · trip planners")
     end
 
     test "a zone value the inventory does not carry shows All stops", %{
@@ -343,7 +344,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
     end
   end
 
-  # The rendered href of one row. The panel owns the encoding, so the tests read
+  # The rendered href of one chip. The strip owns the encoding, so the tests read
   # the link it produced rather than reconstructing it.
   defp row_href(view, selector) do
     [href] =
@@ -354,6 +355,18 @@ defmodule GtfsPlannerWeb.Gtfs.FaresLiveInventoryTest do
       |> LazyHTML.attribute("href")
 
     href
+  end
+
+  # The inline style of the color dot a chip leads with.
+  defp dot_style(view, chip_selector) do
+    [style] =
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#{chip_selector} span[style]")
+      |> LazyHTML.attribute("style")
+
+    style
   end
 
   # The untrimmed text of the given nodes. `has_element?/3` compares
