@@ -763,6 +763,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # query count does not grow with the number of requested trips. Each pair is
   # checked over its own block's trips on its own day type, filtered from that read.
   defp block_problem_entries(organization_id, gtfs_version_id, day_types, trips, min_layover) do
+    context = Context.layover_only(min_layover)
+
     pairs =
       trips
       |> Enum.filter(&is_binary(&1.block_id))
@@ -778,7 +780,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       block_trips =
         Enum.filter(rows, &(&1.block_id == block_id and &1.service_id in day_type.service_ids))
 
-      {Checks.block_findings(block_id, block_trips, min_layover), day_type}
+      {Checks.block_findings(block_id, block_trips, context), day_type}
     end)
     |> Enum.flat_map(fn {findings, day_type} -> Enum.map(findings, &{&1, day_type}) end)
     |> Enum.uniq_by(fn {finding, day_type} -> {Checks.finding_key(finding), day_type.key} end)
@@ -1116,12 +1118,14 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   defp day_type_findings(day_type, trips, min_layover_minutes) do
+    context = Context.layover_only(min_layover_minutes)
+
     day_type
     |> day_type_trips(trips)
     |> Enum.group_by(& &1.block_id)
     |> Enum.flat_map(fn {block_id, block_trips} ->
       block_id
-      |> Checks.block_findings(Enum.sort_by(block_trips, & &1.trip_id), min_layover_minutes)
+      |> Checks.block_findings(Enum.sort_by(block_trips, & &1.trip_id), context)
       |> Enum.map(&with_day_type_context(&1, [day_type]))
     end)
   end
@@ -1306,6 +1310,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   defp assemble(organization_id, gtfs_version_id, day_types, service_dates, trips, min_layover) do
+    context = Context.layover_only(min_layover)
     {pool_trips, blocked_trips} = Enum.split_with(trips, &is_nil(&1.block_id))
 
     in_seat =
@@ -1336,7 +1341,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         build_block(
           block_id,
           block_trips,
-          min_layover,
+          context,
           Map.get(in_seat_by_block, block_id, [])
         )
       end)
@@ -1346,7 +1351,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
     findings =
       (Enum.flat_map(blocks, & &1.findings) ++
-         pool_notices(pool_trips, min_layover) ++ in_seat_findings)
+         pool_notices(pool_trips, context) ++ in_seat_findings)
       |> Enum.uniq_by(&Checks.finding_key/1)
 
     summaries = Enum.map(blocks, & &1.summary)
@@ -1376,9 +1381,9 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     }
   end
 
-  defp build_block(block_id, trips, min_layover_minutes, in_seat_findings) do
+  defp build_block(block_id, trips, context, in_seat_findings) do
     findings =
-      (Checks.block_findings(block_id, trips, min_layover_minutes) ++ in_seat_findings)
+      (Checks.block_findings(block_id, trips, context) ++ in_seat_findings)
       |> Enum.uniq_by(&Checks.finding_key/1)
 
     %{
@@ -1559,8 +1564,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     Enum.sort_by(plottable, & &1.first_departure) ++ Enum.sort_by(untimed, & &1.trip_id)
   end
 
-  defp pool_notices(pool_trips, min_layover_minutes) do
-    Enum.flat_map(pool_trips, &Checks.block_findings(nil, [&1], min_layover_minutes))
+  defp pool_notices(pool_trips, context) do
+    Enum.flat_map(pool_trips, &Checks.block_findings(nil, [&1], context))
   end
 
   # The axis covers every plottable trip of the day type, blocked or not, from the
@@ -1887,7 +1892,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         changes: changes,
         in_seat: in_seat,
         service_dates: service_dates,
-        min_layover_minutes: get_settings(organization_id, version_id).min_layover_minutes
+        context:
+          Context.layover_only(get_settings(organization_id, version_id).min_layover_minutes)
       })
 
     cond do
