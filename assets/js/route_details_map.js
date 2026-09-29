@@ -765,6 +765,7 @@ const RouteDetailsMapHook = {
     this._lineColor = lineHex;
 
     this._paintLines();
+    this._paintMarkers();
     this._paintSwatches();
   },
 
@@ -969,7 +970,7 @@ const RouteDetailsMapHook = {
   },
 
   _paintMarkers() {
-    if (!this._L) return;
+    if (!this._L || !this._markers) return;
     this._markers.clearLayers();
 
     const stroke =
