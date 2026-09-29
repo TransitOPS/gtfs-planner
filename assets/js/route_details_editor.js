@@ -90,7 +90,7 @@ const RouteDetailsEditor = {
     // The heading badge is the route header's own badge, rendered outside this
     // color field, so it is found in the document like the save bar below.
     this.headingBadge = this.el.ownerDocument.getElementById(
-      `${this.prefix}-badge`,
+      this.el.dataset.headingBadge || `${this.prefix}-badge`,
     )?.firstElementChild;
     this.readableIcon = this._part("contrast-icon-ok");
     this.unreadableIcon = this._part("contrast-icon-low");

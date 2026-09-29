@@ -514,6 +514,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     default: nil,
     doc: "the draft's automatic|custom transport mode; derived from the colors when absent"
 
+  attr :heading_badge_id, :string,
+    default: nil,
+    doc: """
+    the id of the page header's route badge, which the color preview repaints as
+    the operator types; defaults to `<prefix>-badge`
+    """
+
   attr :nav_guard, :boolean,
     default: false,
     doc: "arm the RouteDetailsEditor dirty-navigation guard on this hook instance"
@@ -550,6 +557,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
       id={"#{@prefix}-color-fields"}
       phx-hook="RouteDetailsEditor"
       data-prefix={@prefix}
+      data-heading-badge={@heading_badge_id}
       data-nav-guard={@nav_guard && "true"}
       data-dirty={@nav_guard && to_string(@nav_dirty)}
       class="grid gap-3"

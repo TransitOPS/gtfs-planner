@@ -109,6 +109,23 @@ describe("RouteDetailsEditor local color preview", () => {
     expect(verdict.textContent).toBe("Easy to read");
   });
 
+  it("repaints the page header's badge from the element the color field names", () => {
+    const header = document.createElement("div");
+    header.innerHTML = `<span id="route-badge"><span style="background-color: rgb(255, 255, 255)">W1</span></span>`;
+    document.body.appendChild(header);
+    const hook = mountHook({ prefix: "route-details" });
+    hook.el.setAttribute("data-heading-badge", "route-badge");
+    hook.mounted();
+
+    const color = document.getElementById("route-details-color");
+    color.value = "5BC5F2";
+    color.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(
+      header.querySelector("#route-badge > span").style.backgroundColor,
+    ).toBe("rgb(91, 197, 242)");
+  });
+
   it("Use automatic text color announces the mode change so the server draft follows", () => {
     mountHook({ prefix: "new-route" });
     const automatic = document.getElementById("new-route-text-mode-automatic");
