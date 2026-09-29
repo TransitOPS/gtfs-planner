@@ -30,9 +30,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
 
   import Phoenix.LiveViewTest
 
-  import Ecto.Query, only: [where: 2]
+  import Ecto.Query, only: [from: 2]
 
   import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.AdvancedBlockingFixtures
   import GtfsPlanner.BlockingFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OperationsFixtures
@@ -622,8 +623,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
   defp hours(_no_seconds), do: "—"
 
   defp block_of(trip_id) do
-    GtfsPlanner.Gtfs.Trip
-    |> where([t], t.trip_id == ^trip_id)
+    from(t in GtfsPlanner.Gtfs.Trip, where: t.trip_id == ^trip_id)
     |> Repo.one()
     |> Map.fetch!(:block_id)
   end

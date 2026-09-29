@@ -260,7 +260,6 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
       out_of_range_columns = [
         max_block_minutes: {59, "max_block_minutes_range"},
         pull_out_buffer_minutes: {61, "pull_out_buffer_range"},
-        interlining: {"sometimes", "interlining_values"},
         deadhead_speed_kmh: {4, "deadhead_speed_range"},
         deadhead_circuity: {Decimal.new("3.1"), "deadhead_circuity_range"},
         max_piece_minutes: {59, "max_piece_minutes_range"}
@@ -278,6 +277,21 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
         assert_raise Ecto.ConstraintError, ~r/#{constraint}/, fn ->
           Repo.transaction(fn -> Repo.insert!(setting) end)
         end
+      end
+
+      # `interlining` is an Ecto enum, so the database never sees the bad value:
+      # the struct cannot be loaded at all. That is a different refusal from the
+      # CHECK constraints above, and it is the one the schema can make.
+      interlining =
+        struct(%BlockingSetting{
+          organization_id: organization.id,
+          gtfs_version_id: version.id,
+          min_layover_minutes: 5
+        })
+        |> Map.replace!(:interlining, "sometimes")
+
+      assert_raise Ecto.ChangeError, ~r/interlining/, fn ->
+        Repo.insert!(interlining)
       end
     end
 

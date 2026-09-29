@@ -163,7 +163,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.SuggestTest do
 
       # Every trip that already had a block keeps it: no move names one, and the
       # stored assignments are exactly what the fixture wrote (AC-22).
-      assert stored_blocks(scope, Enum.map(@blocked_trips, &elem(&1, 0))) == %{
+      assert stored_blocks(
+               scope,
+               Enum.map(@blocked_trips, &elem(&1, 0)) ++ [@frequency_trip_id]
+             ) == %{
                "wk_1" => "101",
                "wk_2" => "101",
                "wk_3" => "102",

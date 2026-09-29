@@ -85,7 +85,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.MovementsTest do
       pull = movements.pull_out
       assert pull.end_secs == 21_600
       assert pull.start_secs == 21_600 - 12 * 60
-      assert pull.drive_secs == 12
+      assert pull.drive_secs == 12 * 60
       assert pull.source == :estimated
       assert pull.from == {:garage, @garage_uuid}
       assert pull.to == {:stop, "S1"}
@@ -99,7 +99,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.MovementsTest do
       metres = haversine_m(@depot, @bay_a)
       assert_in_delta metres, 4_614.6, 0.1
       assert round(metres * @circuity / @metres_per_minute) == 12
-      assert movements.pull_out.drive_secs == 12
+      assert movements.pull_out.drive_secs == 12 * 60
     end
 
     test "a five-minute buffer moves the end back and the start with it" do
@@ -124,7 +124,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.MovementsTest do
         )
 
       pull = movements.pull_out
-      assert pull.drive_secs == 20
+      assert pull.drive_secs == 20 * 60
       assert pull.source == :entered
       assert pull.end_secs == 300
       assert pull.start_secs == -900
@@ -146,7 +146,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.MovementsTest do
       assert pull.to == {:garage, @garage_uuid}
       assert pull.start_secs == 21_900 + 180
       assert pull.end_secs == 21_900 + 180 + 12 * 60
-      assert pull.drive_secs == 12
+      assert pull.drive_secs == 12 * 60
       assert pull.source == :estimated
     end
 
@@ -177,8 +177,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.MovementsTest do
 
       gap = only_gap(movements)
       assert gap.kind == :layover
-      assert gap.gap_secs == 1_800
-      assert gap.wait_secs == 1_800
+      # 06:00 arrives five minutes after it departs and 06:30 leaves on the
+      # half hour, so the whole 25-minute gap is spent at the stop.
+      assert gap.gap_secs == 1_500
+      assert gap.wait_secs == 1_500
       assert gap.drive_secs == nil
       assert gap.source == nil
       assert gap.feasible? == true
@@ -314,9 +316,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.MovementsTest do
 
       assert [first, second] = movements.gaps
       assert Enum.map(movements.gaps, & &1.index) == [0, 1]
+      # Each trip arrives five minutes after it departs.
       assert first.arrival_secs == 21_900
-      assert first.departure_secs == 22_800
-      assert second.arrival_secs == 23_100
+      assert first.departure_secs == 23_400
+      assert second.arrival_secs == 23_700
       assert second.departure_secs == 25_200
       assert {first.from_id, first.to_id} == {one.id, two.id}
       assert {second.from_id, second.to_id} == {two.id, three.id}
@@ -336,13 +339,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.MovementsTest do
       assert movements.pull_back == nil
       assert movements.garage_id == nil
       assert movements.platform_start_secs == 21_600
-      assert movements.platform_end_secs == 23_100
+      assert movements.platform_end_secs == 23_700
       assert movements.drive_secs == 0
       assert movements.deadhead_km == 0.0
     end
 
     test "an endpoint stop the feed does not describe also leaves the pull out" do
-      movements = Movements.build([trip("06:00", first_stop: nil)], resolved(), context())
+      movements =
+        Movements.build([trip("06:00", first_stop: nil, last_stop: nil)], resolved(), context())
 
       assert movements.pull_out == nil
       assert movements.pull_back == nil
@@ -383,10 +387,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.MovementsTest do
       # Three trips of five minutes each.
       assert movements.service_secs == 900
 
-      # Gap 1 is a 15-minute nearby layover; gap 2 is 35 minutes against a
-      # 14-minute drive, so 21 minutes of wait.
-      assert movements.gaps |> Enum.map(& &1.gap_secs) == [900, 2_100]
-      assert movements.layover_secs == 900 + 1_260
+      # Each trip ends five minutes after it departs, so gap 1 is 21:00's 21:05
+      # arrival to 06:30's 23:30 departure and gap 2 is 06:30's 23:35 arrival to
+      # 07:00's 25:20 departure: 25 minutes each.
+      assert movements.gaps |> Enum.map(& &1.gap_secs) == [1_500, 1_500]
+
+      # Gap 1 is a nearby layover and waits out its whole 25 minutes. Gap 2
+      # drives 14 minutes, so 11 of its 25 minutes are wait.
+      assert movements.layover_secs == 1_500 + (1_500 - 14 * 60)
 
       # Two 12-minute pulls and one 14-minute drive.
       assert movements.drive_secs == 12 * 60 + 12 * 60 + 14 * 60

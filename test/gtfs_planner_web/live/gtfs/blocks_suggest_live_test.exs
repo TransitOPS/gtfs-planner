@@ -18,7 +18,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
 
   import Phoenix.LiveViewTest
 
-  import Ecto.Query, only: [where: 2]
+  import Ecto.Query, only: [from: 2]
 
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.AdvancedBlockingFixtures
@@ -524,8 +524,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
   end
 
   defp unassigned?(trip_id) do
-    GtfsPlanner.Gtfs.Trip
-    |> where([t], t.trip_id == ^trip_id)
+    from(t in GtfsPlanner.Gtfs.Trip, where: t.trip_id == ^trip_id)
     |> Repo.one()
     |> Map.fetch!(:block_id)
     |> is_nil()

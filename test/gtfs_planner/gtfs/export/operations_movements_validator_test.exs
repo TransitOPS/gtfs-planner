@@ -175,8 +175,10 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsValidatorTest do
     trip
   end
 
+  # `entries` is the ZIP's own file-name list, so the TODS files are read out of
+  # it directly rather than out of a map this module never builds.
   defp tods_files(entries) do
-    Enum.filter(Map.keys(entries), &(&1 in ["stops_supplement.txt", "vehicles.txt"]))
+    Enum.filter(entries, &(&1 in ["stops_supplement.txt", "vehicles.txt"]))
   end
 
   defp export_zip!(tmp_dir, organization_id, version_id, export_type) do

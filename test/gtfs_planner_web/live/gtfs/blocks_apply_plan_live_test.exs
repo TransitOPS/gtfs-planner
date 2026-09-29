@@ -33,7 +33,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksApplyPlanLiveTest do
 
   import Phoenix.LiveViewTest
 
-  import Ecto.Query, only: [from: 2, where: 2]
+  import Ecto.Query, only: [from: 2]
 
   import Mox
 
@@ -204,8 +204,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksApplyPlanLiveTest do
   defp plan(view), do: assigns(view)[:suggestion].plan
 
   defp block_of(trip_id) do
-    Trip
-    |> where([t], t.trip_id == ^trip_id)
+    from(t in Trip, where: t.trip_id == ^trip_id)
     |> Repo.one()
     |> Map.fetch!(:block_id)
   end
@@ -520,8 +519,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksApplyPlanLiveTest do
 
   # The trips the plan actually moved, as the table holds them.
   defp moved_blocks(context) do
-    Trip
-    |> where([t], t.gtfs_version_id == ^context.version.id)
+    from(t in Trip, where: t.gtfs_version_id == ^context.version.id)
     |> Repo.all()
     |> Enum.map(& &1.block_id)
     |> Enum.reject(&is_nil/1)

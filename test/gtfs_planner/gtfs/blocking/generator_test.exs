@@ -73,7 +73,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.GeneratorTest do
       assert Enum.filter(result.leftovers, &(&1.reason in @singleton_reasons)) == []
 
       {before, after_findings} = findings_around(instance, result)
-      assert before == %{} and after_findings == %{}
+
+      # The run creates one block, so `after_findings` is keyed by it. What the
+      # case claims is that it raises nothing: every block's finding list is
+      # empty, before and after.
+      assert before == %{}
+      assert Enum.all?(after_findings, fn {_block_id, findings} -> findings == [] end)
+      assert map_size(after_findings) > 0
     end
 
     test "a relief limit the chain cannot meet splits the block and reports it" do
@@ -248,7 +254,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.GeneratorTest do
       |> Enum.filter(& &1.block_id)
       |> Enum.group_by(& &1.block_id)
       |> Map.new(fn {block_id, trips} ->
-        {block_id, Checks.block_findings(block_id, trips, context)}
+        {block_id,
+         trips
+         |> then(&Checks.block_findings(block_id, &1, context))
+         |> Enum.map(&Checks.finding_key/1)}
       end)
 
     after_findings =

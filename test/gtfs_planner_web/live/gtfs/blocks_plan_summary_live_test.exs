@@ -54,6 +54,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
     {"T4", "104", "06:15:00", "06:55:00", "35-ft diesel"}
   ]
 
+  @typed_blocks [
+    {"T1", "101", "06:00:00", "06:40:00", "Cutaway"},
+    {"T2", "102", "06:05:00", "06:45:00", "Cutaway"},
+    {"T3", "103", "06:10:00", "06:50:00", "Cutaway"}
+  ]
+
   setup do
     organization = organization_fixture()
     user = user_fixture()
@@ -220,7 +226,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
   describe "the chart" do
     test "a short row charts its own bins against its own listing",
          %{version: version} = context do
-      seed_plan!(context, cutaways: 2)
+      seed_plan!(context, cutaways: 2, untyped_last?: true)
 
       {:ok, view, _html} = live(editor_conn(context), blocks_path(version.id))
 
@@ -250,11 +256,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
       # thirds of the chart rather than off its top.
       assert attribute(view, "#plan-summary-listed-line", "style") =~ "bottom: 67%"
 
-      assert has_element?(
-               view,
-               "#plan-summary-chart",
-               "Main Cutaway vehicles out by 15 minutes; peak 3 at 06:00; 2 listed."
-             )
+      # The chart's accessible label names the row, its peak and its shortfall,
+      # and the window the bins cover.
+      assert attribute(view, "#plan-summary-chart", "aria-label") ==
+               "Main Cutaway vehicles out by 15 minutes; peak 3 at 06:00; 2 listed." <>
+                 " Chart covers 05:00 to 07:00."
     end
 
     test "the chart's sentence names the row, its peak and its shortfall",
@@ -276,7 +282,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
 
     test "a listing above every bar draws its line above them all",
          %{version: version} = context do
-      seed_plan!(context, cutaways: 5)
+      seed_plan!(context, cutaways: 5, untyped_last?: true)
 
       {:ok, view, _html} = live(editor_conn(context), blocks_path(version.id))
 
@@ -315,8 +321,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
       assert total_text(view, "layover") == "0.0"
       assert total_text(view, "drive") == "1.3"
 
-      assert has_element?(view, "#plan-summary-total-service_km", "km")
-      assert has_element?(view, "#plan-summary-total-deadhead_km", "km")
+      assert has_element?(view, "[data-role='plan-summary-total-service_km']", "km")
+      assert has_element?(view, "[data-role='plan-summary-total-deadhead_km']", "km")
 
       assert has_element?(
                view,
@@ -333,28 +339,38 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
 
       view |> element("#blocks-summary-figures-item-vehicles") |> render_click()
 
-      refute has_element?(view, "#plan-summary-total-drive [data-role='plan-summary-est']")
-      refute has_element?(view, "#plan-summary-total-deadhead_km [data-role='plan-summary-est']")
+      refute has_element?(
+               view,
+               "[data-role='plan-summary-total-drive'] [data-role='plan-summary-est']"
+             )
+
+      refute has_element?(
+               view,
+               "[data-role='plan-summary-total-deadhead_km'] [data-role='plan-summary-est']"
+             )
     end
 
     test "an estimated drive is marked est. on the time and the distance",
          %{version: version} = context do
-      seed_plan!(context, cutaways: 4, entered_drives?: false)
+      seed_plan!(context, cutaways: 4, entered_drives?: false, untyped_last?: true)
 
       {:ok, view, _html} = live(editor_conn(context), blocks_path(version.id))
 
       view |> element("#blocks-summary-figures-item-vehicles") |> render_click()
 
-      assert has_element?(
+      assert has_element?(view, "[data-role='plan-summary-total-drive']", "est.")
+      assert has_element?(view, "[data-role='plan-summary-total-deadhead_km']", "est.")
+
+      # The trip times themselves are not estimates, so they are never marked.
+      refute has_element?(
                view,
-               "#plan-summary-total-drive",
-               "est."
+               "[data-role='plan-summary-total-platform'] [data-role='plan-summary-est']"
              )
 
-      assert has_element?(view, "#plan-summary-total-deadhead_km", "est.")
-      # The trip times themselves are not estimates, so they are never marked.
-      refute has_element?(view, "#plan-summary-total-platform [data-role='plan-summary-est']")
-      refute has_element?(view, "#plan-summary-total-service [data-role='plan-summary-est']")
+      refute has_element?(
+               view,
+               "[data-role='plan-summary-total-service'] [data-role='plan-summary-est']"
+             )
     end
 
     test "an error in the day makes the totals provisional", %{version: version} = context do
@@ -402,7 +418,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
 
       refute has_element?(view, "#plan-summary-relief-off")
 
-      assert has_element?(view, "#plan-summary-relief-longest", "2 h in block 101")
+      assert has_element?(view, "[data-role='plan-summary-relief-longest']", "2 h in block 101")
       assert has_element?(view, "#plan-summary-relief-note", "Limit 1 h · 2 stops marked.")
 
       assert has_element?(
@@ -422,7 +438,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
 
       view |> element("#blocks-summary-figures-item-vehicles") |> render_click()
 
-      assert has_element?(view, "#plan-summary-relief-longest", "1 h in block 101")
+      assert has_element?(view, "[data-role='plan-summary-relief-longest']", "1 h in block 101")
       assert has_element?(view, "#plan-summary-relief-note", "Limit 5 h 30 min · 0 stops marked.")
 
       refute has_element?(view, "#plan-summary-relief-note", "no place to change operators")
@@ -448,7 +464,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
         })
       end
 
-    Enum.each(@blocks, fn {trip, block, first, last, type} ->
+    # The chart focuses one typed row and `Fleet.rows/2` orders types by UUID, so
+    # a two-type day leaves which row is focused up to the fixture's random IDs.
+    # `:untyped_last?` gives the fourth block no type, which puts it on the
+    # garage's `:all` row instead: Cutaway is then the only typed row, and the
+    # counts these cases assert are the ones the two-type day already gives.
+    untyped_last? = Keyword.get(opts, :untyped_last?, false)
+    blocks = if untyped_last?, do: @typed_blocks, else: @blocks
+
+    Enum.each(blocks, fn {trip, block, first, last, type} ->
       trip!(context, trip, block, first, last)
 
       if garage do
@@ -556,7 +580,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
     |> LazyHTML.query("tr[data-role='plan-summary-fleet-row']")
     |> Enum.find_value("", fn row ->
       if String.contains?(LazyHTML.text(row), "· #{type}") do
-        row |> LazyHTML.text() |> String.replace(~r/\s+/, " ") |> String.trim()
+        # The cells are read one at a time: concatenated cell text runs the
+        # "When" clock into the "Listed" number.
+        row
+        |> LazyHTML.query("td")
+        |> Enum.map_join(
+          " ",
+          &(&1 |> LazyHTML.text() |> String.replace(~r/\s+/, " ") |> String.trim())
+        )
+        |> String.trim()
       end
     end)
   end
@@ -576,7 +608,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
     view
     |> render()
     |> LazyHTML.from_fragment()
-    |> LazyHTML.query("#plan-summary-total-#{key}")
+    |> LazyHTML.query("[data-role='plan-summary-total-#{key}']")
     |> LazyHTML.text()
     |> String.replace(~r/\s+/, " ")
     |> String.trim()

@@ -300,7 +300,12 @@ defmodule GtfsPlanner.Gtfs.ExportTest do
       vehicle_fixture(org_id, vehicle_id: "bus-1")
 
       assert {:ok, full_zip} = Export.export_to_zip(org_id, version_id, :full)
-      assert {:ok, operations_zip, []} = Export.build_zip(org_id, version_id, :operations)
+
+      # This version has a garage and a vehicle but no blocked day, so only the
+      # four movement files are omitted, and each omission carries a warning.
+      assert {:ok, operations_zip, warnings} = Export.build_zip(org_id, version_id, :operations)
+
+      assert warnings == movement_omitted_warnings()
 
       full = zip_entries(full_zip)
       operations = zip_entries(operations_zip)
@@ -337,7 +342,9 @@ defmodule GtfsPlanner.Gtfs.ExportTest do
 
       assert {:ok, zip_binary, warnings} = Export.build_zip(org_id, version_id, :operations)
 
-      assert warnings == [tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")]
+      assert warnings ==
+               movement_omitted_warnings() ++
+                 [tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")]
 
       assert zip_entries(zip_binary)["stops_supplement.txt"] ==
                """
@@ -364,9 +371,9 @@ defmodule GtfsPlanner.Gtfs.ExportTest do
 
       assert {:ok, zip_binary, warnings} = Export.build_zip(org_id, version_id, :operations)
 
-      assert warnings == [
-               tods_omitted_warning("stops_supplement.txt", "garage", "garages")
-             ]
+      assert warnings ==
+               movement_omitted_warnings() ++
+                 [tods_omitted_warning("stops_supplement.txt", "garage", "garages")]
 
       assert zip_entries(zip_binary)["vehicles.txt"] ==
                """
@@ -389,10 +396,12 @@ defmodule GtfsPlanner.Gtfs.ExportTest do
       refute Map.has_key?(files, "stops_supplement.txt")
       refute Map.has_key?(files, "vehicles.txt")
 
-      assert warnings == [
-               tods_omitted_warning("stops_supplement.txt", "garage", "garages"),
-               tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")
-             ]
+      assert warnings ==
+               movement_omitted_warnings() ++
+                 [
+                   tods_omitted_warning("stops_supplement.txt", "garage", "garages"),
+                   tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")
+                 ]
     end
 
     test "keeps the TODS file whose table has rows", %{
@@ -408,7 +417,9 @@ defmodule GtfsPlanner.Gtfs.ExportTest do
       assert Map.has_key?(files, "stops_supplement.txt")
       refute Map.has_key?(files, "vehicles.txt")
 
-      assert warnings == [tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")]
+      assert warnings ==
+               movement_omitted_warnings() ++
+                 [tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")]
     end
 
     test "export_to_zip/4 returns the operations ZIP bytes", %{
@@ -550,6 +561,27 @@ defmodule GtfsPlanner.Gtfs.ExportTest do
       file: filename,
       entity_type: entity_type
     }
+  end
+
+  # The four movement files are omitted for the same reason as the two TODS
+  # files and share their code, but a version with no blocked day has no
+  # movements at all rather than no garage or vehicle.
+  @movement_files ~w(
+    calendar_dates_supplement.txt
+    routes_supplement.txt
+    trips_supplement.txt
+    stop_times_supplement.txt
+  )
+
+  defp movement_omitted_warnings do
+    Enum.map(@movement_files, fn filename ->
+      %{
+        code: "tods_file_omitted",
+        detail: "#{filename} was not included because this version has no movements.",
+        file: filename,
+        entity_type: "movement"
+      }
+    end)
   end
 
   # The first `stops` query of the operations export is the preliminary conflict

@@ -1,5 +1,14 @@
 defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
   use GtfsPlanner.DataCase, async: false
+  # The four movement files are omitted for the same reason as the two TODS
+  # files and share their code, but a version with no blocked day has no
+  # movements at all rather than no garage or vehicle.
+  @movement_files ~w(
+    calendar_dates_supplement.txt
+    routes_supplement.txt
+    trips_supplement.txt
+    stop_times_supplement.txt
+  )
 
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.{Run, Worker}
@@ -142,7 +151,10 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
 
     assert ready.state == :ready
     assert ready.artifact_key
-    assert ready.warnings == [tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")]
+
+    assert ready.warnings ==
+             movement_omitted_warnings() ++
+               [tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")]
 
     entries = published_zip_entries(root, ready)
 
@@ -197,11 +209,15 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
 
     assert ready.state == :ready
     assert length(ready.warnings) == 100
-    assert hd(ready.warnings) == tods_omitted_warning("vehicles.txt", "vehicle", "vehicles")
-    assert Enum.at(ready.warnings, 1) == preflight_warning(0)
 
-    assert Enum.map(tl(ready.warnings), & &1["code"]) ==
-             Enum.map(0..98, &"preflight_#{&1}")
+    # The five omissions the export itself caused lead, ahead of the preflight
+    # noise: four movement files, since this version has no blocked day, and the
+    # vehicles file, since it lists nothing.
+    {operations, preflight} = Enum.split(ready.warnings, 5)
+
+    assert Enum.map(operations, & &1["file"]) == @movement_files ++ ["vehicles.txt"]
+    assert preflight_warning(0) in preflight
+    assert Enum.map(preflight, & &1["code"]) == Enum.map(0..94, &"preflight_#{&1}")
   end
 
   test "a garage/stop collision fails the run, names garage and stop, and publishes nothing", %{
@@ -350,6 +366,17 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
       "file" => filename,
       "entity_type" => entity_type
     }
+  end
+
+  defp movement_omitted_warnings do
+    Enum.map(@movement_files, fn filename ->
+      %{
+        "code" => "tods_file_omitted",
+        "detail" => "#{filename} was not included because this version has no movements.",
+        "file" => filename,
+        "entity_type" => "movement"
+      }
+    end)
   end
 
   defp preflight_warning(index) do

@@ -5240,7 +5240,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   def clock(secs) when is_integer(secs) do
     days = Integer.floor_div(secs, 86_400)
-    within = rem(secs, 86_400)
+    # `rem/2` keeps the dividend's sign, which would leave a negative second
+    # still negative and print `00:-15`. `Integer.mod/2` is the operation that
+    # pairs with `floor_div/2`, so the within-day value is never negative.
+    within = Integer.mod(secs, 86_400)
 
     clock =
       String.pad_leading(Integer.to_string(div(within, 3600)), 2, "0") <>

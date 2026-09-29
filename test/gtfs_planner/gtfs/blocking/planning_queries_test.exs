@@ -239,8 +239,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanningQueriesTest do
     test "a shape with no points, another version's shape and a foreign organization's shape are absent",
          %{organization: o, version: v, foreign: foreign, other_version: other} do
       shape_point!(o, v, "SH-A", 1, "42.0000", "-71.0000")
-      shape_point!(foreign.id, v.id, "SH-FOREIGN", 1, "42.0000", "-71.0000")
-      shape_point!(o.id, other.id, "SH-OTHER", 1, "42.0000", "-71.0000")
+      shape_point!(foreign, v, "SH-FOREIGN", 1, "42.0000", "-71.0000")
+      shape_point!(o, other, "SH-OTHER", 1, "42.0000", "-71.0000")
 
       assert Queries.shape_points(o.id, v.id, ["SH-A", "SH-EMPTY", "SH-FOREIGN", "SH-OTHER"]) ==
                %{
@@ -470,6 +470,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanningQueriesTest do
     })
   end
 
+  # The organization and version are the struct each test already holds, so this
+  # takes their IDs rather than making every caller unwrap them.
   defp shape_point!(organization, version, shape_id, sequence, lat, lon) do
     %Shape{}
     |> Shape.changeset(%{
