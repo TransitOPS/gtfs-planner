@@ -30,6 +30,16 @@ defmodule GtfsPlannerWeb.ProductSurfaces do
   def name(:planner), do: "GTFS Planner"
   def name(:pathways), do: "Pathways Studio"
 
+  @doc "What members of an organization on this product see, in the words an administrator chooses by."
+  @spec description(:planner | :pathways) :: String.t()
+  def description(:planner),
+    do:
+      "Routes, calendars, operations, flex service, stops and stations, and GTFS import and export."
+
+  def description(:pathways),
+    do:
+      "Routes, calendars, stops and stations, and GTFS import and export. Operations, Flex and feed settings are hidden."
+
   @spec logo_path(:planner | :pathways) :: String.t()
   def logo_path(:planner), do: "/images/gtfs-planner-logo.svg"
   def logo_path(:pathways), do: "/images/pathways-studio-logo.svg"

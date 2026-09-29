@@ -92,7 +92,72 @@ defmodule GtfsPlannerWeb.Components.PlannerComponentsTest do
     end
   end
 
+  describe "first_use/1" do
+    test "says what belongs here and offers the one next step" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.first_use id="empty" title="No members yet" icon="hero-users">
+          Invite someone to give them access.
+          <:action><a href="/invite">Invite member</a></:action>
+        </.first_use>
+        """)
+
+      panel = doc(html) |> LazyHTML.query("#empty")
+
+      assert LazyHTML.text(LazyHTML.query(panel, "h2")) =~ "No members yet"
+      assert LazyHTML.text(panel) =~ "Invite someone to give them access."
+      assert LazyHTML.attribute(LazyHTML.query(panel, "a"), "href") == ["/invite"]
+      assert Enum.count(LazyHTML.query(panel, ".hero-users")) == 1
+    end
+
+    test "leaves out the icon and the action when none is given" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.first_use id="empty" title="Nothing here">Explained.</.first_use>
+        """)
+
+      panel = doc(html) |> LazyHTML.query("#empty")
+
+      assert Enum.empty?(LazyHTML.query(panel, "[class*='hero-']"))
+      assert Enum.empty?(LazyHTML.query(panel, "a, button"))
+    end
+  end
+
   describe "choice_cards/1" do
+    test "renders radios for a single choice, checking only the selected value" do
+      assigns = %{options: @options}
+
+      html =
+        rendered_to_string(~H"""
+        <.choice_cards
+          id="product"
+          type="radio"
+          name="organization[product]"
+          label="Product"
+          options={@options}
+          selected={["admin"]}
+        />
+        """)
+
+      document = doc(html)
+
+      assert LazyHTML.attribute(LazyHTML.query(document, "input[type=radio]"), "name") == [
+               "organization[product]",
+               "organization[product]"
+             ]
+
+      assert Enum.empty?(LazyHTML.query(document, "input[type=checkbox]"))
+      assert LazyHTML.attribute(LazyHTML.query(document, "input#product-editor"), "checked") == []
+
+      assert LazyHTML.attribute(LazyHTML.query(document, "input#product-admin"), "checked") == [
+               ""
+             ]
+    end
+
     test "renders one checkbox per option with a description, checked when selected" do
       assigns = %{options: @options}
 

@@ -15,8 +15,12 @@ defmodule GtfsPlannerWeb.Admin.Components do
   """
   use GtfsPlannerWeb, :html
 
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [choice_cards: 1, first_use: 1, form_error_summary: 1, message: 1]
+
   alias GtfsPlanner.Accounts.InviteForm
   alias GtfsPlanner.Authorization.Roles
+  alias GtfsPlannerWeb.CoreComponents
 
   # What each organization role lets a person do, in the words an administrator
   # chooses by. Editor comes first because most invitees are editors. The
@@ -133,6 +137,7 @@ defmodule GtfsPlannerWeb.Admin.Components do
     doc: "the route-appropriate invite path; omitted renders no empty-state CTA"
 
   attr :empty_title, :string, default: "No members yet"
+  attr :empty_icon, :string, default: nil, doc: "a hero icon name shown above the empty title"
 
   attr :empty_description, :string,
     default: "Members appear here after you invite someone to this organization."
@@ -147,23 +152,14 @@ defmodule GtfsPlannerWeb.Admin.Components do
     assigns = assign(assigns, :access_levels, access_levels())
 
     ~H"""
-    <div
-      :if={@empty?}
-      id={"#{@id}-empty"}
-      class="rounded-card border border-subtle bg-white px-5 py-14 sm:px-10"
-    >
-      <div class="mx-auto max-w-[520px] text-center">
-        <h2 class="font-display text-[24px] font-semibold tracking-[-0.025em] text-strong">
-          {@empty_title}
-        </h2>
-        <p class="mt-2 text-sm text-muted">{@empty_description}</p>
-        <div :if={@invite_path} class="mt-6">
-          <.button class="min-h-11" navigate={@invite_path}>
-            <.icon name="hero-plus" class="size-4" /> {@invite_label}
-          </.button>
-        </div>
-      </div>
-    </div>
+    <.first_use :if={@empty?} id={"#{@id}-empty"} title={@empty_title} icon={@empty_icon}>
+      {@empty_description}
+      <:action :if={@invite_path}>
+        <.button class="min-h-11" navigate={@invite_path}>
+          <.icon name="hero-plus" class="size-4" /> {@invite_label}
+        </.button>
+      </:action>
+    </.first_use>
 
     <section
       :if={!@empty?}
@@ -194,10 +190,12 @@ defmodule GtfsPlannerWeb.Admin.Components do
           </caption>
           <thead>
             <tr>
-              <th scope="col" class={[head_class(), "pl-5 pr-4"]}>{String.capitalize(@noun)}</th>
-              <th scope="col" class={[head_class(), "w-[230px] px-4"]}>Access</th>
-              <th scope="col" class={[head_class(), "w-[190px] px-4"]}>Status</th>
-              <th scope="col" class={[head_class(), "w-[300px] pl-4 pr-5 text-right"]}>
+              <th scope="col" class={[table_head_class(), "pl-5 pr-4"]}>
+                {String.capitalize(@noun)}
+              </th>
+              <th scope="col" class={[table_head_class(), "w-[230px] px-4"]}>Access</th>
+              <th scope="col" class={[table_head_class(), "w-[190px] px-4"]}>Status</th>
+              <th scope="col" class={[table_head_class(), "w-[300px] pl-4 pr-5 text-right"]}>
                 <span class="sr-only">Actions</span>
               </th>
             </tr>
@@ -252,7 +250,8 @@ defmodule GtfsPlannerWeb.Admin.Components do
     """
   end
 
-  defp head_class,
+  @doc "The classes of a column heading in an administration table."
+  def table_head_class,
     do: "border-b border-subtle bg-canvas py-0 text-[13px] font-[650] leading-[44px] text-default"
 
   attr :id, :string, required: true
@@ -432,6 +431,149 @@ defmodule GtfsPlannerWeb.Admin.Components do
     case Roles.get(role) do
       %{name: name} -> name
       nil -> to_string(role)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Invitation drawer and deactivation dialog
+  #
+  # Organization-admin users and system-admin organization detail invite and
+  # deactivate through the same drawer and dialog. The parent owns the events,
+  # the form assigns (`GtfsPlannerWeb.Admin.InviteFormState`) and the routes.
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  The invitation form for the planner-chrome drawer: an email, the access-level
+  cards, and a persistent footer with Cancel and Send invite.
+
+  Expects the assigns `GtfsPlannerWeb.Admin.InviteFormState.assign_invite_form/2`
+  sets, and the parent's `validate_invite` and `send_invite` events.
+  """
+  attr :form, Phoenix.HTML.Form, required: true
+  attr :email_errors, :list, required: true
+  attr :roles_error, :string, default: nil
+  attr :base_error, :string, default: nil
+  attr :failures, :list, required: true
+  attr :cancel_path, :string, required: true, doc: "where Cancel patches back to"
+
+  def invite_form(assigns) do
+    assigns =
+      assigns
+      |> assign(:selected_roles, assigns.form[:roles].value || [])
+      |> assign(:access_levels, access_levels())
+
+    ~H"""
+    <.form
+      for={@form}
+      id="invite-form"
+      novalidate
+      phx-change="validate_invite"
+      phx-submit="send_invite"
+      class="flex min-h-0 flex-1 flex-col"
+    >
+      <div class="grid flex-1 content-start gap-5 overflow-y-auto px-5 py-5 sm:px-6">
+        <.message
+          :if={@base_error}
+          id="invite-service-error"
+          tabindex="-1"
+          kind="error"
+          title={@base_error}
+        >
+          Nothing was saved. Correct the details or try again.
+        </.message>
+
+        <.form_error_summary
+          id="invite-error-summary"
+          title="Invitation not sent. Fix these fields:"
+          failures={@failures}
+          class=""
+        />
+
+        <.input
+          field={@form[:email]}
+          id="invite-email"
+          type="email"
+          label="Email address"
+          help="If this address already has an account, that person is added right away."
+          autocomplete="off"
+          spellcheck="false"
+          errors={@email_errors}
+          required
+        />
+
+        <.choice_cards
+          id="invite-roles"
+          name="invite[roles][]"
+          label="Access level"
+          help="Choose at least one. Choose both for someone who edits feed data and manages users."
+          options={@access_levels}
+          selected={@selected_roles}
+          error={@roles_error}
+        />
+      </div>
+
+      <.drawer_footer>
+        <.button variant="secondary" class="min-h-11" patch={@cancel_path}>Cancel</.button>
+        <.button type="submit" class="min-h-11 min-w-[132px]" phx-disable-with="Sending invite…">
+          Send invite
+        </.button>
+      </.drawer_footer>
+    </.form>
+    """
+  end
+
+  @doc """
+  A drawer form's actions, kept in view under the scrolling fields: Cancel, then
+  the one primary at the right.
+  """
+  slot :inner_block, required: true
+
+  def drawer_footer(assigns) do
+    ~H"""
+    <footer class="flex items-center justify-end gap-3 border-t border-subtle bg-white px-5 py-4 sm:px-6">
+      {render_slot(@inner_block)}
+    </footer>
+    """
+  end
+
+  @doc "The deactivation dialog's title: names the person, or the action while none is chosen."
+  def deactivation_title(nil), do: "Deactivate user"
+  def deactivation_title(%{user: user}), do: "Deactivate #{user.email}?"
+
+  @doc """
+  The deactivation dialog's body: the consequence for this person in this
+  organization. Someone who has not accepted yet has no password and so no
+  session to end, so the dialog does not claim one.
+  """
+  def deactivation_body(%{user: %{hashed_password: nil} = user}, organization) do
+    "#{user.email} has not accepted their invitation yet. Deactivating keeps them on this list without access to #{organization.name}. You can activate them again from this list."
+  end
+
+  def deactivation_body(%{user: user}, organization) do
+    "#{user.email} loses access to #{organization.name} and is signed out of every web and mobile session immediately. The account is kept and can be activated again from this list."
+  end
+
+  @doc """
+  One sentence for a failed organization field, chosen by the rule that failed so
+  it says what to enter instead of repeating the changeset's wording. An alias
+  that collides with another organization's is only known on save.
+  """
+  def organization_error_message(field, {_message, opts} = error) do
+    case {field, opts[:validation], opts[:kind], opts[:constraint]} do
+      {:name, :required, _kind, _constraint} ->
+        "Enter an organization name."
+
+      {:alias, :required, _kind, _constraint} ->
+        "Enter an alias using letters, numbers or hyphens."
+
+      {_field, :length, :max, _constraint} ->
+        "Use #{opts[:count]} characters or fewer."
+
+      {:alias, _validation, _kind, :unique} ->
+        "Another organization already uses this alias. Choose a different one."
+
+      _other ->
+        CoreComponents.translate_error(error)
     end
   end
 end

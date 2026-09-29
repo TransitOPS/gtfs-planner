@@ -22,10 +22,11 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
   alias GtfsPlanner.Accounts.InviteForm
   alias GtfsPlanner.Organizations
   alias GtfsPlannerWeb.Admin.Components
-  alias GtfsPlannerWeb.CoreComponents
 
-  import GtfsPlannerWeb.PlannerComponents,
-    only: [choice_cards: 1, form_error_summary: 1, message: 1]
+  import GtfsPlannerWeb.Admin.InviteFormState,
+    only: [assign_invite_form: 2, invitation_detail: 1, normalize_invite_params: 1]
+
+  import GtfsPlannerWeb.PlannerComponents, only: [form_error_summary: 1, message: 1]
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_pathways_studio_admin}
 
@@ -214,7 +215,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
          |> put_feedback(
            "success",
            "Invitation sent to #{user.email}.",
-           "They show as Invitation pending until they set a password. The link works for 7 days.",
+           invitation_detail(user),
            user.id
          )
          |> load_members()
@@ -227,7 +228,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
          |> put_feedback(
            "success",
            "#{user.email} now has access to #{organization.name}.",
-           "They already have an account, so they show as Active.",
+           invitation_detail(user),
            user.id
          )
          |> load_members()
@@ -263,7 +264,10 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
         {:noreply,
          socket
          |> assign_invite_form(changeset)
-         |> push_event("focus_first_invite_error", %{})}
+         |> push_event("focus_form_error", %{
+           form_id: "invite-form",
+           fallback_id: "invite-service-error"
+         })}
     end
   end
 
@@ -410,7 +414,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
          socket
          |> assign(:organization_save_failed?, true)
          |> assign(:organization_form, to_form(%{changeset | action: :validate}))
-         |> push_event("focus_first_organization_error", %{})}
+         |> push_event("focus_form_error", %{form_id: "organization-settings-form"})}
     end
   end
 
@@ -463,186 +467,20 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
 
   defp allowed_org_params(params), do: Map.take(params, ["name"])
 
-  # Roles arrive as a list, a map, or not at all when every box is unchecked.
-  defp normalize_invite_params(params) do
-    roles =
-      case Map.get(params, "roles") do
-        nil -> []
-        roles when is_list(roles) -> roles
-        roles when is_map(roles) -> Map.values(roles)
-        role -> [role]
-      end
-
-    Map.put(params, "roles", roles)
-  end
-
-  defp assign_invite_form(socket, changeset) do
-    form = to_form(changeset, as: :invite)
-    email_errors = email_errors(form, changeset)
-    roles_error = roles_error(changeset)
-
-    socket
-    |> assign(:invite_form, form)
-    |> assign(:invite_email_errors, email_errors)
-    |> assign(:invite_roles_error, roles_error)
-    |> assign(:invite_base_error, List.first(field_errors(changeset, :base)))
-    |> assign(:invite_failures, invite_failures(changeset, email_errors, roles_error))
-  end
-
-  defp field_errors(changeset, field) do
-    for {^field, error} <- changeset.errors, do: CoreComponents.translate_error(error)
-  end
-
-  # On submit the errors are authoritative and always shown. While changing, an
-  # email shows its errors once the person has used the field.
-  defp email_errors(form, changeset) do
-    if changeset.action == :insert or Phoenix.Component.used_input?(form[:email]) do
-      for {:email, error} <- changeset.errors, do: email_message(error)
-    else
-      []
-    end
-  end
-
-  # Each sentence is chosen by the rule that failed, so it says what to enter
-  # instead of repeating the changeset's wording.
-  defp email_message({_message, opts} = error) do
-    case {opts[:validation], opts[:kind]} do
-      {:required, _kind} -> "Enter an email address."
-      {:format, _kind} -> "Enter a valid email address, such as name@agency.org."
-      {:length, :max} -> "Use #{opts[:count]} characters or fewer."
-      _other -> CoreComponents.translate_error(error)
-    end
-  end
-
-  # A checkbox group has no useful blur, so its error appears on submit and on
-  # any change the operator actually made to the group.
-  defp roles_error(%Ecto.Changeset{action: nil}), do: nil
-
-  defp roles_error(%Ecto.Changeset{action: :validate, params: params} = changeset) do
-    if Map.has_key?(params, "_unused_roles"),
-      do: nil,
-      else: changeset |> role_messages() |> List.first()
-  end
-
-  defp roles_error(changeset), do: changeset |> role_messages() |> List.first()
-
-  defp role_messages(changeset) do
-    for {:roles, {message, _opts}} <- changeset.errors do
-      case message do
-        "must select at least one role" -> "Choose at least one access level."
-        "contains an invalid role" -> "Choose a valid access level."
-        other -> other
-      end
-    end
-  end
-
-  # The summary lists a rejected submit, once, with a link to each field. Live
-  # validation is not a rejection and never produces one.
-  defp invite_failures(%Ecto.Changeset{action: :insert}, email_errors, roles_error) do
-    first_role = Components.access_levels() |> List.first() |> Map.fetch!(:value)
-
-    [
-      {List.first(email_errors), "#invite-email"},
-      {roles_error, "#invite-roles-#{first_role}"}
-    ]
-    |> Enum.filter(fn {message, _href} -> message end)
-    |> Enum.map(fn {message, href} -> %{href: href, msg: message} end)
-  end
-
-  defp invite_failures(_changeset, _email_errors, _roles_error), do: []
-
   # The organization name is the form's only field, so there is one error and it
   # reads the same beside the field and in the summary.
   defp organization_name_errors(form, save_failed?) do
     if save_failed? or Phoenix.Component.used_input?(form[:name]) do
-      for error <- Keyword.get_values(form.source.errors, :name), do: name_message(error)
+      for error <- Keyword.get_values(form.source.errors, :name),
+          do: Components.organization_error_message(:name, error)
     else
       []
-    end
-  end
-
-  defp name_message({_message, opts} = error) do
-    case {opts[:validation], opts[:kind]} do
-      {:required, _kind} -> "Enter an organization name."
-      {:length, :max} -> "Use #{opts[:count]} characters or fewer."
-      _other -> CoreComponents.translate_error(error)
     end
   end
 
   # ---------------------------------------------------------------------------
   # Render
   # ---------------------------------------------------------------------------
-
-  attr :form, Phoenix.HTML.Form, required: true
-  attr :email_errors, :list, required: true
-  attr :roles_error, :string, default: nil
-  attr :base_error, :string, default: nil
-  attr :failures, :list, required: true
-
-  defp invite_form(assigns) do
-    assigns =
-      assigns
-      |> assign(:selected_roles, assigns.form[:roles].value || [])
-      |> assign(:access_levels, Components.access_levels())
-
-    ~H"""
-    <.form
-      for={@form}
-      id="invite-form"
-      novalidate
-      phx-change="validate_invite"
-      phx-submit="send_invite"
-      class="flex min-h-0 flex-1 flex-col"
-    >
-      <div class="grid flex-1 content-start gap-5 overflow-y-auto px-5 py-5 sm:px-6">
-        <.message
-          :if={@base_error}
-          id="invite-service-error"
-          tabindex="-1"
-          kind="error"
-          title={@base_error}
-        >
-          Nothing was saved. Correct the details or try again.
-        </.message>
-
-        <.form_error_summary
-          id="invite-error-summary"
-          title="Invitation not sent. Fix these fields:"
-          failures={@failures}
-        />
-
-        <.input
-          field={@form[:email]}
-          id="invite-email"
-          type="email"
-          label="Email address"
-          help="If this address already has an account, that person is added right away."
-          autocomplete="off"
-          spellcheck="false"
-          errors={@email_errors}
-          required
-        />
-
-        <.choice_cards
-          id="invite-roles"
-          name="invite[roles][]"
-          label="Access level"
-          help="Choose at least one. Choose both for someone who edits feed data and manages users."
-          options={@access_levels}
-          selected={@selected_roles}
-          error={@roles_error}
-        />
-      </div>
-
-      <.drawer_footer>
-        <.button variant="secondary" class="min-h-11" patch={~p"/admin/users"}>Cancel</.button>
-        <.button type="submit" class="min-h-11 min-w-[132px]" phx-disable-with="Sending invite…">
-          Send invite
-        </.button>
-      </.drawer_footer>
-    </.form>
-    """
-  end
 
   attr :form, Phoenix.HTML.Form, required: true
   attr :save_failed?, :boolean, required: true
@@ -669,6 +507,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
               do: [%{href: "#organization-name", msg: List.first(@errors)}],
               else: []
           }
+          class=""
         />
 
         <.input
@@ -684,25 +523,13 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
         />
       </div>
 
-      <.drawer_footer>
+      <Components.drawer_footer>
         <.button variant="secondary" class="min-h-11" patch={~p"/admin/users"}>Cancel</.button>
         <.button type="submit" class="min-h-11 min-w-[132px]" phx-disable-with="Saving…">
           Save changes
         </.button>
-      </.drawer_footer>
+      </Components.drawer_footer>
     </.form>
-    """
-  end
-
-  # A drawer form's actions stay in view under the scrolling fields: Cancel, then
-  # the one primary at the right.
-  slot :inner_block, required: true
-
-  defp drawer_footer(assigns) do
-    ~H"""
-    <footer class="flex items-center justify-end gap-3 border-t border-subtle bg-white px-5 py-4 sm:px-6">
-      {render_slot(@inner_block)}
-    </footer>
     """
   end
 
@@ -718,7 +545,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <div id="admin-users-page" phx-hook=".DrawerErrorFocus">
+      <div id="admin-users-page" phx-hook="FormErrorFocus">
         <.header>
           Users
           <:subtitle>
@@ -804,13 +631,14 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
             They get an email with a link to set a password and join {@current_organization.name}.
             The link works for 7 days.
           </:lede>
-          <.invite_form
+          <Components.invite_form
             :if={@live_action == :invite}
             form={@invite_form}
             email_errors={@invite_email_errors}
             roles_error={@invite_roles_error}
             base_error={@invite_base_error}
             failures={@invite_failures}
+            cancel_path={~p"/admin/users"}
           />
         </.drawer>
 
@@ -837,7 +665,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
           id="deactivate-user-dialog"
           chrome="planner"
           open={@pending_deactivation != nil}
-          title={deactivation_title(@pending_deactivation)}
+          title={Components.deactivation_title(@pending_deactivation)}
           confirm_label="Deactivate user"
           pending_label="Deactivating user…"
           cancel_label="Keep access"
@@ -847,48 +675,11 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
           described_by="deactivate-user-dialog-body"
         >
           <span :if={@pending_deactivation}>
-            {deactivation_body(@pending_deactivation, @current_organization)}
+            {Components.deactivation_body(@pending_deactivation, @current_organization)}
           </span>
         </.confirm_dialog>
       </div>
     </Layouts.app>
-
-    <%!-- Moves focus to the first invalid control of a drawer form after a failed
-         submit, through the repository's colocated-hook pattern. The event names
-         say which form failed. Decision 0.12 excludes live-region announcements,
-         so focus movement is the whole contract. --%>
-    <script :type={Phoenix.LiveView.ColocatedHook} name=".DrawerErrorFocus">
-      export default {
-        mounted() {
-          this.handleEvent("focus_first_invite_error", () =>
-            this.focusFirstInvalid("invite-form", "invite-service-error")
-          )
-          this.handleEvent("focus_first_organization_error", () =>
-            this.focusFirstInvalid("organization-settings-form")
-          )
-        },
-
-        // With no invalid control the failure is form-level (a duplicate member
-        // or a service error), so focus lands on that message instead.
-        focusFirstInvalid(formId, messageId) {
-          const form = document.getElementById(formId);
-          const invalid =
-            (form && form.querySelector('[aria-invalid="true"]')) ||
-            (messageId && document.getElementById(messageId));
-          if (!invalid) return;
-          // A grouped control (the access-level fieldset) carries the invalid
-          // state but is not focusable itself, so descend to its first control.
-          const focusable = invalid.matches("input, select, textarea, button")
-            ? invalid
-            : invalid.querySelector(
-                "input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])"
-              );
-          // The event can arrive before LiveView finishes patching and
-          // restoring focus, so claim focus on the next frame instead.
-          requestAnimationFrame(() => (focusable || invalid).focus());
-        }
-      }
-    </script>
     """
   end
 
@@ -905,18 +696,5 @@ defmodule GtfsPlannerWeb.Admin.UsersLive do
       assigns.members_only_you? -> "first-use-invite"
       true -> nil
     end
-  end
-
-  defp deactivation_title(nil), do: "Deactivate user"
-  defp deactivation_title(%{user: user}), do: "Deactivate #{user.email}?"
-
-  # Someone who has not accepted yet has no password and so no session to end,
-  # so the dialog does not claim one.
-  defp deactivation_body(%{user: %{hashed_password: nil} = user}, organization) do
-    "#{user.email} has not accepted their invitation yet. Deactivating keeps them on this list without access to #{organization.name}. You can activate them again from this list."
-  end
-
-  defp deactivation_body(%{user: user}, organization) do
-    "#{user.email} loses access to #{organization.name} and is signed out of every web and mobile session immediately. The account is kept and can be activated again from this list."
   end
 end

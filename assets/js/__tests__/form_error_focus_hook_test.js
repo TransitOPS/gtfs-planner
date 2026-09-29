@@ -224,6 +224,32 @@ describe("FormErrorFocus", () => {
       expect(document.activeElement).toBe(root.querySelector("#login-email"));
     });
 
+    it("focuses the first enabled control inside an invalid group", () => {
+      const root = buildRoot({
+        innerHTML: `
+          <form id="invite_form">
+            <input id="invite-email" type="email" />
+            <fieldset id="invite-roles" aria-invalid="true">
+              <input id="invite-roles-off" type="checkbox" disabled />
+              <input id="invite-roles-editor" type="checkbox" />
+              <input id="invite-roles-admin" type="checkbox" />
+            </fieldset>
+          </form>
+        `,
+      });
+      const { hook, registrations } = makeHook(root);
+      hook.mounted();
+
+      pushServerEvent(registrations, {
+        form_id: "invite_form",
+        fallback_id: null,
+      });
+
+      expect(document.activeElement).toBe(
+        root.querySelector("#invite-roles-editor"),
+      );
+    });
+
     it("ignores invalid controls outside the named form", () => {
       const root = buildRoot({
         innerHTML: `

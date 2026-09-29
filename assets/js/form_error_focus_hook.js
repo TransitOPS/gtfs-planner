@@ -6,6 +6,9 @@ const FOCUS_FORM_ERROR_EVENT = "focus_form_error";
 // broadcast event cannot pull focus into an unrelated region of the page.
 const FOCUS_SCOPED_TARGET_EVENT = "focus_scoped_target";
 const INVALID_CONTROL_SELECTOR = '[aria-invalid="true"]';
+const NATIVE_CONTROL_SELECTOR = "input, select, textarea, button";
+const ENABLED_CONTROL_SELECTOR =
+  "input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])";
 
 const FormErrorFocus = {
   mounted() {
@@ -28,7 +31,7 @@ const FormErrorFocus = {
     const invalid = form ? form.querySelector(INVALID_CONTROL_SELECTOR) : null;
 
     if (invalid) {
-      this._attemptFocus(invalid);
+      this._attemptFocus(this._controlFor(invalid));
       return;
     }
 
@@ -40,6 +43,13 @@ const FormErrorFocus = {
     if (target) {
       this._attemptFocus(target);
     }
+  },
+
+  // A grouped control (a fieldset of checkboxes or radios) carries the invalid
+  // state but is not focusable itself, so focus its first enabled control.
+  _controlFor(invalid) {
+    if (invalid.matches(NATIVE_CONTROL_SELECTOR)) return invalid;
+    return invalid.querySelector(ENABLED_CONTROL_SELECTOR) || invalid;
   },
 
   _findWithinRoot(id) {

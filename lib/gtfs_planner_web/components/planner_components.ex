@@ -1,14 +1,15 @@
 defmodule GtfsPlannerWeb.PlannerComponents do
   @moduledoc """
   Components from the TransitOps application design system that pages migrated
-  to it share: the in-place outcome message, the form error summary, and the
-  choice cards used for options that carry consequences.
+  to it share: the in-place outcome message, the form error summary, the
+  choice cards used for options that carry consequences, and the first-use
+  panel.
 
   They read the design-system tokens declared in `assets/css/app.css`
   (`text-strong`, `bg-soft`, `border-control`, `rounded-control`, and so on) and
   need no page scope. The form error summary is styled by the `.form-error-summary`
   rules, which a page opts into with its own id (`#account-page`,
-  `#admin-users-page`).
+  `#admin-users-page`, `#admin-organizations-page`).
 
   Called through an explicit import in each consumer; not part of the global
   `GtfsPlannerWeb.html_helpers/0` import set.
@@ -72,11 +73,14 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   validation, which is not a rejection, never produces one.
 
   `failures` is a list of `%{href: "#field-id", msg: "Sentence."}`. The panel takes
-  focus by its id (`tabindex="-1"`) when the caller pushes focus to it.
+  focus by its id (`tabindex="-1"`) when the caller pushes focus to it. It leaves
+  space below itself; a caller that already spaces its children, such as a drawer
+  form laid out as a grid, passes `class=""`.
   """
   attr :id, :string, required: true
   attr :title, :string, required: true
   attr :failures, :list, required: true
+  attr :class, :string, default: "mb-5"
 
   def form_error_summary(%{failures: []} = assigns) do
     ~H"""
@@ -85,7 +89,7 @@ defmodule GtfsPlannerWeb.PlannerComponents do
 
   def form_error_summary(assigns) do
     ~H"""
-    <div id={@id} role="alert" tabindex="-1" class="form-error-summary mb-5">
+    <div id={@id} role="alert" tabindex="-1" class={["form-error-summary", @class]}>
       <strong class="font-bold">{@title}</strong>
       <a :for={failure <- @failures} href={failure.href}>{failure.msg}</a>
     </div>
@@ -93,12 +97,53 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   end
 
   @doc """
-  A group of checkbox options where each choice carries a consequence.
+  What a view says when nothing is in it yet: what belongs here, and the one next
+  step. The action goes in the `:action` slot, so the view keeps a single primary.
+
+  ## Examples
+
+      <.first_use id="members-empty" title="No members yet" icon="hero-users">
+        Invite someone to give them access to Acme Transit.
+        <:action><.button patch={~p"/invite"}>Invite member</.button></:action>
+      </.first_use>
+  """
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :icon, :string, default: nil, doc: "a hero icon name shown above the title"
+  slot :inner_block, required: true
+  slot :action
+
+  def first_use(assigns) do
+    ~H"""
+    <div id={@id} class="rounded-card border border-subtle bg-white px-5 py-14 sm:px-10">
+      <div class="mx-auto max-w-[520px] text-center">
+        <span
+          :if={@icon}
+          class="mx-auto mb-4 grid size-12 place-items-center rounded-control bg-soft text-cyan-700"
+        >
+          <.icon name={@icon} class="size-6" />
+        </span>
+        <h2 class="font-display text-[24px] font-semibold tracking-[-0.025em] text-strong">
+          {@title}
+        </h2>
+        <p class="mt-2 text-sm text-muted">{render_slot(@inner_block)}</p>
+        <div :if={@action != []} class="mt-6">{render_slot(@action)}</div>
+      </div>
+    </div>
+    """
+  end
+
+  @doc """
+  A group of options where each choice carries a consequence.
 
   Each option is a whole-card target with its label and a one-line description, so
-  the person reads what a choice allows before ticking it. The group is one
+  the person reads what a choice allows before choosing it. The group is one
   `fieldset`: `aria-invalid` and the error live on it, and an invalid group outlines
-  its cards. Checkbox ids are `<id>-<value>`.
+  its cards. Input ids are `<id>-<value>`.
+
+  `type="checkbox"` (the default) lets the person choose any number and expects a
+  `name` ending in `[]`. `type="radio"` lets them choose one; `selected` then holds
+  the one chosen value.
 
   ## Examples
 
@@ -116,6 +161,7 @@ defmodule GtfsPlannerWeb.PlannerComponents do
   """
   attr :id, :string, required: true
   attr :name, :string, required: true
+  attr :type, :string, values: ~w(checkbox radio), default: "checkbox"
   attr :label, :string, required: true
   attr :options, :list, required: true, doc: "maps with :value, :label and :description"
   attr :selected, :list, default: []
@@ -154,7 +200,7 @@ defmodule GtfsPlannerWeb.PlannerComponents do
           ]}
         >
           <input
-            type="checkbox"
+            type={@type}
             id={"#{@id}-#{option.value}"}
             name={@name}
             value={option.value}
