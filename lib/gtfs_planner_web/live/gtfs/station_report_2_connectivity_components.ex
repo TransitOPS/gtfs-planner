@@ -11,12 +11,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   Status is stated in words with a semantic token; accessibility is rendered by
   `TransitPresentation.accessibility_status/1` so its three states
   (accessible / not accessible / no data) are never flattened into a generic
-  badge.
+  badge. Times read as "5 min 58 s" and distances as "80 m".
+
+  Every status badge is `ResultComponents.tone_badge/1`.
   """
   use Phoenix.Component
 
-  import GtfsPlannerWeb.CoreComponents, only: [icon: 1, status_badge: 1, callout: 1]
+  import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
+  import GtfsPlannerWeb.ResultComponents, only: [tone_badge: 1]
   import GtfsPlannerWeb.Components.TransitPresentation, only: [accessibility_status: 1]
+
+  alias GtfsPlanner.Gtfs.StationReport2.Helpers
 
   attr :group, :map, required: true
   attr :dimension, :atom, required: true
@@ -28,34 +33,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
     assigns = assign(assigns, :dimension_label, dimension_label(assigns.dimension))
 
     ~H"""
-    <%!-- Nested tier: no side borders or rounding of its own. The outermost
-          card owns the only full border; this group announces itself with a
-          tinted full-width header band and horizontal rules. --%>
-    <div class="border-t border-base-300">
-      <%!-- Indent scale: card content ps-4, group tier ps-8, expanded route
-            evidence ps-12. Backgrounds and rules stay full width; only the
-            content indents, so depth reads at a glance. --%>
-      <%!-- The band carries a hue, not a gray: grays read as page background or
-            hover states. A low-opacity primary (indigo) tint is structural
-            wayfinding; green/teal would read as a success state. --%>
-      <div class="flex flex-wrap items-start justify-between gap-2 border-b border-base-300 bg-primary/10 py-2.5 pe-4 ps-8">
+    <div class="overflow-clip rounded-control border border-subtle bg-white">
+      <div class="flex flex-wrap items-start justify-between gap-2 border-b border-subtle bg-canvas px-4 py-3">
         <div class="min-w-0">
           <div class="flex flex-wrap items-baseline gap-2">
-            <h4 class="text-sm font-semibold break-words">{@group.source.name}</h4>
+            <h4 class="break-words text-sm font-bold text-strong">{@group.source.name}</h4>
             <.level_chip
               :if={@group.source.level_name}
               name={@group.source.level_name}
               index={@group.source.level_index}
             />
           </div>
-          <p class="mt-0.5 font-mono text-xs text-base-content/70 break-all">
+          <p class="mt-0.5 break-all font-mono text-[13px] text-muted">
             {@group.source.stop_id}
           </p>
         </div>
-        <span class="shrink-0 text-xs font-medium text-base-content/70">{@dimension_label}</span>
+        <span class="shrink-0 text-[13px] font-[650] text-muted">{@dimension_label}</span>
       </div>
 
-      <div class="divide-y divide-base-300">
+      <div class="divide-y divide-subtle">
         <.target_row
           :for={target <- @group.targets}
           target={target}
@@ -97,14 +93,18 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         phx-value-target_id={@target.stop_id}
         aria-expanded={to_string(@expanded)}
         aria-controls={@route_region_id}
-        class="print:hidden flex w-full min-h-11 cursor-pointer flex-col gap-2 py-3 pe-4 ps-8 text-left motion-safe:transition-colors hover:bg-base-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+        class={[
+          "print:hidden flex min-h-11 w-full cursor-pointer flex-col gap-2 px-4 py-3 text-left",
+          "motion-safe:transition-colors hover:bg-canvas",
+          "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus"
+        ]}
       >
         <span class="flex min-w-0 items-baseline gap-1">
           <.icon
             name={if @expanded, do: "hero-chevron-down", else: "hero-chevron-right"}
-            class="size-4 shrink-0 self-center"
+            class="size-4 shrink-0 self-center text-muted"
           />
-          <span class="text-sm font-medium break-words">
+          <span class="break-words text-sm font-bold text-strong">
             {@source_name} → {@target.name}
           </span>
         </span>
@@ -112,8 +112,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
       </button>
 
       <%!-- Print carries the same facts without the control affordance. --%>
-      <div class="hidden py-3 pe-4 ps-8 print:block">
-        <p class="text-sm font-medium break-words">{@source_name} → {@target.name}</p>
+      <div class="hidden px-4 py-3 print:block">
+        <p class="break-words text-sm font-bold text-strong">{@source_name} → {@target.name}</p>
         <.route_metrics target={@target} nopath={@nopath} />
       </div>
 
@@ -122,54 +122,57 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         id={@route_region_id}
         role="region"
         aria-label={"Route from #{@source_name} to #{@target.name}"}
-        class={["border-t border-base-300", not @expanded && "hidden print:block"]}
+        class={["border-t border-subtle px-4 py-4", not @expanded && "hidden print:block"]}
       >
-        <div class="border-b border-base-300 py-3 pe-4 ps-12">
-          <div class="flex flex-wrap items-start justify-between gap-2">
-            <p class="min-w-0 font-mono text-xs text-base-content/70 break-all">
-              {@expanded_route.target.stop_id} · {@expanded_route.target.meta}
-            </p>
-            <.route_badge status={@expanded_route.status} />
-          </div>
-
-          <div :for={warning <- @expanded_route.warnings} class="mt-3">
-            <.callout kind="warning" title={warning} />
-          </div>
-
-          <dl class="mt-3 grid grid-cols-1 gap-x-6 gap-y-1 text-sm sm:grid-cols-2 lg:grid-cols-4">
-            <div class="flex flex-wrap items-baseline gap-x-2">
-              <dt class="text-base-content/70">Total time</dt>
-              <dd class="font-semibold tabular-nums">{format_number(@expanded_route.time)}s</dd>
-            </div>
-            <div class="flex flex-wrap items-baseline gap-x-2">
-              <dt class="text-base-content/70">Distance</dt>
-              <dd class="font-semibold tabular-nums">{format_number(@expanded_route.distance)}m</dd>
-            </div>
-            <div class="flex flex-wrap items-baseline gap-x-2">
-              <dt class="text-base-content/70">Level changes</dt>
-              <dd class="font-semibold tabular-nums">
-                {@expanded_route.levels}
-                <span :if={@expanded_route.level_path} class="font-normal text-base-content/70">
-                  ({@expanded_route.level_path})
-                </span>
-              </dd>
-            </div>
-            <div class="flex flex-wrap items-baseline gap-x-2">
-              <dt class="text-base-content/70">Accessibility</dt>
-              <dd class="min-w-0">
-                <.accessibility_status status={accessibility_state(@expanded_route.accessible)} />
-                <span
-                  :if={@expanded_route.accessible_note}
-                  class="text-base-content/70 break-words"
-                >
-                  · {@expanded_route.accessible_note}
-                </span>
-              </dd>
-            </div>
-          </dl>
+        <div class="flex flex-wrap items-start justify-between gap-2">
+          <p class="min-w-0 break-all font-mono text-[13px] text-muted">
+            {@expanded_route.target.stop_id} · {@expanded_route.target.meta}
+          </p>
+          <.route_badge status={@expanded_route.status} />
         </div>
 
-        <div class="py-3 pe-4 ps-12">
+        <p
+          :for={warning <- @expanded_route.warnings}
+          class="mt-3 flex items-start gap-2 rounded-control bg-warning-bg px-3 py-2 text-sm text-warning-fg"
+        >
+          <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4 shrink-0" />
+          <span class="min-w-0 break-words">{warning}</span>
+        </p>
+
+        <dl class="mt-3 grid grid-cols-1 gap-x-6 gap-y-1 text-sm sm:grid-cols-2 lg:grid-cols-4">
+          <div class="flex flex-wrap items-baseline gap-x-2">
+            <dt class="text-muted">Total time</dt>
+            <dd class="font-bold tabular-nums text-strong">
+              {format_time(@expanded_route.time)}
+            </dd>
+          </div>
+          <div class="flex flex-wrap items-baseline gap-x-2">
+            <dt class="text-muted">Distance</dt>
+            <dd class="font-bold tabular-nums text-strong">
+              {format_distance(@expanded_route.distance)}
+            </dd>
+          </div>
+          <div class="flex flex-wrap items-baseline gap-x-2">
+            <dt class="text-muted">Level changes</dt>
+            <dd class="font-bold tabular-nums text-strong">
+              {@expanded_route.levels}
+              <span :if={@expanded_route.level_path} class="font-normal text-muted">
+                ({@expanded_route.level_path})
+              </span>
+            </dd>
+          </div>
+          <div class="flex flex-wrap items-baseline gap-x-2">
+            <dt class="text-muted">Accessibility</dt>
+            <dd class="min-w-0">
+              <.accessibility_status status={accessibility_state(@expanded_route.accessible)} />
+              <span :if={@expanded_route.accessible_note} class="break-words text-muted">
+                · {@expanded_route.accessible_note}
+              </span>
+            </dd>
+          </div>
+        </dl>
+
+        <div class="mt-4">
           <.step_table steps={@expanded_route.steps} />
         </div>
       </div>
@@ -179,10 +182,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
         id={@route_region_id}
         role="region"
         aria-label={"Route from #{@source_name} to #{@target.name}"}
-        class={["border-t border-base-300 py-3 pe-4 ps-12", not @expanded && "hidden print:block"]}
+        class={["border-t border-subtle px-4 py-4", not @expanded && "hidden print:block"]}
       >
-        <p class="flex items-start gap-2 text-sm">
-          <.icon name="hero-x-circle" class="size-4 shrink-0 text-error" />
+        <p class="flex items-start gap-2 text-sm text-default">
+          <.icon name="hero-x-circle" class="size-4 shrink-0 text-error-fg" />
           <span class="break-words">
             No directed path exists between these stops. Check that pathway records connect all intermediate nodes.
           </span>
@@ -199,15 +202,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
     ~H"""
     <span class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
       <span class="inline-flex items-baseline gap-1">
-        <span class="text-base-content/70">Time</span>
-        <span class="font-medium tabular-nums">
-          {if @nopath, do: "—", else: "#{format_number(@target.time)}s"}
+        <span class="text-muted">Time</span>
+        <span class="font-bold tabular-nums text-strong">
+          {if @nopath, do: "—", else: format_time(@target.time)}
         </span>
       </span>
       <span class="inline-flex items-baseline gap-1">
-        <span class="text-base-content/70">Distance</span>
-        <span class="font-medium tabular-nums">
-          {if @nopath, do: "—", else: "#{format_number(@target.distance)}m"}
+        <span class="text-muted">Distance</span>
+        <span class="font-bold tabular-nums text-strong">
+          {if @nopath, do: "—", else: format_distance(@target.distance)}
         </span>
       </span>
       <.accessibility_status status={accessibility_state(@target.accessible)} />
@@ -232,61 +235,73 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
       role="region"
       aria-label="Route steps"
       tabindex="0"
-      class="overflow-x-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+      class="overflow-x-auto rounded-control border border-subtle focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus"
     >
       <table class="w-full text-sm">
-        <thead>
-          <tr class="border-b border-base-300">
-            <th scope="col" class="px-2 py-2 text-left text-xs font-semibold text-base-content/70">
-              #
-            </th>
-            <th scope="col" class="px-2 py-2 text-left text-xs font-semibold text-base-content/70">
-              Mode
-            </th>
-            <th scope="col" class="px-2 py-2 text-left text-xs font-semibold text-base-content/70">
-              Stop name
-            </th>
-            <th scope="col" class="px-2 py-2 text-left text-xs font-semibold text-base-content/70">
-              Instruction
-            </th>
-            <th scope="col" class="px-2 py-2 text-right text-xs font-semibold text-base-content/70">
-              Time
-            </th>
-            <th scope="col" class="px-2 py-2 text-right text-xs font-semibold text-base-content/70">
-              Dist
-            </th>
+        <thead class="bg-canvas">
+          <tr class="border-b border-subtle">
+            <.step_header>#</.step_header>
+            <.step_header>Mode</.step_header>
+            <.step_header>Stop name</.step_header>
+            <.step_header>Instruction</.step_header>
+            <.step_header align="right">Time</.step_header>
+            <.step_header align="right">Distance</.step_header>
           </tr>
         </thead>
-        <tbody class="divide-y divide-base-300">
+        <tbody class="divide-y divide-subtle">
           <%= for item <- @grouped do %>
-            <tr :if={item.type == :level}>
-              <th scope="colgroup" colspan="6" class="px-2 pt-3 pb-1 text-left text-xs font-semibold">
+            <tr :if={item.type == :level} class="bg-canvas/60">
+              <th
+                scope="colgroup"
+                colspan="6"
+                class="px-3 py-2 text-left text-[13px] font-[650] text-strong"
+              >
                 {item.name} ({format_level_index(item.index)})
               </th>
             </tr>
             <tr :if={item.type != :level}>
-              <td class="px-2 py-2 text-base-content/70 tabular-nums">{item.num}</td>
-              <td class="px-2 py-2 font-medium break-words">{item.mode || "—"}</td>
-              <td class="px-2 py-2 break-words">{item.stop_name || item.stop_id}</td>
-              <td class="px-2 py-2 break-words">{item.instruction || "—"}</td>
-              <td class="px-2 py-2 text-right tabular-nums">
+              <td class="px-3 py-2 tabular-nums text-muted">{item.num}</td>
+              <td class="break-words px-3 py-2 font-[650] text-strong">{item.mode || "—"}</td>
+              <td class="break-words px-3 py-2">{item.stop_name || item.stop_id}</td>
+              <td class="break-words px-3 py-2">{item.instruction || "—"}</td>
+              <td class="px-3 py-2 text-right tabular-nums">
                 <%= if item.time != nil do %>
-                  <span class={item.time_warning && "font-semibold text-warning"}>
-                    {format_number(item.time)}s
+                  <span class={item.time_warning && "font-bold text-warning-fg"}>
+                    {format_time(item.time)}
                   </span>
-                  <span :if={item.time_warning} class="block text-xs text-warning">Long</span>
+                  <span :if={item.time_warning} class="block text-[13px] text-warning-fg">
+                    Long
+                  </span>
                 <% else %>
                   —
                 <% end %>
               </td>
-              <td class="px-2 py-2 text-right tabular-nums">
-                {if item.dist != nil, do: "#{format_number(item.dist)}m", else: "—"}
+              <td class="px-3 py-2 text-right tabular-nums">
+                {if item.dist != nil, do: format_distance(item.dist), else: "—"}
               </td>
             </tr>
           <% end %>
         </tbody>
       </table>
     </div>
+    """
+  end
+
+  attr :align, :string, default: "left", values: ~w(left right)
+  slot :inner_block, required: true
+
+  defp step_header(assigns) do
+    ~H"""
+    <th
+      scope="col"
+      class={[
+        "px-3 py-2 text-[13px] font-[650] text-muted",
+        @align == "right" && "text-right",
+        @align == "left" && "text-left"
+      ]}
+    >
+      {render_slot(@inner_block)}
+    </th>
     """
   end
 
@@ -297,12 +312,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   # Renders one route's outcome as a word plus a semantic token.
   defp route_badge(assigns) do
     ~H"""
-    <.status_badge
-      status={route_badge_status(@status)}
-      label={route_badge_label(@status)}
-      class="shrink-0"
+    <.tone_badge
+      tone={route_badge_tone(@status)}
+      class="shrink-0 whitespace-nowrap"
       data-route-status={to_string(@status)}
-    />
+    >
+      {route_badge_label(@status)}
+    </.tone_badge>
     """
   end
 
@@ -312,7 +328,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   # Renders a level identifier as a neutral chip; a level is a category, not a state.
   defp level_chip(assigns) do
     ~H"""
-    <span class="rounded-selector inline-flex items-center border border-base-300 px-2 py-0.5 text-xs">
+    <span class="inline-flex items-center rounded-badge border border-subtle bg-white px-2 py-0.5 text-[13px] text-default">
       {@name} · {format_level_index(@index)}
     </span>
     """
@@ -336,9 +352,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
     Enum.reverse(grouped_rev)
   end
 
-  defp route_badge_status(:reachable), do: :pass
-  defp route_badge_status(:long), do: :warning
-  defp route_badge_status(_nopath), do: :failed
+  defp route_badge_tone(:reachable), do: "success"
+  defp route_badge_tone(:long), do: "warning"
+  defp route_badge_tone(_nopath), do: "error"
 
   defp route_badge_label(:reachable), do: "Reachable"
   defp route_badge_label(:long), do: "Long route"
@@ -348,7 +364,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2ConnectivityComponents do
   defp dimension_label(:platform_to_exit), do: "Platform to exit"
   defp dimension_label(:platform_to_platform), do: "Platform to platform"
 
-  defp format_number(nil), do: "—"
+  defp format_time(nil), do: "—"
+  defp format_time(seconds) when is_number(seconds), do: Helpers.format_duration(seconds)
+  defp format_time(other), do: to_string(other)
+
+  defp format_distance(nil), do: "—"
+  defp format_distance(meters), do: "#{format_number(meters)} m"
+
   defp format_number(n) when is_float(n) and n == trunc(n), do: Integer.to_string(trunc(n))
   defp format_number(n) when is_float(n), do: :erlang.float_to_binary(n, decimals: 1)
   defp format_number(n) when is_integer(n), do: Integer.to_string(n)

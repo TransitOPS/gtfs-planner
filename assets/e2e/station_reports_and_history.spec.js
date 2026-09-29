@@ -189,7 +189,10 @@ test.describe("Station report responsive contracts", () => {
       ).toBe(true);
 
       // Primary identity, the outcome counts, and one action remain available.
-      await expect(page.locator("#station-report-2 h1")).toBeVisible();
+      // The station's name is the workspace header's H1; the report's own H1 is
+      // print-only.
+      await expect(page.locator("#station-sub-nav h1")).toBeVisible();
+      await expect(page.locator("#station-report-2 h1")).toBeHidden();
       await expect(page.locator("#report-outcome-counts")).toBeVisible();
       await expect(page.locator("#report-expand-all")).toBeVisible();
       await expect(
@@ -459,12 +462,12 @@ test.describe("Station report print evidence", () => {
     // Station identity and all six section headings.
     expect(printed.h1).toEqual(["Browser Test Station"]);
     expect(printed.headings).toEqual([
-      "Station Inventory",
-      "Data Quality",
-      "GPS",
-      "Naming & ID Conventions",
-      "Reachability & Connectivity",
-      "Pathway Field Completeness",
+      "Data quality",
+      "Routes riders can take",
+      "Stop locations",
+      "Pathway details",
+      "Names and IDs",
+      "What's in this station",
     ]);
 
     // Every failed-check detail and every connectivity source/target/route.

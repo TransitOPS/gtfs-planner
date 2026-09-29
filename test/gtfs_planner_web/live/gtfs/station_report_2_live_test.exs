@@ -165,13 +165,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       {_view, html} =
         live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
+      # Problems come first, and what the station contains comes last.
       section_ids = [
-        "report2-station-inventory",
         "report2-data-quality",
-        "report2-gps-checks",
-        "report2-naming-conventions",
         "report2-reachability-connectivity",
-        "report2-pathway-field-completeness"
+        "report2-gps-checks",
+        "report2-pathway-field-completeness",
+        "report2-naming-conventions",
+        "report2-station-inventory"
       ]
 
       positions =
@@ -512,15 +513,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
 
-      {view, html} =
+      {view, _html} =
         live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
-      assert html =~ "Naming &amp; ID Conventions"
+      assert has_element?(view, "#report2-naming-conventions h2", "Names and IDs")
 
       # Result counts come from the shared count strip, in report vocabulary.
+      # A naming rule is house style, so a failed one is counted as a suggestion.
       assert has_element?(view, "#naming-counts[data-role='count-strip'][data-mode='display']")
       assert has_element?(view, "#naming-counts-item-passed", "Passed")
-      assert has_element?(view, "#naming-counts-item-failed", "Failed")
+      assert has_element?(view, "#naming-counts-item-suggestions", "Suggestions")
+      refute has_element?(view, "#naming-counts-item-failed")
     end
 
     test "naming conventions section renders all 6 check rows", %{
@@ -543,7 +546,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert html =~ "Human-written stop names"
     end
 
-    test "naming conventions failing check renders FAIL badge", %{
+    test "naming conventions failing check renders a Suggestion badge, not a Problem", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -572,10 +575,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       {view, _html} =
         live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
-      assert has_element?(view, "#report2-naming-conventions [data-status='fail']", "Fail")
+      assert has_element?(view, "#report2-naming-conventions [data-status='warn']", "Suggestion")
+      refute has_element?(view, "#report2-naming-conventions [data-status='fail']")
     end
 
-    test "naming conventions passing check renders PASS badge", %{
+    test "naming conventions passing check renders a Passed badge", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -587,7 +591,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       {view, _html} =
         live_report(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/report")
 
-      assert has_element?(view, "#report2-naming-conventions [data-status='pass']", "Pass")
+      assert has_element?(view, "#report2-naming-conventions [data-status='pass']", "Passed")
     end
 
     test "naming conventions prefix mismatch includes expected prefix", %{
@@ -766,6 +770,43 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert has_element?(view, "#report2-station-inventory")
       assert has_element?(view, "#report2-pathway-field-completeness")
       assert html =~ "Station One"
+    end
+
+    test "the station tabs stay reachable while the report loads and after it fails", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station_one: station_one
+    } do
+      control_snapshot_source()
+      conn = log_in_user(conn, user, organization: organization)
+      diagram_href = "/gtfs/#{gtfs_version.id}/stops/#{station_one.stop_id}/diagram"
+
+      {:ok, view, _html} = live(conn, report_path(gtfs_version, station_one))
+
+      # Nothing is known about the station yet, so the header names it by its id.
+      assert has_element?(view, "#report-status[data-state='initial_loading']")
+      assert has_element?(view, "#station-sub-nav h1", station_one.stop_id)
+      assert has_element?(view, "#station-sub-nav a[aria-current='page']", "Reports")
+      assert has_element?(view, "#station-sub-nav a[href='#{diagram_href}']", "Floorplans")
+
+      station_one.stop_id |> await_load() |> release_load({:error, :snapshot_unavailable})
+      render_async(view, 5_000)
+
+      assert has_element?(view, "#report-status[data-state='error']")
+      assert has_element?(view, "#station-sub-nav a[aria-current='page']", "Reports")
+      assert has_element?(view, "#station-sub-nav a[href='#{diagram_href}']", "Floorplans")
+
+      view |> element("button#report-retry") |> render_click()
+      station_one.stop_id |> await_load() |> release_load(:real)
+      render_async(view, 5_000)
+
+      # Once the report loads, the header names the station and what it holds.
+      assert has_element?(view, "#station-sub-nav h1", "Station One")
+      assert has_element?(view, "#station-sub-nav", "STATION_1")
+      assert has_element?(view, "#station-sub-nav", "1 level")
+      assert has_element?(view, "#station-sub-nav", "stops and nodes inside")
     end
 
     test "a station switch during a load applies only the active station's result", %{
@@ -1081,7 +1122,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
                "#connectivity-detail-entrance_to_platform-ENT_1[class*='print:']"
              )
 
-      assert has_element?(view, "#check-detail-data-quality-isolated_nodes[class*='print:grid']")
+      assert has_element?(view, "#check-detail-data-quality-isolated_nodes[class*='print:block']")
 
       # The client-only expand-all mutation and native <details> disclosure are gone.
       refute has_element?(view, "[phx-hook='ExpandAll']")
@@ -1273,20 +1314,25 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert element_count(doc, "h1") == 1,
              "the report must own exactly one H1"
 
+      # The workspace header names the station on screen and does not print, so
+      # the report's own H1 is the printed title and is hidden on screen.
+      assert has_element?(ctx.view, "#station-report-2 h1[class~='hidden'][class~='print:block']")
+      assert has_element?(ctx.view, "#station-sub-nav h1", "Station One")
+
       assert element_count(doc, "h2") == 6,
              "the report must expose exactly six peer H2 sections"
 
       view = ctx.view
 
       for {id, title} <- [
-            {"report2-station-inventory", "Station Inventory"},
-            {"report2-data-quality", "Data Quality"},
-            {"report2-gps-checks", "GPS"},
-            {"report2-naming-conventions", "Naming"},
-            {"report2-reachability-connectivity", "Reachability"},
-            {"report2-pathway-field-completeness", "Pathway Field Completeness"}
+            {"report2-station-inventory", "What's in this station"},
+            {"report2-data-quality", "Data quality"},
+            {"report2-gps-checks", "Stop locations"},
+            {"report2-naming-conventions", "Names and IDs"},
+            {"report2-reachability-connectivity", "Routes riders can take"},
+            {"report2-pathway-field-completeness", "Pathway details"}
           ] do
-        assert has_element?(view, "##{id} > h2", title),
+        assert has_element?(view, "##{id} h2", title),
                "expected #{id} to own an H2 titled #{title}"
       end
     end
@@ -1297,19 +1343,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert has_element?(
                view,
                "#report2-data-quality [data-check='isolated_nodes'] [data-status='fail']",
-               "Fail"
+               "Problem"
              )
 
       assert has_element?(
                view,
                "#report2-data-quality [data-check='duplicate_stop_ids'] [data-status='pass']",
-               "Pass"
+               "Passed"
              )
 
       assert has_element?(
                view,
-               "#report2-naming-conventions [data-check='naming_node_prefix'] [data-status='fail']",
-               "Fail"
+               "#report2-naming-conventions [data-check='naming_node_prefix'] [data-status='warn']",
+               "Suggestion"
              )
     end
 
@@ -1351,24 +1397,49 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
                "#report-outcome-counts[data-role='count-strip'][data-mode='display']"
              )
 
-      assert has_element?(view, "#report-outcome-counts-item-failed", "Failed")
+      assert has_element?(view, "#report-outcome-counts-item-problems", "Problems")
+      assert has_element?(view, "#report-outcome-counts-item-suggestions", "Suggestions")
+      assert has_element?(view, "#report-outcome-counts-item-notes", "Notes")
       assert has_element?(view, "#report-outcome-counts-item-passed", "Passed")
       refute has_element?(view, "#report-outcome-counts button")
     end
 
+    test "an unfilled optional pathway field reads Missing, never as a failure", ctx do
+      # The fixture's elevator pathway carries neither a width nor a travel time.
+      assert has_element?(
+               ctx.view,
+               "#report2-pathway-field-completeness [data-field-status='fail']",
+               "Missing"
+             )
+
+      refute ctx |> report_html() |> String.contains?(">Fail<")
+    end
+
     test "the report count strip agrees with the statuses the sections render", ctx do
-      strip_failed =
+      strip_problems =
         ctx.view
-        |> element("#report-outcome-counts-item-failed [data-role='count-strip-value']")
+        |> element("#report-outcome-counts-item-problems [data-role='count-strip-value']")
         |> render()
         |> extract_integer()
 
-      rendered_failures = ctx |> report_doc() |> element_count(~s([data-status="fail"]))
+      rendered_problems = ctx |> report_doc() |> element_count(~s([data-status="fail"]))
 
-      assert strip_failed == rendered_failures,
-             "count strip reports #{strip_failed} failures but #{rendered_failures} are rendered"
+      assert strip_problems == rendered_problems,
+             "count strip reports #{strip_problems} problems but #{rendered_problems} are rendered"
 
-      assert strip_failed > 0, "the fixture must produce at least one failing check"
+      assert strip_problems > 0, "the fixture must produce at least one failing check"
+
+      # Naming failures are suggestions, so the strip counts them with the
+      # warnings the sections render rather than with the problems.
+      strip_suggestions =
+        ctx.view
+        |> element("#report-outcome-counts-item-suggestions [data-role='count-strip-value']")
+        |> render()
+        |> extract_integer()
+
+      rendered_suggestions = ctx |> report_doc() |> element_count(~s([data-status="warn"]))
+
+      assert strip_suggestions == rendered_suggestions
     end
 
     test "long stop names stay complete and are never truncated", ctx do
@@ -1497,7 +1568,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
     end
 
     test "an empty report still reports zero counts rather than hiding the strip", ctx do
-      assert has_element?(ctx.view, "#report-outcome-counts-item-failed")
+      assert has_element?(ctx.view, "#report-outcome-counts-item-problems")
       assert has_element?(ctx.view, "#report-outcome-counts-item-passed")
     end
   end
@@ -1546,6 +1617,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
 
       assert has_element?(view, "dialog#report-entity-drawer-overlay[data-open='true']")
       assert has_element?(view, "form#report-stop-edit-form")
+      assert has_element?(view, "#report-entity-drawer", "Saving rebuilds the report")
 
       # The report owns no pathway drawer: neither a form nor a select path.
       refute has_element?(view, "#report-pathway-edit-form")
@@ -1628,7 +1700,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       controls_per_row =
         view
         |> stop_form_doc()
-        |> LazyHTML.query("#report-stop-edit-form > *")
+        |> LazyHTML.query("#report-stop-edit-form .overflow-y-auto > *")
         |> Enum.map(&element_count(&1, "input:not([type='hidden']), select, textarea"))
 
       assert Enum.sum(controls_per_row) == 6,
@@ -1672,7 +1744,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert has_element?(view, "#stop_level_id-error", "can't be blank")
 
       # A view-level explanation says what failed and what to do next.
-      assert has_element?(view, "#report-stop-form-error", "Check the highlighted fields")
+      assert has_element?(
+               view,
+               "#report-stop-form-error",
+               "Nothing was saved. Fix these fields:"
+             )
+
+      # The summary names each rejected field and links to it.
+      assert has_element?(view, "#report-stop-form-error a[href='#stop_stop_lat']", "Latitude")
+      assert has_element?(view, "#report-stop-form-error a[href='#stop_level_id']", "Level")
 
       # Nothing was written, not even the field that was valid.
       stored = Gtfs.get_stop_by_stop_id(ctx.organization.id, ctx.gtfs_version.id, "ENT_1")
@@ -1958,6 +2038,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
       assert has_element?(view, "#report-stop-lookup-error", "Stop not found")
       assert has_element?(view, "button#report-stop-lookup-retry", "Retry lookup")
 
+      # Nothing was opened, so the drawer does not promise a rebuild.
+      refute has_element?(view, "#report-entity-drawer", "Saving rebuilds the report")
+
       # Retrying while the stop is still missing stays in the drawer.
       view |> element("button#report-stop-lookup-retry") |> render_click()
       assert has_element?(view, "dialog#report-entity-drawer-overlay[data-open='true']")
@@ -2078,7 +2161,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationReport2LiveTest do
                "Choose a level that exists in this version."
              )
 
-      assert has_element?(view, "#report-stop-form-error", "Check the highlighted fields")
+      assert has_element?(
+               view,
+               "#report-stop-form-error a[href='#stop_level_id']",
+               "Choose a level that exists in this version."
+             )
 
       assert_push_event(view, "focus_form_error", %{
         form_id: "report-stop-edit-form",
