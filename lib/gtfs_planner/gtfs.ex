@@ -4830,6 +4830,11 @@ defmodule GtfsPlanner.Gtfs do
   defp maybe_filter_wheelchair(query, nil), do: query
   defp maybe_filter_wheelchair(query, ""), do: query
 
+  # GTFS treats an empty wheelchair_boarding the same as 0 (no information).
+  defp maybe_filter_wheelchair(query, value) when value in [0, "0"] do
+    where(query, [s], s.wheelchair_boarding == 0 or is_nil(s.wheelchair_boarding))
+  end
+
   defp maybe_filter_wheelchair(query, wheelchair_boarding) do
     where(query, [s], s.wheelchair_boarding == ^wheelchair_boarding)
   end

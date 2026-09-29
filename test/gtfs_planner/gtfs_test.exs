@@ -2566,6 +2566,43 @@ defmodule GtfsPlanner.GtfsTest do
     end
   end
 
+  describe "stations wheelchair_boarding filtering" do
+    setup do
+      organization = organization_fixture()
+      gtfs_version = gtfs_version_fixture(organization.id)
+
+      for {stop_id, wheelchair_boarding} <- [{"BLANK", nil}, {"ZERO", 0}, {"ACCESSIBLE", 1}] do
+        stop_fixture(organization.id, gtfs_version.id, %{
+          stop_id: stop_id,
+          parent_station: nil,
+          wheelchair_boarding: wheelchair_boarding
+        })
+      end
+
+      %{organization: organization, gtfs_version: gtfs_version}
+    end
+
+    test "filtering by 0 lists and counts stops with a blank or 0 value", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      stops = Gtfs.list_stations(org.id, version.id, wheelchair_boarding: 0)
+
+      assert stops |> Enum.map(& &1.stop_id) |> Enum.sort() == ["BLANK", "ZERO"]
+      assert Gtfs.count_stations(org.id, version.id, wheelchair_boarding: 0) == 2
+    end
+
+    test "filtering by 1 lists and counts only stops with that exact value", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      stops = Gtfs.list_stations(org.id, version.id, wheelchair_boarding: 1)
+
+      assert Enum.map(stops, & &1.stop_id) == ["ACCESSIBLE"]
+      assert Gtfs.count_stations(org.id, version.id, wheelchair_boarding: 1) == 1
+    end
+  end
+
   describe "list_pathways_for_station/3" do
     setup do
       organization = organization_fixture()
