@@ -114,6 +114,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
      |> assign(:warning_candidates, [])
      |> assign(:geometry_status, nil)
      |> assign(:route_map_data, nil)
+     |> assign(:show_context, false)
+     |> assign(:route_context, nil)
+     |> assign(:route_context_status, nil)
+     |> assign(:route_context_bounds, nil)
+     |> assign(:route_context_cursor, nil)
      |> assign(:last_saved, nil)
      |> assign(:draft_route, nil)
      |> assign(:route_text_mode, nil)
@@ -154,6 +159,67 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   @impl true
   def handle_event("retry", _params, socket) do
     {:noreply, load_route_workspace(socket)}
+  end
+
+  # --- other-route context (R7, step 31) --------------------------------------
+
+  # The hook pushes this when the operator toggles "Show other routes" and on
+  # every map move while it is on. Events are handled sequentially in this one
+  # LiveView process, so the newest event always wins: turning context off
+  # clears every context assign before anything older could render, and no
+  # in-flight read can outlive it — a stale viewport response can never
+  # replace newer state (AC-27). The checkbox and its keyboard operation stay
+  # the hook's; this boundary only ever sees the resulting event.
+  @impl true
+  def handle_event("route_context_viewport", params, socket) do
+    if socket.assigns.route_state == :ready and params["enabled"] in [true, "true"] do
+      load_route_context(socket, params["bounds"], nil)
+    else
+      {:noreply, clear_route_context(socket)}
+    end
+  end
+
+  # The partial strip's "Show more routes": the next keyset page for the
+  # viewport the operator is still looking at, appended to what is shown.
+  @impl true
+  def handle_event("more_route_context", _params, socket) do
+    context = socket.assigns.route_context
+
+    if socket.assigns.show_context and is_map(context) and is_binary(context.next_cursor) do
+      case context_map_read(socket, socket.assigns.route_context_bounds, context.next_cursor) do
+        {:ok, page} ->
+          merged = %{
+            context
+            | partial: page.partial,
+              next_cursor: page.next_cursor,
+              routes: context.routes ++ page.routes
+          }
+
+          {:noreply,
+           socket
+           |> assign(:route_context, merged)
+           |> assign(:route_context_status, :ok)
+           |> assign(:route_context_cursor, merged.next_cursor)}
+
+        {:error, _reason} ->
+          {:noreply, assign(socket, :route_context_status, :error)}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # The strip's Retry: a full page-one reload for the last viewport the hook
+  # reported, replacing whatever is on screen. A failed load keeps the last
+  # good bounds (nil on the very first failure), so retry repeats a transient
+  # loss instead of repeating a malformed request.
+  @impl true
+  def handle_event("retry_route_context", _params, socket) do
+    if socket.assigns.show_context and socket.assigns.route_context_bounds do
+      load_route_context(socket, socket.assigns.route_context_bounds, nil)
+    else
+      {:noreply, socket}
+    end
   end
 
   # Every form change re-validates the draft and reports which fields a save
@@ -622,6 +688,62 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
       else: "/gtfs/#{version_id}/routes"
   end
 
+  # The context read goes through the same facade chain as the current route's
+  # map (RouteDetailLive -> Gtfs.route_context_map/4 ->
+  # GtfsPlanner.Gtfs.Routes.Map.route_context_map/4). A success records the
+  # bounds that produced it, so Retry and "Show more" repeat the viewport the
+  # operator is actually looking at; a rejection keeps the previous page on
+  # screen and the previous bounds, with the strip explaining the failure.
+  defp load_route_context(socket, bounds, cursor) do
+    case context_map_read(socket, bounds, cursor) do
+      {:ok, context} ->
+        {:noreply,
+         socket
+         |> assign(:show_context, true)
+         |> assign(:route_context, context)
+         |> assign(:route_context_status, :ok)
+         |> assign(:route_context_cursor, context.next_cursor)
+         |> assign(:route_context_bounds, bounds)}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> assign(:show_context, true)
+         |> assign(:route_context_status, :error)}
+    end
+  end
+
+  defp context_map_read(socket, bounds, cursor) do
+    Gtfs.route_context_map(
+      socket.assigns.current_organization.id,
+      socket.assigns.current_gtfs_version.id,
+      socket.assigns.route.route_id,
+      %{bounds: bounds, cursor: cursor}
+    )
+  end
+
+  # The context layer describes *other* routes, so it survives a same-route
+  # reload (a save) untouched and resets when a different route opens — a
+  # stale current-route exclusion can never survive a route change.
+  defp keep_route_context(socket, route) do
+    previous = socket.assigns[:route]
+
+    if previous != nil and previous.id != route.id do
+      clear_route_context(socket)
+    else
+      socket
+    end
+  end
+
+  defp clear_route_context(socket) do
+    socket
+    |> assign(:show_context, false)
+    |> assign(:route_context, nil)
+    |> assign(:route_context_status, nil)
+    |> assign(:route_context_bounds, nil)
+    |> assign(:route_context_cursor, nil)
+  end
+
   # One workspace read, one classification. A missing/foreign scope redirects to
   # the scoped list with a flash and an unavailable database keeps the route on
   # screen behind its retry action; neither is rendered as the other.
@@ -686,6 +808,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         |> assign(:delete_error, nil)
         |> assign(:delete_pending, false)
         |> assign(:delete_task, nil)
+        |> keep_route_context(workspace.route)
         |> assign(
           :transfer_count,
           related_transfers(organization_id, gtfs_version_id, workspace.route)
@@ -2228,6 +2351,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                     usage={@usage}
                     transfer_count={@transfer_count}
                     gtfs_version_id={@current_gtfs_version.id}
+                    show_context={@show_context}
+                    route_context={@route_context}
+                    route_context_status={@route_context_status}
                   />
                 </aside>
               </div>
@@ -2253,6 +2379,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   attr :usage, :any, required: true
   attr :transfer_count, :any, required: true
   attr :gtfs_version_id, :string, required: true
+  attr :show_context, :boolean, required: true
+  attr :route_context, :any, required: true
+  attr :route_context_status, :any, required: true
 
   def route_map_panel(assigns) do
     ~H"""
@@ -2264,6 +2393,18 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         <h2 id="route-map-title" class="text-base font-bold tracking-normal text-strong">
           Where it runs
         </h2>
+        <label
+          :if={route_map_context_available?(@route_map_data)}
+          for="route-map-context-toggle"
+          class="inline-flex min-h-11 cursor-pointer items-center gap-2 text-[13px] font-[650] text-default"
+        >
+          <input
+            type="checkbox"
+            id="route-map-context-toggle"
+            class="size-4 accent-action"
+            checked={@show_context}
+          /> Show other routes
+        </label>
       </div>
 
       <%= case @route_map_data do %>
@@ -2278,6 +2419,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                 phx-hook="RouteDetailsMap"
                 phx-update="ignore"
                 data-map-payload={route_map_payload_json(map)}
+                data-map-context={route_map_context_json(@route_context)}
                 data-map-colors={route_map_colors_json(@draft_route)}
                 class="absolute inset-0 z-0 bg-map-paper"
               >
@@ -2391,6 +2533,47 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                 </svg>
                 Straight between stops, no path yet
               </span>
+            </div>
+
+            <%!-- Other-route context (AC-27): off by default; when on, the
+                   strip announces the result and stays honest about a page
+                   that is not the whole viewport yet. --%>
+            <div
+              :if={@show_context}
+              class="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-subtle px-4 py-2 text-[13px] text-default"
+            >
+              <%= case @route_context_status do %>
+                <% :ok -> %>
+                  <p id="route-map-context-status" role="status" class="min-w-0 flex-1">
+                    {route_map_context_status_text(@route_context)}
+                  </p>
+                  <button
+                    :if={@route_context.partial}
+                    type="button"
+                    id="route-map-context-more"
+                    phx-click="more_route_context"
+                    class="inline-flex min-h-11 items-center font-[650] underline"
+                  >
+                    Show more routes
+                  </button>
+                <% :error -> %>
+                  <p
+                    id="route-map-context-status"
+                    role="status"
+                    class="min-w-0 flex-1 text-warning-fg"
+                  >
+                    Couldn't load nearby routes. This route and its editor are
+                    unaffected.
+                  </p>
+                  <button
+                    type="button"
+                    id="route-map-context-retry"
+                    phx-click="retry_route_context"
+                    class="inline-flex min-h-11 items-center font-[650] underline"
+                  >
+                    Retry
+                  </button>
+              <% end %>
             </div>
 
             <div class="flex items-baseline justify-between gap-3 px-4 pb-1 pt-3">
@@ -2537,6 +2720,43 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
 
   defp route_map_has_geometry?(map),
     do: map.patterns != [] or map.imported_shape_variants != []
+
+  # "Show other routes" exists only where a current-route map exists to add
+  # context to — the prototype shows the checkbox only with patterns.
+  defp route_map_context_available?({:ok, map}), do: route_map_has_geometry?(map)
+  defp route_map_context_available?(_route_map_data), do: false
+
+  defp route_map_context_status_text(%{routes: [], partial: _}),
+    do: "No other routes in this view have maps."
+
+  defp route_map_context_status_text(%{routes: routes, partial: true}),
+    do: "Showing the first #{length(routes)} nearby routes. More are in this view."
+
+  defp route_map_context_status_text(%{routes: routes}),
+    do: "Showing all #{length(routes)} nearby routes in this view."
+
+  # The context payload as JSON for the hook. Absent (nil) when context is
+  # off, so the attribute disappears and the hook clears its layer.
+  defp route_map_context_json(nil), do: nil
+
+  defp route_map_context_json(%{routes: routes}) do
+    Jason.encode!(%{
+      routes:
+        Enum.map(routes, fn route ->
+          %{
+            route_id: route.route_id,
+            route_short_name: route.route_short_name,
+            route_long_name: route.route_long_name,
+            route_color: route.route_color,
+            route_text_color: route.route_text_color,
+            active: route.active,
+            sections: Enum.map(route.sections, &route_map_geometry_json/1),
+            imported_shape_variants:
+              Enum.map(route.imported_shape_variants, &route_map_geometry_json/1)
+          }
+        end)
+    })
+  end
 
   defp route_map_trips(usage) when is_map(usage), do: Map.get(usage, :trips)
   defp route_map_trips(_usage), do: nil

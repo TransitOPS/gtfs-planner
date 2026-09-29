@@ -1042,6 +1042,41 @@ case Accounts.register_first_admin(%{
       })
     end)
 
+    # ── Other-route context fixtures (spec 16, step 31) ──
+    #
+    # Fifty-five small routes over the pattern-stop corner of the map, so the
+    # Details map's "Show other routes" layer has more than one 50-route page
+    # and every context route sits inside the fitted viewport. CTX_55 is
+    # explicitly inactive to give the layer its dashed inactive state.
+    Enum.each(1..55, fn index ->
+      route_id = "BROWSER_CTX_" <> String.pad_leading(Integer.to_string(index), 2, "0")
+
+      {:ok, _context_route} =
+        Gtfs.create_route(%{
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          route_id: route_id,
+          route_short_name: "C#{index}",
+          route_long_name: "Context Route #{index}",
+          route_type: 3,
+          active: index != 55
+        })
+
+      context_pattern =
+        GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
+          route_id: route_id,
+          route_pattern_id: route_id <> "-P1",
+          route_pattern_name: "Context #{index}",
+          direction_id: 0
+        })
+
+      [first_stop, second_stop] = Enum.take(pattern_stops, 2)
+      GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(context_pattern, first_stop.stop_id, 1)
+      GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(context_pattern, second_stop.stop_id, 2)
+    end)
+
+    IO.puts("Browser seed: 55 context routes for the Show-other-routes layer")
+
     unlinked_route = Map.fetch!(pattern_routes, "BROWSER_PATTERNS_UNLINKED")
 
     Enum.each(["BROWSER_PU1", "BROWSER_PU2"], fn trip_id ->
