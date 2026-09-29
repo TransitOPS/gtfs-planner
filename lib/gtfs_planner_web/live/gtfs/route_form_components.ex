@@ -830,7 +830,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     <details
       id={"#{@prefix}-additional"}
       open={@open?}
-      class="group rounded-card border border-subtle"
+      class="group min-w-0 rounded-card border border-subtle"
     >
       <summary class="flex min-h-14 cursor-pointer list-none items-center gap-3 px-4 [&::-webkit-details-marker]:hidden">
         <.icon
