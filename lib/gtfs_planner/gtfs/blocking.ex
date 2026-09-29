@@ -66,10 +66,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   alias GtfsPlanner.Gtfs.BlockingSetting
   alias GtfsPlanner.Gtfs.Calendars
+  alias GtfsPlanner.Gtfs.DeadheadTime
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteOperatingSetting
   alias GtfsPlanner.Gtfs.Schedules
+  alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Operations
   alias GtfsPlanner.Repo
@@ -98,6 +100,17 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # that replaced only one of them would leave a previous save's other value
   # behind, so clearing a garage and setting a type never leaves the old garage.
   @replace_setting_columns [:garage_id, :required_vehicle_type_id, :updated_at]
+
+  # The one value column of a driving-time pair plus the write timestamp. A save
+  # replaces the minutes of the same ordered pair and never writes its reverse, so
+  # an entered A→B value cannot be shadowed by a later B→A save (AC-3, CR-7).
+  @replace_deadhead_columns [:minutes, :updated_at]
+
+  # The pair sources a Movements leg can carry. Every leg of the day is listed for
+  # the Driving times drawer; only an estimated one is counted as "N estimated"
+  # (AC-3, AC-40).
+  @estimated_sources [:estimated]
+  @driven_sources [:estimated, :entered, :unknown]
 
   @published_status "published"
   @seconds_per_hour 3600
@@ -292,6 +305,26 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           route_id: String.t(),
           garage_id: Ecto.UUID.t() | nil,
           required_vehicle_type_id: Ecto.UUID.t() | nil
+        }
+
+  @typedoc """
+  One directional driving-time pair of a day, as AC-3 lists it.
+
+  `from` and `to` are the stored reference strings — `"stop:<stop_id>"` or
+  `"garage:<uuid>"` — so a planner can hand a row straight back to
+  `put_deadhead_time/4` or `clear_deadhead_time/3`, and the labels beside them
+  are the stop name and the garage name a human reads. `uses` counts the legs of
+  the day that drove this exact direction, `minutes` is `nil` when the drive is
+  unknown, and `source` says which of the three answers it is.
+  """
+  @type pair :: %{
+          from: String.t(),
+          to: String.t(),
+          from_label: String.t(),
+          to_label: String.t(),
+          uses: pos_integer(),
+          minutes: non_neg_integer() | nil,
+          source: :entered | :estimated | :unknown
         }
 
   @doc """
@@ -608,6 +641,315 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         conflict_target: [:organization_id, :gtfs_version_id, :route_id]
       )
     end)
+  end
+
+  @doc """
+  Lists every directional driving-time pair the day type's blocks connect.
+
+  The list is derived from the same day load the page holds, in the same
+  transaction: every block's pull-out, pull-back and driving or unknown gap names
+  one ordered `{from_ref, to_ref}` pair, and each distinct pair is listed once
+  with the number of legs that drove it. Nothing here re-reads the movements or
+  re-derives a drive, so a pair in this list is a leg the day really has
+  (INV-8).
+
+  Each pair carries its `minutes` and `source` from `DeadheadTimes.lookup/5` over
+  that day's own context — an entered value for exactly this direction first, the
+  symmetric estimate otherwise, and `:unknown` with `nil` minutes when an end has
+  no coordinates. Pairs are ordered by uses descending, then by the two labels
+  and the two stored references, so the busiest directions are first and the
+  order never depends on the order the blocks came back in (AC-3).
+
+  `from` and `to` are the stored reference strings, so the drawer can hand a row
+  straight to `put_deadhead_time/4` or `clear_deadhead_time/3`. A `nil` key
+  selects the first day type; an unknown key is
+  `{:error, {:unknown_day_type, day_types}}` and selects none (INV-6), and a
+  foreign or unpublished version is `{:error, :not_found}`.
+  """
+  @spec list_deadhead_pairs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
+          {:ok, [pair()]} | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]}}
+  def list_deadhead_pairs(organization_id, gtfs_version_id, day_type_key) do
+    case Repo.transaction(fn ->
+           day = read_day(organization_id, gtfs_version_id, day_type_key)
+           {:ok, day_pairs(day)}
+         end) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Stores an entered driving time for one direction of one pair.
+
+  `{from_ref, to_ref}` is the ordered pair of stored reference strings the list
+  hands out. Both refs are decoded first: a stop ref must name a stop of this
+  version and a garage ref a garage of this organization, and anything else — an
+  unknown stop, another organization's garage, a hand-edited reference — is
+  `{:error, :invalid_ref}` with nothing stored. Garage references are the garage
+  UUID and never its correctable `garage_id` (CR-7).
+
+  `minutes` is 0–600, checked by `DeadheadTime.changeset/2` and again by the
+  named database constraint, so an out-of-range or non-numeric value is a
+  changeset error rather than a raised constraint violation.
+
+  The save runs in one transaction whose first statement is the scoped version row
+  `FOR SHARE` and whose next is `lock_blocking!/1`, so it serializes with every
+  other planning-input writer and cannot slip between a plan's review of the
+  entered driving times and its apply (INV-7, R12). It replaces the minutes of
+  exactly this ordered pair: the reverse direction keeps whatever it had, and
+  writing A→B never writes B→A. A staging or foreign version is
+  `{:error, :not_found}`.
+  """
+  @spec put_deadhead_time(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          {String.t(), String.t()},
+          non_neg_integer()
+        ) ::
+          {:ok, DeadheadTime.t()} | {:error, :not_found | :invalid_ref | Ecto.Changeset.t()}
+  def put_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref}, minutes) do
+    case Repo.transaction(fn ->
+           write_deadhead_time!(organization_id, gtfs_version_id, {from_ref, to_ref}, minutes)
+         end) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Removes the entered driving time of one direction, so the pair shows its
+  estimate again.
+
+  Only the named row is deleted: the reverse direction and every other pair of
+  the version keep theirs. A pair with no stored row is `{:error, :not_found}` —
+  there was nothing to reset — and a staging or foreign version is
+  `{:error, :not_found}` as well.
+
+  The delete takes the same locks as a save, the version row `FOR SHARE` and then
+  `lock_blocking!/1`, so a reset cannot land between a plan's review and its apply
+  (INV-7, R12).
+  """
+  @spec clear_deadhead_time(Ecto.UUID.t(), Ecto.UUID.t(), {String.t(), String.t()}) ::
+          :ok | {:error, :not_found}
+  def clear_deadhead_time(organization_id, gtfs_version_id, {from_ref, to_ref}) do
+    case Repo.transaction(fn ->
+           clear_deadhead_time!(
+             organization_id,
+             gtfs_version_id,
+             canonical_pair({from_ref, to_ref})
+           )
+         end) do
+      {:ok, result} -> result
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # One pair entry per distinct ordered pair the day drove, with the number of
+  # legs behind it. The counts come from the movements the day load built, so
+  # `estimated_pairs/1` — the "N estimated" the scope bar counts — is a subset of
+  # this list rather than a second walk of the day's legs.
+  defp day_pairs(%{blocks: blocks, context: context}) do
+    stops = day_stop_refs(blocks)
+
+    blocks
+    |> Enum.flat_map(&pair_refs/1)
+    |> Enum.frequencies()
+    |> Enum.map(fn {{from_ref, to_ref}, uses} -> pair(context, stops, from_ref, to_ref, uses) end)
+    |> Enum.sort_by(&{-&1.uses, &1.from_label, &1.to_label, &1.from, &1.to})
+  end
+
+  # The day's own stop rows, keyed by stop ID, for a pair's labels and for the
+  # points its estimate is measured between. A pair's stop is always an endpoint
+  # of one of the day's trips, so this map covers every stop ref a leg can name.
+  defp day_stop_refs(blocks) do
+    for block <- blocks,
+        trip <- block.trips,
+        stop <- [trip.first_stop, trip.last_stop],
+        stop != nil,
+        into: %{},
+        do: {stop.stop_id, stop}
+  end
+
+  defp pair(context, stops, from_ref, to_ref, uses) do
+    %{minutes: minutes, source: source} =
+      DeadheadTimes.lookup(
+        from_ref,
+        ref_point(from_ref, stops, context),
+        to_ref,
+        ref_point(to_ref, stops, context),
+        context
+      )
+
+    %{
+      from: DeadheadTimes.encode_ref(from_ref),
+      to: DeadheadTimes.encode_ref(to_ref),
+      from_label: ref_label(from_ref, stops, context),
+      to_label: ref_label(to_ref, stops, context),
+      uses: uses,
+      minutes: minutes,
+      source: source
+    }
+  end
+
+  # A stop's point is the one its own rows give, falling back to the parent
+  # station's, exactly as `Queries.stop_refs/3` built it for the movements. A
+  # garage's is the context's own stored coordinate.
+  defp ref_point({:stop, stop_id}, stops, _context) do
+    case Map.get(stops, stop_id) do
+      nil -> nil
+      stop -> point(stop.lat, stop.lon)
+    end
+  end
+
+  defp ref_point({:garage, garage_uuid}, _stops, context) do
+    case Map.get(context.garages, garage_uuid) do
+      nil -> nil
+      garage -> point(garage.lat, garage.lon)
+    end
+  end
+
+  # A coordinate pair needs both numbers; a stop or garage that carries one
+  # without the other is as unmeasurable here as it is in `Blocking.Movements`.
+  defp point(lat, lon) when is_number(lat) and is_number(lon), do: {lat * 1.0, lon * 1.0}
+  defp point(_lat, _lon), do: nil
+
+  # A garage is labelled by its name — a garage is a place, not a row ID — and a
+  # stop by its GTFS stop name. A ref the day cannot name (a garage the context
+  # does not carry, a stop with no name) falls back to the ID it is stored as,
+  # so a row is never blank.
+  defp ref_label({:stop, stop_id}, stops, _context) do
+    case Map.get(stops, stop_id) do
+      %{name: name} when is_binary(name) and name != "" -> name
+      _no_name -> stop_id
+    end
+  end
+
+  defp ref_label({:garage, garage_uuid}, _stops, context) do
+    case Map.get(context.garages, garage_uuid) do
+      %{name: name} when is_binary(name) and name != "" -> name
+      %{garage_id: garage_id} when is_binary(garage_id) and garage_id != "" -> garage_id
+      _no_name -> garage_uuid
+    end
+  end
+
+  # The version share lock is the first statement of the write transaction and
+  # `lock_blocking!/1` follows it and nothing else, in INV-1's order, exactly as
+  # the settings and route-settings writers take them (INV-7).
+  defp write_deadhead_time!(organization_id, gtfs_version_id, {from_ref, to_ref}, minutes) do
+    version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
+
+    if version.publication_status == @published_status do
+      :ok = lock_blocking!(gtfs_version_id)
+
+      with {:ok, from_ref} <- decode_deadhead_ref(from_ref),
+           {:ok, to_ref} <- decode_deadhead_ref(to_ref),
+           :ok <- check_pair_refs(organization_id, gtfs_version_id, [from_ref, to_ref]) do
+        %DeadheadTime{
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id,
+          # `encode_ref/1` re-writes both in their canonical stored form, so an
+          # uppercase UUID reaches the row downcased and the unique index is one
+          # row per pair rather than two spellings of it.
+          from_ref: DeadheadTimes.encode_ref(from_ref),
+          to_ref: DeadheadTimes.encode_ref(to_ref)
+        }
+        |> DeadheadTime.changeset(%{minutes: minutes})
+        |> Repo.insert(
+          on_conflict: {:replace, @replace_deadhead_columns},
+          conflict_target: [:organization_id, :gtfs_version_id, :from_ref, :to_ref],
+          returning: true
+        )
+      end
+    else
+      {:error, :not_found}
+    end
+  end
+
+  # Only the two decoded forms reach a row. `decode_ref/1` already refuses a
+  # corrupt or hand-edited reference, so this only has to refuse a value that is
+  # not a stored string at all.
+  defp decode_deadhead_ref(ref) when is_binary(ref) do
+    case DeadheadTimes.decode_ref(ref) do
+      {:ok, decoded} -> {:ok, decoded}
+      :error -> {:error, :invalid_ref}
+    end
+  end
+
+  defp decode_deadhead_ref(_not_a_reference), do: {:error, :invalid_ref}
+
+  # A stop ref must name a stop of this version and a garage ref a garage of this
+  # organization, so a stored row can never point at a place this planner does not
+  # run. Both refs are checked before the upsert, so a rejected pair stores
+  # nothing. Garage ownership is the same organization-scoped read the default
+  # garage and the route settings use.
+  defp check_pair_refs(organization_id, gtfs_version_id, refs) do
+    stop_ids = for {:stop, stop_id} <- refs, do: stop_id
+    garage_ids = for {:garage, garage_uuid} <- refs, do: garage_uuid
+
+    with :ok <- check_stops(organization_id, gtfs_version_id, stop_ids) do
+      check_garages(organization_id, garage_ids)
+    end
+  end
+
+  defp check_stops(_organization_id, _gtfs_version_id, []), do: :ok
+
+  defp check_stops(organization_id, gtfs_version_id, stop_ids) do
+    known =
+      from(s in Stop,
+        where:
+          s.organization_id == ^organization_id and s.gtfs_version_id == ^gtfs_version_id and
+            s.stop_id in ^stop_ids,
+        select: s.stop_id
+      )
+      |> Repo.all()
+      |> MapSet.new()
+
+    if MapSet.equal?(known, MapSet.new(stop_ids)), do: :ok, else: {:error, :invalid_ref}
+  end
+
+  defp check_garages(_organization_id, []), do: :ok
+
+  defp check_garages(organization_id, garage_ids) do
+    if Enum.all?(garage_ids, &Operations.get_garage(organization_id, &1)),
+      do: :ok,
+      else: {:error, :invalid_ref}
+  end
+
+  # The version share lock and the blocking lock are taken in INV-1's order, and
+  # the delete is by the four-column key of the one ordered pair: the reverse
+  # direction is a different row and is never touched.
+  defp clear_deadhead_time!(organization_id, gtfs_version_id, {from_ref, to_ref}) do
+    version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
+
+    if version.publication_status == @published_status do
+      :ok = lock_blocking!(gtfs_version_id)
+
+      {deleted, _nothing} =
+        Repo.delete_all(
+          from(t in DeadheadTime,
+            where:
+              t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+                t.from_ref == ^from_ref and t.to_ref == ^to_ref
+          )
+        )
+
+      if deleted == 1, do: :ok, else: {:error, :not_found}
+    else
+      {:error, :not_found}
+    end
+  end
+
+  # The stored form of a pair, with every decodable ref rewritten by
+  # `encode_ref/1`. A ref that decodes to nothing is kept as given: it cannot
+  # match a valid row either way, and refusing to answer a clear because the
+  # caller sent a corrupt string would hide a row rather than remove it.
+  defp canonical_pair({from_ref, to_ref}), do: {canonical_ref(from_ref), canonical_ref(to_ref)}
+
+  defp canonical_ref(ref) do
+    case DeadheadTimes.decode_ref(ref) do
+      {:ok, decoded} -> DeadheadTimes.encode_ref(decoded)
+      :error -> ref
+    end
   end
 
   defp settings_query(organization_id, gtfs_version_id) do
@@ -1759,26 +2101,47 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   defp estimated_pair_refs(%{trips: trips, movements: movements}) do
+    pull_refs(movements, @estimated_sources) ++ gap_refs(trips, movements, @estimated_sources)
+  end
+
+  # Every leg of the block, in the order the movements list them: the two pulls
+  # and then each driving or unknown gap. The Driving times drawer lists all of
+  # them, while the count above takes only the estimated ones.
+  defp pair_refs(%{trips: trips, movements: movements}) do
+    pull_refs(movements, @driven_sources) ++ gap_refs(trips, movements, @driven_sources)
+  end
+
+  # A pull names its own refs, so its pair is read off the movement itself.
+  defp pull_refs(movements, sources) do
+    movements.pull_out
+    |> List.wrap()
+    |> Kernel.++(List.wrap(movements.pull_back))
+    |> Enum.filter(&(pull_source(&1) in sources))
+    |> Enum.map(&{&1.from, &1.to})
+  end
+
+  defp pull_source(nil), do: :none
+  defp pull_source(%{source: source}), do: source
+
+  # A gap names its trips, so the pair is read off the same `sequence/1` the
+  # movements were built from and lines up by construction. A layover carries no
+  # source and is never a pair; a gap whose trip is not in this block cannot name
+  # a stop and is dropped.
+  defp gap_refs(trips, movements, sources) do
     by_id = Map.new(trips, &{&1.id, &1})
 
-    pulls =
-      [movements.pull_out, movements.pull_back]
-      |> Enum.reject(&is_nil/1)
-      |> Enum.flat_map(fn
-        %{source: :estimated, from: from, to: to} -> [{from, to}]
-        _entered_or_unknown -> []
-      end)
-
-    gaps =
-      for %{source: :estimated, from_id: from_id, to_id: to_id} <- movements.gaps do
-        case {Map.get(by_id, from_id), Map.get(by_id, to_id)} do
-          {%{last_stop: from_stop}, %{first_stop: to_stop}} -> [stop_pair(from_stop, to_stop)]
-          _a_gap_whose_trip_is_not_here -> []
-        end
+    movements.gaps
+    |> Enum.filter(&(gap_source(&1) in sources))
+    |> Enum.map(fn gap ->
+      case {Map.get(by_id, gap.from_id), Map.get(by_id, gap.to_id)} do
+        {%{last_stop: from_stop}, %{first_stop: to_stop}} -> stop_pair(from_stop, to_stop)
+        _a_gap_whose_trip_is_not_here -> nil
       end
-
-    (pulls ++ gaps) |> Enum.reject(&is_nil/1)
+    end)
+    |> Enum.reject(&is_nil/1)
   end
+
+  defp gap_source(%{source: source}), do: source
 
   defp stop_pair(%{stop_id: from_stop_id}, %{stop_id: to_stop_id}),
     do: {{:stop, from_stop_id}, {:stop, to_stop_id}}
