@@ -43,7 +43,7 @@ defmodule GtfsPlanner.Gtfs.Export.AlignmentValidatorTest do
   @moduletag :validator_cli
   @moduletag timeout: 300_000
 
-  @validator_version "7.1.0"
+  @validator_version "8.0.1"
 
   @loop_points %{
     1 => [[-74.0055, 40.7131]],
@@ -315,7 +315,7 @@ defmodule GtfsPlanner.Gtfs.Export.AlignmentValidatorTest do
     Enum.map(entries, fn {name, _content} -> List.to_string(name) end)
   end
 
-  # The 7.1.0 report holds one entry per notice code:
+  # The 8.0.1 report holds one entry per notice code:
   # %{"code" => ..., "severity" => "ERROR" | "WARNING" | "INFO",
   #   "totalNotices" => n, "sampleNotices" => [%{"filename" => ...}, ...]}
   defp notice_codes(report) do

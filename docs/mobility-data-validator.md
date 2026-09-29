@@ -18,12 +18,12 @@ export PATH="/opt/homebrew/opt/openjdk@21/bin:$PATH"
 ```
 
 ### 2. Download the Validator JAR
-Download the validator CLI JAR into the `priv/gtfs_validator` directory. We use version `7.1.0` for consistency with the production environment.
+Download the validator CLI JAR into the `priv/gtfs_validator` directory. We use version `8.0.1` for consistency with the production environment.
 
 ```bash
 mkdir -p priv/gtfs_validator
 curl -L -o priv/gtfs_validator/gtfs-validator-cli.jar \
-  "https://github.com/MobilityData/gtfs-validator/releases/download/v7.1.0/gtfs-validator-7.1.0-cli.jar"
+  "https://github.com/MobilityData/gtfs-validator/releases/download/v8.0.1/gtfs-validator-8.0.1-cli.jar"
 ```
 
 ## Docker Configuration (Production)

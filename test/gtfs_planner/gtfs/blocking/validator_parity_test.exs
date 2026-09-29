@@ -4,7 +4,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ValidatorParityTest do
   exported feed (EV-8, AC-4, R4; the external oracle for CL-2).
 
   The oracle is the validator's own `block_trips_with_overlapping_stop_times` notice: the
-  module exports the version with `Export.export_to_zip/3`, runs the tracked 7.1.0 jar with
+  module exports the version with `Export.export_to_zip/3`, runs the tracked 8.0.1 jar with
   `--skip_validator_update`, and compares its reported `{tripIdA, tripIdB}` pairs with the
   `:overlap` findings of every day type through the ordinary `Gtfs.load_blocking_day/3`
   entry, mapped back to natural trip IDs.
@@ -50,7 +50,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ValidatorParityTest do
   @moduletag :validator_cli
   @moduletag timeout: 300_000
 
-  @validator_version "7.1.0"
+  @validator_version "8.0.1"
   @overlap_code "block_trips_with_overlapping_stop_times"
 
   # Mon-Fri, Wednesday and Saturday services over the fixture's 2026 window: WKDY and MID
