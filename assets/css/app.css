@@ -3837,3 +3837,24 @@ body:has(#home-page) {
     padding-bottom: 0.75rem;
   }
 }
+
+/* ── Floorplan pathway drawer: the bidirectional checkbox label ──
+   daisyUI's `.label` is `white-space: nowrap`, so the pathway form's
+   "Can be traversed in both directions?" label ran past 320px and the
+   drawer's `overflow-x-hidden` clipped its last word. Scoped to the checkbox
+   rows of the drawer the deletion refusals live in, so no other `.label` in
+   the app changes; a browser without `:has()` keeps today's rendering. */
+#pathway-form .label:has(> input[type="checkbox"]) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* ── Floorplan pathway drawer header at 320px ──
+   A paired pathway adds two tabs to the drawer header beside the title, and
+   the header's left group could not shrink, so at 320px it pushed the Close
+   control past the drawer's right edge where `overflow-x-hidden` clipped it.
+   Scoped to this drawer's own header; wider widths keep the single row. */
+#pathway-drawer > div > header > div:first-child {
+  flex-wrap: wrap;
+  min-width: 0;
+}
