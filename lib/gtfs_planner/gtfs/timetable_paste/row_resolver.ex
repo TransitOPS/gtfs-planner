@@ -1168,7 +1168,15 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
   defp template_attrs(rows, index) do
     case Enum.at(rows, index) do
       %{pickup_type: pickup, drop_off_type: drop, stop_headsign: headsign} ->
-        %{pickup_type: pickup, drop_off_type: drop, stop_headsign: headsign}
+        # GTFS treats an absent pickup_type/drop_off_type as 0 (regularly
+        # scheduled); normalize nil here so the timing key matches existing
+        # timings whose stored value is 0, instead of always missing and
+        # creating a duplicate "Pasted" timing.
+        %{
+          pickup_type: if(is_nil(pickup), do: 0, else: pickup),
+          drop_off_type: if(is_nil(drop), do: 0, else: drop),
+          stop_headsign: headsign
+        }
 
       _row ->
         %{pickup_type: 0, drop_off_type: 0, stop_headsign: nil}
