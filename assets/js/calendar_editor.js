@@ -42,15 +42,33 @@ const CalendarEditor = {
       this.restoringHistory = true
       window.history.go(delta)
     }
+    // The error summary links to fields that may sit in a collapsed disclosure, and
+    // a browser cannot scroll to or focus a control that is not rendered.
+    this.jumpToField = event => {
+      const link = event.target.closest?.('.form-error-summary a[href^="#"]')
+      const target = link && document.getElementById(link.getAttribute("href").slice(1))
+      if (!target || !this.el.contains(target)) return
+      event.preventDefault()
+      this._attemptFocus(target)
+    }
     activeEditor = this
     window.addEventListener("beforeunload", this.beforeUnload)
     window.addEventListener("click", this.depart, true)
+    this.el.addEventListener("click", this.jumpToField)
+  },
+  // Optional fields live in `<details>` that the client owns, so a rejected submit
+  // opens the one holding the first invalid control before focusing it.
+  _attemptFocus(target) {
+    const details = target?.closest?.("details")
+    if (details) details.open = true
+    FormErrorFocus._attemptFocus.call(this, target)
   },
   destroyed() {
     FormErrorFocus.destroyed?.call(this)
     if (activeEditor === this) activeEditor = null
     window.removeEventListener("beforeunload", this.beforeUnload)
     window.removeEventListener("click", this.depart, true)
+    this.el.removeEventListener("click", this.jumpToField)
   }
 }
 export default CalendarEditor

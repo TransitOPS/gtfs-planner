@@ -22,6 +22,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   date is before its start date opens with an error callout and its stored dates, and
   only a corrected range can be saved; conversion, breaks and single-date changes wait
   until it is.
+
+  Outcomes render next to what changed: `message_area` is `:schedule` for a save,
+  `:changes` for a date change and `:page` for duplicate and delete, so a message
+  is never far from the control that caused it. `status_message` and
+  `error_message` hold a title or a `{title, body}` pair.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -30,7 +35,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Versions
-  alias GtfsPlannerWeb.Gtfs.CalendarComponents
+  alias GtfsPlannerWeb.Gtfs.CalendarEditorComponents, as: Editor
+
+  import GtfsPlannerWeb.PlannerComponents,
+    only: [form_error_summary: 1, message: 1, unsaved_badge: 1]
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -85,7 +93,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
      |> assign(:kind, :weekly)
      |> assign(:periods, empty_periods())
      |> assign(:preview_month, nil)
-     |> assign(:months, [])
+     |> assign(:month_grid, nil)
      |> assign(:zone, nil)
      |> assign(:today, Date.utc_today())
      |> assign(:warnings, [])
@@ -108,6 +116,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
      |> assign(:pending?, false)
      |> assign(:status_message, nil)
      |> assign(:error_message, nil)
+     |> assign(:message_area, :schedule)
+     |> assign(:rejected?, false)
      |> assign(:dirty?, false)}
   end
 
@@ -236,10 +246,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     else
       :error ->
         {:noreply,
-         assign(socket, :error_message, "Choose a valid first and last date for the break.")}
+         put_error(
+           socket,
+           :changes,
+           "Choose the first and last day off. For a single day, choose it twice."
+         )}
 
       {:error, message} ->
-        {:noreply, assign(socket, :error_message, message)}
+        {:noreply, put_error(socket, :changes, message)}
     end
   end
 
@@ -252,7 +266,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
         guard_or_run(socket, {:put_exceptions, socket.assigns.service_id, [date], :added})
 
       :error ->
-        {:noreply, assign(socket, :error_message, "Choose a valid date to add.")}
+        {:noreply, put_error(socket, :changes, "Choose a valid date to add.")}
     end
   end
 
@@ -265,7 +279,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
         guard_or_run(socket, {:remove_exceptions, socket.assigns.service_id, [date]})
 
       :error ->
-        {:noreply, assign(socket, :error_message, "That date change could not be read.")}
+        {:noreply, put_error(socket, :changes, "That date change could not be read.")}
     end
   end
 
@@ -274,13 +288,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     case parse_dates(dates) do
       {:ok, []} ->
         {:noreply,
-         assign(socket, :error_message, "That break has no stored date changes to remove.")}
+         put_error(socket, :changes, "That break has no stored date changes to remove.")}
 
       {:ok, parsed} ->
         guard_or_run(socket, {:remove_exceptions, socket.assigns.service_id, parsed})
 
       :error ->
-        {:noreply, assign(socket, :error_message, "That break could not be read.")}
+        {:noreply, put_error(socket, :changes, "That break could not be read.")}
     end
   end
 
@@ -309,7 +323,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
          |> push_navigate(to: detail_path(socket, copy_id))}
 
       {:error, reason} ->
-        {:noreply, assign(socket, :error_message, write_error_message(reason))}
+        {:noreply,
+         socket
+         |> put_error(:page, write_error_message(reason, :duplicate))
+         |> focus_message()}
     end
   end
 
@@ -332,10 +349,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
              |> push_navigate(to: list_path(socket))}
 
           {:ok, result} ->
-            {:noreply, after_write(socket, result)}
+            {:noreply, after_write(socket, command, result)}
 
           {:error, reason} ->
-            {:noreply, write_failed(socket, reason)}
+            {:noreply, write_failed(socket, reason, command)}
         end
 
       nil ->
@@ -348,8 +365,20 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     {:noreply, assign(socket, :review_dialog, nil)}
   end
 
+  # Discard changes drops typed work, so it asks first through the same dialog as
+  # every other action that would drop it.
+  @impl true
+  def handle_event("ask_discard", _params, socket) do
+    {:noreply, assign(socket, :pending_action, :discard)}
+  end
+
   @impl true
   def handle_event("discard_changes", _params, socket) do
+    socket =
+      if socket.assigns.pending_action == :discard,
+        do: push_event(socket, "focus_scoped_target", %{id: "calendar-name"}),
+        else: socket
+
     {:noreply, socket |> reset_draft() |> continue_pending()}
   end
 
@@ -399,7 +428,6 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     |> assign(:usage, %{trip_count: 0, route_ids: [], routes: []})
     |> assign(:kind, :weekly)
     |> assign(:periods, empty_periods())
-    |> assign(:months, [])
     |> assign(:warnings, [])
     |> put_params(params, baseline: params, errors: [])
     |> assign_preview(socket.assigns.today || Date.utc_today())
@@ -462,8 +490,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   # A post-write refresh is a fresh source snapshot, so the retained fingerprint
-  # and the dirty baseline both move with it.
-  defp refresh_source(socket, message) do
+  # and the dirty baseline both move with it. The outcome is worded from that fresh
+  # snapshot, so it reports what is now stored, not what was asked for.
+  defp refresh_source(socket, area, {title, body_for}) do
     organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
 
@@ -471,14 +500,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       {:ok, source} ->
         socket
         |> apply_source(source)
-        |> assign(:status_message, message)
-        |> assign(:preview_month, socket.assigns.preview_month)
+        |> put_status(area, {title, body_for.(source)})
 
       {:error, _reason} ->
-        assign(
+        put_error(
           socket,
-          :error_message,
-          "#{message} The calendar could not be reloaded; reload the page to see the stored values."
+          area,
+          {title, "The calendar could not be reloaded. Reload the page to see the stored values."}
         )
     end
   end
@@ -491,6 +519,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     |> assign_preview(socket.assigns.preview_month || Date.new!(today.year, today.month, 1))
   end
 
+  # One month at a time: the strip in the changes card carries the long view, and the
+  # preview beside the form has room for a readable month.
   defp assign_preview(socket, month) do
     first = Date.new!(month.year, month.month, 1)
     source = socket.assigns.source
@@ -507,12 +537,10 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
           %{date: Date.from_iso8601!(iso), exception_type: 1}
         end)
 
-    months =
-      for offset <- 0..2 do
-        ServiceDates.month_grid(calendar, exceptions, shift_month(first, offset))
-      end
-
-    assign(socket, months: months, preview_month: first)
+    assign(socket,
+      month_grid: ServiceDates.month_grid(calendar, exceptions, first),
+      preview_month: first
+    )
   end
 
   defp preview_calendar(socket, source) do
@@ -537,8 +565,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp preview_target(socket, "ArrowRight"), do: shift_month(socket.assigns.preview_month, 1)
   defp preview_target(socket, "Home"), do: preview_step(socket, "today")
 
-  defp preview_step(socket, "next"), do: shift_month(socket.assigns.preview_month, 3)
-  defp preview_step(socket, "prev"), do: shift_month(socket.assigns.preview_month, -3)
+  defp preview_step(socket, "next"), do: shift_month(socket.assigns.preview_month, 1)
+  defp preview_step(socket, "prev"), do: shift_month(socket.assigns.preview_month, -1)
 
   defp preview_step(socket, _today),
     do: Date.new!(socket.assigns.today.year, socket.assigns.today.month, 1)
@@ -696,6 +724,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     |> String.slice(0, 60)
   end
 
+  # `rejected: true` marks a rejected submit, the only time the error summary shows:
+  # live validation and typing are not a rejection.
   defp put_params(socket, params, opts) do
     errors = Keyword.get(opts, :errors, [])
     baseline = Keyword.get(opts, :baseline, socket.assigns.baseline)
@@ -703,6 +733,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     socket
     |> assign(:params, params)
     |> assign(:baseline, baseline)
+    |> assign(:rejected?, Keyword.get(opts, :rejected, false) and errors != [])
     |> assign(
       :field_errors,
       Map.new(errors, fn {field, messages} -> {field, List.wrap(messages)} end)
@@ -730,6 +761,14 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     put_params(socket, params, errors: errors)
   end
 
+  # A rejected submit lands focus on the first invalid field, or on the summary when
+  # the failing control cannot take focus.
+  defp reject_submit(socket, params, errors) do
+    socket
+    |> put_params(params, errors: errors, rejected: true)
+    |> focus_field_error()
+  end
+
   defp reset_draft(socket) do
     params = socket.assigns.baseline || creation_params()
 
@@ -742,7 +781,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     case params_to_command(socket, params) do
       {:ok, :create, attrs} -> create(socket, params, attrs)
       {:ok, command} -> review_or_apply(socket, params, command)
-      {:error, errors} -> {:noreply, reject_input(socket, params, errors)}
+      {:error, errors} -> {:noreply, reject_submit(socket, params, errors)}
     end
   end
 
@@ -755,7 +794,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
          |> push_navigate(to: detail_path(socket, service_id))}
 
       {:error, reason} ->
-        {:noreply, reject_write(socket, params, reason)}
+        {:noreply, reject_write(socket, params, reason, :create)}
     end
   end
 
@@ -778,7 +817,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
         end
 
       {:error, reason} ->
-        {:noreply, socket |> assign(:pending?, false) |> reject_write(params, reason)}
+        {:noreply, socket |> assign(:pending?, false) |> reject_write(params, reason, command)}
     end
   end
 
@@ -795,10 +834,17 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp apply_reviewed(socket, command, review) do
     case Gtfs.apply_calendar_change(command, review.fingerprint, audit_context(socket)) do
-      {:ok, result} -> {:noreply, after_write(socket, result)}
-      {:error, reason} -> {:noreply, write_failed(socket, reason)}
+      {:ok, result} -> {:noreply, socket |> after_write(command, result) |> focus_after(command)}
+      {:error, reason} -> {:noreply, write_failed(socket, reason, command)}
     end
   end
+
+  # A removed row takes its Restore button with it, so focus follows the outcome
+  # message; the other commands leave the pressed control in place.
+  defp focus_after(socket, {:remove_exceptions, _service_id, _dates}),
+    do: push_event(socket, "focus_scoped_target", %{id: "calendar-status"})
+
+  defp focus_after(socket, _command), do: socket
 
   # Delete, both conversions, and a break removal are always reviewed; a date
   # change is reviewed when it would leave no service at all or when it stores a
@@ -827,45 +873,132 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     review.active_date_count == 0 or outside_range?
   end
 
-  defp after_write(socket, %{action: :deleted}) do
+  defp after_write(socket, _command, %{action: :deleted}) do
     socket
     |> put_flash(:info, "Deleted #{socket.assigns.service_id}.")
     |> push_navigate(to: list_path(socket))
   end
 
-  defp after_write(socket, %{action: :unchanged}) do
-    refresh_source(
-      assign(socket, :preview_month, socket.assigns.preview_month),
-      "No change was needed."
-    )
+  defp after_write(socket, command, result) do
+    refresh_source(socket, area_for(command), result_outcome(result, socket.assigns.kind))
   end
 
-  defp after_write(socket, result) do
-    refresh_source(socket, "Saved. #{result_summary(result)}")
+  # Each outcome is a title and a body worded from the source read after the write:
+  # what changed, then what the calendar now does.
+  defp result_outcome(%{action: :unchanged}, _kind) do
+    {"No change was needed.", fn _source -> "The calendar already matches what you see." end}
   end
 
-  defp result_summary(%{action: :convert, kind: :dates_only} = result),
-    do: "Now stores all #{result.active_date_count} effective service dates as specific dates."
+  defp result_outcome(%{action: :convert, kind: :dates_only}, _kind) do
+    {"Converted to chosen dates.",
+     fn source ->
+       "All #{Editor.plural(length(source.active_dates), "service date")} are now stored as individual dates. Trips run on the same days as before."
+     end}
+  end
 
-  defp result_summary(%{action: :convert, kind: :weekly}),
-    do: "Now runs on a weekly schedule."
+  defp result_outcome(%{action: :convert, kind: :weekly}, _kind) do
+    {"Converted to a weekly schedule.",
+     fn _source ->
+       "The calendar now runs on the days and dates you chose. Dates you added individually were kept."
+     end}
+  end
 
-  defp result_summary(%{action: :add_break} = result),
-    do: "#{result.changed_count} service dates were removed."
+  defp result_outcome(%{action: :add_break, changed_count: 0}, _kind) do
+    {"No change was needed.", fn _source -> "This calendar doesn’t run on any of those days." end}
+  end
 
-  defp result_summary(%{action: :put_exceptions} = result),
-    do: "#{result.changed_count} date changes were stored."
+  defp result_outcome(%{action: :add_break, changed_count: count}, _kind) do
+    {"Days off added.",
+     fn source ->
+       "#{Editor.plural(count, "service date")} #{if count == 1, do: "was", else: "were"} removed. " <>
+         "#{Editor.plural(length(source.active_dates), "service day")} on this calendar."
+     end}
+  end
 
-  defp result_summary(%{action: :remove_exceptions} = result),
-    do: "#{result.changed_count} date changes were removed."
+  defp result_outcome(%{action: :put_exceptions, changed_count: 0}, _kind) do
+    {"No change was needed.", fn _source -> "That date already runs on this calendar." end}
+  end
 
-  defp result_summary(%{changed_count: 0}), do: "No change was needed."
-  defp result_summary(_result), do: "Saved."
+  defp result_outcome(%{action: :put_exceptions}, kind) do
+    {if(kind == :weekly, do: "Extra service added.", else: "Service date added."),
+     &service_days_line/1}
+  end
 
-  defp write_failed(socket, reason) do
+  defp result_outcome(%{action: :remove_exceptions, changed_count: 0}, _kind) do
+    {"No change was needed.", fn _source -> "Nothing was stored for that date." end}
+  end
+
+  defp result_outcome(%{action: :remove_exceptions, changed_count: count}, :weekly) do
+    {if(count == 1, do: "Regular schedule restored.", else: "#{count} dates restored."),
+     fn source ->
+       "#{if count == 1, do: "That date follows", else: "Those dates follow"} the regular schedule again. " <>
+         service_days_line(source)
+     end}
+  end
+
+  defp result_outcome(%{action: :remove_exceptions, changed_count: count}, _kind) do
+    {if(count == 1, do: "Service date removed.", else: "#{count} service dates removed."),
+     &service_days_line/1}
+  end
+
+  defp result_outcome(%{changed_count: 0}, _kind) do
+    {"No change was needed.", fn _source -> "The calendar already matches what you see." end}
+  end
+
+  defp result_outcome(_result, _kind) do
+    {"Saved.",
+     fn %{usage: usage} ->
+       case usage do
+         %{trip_count: 0} ->
+           "No trips use this calendar yet."
+
+         %{trip_count: trips, routes: routes} ->
+           "#{Editor.plural(trips, "trip")} on #{Editor.plural(length(routes), "route")} now follow this schedule."
+       end
+     end}
+  end
+
+  defp service_days_line(source),
+    do: "#{Editor.plural(length(source.active_dates), "service day")} on this calendar."
+
+  defp write_failed(socket, reason, command) do
     socket
-    |> assign(error_message: write_error_message(reason), status_message: nil)
-    |> assign_delete_block(reason)
+    |> put_error(area_for(command), write_error_message(reason, command))
+    |> assign_delete_block(reason, command)
+    |> focus_message()
+  end
+
+  # Where an outcome renders: beside the control that caused it.
+  defp area_for({:save, _service_id, _attrs}), do: :schedule
+  defp area_for({:convert, _service_id, _kind, _attrs}), do: :schedule
+  defp area_for(:create), do: :schedule
+  defp area_for(:duplicate), do: :page
+  defp area_for({:delete, _service_id}), do: :page
+  defp area_for(_command), do: :changes
+
+  defp put_status(socket, area, message) do
+    assign(socket, status_message: message, error_message: nil, message_area: area)
+  end
+
+  defp put_error(socket, area, message) do
+    assign(socket, error_message: message, status_message: nil, message_area: area)
+  end
+
+  # Errors are announced when they render; focus goes where the person can act.
+  defp focus_field_error(socket) do
+    push_event(socket, "focus_form_error", %{
+      form_id: "calendar-form",
+      fallback_id: "calendar-form-errors"
+    })
+  end
+
+  defp focus_message(socket) do
+    fallback =
+      if socket.assigns.delete_block,
+        do: "calendar-delete-blocked-message",
+        else: "calendar-error"
+
+    push_event(socket, "focus_form_error", %{form_id: "none", fallback_id: fallback})
   end
 
   ## Command building
@@ -889,15 +1022,42 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
     end
   end
 
+  # Every rule runs, so a rejected submit reports each failing field at once instead
+  # of one per attempt. A new calendar also needs its draft dates and feed ID; a blank
+  # name already has its own message, so the feed ID it would have suggested is not
+  # reported as well.
   defp params_to_command(socket, params) do
     kind = String.to_existing_atom(params["kind"])
 
-    with {:ok, name} <- save_name(socket, params),
-         {:ok, metadata} <- metadata_attrs(params),
-         {:ok, weekly} <- save_weekly(socket, kind, params) do
+    checks = [
+      save_name(socket, params),
+      metadata_attrs(params),
+      save_weekly(socket, kind, params)
+    ]
+
+    checks =
+      if socket.assigns.live_action == :new,
+        do: checks ++ [additions_for(kind, params), new_service_id(params)],
+        else: checks
+
+    with {:ok, [name, metadata, weekly | creation]} <- collect(checks) do
       attrs = metadata |> Map.merge(%{name: name, kind: kind}) |> Map.merge(weekly)
-      command_for(socket, kind, attrs, params)
+      command_for(socket, kind, attrs, creation)
     end
+  end
+
+  defp collect(checks) do
+    case Enum.flat_map(checks, fn
+           {:error, errors} -> errors
+           {:ok, _value} -> []
+         end) do
+      [] -> {:ok, Enum.map(checks, fn {:ok, value} -> value end)}
+      errors -> {:error, errors}
+    end
+  end
+
+  defp new_service_id(%{"name" => name} = params) do
+    if String.trim(name) == "", do: {:ok, ""}, else: required_service_id(params)
   end
 
   defp save_name(socket, params) do
@@ -922,14 +1082,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   # A new calendar carries its own service ID and draft dates; an existing one is
   # either converted to the requested kind or saved in place.
-  defp command_for(%{assigns: %{live_action: :new}} = _socket, kind, attrs, params) do
-    with {:ok, additions} <- additions_for(kind, params),
-         {:ok, service_id} <- required_service_id(params) do
-      {:ok, :create, Map.merge(attrs, Map.merge(%{service_id: service_id}, additions))}
-    end
+  defp command_for(%{assigns: %{live_action: :new}}, _kind, attrs, [additions, service_id]) do
+    {:ok, :create, Map.merge(attrs, Map.merge(%{service_id: service_id}, additions))}
   end
 
-  defp command_for(socket, kind, attrs, _params) do
+  defp command_for(socket, kind, attrs, []) do
     if socket.assigns.kind == kind do
       {:ok, {:save, socket.assigns.service_id, attrs}}
     else
@@ -942,32 +1099,29 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp required_name(params) do
     case String.trim(params["name"] || "") do
-      "" -> {:error, [name: "can’t be blank"]}
+      "" -> {:error, [name: "Enter a calendar name."]}
       name -> {:ok, name}
     end
   end
 
   defp required_service_id(params) do
     case String.trim(params["service_id"] || "") do
-      "" -> {:error, [service_id: "can’t be blank"]}
+      "" -> {:error, [service_id: "Enter a feed ID."]}
       service_id -> {:ok, service_id}
     end
   end
 
   defp weekly_attrs(params) do
-    case parse_date(params["start_date"]) do
-      :error -> {:error, [start_date: "choose a start date"]}
-      {:ok, start_date} -> weekly_end_attrs(params, start_date)
-    end
-  end
-
-  defp weekly_end_attrs(params, start_date) do
-    case parse_date(params["end_date"]) do
-      :error ->
-        {:error, [end_date: "choose an end date"]}
-
-      {:ok, end_date} ->
+    case {parse_date(params["start_date"]), parse_date(params["end_date"])} do
+      {{:ok, start_date}, {:ok, end_date}} ->
         ordered_weekly_attrs(params, start_date, end_date)
+
+      {start_date, end_date} ->
+        {:error,
+         Enum.concat(
+           if(start_date == :error, do: [start_date: "Choose a start date."], else: []),
+           if(end_date == :error, do: [end_date: "Choose an end date."], else: [])
+         )}
     end
   end
 
@@ -975,7 +1129,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   # would compare the day before the month and misread a year boundary.
   defp ordered_weekly_attrs(params, start_date, end_date) do
     if Date.compare(end_date, start_date) == :lt do
-      {:error, [end_date: "must be on or after the start date"]}
+      {:error, [end_date: "The end date must be on or after the start date."]}
     else
       days =
         @weekday_fields
@@ -990,9 +1144,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp additions(params) do
     case parse_dates(Enum.join(params["dates"], ",")) do
-      {:ok, []} -> {:error, [date_input: "add at least one service date"]}
+      {:ok, []} -> {:error, [date_input: "Add at least one service date."]}
       {:ok, dates} -> {:ok, %{dates: dates}}
-      :error -> {:error, [date_input: "must be a list of valid dates"]}
+      :error -> {:error, [date_input: "Choose valid dates."]}
     end
   end
 
@@ -1008,11 +1162,11 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
     cond do
       rating_start == :error or rating_end == :error ->
-        {:error, [rating_start_date: "choose valid rating dates"]}
+        {:error, [rating_start_date: "Choose valid dates for the schedule period."]}
 
       is_struct(rating_start, Date) and is_struct(rating_end, Date) and
           Date.compare(rating_end, rating_start) == :lt ->
-        {:error, [rating_end_date: "must be on or after the rating start date"]}
+        {:error, [rating_end_date: "The schedule period must end on or after it starts."]}
 
       true ->
         {:ok,
@@ -1051,6 +1205,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   end
 
   defp run_command(socket, :duplicate), do: handle_event("duplicate", %{}, socket)
+
+  # Discarding has nothing to run after the draft is reset.
+  defp run_command(socket, :discard), do: {:noreply, socket}
 
   defp run_command(socket, command) do
     review_or_apply(socket, socket.assigns.params, command)
@@ -1100,59 +1257,82 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   ## Errors
 
-  defp reject_write(socket, params, reason) do
+  defp reject_write(socket, params, reason, command) do
     if is_struct(reason, Ecto.Changeset) do
-      put_params(socket, params, errors: form_errors(reason))
+      reject_submit(socket, params, form_errors(reason))
     else
       socket
       |> put_params(params, errors: [], clear_messages: false)
-      |> assign(:error_message, write_error_message(reason))
-      |> assign_delete_block(reason)
+      |> put_error(area_for(command), write_error_message(reason, command))
+      |> assign_delete_block(reason, command)
+      |> focus_message()
     end
   end
 
-  defp assign_delete_block(socket, {:in_use, trip_count, route_ids}) do
-    assign(socket, :delete_block, %{trip_count: trip_count, route_ids: route_ids})
+  # Only a refused delete is "blocked": a refused conversion says so in its own words.
+  # The callout says what the refusal would, so the plain error line is dropped.
+  defp assign_delete_block(socket, {:in_use, trip_count, route_ids}, {:delete, _service_id}) do
+    assign(socket,
+      delete_block: %{trip_count: trip_count, route_ids: route_ids},
+      error_message: nil
+    )
   end
 
-  defp assign_delete_block(socket, _reason), do: socket
+  defp assign_delete_block(socket, _reason, _command), do: socket
 
-  defp write_error_message(:stale_review) do
-    "This calendar changed in another session. Your edits are still here; reload to see the stored values, then save again."
+  # Each message says what happened and what to do next. Edits stay on the page for
+  # every failure that keeps the draft, and the copy says so.
+  defp write_error_message(:stale_review, _command) do
+    {"This calendar changed in another session. Nothing was saved.",
+     "Your edits are still on this page. Reloading shows the latest calendar and drops your edits, so copy anything you want to keep first."}
   end
 
-  defp write_error_message(:forbidden) do
-    "You no longer have permission to change this calendar."
+  defp write_error_message(:forbidden, _command) do
+    {"You no longer have permission to change this calendar.",
+     "Your edits are still on this page. Ask an organization administrator to restore your access, then save again."}
   end
 
-  defp write_error_message(:not_found) do
-    "This calendar is no longer available in this service version."
+  defp write_error_message(:not_found, _command) do
+    {"This calendar is no longer available in this service version.",
+     "It may have been deleted in another session, so your edits can’t be saved. They are still on this page."}
   end
 
-  defp write_error_message(:unavailable) do
-    "The database is temporarily unavailable. Your edits are still here."
+  defp write_error_message(:unavailable, command) do
+    {failed_title(command),
+     "The database is temporarily unavailable. Your edits are still here. Try again in a moment."}
   end
 
-  defp write_error_message(:invalid_command) do
+  defp write_error_message(:invalid_command, _command) do
     "That change is not valid for this calendar."
   end
 
-  defp write_error_message(:reversed_range) do
+  defp write_error_message(:reversed_range, _command) do
     "Correct this calendar’s dates first."
   end
 
-  defp write_error_message({:in_use, trip_count, _routes}) do
-    "#{trip_count} trips use this calendar, so it cannot be deleted."
+  defp write_error_message({:in_use, trips, _routes}, {:delete, _service_id}) do
+    "#{Editor.plural(trips, "trip")} #{if trips == 1, do: "uses", else: "use"} this calendar, so it can’t be deleted."
   end
 
-  defp write_error_message(_reason), do: "The change could not be saved."
+  defp write_error_message({:in_use, trips, _routes}, _command) do
+    {"#{Editor.plural(trips, "trip")} #{if trips == 1, do: "uses", else: "use"} this calendar, so it can’t switch to a weekly schedule.",
+     "Move its trips to another calendar first."}
+  end
+
+  defp write_error_message(_reason, command), do: failed_title(command)
+
+  defp failed_title(:create), do: "The calendar wasn’t created."
+  defp failed_title(_command), do: "The calendar wasn’t saved."
 
   # Domain changesets own field errors; the mapping renames them onto the form
-  # fields the editor renders so every message stays associated with its control.
+  # fields the editor renders and words each as a sentence that says what to do.
   defp form_errors(%Ecto.Changeset{} = changeset) do
     changeset
     |> Ecto.Changeset.traverse_errors(fn {message, _opts} -> message end)
-    |> Enum.map(fn {field, messages} -> {form_field(field), messages} end)
+    |> Enum.map(fn {field, messages} ->
+      field = form_field(field)
+      {field, Enum.map(messages, &plain_error(field, &1))}
+    end)
     |> Enum.reject(fn {field, _messages} -> field == nil end)
   end
 
@@ -1161,7 +1341,39 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
   defp form_field(:dates), do: :date_input
   defp form_field(field), do: field
 
-  defp date_error, do: [date_input: "choose a valid date"]
+  defp plain_error(:name, "has already been taken"),
+    do: "Another calendar already has this name. Choose a different name."
+
+  defp plain_error(:name, message) when message in ["can't be blank", "can’t be blank"],
+    do: "Enter a calendar name."
+
+  defp plain_error(:service_id, "has already been taken"),
+    do: "Another calendar already uses this feed ID. Choose a different one."
+
+  defp plain_error(:service_id, message) when message in ["can't be blank", "can’t be blank"],
+    do: "Enter a feed ID."
+
+  defp plain_error(:weekdays, "select at least one service day"),
+    do: "Choose at least one service day."
+
+  defp plain_error(:end_date, "must be on or after the start date"),
+    do: "The end date must be on or after the start date."
+
+  defp plain_error(:rating_end_date, "must be greater than or equal to rating_start_date"),
+    do: "The schedule period must end on or after it starts."
+
+  defp plain_error(:date_input, "add at least one service date"),
+    do: "Add at least one service date."
+
+  defp plain_error(_field, message), do: sentence(message)
+
+  defp sentence(message) do
+    {first, rest} = message |> String.trim() |> String.split_at(1)
+    message = String.upcase(first) <> rest
+    if String.ends_with?(message, "."), do: message, else: message <> "."
+  end
+
+  defp date_error, do: [date_input: "Choose a valid date."]
 
   ## Audit
 
@@ -1216,7 +1428,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp ordered_range(first_date, last_date) do
     if Date.compare(last_date, first_date) == :lt do
-      {:error, "The break’s last date must be on or after its first date."}
+      {:error, "The last day off must be on or after the first day off."}
     else
       :ok
     end
@@ -1255,6 +1467,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   @impl true
   def render(assigns) do
+    assigns = assign_view_state(assigns)
+
     ~H"""
     <Layouts.app
       flash={@flash}
@@ -1265,164 +1479,214 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
       current_gtfs_version={assigns[:current_gtfs_version]}
       available_versions={assigns[:available_versions] || []}
     >
-      <div id="calendar-editor" phx-hook="CalendarEditor" data-dirty={to_string(@dirty?)} class="mt-6">
-        <nav aria-label="Breadcrumb" class="text-sm">
-          <.link navigate={list_path_for(@current_gtfs_version.id)} class="link">Calendars</.link>
-          <span class="text-base-content/70">{" / "}{breadcrumb_label(assigns)}</span>
-        </nav>
+      <div
+        id="calendar-editor"
+        phx-hook="CalendarEditor"
+        data-dirty={to_string(@dirty?)}
+        class="ds-page"
+      >
+        <Editor.editor_head
+          list_path={list_path_for(@current_gtfs_version.id)}
+          crumb={crumb(assigns)}
+          heading={heading(assigns)}
+          badge={if @show?, do: Editor.status(@source)}
+          lede={lede(assigns)}
+        >
+          <:meta :if={@show?}>
+            <span :if={unnamed?(@source)}>Imported without a name · </span>{Editor.usage_line(@usage)} · Feed ID
+            <code class="font-mono text-strong">{@service_id}</code>
+          </:meta>
+          <:actions :if={@show?}>
+            <.button
+              id="calendar-duplicate"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="duplicate"
+            >
+              <.icon name="hero-document-duplicate" class="size-4" /> Duplicate calendar
+            </.button>
+            <.button
+              id="calendar-delete"
+              type="button"
+              variant="secondary"
+              class="calendar-delete-button min-h-11"
+              phx-click="delete"
+            >
+              <.icon name="hero-trash" class="size-4" /> Delete calendar
+            </.button>
+          </:actions>
+        </Editor.editor_head>
 
         <div
           id="calendar-offline"
           phx-disconnected={JS.show(to: "#calendar-offline") |> JS.remove_attribute("hidden")}
           phx-connected={JS.hide(to: "#calendar-offline") |> JS.set_attribute({"hidden", ""})}
           hidden
-          class="mt-3"
+          class="mb-6"
         >
-          <.callout kind="warning" title="Reconnecting">
-            Changes are already saved on the server. Keep this page open to continue editing.
-          </.callout>
+          <.message kind="warning" title="Reconnecting…">
+            Changes you already saved are safe. Keep this page open to continue editing.
+          </.message>
         </div>
 
-        <div :if={@load_state == :loading} id="calendar-loading" class="mt-6" aria-busy="true">
-          <.skeleton rows={4} label="Loading calendar…" />
+        <Editor.loading :if={@load_state == :loading} />
+
+        <div :if={@load_state == :unavailable} id="calendar-unavailable" class="max-w-[760px]">
+          <.message kind="error" title="We couldn’t load this calendar">
+            Nothing was changed. Try again to open it.
+            <:action>
+              <.button id="calendar-retry" type="button" class="min-h-11" phx-click="retry">
+                Try again
+              </.button>
+            </:action>
+          </.message>
         </div>
 
-        <div :if={@load_state == :unavailable} id="calendar-unavailable" class="mt-6" role="alert">
-          <.callout kind="error" title="This calendar couldn’t be loaded">
-            Try again to open it.
-            <.button id="calendar-retry" phx-click="retry" variant="secondary" size="sm" class="mt-2">
-              Retry
-            </.button>
-          </.callout>
+        <div :if={@load_state == :not_found} id="calendar-not-found" class="max-w-[760px]">
+          <.message kind="error" title={"This calendar isn’t in #{@current_gtfs_version.name}"}>
+            It may have been deleted, or the link may point to a calendar in another version. Open
+            the Calendars list to find it.
+            <:action>
+              <.button
+                id="calendar-back-to-list"
+                class="min-h-11"
+                navigate={list_path_for(@current_gtfs_version.id)}
+              >
+                Back to calendars
+              </.button>
+            </:action>
+          </.message>
         </div>
 
-        <div :if={@load_state == :not_found} id="calendar-not-found" class="mt-6">
-          <.callout kind="error" title="Calendar not found">
-            This calendar does not exist in the selected service version.
-            <.button
-              id="calendar-back-to-list"
-              navigate={list_path_for(@current_gtfs_version.id)}
-              variant="secondary"
-              size="sm"
-              class="mt-2"
+        <div :if={@notices?} id="calendar-notices" class="mb-6 grid gap-3">
+          <div :if={@zone_fallback?} id="calendar-timezone-fallback">
+            <.message kind="warning" title="Today’s date may be off by a day">
+              This version’s agency timezone couldn’t be used ({fallback_reason(@zone.fallback_reason)}), so “today” and the ending-soon warnings use the UTC date. Set one valid
+              timezone for the agency.
+              <:action>
+                <.button
+                  id="calendar-timezone-link"
+                  variant="secondary"
+                  class="min-h-11"
+                  navigate={"/gtfs/#{@current_gtfs_version.id}/settings/agencies"}
+                >
+                  Open Agencies
+                </.button>
+              </:action>
+            </.message>
+          </div>
+
+          <div :if={@notes != []} id="periods-warnings">
+            <.message
+              kind="warning"
+              title={
+                if length(@notes) == 1,
+                  do: "1 thing to check",
+                  else: "#{length(@notes)} things to check"
+              }
             >
-              Back to calendars
-            </.button>
-          </.callout>
+              <ul class="mt-1 grid gap-1">
+                <li :for={warning <- @notes}>
+                  {Editor.warning_line(warning, @kind, Editor.range_label(@source.calendar))}
+                </li>
+              </ul>
+            </.message>
+          </div>
+
+          <div :if={@delete_block} id="calendar-delete-blocked">
+            <.message
+              id="calendar-delete-blocked-message"
+              tabindex="-1"
+              kind="error"
+              title="This calendar is used by trips, so it can’t be deleted"
+            >
+              <p phx-no-format>{Editor.plural(@delete_block.trip_count, "trip")}<span :if={@delete_block.route_ids != []}> on <span :for={{route_id, index} <- Enum.with_index(@delete_block.route_ids)}><.link id={"calendar-delete-blocked-route-#{route_id}"} navigate={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{route_id}"} class="font-semibold underline underline-offset-2">{route_id}</.link><span :if={index < length(@delete_block.route_ids) - 1}>, </span></span></span> still {if @delete_block.trip_count == 1, do: "runs", else: "run"} on it. Move them to another calendar first: <strong>Combine calendars</strong> on the Calendars page moves every trip at once, or you can change the calendar on each route’s schedule. Then delete this one.</p>
+              <p class="mt-2 flex flex-wrap gap-x-5">
+                <a
+                  href="#calendar-trips-title"
+                  class="inline-flex min-h-11 items-center font-[650] underline underline-offset-2"
+                >
+                  See the routes that use it
+                </a>
+                <.link
+                  navigate={list_path_for(@current_gtfs_version.id)}
+                  class="inline-flex min-h-11 items-center font-[650] underline underline-offset-2"
+                >
+                  Open Calendars
+                </.link>
+              </p>
+            </.message>
+          </div>
+
+          <div :if={@live_action == :show and @source.coverage_error} id="calendar-range-error">
+            <.message kind="error" title="This calendar’s end date is before its start date.">
+              Correct the dates and save. Until then, no service dates can be worked out for it.
+            </.message>
+          </div>
+
+          <div :if={@message_area == :page and @error_message}>
+            <Editor.outcome kind="error" outcome={@error_message} />
+          </div>
         </div>
 
-        <div :if={@load_state == :ready} class="mt-2">
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h1 class="text-2xl font-semibold">{heading(assigns)}</h1>
-              <p :if={@live_action == :new} class="text-base-content/70">
-                Choose when service runs. You can add holidays and breaks next.
-              </p>
-              <p :if={@live_action == :show} class="text-base-content/70">
-                <code class="font-mono">{@service_id}</code>
-                <span :if={@source.attributes == nil or blank_name?(@source)}>
-                  · Unnamed imported service
-                </span>
-                <span>{" · "}{kind_label(@kind)}</span>
-              </p>
-            </div>
-            <details :if={@live_action == :show} class="mt-3">
-              <summary id="calendar-actions" class="btn btn-sm btn-outline min-h-11 w-fit">
-                Calendar actions
-              </summary>
-              <div class="mt-2 flex flex-wrap gap-3 border border-base-300 bg-base-100 p-3">
-                <button
-                  id="calendar-duplicate"
-                  type="button"
-                  class="link text-sm"
-                  phx-click="duplicate"
+        <div
+          :if={@ready?}
+          id="calendar-layout"
+          class={[
+            "grid gap-6",
+            @show? && "lg:grid-cols-[minmax(0,1fr)_420px] lg:items-start",
+            not @show? && "max-w-[820px]"
+          ]}
+        >
+          <section
+            id="calendar-schedule"
+            aria-labelledby="calendar-schedule-title"
+            class="min-w-0 overflow-clip rounded-card border border-subtle bg-white lg:col-start-1"
+          >
+            <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-subtle bg-canvas px-4 py-4 sm:px-5">
+              <div class="min-w-0">
+                <h2
+                  id="calendar-schedule-title"
+                  class="text-lg font-bold leading-snug tracking-[-0.01em] text-strong"
                 >
-                  Duplicate calendar
-                </button>
-                <button
-                  id="calendar-delete"
-                  type="button"
-                  class="link text-sm text-error"
-                  phx-click="delete"
-                >
-                  Delete calendar
-                </button>
+                  {if @params["kind"] == "weekly", do: "Regular schedule", else: "Schedule"}
+                </h2>
+                <p class="mt-0.5 text-[13px] text-muted">
+                  {if @params["kind"] == "weekly",
+                    do: "The days of the week this service runs, and the dates it covers.",
+                    else: "This calendar runs only on the dates you choose."}
+                </p>
               </div>
-            </details>
-          </div>
+              <.unsaved_badge :if={@dirty?} id="calendar-unsaved" />
+            </div>
 
-          <div
-            :if={@live_action == :show and @source.coverage_error}
-            id="calendar-range-error"
-            class="mt-4"
-          >
-            <.callout kind="error" title="This calendar’s end date is before its start date.">
-              Correct the dates and save. Until then, no service dates can be worked out for it.
-            </.callout>
-          </div>
+            <.form
+              for={@form}
+              id="calendar-form"
+              phx-change="validate"
+              phx-submit="submit_form"
+              class="px-4 pt-5 sm:px-5"
+            >
+              <div :if={@message_area == :schedule and @status_message} class="mb-5">
+                <Editor.outcome kind="success" outcome={@status_message} />
+              </div>
+              <div :if={@message_area == :schedule and @error_message} class="mb-5">
+                <Editor.outcome kind="error" outcome={@error_message} />
+              </div>
 
-          <div
-            :if={(@load_state == :ready and @zone) && @zone.fallback?}
-            id="calendar-timezone-fallback"
-            class="mt-4"
-          >
-            <.callout kind="warning" title="Dates use UTC">
-              This version’s agency timezone could not be resolved
-              ({fallback_reason(@zone.fallback_reason)}), so “today” and the expiry warnings use the UTC
-              civil date. Set a single valid agency timezone to avoid a wrong local day.
-            </.callout>
-          </div>
+              <.form_error_summary
+                :if={@rejected?}
+                id="calendar-form-errors"
+                title={
+                  if @live_action == :new,
+                    do: "Calendar not created. Fix these fields.",
+                    else: "Calendar not saved. Fix these fields."
+                }
+                failures={failures(assigns)}
+              />
 
-          <div :if={@live_action == :show} class="mt-4">
-            <CalendarComponents.usage_strip
-              id="calendar-usage"
-              usage={@usage}
-              version_id={@current_gtfs_version.id}
-            />
-          </div>
-
-          <div :if={@delete_block} id="calendar-delete-blocked" class="mt-4">
-            <.callout kind="error" title="This calendar is used by trips">
-              {@delete_block.trip_count} trips use this calendar <span :if={
-                @delete_block.route_ids != []
-              }>
-                on
-                <span :for={
-                  {route_id, index} <- Enum.with_index(@delete_block.route_ids)
-                }>
-                  <span :if={index > 0}>, </span>
-                  <.link
-                  navigate={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{route_id}"}
-                  class="link"
-                >
-                    {route_id}
-                  </.link>
-                </span>
-              </span>. Reassign those trips before deleting it.
-            </.callout>
-          </div>
-
-          <p
-            id="calendar-status"
-            role="status"
-            aria-live="polite"
-            class="mt-4 text-sm text-base-content/70"
-          >
-            {@status_message}
-          </p>
-          <p id="calendar-error" role="alert" class="mt-2 text-sm text-error">{@error_message}</p>
-
-          <.form
-            for={@form}
-            id="calendar-form"
-            phx-change="validate"
-            phx-submit="submit_form"
-            class="mt-4"
-          >
-            <section class="border border-base-300 bg-base-100 p-4">
-              <h2 class="text-lg font-semibold">Regular schedule</h2>
-
-              <div class="mt-4">
+              <div class="max-w-[480px]">
                 <.input
                   id="calendar-name"
                   field={@form[:name]}
@@ -1431,69 +1695,27 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                   value={@params["name"]}
                   errors={form_errors_for(assigns, :name)}
                   autocomplete="off"
+                  help={name_help(assigns)}
                 />
-                <p class="text-sm text-base-content/70">
-                  Use a name your team knows, such as “School days”.
-                </p>
               </div>
 
-              <fieldset class="mt-4">
-                <legend class="text-sm font-medium">When does service run?</legend>
-                <div class="mt-2 grid gap-2 sm:grid-cols-2">
-                  <label class="flex min-h-11 cursor-pointer items-center gap-2 border border-base-300 px-3 py-2 has-[:checked]:border-primary has-[:checked]:bg-primary/5">
-                    <input
-                      type="radio"
-                      id="calendar-kind-weekly"
-                      name={@form[:kind].name}
-                      value="weekly"
-                      checked={@params["kind"] == "weekly"}
-                      class="radio radio-sm"
-                    />
-                    <span class="text-sm font-medium">On a weekly schedule</span>
-                  </label>
-                  <label class="flex min-h-11 cursor-pointer items-center gap-2 border border-base-300 px-3 py-2 has-[:checked]:border-primary has-[:checked]:bg-primary/5">
-                    <input
-                      type="radio"
-                      id="calendar-kind-dates-only"
-                      name={@form[:kind].name}
-                      value="dates_only"
-                      checked={@params["kind"] == "dates_only"}
-                      disabled={reversed_range?(assigns)}
-                      aria-describedby={reversed_range?(assigns) && "calendar-range-error"}
-                      class="radio radio-sm"
-                    />
-                    <span class="text-sm font-medium">Only on specific dates</span>
-                  </label>
-                </div>
-              </fieldset>
+              <Editor.kind_cards
+                name={@form[:kind].name}
+                kind={@params["kind"]}
+                dates_only_disabled={reversed_range?(assigns)}
+              />
 
-              <%= if @params["kind"] == "weekly" do %>
-                <div class="mt-4">
-                  <div class="flex flex-wrap items-center gap-3">
-                    <span class="text-sm text-base-content/70">Presets</span>
-                    <button
-                      :for={{label, _days} <- @presets}
-                      id={"calendar-preset-#{label}"}
-                      type="button"
-                      class="link text-sm"
-                      phx-click="preset_days"
-                      phx-value-preset={label}
-                    >
-                      {label}
-                    </button>
-                  </div>
-                  <.checkbox_group
-                    id="calendar-weekdays"
-                    name={@form[:weekdays].name <> "[]"}
-                    label="Service days"
-                    options={@weekday_options}
-                    selected={@params["weekdays"]}
-                    error={field_error(assigns, :weekdays)}
-                    help="Days of the week this calendar runs."
-                  />
-                </div>
+              <div :if={@params["kind"] == "weekly"} id="calendar-weekly-fields" class="mt-6">
+                <Editor.weekday_toggles
+                  id="calendar-weekdays"
+                  name={@form[:weekdays].name <> "[]"}
+                  options={@weekday_options}
+                  selected={@params["weekdays"]}
+                  presets={@presets}
+                  error={field_error(assigns, :weekdays)}
+                />
 
-                <div class="mt-4 grid gap-4 sm:grid-cols-2">
+                <div class="mt-5 grid gap-4 sm:max-w-[480px] sm:grid-cols-2">
                   <.input
                     id="calendar-start-date"
                     field={@form[:start_date]}
@@ -1511,33 +1733,18 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                     errors={form_errors_for(assigns, :end_date)}
                   />
                 </div>
-              <% else %>
-                <div class="mt-4">
-                  <p class="text-sm">
-                    Trips run only on specific dates. There is no weekly schedule. For an existing calendar, use the date changes section below to add or remove service dates.
-                  </p>
-                  <ul
-                    :if={@params["dates"] != []}
-                    id="calendar-draft-dates"
-                    class="mt-2 flex flex-wrap gap-2"
-                  >
-                    <li
-                      :for={iso <- @params["dates"]}
-                      id={"calendar-draft-date-#{iso}"}
-                      class="inline-flex items-center gap-2 rounded-full border border-control-border px-3 py-1 text-sm"
-                    >
-                      <span>{CalendarComponents.format_date(date_from_iso(iso))}</span>
-                      <button
-                        type="button"
-                        class="link text-xs"
-                        phx-click="remove_draft_date"
-                        phx-value-date={iso}
-                      >
-                        Remove
-                      </button>
-                    </li>
-                  </ul>
-                  <div :if={@live_action == :new} class="mt-3 w-44">
+                <p class="mt-2 text-[13px] text-muted">
+                  {if @live_action == :new,
+                    do:
+                      "Both dates are included. You can add holidays and breaks after you create the calendar.",
+                    else:
+                      "Both dates are included. Holidays and breaks go under Days off and extra service."}
+                </p>
+              </div>
+
+              <div :if={@params["kind"] == "dates_only"} id="calendar-dates-fields" class="mt-6">
+                <div :if={@live_action == :new}>
+                  <div class="max-w-[220px]">
                     <.input
                       id="calendar-date-input"
                       field={@form[:date_input]}
@@ -1545,324 +1752,377 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
                       label="Service date"
                       value={@params["date_input"]}
                       errors={form_errors_for(assigns, :date_input)}
-                      help="Pick a date to add it to the list."
+                      help="Pick a date to add it to the list. Repeat for each day the calendar runs."
                     />
                   </div>
+                  <ul
+                    :if={@params["dates"] != []}
+                    id="calendar-draft-dates"
+                    aria-label="Service dates to add"
+                    class="mt-3 flex flex-wrap gap-2"
+                  >
+                    <li
+                      :for={iso <- @params["dates"]}
+                      id={"calendar-draft-date-#{iso}"}
+                      class="inline-flex min-h-11 items-center gap-1 rounded-control border border-subtle bg-canvas pl-3 pr-1 text-sm"
+                    >
+                      <span class="font-semibold text-strong">
+                        {Editor.weekday_date(date_from_iso(iso))}
+                      </span>
+                      <button
+                        type="button"
+                        phx-click="remove_draft_date"
+                        phx-value-date={iso}
+                        aria-label={"Remove #{Editor.format_date(date_from_iso(iso))}"}
+                        class="inline-flex size-11 items-center justify-center rounded-control text-muted hover:bg-white hover:text-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+                      >
+                        <.icon name="hero-x-mark" class="size-4" />
+                      </button>
+                    </li>
+                  </ul>
+                  <p :if={@params["dates"] == []} class="mt-3 text-[13px] text-muted">
+                    No dates yet.
+                  </p>
                 </div>
-              <% end %>
-
-              <div :if={@live_action == :new} class="mt-4">
-                <.input
-                  id="calendar-service-id"
-                  field={@form[:service_id]}
-                  type="text"
-                  label="Service ID"
-                  value={@params["service_id"]}
-                  errors={form_errors_for(assigns, :service_id)}
-                  autocomplete="off"
-                  help="Suggested from the name. It must be unique and cannot change after creation."
-                />
+                <p
+                  :if={@live_action == :show}
+                  class="rounded-control bg-canvas px-4 py-3 text-sm text-default"
+                >
+                  This calendar runs only on the dates listed under
+                  <strong class="font-semibold text-strong">Service dates</strong>
+                  below. Add or remove dates there.
+                </p>
               </div>
 
-              <details id="calendar-more-details" open={@details_open?} class="mt-4">
+              <details
+                :if={@live_action == :new}
+                id="calendar-service-id-details"
+                open={form_errors_for(assigns, :service_id) != []}
+                phx-mounted={JS.ignore_attributes("open")}
+                class="group mt-6"
+              >
+                <summary class="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-2 text-[13px] text-muted [&::-webkit-details-marker]:hidden">
+                  <span phx-no-format>Feed ID <code :if={@params["service_id"] != ""} id="calendar-service-id-preview" class="rounded-badge bg-canvas px-1.5 py-0.5 font-mono text-[13px] text-strong">{@params["service_id"]}</code><span :if={@params["service_id"] == ""} id="calendar-service-id-preview">made from the name</span></span>
+                  <span aria-hidden="true">·</span>
+                  <span class="font-[650] text-action group-open:hidden">Change ID</span>
+                  <span class="hidden font-[650] text-action group-open:inline">Hide ID</span>
+                </summary>
+                <div class="mt-1 max-w-[320px]">
+                  <.input
+                    id="calendar-service-id"
+                    field={@form[:service_id]}
+                    type="text"
+                    label="Feed ID"
+                    value={@params["service_id"]}
+                    errors={form_errors_for(assigns, :service_id)}
+                    class="w-full input input-lg font-mono"
+                    autocomplete="off"
+                    spellcheck="false"
+                    help="How this calendar is identified in your exported feed and on trips. Must be unique, and can’t change after you create the calendar."
+                  />
+                </div>
+              </details>
+
+              <details
+                id="calendar-more-details"
+                open={@details_open?}
+                class="group mt-6 border-t border-subtle pt-2"
+              >
                 <summary
                   id="calendar-more-details-summary"
                   phx-click="toggle_details"
-                  class="cursor-pointer text-sm font-medium"
+                  class="flex min-h-11 cursor-pointer list-none items-center gap-2 text-sm font-semibold text-strong [&::-webkit-details-marker]:hidden"
                 >
-                  More details <span class="text-base-content/70">· optional</span>
+                  <.icon
+                    name="hero-chevron-right"
+                    class="size-4 shrink-0 text-muted transition-transform group-open:rotate-90 motion-reduce:transition-none"
+                  />
+                  <span>
+                    Details for the exported feed
+                    <span class="font-normal text-muted">· optional</span>
+                  </span>
                 </summary>
-                <div class="mt-4 space-y-4">
+                <div class="mt-3 grid gap-5 sm:max-w-[520px]">
+                  <p class="text-[13px] text-muted">
+                    These labels go to <code class="font-mono">calendar_attributes.txt</code>, an optional extension some trip planners read. None of them change which days run.
+                  </p>
                   <.input
                     id="calendar-schedule-name"
                     field={@form[:service_schedule_name]}
                     type="text"
                     label="Schedule name"
                     value={@params["service_schedule_name"]}
+                    autocomplete="off"
+                    help="When this service is in effect, such as “Weekday (no school)” or “Storm (reduced schedule)”."
                   />
-                  <.input
-                    id="calendar-schedule-type"
-                    field={@form[:service_schedule_type]}
-                    type="select"
-                    label="Schedule type"
-                    options={@schedule_types}
-                    value={@params["service_schedule_type"]}
-                  />
-                  <.input
-                    id="calendar-typicality"
-                    field={@form[:service_schedule_typicality]}
-                    type="select"
-                    label="How typical is this service?"
-                    options={@typicality_options}
-                    value={@params["service_schedule_typicality"]}
-                  />
-                  <div class="grid gap-4 sm:grid-cols-2">
+                  <div class="max-w-[280px]">
                     <.input
-                      id="calendar-rating-start"
-                      field={@form[:rating_start_date]}
-                      type="date"
-                      label="Rating start date"
-                      value={@params["rating_start_date"]}
-                    />
-                    <.input
-                      id="calendar-rating-end"
-                      field={@form[:rating_end_date]}
-                      type="date"
-                      label="Rating end date"
-                      value={@params["rating_end_date"]}
+                      id="calendar-schedule-type"
+                      field={@form[:service_schedule_type]}
+                      type="select"
+                      label="Schedule type"
+                      options={@schedule_types}
+                      value={@params["service_schedule_type"]}
+                      help="The kind of day this service is built for. A holiday calendar that runs a Sunday timetable is type Sunday."
                     />
                   </div>
-                  <.input
-                    id="calendar-rating-description"
-                    field={@form[:rating_description]}
-                    type="text"
-                    label="Rating description"
-                    value={@params["rating_description"]}
-                    help="Optional schedule-period metadata for feed exports; it does not change service dates."
-                  />
+                  <div class="max-w-[360px]">
+                    <.input
+                      id="calendar-typicality"
+                      field={@form[:service_schedule_typicality]}
+                      type="select"
+                      label="How typical is this service?"
+                      options={@typicality_options}
+                      value={@params["service_schedule_typicality"]}
+                    />
+                  </div>
+                  <fieldset class="min-w-0">
+                    <legend class="text-[13px] font-[650] text-strong">
+                      Schedule period (rating)
+                    </legend>
+                    <p class="mt-0.5 text-[13px] text-muted">
+                      The schedule period this service belongs to, such as “Fall 2026”. It is reference information only.
+                    </p>
+                    <div class="mt-2 grid gap-4 sm:grid-cols-2">
+                      <.input
+                        id="calendar-rating-start"
+                        field={@form[:rating_start_date]}
+                        type="date"
+                        label="Period start"
+                        value={@params["rating_start_date"]}
+                        errors={form_errors_for(assigns, :rating_start_date)}
+                      />
+                      <.input
+                        id="calendar-rating-end"
+                        field={@form[:rating_end_date]}
+                        type="date"
+                        label="Period end"
+                        value={@params["rating_end_date"]}
+                        errors={form_errors_for(assigns, :rating_end_date)}
+                      />
+                    </div>
+                    <div class="mt-4">
+                      <.input
+                        id="calendar-rating-description"
+                        field={@form[:rating_description]}
+                        type="text"
+                        label="Period name"
+                        value={@params["rating_description"]}
+                        autocomplete="off"
+                      />
+                    </div>
+                  </fieldset>
                 </div>
               </details>
-            </section>
 
-            <div class="sticky bottom-0 mt-4 flex flex-wrap items-center justify-between gap-3 border border-base-300 bg-base-100 p-4">
-              <div>
-                <p class="text-sm font-medium">
-                  {if @dirty?, do: "Unsaved changes", else: "No unsaved changes"}
-                </p>
-                <p class="text-sm text-base-content/70">
-                  <strong>Changes apply to {@current_gtfs_version.name}, a published version.</strong>
-                  {save_impact(assigns)}
-                </p>
-              </div>
-              <div class="flex items-center gap-2">
-                <button
-                  id="calendar-discard"
-                  type="button"
-                  class="btn btn-sm btn-outline min-h-11"
-                  phx-click="discard_changes"
-                  disabled={not @dirty?}
-                >
-                  {if @live_action == :new, do: "Cancel", else: "Discard changes"}
-                </button>
-                <button
-                  id="calendar-save"
-                  type="submit"
-                  class="btn btn-sm btn-primary min-h-11"
-                  disabled={@pending?}
-                  phx-disable-with="Saving…"
-                >
-                  {if @live_action == :new, do: "Create calendar", else: "Save calendar"}
-                </button>
-              </div>
-            </div>
-          </.form>
-
-          <section :if={@live_action == :show} class="mt-6">
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 class="text-lg font-semibold">Service periods &amp; changes</h2>
-                <p class="text-sm text-base-content/70">
-                  Regular service, with breaks and one-off changes applied.
-                </p>
-              </div>
-            </div>
-
-            <CalendarComponents.periods_section
-              id="periods"
-              periods={@periods}
-              exceptions={@source.exceptions}
-              timeline_label={"Service periods with #{length(@periods.breaks)} breaks"}
-              editable={true}
-            />
-
-            <CalendarComponents.warning_list id="periods-warnings" warnings={@warnings} />
-
-            <div
-              :if={@kind == :weekly and not reversed_range?(assigns)}
-              class="mt-4 border border-base-300 bg-base-100 p-4"
-            >
-              <.form
-                for={@break_form}
-                id="calendar-break-form"
-                phx-change="validate_break"
-                phx-submit="add_break"
-                class="flex flex-wrap items-end gap-3"
-              >
-                <div class="w-40">
-                  <.input
-                    id="calendar-break-first"
-                    field={@break_form[:first_date]}
-                    type="date"
-                    label="Break first date"
-                    value={@break_params["first_date"]}
-                  />
-                </div>
-                <div class="w-40">
-                  <.input
-                    id="calendar-break-last"
-                    field={@break_form[:last_date]}
-                    type="date"
-                    label="Break last date"
-                    value={@break_params["last_date"]}
-                  />
-                </div>
-                <button id="calendar-add-break" type="submit" class="btn btn-sm btn-outline min-h-11">
-                  Add break
-                </button>
-                <p class="text-sm text-base-content/70">
-                  Removes only the expected weekly service dates in the range.
-                </p>
-              </.form>
-            </div>
-          </section>
-
-          <section :if={@live_action == :show} class="mt-6">
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 class="text-lg font-semibold">Service preview</h2>
-                <p id="calendar-preview-intro" class="text-sm text-base-content/70">
-                  {if @dirty?,
-                    do: "Preview includes your unsaved changes.",
-                    else: "Days when trips using this calendar will run."}
-                </p>
-              </div>
-              <div class="flex items-center gap-2">
-                <button
-                  id="calendar-preview-prev"
-                  type="button"
-                  class="btn btn-sm btn-outline min-h-11"
-                  phx-click="preview_step"
-                  phx-value-step="prev"
-                  aria-label="Previous three months"
-                  title="Previous three months"
-                >
-                  <span aria-hidden="true">←</span>
-                </button>
-                <button
-                  id="calendar-preview-today"
-                  type="button"
-                  class="btn btn-sm btn-outline min-h-11"
-                  phx-click="preview_step"
-                  phx-value-step="today"
-                >
-                  Today
-                </button>
-                <button
-                  id="calendar-preview-next"
-                  type="button"
-                  class="btn btn-sm btn-outline min-h-11"
-                  phx-click="preview_step"
-                  phx-value-step="next"
-                  aria-label="Next three months"
-                  title="Next three months"
-                >
-                  <span aria-hidden="true">→</span>
-                </button>
-              </div>
-            </div>
-
-            <CalendarComponents.preview_section
-              id="months"
-              months={@months}
-              preview_label={"Service preview from #{List.first(@months).title}"}
-            />
-
-            <p id="preview-date-status" role="status" class="mt-3 text-sm text-base-content/70">
-              Use the left and right arrow keys in the preview to move the month window.
-            </p>
-          </section>
-
-          <section :if={@live_action == :show} class="mt-6">
-            <div>
-              <h2 class="text-lg font-semibold">Individual date changes</h2>
-              <p class="text-sm text-base-content/70">
-                Removing a change restores the regular schedule for that date.
-              </p>
-            </div>
-
-            <div id="calendar-exceptions">
-              <CalendarComponents.date_chips
-                id="calendar-exception-chips"
-                entries={@source.exceptions}
-                editable={not reversed_range?(assigns)}
+              <Editor.save_bar
+                live_action={@live_action}
+                dirty?={@dirty?}
+                pending?={@pending?}
+                note={save_note(assigns)}
+                list_path={list_path_for(@current_gtfs_version.id)}
               />
-
-              <p :if={@source.exceptions == []} class="mt-2 text-sm text-base-content/70">
-                No individual date changes.
-              </p>
-            </div>
-
-            <.form
-              :if={not reversed_range?(assigns)}
-              for={@exception_form}
-              id="calendar-exception-form"
-              phx-submit="add_dates"
-              class="mt-4 flex flex-wrap items-end gap-3"
-            >
-              <div class="w-40">
-                <.input
-                  id="calendar-exception-date"
-                  field={@exception_form[:date]}
-                  type="date"
-                  label="Add service on a date"
-                />
-              </div>
-              <button id="calendar-add-date" type="submit" class="btn btn-sm btn-outline min-h-11">
-                Add service day
-              </button>
-              <p class="text-sm text-base-content/70">
-                A date outside the regular range is stored as an explicit change.
-              </p>
             </.form>
           </section>
+
+          <Editor.preview_card
+            :if={@show?}
+            month_grid={@month_grid}
+            kind={@params["kind"]}
+            dirty?={@dirty?}
+            today={@today}
+          />
+
+          <section
+            :if={@show?}
+            id="calendar-changes"
+            aria-labelledby="calendar-changes-title"
+            class="min-w-0 overflow-hidden rounded-card border border-subtle bg-white lg:col-start-1"
+          >
+            <div class="border-b border-subtle bg-canvas px-4 py-4 sm:px-5">
+              <h2
+                id="calendar-changes-title"
+                class="text-lg font-bold leading-snug tracking-[-0.01em] text-strong"
+              >
+                {if @kind == :weekly, do: "Days off and extra service", else: "Service dates"}
+              </h2>
+              <p class="mt-0.5 text-[13px] text-muted">
+                {if @kind == :weekly,
+                  do:
+                    "Holidays, breaks and one-off service. These apply when you confirm them, separately from Save.",
+                  else:
+                    "This calendar runs only on these dates. Changes apply when you confirm them, separately from Save."}
+              </p>
+            </div>
+
+            <div class="px-4 py-5 sm:px-5">
+              <Editor.service_strip
+                calendar={@source.calendar}
+                kind={@kind}
+                periods={@periods}
+                active_dates={@source.active_dates}
+                today={@today}
+                list_path={list_path_for(@current_gtfs_version.id)}
+              />
+
+              <div id="calendar-change-panel" class="grid gap-4 rounded-control bg-canvas p-4">
+                <.form
+                  :if={@kind == :weekly and not reversed_range?(assigns)}
+                  for={@break_form}
+                  id="calendar-break-form"
+                  phx-change="validate_break"
+                  phx-submit="add_break"
+                  class="grid gap-2"
+                >
+                  <h3 class="text-[13px] font-semibold text-strong">Add days off</h3>
+                  <div class="flex flex-wrap items-end gap-3">
+                    <div class="w-44">
+                      <.input
+                        id="calendar-break-first"
+                        field={@break_form[:first_date]}
+                        type="date"
+                        label="First day off"
+                        value={@break_params["first_date"]}
+                      />
+                    </div>
+                    <div class="w-44">
+                      <.input
+                        id="calendar-break-last"
+                        field={@break_form[:last_date]}
+                        type="date"
+                        label="Last day off"
+                        value={@break_params["last_date"]}
+                      />
+                    </div>
+                    <.button
+                      id="calendar-add-break"
+                      type="submit"
+                      variant="secondary"
+                      class="min-h-11"
+                    >
+                      <.icon name="hero-plus" class="size-4" /> Add days off
+                    </.button>
+                  </div>
+                  <p class="text-[13px] text-muted">
+                    Skips only the days this calendar normally runs. For a single day, choose it twice. Three or more service days in a row are shown as a break.
+                  </p>
+                </.form>
+
+                <.form
+                  :if={not reversed_range?(assigns)}
+                  for={@exception_form}
+                  id="calendar-exception-form"
+                  phx-submit="add_dates"
+                  class={["grid gap-2", @kind == :weekly && "border-t border-subtle pt-4"]}
+                >
+                  <h3 class="text-[13px] font-semibold text-strong">
+                    {if @kind == :weekly, do: "Add extra service", else: "Add a service date"}
+                  </h3>
+                  <div class="flex flex-wrap items-end gap-3">
+                    <div class="w-44">
+                      <.input
+                        id="calendar-exception-date"
+                        field={@exception_form[:date]}
+                        type="date"
+                        label={if @kind == :weekly, do: "Date", else: "Service date"}
+                      />
+                    </div>
+                    <.button
+                      id="calendar-add-date"
+                      type="submit"
+                      variant="secondary"
+                      class="min-h-11"
+                    >
+                      <.icon name="hero-plus" class="size-4" />
+                      {if @kind == :weekly, do: "Add extra service", else: "Add service date"}
+                    </.button>
+                  </div>
+                  <p class="text-[13px] text-muted">
+                    {if @kind == :weekly,
+                      do:
+                        "Runs trips on a date outside your regular days, such as an event Saturday. A date outside the start and end dates is stored as its own change.",
+                      else: "Adds one date this calendar runs. Repeat for each date."}
+                  </p>
+                </.form>
+              </div>
+
+              <div
+                :if={@message_area == :changes and (@status_message || @error_message)}
+                class="mt-4"
+              >
+                <Editor.outcome :if={@status_message} kind="success" outcome={@status_message} />
+                <Editor.outcome :if={@error_message} kind="error" outcome={@error_message} />
+              </div>
+
+              <div class="mt-5">
+                <Editor.change_list
+                  kind={@kind}
+                  calendar={@source.calendar}
+                  periods={@periods}
+                  exceptions={@source.exceptions}
+                  warnings={@warnings}
+                  editable={not reversed_range?(assigns)}
+                />
+              </div>
+            </div>
+          </section>
+
+          <Editor.trips_card :if={@show?} usage={@usage} version_id={@current_gtfs_version.id} />
         </div>
 
         <.confirm_dialog
           id="calendar-review-dialog"
           open={@review_dialog != nil}
-          title={dialog_title(@review_dialog)}
-          confirm_label={dialog_confirm_label(@review_dialog)}
-          pending_label="Saving…"
+          chrome="planner"
+          title={@review.title}
+          confirm_label={@review.confirm}
+          pending_label={@review.pending}
           on_confirm="apply_review"
           on_cancel="cancel_review"
           described_by="calendar-review-dialog-body"
-          confirm_variant="primary"
           return_focus_id={review_return_focus(@review_dialog)}
         >
-          <div>
-            <p>{dialog_body(assigns)}</p>
-            <p class="mt-2 text-sm">
-              <strong>This changes {@current_gtfs_version.name}, a published version.</strong>
-            </p>
-            <ul :if={@review_dialog} class="mt-2 text-sm">
-              <li :for={line <- dialog_details(@review_dialog)}>{line}</li>
-              <li :for={date <- command_dates(@review_dialog.command)}>Selected date: {date}</li>
+          <div :if={@review_dialog}>
+            <p>{@review.lead}</p>
+            <ul :if={@review.items != []} class="mt-3 grid list-disc gap-1 pl-5">
+              <li :for={item <- @review.items}>{item}</li>
             </ul>
-            <CalendarComponents.warning_list
-              :if={@review_dialog}
-              id="calendar-review-warnings"
-              warnings={@review_dialog.warnings}
-              service_label={@service_id || "Calendar"}
-            />
+            <div :if={@review.warnings != []} id="calendar-review-warnings" class="mt-3">
+              <.message
+                kind="warning"
+                title={
+                  if length(@review.warnings) == 1,
+                    do: "1 thing to check",
+                    else: "#{length(@review.warnings)} things to check"
+                }
+              >
+                <ul class="mt-1 grid gap-1">
+                  <li :for={line <- @review.warnings}>{line}</li>
+                </ul>
+              </.message>
+            </div>
+            <p class="mt-3 font-semibold text-strong">
+              This changes {@current_gtfs_version.name}, a published version.
+            </p>
           </div>
         </.confirm_dialog>
 
         <.confirm_dialog
           id="calendar-dirty-dialog"
           open={@pending_navigation != nil or @pending_action != nil}
-          title="Save or discard your schedule changes?"
-          confirm_label="Discard and continue"
+          chrome="planner"
+          title="Discard your unsaved changes?"
+          confirm_label="Discard changes"
           cancel_label="Keep editing"
           pending_label="Discarding…"
           on_confirm="discard_changes"
           on_cancel="keep_editing"
           described_by="calendar-dirty-dialog-body"
-          confirm_variant="danger"
           return_focus_id="calendar-save"
         >
-          <p>
-            Your unsaved schedule changes are still on this page. Saving keeps them; discarding and
-            continuing drops them and then runs the action you asked for.
+          <p>{dirty_lead(assigns)}</p>
+          <p :if={@pending_action != :discard} class="mt-3">
+            To keep them, choose Keep editing and save first.
           </p>
         </.confirm_dialog>
       </div>
@@ -1872,24 +2132,76 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   ## Render helpers
 
-  defp heading(%{live_action: :new}), do: "Create calendar"
+  # What the template branches on, worked out once: which sections exist, which
+  # notices the page carries, and the copy of the review dialog when one is open.
+  defp assign_view_state(assigns) do
+    ready? = assigns.load_state == :ready
+    show? = ready? and assigns.live_action == :show
+    notes = if show?, do: Editor.actionable(assigns.warnings), else: []
+    zone_fallback? = ready? and match?(%{fallback?: true}, assigns.zone)
+    page_error? = assigns.message_area == :page and assigns.error_message != nil
 
-  defp heading(%{source: %{attributes: %{service_description: name}}}) when is_binary(name) do
+    assigns
+    |> assign(:ready?, ready?)
+    |> assign(:show?, show?)
+    |> assign(:notes, notes)
+    |> assign(:zone_fallback?, zone_fallback?)
+    |> assign(
+      :notices?,
+      ready? and (zone_fallback? or notes != [] or assigns.delete_block != nil or page_error?)
+    )
+    |> assign(:review, review_copy(assigns.review_dialog, assigns))
+  end
+
+  defp heading(%{load_state: :not_found}), do: "Calendar not found"
+  defp heading(%{load_state: state}) when state in [:loading, :unavailable], do: "Calendar"
+  defp heading(%{live_action: :new}), do: "New calendar"
+
+  defp heading(%{source: %{attributes: %{service_description: name}}} = assigns)
+       when is_binary(name) do
     case String.trim(name) do
-      "" -> "Untitled calendar"
+      "" -> assigns.service_id || "Untitled calendar"
       trimmed -> trimmed
     end
   end
 
   defp heading(assigns), do: assigns.service_id || "Untitled calendar"
 
-  defp breadcrumb_label(%{live_action: :new}), do: "Create calendar"
-  defp breadcrumb_label(assigns), do: heading(assigns)
+  defp crumb(%{load_state: :not_found}), do: "Not found"
+  defp crumb(%{load_state: state}) when state in [:loading, :unavailable], do: "Calendar"
+  defp crumb(assigns), do: heading(assigns)
+
+  defp lede(%{live_action: :new, load_state: :ready}),
+    do: "Set when trips run. You can add holidays and breaks after you create it."
+
+  defp lede(%{live_action: :show, load_state: :ready, source: source}), do: Editor.lede(source)
+  defp lede(_assigns), do: nil
+
+  defp unnamed?(%{attributes: nil}), do: true
+  defp unnamed?(source), do: blank_name?(source)
 
   defp blank_name?(%{attributes: %{service_description: name}}) when is_binary(name),
     do: String.trim(name) == ""
 
   defp blank_name?(_source), do: true
+
+  defp name_help(%{live_action: :show, source: source, params: %{"name" => ""}}) do
+    if unnamed?(source),
+      do:
+        "This calendar came in without a name. Add one so your team can recognize it; saving without one is fine.",
+      else: name_example()
+  end
+
+  defp name_help(_assigns), do: name_example()
+
+  defp name_example, do: "Use a name your team recognizes, such as “Weekday” or “Summer weekday”."
+
+  # Form errors are held as a field-to-messages map so every control renders the
+  # message that belongs to it, with the component's own `aria-invalid` and
+  # `#{id}-error` association.
+  defp field_error(assigns, field), do: assigns.field_errors |> Map.get(field, []) |> List.first()
+
+  defp form_errors_for(assigns, field), do: Map.get(assigns.field_errors, field, [])
 
   # A stored range that ends before it starts has no service dates, so the commands
   # that read them (conversion, breaks, single-date changes) are not offered until it
@@ -1899,37 +2211,48 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp reversed_range?(_assigns), do: false
 
-  defp kind_label(:weekly), do: "Weekly schedule"
-  defp kind_label(_kind), do: "Specific dates"
+  # Where each failing field takes focus, in the order the form shows them.
+  @failure_targets [
+    name: "calendar-name",
+    service_id: "calendar-service-id",
+    weekdays: "calendar-weekdays-monday",
+    start_date: "calendar-start-date",
+    end_date: "calendar-end-date",
+    date_input: "calendar-date-input",
+    rating_start_date: "calendar-rating-start",
+    rating_end_date: "calendar-rating-end"
+  ]
 
-  # Form errors are held as a field-to-messages map so every control renders the
-  # message that belongs to it, with the component's own `aria-invalid` and
-  # `#{id}-error` association.
-  defp field_error(assigns, field), do: assigns.field_errors |> Map.get(field, []) |> List.first()
-
-  defp form_errors_for(assigns, field), do: Map.get(assigns.field_errors, field, [])
+  defp failures(assigns) do
+    for {field, target} <- @failure_targets,
+        message <- [field_error(assigns, field)],
+        message != nil,
+        do: %{href: "##{target}", msg: message}
+  end
 
   defp fallback_reason(:missing), do: "no agency timezone"
   defp fallback_reason(:invalid), do: "invalid agency timezone"
   defp fallback_reason(:conflicting), do: "conflicting agency timezones"
   defp fallback_reason(_reason), do: "unavailable agency timezone"
 
-  defp save_impact(%{live_action: :new}),
-    do: "Assign trips to this calendar from a route’s schedule after creating it."
+  defp save_note(%{live_action: :new} = assigns),
+    do:
+      "Creates the calendar in #{assigns.current_gtfs_version.name}, a published version. Assign trips from a route’s schedule afterward."
 
-  defp save_impact(%{usage: %{trip_count: count}, source: %{attributes: nil}}) when count > 0,
-    do: "Saving updates the service days for all #{count} trips using this calendar."
+  defp save_note(%{usage: %{trip_count: 0}} = assigns),
+    do:
+      "No trips use this calendar yet. Changes apply to #{assigns.current_gtfs_version.name}, a published version."
 
-  defp save_impact(%{usage: %{trip_count: 0}}),
-    do: "No trips use this calendar yet."
-
-  defp save_impact(%{usage: %{trip_count: count}}),
-    do: "Saving updates the service days for all #{count} trips using this calendar."
+  defp save_note(%{usage: %{trip_count: trips, routes: routes}} = assigns),
+    do:
+      "Saving updates #{Editor.plural(trips, "trip")} on #{Editor.plural(length(routes), "route")} in #{assigns.current_gtfs_version.name}, a published version."
 
   defp date_from_iso(iso) do
     {:ok, date} = Date.from_iso8601(iso)
     date
   end
+
+  ## Dialog copy
 
   defp review_return_focus(%{command: {:delete, _}}), do: "calendar-delete"
   defp review_return_focus(%{command: {:convert, _sid, _kind, _attrs}}), do: "calendar-save"
@@ -1945,110 +2268,199 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLive do
 
   defp review_return_focus(_dialog), do: "calendar-save"
 
-  defp dialog_title(%{command: {:delete, service_id}}), do: "Delete #{service_id}?"
-
-  defp dialog_title(%{command: {:convert, _sid, :dates_only, _attrs}}),
-    do: "Convert to specific dates?"
-
-  defp dialog_title(%{command: {:convert, _sid, :weekly, _attrs}}),
-    do: "Convert to a weekly schedule?"
-
-  defp dialog_title(%{command: {:add_break, _sid, _first, _last}}), do: "Add this break?"
-
-  defp dialog_title(%{command: {:put_exceptions, _sid, _dates, _type}}),
-    do: "Add this service date?"
-
-  defp dialog_title(%{command: {:remove_exceptions, _sid, _dates}}),
-    do: "Remove this service date?"
-
-  defp dialog_title(%{command: {:save, _sid, _attrs}}), do: "Save this calendar?"
-  defp dialog_title(_dialog), do: "Review this change"
-
-  defp dialog_confirm_label(%{command: {:delete, _sid}}), do: "Delete calendar"
-  defp dialog_confirm_label(%{command: {:convert, _sid, _kind, _attrs}}), do: "Convert calendar"
-  defp dialog_confirm_label(%{command: {:add_break, _sid, _first, _last}}), do: "Add break"
-  defp dialog_confirm_label(%{command: {:remove_exceptions, _sid, _dates}}), do: "Remove dates"
-  defp dialog_confirm_label(%{command: {:put_exceptions, _sid, _dates, _type}}), do: "Add date"
-  defp dialog_confirm_label(_dialog), do: "Save calendar"
-
-  defp dialog_body(%{live_action: :show, review_dialog: %{command: {:delete, _sid}}}) do
-    "This removes the calendar and its stored date changes. This cannot be undone."
+  # A review says what the change does to this calendar's days, then what stays
+  # unchanged, and names the object in the title and the confirm.
+  defp review_copy(nil, _assigns) do
+    %{
+      title: "Review this change",
+      confirm: "Save calendar",
+      pending: "Saving…",
+      lead: nil,
+      items: [],
+      warnings: []
+    }
   end
 
-  defp dialog_body(%{review_dialog: %{command: {:convert, _sid, _kind, _attrs}}}) do
-    "The preview below shows the exact dates that will be stored."
+  defp review_copy(%{command: command, changes: changes, warnings: warnings}, assigns) do
+    name = heading(assigns)
+
+    copy = review_copy(command, changes, name, assigns.kind)
+
+    Map.put(
+      copy,
+      :warnings,
+      warnings
+      |> Editor.review_warnings()
+      |> Enum.map(&Editor.warning_line(&1, review_kind(command, assigns.kind)))
+    )
   end
 
-  defp dialog_body(%{review_dialog: %{command: {:add_break, _sid, _first, _last}}}) do
-    "Only the expected weekly service dates in the range are removed; out-of-range additions stay."
+  defp review_kind({:convert, _sid, kind, _attrs}, _current), do: kind
+  defp review_kind(_command, current), do: current
+
+  defp review_copy({:delete, _sid}, changes, name, _kind) do
+    %{
+      title: "Delete #{name}?",
+      confirm: "Delete calendar",
+      pending: "Deleting…",
+      lead: "This removes the calendar and its stored date changes. It can’t be undone.",
+      items: [
+        "Removes #{Editor.plural(changes.active_date_count, "service date")}.",
+        "No trips use it, so no trip loses service."
+      ]
+    }
   end
 
-  defp dialog_body(%{review_dialog: %{command: {action, _sid, _dates}}})
-       when action in [:put_exceptions, :remove_exceptions] do
-    "Review the stored date changes below before applying them."
+  defp review_copy({:convert, _sid, :dates_only, _attrs}, changes, name, _kind) do
+    %{
+      title: "Convert #{name} to chosen dates?",
+      confirm: "Convert calendar",
+      pending: "Converting…",
+      lead:
+        "Every date this calendar runs today becomes an individual service date. What runs stays the same; the weekly pattern and its days off are replaced by that list.",
+      items: [
+        "Stores all #{Editor.plural(changes.persisted_date_count, "service date")} as chosen dates.",
+        "Removes the weekly days and the date range."
+      ]
+    }
   end
 
-  defp dialog_body(_assigns), do: "Review the change below before applying it."
-
-  defp command_dates({:put_exceptions, _id, dates, _type}), do: dates
-  defp command_dates({:remove_exceptions, _id, dates}), do: dates
-  defp command_dates({:add_break, _id, first, last}), do: [first, last]
-  defp command_dates(_command), do: []
-
-  defp dialog_details(%{changes: %{action: :delete} = changes, warnings: warnings}),
-    do: change_lines(changes, warnings) ++ ["0 effective service dates remain."]
-
-  defp dialog_details(%{changes: changes, warnings: warnings}) do
-    change_lines(changes, warnings) ++
-      ["#{changes.active_date_count} effective service dates remain."] ++
-      Enum.map(Map.get(changes, :new_service_dates, []), &"New service on #{&1}.")
+  defp review_copy({:convert, _sid, :weekly, _attrs}, changes, name, _kind) do
+    %{
+      title: "Convert #{name} to a weekly schedule?",
+      confirm: "Convert calendar",
+      pending: "Converting…",
+      lead:
+        "The calendar will run on the days and dates you chose. Dates you added individually are kept as extra service.",
+      items: [
+        "Adds a weekly schedule covering #{Editor.plural(changes.active_date_count, "service date")}.",
+        "Existing date changes are kept."
+      ]
+    }
   end
 
-  defp change_lines(%{action: :delete, active_date_count: count}, _warnings),
-    do: ["Removes #{count} effective service dates."]
-
-  defp change_lines(
-         %{action: :convert, kind: :dates_only, persisted_date_count: count},
-         _warnings
-       ),
-       do: [
-         "Stores all #{count} effective service dates as specific dates.",
-         "Removes the weekly row and the obsolete removals."
-       ]
-
-  defp change_lines(%{action: :convert, kind: :weekly, active_date_count: count}, _warnings),
-    do: [
-      "Adds a weekly schedule covering #{count} effective service dates.",
-      "Existing date changes are kept."
-    ]
-
-  defp change_lines(%{action: :add_break} = changes, _warnings),
-    do: [
-      "#{changes.expected_date_count} expected service dates in the range.",
-      "#{changes.removed_date_count} would be removed."
-    ]
-
-  defp change_lines(%{action: :put_exceptions} = changes, _warnings) do
-    [
-      count_line(changes.date_count, "date", "dates", "sent"),
-      count_line(changes.changed_row_count, "stored value", "stored values", "would change")
-    ]
+  defp review_copy({:add_break, _sid, first, last}, changes, name, _kind) do
+    %{
+      title: "Skip service #{Editor.date_span(first, last)}?",
+      confirm: "Add days off",
+      pending: "Saving…",
+      lead: "Trips on #{name} won’t run on its service days between these dates.",
+      items: [
+        skip_line(changes.expected_date_count, changes.removed_date_count),
+        "Days outside the range and extra service stay as they are.",
+        remaining_line(changes.active_date_count)
+      ]
+    }
   end
 
-  defp change_lines(%{action: :remove_exceptions} = changes, _warnings) do
-    [
-      count_line(changes.date_count, "date", "dates", "sent"),
-      count_line(changes.removed_row_count, "stored value", "stored values", "would be removed")
-    ]
+  defp review_copy({:put_exceptions, _sid, [date | _rest] = dates, _type}, changes, name, kind) do
+    %{
+      title:
+        if(length(dates) == 1,
+          do: "Add service on #{Editor.weekday_date(date)}?",
+          else: "Add service on #{Editor.plural(length(dates), "date")}?"
+        ),
+      confirm: if(kind == :weekly, do: "Add extra service", else: "Add service date"),
+      pending: "Saving…",
+      lead:
+        "Trips on #{name} will run #{if length(dates) == 1, do: "on this date", else: "on these dates"}.",
+      items: [
+        "#{Editor.plural(changes.active_date_count, "service day")} on this calendar after the change."
+      ]
+    }
   end
 
-  defp change_lines(changes, _warnings) do
-    [
-      "#{changes.changed_count} stored values would change.",
-      "#{changes.active_date_count} effective service dates remain."
-    ]
+  defp review_copy({:remove_exceptions, _sid, dates}, changes, _name, kind),
+    do: remove_copy(dates, changes, kind)
+
+  defp review_copy({:save, _sid, _attrs}, changes, name, _kind) do
+    %{
+      title: "Save #{name}?",
+      confirm: "Save calendar",
+      pending: "Saving…",
+      lead: "Review the effect before saving.",
+      items: [
+        "#{Editor.plural(changes.active_date_count, "service day")} on this calendar after saving."
+      ]
+    }
   end
 
-  defp count_line(1, singular, _plural, rest), do: "1 #{singular} #{rest}."
-  defp count_line(count, _singular, plural, rest), do: "#{count} #{plural} #{rest}."
+  defp review_copy(_command, changes, _name, _kind) do
+    %{
+      title: "Review this change",
+      confirm: "Save calendar",
+      pending: "Saving…",
+      lead: "Review the change below before applying it.",
+      items: [remaining_line(changes.active_date_count)]
+    }
+  end
+
+  defp remove_copy([date | _rest] = dates, changes, :weekly) do
+    %{
+      title:
+        if(length(dates) == 1,
+          do: "Restore the regular schedule on #{Editor.weekday_date(date)}?",
+          else: "Restore service on #{Editor.plural(length(dates), "date")}?"
+        ),
+      confirm: "Restore service",
+      pending: "Saving…",
+      lead: "These dates go back to the regular weekly schedule.",
+      items: [remaining_line(changes.active_date_count)]
+    }
+  end
+
+  defp remove_copy([date | _rest] = dates, changes, _kind) do
+    %{
+      title:
+        if(length(dates) == 1,
+          do: "Remove #{Editor.weekday_date(date)}?",
+          else: "Remove #{Editor.plural(length(dates), "service date")}?"
+        ),
+      confirm: if(length(dates) == 1, do: "Remove date", else: "Remove dates"),
+      pending: "Saving…",
+      lead: "These dates are removed from the calendar.",
+      items: [remaining_line(changes.active_date_count)]
+    }
+  end
+
+  defp skip_line(0, _removed),
+    do: "This calendar doesn’t run on any of those days, so nothing would change."
+
+  defp skip_line(expected, removed) do
+    scope =
+      if removed == expected,
+        do: "would be skipped",
+        else: "(#{Editor.plural(removed, "new day")} to skip)"
+
+    "#{Editor.plural(expected, "service day")} in the range #{scope}#{if expected >= 3, do: ", so it will appear as a break", else: ""}."
+  end
+
+  defp remaining_line(1), do: "1 service day remains on this calendar."
+  defp remaining_line(count), do: "#{count} service days remain on this calendar."
+
+  defp dirty_lead(assigns) do
+    name = heading(assigns)
+
+    case {assigns.pending_action, assigns.pending_navigation} do
+      {:discard, _path} ->
+        "Your edits to the schedule for #{name} will be dropped and the saved calendar shown again."
+
+      {nil, path} when is_binary(path) ->
+        "You have unsaved changes on this page. Discarding drops them, then opens the page you chose."
+
+      {nil, nil} ->
+        ""
+
+      {command, _path} ->
+        "You changed the schedule for #{name} but haven’t saved it. Discarding drops those edits, then continues to #{pending_what(command, assigns.kind)}."
+    end
+  end
+
+  defp pending_what({:add_break, _sid, _first, _last}, _kind), do: "add days off"
+  defp pending_what({:put_exceptions, _sid, _dates, _type}, _kind), do: "add this date"
+  defp pending_what({:remove_exceptions, _sid, _dates}, :weekly), do: "restore service"
+  defp pending_what({:remove_exceptions, _sid, _dates}, _kind), do: "remove the date"
+  defp pending_what({:delete, _sid}, _kind), do: "delete the calendar"
+  defp pending_what(:duplicate, _kind), do: "duplicate the calendar"
+  defp pending_what(_command, _kind), do: "continue"
 end

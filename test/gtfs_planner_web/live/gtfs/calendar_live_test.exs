@@ -272,7 +272,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
 
     assert cell_aria_label(render(view), second) != before
     assert stored(context, "PREVIEW").calendar.end_date == last
-    assert render(view) =~ "Preview includes your unsaved changes"
+    assert has_element?(view, "#calendar-preview-intro", "Includes your unsaved changes.")
   end
 
   test "unnamed imported zero-day schedule permits a metadata-only save", context do
@@ -366,7 +366,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
         |> render_change()
 
       refute html =~ "calendar-start-date"
-      assert html =~ "There is no weekly schedule"
+      refute html =~ "calendar-weekdays"
+      assert html =~ "calendar-date-input"
 
       with_date =
         render_change(view, "validate", %{
@@ -394,7 +395,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
                [{~D[2026-05-01], 1}]
 
       {:ok, _detail, html} = live(conn, to)
-      assert html =~ "Specific dates"
+      assert html =~ "Runs only on chosen dates"
       assert html =~ "Holiday extras"
     end
 
@@ -413,7 +414,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
         |> render_submit()
 
       assert blank =~ "calendar-name-error"
-      assert blank =~ "can’t be blank"
+      assert blank =~ "Enter a calendar name."
       assert blank =~ ~s{aria-invalid="true"}
       refute weekly_row(%{organization: organization, version: version}, "NONAME")
 
@@ -432,7 +433,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
         |> render_submit()
 
       assert no_days =~ "calendar-weekdays-error"
-      assert no_days =~ "select at least one service day"
+      assert no_days =~ "Choose at least one service day."
 
       reversed =
         view
@@ -449,7 +450,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
         |> render_submit()
 
       assert reversed =~ "calendar-end-date-error"
-      assert reversed =~ "must be on or after the start date"
+      assert reversed =~ "The end date must be on or after the start date."
 
       no_dates =
         view
@@ -459,7 +460,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
         |> render_submit()
 
       assert no_dates =~ "calendar-date-input-error"
-      assert no_dates =~ "add at least one service date"
+      assert no_dates =~ "Add at least one service date."
 
       # Every failed submit retains the draft and still holds the identifier.
       assert input_value(render(view), "calendar-name") == "No dates"
@@ -661,7 +662,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
       assert has_element?(
                view,
                "#calendar-more-details #calendar-rating-end-error",
-               "must be on or after the rating start date"
+               "The schedule period must end on or after it starts."
              )
 
       assert has_element?(view, "#calendar-rating-end[aria-invalid='true']")
@@ -721,7 +722,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
       # Create stays unambiguous next to a stored "new" identity.
       {:ok, _view, create_html} = live(conn, new_path(version))
       assert create_html =~ "calendar-form"
-      assert create_html =~ "Service ID"
+      assert create_html =~ "Feed ID"
 
       for path <- [
             "/gtfs/#{version.id}/calendars/show",
@@ -787,48 +788,60 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, html} = live(conn, detail_path(version, "CLOSURE"))
 
-      # The three removed expected days span a weekend, so they form one break.
+      # The three removed expected days span a weekend, so they form one break: the
+      # strip draws it, and the changes list shows it once with its dates a disclosure away.
       assert has_element?(view, "#periods-timeline")
-      assert html =~ "Service periods with 1 breaks"
+      assert html =~ "1 break"
       assert has_element?(view, "#periods-remove-break-break-#{Date.to_iso8601(friday)}")
       assert html =~ "Break · "
-      assert html =~ "3 service days removed"
+      assert html =~ "3 service days without service"
+      assert has_element?(view, "#calendar-changes-summary", "1 break")
 
-      # Out-of-range additions stay outside the periods and are named separately.
-      assert html =~ "Extra service:"
-      assert html =~ "outside the regular schedule"
-      assert html =~ "is outside the regular date range"
-      assert html =~ "service warnings to review"
+      # A break's coverage gap is stated under the strip, not raised as a warning.
+      assert has_element?(view, "#periods-gaps", "No service")
 
-      # Exact accessible states in the month grid, with the exception symbol.
-      assert cell_aria_label(html, friday) =~ "Service removed"
-      assert html =~ "Service removed recorded"
-      assert cell_aria_label(html, saturday) =~ "Service added"
-      assert cell_aria_label(html, outside) =~ "Service added"
-      assert cell_aria_label(html, monday) =~ "Service removed"
+      # Out-of-range additions stay outside the periods, are one warning to check, and
+      # say so on their own row.
+      assert has_element?(view, "#periods-warnings", "1 thing to check")
+      assert has_element?(view, "#periods-warnings", "is outside the regular dates")
+      assert has_element?(view, "#periods-warnings", "stored as its own change")
+
+      assert has_element?(
+               view,
+               "#calendar-exception-chips-#{Date.to_iso8601(outside)}",
+               "Outside the regular dates."
+             )
 
       # Symbols plus text plus a legend for every state.
       assert has_element?(view, "#months-legend")
 
-      for word <- ["Regular service", "Service removed", "Service added", "No service scheduled"] do
-        assert html =~ word
+      for word <- ["Runs", "Day off", "Extra service", "Not a service day", "Today"] do
+        assert has_element?(view, "#months-legend", word)
       end
 
-      # Three months are rendered and the window is navigable.
-      assert Enum.count(LazyHTML.query(LazyHTML.from_fragment(html), "#months table")) == 3
+      # One month is rendered, and the window moves a month at a time.
+      assert Enum.count(LazyHTML.query(LazyHTML.from_fragment(html), "#months table")) == 1
 
       first_month = Date.new!(today.year, today.month, 1)
-      next_month = Date.new!(first_month.year, first_month.month, 1) |> shift_month(1)
+      next_month = shift_month(first_month, 1)
       keyboard = render_keydown(view, "preview_keys", %{"key" => "ArrowRight"})
       assert keyboard =~ Elixir.Calendar.strftime(next_month, "%B %Y")
 
-      three_ahead = shift_month(next_month, 3)
-
       assert render_click(view, "preview_step", %{"step" => "next"}) =~
-               Elixir.Calendar.strftime(three_ahead, "%B %Y")
+               Elixir.Calendar.strftime(shift_month(next_month, 1), "%B %Y")
+
+      assert render_click(view, "preview_step", %{"step" => "prev"}) =~
+               Elixir.Calendar.strftime(next_month, "%B %Y")
 
       assert render_click(view, "preview_step", %{"step" => "today"}) =~
                Elixir.Calendar.strftime(first_month, "%B %Y")
+
+      # Exact accessible states in the month grid, in whichever month each date falls.
+      assert cell_label_in_month(view, today, friday) =~ "Day off"
+      assert cell_label_in_month(view, today, monday) =~ "Day off"
+      assert cell_label_in_month(view, today, tuesday) =~ "Day off"
+      assert cell_label_in_month(view, today, saturday) =~ "Extra service"
+      assert cell_label_in_month(view, today, outside) =~ "Extra service"
     end
 
     test "a long schedule is drawn whole instead of clipped", %{
@@ -868,7 +881,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
 
       # The period row names both ends of the multi-year range, so the preview and
       # the timeline describe the whole schedule rather than a clipped window.
-      assert html =~ "Service periods with 0 breaks"
+      assert html =~ "0 breaks"
       assert html =~ label
       assert has_element?(view, "#periods-timeline")
     end
@@ -884,7 +897,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
 
       {:ok, _view, html} = live(conn, detail_path(version, "ZONE"))
       assert html =~ "calendar-timezone-fallback"
-      assert html =~ "Dates use UTC"
+      assert html =~ "Today’s date may be off by a day"
       assert html =~ "no agency timezone"
 
       agency_fixture(organization.id, version.id, %{agency_timezone: "Pacific/Auckland"})
@@ -903,7 +916,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
 
       {:ok, _view, html} = live(conn, detail_path(version, "IMPORTED_UNNAMED"))
       assert html =~ "IMPORTED_UNNAMED"
-      assert html =~ "Unnamed imported service"
+      assert html =~ "Imported without a name"
       assert input_value(html, "calendar-name") == ""
 
       # An unrelated native edit leaves the unnamed identity unnamed.
@@ -1006,7 +1019,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
 
       refute has_element?(view, "#calendar-break-form")
       refute has_element?(view, "#calendar-exception-form")
-      refute has_element?(view, "#calendar-exception-chips button")
+      refute has_element?(view, "[id^='calendar-exception-chips-remove-']")
+      assert has_element?(view, "#calendar-exception-chips-2026-07-04")
       assert has_element?(view, "#calendar-kind-dates-only[disabled]")
       refute has_element?(view, "#calendar-kind-weekly[disabled]")
     end
@@ -1077,7 +1091,12 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
       {:ok, view, _html} = live(context.conn, detail_path(context.version, "REVERSED"))
 
       view |> element("#calendar-delete") |> render_click()
-      assert has_element?(view, "#calendar-review-dialog[data-open=true]", "Delete REVERSED?")
+
+      assert has_element?(
+               view,
+               "#calendar-review-dialog[data-open=true]",
+               "Delete Reversed range?"
+             )
 
       assert {:error, {:live_redirect, %{to: to}}} = render_click(view, "apply_review")
       assert to == list_path(context.version)
@@ -1100,7 +1119,13 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
 
       view |> element("#calendar-delete") |> render_click()
 
-      assert has_element?(view, "#calendar-delete-blocked", "1 trips use this calendar")
+      assert has_element?(
+               view,
+               "#calendar-delete-blocked",
+               "1 trip on R_REVERSED still runs on it"
+             )
+
+      assert has_element?(view, "#calendar-delete-blocked-route-R_REVERSED")
       refute has_element?(view, "#calendar-review-dialog[data-open=true]")
       assert weekly_row(context, "REVERSED") != nil
     end
@@ -1177,7 +1202,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
         })
 
       assert dialog_open?(review, "calendar-review-dialog")
-      assert review =~ "expected service dates in the range"
+      assert review =~ "3 service days in the range would be skipped"
       assert exception_rows(context, "CANCEL") == []
 
       cancelled = render_click(view, "cancel_review")
@@ -1219,10 +1244,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
       })
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, html} = live(conn, detail_path(version, "CHIPS"))
+      {:ok, view, _html} = live(conn, detail_path(version, "CHIPS"))
 
-      assert has_element?(view, "#calendar-exception-chips-2026-03-09")
-      assert html =~ "Service removed"
+      assert has_element?(view, "#calendar-exception-chips-2026-03-09", "No service")
 
       # Removing the only removal keeps other service days, so it applies directly.
       removed = render_click(view, "remove_date", %{"date" => "2026-03-09"})
@@ -1313,10 +1337,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
         |> render_submit()
 
       assert dialog_open?(review, "calendar-review-dialog")
-      assert review =~ "Convert to specific dates?"
+      assert review =~ "to chosen dates?"
 
-      assert review =~
-               "Stores all #{length(effective)} effective service dates as specific dates."
+      assert review =~ "Stores all #{length(effective)} service dates as chosen dates."
 
       render_click(view, "cancel_review")
       assert weekly_row(context, "CONVERT") != nil
@@ -1383,7 +1406,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
         })
         |> render_submit()
 
-      assert html =~ "1 trips use this calendar"
+      assert html =~ "1 trip uses this calendar, so it can’t switch to a weekly schedule."
+      refute has_element?(view, "#calendar-delete-blocked")
       refute dialog_open?(html, "calendar-review-dialog")
       assert weekly_row(context, "USED_DATES") == nil
     end
@@ -1437,8 +1461,8 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
       html = render_click(view, "delete")
 
       assert has_element?(view, "#calendar-delete-blocked")
-      assert html =~ "3 trips use this calendar"
-      assert html =~ "R_USED"
+      assert html =~ "3 trips"
+      assert has_element?(view, "#calendar-delete-blocked-route-R_USED")
       refute dialog_open?(html, "calendar-review-dialog")
       assert weekly_row(context, "USED_DELETE") != nil
       assert weekly_row(context, "USED_DELETE").id != nil
@@ -1456,9 +1480,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
       {:ok, view, _html} = live(conn, detail_path(version, "UNUSED_DELETE"))
 
       review = render_click(view, "delete")
-      assert has_element?(view, "#calendar-review-dialog", "0 effective service dates remain.")
+      assert has_element?(view, "#calendar-review-dialog", "Removes")
       assert dialog_open?(review, "calendar-review-dialog")
-      assert review =~ "Delete UNUSED_DELETE?"
+      assert review =~ "Delete Unused for delete?"
       assert weekly_row(context, "UNUSED_DELETE") != nil
 
       assert {:error, {:live_redirect, %{to: to}}} = render_click(view, "apply_review")
@@ -1549,7 +1573,7 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
           "break" => %{"first_date" => "2026-03-31", "last_date" => "2026-03-02"}
         })
 
-      assert html =~ "last date must be on or after its first date"
+      assert html =~ "last day off must be on or after the first day off"
       assert exception_rows(context, "FORGED") == []
 
       # A date that stores no change is a no-op, not an invented removal.
@@ -1674,6 +1698,318 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarLiveTest do
       assert {:error, {:redirect, _}} = live(conn, new_path(version))
       assert {:error, {:redirect, _}} = live(conn, detail_path(version, "GUARDED"))
     end
+  end
+
+  describe "header summary" do
+    test "states what a used every-day calendar runs and which trips depend on it", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      today = postgres_local_today("Etc/UTC")
+      context = %{organization: organization, version: version}
+
+      seeded_weekly(context, "EVERY_DAY", "Every day", %{
+        monday: 1,
+        saturday: 1,
+        sunday: 1,
+        start_date: Date.add(today, -5),
+        end_date: Date.add(today, 60)
+      })
+
+      route = route_fixture(organization.id, version.id, %{route_id: "R_HEAD"})
+      trip_fixture(organization.id, version.id, route.route_id, %{service_id: "EVERY_DAY"})
+
+      {:ok, view, _html} =
+        live(
+          log_in_user(conn, user, organization: organization),
+          detail_path(version, "EVERY_DAY")
+        )
+
+      assert has_element?(view, "h1", "Every day")
+      assert has_element?(view, "#calendar-badge", "Runs today")
+      assert has_element?(view, "#calendar-lede", "Runs every day")
+      assert has_element?(view, "#calendar-meta", "1 trip on 1 route uses this calendar")
+      assert has_element?(view, "#calendar-meta", "EVERY_DAY")
+    end
+
+    test "says a calendar with no trips is unused and offers the route list", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      today = postgres_local_today("Etc/UTC")
+
+      seeded_weekly(%{organization: organization, version: version}, "IDLE", "Idle", %{
+        start_date: Date.add(today, -5),
+        end_date: Date.add(today, 90)
+      })
+
+      {:ok, view, _html} =
+        live(
+          log_in_user(conn, user, organization: organization),
+          detail_path(version, "IDLE")
+        )
+
+      assert has_element?(view, "#calendar-badge", "Not used by trips")
+      assert has_element?(view, "#calendar-meta", "No trips use this calendar yet")
+      assert has_element?(view, "#calendar-usage", "No trips use this calendar")
+      assert has_element?(view, "#calendar-open-routes[href='/gtfs/#{version.id}/routes']")
+    end
+
+    test "reads a chosen-dates calendar from its dates and shows added dates as running", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      today = postgres_local_today("Etc/UTC")
+      first = Date.add(today, 3)
+
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "CHOSEN",
+        date: first,
+        exception_type: 1
+      })
+
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "CHOSEN",
+        date: Date.add(first, 1),
+        exception_type: 1
+      })
+
+      calendar_attribute_fixture(
+        organization.id,
+        version.id,
+        attribute_attrs("CHOSEN", "Chosen dates")
+      )
+
+      {:ok, view, _html} =
+        live(
+          log_in_user(conn, user, organization: organization),
+          detail_path(version, "CHOSEN")
+        )
+
+      assert has_element?(view, "#calendar-lede", "Runs only on chosen dates · 2 dates")
+      assert has_element?(view, "#calendar-changes-title", "Service dates")
+      refute has_element?(view, "#calendar-break-form")
+
+      # An added date on a chosen-dates calendar is a day it runs, so no cell claims extra service.
+      label = cell_label_in_month(view, today, first)
+      assert label =~ "Runs"
+      refute label =~ "Extra service"
+      refute has_element?(view, "#months-legend", "Extra service")
+    end
+  end
+
+  describe "rejected submit" do
+    test "lists every failing field at once, links each, and moves focus to the first", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      {:ok, view, _html} =
+        live(log_in_user(conn, user, organization: organization), new_path(version))
+
+      view
+      |> form("#calendar-form", %{calendar: %{name: "", start_date: "", end_date: ""}})
+      |> render_submit()
+
+      assert has_element?(view, "#calendar-form-errors", "Calendar not created")
+      assert has_element?(view, "#calendar-form-errors a[href='#calendar-name']")
+      assert has_element?(view, "#calendar-form-errors a[href='#calendar-start-date']")
+      assert has_element?(view, "#calendar-form-errors a[href='#calendar-end-date']")
+      assert_push_event(view, "focus_form_error", %{form_id: "calendar-form"})
+    end
+
+    test "shows no summary while the person is only typing", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      {:ok, view, _html} =
+        live(log_in_user(conn, user, organization: organization), new_path(version))
+
+      view |> form("#calendar-form", %{calendar: %{name: "Typing"}}) |> render_change()
+
+      refute has_element?(view, "#calendar-form-errors")
+    end
+
+    test "opens the feed ID disclosure when the ID is already taken", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      seeded_weekly(%{organization: organization, version: version}, "TAKEN_ID", "Taken ID")
+
+      {:ok, view, _html} =
+        live(log_in_user(conn, user, organization: organization), new_path(version))
+
+      refute has_element?(view, "#calendar-service-id-details[open]")
+
+      view
+      |> form("#calendar-form", %{
+        calendar: %{
+          name: "A fresh name",
+          service_id: "TAKEN_ID",
+          start_date: "2026-03-02",
+          end_date: "2026-03-31"
+        }
+      })
+      |> render_submit()
+
+      assert has_element?(view, "#calendar-service-id-details[open]")
+
+      assert has_element?(
+               view,
+               "#calendar-service-id-error",
+               "Another calendar already uses this feed ID."
+             )
+    end
+  end
+
+  describe "outcome messages" do
+    test "a save reports beside the schedule and a date change beside the changes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      seeded_weekly(%{organization: organization, version: version}, "MESSAGES", "Messages")
+
+      {:ok, view, _html} =
+        live(
+          log_in_user(conn, user, organization: organization),
+          detail_path(version, "MESSAGES")
+        )
+
+      view |> form("#calendar-form", %{calendar: %{name: "Renamed"}}) |> render_submit()
+
+      assert has_element?(view, "#calendar-schedule #calendar-status", "Saved.")
+      refute has_element?(view, "#calendar-changes #calendar-status")
+
+      render_click(view, "add_dates", %{"exception" => %{"date" => "2026-03-14"}})
+
+      assert has_element?(view, "#calendar-changes #calendar-status", "Extra service added.")
+      refute has_element?(view, "#calendar-schedule #calendar-status")
+    end
+
+    test "a refused date names the fix beside the changes and keeps the schedule message clear",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           version: version
+         } do
+      seeded_weekly(%{organization: organization, version: version}, "REFUSED", "Refused")
+
+      {:ok, view, _html} =
+        live(
+          log_in_user(conn, user, organization: organization),
+          detail_path(version, "REFUSED")
+        )
+
+      render_submit(view, "add_break", %{"break" => %{"first_date" => "", "last_date" => ""}})
+
+      assert has_element?(
+               view,
+               "#calendar-changes #calendar-error[role=alert]",
+               "choose it twice"
+             )
+
+      refute has_element?(view, "#calendar-schedule #calendar-error")
+    end
+  end
+
+  describe "breaks and discarding" do
+    test "restoring a break applies directly, names what came back and moves focus to the message",
+         %{conn: conn, user: user, organization: organization, version: version} do
+      context = %{organization: organization, version: version}
+      seeded_weekly(context, "BREAKS", "Breaks")
+
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "BREAKS",
+        date: ~D[2026-03-09],
+        exception_type: 2
+      })
+
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "BREAKS",
+        date: ~D[2026-03-10],
+        exception_type: 2
+      })
+
+      calendar_date_fixture(organization.id, version.id, %{
+        service_id: "BREAKS",
+        date: ~D[2026-03-11],
+        exception_type: 2
+      })
+
+      {:ok, view, _html} =
+        live(log_in_user(conn, user, organization: organization), detail_path(version, "BREAKS"))
+
+      assert has_element?(view, "#calendar-break-2026-03-09", "3 service days without service")
+
+      view |> element("#periods-remove-break-break-2026-03-09") |> render_click()
+
+      assert exception_rows(context, "BREAKS") == []
+      assert has_element?(view, "#calendar-changes #calendar-status", "3 dates restored.")
+      refute has_element?(view, "#calendar-break-2026-03-09")
+      assert_push_event(view, "focus_scoped_target", %{id: "calendar-status"})
+    end
+
+    test "discard changes asks first, keeps the draft on Keep editing and resets on confirm", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      seeded_weekly(%{organization: organization, version: version}, "DISCARD", "Discard me")
+
+      {:ok, view, _html} =
+        live(
+          log_in_user(conn, user, organization: organization),
+          detail_path(version, "DISCARD")
+        )
+
+      refute has_element?(view, "#calendar-discard")
+
+      view |> form("#calendar-form", %{calendar: %{name: "Edited"}}) |> render_change()
+      assert has_element?(view, "#calendar-unsaved")
+
+      view |> element("#calendar-discard") |> render_click()
+      assert dialog_open?(render(view), "calendar-dirty-dialog")
+      assert has_element?(view, "#calendar-dirty-dialog", "will be dropped")
+
+      kept = render_click(view, "keep_editing")
+      refute dialog_open?(kept, "calendar-dirty-dialog")
+      assert input_value(kept, "calendar-name") == "Edited"
+
+      view |> element("#calendar-discard") |> render_click()
+      discarded = render_click(view, "discard_changes")
+
+      refute dialog_open?(discarded, "calendar-dirty-dialog")
+      assert input_value(discarded, "calendar-name") == "Discard me"
+      refute has_element?(view, "#calendar-discard")
+    end
+  end
+
+  # The preview shows one month, so a date outside it is read after stepping to its month.
+  defp cell_label_in_month(view, today, date) do
+    render_click(view, "preview_step", %{"step" => "today"})
+    months = (date.year - today.year) * 12 + (date.month - today.month)
+
+    html =
+      Enum.reduce(List.duplicate(:next, months), render(view), fn :next, _html ->
+        render_click(view, "preview_step", %{"step" => "next"})
+      end)
+
+    cell_aria_label(html, date)
   end
 
   defp shift_month(%Date{} = month, offset) do

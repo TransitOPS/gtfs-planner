@@ -1717,6 +1717,35 @@ body {
   stroke: var(--diagram-journal-open) !important;
 }
 
+/* ── calendar-editor (design system) ──
+   /gtfs/:version/calendars/new and /calendars/show take the design system through
+   `.ds-page` on `#calendar-editor` (action colour, field grammar, error summary,
+   focus outline). Only what utilities cannot express lives here. */
+
+/* Delete is a secondary button that reads as destructive by its ink and its name,
+   not by a red fill. `.ds-page .btn-outline` sets the ink with an id-strength
+   selector, so the override is scoped to the id as well. */
+#calendar-editor .calendar-delete-button,
+#calendar-editor .calendar-delete-button:hover {
+  color: var(--color-error-fg);
+}
+
+#calendar-editor .calendar-delete-button:hover {
+  background: var(--color-error-bg);
+}
+
+/* The sticky save bar must not cover the field a keyboard user is moving to. */
+html:has(#calendar-editor) {
+  scroll-padding-bottom: 104px;
+}
+
+/* An outcome message or a heading that takes programmatic focus shows where the
+   reader landed. */
+#calendar-editor :is([role="status"], h2)[tabindex="-1"]:focus {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
 /* ── Native dialog overlay presentation ── */
 
 /* Backdrop: dim the page behind every open modal dialog.
