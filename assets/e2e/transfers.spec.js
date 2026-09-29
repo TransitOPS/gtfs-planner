@@ -740,6 +740,7 @@ async function waitForLiveView(page) {
     const main = document.querySelector("[data-phx-main]");
     return Boolean(
       main &&
+      main.classList.contains("phx-connected") &&
       !main.hasAttribute("data-phx-pending") &&
       window.liveSocket?.isConnected(),
     );

@@ -75,7 +75,10 @@ async function waitForLiveView(page) {
   await page.waitForFunction(() => {
     const main = document.querySelector("[data-phx-main]");
     return Boolean(
-      main && !main.hasAttribute("data-phx-pending") && window.liveSocket?.isConnected(),
+      main &&
+        main.classList.contains("phx-connected") &&
+        !main.hasAttribute("data-phx-pending") &&
+        window.liveSocket?.isConnected(),
     );
   });
 }
