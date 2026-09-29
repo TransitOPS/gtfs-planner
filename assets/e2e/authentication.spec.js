@@ -124,7 +124,9 @@ test.describe("Public auth flows (serial)", () => {
     page,
   }) => {
     await page.goto("/users/reset_password");
-    await page.fill("#reset-password-email", "auth-reset@gtfs-planner.test");
+    // Requesting a reset replaces the account's earlier reset tokens, so this
+    // must not target auth-reset, whose seeded token the token cases consume.
+    await page.fill("#reset-password-email", NOORG_USER.email);
     await page.locator("#reset-password-request-submit").click();
     await page.waitForURL("**/users/log_in");
     await expect(page.locator("#flash-info")).toContainText(
