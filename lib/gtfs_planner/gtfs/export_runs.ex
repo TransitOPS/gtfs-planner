@@ -12,6 +12,7 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
 
   alias GtfsPlanner.Gtfs.Export.ArtifactStorage
   alias GtfsPlanner.Gtfs.Export.Run
+  alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions.GtfsVersion
 
@@ -347,7 +348,8 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
       actor_email: actor.email,
       export_type: export_type,
       state: :pending,
-      phase: :preflight
+      phase: :preflight,
+      include_flex: include_flex_for(organization_id, export_type)
     }
 
     case Repo.insert(Run.system_changeset(%Run{}, attrs)) do
@@ -417,7 +419,8 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
       version_name: run.version_name,
       export_type: run.export_type,
       state: :pending,
-      phase: :preflight
+      phase: :preflight,
+      include_flex: include_flex_for(run.organization_id, run.export_type)
     }
 
     case Repo.insert(Run.system_changeset(%Run{}, attrs)) do
@@ -637,6 +640,13 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
 
   defp artifact_ttl_seconds do
     Application.get_env(:gtfs_planner, :gtfs_task_artifacts_ttl_seconds, 86_400)
+  end
+
+  # The flex file is an extra artifact on full and operations runs only, and it is
+  # recorded when the run row is created, so a later switch change cannot alter a
+  # run that already exists. A pathways run never carries flex (AC-15).
+  defp include_flex_for(organization_id, export_type) do
+    export_type in [:full, :operations] and ExportDefaults.get(organization_id).include_flex
   end
 
   defp artifact_storage_module do
