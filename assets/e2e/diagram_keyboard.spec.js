@@ -35,6 +35,15 @@ async function loginAndGoToDiagram(page) {
   // Click the "Floorplans" sub-nav tab
   await page.getByRole("link", { name: "Floorplans", exact: true }).click();
   await page.waitForSelector("#diagram-page");
+  // Until the floorplan image loads, the overlay keeps its 100x100 placeholder
+  // viewBox, and the seeded pathway between (30,40) and (70,60) crosses the
+  // canvas centre, so an early click there opens the pathway editor.
+  await page.waitForFunction(() => {
+    const viewBox = document
+      .querySelector("#diagram-overlay")
+      ?.getAttribute("viewBox");
+    return Boolean(viewBox) && viewBox !== "0 0 100 100";
+  });
 }
 
 async function tabUntilFocused(page, selector, maxTabs = 50) {
