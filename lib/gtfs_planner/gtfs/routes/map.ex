@@ -49,8 +49,8 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
 
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
-  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.RoutePatterns
+  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
@@ -265,8 +265,8 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
           trip.organization_id == parent_as(:route).organization_id and
           trip.gtfs_version_id == parent_as(:route).gtfs_version_id and
           not is_nil(trip.shape_id) and
-          shape.shape_pt_lat >= ^box.south and shape.shape_pt_lat <= ^box.north and
-          shape.shape_pt_lon >= ^box.west and shape.shape_pt_lon <= ^box.east,
+          fragment("? BETWEEN ? AND ?", shape.shape_pt_lat, ^box.south, ^box.north) and
+          fragment("? BETWEEN ? AND ?", shape.shape_pt_lon, ^box.west, ^box.east),
       select: 1
     )
   end

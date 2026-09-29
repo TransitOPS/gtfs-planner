@@ -98,7 +98,6 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
     end
   end
 
-
   @doc """
   The saved candidate whose color is nearest to `color` within the prototype's
   advisory CIE76 delta of 12, as `%{route: candidate, delta: delta}`.
@@ -114,24 +113,30 @@ defmodule GtfsPlannerWeb.Components.RouteIdentity do
   def similar_color(color, candidates) when is_list(candidates) do
     with {:ok, subject} <- normalize_hex(color),
          false <- subject == "FFFFFF" do
-      candidates
-      |> Enum.reduce(nil, fn candidate, nearest ->
-        with {:ok, hex} <- normalize_hex(candidate[:route_color]),
-             false <- hex == "FFFFFF",
-             delta = color_delta(subject, hex),
-             false <- delta >= @similar_color_delta,
-             true <- is_nil(nearest) or delta < nearest.delta do
-          %{route: candidate, delta: delta}
-        else
-          _other -> nearest
-        end
-      end)
+      nearest_similar_candidate(subject, candidates)
     else
       _other -> nil
     end
   end
 
   def similar_color(_color, _candidates), do: nil
+
+  # The nearest non-white candidate within the prototype's advisory CIE76
+  # delta, reducing over the saved routes in their given order.
+  defp nearest_similar_candidate(subject, candidates) do
+    candidates
+    |> Enum.reduce(nil, fn candidate, nearest ->
+      with {:ok, hex} <- normalize_hex(candidate[:route_color]),
+           false <- hex == "FFFFFF",
+           delta = color_delta(subject, hex),
+           false <- delta >= @similar_color_delta,
+           true <- is_nil(nearest) or delta < nearest.delta do
+        %{route: candidate, delta: delta}
+      else
+        _other -> nearest
+      end
+    end)
+  end
 
   # CIE76 distance in CIE Lab. White is excluded from the comparison (above),
   # so the constant here is the prototype's D65 matrix, not a calibrated Lab

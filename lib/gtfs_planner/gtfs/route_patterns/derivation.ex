@@ -26,9 +26,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
-  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Stop

@@ -417,61 +417,24 @@ defmodule GtfsPlanner.Gtfs.Routes.StatusTest do
 
   defp cleanup_fixture(fixture) do
     unboxed(fn ->
-      Repo.delete_all(
-        from f in Frequency,
-          where:
-            f.organization_id == ^fixture.organization.id or
-              f.gtfs_version_id == ^fixture.version.id
-      )
+      org_id = fixture.organization.id
+      version_id = fixture.version.id
 
-      Repo.delete_all(
-        from st in StopTime,
-          where:
-            st.organization_id == ^fixture.organization.id or
-              st.gtfs_version_id == ^fixture.version.id
-      )
+      delete_org_or_version!(Frequency, org_id, version_id)
 
-      Repo.delete_all(
-        from t in Trip,
-          where:
-            t.organization_id == ^fixture.organization.id or
-              t.gtfs_version_id == ^fixture.version.id
-      )
+      delete_org_or_version!(StopTime, org_id, version_id)
 
-      Repo.delete_all(
-        from p in RoutePattern,
-          where:
-            p.organization_id == ^fixture.organization.id or
-              p.gtfs_version_id == ^fixture.version.id
-      )
+      delete_org_or_version!(Trip, org_id, version_id)
 
-      Repo.delete_all(
-        from s in Stop,
-          where:
-            s.organization_id == ^fixture.organization.id or
-              s.gtfs_version_id == ^fixture.version.id
-      )
+      delete_org_or_version!(RoutePattern, org_id, version_id)
 
-      Repo.delete_all(
-        from l in ChangeLog,
-          where:
-            l.organization_id == ^fixture.organization.id or
-              l.gtfs_version_id == ^fixture.version.id
-      )
+      delete_org_or_version!(Stop, org_id, version_id)
 
-      Repo.delete_all(
-        from r in Route,
-          where:
-            r.organization_id == ^fixture.organization.id or
-              r.gtfs_version_id == ^fixture.version.id
-      )
+      delete_org_or_version!(ChangeLog, org_id, version_id)
 
-      Repo.delete_all(
-        from a in GtfsPlanner.Gtfs.Agency,
-          where:
-            a.organization_id == ^fixture.organization.id or
-              a.gtfs_version_id == ^fixture.version.id
-      )
+      delete_org_or_version!(Route, org_id, version_id)
+
+      delete_org_or_version!(GtfsPlanner.Gtfs.Agency, org_id, version_id)
 
       Repo.delete_all(
         from m in UserOrgMembership,
@@ -483,5 +446,14 @@ defmodule GtfsPlanner.Gtfs.Routes.StatusTest do
       Repo.delete_all(from o in Organization, where: o.id == ^fixture.organization.id)
       :ok
     end)
+  end
+
+  # Cascading cleanup in dependency order: every row scoped by organization or
+  # version goes first, so fixtures never leak across tests.
+  defp delete_org_or_version!(schema, org_id, version_id) do
+    Repo.delete_all(
+      from s in schema,
+        where: s.organization_id == ^org_id or s.gtfs_version_id == ^version_id
+    )
   end
 end

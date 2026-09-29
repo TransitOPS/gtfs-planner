@@ -1111,35 +1111,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
     # R1 normalizes a new/changed blank route color to FFFFFF, so a blank
     # draft previews as white. A nonblank color the server will reject has no
     # preview at all: it is `nil` here, and the error line above is the truth.
-    background =
-      case color do
-        {:ok, hex} -> hex
-        :blank -> "FFFFFF"
-        :invalid -> nil
-      end
-
+    background = preview_background(color)
     mode = text_mode || derived_text_mode(background, text)
-
-    requested =
-      cond do
-        mode != "automatic" ->
-          case text do
-            {:ok, hex} -> hex
-            :blank -> "000000"
-            :invalid -> nil
-          end
-
-        is_nil(background) ->
-          nil
-
-        true ->
-          RouteIdentity.automatic_text_color(background)
-      end
-
-    ratio =
-      if background && requested,
-        do: RouteIdentity.contrast_ratio(background, requested),
-        else: nil
+    requested = preview_requested_text(mode, background, text)
+    ratio = preview_contrast_ratio(background, requested)
 
     %{
       background: background,
@@ -1150,6 +1125,43 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
       usable?: ratio != nil,
       fallback: background && RouteIdentity.automatic_text_color(background)
     }
+  end
+
+  defp preview_background(color) do
+    case color do
+      {:ok, hex} -> hex
+      :blank -> "FFFFFF"
+      :invalid -> nil
+    end
+  end
+
+  # A Custom text color previews its own draft; an Automatic text color is
+  # resolved from the background, and an unknown background has none.
+  defp preview_requested_text(mode, background, text) do
+    cond do
+      mode != "automatic" ->
+        preview_requested_draft_text(text)
+
+      is_nil(background) ->
+        nil
+
+      true ->
+        RouteIdentity.automatic_text_color(background)
+    end
+  end
+
+  defp preview_requested_draft_text(text) do
+    case text do
+      {:ok, hex} -> hex
+      :blank -> "000000"
+      :invalid -> nil
+    end
+  end
+
+  defp preview_contrast_ratio(background, requested) do
+    if background && requested,
+      do: RouteIdentity.contrast_ratio(background, requested),
+      else: nil
   end
 
   # A draft color is blank, usable hex, or unusable, and the three are different

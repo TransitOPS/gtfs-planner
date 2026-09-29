@@ -14,6 +14,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.CatalogReadAdapter
   alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
+  alias GtfsPlanner.Gtfs.FareRule
+  alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.Routes
   alias GtfsPlanner.Gtfs.Shape
   alias GtfsPlanner.Repo
   alias GtfsPlannerWeb.Gtfs.RouteDetailLive
@@ -1066,7 +1069,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       actor_email: actor.email
     }
 
-    base = GtfsPlanner.Gtfs.Routes.source(Repo.get!(GtfsPlanner.Gtfs.Route, route.id))
+    base = Routes.source(Repo.get!(Route, route.id))
     Gtfs.update_route(route.route_id, attrs, base, %{}, audit)
   end
 
@@ -1091,7 +1094,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
     )
   end
 
-  defp saved_route(route), do: Repo.get!(GtfsPlanner.Gtfs.Route, route.id)
+  defp saved_route(route), do: Repo.get!(Route, route.id)
 
   describe "route not found and unavailable" do
     setup :shared_setup
@@ -1824,7 +1827,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       html =
         render_component(&RouteDetailLive.route_map_panel/1, %{
           route_map_data: {:error, :unavailable},
-          route: %GtfsPlanner.Gtfs.Route{
+          route: %Route{
             route_id: "MAPDOWN1",
             route_short_name: "MD1",
             route_long_name: "Map down"
@@ -2365,14 +2368,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       assert path == "/gtfs/#{version.id}/routes?deleted=1"
       assert flash =~ "deleted, with its 1 trip."
 
-      refute Repo.get(GtfsPlanner.Gtfs.Route, route.id)
+      refute Repo.get(Route, route.id)
 
       refute Repo.get_by(GtfsPlanner.Gtfs.Trip,
                organization_id: organization.id,
                trip_id: "DEL3_T1"
              )
 
-      refute Repo.get_by(GtfsPlanner.Gtfs.FareRule,
+      refute Repo.get_by(FareRule,
                organization_id: organization.id,
                fare_id: "DEL3_F1"
              )
@@ -2411,7 +2414,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       {path, %{"info" => flash}} = assert_redirect(view)
       assert path == "/gtfs/#{version.id}/routes?deleted=1"
       assert flash == "Route P1 deleted."
-      refute Repo.get(GtfsPlanner.Gtfs.Route, route.id)
+      refute Repo.get(Route, route.id)
     end
 
     test "a relationships-only route uses the complete review",
@@ -2451,12 +2454,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       {path, %{"info" => _flash}} = assert_redirect(view)
       assert path == "/gtfs/#{version.id}/routes?deleted=1"
 
-      refute Repo.get_by(GtfsPlanner.Gtfs.FareRule,
+      refute Repo.get_by(FareRule,
                organization_id: organization.id,
                fare_id: "DEL5_F1"
              )
 
-      refute Repo.get(GtfsPlanner.Gtfs.Route, route.id)
+      refute Repo.get(Route, route.id)
     end
 
     test "same-count stale review says contents changed, clears acknowledgement and deletes nothing",
@@ -2517,7 +2520,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       {path, %{"info" => _flash}} = assert_redirect(view)
       assert path == "/gtfs/#{version.id}/routes?deleted=1"
-      refute Repo.get(GtfsPlanner.Gtfs.Route, route.id)
+      refute Repo.get(Route, route.id)
     end
 
     test "a counts-changed stale review shows the reviewed count struck through, clears acknowledgement and deletes nothing",
@@ -2690,8 +2693,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
   end
 
   defp fare_rule_fixture(organization_id, gtfs_version_id, attrs) do
-    %GtfsPlanner.Gtfs.FareRule{}
-    |> GtfsPlanner.Gtfs.FareRule.changeset(
+    %FareRule{}
+    |> FareRule.changeset(
       Map.merge(
         %{organization_id: organization_id, gtfs_version_id: gtfs_version_id},
         Map.new(attrs)

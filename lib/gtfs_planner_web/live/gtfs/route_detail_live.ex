@@ -860,13 +860,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # consumes it, so only a committed save navigates and every other outcome —
   # rejection, conflict, a lost route — keeps the operator here with the draft.
   defp run_details_save(socket, attrs, params) do
-    pending = if params["leave_nav"] == "true", do: socket.assigns.pending_navigation, else: nil
+    pending = details_save_pending(socket, params)
     socket = clear_pending(socket)
-
-    choices =
-      if merge_submission?(params) and socket.assigns.merge != nil,
-        do: merge_choices(socket, params),
-        else: %{}
+    choices = details_save_choices(socket, params)
 
     case Gtfs.update_route(
            socket.assigns.route.route_id,
@@ -878,16 +874,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
       {:ok, %{route: _saved}} when is_binary(pending) ->
         {:noreply, guarded_navigate(socket, pending)}
 
-      # The save that unblocked the status review continues into it (R4).
-      {:ok, %{route: saved}} when pending == :status_review ->
-        {:noreply, saved_details(socket, saved) |> open_status_review()}
-
-      # The save that unblocked the delete review continues into it (R4).
-      {:ok, %{route: saved}} when pending == :delete_review ->
-        {:noreply, saved_details(socket, saved) |> open_delete_review()}
-
       {:ok, %{route: saved}} ->
-        {:noreply, saved_details(socket, saved)}
+        {:noreply, saved_details_continue(socket, saved, pending)}
 
       {:error, {:conflict, payload}} ->
         {:noreply, present_conflict(socket, payload)}
@@ -895,51 +883,78 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, save_rejected(socket, changeset)}
 
-      {:error, :not_found} ->
-        {:noreply,
-         route_gone(
-           socket,
-           "This route is no longer in this version. Open it again from the route list."
-         )}
-
-      # The same natural ID exists again, but it is a different route with a
-      # different UUID: the old draft never authorizes it (AC-9).
-      {:error, :stale} ->
-        {:noreply,
-         route_gone(
-           socket,
-           "This route was deleted and created again with the same route ID. Open the new route from the route list."
-         )}
-
-      {:error, :forbidden} ->
-        {:noreply,
-         save_not_saved(
-           socket,
-           "Not saved: your editor access was removed. Your changes are still on this page, but you can't save them. Ask an admin to restore editor access."
-         )}
-
-      {:error, :busy} ->
-        {:noreply,
-         save_not_saved(
-           socket,
-           "Not saved: the server is busy right now. Your changes are still here — try Save again."
-         )}
-
-      # The mutation and its audit commit together, so nothing was changed.
-      {:error, :failed_audit} ->
-        {:noreply,
-         save_not_saved(
-           socket,
-           "Not saved: your changes could not be recorded. Nothing was changed — try Save again."
-         )}
-
-      {:error, _other} ->
-        {:noreply,
-         save_not_saved(
-           socket,
-           "Not saved: something went wrong. Your changes are still here — try Save again."
-         )}
+      {:error, reason} ->
+        {:noreply, details_save_failure(socket, reason)}
     end
+  end
+
+  # Only a navigation guarded by the leave dialog carries the draft into the
+  # next page; any other pending marker waits for the save's own outcome.
+  defp details_save_pending(socket, params) do
+    if params["leave_nav"] == "true", do: socket.assigns.pending_navigation, else: nil
+  end
+
+  # A deliberate merge applies only on a merge submission of an open merge.
+  defp details_save_choices(socket, params) do
+    if merge_submission?(params) and socket.assigns.merge != nil,
+      do: merge_choices(socket, params),
+      else: %{}
+  end
+
+  # The save that unblocked a held review continues into it (R4).
+  defp saved_details_continue(socket, saved, :status_review),
+    do: saved_details(socket, saved) |> open_status_review()
+
+  defp saved_details_continue(socket, saved, :delete_review),
+    do: saved_details(socket, saved) |> open_delete_review()
+
+  defp saved_details_continue(socket, saved, _pending),
+    do: saved_details(socket, saved)
+
+  # Each failure keeps the draft on screen and names what happened to it.
+  defp details_save_failure(socket, :not_found) do
+    route_gone(
+      socket,
+      "This route is no longer in this version. Open it again from the route list."
+    )
+  end
+
+  # The same natural ID exists again, but it is a different route with a
+  # different UUID: the old draft never authorizes it (AC-9).
+  defp details_save_failure(socket, :stale) do
+    route_gone(
+      socket,
+      "This route was deleted and created again with the same route ID. Open the new route from the route list."
+    )
+  end
+
+  defp details_save_failure(socket, :forbidden) do
+    save_not_saved(
+      socket,
+      "Not saved: your editor access was removed. Your changes are still on this page, but you can't save them. Ask an admin to restore editor access."
+    )
+  end
+
+  defp details_save_failure(socket, :busy) do
+    save_not_saved(
+      socket,
+      "Not saved: the server is busy right now. Your changes are still here — try Save again."
+    )
+  end
+
+  # The mutation and its audit commit together, so nothing was changed.
+  defp details_save_failure(socket, :failed_audit) do
+    save_not_saved(
+      socket,
+      "Not saved: your changes could not be recorded. Nothing was changed — try Save again."
+    )
+  end
+
+  defp details_save_failure(socket, _other) do
+    save_not_saved(
+      socket,
+      "Not saved: something went wrong. Your changes are still here — try Save again."
+    )
   end
 
   # A clean save (or a deliberate merge) reloads the workspace through the
@@ -1243,21 +1258,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         |> push_navigate(to: "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes?deleted=1")
 
       {:error, {:stale_review, fresh}} ->
-        previous_categories =
-          case socket.assigns.delete_review do
-            %{categories: categories} -> categories
-            _other -> []
-          end
-
-        changes = Gtfs.deletion_review_changes(previous_categories, fresh.categories)
-
-        socket
-        |> assign(:delete_review, fresh)
-        |> assign(:delete_changes, changes)
-        |> assign(:delete_previous_categories, previous_categories)
-        |> assign(:delete_ack_error, nil)
-        |> assign(:delete_error, nil)
-        |> push_event("focus_scoped_target", %{id: "route-delete-ack"})
+        present_stale_delete_review(socket, fresh)
 
       {:error, :not_found} ->
         route_gone(
@@ -1292,6 +1293,26 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
           "The deletion could not be completed. Nothing was deleted — try Delete route again."
         )
     end
+  end
+
+  # A stale apply re-renders the review from the freshly recomputed snapshot
+  # and re-clears the acknowledgement, so only a fresh confirm can apply it.
+  defp present_stale_delete_review(socket, fresh) do
+    previous_categories =
+      case socket.assigns.delete_review do
+        %{categories: categories} -> categories
+        _other -> []
+      end
+
+    changes = Gtfs.deletion_review_changes(previous_categories, fresh.categories)
+
+    socket
+    |> assign(:delete_review, fresh)
+    |> assign(:delete_changes, changes)
+    |> assign(:delete_previous_categories, previous_categories)
+    |> assign(:delete_ack_error, nil)
+    |> assign(:delete_error, nil)
+    |> push_event("focus_scoped_target", %{id: "route-delete-ack"})
   end
 
   defp delete_refused(socket, message) do

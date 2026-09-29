@@ -1046,8 +1046,11 @@ case Accounts.register_first_admin(%{
     #
     # Fifty-five small routes over the pattern-stop corner of the map, so the
     # Details map's "Show other routes" layer has more than one 50-route page
-    # and every context route sits inside the fitted viewport. CTX_55 is
-    # explicitly inactive to give the layer its dashed inactive state.
+    # and every context route sits inside the fitted viewport. CTX_50 is
+    # explicitly inactive to give the layer its dashed inactive state; it sorts
+    # inside the first 50-route page (routes order by route_id, and the CTX_
+    # block sorts before every other seeded route id), so the dashed state is
+    # observable on the layer's first page without paging.
     Enum.each(1..55, fn index ->
       route_id = "BROWSER_CTX_" <> String.pad_leading(Integer.to_string(index), 2, "0")
 
@@ -1059,7 +1062,7 @@ case Accounts.register_first_admin(%{
           route_short_name: "C#{index}",
           route_long_name: "Context Route #{index}",
           route_type: 3,
-          active: index != 55
+          active: index != 50
         })
 
       context_pattern =

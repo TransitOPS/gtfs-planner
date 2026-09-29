@@ -2048,36 +2048,44 @@ defmodule GtfsPlannerWeb.Gtfs.RoutesLive do
   # attempt itself would still reconcile. The attempt's own verification makes
   # the "unknown source" case a blocked drawer, never a save.
   defp recover_new_route(socket, token) do
-    cond do
-      not editor_access?(socket) ->
+    if editor_access?(socket) do
+      recover_new_route_attempt(socket, token)
+    else
+      {:noreply, block_new_route(socket, @recovery_forbidden_message)}
+    end
+  end
+
+  # One revalidation, one outcome. The attempt's own verification makes the
+  # "unknown source" case a blocked drawer, never a save.
+  defp recover_new_route_attempt(socket, token) do
+    case verify_creation_attempt(token) do
+      :error ->
+        {:noreply, block_new_route(socket, @invalid_attempt_message)}
+
+      attempt ->
+        reconcile_recovered_creation(socket, attempt)
+    end
+  end
+
+  defp reconcile_recovered_creation(socket, attempt) do
+    case Gtfs.reconcile_creation(attempt, audit_context(socket)) do
+      {:ok, route} ->
+        {:noreply, finish_recovered_creation(socket, route)}
+
+      # Nothing committed during the lost window: the same verified
+      # attempt may retry, so the offline block clears and the form
+      # keeps its draft and its attempt untouched.
+      {:error, :not_started} ->
+        {:noreply, retry_new_route(socket)}
+
+      {:error, :attempt_consumed} ->
+        {:noreply, block_new_route(socket, @consumed_message)}
+
+      {:error, :forbidden} ->
         {:noreply, block_new_route(socket, @recovery_forbidden_message)}
 
-      true ->
-        case verify_creation_attempt(token) do
-          :error ->
-            {:noreply, block_new_route(socket, @invalid_attempt_message)}
-
-          attempt ->
-            case Gtfs.reconcile_creation(attempt, audit_context(socket)) do
-              {:ok, route} ->
-                {:noreply, finish_recovered_creation(socket, route)}
-
-              # Nothing committed during the lost window: the same verified
-              # attempt may retry, so the offline block clears and the form
-              # keeps its draft and its attempt untouched.
-              {:error, :not_started} ->
-                {:noreply, retry_new_route(socket)}
-
-              {:error, :attempt_consumed} ->
-                {:noreply, block_new_route(socket, @consumed_message)}
-
-              {:error, :forbidden} ->
-                {:noreply, block_new_route(socket, @recovery_forbidden_message)}
-
-              {:error, _other} ->
-                {:noreply, block_new_route(socket, @invalid_attempt_message)}
-            end
-        end
+      {:error, _other} ->
+        {:noreply, block_new_route(socket, @invalid_attempt_message)}
     end
   end
 
