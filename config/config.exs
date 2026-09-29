@@ -115,7 +115,15 @@ config :logger, :default_formatter,
     :issue_codes,
     :details,
     :x,
-    :y
+    :y,
+    # Agent turn outcomes: one terminal line per finished helper turn.
+    :pack,
+    :model,
+    :outcome,
+    :tools,
+    :duration_ms,
+    :cost,
+    :cost_complete
   ]
 
 # Use Jason for JSON parsing in Phoenix
