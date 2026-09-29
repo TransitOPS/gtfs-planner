@@ -62,22 +62,26 @@ locals {
 
   environments = {
     dev = {
-      network_name     = "dev"
-      database_name    = "dev"
-      type             = "docker"
-      host             = data.env_var.dev_ip.value
-      domain           = "dev.gtfs-planner.transitops.tech"
-      geoapify_api_key = data.env_var.geoapify_api_key.value
-      is_temporary     = true
+      network_name       = "dev"
+      database_name      = "dev"
+      type               = "docker"
+      host               = data.env_var.dev_ip.value
+      domain             = "dev.gtfs-planner.transitops.tech"
+      geoapify_api_key   = data.env_var.geoapify_api_key.value
+      openrouter_api_key = data.env_var.openrouter_api_key.value
+      openrouter_model   = data.env_var.openrouter_model.value
+      is_temporary       = true
     }
     prod = {
-      network_name     = "prod"
-      database_name    = "prod"
-      type             = "aws"
-      geoapify_api_key = data.env_var.geoapify_api_key.value
-      certificate      = "gtfs-planner.transitops.tech"
-      domain           = "gtfs-planner.transitops.tech"
-      is_temporary     = false
+      network_name       = "prod"
+      database_name      = "prod"
+      type               = "aws"
+      geoapify_api_key   = data.env_var.geoapify_api_key.value
+      openrouter_api_key = data.env_var.openrouter_api_key.value
+      openrouter_model   = data.env_var.openrouter_model.value
+      certificate        = "gtfs-planner.transitops.tech"
+      domain             = "gtfs-planner.transitops.tech"
+      is_temporary       = false
     }
   }
 }
@@ -88,4 +92,12 @@ data "env_var" "dev_ip" {
 
 data "env_var" "geoapify_api_key" {
   id = "GEOAPIFY_API_KEY"
+}
+
+data "env_var" "openrouter_api_key" {
+  id = "OPENROUTER_API_KEY"
+}
+
+data "env_var" "openrouter_model" {
+  id = "OPENROUTER_MODEL"
 }
