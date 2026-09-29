@@ -1007,6 +1007,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexServiceLive do
                       no_stops?={is_nil(@area_stop_extent)}
                       search_name={@area_search["name"]}
                       search_state={@area_search["state"]}
+                      pick={@area_pick_place && @area_pick_place.geoid}
                       error={@area_error}
                     />
                   <% :routes -> %>

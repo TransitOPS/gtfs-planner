@@ -144,6 +144,10 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
   stop extent (or the name-and-state search when the version has no stops), the
   CDP label, and the unavailable state that names three next actions and changes
   nothing.
+
+  The place the editor picked stays the list's own selected radio (`pick`), the
+  way the reference's list marks the chosen town; without it a re-render of the
+  panel would leave the list with nothing selected.
   """
   attr :places, :list, required: true
   attr :state, :atom, required: true
@@ -151,6 +155,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
   attr :no_stops?, :boolean, required: true
   attr :search_name, :string, default: ""
   attr :search_state, :string, default: ""
+  attr :pick, :string, default: nil
   attr :error, :string, default: nil
 
   def census_panel(assigns) do
@@ -263,6 +268,7 @@ defmodule GtfsPlannerWeb.Gtfs.FlexAreaEditorComponents do
                 type="radio"
                 name="geoid"
                 value={place.geoid}
+                checked={@pick == place.geoid}
                 class="mt-1 size-4 shrink-0 accent-[var(--color-action)]"
               />
               <span class="min-w-0">
