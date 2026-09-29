@@ -177,6 +177,9 @@ defmodule GtfsPlannerWeb.Gtfs.CalendarsHelperLiveTest do
       {view, pid} = open_helper(context)
       conn = log_in_user(context.conn, context.user, organization: context.organization)
       other_version = gtfs_version_fixture(context.organization.id, %{name: "Other Version"})
+      # The header offers the helper only once a version has calendars; an empty
+      # version's first-use panel keeps Create calendar as its one action.
+      add_calendar(context.organization, other_version, "OTHER_WD", "Other weekdays")
 
       assert {:error, {:live_redirect, %{to: path}}} =
                render_click(view, "gtfs_version_loaded", %{"version_id" => other_version.id})
