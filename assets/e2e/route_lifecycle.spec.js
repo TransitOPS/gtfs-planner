@@ -1320,3 +1320,180 @@ test.describe("Reviewed route deletion", () => {
     );
   });
 });
+
+/**
+ * Saved route map (spec 16, step 30).
+ *
+ * The Details page's `#route-map` ignored container draws the step-17
+ * projection (`GtfsPlanner.Gtfs.Routes.Map.route_map/3`) through the
+ * RouteDetailsMap hook and vendored Leaflet, over the authenticated
+ * /map/tiles/osm-bright/:z/:x/:y proxy. These cases treat the tile HTTP as
+ * the only double (stubbed or aborted); everything else — payload, list,
+ * controls, degraded states — is the production page.
+ *
+ * Stable ids this step publishes:
+ *   #route-details-map-region / #route-map-frame / #route-map
+ *   #route-map-alt / #route-map-zoom-in / #route-map-zoom-out / #route-map-fit
+ *   #route-map-card / #route-map-hint / #route-map-tiles-unavailable
+ *   #route-map-tiles-retry / #route-map-pattern-list / #route-map-variant-list
+ *   #route-map-unavailable / #route-map-retry / #route-map-first-pattern
+ */
+test.describe("Saved route map", () => {
+  const TILE_PATTERN = /\/map\/tiles\//;
+
+  function pngTile() {
+    // One grey 2x2 PNG; the pixels do not matter, only that the layer loads.
+    return Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP8z8DwnwEJMDEgAQBe" +
+        "4QEKd3hXFAAAAABJRU5ErkJggg==",
+      "base64",
+    );
+  }
+
+  async function openDetailsMap(page) {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    await awaitConnected(page);
+    await expect(page.locator("#route-map-frame")).toBeVisible();
+  }
+
+  test("saved map draws the seeded sections, the labelled variant and the pattern list", async ({
+    page,
+  }) => {
+    await page.route(TILE_PATTERN, (route) =>
+      route.fulfill({ status: 200, body: pngTile(), contentType: "image/png" }),
+    );
+    await openDetailsMap(page);
+
+    // The projection reached the hook: saved sections with coordinates and
+    // the distinct imported shape as one labelled variant.
+    const payload = JSON.parse(
+      await page.locator("#route-map").getAttribute("data-map-payload"),
+    );
+    expect(payload.patterns).toHaveLength(2);
+    expect(
+      payload.patterns.every((pattern) =>
+        pattern.sections.every(
+          (section) =>
+            section.source === "stop_pair" && section.status === "saved",
+        ),
+      ),
+    ).toBe(true);
+    expect(payload.imported_shape_variants).toHaveLength(1);
+    expect(payload.imported_shape_variants[0].label).toBe("Variant 1");
+
+    // The list is the text equivalent; the controls, legend and attribution
+    // are present, and the served tiles keep the degraded banner hidden.
+    await expect(
+      page.locator("#route-map-pattern-list [data-map-highlight]"),
+    ).toHaveCount(2);
+    await expect(
+      page.locator("#route-map-variant-list [data-map-kind='variant']"),
+    ).toHaveCount(1);
+    await expect(page.locator("#route-map-zoom-in")).toBeVisible();
+    await expect(page.locator("#route-map-fit")).toBeVisible();
+    await expect(
+      page.locator("#route-details-map-region", { hasText: "Path saved" }),
+    ).toBeVisible();
+    await expect(page.locator("#route-map-tiles-unavailable")).toBeHidden();
+
+    // Leaflet actually drew the vectors over the basemap.
+    await expect(page.locator("#route-map path")).not.toHaveCount(0);
+
+    expect(await bodyFitsViewport(page)).toBe(true);
+  });
+
+  test("tile failure keeps the vectors, the list and the retry affordance", async ({
+    page,
+  }) => {
+    await page.route(TILE_PATTERN, (route) => route.abort());
+    await openDetailsMap(page);
+
+    // The street map is lost, the route geometry and its text equivalent are
+    // not: nothing erases service when tiles fail (AC-26).
+    await expect(page.locator("#route-map-tiles-unavailable")).toBeVisible();
+    await expect(page.locator("#route-map path")).not.toHaveCount(0);
+    await expect(
+      page.locator("#route-map-pattern-list [data-map-highlight]"),
+    ).toHaveCount(2);
+    await expect(page.locator("#route-details-form")).toBeVisible();
+
+    await page.locator("#route-map-tiles-retry").click();
+    await expect(page.locator("#route-map-tiles-unavailable")).toBeVisible();
+  });
+
+  test("color preview changes the line color without resetting pan or zoom", async ({
+    page,
+  }) => {
+    await page.route(TILE_PATTERN, (route) =>
+      route.fulfill({ status: 200, body: pngTile(), contentType: "image/png" }),
+    );
+    await openDetailsMap(page);
+
+    await page.locator("#route-map-zoom-in").click();
+    await page.locator("#route-map-zoom-in").click();
+    const pane = page.locator("#route-map .leaflet-map-pane");
+    const beforeTransform = await pane.evaluate((el) => el.style.transform);
+    const beforeStroke = await page
+      .locator("#route-map path[stroke]")
+      .first()
+      .getAttribute("stroke");
+
+    // Local preview (C-2): the hex field repaints the lines immediately,
+    // with no server round trip and no fit.
+    await page.fill("#route-details-color", "C81870");
+    await page
+      .locator("#route-details-color")
+      .dispatchEvent("input")
+      .catch(() => {});
+    await expect(
+      page.locator("#route-map path[stroke]").first(),
+    ).not.toHaveAttribute("stroke", beforeStroke);
+
+    const afterTransform = await pane.evaluate((el) => el.style.transform);
+    expect(afterTransform).toBe(beforeTransform);
+  });
+
+  test("pattern rows highlight their occurrence geometry on hover and focus", async ({
+    page,
+  }) => {
+    await page.route(TILE_PATTERN, (route) =>
+      route.fulfill({ status: 200, body: pngTile(), contentType: "image/png" }),
+    );
+    await openDetailsMap(page);
+
+    const firstRow = page
+      .locator("#route-map-pattern-list [data-map-highlight]")
+      .first();
+
+    await firstRow.hover();
+    await expect(firstRow).toHaveAttribute("data-on", "true");
+    await expect(page.locator("#route-map-card")).toBeVisible();
+    await expect(page.locator("#route-map-card")).toContainText(
+      await firstRow.locator("span span").first().textContent(),
+    );
+
+    await page.locator("#route-map-title").hover();
+    await expect(firstRow).toHaveAttribute("data-on", "false");
+    await expect(page.locator("#route-map-card")).toBeHidden();
+
+    await firstRow.focus();
+    await expect(firstRow).toHaveAttribute("data-on", "true");
+  });
+
+  test("empty route map names the no-pattern state instead of drawing anything", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/BROWSER_PATTERNS_EMPTY`);
+    await awaitConnected(page);
+
+    await expect(page.locator("#route-details-map-region")).toContainText(
+      "No patterns yet",
+    );
+    await expect(page.locator("#route-map-first-pattern")).toBeVisible();
+    await expect(page.locator("#route-map")).toHaveCount(0);
+  });
+});
