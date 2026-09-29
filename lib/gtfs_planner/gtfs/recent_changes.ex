@@ -322,9 +322,18 @@ defmodule GtfsPlanner.Gtfs.RecentChanges do
         {:station, log.station_stop_id, level_id(log)}
 
       true ->
-        {:stop, log.entity_external_id}
+        default_destination(log)
     end
   end
+
+  # The types the cond above does not name: a shape edit has no editor surface,
+  # a transfer rule has its own screen, and every other type reads through the
+  # stop vocabulary.
+  defp default_destination(%ChangeLog{entity_type: "alignment_segment"} = log),
+    do: {:alignment, log.entity_external_id}
+
+  defp default_destination(%ChangeLog{entity_type: "transfer"}), do: :transfers
+  defp default_destination(%ChangeLog{} = log), do: {:stop, log.entity_external_id}
 
   # A level's GTFS `level_id` is its external id; a stop's is its snapshot value.
   defp level_id(%ChangeLog{entity_type: "level", entity_external_id: level_id}), do: level_id
