@@ -28,7 +28,10 @@ config :gtfs_planner,
   import_cleanup_worker_module: GtfsPlanner.Gtfs.Import.Recovery,
   # Heartbeat interval (in milliseconds) at which the import runner renews its
   # execution/cleanup lease.
-  import_runner_heartbeat_ms: 60_000
+  import_runner_heartbeat_ms: 60_000,
+  # Module the export worker runs before it builds a ZIP. Its `run/3` returns
+  # `:ok` or `{:error, issues}`; each issue is stored as a run warning.
+  otp_preflight_module: GtfsPlanner.Gtfs.Export.Preflight
 
 # Configure the endpoint
 config :gtfs_planner, GtfsPlannerWeb.Endpoint,
