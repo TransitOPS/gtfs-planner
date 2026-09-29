@@ -5,7 +5,9 @@ defmodule GtfsPlanner.RuntimeConfigTest do
   @required_prod_env %{
     "DATABASE_URL" => "ecto://user:pass@localhost/db",
     "SECRET_KEY_BASE" => String.duplicate("a", 64),
-    "GEOAPIFY_API_KEY" => "test-geoapify-key"
+    "GEOAPIFY_API_KEY" => "test-geoapify-key",
+    "OPENROUTER_API_KEY" => "test-openrouter-key",
+    "OPENROUTER_MODEL" => "test/model-a"
   }
 
   @artifact_env_keys [

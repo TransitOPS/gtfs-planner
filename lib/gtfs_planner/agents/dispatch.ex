@@ -71,19 +71,23 @@ defmodule GtfsPlanner.Agents.Dispatch do
       tool.parameters
       |> Map.get("properties", %{})
       |> Enum.reduce_while(:ok, fn {key, schema}, :ok ->
-        case Map.fetch(args, key) do
-          :error ->
-            {:cont, :ok}
-
-          {:ok, value} ->
-            case validate_value(key, schema, value) do
-              :ok -> {:cont, :ok}
-              {:tool_error, _message} = error -> {:halt, error}
-            end
-        end
+        check_declared_value(args, key, schema)
       end)
     end
   end
+
+  defp check_declared_value(args, key, schema) do
+    case Map.fetch(args, key) do
+      :error ->
+        {:cont, :ok}
+
+      {:ok, value} ->
+        halt_on_tool_error(validate_value(key, schema, value))
+    end
+  end
+
+  defp halt_on_tool_error(:ok), do: {:cont, :ok}
+  defp halt_on_tool_error({:tool_error, _message} = error), do: {:halt, error}
 
   defp required_keys(tool), do: Map.get(tool.parameters, "required", [])
 
