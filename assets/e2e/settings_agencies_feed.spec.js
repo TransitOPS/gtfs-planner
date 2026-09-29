@@ -1,7 +1,7 @@
 // Settings › Feed details browser journey (EV-4, EV-5; step 6).
 //
-// Runs against the reset-and-seeded browser database the repository's Playwright
-// configuration already uses (`mise run prepare:browser`, workers: 1, retries: 0)
+// Runs against the freshly seeded browser database the repository's Playwright
+// configuration already uses (`bin/test-browser`, workers: 1, retries: 0)
 // with `BROWSER_E2E=true`. The journey is read-only: it opens the page's summary
 // and empty states at both required viewports and captures them.
 //
@@ -1496,10 +1496,9 @@ test.describe("@routes-new-route", () => {
 // Declared last: it mutates only the two versions seeded for it ("Browser
 // Onboarding Version" and "Browser Unassigned Routes Version"), which no other
 // block reads, and the suite runs one worker with no retries (CR-10). Both
-// journeys need `mise run prepare:browser` to have reset and seeded the
-// database, because both create the only agency their version gets: a repeat
-// run against a database that was not reset starts from a version that already
-// has one.
+// journeys need `bin/test-browser` to have seeded a new database, because both
+// create the only agency their version gets: a repeat run against a database
+// that was not recreated starts from a version that already has one.
 //
 // Captures land in this block's own evidence folder as
 // `onboarding-{1280,375}.png`, `agency-drawer-{1280,375}.png`,
@@ -1663,7 +1662,7 @@ test.describe("@routes-onboarding", () => {
 //
 // Declared last: it imports a feed of its own into a new uniquely named version
 // on the Browser E2E Version's import page, so it reads and writes no seeded
-// version's agencies or routes (CR-10). It needs `mise run prepare:browser` for
+// version's agencies or routes (CR-10). It needs the `bin/test-browser` seed for
 // the seeded login and version panel, not for the import itself.
 //
 // Captures land in this block's own evidence folder as

@@ -13,8 +13,8 @@ import {
 // fixtures created by `test/support/browser_seed.exs`. Nothing is faked.
 //
 // The mutating scenarios own dedicated seeded rows, so they never disturb the
-// users the other browser specs rely on. They do assume the standard
-// `mise run prepare:browser` reset+seed before a run.
+// users the other browser specs rely on. They do assume the fresh database
+// `bin/test-browser` seeds before a run.
 
 const ORG_ADMIN = {
   email: "admin-contracts@gtfs-planner.test",

@@ -19,6 +19,12 @@ config :gtfs_planner, GtfsPlanner.Repo,
   # `config/runtime.exs` already use.
   pool_size: max(System.schedulers_online() * 2, 10)
 
+# `bin/test-browser` points the Repo at a throwaway Postgres this way; the
+# partition-based default above stays in effect for ordinary `mix test` runs.
+if database_url = System.get_env("DATABASE_URL") do
+  config :gtfs_planner, GtfsPlanner.Repo, url: database_url
+end
+
 # Use a deterministic final-validator adapter for browser journeys while ordinary
 # ExUnit cases retain process-owned Mox expectations.
 validator_module =

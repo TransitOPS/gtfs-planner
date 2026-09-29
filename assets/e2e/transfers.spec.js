@@ -1,7 +1,7 @@
 // Transfers page journeys (EV-29).
 //
-// Runs against the reset-and-seeded browser database the repository's Playwright
-// configuration already uses (`mise run prepare:browser`, workers: 1, retries: 0)
+// Runs against the freshly seeded browser database the repository's Playwright
+// configuration already uses (`bin/test-browser`, workers: 1, retries: 0)
 // with `BROWSER_E2E=true`, and drives the real page: router → `TransfersLive` →
 // `Gtfs` facades → PostgreSQL. Only the Esri tile hosts are faked, at the network
 // boundary, so no journey reaches the internet.
@@ -14,7 +14,7 @@
 // renders rather than by an id; only the seeded stop ids are literal.
 //
 // The journeys share one version and mutate it in order (create, edit, delete),
-// so they run serially and a re-run needs `mise run prepare:browser` first. Test
+// so they run serially and a re-run needs a new `bin/test-browser` database. Test
 // titles keep the prefixes branch review greps: first use, list, inspector,
 // in-seat, create, duplicate, edit, guard, pick, map, related, delete, layout.
 //

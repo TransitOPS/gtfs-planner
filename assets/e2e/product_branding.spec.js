@@ -1,7 +1,7 @@
 // Product branding journey (EV-11, step 11).
 //
-// Runs against the reset-and-seeded browser database the repository's Playwright
-// configuration already uses (`mise run prepare:browser`, workers: 1, retries: 0).
+// Runs against the freshly seeded browser database the repository's Playwright
+// configuration already uses (`bin/test-browser`, workers: 1, retries: 0).
 // Read-only: it logs in, checks the header brand block and the product-hidden
 // task links, and captures the signed-out login frame. Ids, src paths, alts and
 // credentials are literal values from the spec and the seed.

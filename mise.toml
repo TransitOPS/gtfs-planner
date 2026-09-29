@@ -51,18 +51,12 @@ depends = ["setup:nodejs"]
 run = "npx --prefix assets playwright install chromium"
 hide = true
 
-[tasks."prepare:browser"]
-depends = ["elixir:deps", "setup:nodejs"]
-run = '''
-  MIX_ENV=test mix assets.deploy
-  MIX_ENV=test mix ecto.reset --force
-  MIX_ENV=test mix run test/support/browser_seed.exs
-'''
-hide = true
-
+# Starts a throwaway Postgres (needs `brew install ephemeralpg`), then creates,
+# migrates and seeds it before running Playwright. Extra arguments go to
+# Playwright: `mise run test:browser -- e2e/ia_navigation.spec.js`.
 [tasks."test:browser"]
-depends = ["setup:browser", "prepare:browser"]
-run = "npm --prefix assets run test:browser"
+depends = ["elixir:deps", "setup:browser"]
+run = "bin/test-browser"
 
 # Linting
 [tasks."lint:nodejs:syntax"]
@@ -90,7 +84,7 @@ run = "mix dialyzer"
 run = "tofu fmt -recursive -check infra"
 
 [tasks."lint:infra:shellcheck"]
-sources = ["mise-tasks/**/*"]
+sources = ["mise-tasks/**/*", "bin/*"]
 run = '''
 shellcheck -ax -P bin -s bash {% for path in task_source_files() %}{% if path is file %}{{ path }} {% endif %}{% endfor %}
 '''

@@ -794,13 +794,13 @@ test.describe("qa tour", () => {
       "## Setup",
       "",
       "```sh",
-      "mise run prepare:browser && CI=true npm --prefix assets run test:browser -- \\",
+      "bin/test-browser \\",
       "  e2e/blocks.spec.js e2e/ia_navigation.spec.js e2e/route_schedules.spec.js",
       "```",
       "",
-      "The suite runs Chromium against a local test Phoenix server on port 4002",
-      "(`BROWSER_E2E=true`), one worker, no retries, with the database reset and",
-      "seeded by `mise run prepare:browser` in the lane's own `MIX_TEST_PARTITION`.",
+      "The suite runs Chromium against a local test Phoenix server on a free port",
+      "(`BROWSER_E2E=true`), one worker, no retries, against a throwaway Postgres",
+      "that `bin/test-browser` creates, migrates and seeds for the run.",
       "`ia_navigation.spec.js` runs unchanged and `route_schedules.spec.js` keeps its",
       "read-only block assertions.",
       "",
@@ -863,8 +863,6 @@ test.describe("qa tour", () => {
     expect(readFileSync(evidencePath, "utf8")).toContain(
       "Blocks browser QA tour",
     );
-    expect(readFileSync(evidencePath, "utf8")).toContain(
-      "mise run prepare:browser",
-    );
+    expect(readFileSync(evidencePath, "utf8")).toContain("bin/test-browser");
   });
 });
