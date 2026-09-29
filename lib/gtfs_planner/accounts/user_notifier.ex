@@ -81,7 +81,7 @@ defmodule GtfsPlanner.Accounts.UserNotifier do
 
   """
   def deliver_user_invite(user, url) when is_binary(url) do
-    Logger.info("User invite for #{user.email}: #{url}")
+    Logger.info("User invite sent to user #{user.id}")
 
     email_body = user_invite_html(user, url)
     mail_domain = Application.get_env(:gtfs_planner, :mail_domain)

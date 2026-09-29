@@ -2,11 +2,14 @@ defmodule GtfsPlanner.AccountsTest do
   use GtfsPlanner.DataCase
 
   alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.{FirstAdminForm, User, UserOrgMembership, UserToken}
+  alias GtfsPlanner.Accounts.{FirstAdminForm, User, UserNotifier, UserOrgMembership, UserToken}
   alias GtfsPlanner.Organizations.Organization
   alias GtfsPlanner.Versions.GtfsVersion
   import GtfsPlanner.OrganizationsFixtures
+  import ExUnit.CaptureLog
   import Swoosh.TestAssertions
+
+  require Logger
 
   describe "get_user!/1" do
     test "raises if id does not exist" do
@@ -943,6 +946,22 @@ defmodule GtfsPlanner.AccountsTest do
 
       assert user.email == Accounts.get_user_by_invite_token(token).email
     end
+
+    test "logs the user id without the invitation URL, token, or email", %{user: user} do
+      log =
+        capture_info_log(fn ->
+          Accounts.deliver_user_invite(user, fn token ->
+            send(self(), {:invite_token, token})
+            invite_url(token)
+          end)
+        end)
+
+      assert_received {:invite_token, token}
+      assert log =~ "User invite sent to user #{user.id}"
+      refute log =~ token
+      refute log =~ "accept_invite"
+      refute log =~ user.email
+    end
   end
 
   describe "get_user_by_invite_token/1" do
@@ -1495,6 +1514,15 @@ defmodule GtfsPlanner.AccountsTest do
       assert Repo.aggregate(GtfsVersion, :count, :id) == version_count
       assert Repo.aggregate(UserOrgMembership, :count, :id) == membership_count
     end
+  end
+
+  # The test env logs at :warning, which drops the notifier's info messages before
+  # capture_log sees them. Lower the level for that module only, then remove the override.
+  defp capture_info_log(fun) do
+    Logger.put_module_level(UserNotifier, :info)
+    capture_log([level: :info], fun)
+  after
+    Logger.delete_module_level(UserNotifier)
   end
 
   defp invite_url(token), do: "http://localhost:4000/users/accept_invite/#{token}"
