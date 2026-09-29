@@ -260,6 +260,75 @@ defmodule GtfsPlanner.Gtfs.StopTest do
     end
   end
 
+  describe "changeset/2 and import_changeset/2 station parent rule" do
+    @station_in_station_error "A station can't be inside another station. Choose another type."
+
+    test "changeset/2 rejects a station with a parent station" do
+      attrs =
+        base_stop_attrs()
+        |> Map.merge(%{location_type: 1, parent_station: "PARENT_STATION", level_id: "L1"})
+
+      changeset = Stop.changeset(%Stop{}, attrs)
+
+      refute changeset.valid?
+      assert {@station_in_station_error, _} = changeset.errors[:location_type]
+    end
+
+    test "changeset/2 rejects changing a child stop to a station" do
+      child = %Stop{location_type: 0, parent_station: "PARENT_STATION", level_id: "L1"}
+
+      changeset = Stop.changeset(child, %{location_type: 1})
+
+      refute changeset.valid?
+      assert {@station_in_station_error, _} = changeset.errors[:location_type]
+    end
+
+    test "changeset/2 rejects any edit of a stored station that has a parent station" do
+      legacy = %Stop{location_type: 1, parent_station: "PARENT_STATION", level_id: "L1"}
+
+      changeset = Stop.changeset(legacy, %{stop_name: "Renamed"})
+
+      refute changeset.valid?
+      assert {@station_in_station_error, _} = changeset.errors[:location_type]
+    end
+
+    test "changeset/2 accepts a station without a parent station" do
+      attrs = Map.merge(base_stop_attrs(), %{location_type: 1, parent_station: nil})
+
+      assert Stop.changeset(%Stop{}, attrs).valid?
+    end
+
+    test "changeset/2 accepts a station whose parent station is an empty string" do
+      attrs = Map.merge(base_stop_attrs(), %{location_type: 1, parent_station: ""})
+
+      assert Stop.changeset(%Stop{}, attrs).valid?
+    end
+
+    for location_type <- [0, 2, 3, 4] do
+      test "changeset/2 accepts location type #{location_type} with a parent station and level" do
+        attrs =
+          base_stop_attrs()
+          |> Map.merge(%{
+            location_type: unquote(location_type),
+            parent_station: "PARENT_STATION",
+            level_id: "L1"
+          })
+
+        assert Stop.changeset(%Stop{}, attrs).valid?
+      end
+    end
+
+    test "import_changeset/2 accepts a station with a parent station" do
+      attrs =
+        base_stop_attrs()
+        |> Map.merge(%{location_type: 1, parent_station: "PARENT_STATION", level_id: nil})
+
+      changeset = Stop.import_changeset(%Stop{}, attrs)
+
+      assert changeset.valid?
+    end
+  end
+
   describe "resolve_wheelchair_boarding/2" do
     test "returns accessible/direct for a child value of 1" do
       child = %Stop{wheelchair_boarding: 1}

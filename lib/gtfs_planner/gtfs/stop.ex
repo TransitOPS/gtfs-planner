@@ -69,7 +69,9 @@ defmodule GtfsPlanner.Gtfs.Stop do
     |> base_changeset(attrs)
     |> then(fn changeset ->
       if get_field(changeset, :parent_station) not in [nil, ""] do
-        validate_required(changeset, [:level_id])
+        changeset
+        |> validate_required([:level_id])
+        |> validate_station_has_no_parent()
       else
         changeset
       end
@@ -79,6 +81,19 @@ defmodule GtfsPlanner.Gtfs.Stop do
   @doc "Creates an import changeset for a stop with permissive parent/level validation."
   def import_changeset(stop, attrs) do
     base_changeset(stop, attrs)
+  end
+
+  # GTFS: a station (location_type=1) must not have a parent_station.
+  defp validate_station_has_no_parent(changeset) do
+    if get_field(changeset, :location_type) == 1 do
+      add_error(
+        changeset,
+        :location_type,
+        "A station can't be inside another station. Choose another type."
+      )
+    else
+      changeset
+    end
   end
 
   defp base_changeset(stop, attrs) do

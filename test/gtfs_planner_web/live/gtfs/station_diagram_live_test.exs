@@ -516,6 +516,140 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#child-stop-form input[name='stop_lon'][step='any']")
     end
 
+    test "new child stop type select does not offer Station", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "12", "y" => "24"})
+
+      assert has_element?(view, "select#location_type option[value='0']")
+      refute has_element?(view, "select#location_type option[value='1']")
+      refute has_element?(view, "select#location_type[required]")
+    end
+
+    test "rejects a crafted child stop submit with location type Station", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      render_hook(view, "switch_mode", %{"mode" => "add"})
+      render_hook(view, "canvas_click", %{"x" => "30", "y" => "40"})
+
+      render_submit(view, "save_child_stop", %{
+        "stop_id" => "inner_station",
+        "stop_name" => "Inner Station",
+        "location_type" => "1",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => "",
+        "x" => "30",
+        "y" => "40"
+      })
+
+      assert Gtfs.get_stop_by_stop_id(organization.id, gtfs_version.id, "inner_station") == nil
+      assert has_element?(view, "#child-stop-form")
+
+      assert has_element?(
+               view,
+               "#child-stop-form",
+               "A station can't be inside another station. Choose another type."
+             )
+    end
+
+    test "editing a stored station that has a parent asks for a location type", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      {:ok, legacy} =
+        Gtfs.import_create_stop(%{
+          stop_id: "LEGACY_INNER_STATION",
+          stop_name: "Legacy Inner Station",
+          location_type: 1,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 75.0},
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{legacy.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      assert has_element?(view, "select#location_type[required]")
+      assert has_element?(view, "select#location_type option[value='']", "— Choose a type")
+      refute has_element?(view, "select#location_type option[value='1']")
+      assert has_element?(view, "#location_type-help")
+    end
+
+    test "a stored station that has a parent can be saved after choosing another type", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: gtfs_version,
+      station: station,
+      level: level
+    } do
+      {:ok, legacy} =
+        Gtfs.import_create_stop(%{
+          stop_id: "LEGACY_INNER_STATION",
+          stop_name: "Legacy Inner Station",
+          location_type: 1,
+          parent_station: station.stop_id,
+          level_id: level.level_id,
+          diagram_coordinate: %{"x" => 50.0, "y" => 75.0},
+          organization_id: organization.id,
+          gtfs_version_id: gtfs_version.id
+        })
+
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{gtfs_version.id}/stops/#{station.stop_id}/diagram", on_error: :warn)
+
+      view
+      |> element("#child-stop-row-#{legacy.id} button[phx-click='edit_child_stop']")
+      |> render_click()
+
+      view
+      |> form("#child-stop-form", %{
+        "stop_name" => "Legacy Inner Station",
+        "location_type" => "3",
+        "level_id" => level.level_id,
+        "wheelchair_boarding" => ""
+      })
+      |> render_submit()
+
+      updated = Gtfs.get_stop!(legacy.id)
+      assert updated.location_type == 3
+      assert updated.parent_station == station.stop_id
+    end
+
     test "creating a child stop persists latitude and longitude", %{
       conn: conn,
       user: user,

@@ -4799,11 +4799,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :platform_options, :list, default: []
 
   defp child_stop_form(assigns) do
-    # Location type options for select (GTFS spec allows 0-4 for child stops)
-    # Note: Type 1 (Station) can be used for hierarchical stations in complex transit hubs
+    # Location type options for select. GTFS allows 0, 2, 3 and 4 for a point inside a
+    # station; type 1 (Station) must not have a parent station, so it is not offered.
     location_type_options = [
       {"0 - Stop/Platform", "0"},
-      {"1 - Station", "1"},
       {"2 - Entrance/Exit", "2"},
       {"3 - Generic Node", "3"},
       {"4 - Boarding Area", "4"}
@@ -4848,11 +4847,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         required
       />
 
+      <%!--
+        A stop already stored as type 1 has no matching option. The prompt and
+        `required` keep the browser from silently submitting the first option.
+      --%>
       <.input
         field={@child_stop_form[:location_type]}
         type="select"
         label="Location Type"
         options={@location_type_options}
+        prompt={if @location_type == 1, do: "— Choose a type"}
+        required={@location_type == 1}
+        help={
+          if @location_type == 1,
+            do: "This point is stored as a station, which can't be inside a station."
+        }
       />
 
       <%= if @stop_id_mode == :auto && @is_new_stop do %>
