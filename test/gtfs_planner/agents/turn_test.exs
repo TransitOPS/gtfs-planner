@@ -250,18 +250,18 @@ defmodule GtfsPlanner.Agents.TurnTest do
       refute_received {:notify, {:activity, _label}}
     end
 
-    test "ends with :step_limit after exactly eight model calls", %{scope: scope} do
-      Req.Test.expect(@owner, 8, fn conn ->
+    test "ends with :step_limit after exactly sixteen model calls", %{scope: scope} do
+      Req.Test.expect(@owner, 16, fn conn ->
         respond(conn, calls_reply([{"call_1", "list_calendars", "{}"}], 0.0001))
       end)
 
       assert {:error, :step_limit, progress} =
                Turn.run(Calendars, scope, [user_message("Keep looking.")], notify())
 
-      assert length(collect_requests()) == 8
-      assert progress.tools == List.duplicate("list_calendars", 8)
-      assert progress.activity == List.duplicate("Looked up calendars", 8)
-      assert_in_delta progress.cost, 0.0008, 1.0e-12
+      assert length(collect_requests()) == 16
+      assert progress.tools == List.duplicate("list_calendars", 16)
+      assert progress.activity == List.duplicate("Looked up calendars", 16)
+      assert_in_delta progress.cost, 0.0016, 1.0e-12
       assert progress.cost_complete
     end
 

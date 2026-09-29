@@ -332,11 +332,11 @@ defmodule GtfsPlanner.Agents.SessionTest do
       refute Enum.any?(state.messages, &(&1["role"] == "tool"))
     end
 
-    test "the eight-call loop bound also settles as incomplete", context do
+    test "the sixteen-call loop bound also settles as incomplete", context do
       session = start_session(context, EchoPack)
       attach(session)
 
-      expect_reply(calls_reply([{"call_1", "echo", ~s|{"text":"keep going"}|}], 0.0001), 8)
+      expect_reply(calls_reply([{"call_1", "echo", ~s|{"text":"keep going"}|}], 0.0001), 16)
 
       assert :ok = Session.send_message(session, "Keep looking.")
 
@@ -345,8 +345,8 @@ defmodule GtfsPlanner.Agents.SessionTest do
                      10_000
 
       assert entry.text == @incomplete_text
-      assert entry.activity == List.duplicate("Echoed text", 8)
-      assert length(collect_requests()) == 8
+      assert entry.activity == List.duplicate("Echoed text", 16)
+      assert length(collect_requests()) == 16
     end
 
     test "an idle conversation announces its end and stops normally", context do

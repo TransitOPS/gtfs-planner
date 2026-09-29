@@ -4,7 +4,7 @@ defmodule GtfsPlanner.Agents.Turn do
 
   The loop alternates model calls and tool calls: `Model.complete/2`, the pack's
   tool calls through `Dispatch.call/4`, one tool result message per call, and the
-  next model call, at most eight model calls per turn. The scope is re-authorized
+  next model call, at most sixteen model calls per turn. The scope is re-authorized
   before every provider request, so access withdrawn mid-turn sends no further
   request and runs no further tool. Only the pack the session chose is named here,
   and only through its behaviour: this module holds no domain code (INV-1).
@@ -35,7 +35,7 @@ defmodule GtfsPlanner.Agents.Turn do
 
   # Bounds are code constants, not configuration (AC-30, FH-9). Every model call
   # is one provider attempt because `Model` disables automatic POST retries.
-  @max_model_calls 8
+  @max_model_calls 16
   @unavailable_tool "unavailable_tool"
   @unavailable_tool_activity "Tried an unavailable tool"
 
