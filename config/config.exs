@@ -33,6 +33,18 @@ config :gtfs_planner,
   # `:ok` or `{:error, issues}`; each issue is stored as a run warning.
   otp_preflight_module: GtfsPlanner.Gtfs.Export.Preflight
 
+# Every database session runs in UTC. Ecto's :utc_datetime columns are
+# `timestamp without time zone`, so a value from CURRENT_TIMESTAMP, now() or a
+# column default is stored in the session time zone; without this, a database
+# that runs in another zone stores local time that the app reads back as UTC.
+#
+# The parameter is sent in the connection startup packet. A pooler that rejects
+# unknown startup parameters (PgBouncer in transaction mode, a managed pooled
+# endpoint) refuses the connection. If production does, remove this line and
+# either run `ALTER ROLE <app role> SET timezone = 'UTC'` once on the database
+# or use `after_connect: {Postgrex, :query!, ["SET TIME ZONE 'UTC'", []]}`.
+config :gtfs_planner, GtfsPlanner.Repo, parameters: [timezone: "UTC"]
+
 # Configure the endpoint
 config :gtfs_planner, GtfsPlannerWeb.Endpoint,
   url: [host: "localhost"],
