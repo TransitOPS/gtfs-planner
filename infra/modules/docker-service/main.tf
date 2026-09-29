@@ -115,7 +115,8 @@ resource "terraform_data" "service" {
 
   provisioner "remote-exec" {
     inline = [
-      # cheat by automatically migrating
+      "set -e",
+      # Apply schema migrations before starting the new application image.
       "docker compose -f ${local.service_file} run -e PHX_SERVER=false --rm ${var.project_name}-service-${var.name} eval 'GtfsPlanner.Release.migrate()'",
       "docker compose -f ${local.service_file} up -d --no-deps --quiet-pull --wait --wait-timeout 60"
     ]
