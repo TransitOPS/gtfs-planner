@@ -5,13 +5,14 @@ defmodule GtfsPlanner.Home do
   Every function takes the organization and GTFS version ids from the mount
   assigns, so no request parameter selects a tenant or a version, and every read
   is read-only. The module composes the domain reads the page needs — access
-  data, resume items, the station board and its statuses, station editors, and
-  the planner status and attention facts — into display-ready maps, which keeps
-  `DashboardLive` free of context aliases and gives the region failure seam one
-  module to substitute.
+  data, resume items, the station board and its statuses, station editors, the
+  planner status and attention facts, and the check-and-share facts — into
+  display-ready maps, which keeps `DashboardLive` free of context aliases and
+  gives the region failure seam one module to substitute.
   """
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.Import.Run
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Gtfs.RecentChanges.Describe
@@ -214,6 +215,90 @@ defmodule GtfsPlanner.Home do
       },
       :pathways
     )
+  end
+
+  @doc """
+  Returns the homepage's check-and-share facts for one version.
+
+  The check is the newest completed or failed MobilityData run, with its error
+  and warning counts and its start time; a reachability run is never reported
+  as the feed check. The export is the product's own export type — `:full` for
+  the GTFS Planner and `:pathways` for Pathways Studio. `expired?` covers both
+  a swept `:expired` run and a `:ready` run whose `artifact_expires_at` is at
+  or before now, so a run the maintenance sweep has not reached yet still
+  reads as expired without this read changing it. The change count counts
+  distinct operations (and distinct stations) logged after the export
+  finished; an export that has not finished has no change count.
+  """
+  @spec check_and_share(Ecto.UUID.t(), Ecto.UUID.t(), :planner | :pathways) :: %{
+          check:
+            nil
+            | %{
+                run_id: Ecto.UUID.t(),
+                errors: non_neg_integer(),
+                warnings: non_neg_integer(),
+                at: DateTime.t()
+              },
+          export:
+            nil
+            | %{
+                run_id: Ecto.UUID.t(),
+                type: :full | :pathways,
+                state: atom(),
+                expired?: boolean(),
+                finished_at: DateTime.t() | nil
+              },
+          since: nil | %{changes: non_neg_integer(), stations: non_neg_integer()}
+        }
+  def check_and_share(organization_id, gtfs_version_id, product) do
+    run = ExportRuns.latest_for_version(organization_id, gtfs_version_id, export_type(product))
+
+    %{
+      check: check_facts(Validations.latest_feed_check(organization_id, gtfs_version_id)),
+      export: export_facts(run),
+      since: since_facts(organization_id, gtfs_version_id, run)
+    }
+  end
+
+  defp export_type(:planner), do: :full
+  defp export_type(:pathways), do: :pathways
+
+  defp check_facts(nil), do: nil
+
+  defp check_facts(run) do
+    %{
+      run_id: run.id,
+      errors: run.errors_count,
+      warnings: run.warnings_count,
+      at: run.started_at
+    }
+  end
+
+  defp export_facts(nil), do: nil
+
+  defp export_facts(run) do
+    %{
+      run_id: run.id,
+      type: run.export_type,
+      state: run.state,
+      expired?: expired?(run),
+      finished_at: run.finished_at
+    }
+  end
+
+  defp expired?(%{state: :expired}), do: true
+
+  defp expired?(%{state: :ready, artifact_expires_at: expires_at}) when not is_nil(expires_at) do
+    DateTime.compare(expires_at, DateTime.utc_now()) != :gt
+  end
+
+  defp expired?(_run), do: false
+
+  defp since_facts(_organization_id, _gtfs_version_id, nil), do: nil
+  defp since_facts(_organization_id, _gtfs_version_id, %{finished_at: nil}), do: nil
+
+  defp since_facts(organization_id, gtfs_version_id, %{finished_at: finished_at}) do
+    Gtfs.count_changes_since(organization_id, gtfs_version_id, finished_at)
   end
 
   defp calendar_screen(organization_id, gtfs_version_id) do

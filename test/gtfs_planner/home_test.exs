@@ -216,6 +216,9 @@ defmodule GtfsPlanner.HomeTest do
 
     assert HomeSourceStub.pathways_attention(organization.id, gtfs_version.id) ==
              Home.pathways_attention(organization.id, gtfs_version.id)
+
+    assert HomeSourceStub.check_and_share(organization.id, gtfs_version.id, :planner) ==
+             Home.check_and_share(organization.id, gtfs_version.id, :planner)
   end
 
   test "the home source stub raises only for the functions named in :home_failing_functions" do

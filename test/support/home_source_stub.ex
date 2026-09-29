@@ -65,6 +65,12 @@ defmodule GtfsPlanner.HomeSourceStub do
     Home.pathways_attention(organization_id, gtfs_version_id)
   end
 
+  @doc "See `GtfsPlanner.Home.check_and_share/3`."
+  def check_and_share(organization_id, gtfs_version_id, product) do
+    fail_if(:check_and_share)
+    Home.check_and_share(organization_id, gtfs_version_id, product)
+  end
+
   defp fail_if(function_name) do
     if function_name in Application.get_env(:gtfs_planner, :home_failing_functions, []) do
       raise "GtfsPlanner.HomeSourceStub is configured to fail #{function_name}"
