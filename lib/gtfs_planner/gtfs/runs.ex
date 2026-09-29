@@ -22,7 +22,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
 
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.BlockingSetting
-  alias GtfsPlanner.Gtfs.Runs.{Day, Plan}
+  alias GtfsPlanner.Gtfs.Runs.{Day, Numbering, Plan}
   alias GtfsPlanner.Gtfs.TripRun
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
@@ -223,6 +223,226 @@ defmodule GtfsPlanner.Gtfs.Runs do
   # that offers "suggest" on one of them would offer something the cut cannot do.
   defp relief_ready?(context) do
     MapSet.size(context.relief_stop_ids) > 0 and context.max_piece_minutes != nil
+  end
+
+  @doc """
+  Writes manual run moves, checking every trip's expected run and returning an undo.
+
+  A move is `%{trip_id:, from:, to:}` where `to` is a run ID, `nil` to unassign,
+  or `:new` to create a run. Every `:new` in one call resolves to the **same**
+  new run: an operator dragging three trips onto "new run" means one run, not
+  three, and three calls to `next_run_id/1` would give three.
+
+  The check is optimistic and per trip (rule 14, INV-12). A move names what the
+  editor saw as that trip's current run, and the write is refused with
+  `:stale_moves` if any of them differ — so one trip somebody else moved since
+  the page loaded fails the whole call and writes nothing, rather than
+  overwriting a colleague. This is what makes undo safe: undo is the same call
+  with the moves reversed, so it is refused by the same rule.
+
+  The lock order is rule 13's, in one transaction: the version's input-write lock
+  (which also refuses an unpublished version), then the blocking lock, then the
+  reads, then the writes. Rows are scoped by organization, version and day type
+  key on every query, so a Weekday write cannot reach a Saturday row that happens
+  to carry the same run ID (AC-20).
+  """
+  @spec apply_moves(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), [map()]) ::
+          {:ok,
+           %{changed_trips: non_neg_integer(), new_run_id: String.t() | nil, undo: [Plan.move()]}}
+          | {:error,
+             :not_found
+             | :stale_moves
+             | {:invalid_trips, [Ecto.UUID.t()]}
+             | {:invalid_run_id, term()}}
+  def apply_moves(organization_id, gtfs_version_id, day_type_key, moves) do
+    Repo.transaction(fn ->
+      Versions.lock_for_input_write!(organization_id, gtfs_version_id)
+      :ok = Blocking.lock_blocking!(gtfs_version_id)
+
+      case Blocking.load_day(organization_id, gtfs_version_id, day_type_key) do
+        {:ok, day} -> write_moves(organization_id, gtfs_version_id, day, moves)
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  # A move is a plain map on the way in and on the way out, in the shape
+  # `Plan.move/1` uses, so an undo is a `Plan.move/1` without conversion.
+
+  defp write_moves(organization_id, gtfs_version_id, day, moves) do
+    key = day.day_type.key
+
+    sequence_ids =
+      MapSet.new(Enum.flat_map(day.blocks, &Enum.map(&1.trips, fn trip -> trip.id end)))
+
+    current = current_runs(organization_id, gtfs_version_id, key, moves)
+
+    with :ok <- check_trips(moves, sequence_ids),
+         :ok <- check_fresh(moves, current),
+         {:ok, resolved, new_run_id} <-
+           resolve_targets(moves, key, organization_id, gtfs_version_id) do
+      persist(organization_id, gtfs_version_id, key, resolved, current, new_run_id)
+    else
+      # The checks answer `{:error, reason}` so the `with` can read as a
+      # pipeline, but the rollback reason is the bare `reason`: rolling back
+      # `{:error, reason}` would hand the caller `{:error, {:error, reason}}`.
+      # The success path returns a bare map, because the transaction supplies
+      # the `{:ok, _}`.
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # One query for the named trips rather than one per move: a page can drag a
+  # whole block at once, and a query per trip would be a query per trip for no
+  # reason.
+  defp current_runs(organization_id, gtfs_version_id, key, moves) do
+    trip_ids = moves |> Enum.map(& &1.trip_id) |> Enum.uniq()
+
+    case trip_ids do
+      [] ->
+        %{}
+
+      ids ->
+        from(row in TripRun,
+          where:
+            row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id and
+              row.day_type_key == ^key and row.trip_id in ^ids,
+          select: {row.trip_id, row.run_id}
+        )
+        |> Repo.all()
+        |> Map.new()
+    end
+  end
+
+  # A move naming a trip that is not a sequence trip of this day type is refused
+  # before any current run is read, and every offending trip is returned rather
+  # than the first, so a page can mark all of them at once (AC-21).
+  defp check_trips(moves, sequence_ids) do
+    case moves
+         |> Enum.map(& &1.trip_id)
+         |> Enum.uniq()
+         |> Enum.reject(&MapSet.member?(sequence_ids, &1)) do
+      [] -> :ok
+      invalid -> {:error, {:invalid_trips, Enum.sort(invalid)}}
+    end
+  end
+
+  # Rule 14's per-trip check. `from` is what the editor saw, so `nil` is a real
+  # value here rather than "unset": a trip the editor believed was unassigned
+  # must still be unassigned.
+  defp check_fresh(moves, current) do
+    stale? =
+      Enum.any?(moves, &(Map.get(current, &1.trip_id) != &1.from))
+
+    if stale?, do: {:error, :stale_moves}, else: :ok
+  end
+
+  # One `:new` for the whole call, numbered above every run the day type already
+  # uses. Every trip that asked for a new run gets the same one: an operator
+  # dragging three trips onto "new run" means one run, not three.
+  defp resolve_targets(moves, key, organization_id, gtfs_version_id) do
+    new_run_id =
+      if Enum.any?(moves, &(&1.to == :new)) do
+        organization_id
+        |> run_ids_for(gtfs_version_id, key)
+        |> Numbering.next_run_id()
+      end
+
+    resolved = Enum.map(moves, &%{&1 | to: if(&1.to == :new, do: new_run_id, else: &1.to)})
+
+    case validate_run_ids(resolved) do
+      :ok -> {:ok, resolved, new_run_id}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp validate_run_ids(moves) do
+    case Enum.find(moves, &(not (is_nil(&1.to) or Numbering.valid_run_id?(&1.to)))) do
+      nil -> :ok
+      %{to: bad} -> {:error, {:invalid_run_id, bad}}
+    end
+  end
+
+  defp run_ids_for(organization_id, gtfs_version_id, key) do
+    Repo.all(
+      from(row in TripRun,
+        where:
+          row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id and
+            row.day_type_key == ^key,
+        select: row.run_id,
+        distinct: true
+      )
+    )
+  end
+
+  # Every move is written before any is, so a refusal above has written nothing.
+  # An unassignment is a scoped delete rather than a row with a null run ID: the
+  # table has a `run_id_format` check that `NULL` would not satisfy, and a row
+  # with no run is not a row that says a trip is in no run.
+  defp persist(organization_id, gtfs_version_id, key, moves, current, new_run_id) do
+    now = DateTime.utc_now()
+
+    assigns = Enum.filter(moves, & &1.to)
+    unassigns = Enum.reject(moves, & &1.to)
+
+    if assigns != [] do
+      Repo.insert_all(
+        TripRun,
+        Enum.map(assigns, fn move ->
+          %{
+            organization_id: organization_id,
+            gtfs_version_id: gtfs_version_id,
+            day_type_key: key,
+            trip_id: move.trip_id,
+            run_id: move.to,
+            inserted_at: now,
+            updated_at: now
+          }
+        end),
+        # A column list, not an index name. PostgreSQL's `ON CONFLICT (...)` takes
+        # column names or expressions and resolves the unique index itself; the
+        # truncated index name that `TripRun.changeset/2` needs for
+        # `unique_constraint` has no use here, because this path does not have to
+        # match a violation to a declaration.
+        on_conflict: {:replace, [:run_id, :updated_at]},
+        conflict_target: [:organization_id, :gtfs_version_id, :day_type_key, :trip_id]
+      )
+    end
+
+    if unassigns != [] do
+      from(row in TripRun,
+        where:
+          row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id and
+            row.day_type_key == ^key and row.trip_id in ^Enum.map(unassigns, & &1.trip_id)
+      )
+      |> Repo.delete_all()
+    end
+
+    changed = Enum.count(moves, &(Map.get(current, &1.trip_id) != &1.to))
+
+    # A bare map, not `{:ok, map}`: the transaction function's return value is
+    # what the transaction wraps.
+    %{
+      changed_trips: changed,
+      new_run_id: new_run_id,
+      undo: undo_for(moves, new_run_id)
+    }
+  end
+
+  # The undo is the same call with the moves reversed, which is what lets it be
+  # refused by `check_fresh/2` like any other write. A `:new` target is replaced
+  # by the ID it resolved to, so undoing a create removes the run's rows rather
+  # than trying to remove a run named `:new`.
+  defp undo_for(moves, new_run_id) do
+    moves
+    |> Enum.map(fn move ->
+      %{
+        trip_id: move.trip_id,
+        from: move.to,
+        to: if(move.from == :new, do: new_run_id, else: move.from)
+      }
+    end)
+    |> Enum.sort_by(& &1.trip_id)
   end
 
   @doc """
