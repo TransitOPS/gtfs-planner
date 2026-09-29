@@ -4855,8 +4855,36 @@ defmodule GtfsPlanner.Gtfs do
         {"levels.txt", count_levels(organization_id, gtfs_version_id)},
         {"feed_info.txt", count_feed_info(organization_id, gtfs_version_id)},
         {"attributions.txt", count_attributions(organization_id, gtfs_version_id)}
-      ]
+      ] ++
+        Enum.map(
+          [
+            {"fare_products.txt", FareProduct},
+            {"fare_media.txt", FareMedia},
+            {"fare_leg_rules.txt", FareLegRule},
+            {"fare_leg_join_rules.txt", FareLegJoinRule},
+            {"fare_transfer_rules.txt", FareTransferRule},
+            {"rider_categories.txt", RiderCategory},
+            {"timeframes.txt", Timeframe},
+            {"areas.txt", Area},
+            {"stop_areas.txt", StopArea},
+            {"networks.txt", Network},
+            {"route_networks.txt", RouteNetwork},
+            {"locations.txt", Location},
+            {"booking_rules.txt", BookingRule},
+            {"translations.txt", Translation}
+          ],
+          fn {filename, schema} ->
+            {filename, count_version_rows(schema, organization_id, gtfs_version_id)}
+          end
+        )
     end
+  end
+
+  defp count_version_rows(schema, organization_id, gtfs_version_id) do
+    from(r in schema,
+      where: r.organization_id == ^organization_id and r.gtfs_version_id == ^gtfs_version_id
+    )
+    |> Repo.aggregate(:count)
   end
 
   # Private helper functions
