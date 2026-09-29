@@ -428,6 +428,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     >
       <.icon name="hero-arrow-down-tray" class="size-4" /> Download file
     </.button>
+    <.button
+      :if={@run.flex_artifact_key}
+      id="export-flex-download-link"
+      href={~p"/gtfs/#{@version.id}/export-runs/#{@run.id}/download?file=flex"}
+      variant="secondary"
+      class="min-h-11"
+    >
+      <.icon name="hero-arrow-down-tray" class="size-4" /> Download flex file
+    </.button>
     """
   end
 
@@ -855,6 +864,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   attr :error, :atom, default: nil
   attr :validation_run_id, :any, default: nil
   attr :version, :map, required: true
+  attr :include_flex, :boolean, default: false
 
   def check_panel(assigns) do
     ~H"""
@@ -938,14 +948,28 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
             <p :if={is_nil(@error)} class="text-sm leading-relaxed text-default">
               Run a check before you send the file to trip planners, so you hear about problems first.
             </p>
-            <.button
-              id="run-validation"
-              variant="secondary"
-              class={["min-h-11", is_nil(@error) && "mt-4"]}
-              phx-click={JS.push("run_validation") |> JS.focus(to: "#export-check-body")}
-            >
-              {if @error, do: "Try again", else: "Check feed"}
-            </.button>
+            <div class={[
+              "flex flex-wrap items-center gap-2 max-sm:w-full max-sm:[&>*]:flex-1",
+              is_nil(@error) && "mt-4"
+            ]}>
+              <.button
+                id="run-validation"
+                variant="secondary"
+                class="min-h-11"
+                phx-click={JS.push("run_validation") |> JS.focus(to: "#export-check-body")}
+              >
+                {if @error, do: "Try again", else: "Check feed"}
+              </.button>
+              <.button
+                :if={@include_flex}
+                id="validate-flex-button"
+                variant="secondary"
+                class="min-h-11"
+                phx-click={JS.push("run_flex_validation") |> JS.focus(to: "#export-check-body")}
+              >
+                Validate flex file
+              </.button>
+            </div>
         <% end %>
       </div>
     </.result_section>

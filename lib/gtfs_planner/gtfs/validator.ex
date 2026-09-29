@@ -8,6 +8,10 @@ defmodule GtfsPlanner.Gtfs.Validator do
   3. Parsing and structuring the validation results
   4. Broadcasting progress updates via PubSub
 
+  The validation run's `run_type` selects the exported feed: a
+  `"mobility_data_flex"` run validates the flex zip, every other run the full
+  export.
+
   The validation process runs asynchronously and communicates progress
   through Phoenix.PubSub, allowing LiveViews to display real-time updates.
   """
@@ -55,7 +59,12 @@ defmodule GtfsPlanner.Gtfs.Validator do
       broadcast_progress(run.id, :exporting, 10, "Generating GTFS export...")
 
       result =
-        with {:ok, zip_path, temp_dir} <- export_to_temp_file(organization_id, gtfs_version_id) do
+        with {:ok, zip_path, temp_dir} <-
+               export_to_temp_file(
+                 organization_id,
+                 gtfs_version_id,
+                 export_profile(run.run_type)
+               ) do
           # Store temp_dir for cleanup
           Process.put(temp_dir_ref, temp_dir)
 
@@ -165,12 +174,21 @@ defmodule GtfsPlanner.Gtfs.Validator do
   end
 
   @doc false
-  defp export_to_temp_file(organization_id, gtfs_version_id) do
+  defp export_profile("mobility_data_flex"), do: :flex
+  defp export_profile(_run_type), do: :full
+
+  @doc false
+  defp export_module,
+    do: Application.get_env(:gtfs_planner, :gtfs_export_module, Export)
+
+  @doc false
+  defp export_to_temp_file(organization_id, gtfs_version_id, export_profile) do
     unique_id = :erlang.unique_integer([:positive])
     temp_dir = System.tmp_dir!() |> Path.join("gtfs_validation_#{unique_id}")
 
     with :ok <- File.mkdir_p(temp_dir),
-         {:ok, zip_binary} <- Export.export_to_zip(organization_id, gtfs_version_id, :full, []) do
+         {:ok, zip_binary} <-
+           export_module().export_to_zip(organization_id, gtfs_version_id, export_profile, []) do
       zip_path = Path.join(temp_dir, "gtfs.zip")
 
       case File.write(zip_path, zip_binary) do
