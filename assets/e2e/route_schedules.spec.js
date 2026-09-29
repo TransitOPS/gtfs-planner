@@ -492,13 +492,30 @@ test.describe("Schedules editing journeys", () => {
     // Export the version through the real export workspace and download it.
     await page.goto(`/gtfs/${versionId}/export`);
     await page.locator("#gtfs-export-form").waitFor({ state: "visible" });
+    await page.waitForSelector("[data-phx-main].phx-connected");
     await page.locator("#export-type-full").check();
+
+    // An export from an earlier journey can already be ready on this version,
+    // and its link stays on the page until the new run replaces it. Only a link
+    // that differs from the one shown before the click belongs to this export.
+    const downloadHref = async () =>
+      (await page.locator("#export-download-link").count())
+        ? page
+            .locator("#export-download-link")
+            .getAttribute("href", { timeout: 1_000 })
+            .catch(() => null)
+        : null;
+    const earlierHref = await downloadHref();
     await page.locator("#start-export").click();
 
     await expect
-      .poll(() => page.locator("#export-download-link").getAttribute("href"), {
-        timeout: 60_000,
-      })
+      .poll(
+        async () => {
+          const href = await downloadHref();
+          return href && href !== earlierHref ? href : null;
+        },
+        { timeout: 60_000 },
+      )
       .toContain("/download");
 
     const downloadPromise = page.waitForEvent("download");
