@@ -900,7 +900,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
 
   defp contrast_box_class(true),
     do:
-      "flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 rounded-control border border-warning-line bg-warning-bg px-3 py-2 text-[13px] text-warning-fg"
+      "flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 rounded-control border border-warning bg-warning/10 px-3 py-2 text-[13px] text-warning"
 
   defp contrast_box_class(_readable),
     do:
@@ -943,4 +943,119 @@ defmodule GtfsPlannerWeb.Gtfs.RouteFormComponents do
   defp color_name("000000"), do: "black"
   defp color_name("FFFFFF"), do: "white"
   defp color_name(hex), do: "##{hex}"
+
+  @doc """
+  Renders the merge comparison another editor's save produced (R4, AC-8).
+
+  `merge` is the conflict payload `Gtfs.update_route/5` returned: the fresh
+  current source and the field-level comparison. Disjoint changes get one
+  deliberate "Save both changes"; overlapping fields get an explicit
+  keep-mine/use-saved radio group each (the coupled color pair is one group
+  named for `route_color`, which the LiveView copies to its pair member).
+  The panel is rendered inside the details form, so its submit carries the
+  operator's current draft plus the merge binding; "Discard my changes" is a
+  plain click that reloads the latest saved values.
+  """
+  attr :merge, :map, required: true
+  attr :saved_by, :string, required: true
+  attr :intro, :string, required: true
+  attr :rows, :list, required: true
+  attr :groups, :list, required: true
+
+  def merge_conflict(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :choices_required?,
+        assigns.merge.comparison.status == :choices_required
+      )
+
+    ~H"""
+    <div
+      id="route-conflict"
+      tabindex="-1"
+      class="rounded-control border border-warning bg-warning/10 px-4 py-3 outline-none"
+    >
+      <div class="flex items-start gap-3">
+        <.icon name="hero-exclamation-triangle" class="mt-0.5 size-5 shrink-0 text-warning" />
+        <div class="min-w-0 flex-1">
+          <p class="text-sm font-bold text-strong">{@saved_by}</p>
+          <p class="mt-0.5 text-sm text-default">{@intro}</p>
+
+          <table
+            id="route-conflict-table"
+            class="mt-3 w-full border-collapse overflow-hidden rounded-control bg-white text-left text-[13px]"
+          >
+            <thead>
+              <tr class="border-b border-subtle bg-canvas">
+                <th scope="col" class="px-3 py-2 font-[650]">Field</th>
+                <th scope="col" class="px-3 py-2 font-[650]">Now saved</th>
+                <th scope="col" class="px-3 py-2 font-[650]">Your draft</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                :for={row <- @rows}
+                class="border-b border-subtle last:border-0"
+              >
+                <th scope="row" class="px-3 py-2 text-left font-[650]">{row.label}</th>
+                <td class="px-3 py-2">{row.theirs}</td>
+                <td class="px-3 py-2">{row.mine}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <fieldset :for={group <- @groups} class="mt-3 grid gap-1.5">
+            <legend class="text-[13px] font-[650] text-default">{group.label}</legend>
+            <div class="flex flex-wrap gap-3">
+              <label class={choice_class()}>
+                <input
+                  type="radio"
+                  required
+                  class="sr-only"
+                  name={"merge[fields][#{group.field}]"}
+                  value="mine"
+                /> Keep mine
+              </label>
+              <label class={choice_class()}>
+                <input
+                  type="radio"
+                  required
+                  class="sr-only"
+                  name={"merge[fields][#{group.field}]"}
+                  value="theirs"
+                /> Use saved
+              </label>
+            </div>
+          </fieldset>
+
+          <div class="mt-3 flex flex-wrap gap-3">
+            <.button
+              type="submit"
+              name="merge_confirm"
+              value="true"
+              id="route-conflict-save"
+              class="min-h-11 min-w-[150px]"
+            >
+              {if @choices_required?, do: "Save chosen changes", else: "Save both changes"}
+            </.button>
+            <.button
+              type="button"
+              variant="secondary"
+              id="route-conflict-discard"
+              phx-click="discard_merge"
+              class="min-h-11"
+            >
+              Discard my changes
+            </.button>
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp choice_class do
+    "relative inline-flex min-h-11 cursor-pointer items-center rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas has-[:checked]:border-2 has-[:checked]:border-action has-[:checked]:bg-selection has-[:checked]:px-[15px] has-[:checked]:text-action has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus"
+  end
 end
