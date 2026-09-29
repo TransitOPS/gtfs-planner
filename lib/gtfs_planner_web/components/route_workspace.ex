@@ -6,7 +6,9 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
   Patterns and Schedules.
 
   A route page renders `route_header/1` at the top of its own content, so the
-  route reads the same wherever the person is. The header is built from utilities
+  route reads the same wherever the person is. A page that loads its route after
+  the first paint passes `route={nil}`: the header then shows only the way back,
+  or a skeleton while `loading`. The header is built from utilities
   only and needs no page scope, so a page inside the design-system scope
   (`ds-page`) and one outside it can both call it.
 
@@ -41,7 +43,9 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
   The name is the route's long name. When the feed gives none it reads "Route 12"
   from the short name or the route ID, so the heading is never empty. The badge
   already carries the short name, so the heading does not repeat it. An
-  `Inactive` chip shows only while the route is inactive.
+  `Inactive` chip shows only while the route is inactive. A page that knows how
+  many patterns the route has passes `pattern_count` to show it on the Patterns
+  tab.
 
   ## Examples
 
@@ -51,9 +55,11 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
         active_tab={:details}
       />
   """
-  attr :route, :map, required: true, doc: "the route record"
+  attr :route, :map, default: nil, doc: "the route record; nil before it has loaded"
   attr :gtfs_version_id, :any, required: true, doc: "the current GTFS version ID"
   attr :active_tab, :atom, values: [:details, :patterns, :schedules], default: :details
+  attr :pattern_count, :integer, default: nil, doc: "shown on the Patterns tab when known"
+  attr :loading, :boolean, default: false, doc: "draws a skeleton while the route is nil"
 
   def route_header(assigns) do
     ~H"""
@@ -62,7 +68,20 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
         Routes
       </.back_link>
 
-      <header class="mt-1">
+      <div :if={@route == nil and @loading} id="route-workspace-loading" aria-hidden="true">
+        <div class="mt-1 flex items-center gap-4">
+          <span class="h-11 w-[52px] rounded-badge bg-canvas"></span>
+          <span class="h-9 w-64 rounded-badge bg-canvas"></span>
+        </div>
+        <span class="mt-3 block h-4 w-56 rounded-badge bg-canvas"></span>
+        <div class="mt-5 flex min-h-11 items-center gap-8 border-b border-subtle">
+          <span class="h-4 w-14 rounded-badge bg-canvas"></span>
+          <span class="h-4 w-20 rounded-badge bg-canvas"></span>
+          <span class="h-4 w-20 rounded-badge bg-canvas"></span>
+        </div>
+      </div>
+
+      <header :if={@route} class="mt-1">
         <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
           <RouteIdentity.route_badge route={@route} size="large" />
           <h1
@@ -90,7 +109,12 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
         </p>
       </header>
 
-      <nav id="route-tabs" aria-label="Route navigation" class="mt-5 border-b border-subtle">
+      <nav
+        :if={@route}
+        id="route-tabs"
+        aria-label="Route navigation"
+        class="mt-5 border-b border-subtle"
+      >
         <div class="flex flex-wrap items-end gap-1">
           <.link
             id="route-tab-details"
@@ -103,10 +127,17 @@ defmodule GtfsPlannerWeb.RouteWorkspace do
           <.link
             id="route-tab-patterns"
             navigate={~p"/gtfs/#{@gtfs_version_id}/routes/#{@route.route_id}/patterns"}
-            class={tab_class(@active_tab == :patterns)}
+            class={[tab_class(@active_tab == :patterns), @pattern_count && "gap-2"]}
             aria-current={@active_tab == :patterns && "page"}
           >
             Patterns
+            <span
+              :if={@pattern_count}
+              id="route-tab-patterns-count"
+              class="inline-flex min-w-5 items-center justify-center rounded-badge bg-canvas px-1.5 text-[13px] font-bold tabular-nums text-default"
+            >
+              {@pattern_count}
+            </span>
           </.link>
           <.link
             id="route-tab-schedules"

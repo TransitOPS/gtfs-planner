@@ -103,19 +103,27 @@ for (const viewport of VIEWPORTS) {
 
       const nav = page.locator("nav[aria-label='Route navigation']");
       await expect(nav.locator(`a[href='${base}']`)).toHaveText("Details");
-      await expect(nav.locator(`a[href='${base}/patterns']`)).toHaveText("Patterns");
+      await expect(nav.locator(`a[href='${base}/patterns']`)).toContainText("Patterns");
       await expect(nav.locator(`a[href='${base}/schedules']`)).toHaveAttribute(
         "aria-current",
         "page",
       );
 
       await expect(page.locator("#schedules-view-counts")).toContainText(CALENDAR_ROUTE);
+      await expect(page.locator("#vehicles-needed-count")).toHaveText("3");
       await expect(page.locator("#vehicles-needed-line")).toContainText(
-        `At least 3 vehicles for route SR alone`,
+        "at least, for route SR alone",
       );
       await expect(page.locator("#vehicles-needed-context")).toContainText("most at 09:20");
+
+      // Trips per hour starts closed behind its disclosure.
+      await expect(page.locator("#trips-per-hour")).toBeHidden();
+      await page.locator("#hours-toggle").click();
+      await expect(page.locator("#hours-toggle")).toHaveAttribute("aria-expanded", "true");
       await expect(page.locator("#trips-per-hour")).toBeVisible();
-      await expect(page.locator("#schedules-stops-legend")).toContainText("Timepoints");
+      await expect(page.locator("#section-BROWSER-SCHED-P1-stops-legend")).toContainText(
+        "Timepoints",
+      );
       await expect(page.locator("#schedules-unlinked")).toContainText(
         "2 trips aren't linked to a pattern",
       );
@@ -162,10 +170,13 @@ for (const viewport of VIEWPORTS) {
         ),
       );
 
-      await expect(page.locator("#schedules-stops-legend")).toContainText("All stops shown");
+      await expect(page.locator("#section-BROWSER-SCHED-P1-stops-legend")).toContainText(
+        "All stops shown",
+      );
       await expect(page.locator("#section-BROWSER-SCHED-P1-omitted")).toHaveCount(0);
-      // 5 stop columns + selection, Departure, Timing, Trip no., Block and Actions.
-      await expect(page.locator("#section-BROWSER-SCHED-P1-table thead th")).toHaveCount(11);
+      // 4 stop columns after the pinned first stop + selection, Departs, Timing, Block,
+      // Trip and Actions.
+      await expect(page.locator("#section-BROWSER-SCHED-P1-table thead th")).toHaveCount(10);
 
       await page.goBack();
       await expect(page.locator("#section-BROWSER-SCHED-P1-omitted")).toContainText(
@@ -184,8 +195,9 @@ for (const viewport of VIEWPORTS) {
         page.locator("#section-BROWSER-SCHED-PW-table tbody tr"),
       ).toHaveCount(6);
 
-      // 72 stop columns + selection, Start, Timing, Trip no., Block and Actions.
-      await expect(page.locator("#section-BROWSER-SCHED-PW-table thead th")).toHaveCount(78);
+      // 71 stop columns after the pinned first stop + selection, Departs, Timing, Block,
+      // Trip and Actions.
+      await expect(page.locator("#section-BROWSER-SCHED-PW-table thead th")).toHaveCount(77);
       expect(await bodyFitsViewport(page)).toBe(true);
 
       const container = page.locator("#section-BROWSER-SCHED-PW-table-container");
@@ -219,14 +231,14 @@ for (const viewport of VIEWPORTS) {
 
       await page.goto(schedulesPath(versionId, EMPTY_ROUTE));
       await expect(page.locator("#schedules-no-patterns")).toContainText(
-        "This route has no patterns yet",
+        "Route SE has no patterns yet",
       );
       await expect(page.locator("#planning-summary")).toHaveCount(0);
       await capture(page, `step-006-${viewport.label}-no-patterns`);
 
       await page.goto(`${schedulesPath(versionId, READY_ROUTE)}?direction=1`);
       await expect(page.locator("#schedules-no-trips")).toContainText(
-        "No trips on Every day service going Direction 1",
+        "No Every day service trips going Direction 1",
       );
       await capture(page, `step-006-${viewport.label}-no-trips`);
 
@@ -252,8 +264,9 @@ for (const viewport of VIEWPORTS) {
 
       await page.goto(`${schedulesPath(versionId, MUTATE_ROUTE)}?stops=all`);
 
-      // 62 stop columns + selection, Start, Timing, Trip no., Block and Actions.
-      await expect(page.locator("#section-BROWSER-SCHED-PM1-table thead th")).toHaveCount(68);
+      // 61 stop columns after the pinned first stop + selection, Departs, Timing, Block,
+      // Trip and Actions.
+      await expect(page.locator("#section-BROWSER-SCHED-PM1-table thead th")).toHaveCount(67);
       await expect(page.locator("#section-BROWSER-SCHED-PM1-table tbody tr")).toHaveCount(5);
       expect(await bodyFitsViewport(page)).toBe(true);
 
@@ -300,7 +313,7 @@ test.describe("Schedules editing journeys", () => {
 
     // The after-midnight departure keeps its visible day marker.
     await expect(page.locator("#trip-SM_LATE-start")).toHaveText("25:10");
-    await expect(page.locator("#trip-SM_LATE-marker")).toHaveText("+1");
+    await expect(page.locator("#trip-SM_LATE-marker")).toHaveText("+1 day");
 
     // Add a series with the keyboard only.
     await page.locator("#schedules-add-trips").focus();
@@ -391,7 +404,7 @@ test.describe("Schedules editing journeys", () => {
       "Delete 2 trips from Every day service?",
     );
     await expect(page.locator("#delete-dialog-body")).toContainText(
-      "This removes the trips and their stop times from this published version. You cannot undo this.",
+      "This removes the trips and their stop times from the published Browser E2E Version. You can't undo this.",
     );
 
     // Cancelling returns focus to the toolbar control and deletes nothing.

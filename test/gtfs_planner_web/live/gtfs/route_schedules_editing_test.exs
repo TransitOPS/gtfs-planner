@@ -676,10 +676,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       })
 
       assert ScheduleComponents.error_message(:frequency_trip) ==
-               "Frequency service can't be edited here. Its calendar and details can still change."
+               "Frequency service can't be edited here. Its service days and details can still change."
 
       assert renders(view, "#trip-drawer-error") =~
-               "Frequency service can&#39;t be edited here. Its calendar and details can still change."
+               "Frequency service can&#39;t be edited here. Its service days and details can still change."
 
       assert count_trips(scope) == before
     end
@@ -711,14 +711,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
 
       notice = renders(view, "#schedules-block-notice")
 
-      assert notice =~ "Calendar saved"
-      assert notice =~ "block removed"
+      assert notice =~ "Trip saved · removed from its block"
 
       assert notice =~
-               "Removed from block E-1: on Saturday, block E-1 is another vehicle&#39;s work. " <>
-                 "Assign it on Blocks."
+               "It was on block E-1. On Saturday, block E-1 is another vehicle&#39;s work, " <>
+                 "so the trip now has no block. Assign it on Blocks."
 
-      assert renders(view, "#schedules-block-notice-link") =~ "Change on Blocks"
+      assert renders(view, "#schedules-block-notice-link") =~ "Open Blocks"
 
       assert element_href(view, "#schedules-block-notice-link") ==
                blocks_path(scope, @saturday, "EDT_T0600")
@@ -894,11 +893,37 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       html = render_click(view, "delete_selected")
 
       assert html =~ "Delete 3 trips from Weekday?"
-      assert html =~ "This removes the trips and their stop times from this published version."
-
-      # The template line-wraps between "cannot" and "undo this.".
-      assert html =~ ~r/You cannot\s+undo this\./
+      assert html =~ ~r/This removes the trips and their stop times from the published\s+\S+/
+      assert html =~ "You can&#39;t undo this."
       assert has_element?(view, "#delete-dialog[data-open='true']")
+      assert renders(view, "#delete-dialog-detail") =~ "Departures 06:00, 07:00, 07:30"
+    end
+
+    test "one selected trip reads in the singular", context do
+      scope = editing_scope(context)
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0600").id})
+
+      assert renders(view, "#schedules-bulk-toolbar") =~ "1 trip selected"
+      assert renders(view, "#schedules-delete-selected") =~ "Delete 1 trip"
+    end
+
+    test "the confirmation lists the first six departures and counts the rest", context do
+      scope = editing_scope(context)
+      {:ok, view, _html} = live(context.conn, schedules_path(scope))
+
+      render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0600").id})
+      render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0700").id})
+      render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_SHORT_1").id})
+      render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0800").id})
+      render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0900").id})
+      render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T1000").id})
+      render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T1100").id})
+      render_click(view, "delete_selected")
+
+      assert renders(view, "#delete-dialog-detail") =~
+               "Departures 06:00, 07:00, 07:30, 08:00, 09:00, 10:00 and 1 more"
     end
 
     test "a filter change clears the selection and a replayed delete deletes nothing", context do
@@ -926,7 +951,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       scope = editing_scope(context)
       {:ok, view, _html} = live(context.conn, schedules_path(scope))
 
-      assert renders(view, "#vehicles-needed-line") =~ "At least 6 vehicles"
+      assert renders(view, "#vehicles-needed-count") =~ "6"
 
       render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T1100").id})
       render_click(view, "delete_selected")
@@ -992,10 +1017,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       assert renders(view, "#delete-dialog-transfers") =~
                "It also removes 2 transfer records that name these trips."
 
-      assert html =~ "This removes the trips and their stop times from this published version."
+      assert html =~ ~r/This removes the trips and their stop times from the published\s+\S+/
 
       assert html =~
-               ~r/id="delete-dialog-transfers">It also removes 2 transfer records that name these trips\.<\/span>\s+You cannot\s+undo this\./
+               ~r/id="delete-dialog-transfers">It also removes 2 transfer records that name these trips\.<\/span>\s+You can&#39;t undo this\./
     end
 
     test "the frequency confirmation states the transfer consequence too", context do
@@ -1014,7 +1039,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       assert html =~ ~r/including\s+frequency service\./
 
       assert html =~
-               ~r/id="delete-dialog-transfers">It also removes 1 transfer record that names this trip\.<\/span>\s+You cannot\s+undo this\./
+               ~r/id="delete-dialog-transfers">It also removes 1 transfer record that names this trip\.<\/span>\s+You can&#39;t undo this\./
     end
 
     test "the bulk confirmation keeps one transfer singular across several trips", context do
@@ -1177,6 +1202,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
 
       # The fixed create validation copy from the UI contracts.
       assert ScheduleComponents.error_message(:too_many_trips) =~ "Add 200 or fewer at a time"
+
+      # A delete keeps a reason's own sentence, and says nothing was removed for
+      # a reason with none, instead of talking about entries a delete never has.
+      assert ScheduleComponents.delete_error_message(:stale) ==
+               ScheduleComponents.error_message(:stale)
+
+      assert ScheduleComponents.delete_error_message(:something_new) ==
+               "The trips couldn't be deleted. Nothing was removed. Try again."
     end
 
     test "the disconnected state disables Add and Save until reconnected", context do
