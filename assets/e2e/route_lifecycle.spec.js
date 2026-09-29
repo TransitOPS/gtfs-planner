@@ -669,3 +669,101 @@ test.describe("Create route drawer", () => {
     await expect(page.locator("#routes a").first()).toContainText(savedId);
   });
 });
+
+/**
+ * Route › Details save and merge outcomes (spec 16, step 24).
+ *
+ * `RouteDetailLive#save_route_details` submits the draft through the audited
+ * `Gtfs.update_route/5` command carrying the trusted base source. A clean
+ * save persists and reloads saved values; another session's committed save
+ * turns a stale submission into the merge comparison (`#route-conflict`):
+ * disjoint changes get one deliberate "Save both changes", overlapping
+ * fields get keep-mine/use-saved radios, and discarding loads the latest
+ * saved route.
+ *
+ * Stable ids this step publishes:
+ *   #route-details-form-message / #route-details-saved
+ *   #route-details-save-error / #route-conflict / #route-conflict-table
+ *   #route-conflict-save / #route-conflict-discard
+ */
+test.describe("Route details save and merge", () => {
+  test("a clean save persists the values and reloads them as saved truth", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const version = await versionId(page);
+    await page.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+
+    const long = page.locator("#route-details-long");
+    const saved = (await long.inputValue()) || "Route";
+    const renamed = `${saved} extended`;
+
+    await long.fill(renamed);
+    await expect(page.locator("#route-details-save-bar")).toBeVisible();
+    await page.locator("#route-save").click();
+
+    await expect(page.locator("#route-details-saved")).toContainText("saved");
+    await expect(page.locator("#route-details-save-bar")).toBeHidden();
+    await expect(long).toHaveValue(renamed);
+
+    // Reload proves persistence through the ordinary read, not just echo.
+    await page.reload();
+    await expect(page.locator("#route-details-long")).toHaveValue(renamed);
+
+    // Leave the seeded route as it was found.
+    await long.fill(saved);
+    await page.locator("#route-save").click();
+    await expect(page.locator("#route-details-saved")).toContainText("saved");
+  });
+
+  test("another session's disjoint save offers Save both and merges both sets", async ({
+    browser,
+  }) => {
+    const sessionA = await browser.newContext();
+    const pageA = await sessionA.newPage();
+    await logIn(pageA);
+    const version = await versionId(pageA);
+    await pageA.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+
+    // Session B is an ordinary second session of the same editor: it saves a
+    // disjoint field through the same Details surface while A is editing.
+    const sessionB = await browser.newContext();
+    const pageB = await sessionB.newPage();
+    await logIn(pageB);
+    await pageB.goto(`/gtfs/${version}/routes/${DETAILS_ROUTE}`);
+    const descB = pageB.locator("#route-details-desc");
+    const theirDesc = `Saved by session B ${Date.now()}`;
+    await descB.fill(theirDesc);
+    await pageB.locator("#route-save").click();
+    await expect(pageB.locator("#route-details-saved")).toContainText("saved");
+    await sessionB.close();
+
+    // A's stale submission is compared, not written: the conflict surface
+    // names the merge and offers one deliberate Save both.
+    const longA = pageA.locator("#route-details-long");
+    const originalName = await longA.inputValue();
+    await longA.fill("Session A rename");
+    await pageA.locator("#route-save").click();
+
+    const conflict = pageA.locator("#route-conflict");
+    await expect(conflict).toBeVisible();
+    await expect(conflict).toContainText(
+      "saved this route while you were editing",
+    );
+    await expect(pageA.locator("#route-conflict-table")).toContainText(
+      theirDesc,
+    );
+    await expect(conflict).toContainText("Session A rename");
+
+    await pageA.locator("#route-conflict-save").click();
+    await expect(pageA.locator("#route-details-saved")).toContainText("saved");
+    await expect(longA).toHaveValue("Session A rename");
+    await expect(pageA.locator("#route-details-desc")).toHaveValue(theirDesc);
+
+    // Leave the seeded route as it was found.
+    await longA.fill(originalName);
+    await pageA.locator("#route-save").click();
+    await expect(pageA.locator("#route-details-saved")).toContainText("saved");
+    await sessionA.close();
+  });
+});

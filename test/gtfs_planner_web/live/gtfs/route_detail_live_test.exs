@@ -369,8 +369,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       assert render(view) =~ "background-color: #0B6E4F"
     end
 
-    test "a submitted draft is validated, kept on screen and writes nothing", %{
+    test "a submitted draft persists through the audited command and reloads saved values", %{
       conn: conn,
+      user: user,
       organization: organization,
       gtfs_version: version
     } do
@@ -380,19 +381,82 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
 
       view
       |> form("#route-details-form", %{
-        route: %{route_long_name: "Renamed preview"},
+        route: %{route_long_name: "Renamed for real"},
         text_mode: "automatic"
       })
       |> render_submit()
 
-      # The submitted draft is the header's and the form's, the bar still names
-      # it as unsaved, and the row is unchanged.
-      assert has_element?(view, "input#route-details-long[value='Renamed preview']")
-      assert has_element?(view, "#route-details-heading", "Renamed preview")
-      assert has_element?(view, "#route-details-save-bar-text", "Route name")
-      refute has_element?(view, "#route-details-save-bar[hidden]")
-      assert saved_route(route).route_long_name == "Details long name"
+      # The saved row holds the draft, the form and header read it back as
+      # saved truth, and the attribution line names the editor who saved.
+      saved = saved_route(route)
+      assert saved.route_long_name == "Renamed for real"
+      assert saved.updated_at != route.updated_at
+
+      assert has_element?(view, "input#route-details-long[value='Renamed for real']")
+      assert has_element?(view, "#route-details-heading", "Renamed for real")
+      assert has_element?(view, "#route-details-saved", "Changes to Route PREVIEW1 saved.")
+      assert has_element?(view, "#route-details-save-bar[hidden]")
+      refute has_element?(view, "#route-details-unsaved-preview")
+      assert has_element?(view, "#route-details-saved-identity", user.email)
+      refute has_element?(view, "#route-conflict")
+    end
+
+    test "a no-op submit writes nothing and says so", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route = details_route(organization.id, version.id, %{})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      view
+      |> form("#route-details-form", %{text_mode: "automatic"})
+      |> render_submit()
+
       assert saved_route(route).updated_at == route.updated_at
+      assert has_element?(view, "#route-details-saved", "Nothing to save")
+      assert has_element?(view, "#route-details-save-bar[hidden]")
+    end
+
+    test "a server-side error keeps the draft on screen and writes nothing", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      agency_fixture(organization.id, version.id, %{agency_id: "GONE", agency_name: "Vanishing"})
+
+      route = details_route(organization.id, version.id, %{})
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      # The agency disappears after the workspace loaded; only the command's
+      # in-transaction recheck (seam S-1) can catch the submission.
+      gone =
+        Repo.get_by!(GtfsPlanner.Gtfs.Agency,
+          organization_id: organization.id,
+          gtfs_version_id: version.id,
+          agency_id: "GONE"
+        )
+
+      Repo.delete!(gone)
+
+      view
+      |> form("#route-details-form", %{
+        route: %{agency_id: "GONE", route_long_name: "Draft kept on failure"},
+        text_mode: "automatic"
+      })
+      |> render_submit()
+
+      saved = saved_route(route)
+      assert saved.route_long_name == "Details long name"
+      assert saved.agency_id != "GONE"
+      assert saved.updated_at == route.updated_at
+
+      assert has_element?(view, "#route-details-save-error", "Not saved.")
+      assert has_element?(view, "#route-details-save-error", "Agency")
+      assert has_element?(view, "input#route-details-long[value='Draft kept on failure']")
+      refute has_element?(view, "#route-details-save-bar[hidden]")
     end
 
     test "an invalid draft color keeps the input and its error, and never reaches the badge", %{
@@ -426,6 +490,268 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
       assert saved_route(route).updated_at == route.updated_at
     end
   end
+
+  # The save and merge outcomes: every case drives the ordinary public
+  # entrypoint and the real `Gtfs.update_route/5` command — the "other editor"
+  # is a second committed command call with its own audit context, so each
+  # conflict is a real stored divergence, never a mocked one.
+  describe "details save and merge outcomes" do
+    setup :shared_setup
+
+    test "disjoint changes from another editor require one explicit Save both, then apply", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version,
+      user: user
+    } do
+      route = details_route(organization.id, version.id, %{})
+      other = other_editor(organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      # The other editor saves a disjoint field while this session edits.
+      assert {:ok, _saved} =
+               other_editor_save(route, %{route_desc: "Saved by the other editor first."}, other)
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "My disjoint rename"},
+        text_mode: "automatic"
+      })
+      |> render_submit()
+
+      # The comparison is displayed, nothing of mine is written, and the
+      # banner names the editor who actually saved.
+      assert has_element?(view, "#route-conflict", "saved this route while you were editing")
+      assert has_element?(view, "#route-conflict", other.email)
+      assert has_element?(view, "#route-conflict-table", "Saved by the other editor first.")
+      assert has_element?(view, "#route-conflict-table", "My disjoint rename")
+      assert has_element?(view, "#route-conflict-save", "Save both changes")
+      refute has_element?(view, "#route-conflict fieldset")
+
+      saved = saved_route(route)
+      assert saved.route_long_name == "Details long name"
+      assert saved.route_desc == "Saved by the other editor first."
+      assert saved.updated_at != route.updated_at
+
+      # The deliberate merge carries the draft plus the displayed revision's
+      # binding; the command applies both sets and the workspace reloads.
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "My disjoint rename"},
+        text_mode: "automatic"
+      })
+      |> render_submit(%{"merge_confirm" => "true"})
+
+      saved = saved_route(route)
+      assert saved.route_long_name == "My disjoint rename"
+      assert saved.route_desc == "Saved by the other editor first."
+
+      assert has_element?(view, "input#route-details-long[value='My disjoint rename']")
+      assert has_element?(view, "#route-details-saved", "Changes to Route PREVIEW1 saved.")
+      refute has_element?(view, "#route-conflict")
+      assert has_element?(view, "#route-details-save-bar[hidden]")
+      assert has_element?(view, "#route-details-saved-identity", user.email)
+    end
+
+    test "overlapping edits require per-field choices and the loser is never written", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route =
+        details_route(organization.id, version.id, %{
+          route_color: "0B6E4F",
+          route_text_color: "FFFFFF"
+        })
+
+      other = other_editor(organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      assert {:ok, _saved} = other_editor_save(route, %{route_long_name: "Their rename"}, other)
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "My rename", route_color: "5BC5F2"},
+        text_mode: "automatic"
+      })
+      |> render_submit()
+
+      # The overlap demands choices; the disjoint color is listed too.
+      assert has_element?(view, "#route-conflict", "choose which value to keep")
+      assert has_element?(view, "#route-conflict-save", "Save chosen changes")
+
+      assert has_element?(
+               view,
+               "#route-conflict input[name='merge[fields][route_long_name]'][value='mine'][required]"
+             )
+
+      refute saved_color_changed?(route)
+      assert saved_route(route).route_long_name == "Their rename"
+
+      # Keeping theirs for the name keeps my color: one deliberate submission.
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "My rename", route_color: "5BC5F2"},
+        text_mode: "automatic"
+      })
+      |> render_submit(%{
+        "merge_confirm" => "true",
+        "merge" => %{"fields" => %{"route_long_name" => "theirs"}}
+      })
+
+      saved = saved_route(route)
+      assert saved.route_long_name == "Their rename"
+      assert saved.route_color == "5BC5F2"
+      assert has_element?(view, "input#route-details-long[value='Their rename']")
+      assert has_element?(view, "#route-details-saved", "Changes to Route PREVIEW1 saved.")
+      refute has_element?(view, "#route-conflict")
+    end
+
+    test "a third writer's save during a merge is re-presented, never overwritten", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route = details_route(organization.id, version.id, %{})
+      other = other_editor(organization)
+      third = other_editor(organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      assert {:ok, _saved} = other_editor_save(route, %{route_long_name: "First rename"}, other)
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "My rename"},
+        text_mode: "automatic"
+      })
+      |> render_submit()
+
+      assert has_element?(view, "#route-conflict")
+
+      # A third writer commits while the comparison is on screen; the merge
+      # was bound to the displayed revision, so the command refuses it.
+      assert {:ok, _saved} =
+               other_editor_save(route, %{route_long_name: "Third rename"}, third)
+
+      displayed = saved_route(route)
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "My rename"},
+        text_mode: "automatic"
+      })
+      |> render_submit(%{"merge_confirm" => "true"})
+
+      assert saved_route(route).route_long_name == "Third rename"
+      assert has_element?(view, "#route-conflict", "Third rename")
+      refute has_element?(view, "#route-details-saved")
+
+      # A fresh comparison, fresh choices, and the merge lands on the newest
+      # current with my value.
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "My rename"},
+        text_mode: "automatic"
+      })
+      |> render_submit(%{
+        "merge_confirm" => "true",
+        "merge" => %{"fields" => %{"route_long_name" => "mine"}}
+      })
+
+      assert saved_route(route).route_long_name == "My rename"
+      assert saved_route(route).updated_at != displayed.updated_at
+      assert has_element?(view, "input#route-details-long[value='My rename']")
+      refute has_element?(view, "#route-conflict")
+    end
+
+    test "a base-equal draft against a changed current reloads the latest instead of offering a merge",
+         %{
+           conn: conn,
+           organization: organization,
+           gtfs_version: version
+         } do
+      route = details_route(organization.id, version.id, %{})
+      other = other_editor(organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      assert {:ok, _saved} =
+               other_editor_save(route, %{route_desc: "Saved while the page was open."}, other)
+
+      view
+      |> form("#route-details-form", %{text_mode: "automatic"})
+      |> render_submit()
+
+      # A draft that changes nothing has no merge to offer: the latest saved
+      # values are loaded and the outcome is announced.
+      refute has_element?(view, "#route-conflict")
+      assert has_element?(view, "textarea#route-details-desc", "Saved while the page was open.")
+      assert saved_route(route).route_long_name == "Details long name"
+      assert render(view) =~ "Another editor saved this route while it was open"
+    end
+
+    test "discarding during a conflict loads the latest saved route", %{
+      conn: conn,
+      organization: organization,
+      gtfs_version: version
+    } do
+      route = details_route(organization.id, version.id, %{})
+      other = other_editor(organization)
+
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/routes/#{route.route_id}")
+
+      assert {:ok, _saved} = other_editor_save(route, %{route_desc: "The latest saved."}, other)
+
+      view
+      |> form("#route-details-form", %{
+        route: %{route_long_name: "A draft"},
+        text_mode: "automatic"
+      })
+      |> render_submit()
+
+      assert has_element?(view, "#route-conflict")
+
+      view |> element("#route-conflict-discard") |> render_click()
+
+      refute has_element?(view, "#route-conflict")
+      assert has_element?(view, "textarea#route-details-desc", "The latest saved.")
+      assert has_element?(view, "input#route-details-long[value='Details long name']")
+      assert has_element?(view, "#route-details-save-bar[hidden]")
+      assert render(view) =~ "Loaded the latest saved route. Your changes were discarded."
+      assert saved_route(route).route_long_name == "Details long name"
+    end
+  end
+
+  defp other_editor(organization) do
+    user =
+      user_fixture(%{email: "other-editor-#{System.unique_integer([:positive])}@example.com"})
+
+    Accounts.create_user_org_membership(%{
+      user_id: user.id,
+      organization_id: organization.id,
+      roles: ["pathways_studio_editor"]
+    })
+
+    user
+  end
+
+  defp other_editor_save(route, attrs, actor) do
+    audit = %AuditContext{
+      organization_id: route.organization_id,
+      gtfs_version_id: route.gtfs_version_id,
+      actor_id: actor.id,
+      actor_email: actor.email
+    }
+
+    base = GtfsPlanner.Gtfs.Routes.source(Repo.get!(GtfsPlanner.Gtfs.Route, route.id))
+    Gtfs.update_route(route.route_id, attrs, base, %{}, audit)
+  end
+
+  defp saved_color_changed?(route),
+    do: saved_route(route).route_color != route.route_color
 
   defp details_route(organization_id, gtfs_version_id, overrides) do
     route_fixture(

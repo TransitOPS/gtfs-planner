@@ -21,12 +21,26 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   the submitted values through the same `Route.editor_changeset/3` a save will use,
   applies the valid changes to the saved row for the header/chip preview, and
   names the changed fields in the sticky save bar. Invalid input keeps the saved
-  value and its own error line rather than reaching a style attribute. Nothing
-  here writes: persistence, conflicts, and lifecycle actions belong to later steps.
+  value and its own error line rather than reaching a style attribute.
+
+  Save goes through the audited update command (`Gtfs.update_route/5`): the
+  submission carries the trusted base source the workspace was loaded with, and
+  the command decides. A clean save writes the draft minus base and its route
+  audit atomically; a rejected or failed save keeps the draft on screen; a
+  no-op save writes nothing. When another editor saved first, the command
+  returns the fresh current source and a field-level comparison instead of
+  writing, and the workspace shows that comparison: disjoint changes are
+  offered one deliberate "Save both changes", overlapping fields require an
+  explicit per-field keep-mine/use-saved choice, and "Discard my changes"
+  reloads the latest saved values. A merge submission is bound to the revision
+  the comparison was displayed with, so a third writer's save is re-presented
+  as a fresh comparison instead of being overwritten. Lifecycle actions belong
+  to later steps.
   """
   use GtfsPlannerWeb, :live_view
   alias Ecto.Changeset
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.RouteIdentity
@@ -60,6 +74,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     :route_text_color
   ]
 
+  # The toast the reference shows when a conflict is discarded or a base-equal
+  # draft meets a changed current: the latest saved values are loaded.
+  @discard_reload_message "Loaded the latest saved route. Your changes were discarded."
+
   @impl true
   def mount(_params, _session, socket) do
     user_roles = socket.assigns[:user_roles] || []
@@ -77,7 +95,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
      |> assign(:last_saved, nil)
      |> assign(:draft_route, nil)
      |> assign(:route_text_mode, nil)
-     |> assign(:changed_fields, [])}
+     |> assign(:changed_fields, [])
+     |> assign(:merge, nil)
+     |> assign(:save_outcome, nil)}
   end
 
   @impl true
@@ -108,28 +128,47 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
     {:noreply, assign_details_draft(socket, detail_attrs(params), :validate)}
   end
 
-  # Step 24 owns the Details save. This boundary exists so the form's Ctrl/Cmd+S
-  # shortcut emits one ordinary submit instead of navigating the browser, and so
-  # a submitted draft is validated and kept on screen: a rejected draft loses
-  # nothing and a no-op submit writes nothing (AC-21). Step 24 replaces the body
-  # with the audited update command and its conflict outcomes.
+  # Save is the audited update command the form's Ctrl/Cmd+S shortcut emits as
+  # one ordinary submit. The draft is re-validated first so a rejected save
+  # loses nothing (AC-21), then the command — carrying the trusted base source
+  # the workspace was loaded with — decides what the submission means (R4).
   @impl true
   def handle_event("save_route_details", params, socket) do
-    {:noreply, assign_details_draft(socket, detail_attrs(params), :validate)}
+    if socket.assigns.route_state == :ready do
+      attrs = detail_attrs(params)
+      socket = assign_details_draft(socket, attrs, :validate)
+      run_details_save(socket, attrs, params)
+    else
+      {:noreply, socket}
+    end
   end
 
-  # Cancel restores the saved row and its preview. It is a read of what is
-  # already stored, so it writes nothing (AC-19/AC-21).
+  # Cancel restores the saved row and its preview; during a merge it reloads
+  # the latest saved values instead, because the route's saved truth has moved
+  # on from the row the draft was started from. Either way it writes nothing
+  # (AC-19/AC-21).
   @impl true
   def handle_event("discard_route_details", _params, socket) do
-    route = socket.assigns.route
+    if socket.assigns.merge do
+      {:noreply, reload_latest_saved(socket, @discard_reload_message)}
+    else
+      route = socket.assigns.route
 
-    {:noreply,
-     socket
-     |> assign(:route_form, route_form(route))
-     |> assign(:draft_route, route)
-     |> assign(:route_text_mode, nil)
-     |> assign(:changed_fields, [])}
+      {:noreply,
+       socket
+       |> assign(:route_form, route_form(route))
+       |> assign(:draft_route, route)
+       |> assign(:route_text_mode, nil)
+       |> assign(:changed_fields, [])}
+    end
+  end
+
+  # The merge panel's own discard: same honest outcome as the save bar's
+  # discard during a conflict — the draft is thrown away and the latest saved
+  # values are loaded (the reference's "Loaded the latest saved route" toast).
+  @impl true
+  def handle_event("discard_merge", _params, socket) do
+    {:noreply, reload_latest_saved(socket, @discard_reload_message)}
   end
 
   @impl true
@@ -197,6 +236,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
         |> assign(:draft_route, workspace.route)
         |> assign(:route_text_mode, nil)
         |> assign(:changed_fields, [])
+        |> assign(:merge, nil)
+        |> assign(:save_outcome, nil)
         |> assign(:route_state, :ready)
         |> assign(
           :transfer_count,
@@ -210,6 +251,230 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   # already understands the field grammar the save path validates (R1/R4).
   defp route_form(route) do
     to_form(Route.editor_changeset(route, %{}, :edit), as: :route)
+  end
+
+  # One command call, every outcome classified. `base` is the trusted source
+  # minted when the workspace loaded, so a replaced UUID, a changed scope or a
+  # third writer's save can never authorize a silent overwrite (AC-9, CL-3).
+  defp run_details_save(socket, attrs, params) do
+    choices =
+      if merge_submission?(params),
+        do: merge_choices(socket, params),
+        else: %{}
+
+    case Gtfs.update_route(
+           socket.assigns.route.route_id,
+           attrs,
+           socket.assigns.source,
+           choices,
+           audit_context(socket)
+         ) do
+      {:ok, %{route: saved}} ->
+        {:noreply, saved_details(socket, saved)}
+
+      {:error, {:conflict, payload}} ->
+        {:noreply, present_conflict(socket, payload)}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, save_rejected(socket, changeset)}
+
+      {:error, :not_found} ->
+        {:noreply,
+         route_gone(
+           socket,
+           "This route is no longer in this version. Open it again from the route list."
+         )}
+
+      # The same natural ID exists again, but it is a different route with a
+      # different UUID: the old draft never authorizes it (AC-9).
+      {:error, :stale} ->
+        {:noreply,
+         route_gone(
+           socket,
+           "This route was deleted and created again with the same route ID. Open the new route from the route list."
+         )}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         save_not_saved(
+           socket,
+           "Not saved: your editor access was removed. Your changes are still on this page, but you can't save them. Ask an admin to restore editor access."
+         )}
+
+      {:error, :busy} ->
+        {:noreply,
+         save_not_saved(
+           socket,
+           "Not saved: the server is busy right now. Your changes are still here — try Save again."
+         )}
+
+      # The mutation and its audit commit together, so nothing was changed.
+      {:error, :failed_audit} ->
+        {:noreply,
+         save_not_saved(
+           socket,
+           "Not saved: your changes could not be recorded. Nothing was changed — try Save again."
+         )}
+
+      {:error, _other} ->
+        {:noreply,
+         save_not_saved(
+           socket,
+           "Not saved: something went wrong. Your changes are still here — try Save again."
+         )}
+    end
+  end
+
+  # A clean save (or a deliberate merge) reloads the workspace through the
+  # ordinary production read, so the form, the attribution line and the fresh
+  # source all describe what is actually stored now (INV-6). A no-op save
+  # reports exactly that instead of claiming a change was saved.
+  defp saved_details(socket, saved) do
+    message =
+      if saved.updated_at == socket.assigns.route.updated_at do
+        {:saved, "Nothing to save — the route already matches your draft."}
+      else
+        {:saved, "Changes to Route #{saved.route_id} saved."}
+      end
+
+    socket
+    |> load_route_workspace()
+    |> assign(:save_outcome, message)
+    |> push_event("focus_scoped_target", %{id: "route-details-heading"})
+  end
+
+  # Another editor saved first. A draft with nothing of its own (base-equal)
+  # has no merge to offer: the latest saved values are loaded and the operator
+  # is told what happened, never shown a merge against a draft that changes
+  # nothing. Otherwise the workspace displays the command's comparison: the
+  # fresh current source binds every later merge choice to the revision that
+  # was displayed (R4), and the attribution line is refreshed so "saved by"
+  # names the editor who actually saved last.
+  defp present_conflict(socket, payload) do
+    if socket.assigns.changed_fields == [] do
+      reload_latest_saved(
+        socket,
+        "Another editor saved this route while it was open. The latest saved values are loaded."
+      )
+    else
+      socket
+      |> assign(:merge, payload)
+      |> assign(:save_outcome, nil)
+      |> refresh_conflict_attribution()
+      |> push_event("focus_scoped_target", %{id: "route-conflict"})
+    end
+  end
+
+  defp refresh_conflict_attribution(socket) do
+    case Gtfs.load_route_editor(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           socket.assigns.route_id
+         ) do
+      {:ok, workspace} ->
+        socket
+        |> assign(:last_saved, workspace.last_saved)
+        |> assign(:agencies, workspace.agencies)
+        |> assign(:mode_counts, workspace.mode_counts)
+
+      _failure ->
+        socket
+    end
+  end
+
+  defp reload_latest_saved(socket, message) do
+    socket
+    |> load_route_workspace()
+    |> put_flash(:info, message)
+  end
+
+  # A rolled-back changeset is the command's own verdict on the submitted
+  # values: the draft keeps every typed value, the invalid fields carry their
+  # inline errors, and the message region names what to fix.
+  defp save_rejected(socket, changeset) do
+    socket
+    |> assign(:route_form, changeset |> Map.put(:action, :validate) |> to_form(as: :route))
+    |> assign(:save_outcome, {:error, "Not saved. " <> save_error_summary(changeset)})
+    |> push_event("focus_form_error", %{
+      form_id: "route-details-form",
+      fallback_id: "route-details-form-message"
+    })
+  end
+
+  defp save_not_saved(socket, message) do
+    socket
+    |> assign(:save_outcome, {:error, message})
+    |> push_event("focus_scoped_target", %{id: "route-details-form-message"})
+  end
+
+  defp route_gone(socket, message) do
+    socket
+    |> put_flash(:error, message)
+    |> push_navigate(to: "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes")
+  end
+
+  defp save_error_summary(changeset) do
+    errors =
+      changeset.errors
+      |> Enum.take(3)
+      |> Enum.map(fn {field, {message, _opts}} ->
+        "#{field_label(field)}: #{message}"
+      end)
+
+    if errors == [] do
+      "Fix the highlighted fields below."
+    else
+      "Fix the highlighted fields below — " <> Enum.join(errors, "; ") <> "."
+    end
+  end
+
+  defp field_label(field) do
+    Keyword.get(@detail_field_labels, field, Phoenix.Naming.humanize(field))
+  end
+
+  # The merge panel's submit button is the only control named `merge_confirm`,
+  # so a deliberate merge is exactly the submission that used it — the sticky
+  # bar's Save stays a plain submission that the command rechecks.
+  defp merge_submission?(params), do: params["merge_confirm"] == "true"
+
+  defp merge_choices(socket, params) do
+    fields =
+      case params do
+        %{"merge" => %{"fields" => fields}} when is_map(fields) ->
+          fields
+          |> copy_coupled_color_choice()
+          |> Map.new(fn {key, value} -> {String.to_existing_atom(key), value} end)
+
+        _other ->
+          %{}
+      end
+
+    %{
+      confirm_merge: true,
+      # Bound to the revision the comparison was displayed with; the command
+      # rechecks it against the freshly locked row on every submission (R4).
+      current_updated_at: socket.assigns.merge.source.updated_at,
+      fields: fields
+    }
+  end
+
+  # The color pair is one edit unit, so the panel's single radio group names
+  # one member and the choice is copied to the other before validation.
+  defp copy_coupled_color_choice(fields) do
+    cond do
+      value = fields["route_color"] -> Map.put(fields, "route_text_color", value)
+      value = fields["route_text_color"] -> Map.put(fields, "route_color", value)
+      true -> fields
+    end
+  end
+
+  defp audit_context(socket) do
+    %AuditContext{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      actor_id: socket.assigns.current_user.id,
+      actor_email: socket.assigns.current_user.email
+    }
   end
 
   # The submitted form data: the `route[...]` fields plus the top-level transient
@@ -258,6 +523,107 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
   defp more_labels(_count), do: ""
 
   defp preview?(fields), do: Enum.any?(fields, &(&1 in @preview_fields))
+
+  # The comparison table's rows, in editor order. `mine` is the draft's changed
+  # set; `theirs` is what the command's comparison says the current has that
+  # the draft does not: disjoint-theirs plus divergent overlaps. An identical
+  # overlap shows the same value in both columns, so the table never claims a
+  # disagreement that is not there.
+  defp conflict_rows(merge, mine, draft) do
+    comparison = merge.comparison
+    divergent = MapSet.new(comparison.conflicting)
+    compatible = MapSet.new(comparison.compatible)
+    mine_set = MapSet.new(mine)
+    theirs_only = MapSet.difference(MapSet.union(compatible, divergent), mine_set)
+
+    mine
+    |> MapSet.union(theirs_only)
+    |> MapSet.to_list()
+    |> editor_order()
+    |> Enum.map(fn field ->
+      in_theirs? = MapSet.member?(compatible, field) or MapSet.member?(divergent, field)
+
+      %{
+        label: field_label(field),
+        mine:
+          if(MapSet.member?(mine_set, field),
+            do: display_value(field, Map.get(draft, field)),
+            else: "No change"
+          ),
+        theirs:
+          if(in_theirs?,
+            do: display_value(field, Map.fetch!(merge.source.original, field)),
+            else: "No change"
+          )
+      }
+    end)
+  end
+
+  defp editor_order(fields), do: for({f, _} <- @detail_field_labels, f in fields, do: f)
+
+  # The choice groups the merge panel renders for overlapping fields: one
+  # group per field, with the coupled color pair collapsed into a single
+  # group that names `route_color` (the command treats the pair as one unit).
+  defp choice_groups(conflicting) do
+    {pair, rest} =
+      Enum.split_with(conflicting, &(&1 in [:route_color, :route_text_color]))
+
+    rest_groups = Enum.map(editor_order(rest), &%{field: &1, label: field_label(&1)})
+
+    if pair == [] do
+      rest_groups
+    else
+      [%{field: :route_color, label: "Route colors"} | rest_groups]
+    end
+  end
+
+  defp display_value(_field, nil), do: "—"
+
+  defp display_value(field, value) when field in [:route_color, :route_text_color] do
+    if value in [nil, ""], do: "—", else: "##{value}"
+  end
+
+  defp display_value(_field, value) when is_integer(value), do: Integer.to_string(value)
+  defp display_value(_field, value) when is_binary(value), do: value
+  defp display_value(_field, value), do: to_string(value)
+
+  defp conflict_saved_by(merge, last_saved, current_user) do
+    actor =
+      case last_saved do
+        %{actor_email: email}
+        when is_binary(email) and email != "" and email != current_user.email ->
+          email
+
+        %{actor_id: id} when is_binary(id) ->
+          id
+
+        _other ->
+          nil
+      end
+
+    saved_at =
+      case merge.source.updated_at do
+        %DateTime{} = at -> " at " <> Calendar.strftime(at, "%H:%M")
+        _other -> ""
+      end
+
+    if actor do
+      "#{actor} saved this route#{saved_at} while you were editing"
+    else
+      "Another editor saved this route#{saved_at} while you were editing"
+    end
+  end
+
+  defp conflict_intro(:confirmation_required),
+    do:
+      "Nothing of yours is saved yet. You changed different fields, so both sets of changes can be kept."
+
+  defp conflict_intro(:choices_required),
+    do:
+      "Nothing of yours is saved yet. You both changed some of the same fields — choose which value to keep for each below."
+
+  defp conflict_intro(_other),
+    do: "Nothing of yours is saved yet. Review the changes below."
 
   # "Agency · Route ID · Last saved": the saved agency resolved against this
   # version's agency options (falling back to the stored ID when the option is
@@ -383,7 +749,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                       <span
                         :if={preview?(@changed_fields)}
                         id="route-details-unsaved-preview"
-                        class="inline-flex items-center gap-1.5 rounded-badge bg-warning-bg px-2 py-1 text-[13px] font-[650] leading-none text-warning-fg"
+                        class="inline-flex items-center gap-1.5 rounded-badge bg-warning/10 px-2 py-1 text-[13px] font-[650] leading-none text-warning"
                       >
                         <.icon name="hero-pencil-square" class="size-3.5" />Unsaved preview
                       </span>
@@ -402,6 +768,43 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLive do
                     phx-submit="save_route_details"
                     class="mt-5 grid gap-8"
                   >
+                    <%!-- One announcement region for the outcomes a save can
+                           have: a saved confirmation, a rejected-save error,
+                           or the merge comparison another editor's save
+                           produced. It takes focus so the result is announced
+                           and reachable from the keyboard (AC-28). --%>
+                    <div
+                      :if={@merge || @save_outcome}
+                      id="route-details-form-message"
+                      tabindex="-1"
+                      class="grid gap-3 outline-none"
+                    >
+                      <RouteFormComponents.merge_conflict
+                        :if={@merge}
+                        merge={@merge}
+                        saved_by={conflict_saved_by(@merge, @last_saved, @current_user)}
+                        intro={conflict_intro(@merge.comparison.status)}
+                        rows={conflict_rows(@merge, @changed_fields, @draft_route)}
+                        groups={choice_groups(@merge.comparison.conflicting)}
+                      />
+                      <p
+                        :if={match?({:saved, _}, @save_outcome)}
+                        id="route-details-saved"
+                        role="status"
+                        class="rounded-control border border-success bg-success/10 px-4 py-3 text-sm text-default"
+                      >
+                        {elem(@save_outcome, 1)}
+                      </p>
+                      <p
+                        :if={match?({:error, _}, @save_outcome)}
+                        id="route-details-save-error"
+                        role="alert"
+                        class="rounded-control border border-error-line bg-error-bg px-4 py-3 text-sm text-error-fg"
+                      >
+                        {elem(@save_outcome, 1)}
+                      </p>
+                    </div>
+
                     <section
                       aria-labelledby="route-details-identity-title"
                       class="grid gap-6"
