@@ -48,6 +48,14 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   `paste_filter` records the row filter. The review matrix (step 26),
   decisions (step 27) and apply (step 28) build on the `input`/`review`
   assigns kept here.
+
+  Step 26 owns the review matrix: the `#paste-rows` stream of row view
+  models built by `TimetablePasteReview` from the plan changes, the
+  `#paste-timing-note` popover behind the `paste_timing` events, and the
+  Warnings filter step 25 deferred. Every path that assigns a review or
+  changes the filter or stops view re-streams `:plan_rows` with
+  `reset: true` through `put_plan_rows/1`; counts live in the separate
+  `:plan_total`/`:plan_shown` assigns because streams are not countable.
   """
   use GtfsPlannerWeb, :live_view
 
@@ -57,6 +65,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   alias GtfsPlanner.Gtfs.TimetablePaste
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.TimetablePasteComponents
+  alias GtfsPlannerWeb.Gtfs.TimetablePasteReview
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
@@ -82,6 +91,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
      |> assign(:scope_form, to_form(%{}, as: :scope))
      |> assign(:scope_calendars, [])
      |> assign(:draft_scope, nil)
+     |> assign(:plan_columns, [])
+     |> assign(:plan_total, 0)
+     |> assign(:plan_shown, 0)
+     |> assign(:timing_note, nil)
+     |> stream_configure(:plan_rows, dom_id: & &1.id)
+     |> stream(:plan_rows, [])
      |> assign(:load_state, :loading)}
   end
 
@@ -199,6 +214,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # mode and template fields recompute the review purely when they change
   # with the paste itself untouched; the stops-view radios and the filter
   # buttons only restash for display.
+  # Step 26 extends the stash branch: a stops-view change re-streams the
+  # matrix columns without recomputing the review (the plan is
+  # view-independent, like the filter).
   @impl true
   def handle_event("input", %{"paste" => params}, socket) when is_map(params) do
     old_input = current_input(socket)
@@ -218,12 +236,18 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
           |> assign(:paste_error, nil)
           |> assign(:source_open, true)
           |> assign(:show_column_errors, false)
+          |> put_plan_rows()
 
         recompute_columns?(socket, old_input, input, params) ->
           recompute_columns_review(socket, input)
 
         recompute_review_inputs?(socket, old_input, input) ->
           recompute_columns_review(socket, input)
+
+        # Stops view only restashes for display; a change re-streams the
+        # matrix columns from the current review.
+        input.stops_view != old_input.stops_view ->
+          put_plan_rows(socket)
 
         true ->
           socket
@@ -317,6 +341,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # Step 25 owns the row filter: a filter button only restashes the input
   # for display (step 26 reads it for the matrix). No recompute: the plan
   # is filter-independent.
+  # Step 26 re-streams the matrix from the unchanged review when the
+  # filter changes.
   @impl true
   def handle_event("paste_filter", params, socket) when is_map(params) do
     input = Map.put(current_input(socket), :filter, normalize_filter(params["filter"]))
@@ -324,11 +350,32 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     {:noreply,
      socket
      |> assign(:input, input)
-     |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))}
+     |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))
+     |> put_plan_rows()}
   end
 
   @impl true
   def handle_event("paste_filter", _params, socket), do: {:noreply, socket}
+
+  # Step 26 owns the timing note: a timing name button stores its
+  # `pattern_id|name` ref and the matrix resolves the note content from
+  # the current review and scope. Closing clears the ref. Neither touches
+  # the row stream.
+  @impl true
+  def handle_event("paste_timing", params, socket) when is_map(params) do
+    case params["ref"] do
+      ref when is_binary(ref) and ref != "" -> {:noreply, assign(socket, :timing_note, ref)}
+      _ref -> {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("paste_timing", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("paste_timing_close", _params, socket) do
+    {:noreply, assign(socket, :timing_note, nil)}
+  end
 
   # Review trips with column issues shows the error summary and focuses
   # it; with no issues the review header is already showing.
@@ -436,6 +483,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
               review={@review}
               scope={@scope}
               input={@input}
+              columns={@plan_columns}
+              rows={@streams.plan_rows}
+              shown={@plan_shown}
+              timing_note={@timing_note}
             />
           </.form>
         </div>
@@ -480,6 +531,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     |> assign(:source_open, is_nil(review))
     |> assign(:show_column_errors, false)
     |> assign(:load_state, :ready)
+    |> put_plan_rows()
     |> push_canonical(scope, params)
   end
 
@@ -507,6 +559,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
         |> assign(:paste_error, reason)
         |> assign(:source_open, true)
         |> assign(:load_state, :ready)
+        |> put_plan_rows()
         |> push_canonical(scope, params)
 
       {:error, _reason} ->
@@ -537,6 +590,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
         |> assign(:paste_error, :empty)
         |> assign(:source_open, true)
         |> assign(:load_state, :ready)
+        |> put_plan_rows()
 
       {:ok, %{scope: scope, review: review}} ->
         socket
@@ -547,6 +601,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
         |> assign(:source_open, false)
         |> assign(:show_column_errors, false)
         |> assign(:load_state, :ready)
+        |> put_plan_rows()
 
       {:error, :not_found} ->
         route_not_found(socket)
@@ -556,6 +611,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
         |> assign(:review, nil)
         |> assign(:paste_error, reason)
         |> assign(:source_open, true)
+        |> put_plan_rows()
     end
   end
 
@@ -698,7 +754,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     end
   end
 
-  @review_filters ~w(all add change remove unchanged duplicate skipped needs_decision)
+  @review_filters ~w(all add change remove unchanged duplicate skipped needs_decision warnings)
 
   defp normalize_filter(filter) when filter in @review_filters, do: filter
   defp normalize_filter(_filter), do: "all"
@@ -707,7 +763,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # already read for the last Read or patch, so overrides and
   # confirmations never cost a database read. Overrides cannot break
   # parsing, so a failure keeps the last review. Clearing the last issue
-  # hides a visible error summary with it.
+  # hides a visible error summary with it. Step 26 re-streams the matrix
+  # from the recomputed review.
   defp recompute_columns_review(socket, input) do
     case socket.assigns[:scope] do
       nil ->
@@ -722,11 +779,32 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
               :show_column_errors,
               socket.assigns[:show_column_errors] == true and review.column_issues != []
             )
+            |> put_plan_rows()
 
           {:error, _reason} ->
             socket
         end
     end
+  end
+
+  # Streams the review matrix from the current review, scope and input
+  # filter/stops view. Streams are not enumerable, so the rows are rebuilt
+  # from the plan changes and reset on every recompute, filter or view
+  # change; the totals live in separate assigns for the filter counts and
+  # the empty state.
+  defp put_plan_rows(socket) do
+    info =
+      TimetablePasteReview.build(
+        socket.assigns[:review],
+        socket.assigns[:scope],
+        current_input(socket)
+      )
+
+    socket
+    |> assign(:plan_columns, info.columns)
+    |> assign(:plan_total, info.total)
+    |> assign(:plan_shown, info.shown)
+    |> stream(:plan_rows, info.rows, reset: true)
   end
 
   defp confirmation_set(%{confirmations: %MapSet{} = confirmations}), do: confirmations
