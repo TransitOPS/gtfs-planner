@@ -9,7 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveLevelCommandsTest do
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.{AuditContext, Level, Stations, StopLevel}
+  alias GtfsPlanner.Gtfs.{AuditContext, ChangeLog, Level, Stations, StopLevel}
   alias GtfsPlanner.Repo
 
   setup do
@@ -101,13 +101,21 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveLevelCommandsTest do
     foreign_organization = organization_fixture()
     foreign_version = gtfs_version_fixture(foreign_organization.id)
     foreign_level = level_fixture(foreign_organization.id, foreign_version.id)
+    _available_level = level_fixture(scope.organization.id, scope.version.id)
 
     view = mount_diagram(scope)
     render_hook(view, "open_add_level", %{})
-    view |> form("#level-form", %{"existing_level_id" => foreign_level.id}) |> render_submit()
+    assert has_element?(view, "#level-form select[name='existing_level_id']")
+
+    associations_before = Repo.aggregate(StopLevel, :count, :id)
+    logs_before = Repo.aggregate(ChangeLog, :count, :id)
+
+    render_submit(view, "save_level", %{"existing_level_id" => foreign_level.id})
 
     assert has_element?(view, "#level-outcome", "This level no longer exists.")
     assert has_element?(view, "#level-sidebar-overlay[data-open='true']")
+    assert Repo.aggregate(StopLevel, :count, :id) == associations_before
+    assert Repo.aggregate(ChangeLog, :count, :id) == logs_before
 
     assert is_nil(
              Gtfs.get_stop_level(
