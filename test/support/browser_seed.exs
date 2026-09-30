@@ -1995,6 +1995,20 @@ case Accounts.register_first_admin(%{
         route_type: 3
       })
 
+    # Every trip below runs on BROWSER_PATTERN_SERVICE, so the Schedules scope
+    # bar needs a matching calendar row; without one the page can only resolve a
+    # calendar that has no trips on this route.
+    GtfsPlanner.GtfsFixtures.calendar_fixture(org.id, diagram_version.id, %{
+      service_id: "BROWSER_PATTERN_SERVICE",
+      monday: 1,
+      tuesday: 1,
+      wednesday: 1,
+      thursday: 1,
+      friday: 1,
+      saturday: 1,
+      sunday: 1
+    })
+
     headsign_pattern = fn pattern_id, pattern_name, route ->
       GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
         route_id: route.route_id,

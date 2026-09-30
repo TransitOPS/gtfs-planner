@@ -21,8 +21,8 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
     only: [message: 1, first_use: 1, drawer_scroll: 1, drawer_footer: 1, form_section: 1]
 
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.RoutePattern
-  alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlannerWeb.Gtfs.ScheduleChangeComponents
 
   # The problems notice names three problems and counts the rest, so a block with
@@ -1249,15 +1249,21 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
           </div>
 
           <.form_section :if={@drawer.mode == :edit} title="Trip details">
-            <.input
-              id="trip-headsign"
-              name="drawer[trip_headsign]"
-              type="text"
-              label="Headsign (optional)"
-              value={@values["trip_headsign"]}
-              help={headsign_help(@drawer, @pattern)}
-              errors={error_list(@drawer, :trip_headsign)}
-            />
+            <div class="grid gap-1">
+              <.input
+                id="trip-headsign"
+                name="drawer[trip_headsign]"
+                type="text"
+                label="Headsign (optional)"
+                value={@values["trip_headsign"]}
+                errors={error_list(@drawer, :trip_headsign)}
+              />
+              <.trip_headsign_note
+                value={@values["trip_headsign"]}
+                timing={drawer_timing(@pattern, @values["timed_pattern_id"])}
+                pattern_headsign={@pattern && @pattern.headsign}
+              />
+            </div>
             <.input
               id="trip-number"
               name="drawer[trip_short_name]"
@@ -1699,6 +1705,15 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
       Enum.find(patterns, &(&1.route_pattern_id == row.route_pattern_id))
   end
 
+  # The timing whose headsign the drawer's headsign note names as the source of a
+  # blank value: the pattern's timing matching the drawer's timing choice. A
+  # custom trip ("custom" in the select, or no pattern) has none.
+  defp drawer_timing(nil, _timing_id), do: nil
+
+  defp drawer_timing(pattern, timing_id) do
+    Enum.find(pattern.timings, &(&1.id == timing_id))
+  end
+
   defp pattern_options(patterns) do
     Enum.map(patterns, &{&1.name, &1.id})
   end
@@ -1791,18 +1806,181 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   defp frequency_title(_drawer), do: "This trip runs on a frequency"
 
-  # Names the headsign a blank field will store: the selected timing's, else the
-  # pattern's (`Schedules.fallback_headsign/2`), never the trip's own headsign.
-  defp headsign_help(%{values: values}, pattern) when is_map(pattern) do
-    timing = Enum.find(pattern.timings, &(&1.id == values["timed_pattern_id"]))
+  @doc """
+  Renders a timetable row's headsign fact under its timing (AC-22): "To
+  {value}" only when the trip does not follow its effective default — warning
+  ink when the value is a likely typo, muted otherwise — and "No headsign" for
+  a blank trip headsign on a non-blank default. `headsign` carries the display
+  shape `Timetable.build/5` decided through `Headsigns`; nothing is shown when
+  the trip follows its default.
+  """
+  attr :id, :string, default: nil
 
-    case Schedules.fallback_headsign(timing && timing.headsign, pattern.headsign) do
-      nil -> nil
-      headsign -> "Leave blank to use #{headsign}."
+  attr :headsign, :any,
+    required: true,
+    doc: "the Timetable row shape: nil, :blank_with_default or {:differs, value, kind}"
+
+  def trip_headsign_line(assigns) do
+    assigns = assign(assigns, :typo?, match?({:differs, _, :case_or_spacing}, assigns.headsign))
+
+    ~H"""
+    <span
+      :if={@headsign}
+      id={@id}
+      class={[
+        "mt-0.5 block text-[12px]",
+        if(@typo?, do: "text-warning-fg", else: "text-muted")
+      ]}
+    >
+      <%= case @headsign do %>
+        <% {:differs, value, _kind} -> %>
+          To {value}
+        <% :blank_with_default -> %>
+          No headsign
+        <% _ -> %>
+      <% end %>
+    </span>
+    """
+  end
+
+  @doc """
+  Renders the trip drawer headsign field's note (AC-23): what a blank value
+  stores, the same-as confirmation, the likely-typo warning and the
+  keeps-its-value info, with a **Use {default}** button that fills the field
+  with the effective default through `trip_use_default_headsign`. The default
+  and the comparison come from `Headsigns`; the component only presents them.
+  The button hides when neither the timing nor the pattern carries a headsign,
+  because then there is no default to use.
+  """
+  attr :id, :string, default: "trip-headsign-note"
+
+  attr :value, :string,
+    required: true,
+    doc: "the field's current value"
+
+  attr :timing, :map,
+    default: nil,
+    doc: "the selected timing from the pattern's timings (with :name and :headsign), or nil"
+
+  attr :pattern_headsign, :string, default: nil
+
+  def trip_headsign_note(assigns) do
+    default =
+      Headsigns.effective_default(
+        assigns.timing && assigns.timing.headsign,
+        assigns.pattern_headsign
+      )
+
+    kind = note_kind(assigns.value, default)
+
+    assigns =
+      assigns
+      |> assign(:default, default)
+      |> assign(:kind, kind)
+      |> assign(:source, note_source(assigns.timing))
+      |> assign(:present_value, Headsigns.normalize(assigns.value))
+
+    ~H"""
+    <%= case @kind do %>
+      <% :blank -> %>
+        <p id={@id} class="flex gap-2 text-[13px] text-muted">
+          <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0" />
+          <span>Blank uses {@source}, <.headsign_inline value={@default} />.</span>
+        </p>
+      <% :same -> %>
+        <p id={@id} class="flex items-center gap-2 text-[13px] text-success-fg">
+          <.icon name="hero-check-circle" class="size-4 shrink-0" />
+          <span>Same as {@source}. Changing that headsign can update this trip.</span>
+        </p>
+      <% :case_or_spacing -> %>
+        <div
+          id={@id}
+          class="flex gap-2 rounded-card bg-warning-bg px-3 py-2 text-[13px] text-warning-fg"
+        >
+          <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4 shrink-0" />
+          <div>
+            <p>
+              Differs from {@source}, <.headsign_inline value={@default} />, only in capital
+              letters or spacing. Riders may see both spellings.
+            </p>
+            <.button
+              :if={@default}
+              id={@id <> "-use-default"}
+              type="button"
+              variant="secondary"
+              class="mt-2 min-h-11"
+              phx-click="trip_use_default_headsign"
+            >
+              Use {@default}
+            </.button>
+          </div>
+        </div>
+      <% _kind -> %>
+        <div id={@id} class="flex gap-2 rounded-card bg-info-bg px-3 py-2 text-[13px] text-info-fg">
+          <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0" />
+          <div class="text-default">
+            <p>
+              This trip shows <.headsign_inline value={@present_value} /> instead of {@source},
+              <.headsign_inline value={@default} />. When that headsign changes later, this trip
+              keeps <.headsign_inline value={@present_value} />.
+            </p>
+            <.button
+              :if={@default}
+              id={@id <> "-use-default"}
+              type="button"
+              variant="secondary"
+              class="mt-2 min-h-11"
+              phx-click="trip_use_default_headsign"
+            >
+              Use {@default}
+            </.button>
+          </div>
+        </div>
+    <% end %>
+    """
+  end
+
+  # The note's four states: a blank value names its fallback, a following value
+  # confirms it, and a differing one warns on a likely typo or explains that the
+  # trip keeps its headsign. Blank wins over same, as the prototype's note does.
+  defp note_kind(value, default) do
+    cond do
+      is_nil(Headsigns.normalize(value)) ->
+        :blank
+
+      Headsigns.follows?(value, default) ->
+        :same
+
+      true ->
+        %{kind: kind} = Headsigns.difference(value, default, nil)
+        kind
     end
   end
 
-  defp headsign_help(_drawer, _pattern), do: nil
+  # A timing with its own headsign names itself as the source of a blank value;
+  # otherwise the value comes from the pattern.
+  defp note_source(%{headsign: headsign, name: name}) do
+    if Headsigns.normalize(headsign),
+      do: "the #{name} timing’s headsign",
+      else: "the pattern’s headsign"
+  end
+
+  defp note_source(_timing), do: "the pattern’s headsign"
+
+  # A headsign value as riders see it, tight to the surrounding punctuation: the
+  # spans here carry no whitespace between or around them, so "Lincoln City."
+  # never renders with a stray space before the period. Same presentation as
+  # RoutePatternHeadsignComponents.headsign_value/1, which its callers keep.
+  attr :value, :string, required: true
+
+  defp headsign_inline(assigns) do
+    assigns = assign(assigns, :present?, is_binary(Headsigns.normalize(assigns.value)))
+
+    ~H(<span :if={@present?} class="font-[650] text-strong">{@value}</span><span
+  :if={not @present?}
+  class="italic text-muted"
+>No headsign</span>)
+  end
 
   defp can_submit?(%{mode: :add}, nil), do: false
   defp can_submit?(%{mode: :add}, pattern), do: pattern.timings != []
@@ -2356,15 +2534,8 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
                     <.icon name="hero-exclamation-triangle" class="mr-1 size-3.5" />
                     {estimate_problem_text(Map.get(row, :estimate_problem))}
                   </span>
-                  <%!-- Today's display over the new Timetable headsign shapes;
-                       step 16 owns the final markup (warning ink, "No headsign"). --%>
-                  <%= case row.headsign do %>
-                    <% {:differs, value, _kind} -> %>
-                      <span class="block text-[12px] text-muted">
-                        To {value}
-                      </span>
-                    <% _ -> %>
-                  <% end %>
+                  <%!-- The row's headsign fact (AC-22), decided by Timetable through Headsigns. --%>
+                  <.trip_headsign_line id={"trip-#{row.trip_id}-headsign"} headsign={row.headsign} />
                   <span
                     :if={row.frequency_label}
                     id={"trip-#{row.trip_id}-frequency"}
