@@ -7,8 +7,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   metric strip (`AC-7`, `AC-9`, `AC-18`), and the stop-by-stop card adds the
   streamed table with its lanes, difference cells, running-time columns and
   folds (`AC-5`, `AC-6`, `AC-8`, `AC-19`); the all-patterns overview (`AC-21`)
-  adds the direction's column table with its pick-two checkboxes, and the
-  `#compare-map` container stays empty for the later step that fills it.
+  adds the direction's column table with its pick-two checkboxes, and the map
+  pane (`AC-22`) mounts the `PatternCompareMap` hook on `#compare-map` with the
+  map read's payload. The pane is the only thing a failed map read takes with
+  it: `#compare-map-unavailable` carries the retry, and the slots, summary and
+  stop table stay exactly as they are (`CL-13`).
 
   The ready state owns the `#compare-workspace` grid the containers sit in.
   Every state decision stays in `RoutePatternCompareLive`; these components
@@ -72,6 +75,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   attr :reverse_path, :string,
     default: nil,
     doc: "the compare URL with the `reverse` param toggled; nil without a loaded pair"
+
+  attr :map_payload, :map,
+    default: nil,
+    doc: "the loaded comparison map payload; nil when the map read failed"
 
   attr :picker, :map,
     default: nil,
@@ -176,6 +183,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
               rows={@rows}
               slot_paths={@slot_paths}
               reverse_path={@reverse_path}
+              map_payload={@map_payload}
             />
         <% end %>
       </section>
@@ -290,13 +298,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
     """
   end
 
-  # The compare workspace's layout; later steps fill the empty containers. The
-  # slots row and the two-column workspace mirror the prototype, including the
-  # map's own column, which stacks above the table below `lg`.
+  # The compare workspace's layout. The slots row and the two-column workspace
+  # mirror the prototype, including the map's own column, which stacks above the
+  # table below `lg`.
   attr :comparison, :map, required: true
   attr :rows, :any, required: true
   attr :slot_paths, :map, required: true
   attr :reverse_path, :string, default: nil
+  attr :map_payload, :map, default: nil
 
   defp two_pattern_containers(assigns) do
     assigns = assign(assigns, :stops_mode, stops_mode(assigns.comparison))
@@ -345,15 +354,102 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
             <.stops_in_a :if={is_nil(@comparison.alignment)} comparison={@comparison} />
           </section>
         </div>
-        <aside
-          id="compare-map-pane"
-          aria-label="Map of both patterns"
-          class="max-lg:order-first lg:sticky lg:top-4"
-        >
-          <div id="compare-map"></div>
-        </aside>
+        <.map_pane payload={@map_payload} />
       </div>
     </div>
+    """
+  end
+
+  # The sticky map column (`AC-22`): the `PatternCompareMap` hook draws the
+  # payload inside `#compare-map`, and the pane's own failed-read block takes
+  # the payload's place when the map read did not answer. The container is
+  # `phx-update="ignore"` because the hook owns everything inside it (Leaflet's
+  # tiles, vectors and markers, and its own runtime notice); the server patches
+  # only `data-map-payload`, which the hook redraws from without refitting
+  # (`FH-29`). The legend the prototype puts over the map's bottom-left stays
+  # server-owned and outside the ignored container: it names the series and stop
+  # shapes the hook draws, so it follows B's presence and the pins rather than
+  # the hook's private state. The failed block is the prototype's
+  # `map-unavailable` composition: the pane keeps the map's own height and the
+  # copy promises the table is still there, because `retry_map` reloads only the
+  # map read and never the comparison (`CL-13`).
+  attr :payload, :map,
+    default: nil,
+    doc: "the loaded map payload; nil when the map read failed"
+
+  defp map_pane(assigns) do
+    ~H"""
+    <aside
+      id="compare-map-pane"
+      aria-label="Map of both patterns"
+      class="max-lg:order-first lg:sticky lg:top-4"
+    >
+      <div :if={@payload} class="relative">
+        <div
+          id="compare-map"
+          phx-hook="PatternCompareMap"
+          phx-update="ignore"
+          data-map-payload={Jason.encode!(@payload)}
+          class="relative h-[360px] overflow-hidden rounded-card border border-subtle bg-canvas lg:h-[calc(100vh-32px)] lg:max-h-[860px] lg:min-h-[520px]"
+        >
+        </div>
+
+        <div
+          id="compare-map-legend"
+          class="pointer-events-none absolute bottom-3 left-3 flex max-w-[calc(100%-24px)] flex-wrap items-center gap-x-3.5 gap-y-1 rounded-control bg-white/85 px-3 py-1.5 text-[13px] text-default shadow-card"
+        >
+          <span class="flex items-center gap-1.5">
+            <span class="h-1 w-5 rounded-full bg-navy-800"></span>
+            <.series_chip letter="A" />
+          </span>
+          <span :if={@payload.ends.b} class="flex items-center gap-1.5">
+            <span class="h-1 w-5 rounded-full bg-cyan-700"></span>
+            <.series_chip letter="B" />
+          </span>
+          <span :if={@payload.ends.b} class="flex items-center gap-1.5">
+            <span class="inline-block size-3 rounded-full border-2 border-navy-800 bg-white"></span>
+            Both
+          </span>
+          <span :if={@payload.ends.b} class="flex items-center gap-1.5">
+            <span class="inline-block size-3 rounded-full bg-navy-800"></span> Only A
+          </span>
+          <span :if={@payload.ends.b} class="flex items-center gap-1.5">
+            <span class="inline-block size-3 rounded-badge bg-cyan-700"></span> Only B
+          </span>
+          <span :if={@payload.pins != []} class="flex items-center gap-1.5">
+            <span class="inline-flex size-4 items-center justify-center rounded-full bg-inverse text-[10px] font-bold text-white">
+              1
+            </span>
+            Difference
+          </span>
+        </div>
+      </div>
+
+      <div
+        :if={is_nil(@payload)}
+        id="compare-map-unavailable"
+        class="grid h-[360px] place-items-center rounded-card border border-subtle bg-canvas px-6 text-center lg:h-[520px]"
+      >
+        <div class="max-w-[36ch]">
+          <.icon name="hero-map" class="mx-auto size-7 text-muted" />
+          <p class="mt-2 text-sm font-bold text-strong">The map is unavailable</p>
+          <p class="mt-1 text-sm text-default">
+            The stop list, differences and times still work.
+          </p>
+          <div class="mt-4 flex justify-center">
+            <.button
+              id="compare-map-unavailable-retry"
+              type="button"
+              variant="secondary"
+              phx-click="retry_map"
+              class="min-h-11"
+            >
+              <.icon name="hero-arrow-path" class="size-4" /> Retry map
+            </.button>
+          </div>
+        </div>
+      </div>
+    </aside>
     """
   end
 
