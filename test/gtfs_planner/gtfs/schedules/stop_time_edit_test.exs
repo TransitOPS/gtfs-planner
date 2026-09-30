@@ -123,12 +123,48 @@ defmodule GtfsPlanner.Gtfs.Schedules.StopTimeEditTest do
                {:ok,
                 [
                   %{arrival: 0, departure: 0, timepoint: 1},
-                  %{arrival: 100, departure: 140, timepoint: 0},
-                  %{arrival: 332, departure: 384, timepoint: 0},
+                  %{arrival: 100, departure: 134, timepoint: 0},
+                  %{arrival: 332, departure: 366, timepoint: 0},
                   %{arrival: 600, departure: 700, timepoint: 1},
-                  %{arrival: 825, departure: 860, timepoint: 0},
-                  %{arrival: 1275, departure: 1340, timepoint: 0},
+                  %{arrival: 780, departure: 860, timepoint: 0},
+                  %{arrival: 1260, departure: 1340, timepoint: 0},
                   %{arrival: 1500, departure: 1500, timepoint: 1}
+                ]}
+    end
+
+    test "maps a hidden stop between anchors with dwell through one travel span" do
+      # Previous shown stop 07:00/07:05, hidden 07:06/07:06, edited 07:10 -> 07:20:
+      # the 5-minute span from 07:05 becomes 15 minutes, so 07:06 lands on 07:08.
+      stops = [
+        %{arrival: 25_200, departure: 25_500, timepoint: 1},
+        %{arrival: 25_560, departure: 25_560, timepoint: 0},
+        %{arrival: 25_800, departure: 25_800, timepoint: 1}
+      ]
+
+      assert StopTimeEdit.apply(stops, 3, 26_400, :only, [1, 3]) ==
+               {:ok,
+                [
+                  %{arrival: 25_200, departure: 25_500, timepoint: 1},
+                  %{arrival: 25_680, departure: 25_680, timepoint: 0},
+                  %{arrival: 26_400, departure: 26_400, timepoint: 1}
+                ]}
+    end
+
+    test "keeps a hidden stop's blank times blank when re-spacing" do
+      stops = [
+        %{arrival: 0, departure: 0, timepoint: 1},
+        %{arrival: nil, departure: nil, timepoint: 0},
+        %{arrival: nil, departure: 549, timepoint: 0},
+        %{arrival: 1000, departure: 1000, timepoint: 1}
+      ]
+
+      assert StopTimeEdit.apply(stops, 4, 1200, :only, [1, 4]) ==
+               {:ok,
+                [
+                  %{arrival: 0, departure: 0, timepoint: 1},
+                  %{arrival: nil, departure: nil, timepoint: 0},
+                  %{arrival: nil, departure: 658, timepoint: 0},
+                  %{arrival: 1200, departure: 1200, timepoint: 1}
                 ]}
     end
 

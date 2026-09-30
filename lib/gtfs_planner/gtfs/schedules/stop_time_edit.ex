@@ -13,9 +13,10 @@ defmodule GtfsPlanner.Gtfs.Schedules.StopTimeEdit do
   stop and every later stop; `:only` moves one stop. In the timepoints view
   (`shown_positions` is a list) `:only` also re-spaces the stops hidden between the
   shown stops before and after the edit, proportional to their current spacing and
-  floored per arrival and departure, and stores them with `timepoint: 0`. Each hidden
-  run is anchored on the shown stop it follows, so a run whose stored span is zero
-  lands on that anchor's new time.
+  floored per value, and stores them with `timepoint: 0`. Each hidden run maps both
+  fields through one span, from the departure of the shown stop it follows to the
+  arrival of the shown stop it reaches, so a run whose stored span is zero lands on
+  that departure's new time. A hidden stop with no stored time stays blank.
 
   Stop times are integer seconds and may pass 24:00. A stop with no stored time adopts
   the typed time and moves no other stop. A result with a value below zero is refused
@@ -170,32 +171,28 @@ defmodule GtfsPlanner.Gtfs.Schedules.StopTimeEdit do
     |> Enum.min(fn -> nil end)
   end
 
+  # Both fields of a hidden stop map through one travel span, from `near`'s departure
+  # to `far`'s arrival, so a stop's dwell and its order against the anchors survive
+  # when an anchor has dwell of its own.
   defp respace_stop(stop, old_stop, near_old, near_new, far_old, far_new) do
+    span = {
+      anchor_value(near_old, false),
+      anchor_value(near_new, false),
+      anchor_value(far_old, true),
+      anchor_value(far_new, true)
+    }
+
     %{
       stop
-      | arrival:
-          respace_value(
-            old_stop.arrival,
-            near_old.arrival,
-            near_new.arrival,
-            far_old.arrival,
-            far_new.arrival
-          ),
-        departure:
-          respace_value(
-            old_stop.departure,
-            near_old.departure,
-            near_new.departure,
-            far_old.departure,
-            far_new.departure
-          ),
+      | arrival: respace_value(old_stop.arrival, span),
+        departure: respace_value(old_stop.departure, span),
         timepoint: 0
     }
   end
 
-  defp respace_value(value, near_old, near_new, far_old, far_new)
-       when is_integer(near_old) and is_integer(near_new) and is_integer(far_old) and
-              is_integer(far_new) do
+  defp respace_value(value, {near_old, near_new, far_old, far_new})
+       when is_integer(value) and is_integer(near_old) and is_integer(near_new) and
+              is_integer(far_old) and is_integer(far_new) do
     span_old = far_old - near_old
     span_new = far_new - near_new
 
@@ -206,7 +203,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.StopTimeEdit do
     end
   end
 
-  defp respace_value(value, _near_old, _near_new, _far_old, _far_new), do: value
+  defp respace_value(value, _span), do: value
 
   defp check(stops) do
     if Enum.any?(stops, &negative?/1) do
