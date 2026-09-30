@@ -21,6 +21,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   handed to the context, which resolves it again against the organization,
   version, route and calendar. A mutation reloads through the adapter afterwards
   and shows the vehicle "N → M" marker when the count moved.
+
+  A bulk verb opens a reviewed command instead: the LiveView reviews it through
+  the context, previews the reviewed times in the grid without writing, and
+  applies it with the review's fingerprint as the fence (R3), so a trip another
+  editor changed between the review and the apply is never overwritten.
   """
   use GtfsPlannerWeb, :live_view
 
@@ -47,6 +52,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   @duplicate_offset_secs 1_800
   @undo_limit 20
   @nudge_minutes [-5, -1, 1, 5]
+  @max_shift_minutes 1_440
   @default_departure "06:00"
   @default_every "30"
   @default_until "09:00"
@@ -77,6 +83,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
      |> assign(:outcome, nil)
      |> assign(:just_changed, MapSet.new())
      |> assign(:cell_error, nil)
+     |> assign(:change, nil)
      |> assign(:vehicle_change, nil)
      |> assign(:vehicle_change_from, nil)
      |> assign(:keep_vehicle_change, false)
@@ -99,6 +106,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       |> assign(:requested, params)
       |> assign(:selected_ids, MapSet.new())
       |> assign(:selected_count, 0)
+      # A review names the trips the page loaded when it opened, so a parameter
+      # change closes it (step 27's filter change clears the selection first).
+      |> assign(:change, nil)
       |> assign(:delete_dialog, nil)
       |> assign(:block_notice, nil)
       |> clear_vehicle_change()
@@ -238,6 +248,29 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   @impl true
   def handle_event("save_shortcut", _params, socket), do: {:noreply, save_shortcut(socket)}
+
+  @impl true
+  def handle_event("open_change", %{"kind" => kind} = params, socket) do
+    {:noreply, open_change(socket, kind, params["trip"])}
+  end
+
+  def handle_event("open_change", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("change_params", %{} = params, socket) do
+    {:noreply, update_change(socket, params)}
+  end
+
+  def handle_event("change_params", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("apply_change", _params, socket), do: {:noreply, apply_change(socket)}
+
+  @impl true
+  def handle_event("refresh_change", _params, socket), do: {:noreply, refresh_change(socket)}
+
+  @impl true
+  def handle_event("cancel_change", _params, socket), do: {:noreply, cancel_change(socket)}
 
   @impl true
   def handle_event("retry", _params, socket) do
@@ -876,20 +909,21 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     |> reload_cell()
   end
 
-  defp reload_cell(socket) do
+  defp reload_cell(socket, touched_ids \\ MapSet.new()) do
     case reload_schedule(socket) do
-      {:ok, socket} -> stream_grid_state(socket)
+      {:ok, socket} -> stream_grid_state(socket, touched_ids)
       {:error, :not_found} -> route_not_found(socket)
       {:error, :unavailable} -> assign(socket, :load_state, :unavailable)
     end
   end
 
-  # The wait is on the sections whose grid state changed: the changed row's tint,
-  # or the one cell a refusal points at. Everything else keeps the empty grid the
-  # reload put on it.
-  defp stream_grid_state(socket) do
+  # The wait is on the sections whose grid state changed: the rows a review
+  # previews, the rows a re-review or a closed change touched (so amber cells are
+  # removed as well as added), the changed row's tint and the one cell a refusal
+  # points at. Everything else keeps the empty grid the reload put on it.
+  defp stream_grid_state(socket, touched_ids \\ MapSet.new()) do
     grid = %{
-      preview: %{},
+      preview: preview_map(socket.assigns.change),
       just_changed: socket.assigns.just_changed,
       cell_error: socket.assigns.cell_error
     }
@@ -897,16 +931,30 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     socket = assign(socket, :grid_revision, socket.assigns.grid_revision + 1)
 
     socket.assigns.sections_list
-    |> Enum.filter(&grid_section?(&1, grid))
+    |> Enum.filter(&grid_section?(&1, grid, touched_ids))
     |> Enum.reduce(socket, &stream_insert(&2, :sections, Map.put(&1, :grid, grid)))
   end
 
-  defp grid_section?(section, grid) do
+  defp grid_section?(section, grid, touched_ids) do
     Enum.any?(section.rows, fn row ->
-      match?(%{trip: trip} when trip == row.id, grid.cell_error) or
-        MapSet.member?(grid.just_changed, row.id)
+      Map.has_key?(grid.preview, row.id) or
+        MapSet.member?(touched_ids, row.id) or
+        MapSet.member?(grid.just_changed, row.id) or
+        match?(%{trip: trip} when trip == row.id, grid.cell_error)
     end)
   end
+
+  # A change re-streams the sections it leaves as well as the ones it covers: a
+  # re-review, a stale result or a closed surface must clear the amber cells the
+  # previous preview drew.
+  defp restream_change(socket, previous_ids) do
+    stream_grid_state(socket, MapSet.new(previous_ids ++ preview_ids(socket.assigns.change)))
+  end
+
+  defp preview_map(%{review: %{preview: preview}}), do: preview
+  defp preview_map(_change), do: %{}
+
+  defp preview_ids(change), do: Map.keys(preview_map(change))
 
   defp cell_error(socket, context, message) do
     socket
@@ -1330,6 +1378,432 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp warning_outcome(socket, text) do
     assign(socket, :outcome, %{tone: :warning, text: text, undo?: false})
+  end
+
+  # --- reviewed bulk changes ---------------------------------------------------
+
+  # The §4.5 review lifecycle. `open_change` builds a command from the selection
+  # (or the named trip) and the kind's own defaults and reviews it without
+  # writing; `change_params` re-reviews with the posted control values;
+  # `apply_change` writes the reviewed command behind its fingerprint (INV-2);
+  # `refresh_change` re-reviews after a stale result and `cancel_change` closes
+  # the surface. The command, its review and the trip IDs stay in this process
+  # (INV-6): the client sends a kind, one trip UUID and control values, never a
+  # time, a fingerprint or a payload. Steps 31, 32 and 36 add their kinds by
+  # adding an `open_reviewed_change/3` and a `change_command/2` clause; an
+  # unknown kind is ignored rather than raising.
+  defp open_change(socket, kind, trip_id) do
+    if editor_access?(socket) do
+      open_reviewed_change(socket, kind, trip_id)
+    else
+      warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
+    end
+  end
+
+  defp open_reviewed_change(socket, "shift", _trip_id) do
+    case visible_ids(socket, MapSet.to_list(socket.assigns.selected_ids)) do
+      [] -> socket
+      ids -> review_change(socket, :shift, ids, %{direction: 1, minutes: 5, from_position: nil})
+    end
+  end
+
+  defp open_reviewed_change(socket, "timing", trip_id) do
+    case timing_change_ids(socket, trip_id) do
+      {:ok, ids} -> review_change(socket, :timing, ids, timing_params(socket, ids))
+      :not_found -> warning_outcome(socket, ScheduleComponents.error_message(:not_found))
+      :none -> socket
+    end
+  end
+
+  # Copy to calendar, Change calendar, Duplicate and Convert plug in here with
+  # their steps' builders.
+  defp open_reviewed_change(socket, _kind, _trip_id), do: socket
+
+  # Change timing acts on the selection, or on the one trip whose Timing cell
+  # opened it when nothing is selected. Only a row this page loaded resolves; a
+  # forged UUID is refused and never reviewed (FH-30).
+  defp timing_change_ids(socket, trip_id) do
+    case visible_ids(socket, MapSet.to_list(socket.assigns.selected_ids)) do
+      [] -> change_named_trip(socket, trip_id)
+      ids -> {:ok, ids}
+    end
+  end
+
+  defp change_named_trip(socket, trip_id) when is_binary(trip_id) do
+    case find_row(socket, trip_id) do
+      nil -> :not_found
+      row -> {:ok, [row.id]}
+    end
+  end
+
+  defp change_named_trip(_socket, _trip_id), do: :none
+
+  defp review_change(socket, kind, ids, params) do
+    # Opening a change clears the last write's report and the rows it tinted, the
+    # way the reference's strip takes the bar: the preview owns the grid state
+    # while the change is open (the section re-stream removes the tint too).
+    previous_ids =
+      preview_ids(socket.assigns.change) ++ MapSet.to_list(socket.assigns.just_changed)
+
+    change = %{
+      kind: kind,
+      ids: Enum.sort(ids),
+      params: params,
+      review: nil,
+      refusal: nil,
+      stale?: false,
+      applying?: false
+    }
+
+    socket
+    |> assign(:change, change)
+    |> assign(:just_changed, MapSet.new())
+    |> assign(:outcome, nil)
+    |> load_change_review()
+    |> restream_change(previous_ids)
+  end
+
+  # One review through the facade. The command is rebuilt from the change's own
+  # trip IDs and control values, so a re-review, a refresh after a stale result
+  # and the apply all name the same trips and the same parameters. A command that
+  # cannot be formed yet (no minutes typed, no timing chosen) leaves the change
+  # without a review; a review the engine refuses keeps its reason for the
+  # surface to render.
+  defp load_change_review(socket) do
+    change = socket.assigns.change
+
+    case change_command(socket, change) do
+      {:ok, command} ->
+        case Gtfs.review_trip_change(socket.assigns.route_id, command, audit_context(socket)) do
+          {:ok, review} ->
+            assign(socket, :change, %{change | review: review, refusal: nil, stale?: false})
+
+          {:error, reason} ->
+            assign(socket, :change, %{change | review: nil, refusal: [{:error, reason}]})
+        end
+
+      {:error, reason} ->
+        assign(socket, :change, %{change | review: nil, refusal: [{:error, reason}]})
+
+      :incomplete ->
+        assign(socket, :change, %{change | review: nil, refusal: nil})
+    end
+  end
+
+  # The two kinds this step owns. `:shift` is R4 with the strip's whole-minute
+  # delta and an optional displayed timepoint position; `:timing` is R5 with the
+  # chosen timing of the selection's pattern.
+  defp change_command(_socket, %{kind: :shift, ids: ids, params: params}) do
+    minutes = params.minutes
+
+    if is_integer(minutes) and minutes in 1..@max_shift_minutes do
+      {:ok, {:shift, ids, params.direction * minutes * 60, params.from_position}}
+    else
+      :incomplete
+    end
+  end
+
+  defp change_command(_socket, %{kind: :timing, ids: ids, params: %{timing_id: timing_id}})
+       when is_binary(timing_id) do
+    {:ok, {:set_timing, ids, timing_id}}
+  end
+
+  defp change_command(_socket, %{kind: :timing}), do: {:error, :timed_pattern_required}
+
+  defp change_command(_socket, _change), do: :incomplete
+
+  # The strip's default timing: the pattern's first timing that not every
+  # selected trip already uses (the prototype's default), falling back to the
+  # pattern's first. A pattern with no timings has nothing to choose, so the
+  # surface opens with `:timed_pattern_required`.
+  defp timing_params(socket, ids) do
+    timings = pattern_timings(socket, ids)
+    used = MapSet.new(Enum.map(ids, &timed_pattern_of(socket, &1)))
+    timing = Enum.find(timings, &(not MapSet.member?(used, &1.id))) || List.first(timings)
+
+    %{timing_id: timing && timing.id}
+  end
+
+  defp timed_pattern_of(socket, trip_id) do
+    case find_row(socket, trip_id) do
+      nil -> nil
+      row -> row.timed_pattern_id
+    end
+  end
+
+  defp pattern_timings(socket, [trip_id | _rest]) do
+    with %{} = row <- find_row(socket, trip_id),
+         %{} = pattern <- change_pattern(socket, row.route_pattern_id) do
+      pattern.timings
+    else
+      _missing -> []
+    end
+  end
+
+  defp pattern_timings(_socket, []), do: []
+
+  defp change_pattern(socket, route_pattern_id) do
+    Enum.find(socket.assigns.payload.patterns, &(&1.route_pattern_id == route_pattern_id))
+  end
+
+  # The posted control values are merged into the change's own parameter map. A
+  # malformed, forged or unknown value is ignored, so the reviewed command can
+  # only ever name the trips and positions the change opened with (FH-30, CR-5).
+  defp update_change(socket, raw) do
+    case socket.assigns.change do
+      %{} = change ->
+        if editor_access?(socket) do
+          previous_ids = preview_ids(change)
+          params = merge_change_params(socket, change, change_param_map(raw))
+
+          socket
+          |> assign(:change, %{change | params: params, refusal: nil, stale?: false})
+          |> load_change_review()
+          |> restream_change(previous_ids)
+        else
+          warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
+        end
+
+      nil ->
+        socket
+    end
+  end
+
+  # A form posts its fields flat; a surface that nests them under its own key
+  # posts `%{"change" => %{...}}`. Both shapes are read.
+  defp change_param_map(%{"change" => params}) when is_map(params), do: params
+  defp change_param_map(params) when is_map(params), do: params
+
+  defp merge_change_params(socket, %{kind: :shift} = change, raw) do
+    change.params
+    |> merge_shift_direction(raw)
+    |> merge_shift_minutes(raw)
+    |> merge_shift_from_position(socket, change, raw)
+  end
+
+  defp merge_change_params(socket, %{kind: :timing} = change, raw) do
+    case raw["timing_id"] do
+      id when is_binary(id) ->
+        if Enum.any?(pattern_timings(socket, change.ids), &(&1.id == id)),
+          do: %{change.params | timing_id: id},
+          else: change.params
+
+      _other ->
+        change.params
+    end
+  end
+
+  defp merge_shift_direction(params, raw) do
+    case raw["direction"] do
+      value when value in ["1", 1] -> %{params | direction: 1}
+      value when value in ["-1", -1] -> %{params | direction: -1}
+      _other -> params
+    end
+  end
+
+  defp merge_shift_minutes(params, raw) do
+    case shift_minutes(raw["minutes"]) do
+      {:ok, minutes} -> %{params | minutes: minutes}
+      :error -> params
+    end
+  end
+
+  defp shift_minutes(value) when is_integer(value), do: shift_minutes_integer(value)
+
+  defp shift_minutes(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {minutes, ""} -> shift_minutes_integer(minutes)
+      _other -> :error
+    end
+  end
+
+  defp shift_minutes(_value), do: :error
+
+  defp shift_minutes_integer(minutes) when minutes in 0..@max_shift_minutes, do: {:ok, minutes}
+  defp shift_minutes_integer(_minutes), do: :error
+
+  defp merge_shift_from_position(params, socket, change, raw) do
+    case change_from_position(socket, change, raw["from_position"]) do
+      {:ok, position} -> %{params | from_position: position}
+      :error -> params
+    end
+  end
+
+  # "Whole trip" arrives as an empty value or 0; any other position must be a
+  # column this page displays, so a forged position cannot widen the shift
+  # beyond what the strip offered.
+  defp change_from_position(_socket, _change, value) when value in [nil, "", "0", 0],
+    do: {:ok, nil}
+
+  defp change_from_position(socket, change, value) do
+    with {:ok, position} <- positive_position(value),
+         true <- displayed_position?(socket, change.ids, position) do
+      {:ok, position}
+    else
+      _other -> :error
+    end
+  end
+
+  defp positive_position(value) when is_integer(value) and value >= 1, do: {:ok, value}
+
+  defp positive_position(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {position, ""} when position >= 1 -> {:ok, position}
+      _other -> :error
+    end
+  end
+
+  defp positive_position(_value), do: :error
+
+  defp displayed_position?(socket, [trip_id | _rest], position) do
+    case find_section(socket, trip_id) do
+      {_dom_id, section} -> Enum.any?(section.columns, &(&1.position == position))
+      nil -> false
+    end
+  end
+
+  defp displayed_position?(_socket, _ids, _position), do: false
+
+  # The reviewed fingerprint is the only fence a bulk command accepts (R3,
+  # INV-2). A stale result is replaced by the fresh review the engine re-planned
+  # under lock and marked, so the surface offers Refresh instead of applying
+  # (FH-33); a refused change keeps its review and carries the errors; any other
+  # failure writes nothing and reports through the bar.
+  defp apply_change(socket) do
+    case socket.assigns.change do
+      %{review: %{}} = change ->
+        cond do
+          not editor_access?(socket) ->
+            warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
+
+          change.stale? ->
+            socket
+
+          true ->
+            submit_change(socket, change)
+        end
+
+      _no_review ->
+        socket
+    end
+  end
+
+  defp submit_change(socket, %{review: %{command: command, fingerprint: fingerprint}} = change) do
+    case Gtfs.apply_trip_change(
+           socket.assigns.route_id,
+           command,
+           {:reviewed, fingerprint},
+           audit_context(socket)
+         ) do
+      {:ok, result} ->
+        applied_change(socket, change, result)
+
+      {:error, {:stale_review, review}} ->
+        previous_ids = preview_ids(socket.assigns.change)
+
+        socket
+        |> assign(:change, %{change | review: review, refusal: nil, stale?: true})
+        |> restream_change(previous_ids)
+
+      {:error, {:refused, errors}} ->
+        assign(socket, :change, %{change | refusal: errors})
+
+      {:error, reason} ->
+        warning_outcome(socket, ScheduleComponents.error_message(reason))
+    end
+  end
+
+  # A successful apply is one write: the page reloads, the changed rows take the
+  # just-changed tint, the outcome is undoable, and the surface and the selection
+  # are cleared (the prototype's apply). The rows the preview covered are
+  # re-streamed even when the reload leaves them out of `just_changed`, so no
+  # amber cell survives the apply.
+  defp applied_change(socket, change, result) do
+    message = change_outcome(socket, change, result)
+    undo? = not is_nil(result.restore)
+    previous_ids = preview_ids(socket.assigns.change)
+
+    socket
+    |> assign(:change, nil)
+    |> assign(:selected_ids, MapSet.new())
+    |> assign(:selected_count, 0)
+    |> assign(:just_changed, MapSet.new(result.changed_trip_ids))
+    |> assign(:cell_error, nil)
+    |> assign(:outcome, %{tone: :info, text: message, undo?: undo?})
+    |> push_undo(result.restore, message)
+    |> reload_cell(MapSet.new(previous_ids))
+  end
+
+  # What the bar says after an apply, in the prototype's words. A shift names the
+  # minutes and direction and adds that blocks were kept when a shifted trip has
+  # one; a timing change names the timing the trips took.
+  defp change_outcome(socket, %{kind: :shift, params: params}, result) do
+    direction = if params.direction > 0, do: "later", else: "earlier"
+
+    kept =
+      if Enum.any?(result.changed_trip_ids, &block_kept?(socket, &1)),
+        do: " Blocks are kept.",
+        else: ""
+
+    "Shifted #{trip_count_label(length(result.changed_trip_ids))} #{params.minutes} min " <>
+      "#{direction}.#{kept}"
+  end
+
+  defp change_outcome(socket, %{kind: :timing, params: %{timing_id: timing_id}}, result) do
+    count = length(result.changed_trip_ids)
+    verb = if count == 1, do: "now uses", else: "now use"
+
+    "#{trip_count_label(count)} #{verb} #{timing_name(socket, timing_id)}."
+  end
+
+  defp block_kept?(socket, trip_id) do
+    case find_row(socket, trip_id) do
+      nil -> false
+      row -> is_binary(row.block_id)
+    end
+  end
+
+  defp timing_name(socket, timing_id) do
+    timings = Enum.flat_map(socket.assigns.payload.patterns, &Map.get(&1, :timings, []))
+
+    case Enum.find(timings, &(&1.id == timing_id)) do
+      nil -> "the timing"
+      timing -> timing.name
+    end
+  end
+
+  defp refresh_change(socket) do
+    case socket.assigns.change do
+      %{} = change ->
+        if editor_access?(socket) do
+          previous_ids = preview_ids(change)
+
+          socket
+          |> assign(:change, %{change | stale?: false, refusal: nil})
+          |> load_change_review()
+          |> restream_change(previous_ids)
+        else
+          warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
+        end
+
+      nil ->
+        socket
+    end
+  end
+
+  # Cancel keeps the selection so the verbs stay in reach (the prototype's close).
+  defp cancel_change(socket) do
+    case socket.assigns.change do
+      %{} = change ->
+        previous_ids = preview_ids(change)
+
+        socket
+        |> assign(:change, nil)
+        |> restream_change(previous_ids)
+
+      nil ->
+        socket
+    end
   end
 
   # --- mutations -------------------------------------------------------------
