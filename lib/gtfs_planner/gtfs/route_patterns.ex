@@ -48,6 +48,37 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
+  @doc """
+  Counts the trips left outside patterns in one organization and version, grouped
+  by route and reason.
+
+  `route_id` narrows the read to a single published route; `nil` covers the whole
+  version. Rows are ordered by `route_id` and then by descending count, with the
+  reason breaking ties so the order is stable for equal counts.
+  """
+  def left_out(organization_id, version_id, route_id \\ nil) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^organization_id and
+          t.gtfs_version_id == ^version_id and t.pattern_derivation_state == "custom",
+      group_by: [t.route_id, t.pattern_derivation_reason],
+      order_by: [asc: t.route_id],
+      select: %{
+        route_id: t.route_id,
+        reason: t.pattern_derivation_reason,
+        trip_count: count(t.id)
+      }
+    )
+    |> maybe_left_out_route(route_id)
+    |> order_by([t], desc: count(t.id), asc: t.pattern_derivation_reason)
+    |> Repo.all()
+  end
+
+  defp maybe_left_out_route(query, nil), do: query
+
+  defp maybe_left_out_route(query, route_id),
+    do: where(query, [t], t.route_id == ^route_id)
+
   def get_pattern(organization_id, version_id, route_id, pattern_id, timing_id \\ nil) do
     with {:ok, _route} <- published_route(organization_id, version_id, route_id),
          %RoutePattern{} = pattern <-
