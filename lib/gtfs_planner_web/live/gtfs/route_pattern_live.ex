@@ -3666,7 +3666,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     do: not Enum.all?(["arrival", "departure"], &is_integer(elapsed_seconds(values[&1])))
 
   defp raw_review_offset(value, shift) when is_integer(value), do: offset_input(value + shift)
-  defp raw_review_offset(_value, _shift), do: ""
+  defp raw_review_offset(_value, _shift), do: "—"
 
   defp shift_label(shifts, timing_id) when is_list(shifts) do
     case Enum.find(shifts, &(Map.get(&1, :timing_id) == timing_id)) do
@@ -4190,10 +4190,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp validate_timing_values([]), do: {:error, [], "Add a timing before saving."}
 
   defp validate_timing_values(rows) do
+    last_index = length(rows) - 1
+
     rows
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, []}, fn {row, index}, {:ok, acc} ->
-      case validate_timing_row(row, index, previous_departure(acc)) do
+      case validate_timing_row(row, index, last_index, previous_departure(acc)) do
         {:ok, parsed} -> {:cont, {:ok, acc ++ [parsed]}}
         {:error, message, field} -> {:halt, {:error, {message, field}}}
       end
@@ -4204,31 +4206,79 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
+  # A blank row is between the ends and carries no time, so the row it follows is
+  # the last row that actually has one, which is what the next timed row is
+  # compared against.
   defp previous_departure([]), do: nil
-  defp previous_departure(acc), do: acc |> List.last() |> Map.get(:departure_offset)
 
-  defp validate_timing_row(row, index, preceding) do
+  defp previous_departure(parsed) do
+    parsed
+    |> Enum.reverse()
+    |> Enum.find_value(fn %{departure_offset: departure} -> departure end)
+  end
+
+  defp validate_timing_row(row, index, last_index, preceding) do
     with {:ok, arrival} <- parse_elapsed_field(row.arrival, {row.position, :arrival}),
          {:ok, departure} <- parse_elapsed_field(row.departure, {row.position, :departure}) do
-      cond do
-        departure < arrival ->
-          {:error, "Departure must be at or after arrival.", {row.position, :departure}}
-
-        index == 0 and departure != 0 ->
-          {:error, "The first departure must be 00:00; other times are measured from it.",
-           {row.position, :departure}}
-
-        index > 0 and arrival < preceding ->
-          {:error, "Arrival must be at or after the previous departure.",
-           {row.position, :arrival}}
-
-        true ->
-          {:ok, %{row: row, arrival_offset: arrival, departure_offset: departure}}
+      if is_nil(arrival) or is_nil(departure) do
+        validate_blank_or_half_row(row, index, last_index, arrival, departure)
+      else
+        validate_timed_row(row, index, preceding, arrival, departure)
       end
     end
   end
 
-  defp parse_elapsed_field(value, field) do
+  # One cell empty and the other filled is a half pair: the row is malformed
+  # rather than blank, so the empty cell is the one named.
+  defp validate_blank_or_half_row(row, _index, _last_index, nil, departure)
+       when is_integer(departure),
+       do: {:error, needs_times_message(row), {row.position, :arrival}}
+
+  defp validate_blank_or_half_row(row, _index, _last_index, arrival, nil)
+       when is_integer(arrival),
+       do: {:error, needs_times_message(row), {row.position, :departure}}
+
+  # Clearing both cells is legal only where the timing rule allows a blank: not
+  # on either end and not at a timepoint, which always publishes a time.
+  defp validate_blank_or_half_row(row, index, last_index, nil, nil) do
+    if index in [0, last_index] or row.timepoint do
+      {:error, needs_times_message(row), {row.position, :arrival}}
+    else
+      {:ok, %{row: row, arrival_offset: nil, departure_offset: nil}}
+    end
+  end
+
+  defp validate_timed_row(row, index, preceding, arrival, departure) do
+    cond do
+      departure < arrival ->
+        {:error, "Departure must be at or after arrival.", {row.position, :departure}}
+
+      index == 0 and departure != 0 ->
+        {:error, "The first departure must be 00:00; other times are measured from it.",
+         {row.position, :departure}}
+
+      index > 0 and not is_nil(preceding) and arrival < preceding ->
+        {:error, "Arrival must be at or after the previous departure.", {row.position, :arrival}}
+
+      true ->
+        {:ok, %{row: row, arrival_offset: arrival, departure_offset: departure}}
+    end
+  end
+
+  defp needs_times_message(row), do: "#{row.name} needs arrival and departure times"
+
+  defp parse_elapsed_field(value, field) when is_binary(value) do
+    case String.trim(value) do
+      "" -> {:ok, nil}
+      _ -> parse_timed_field(value, field)
+    end
+  end
+
+  defp parse_elapsed_field(nil, _field), do: {:ok, nil}
+
+  defp parse_elapsed_field(value, field), do: parse_timed_field(value, field)
+
+  defp parse_timed_field(value, field) do
     case parse_elapsed(value) do
       {:ok, seconds} ->
         {:ok, seconds}
