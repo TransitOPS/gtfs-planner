@@ -74,6 +74,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponentsTest do
           editable?: true,
           editor_revoked?: false,
           new_path: "/patterns/new",
+          compare_path: "/patterns/compare",
           bulk_candidates: [],
           bulk_selected: MapSet.new(),
           bulk_dialog: nil,

@@ -60,6 +60,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   attr :editable?, :boolean, required: true
   attr :editor_revoked?, :boolean, required: true
   attr :new_path, :string, required: true
+  attr :compare_path, :string, required: true
   attr :bulk_candidates, :list, required: true, doc: "patterns with missing sections"
   attr :bulk_selected, :any, default: nil, doc: "MapSet of selected natural route_pattern_ids"
   attr :bulk_dialog, :map, default: nil
@@ -168,15 +169,26 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
           >
             Stop patterns
           </h2>
-          <.button
-            :if={@create_mode != :hidden}
-            id="patterns-create"
-            navigate={@new_path}
-            variant={if(@create_mode == :primary, do: "primary", else: "secondary")}
-            class="min-h-11"
-          >
-            <.icon name="hero-plus" class="size-4" /> Create pattern
-          </.button>
+          <div class="flex flex-wrap items-center gap-2">
+            <.button
+              :if={@pattern_count > 0}
+              id="patterns-compare"
+              navigate={@compare_path}
+              variant="secondary"
+              class="min-h-11"
+            >
+              <.icon name="hero-view-columns" class="size-4" /> Compare patterns
+            </.button>
+            <.button
+              :if={@create_mode != :hidden}
+              id="patterns-create"
+              navigate={@new_path}
+              variant={if(@create_mode == :primary, do: "primary", else: "secondary")}
+              class="min-h-11"
+            >
+              <.icon name="hero-plus" class="size-4" /> Create pattern
+            </.button>
+          </div>
         </div>
         <p class="mt-1.5 max-w-[80ch] text-[15px] leading-relaxed text-default">
           The stop sequences this route runs, such as the full route, a short turn or a

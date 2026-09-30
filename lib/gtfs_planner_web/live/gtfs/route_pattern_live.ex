@@ -1348,6 +1348,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                 editable?={@patterns_editable}
                 editor_revoked?={@editor_revoked?}
                 new_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/new"}
+                compare_path={
+                  ~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/compare"
+                }
                 bulk_candidates={@bulk_candidates}
                 bulk_selected={@bulk_selected}
                 bulk_dialog={@bulk_dialog}
@@ -1416,6 +1419,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                       do: [:details, :stops],
                       else: [:stops, :timings, :alignment, :details]
                     )
+                  }
+                  compare_path={
+                    @pattern &&
+                      ~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns/compare?#{[a: @pattern.route_pattern_id]}"
                   }
                   tab_chips={tab_chips(assigns)}
                   dirty?={@dirty?}
