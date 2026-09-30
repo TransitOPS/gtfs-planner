@@ -14,10 +14,33 @@
  * that focus (falling back to the same row when the remembered trip is gone).
  * Movement scrolls with the table region's scroll padding so the sticky grid
  * bar never covers the cursor.
+ *
+ * The hook also owns the in-cell time editor: the LiveView renders the empty
+ * `#cell-editor` container once, outside the streamed sections, and this hook
+ * places it over the cursor cell and fills it with the time input and the
+ * `#cell-reading` line. Typing a digit, `+` or `-` starts editing with that
+ * character; Enter or F2 edits the current text; Tab commits and moves right,
+ * Shift+Enter up, Enter down, Alt+Enter only the edited stop and Ctrl/⌘+Enter
+ * the whole trip; Esc cancels; Delete/Backspace outside editing clears the
+ * cell. The server owns the grammar: every text change asks for a reading with
+ * a 150 ms debounce over `cell_preview`, Enter asks `cell_commit` and the cell
+ * carries the pending state until the reply. The editor never holds a parsed
+ * time, a fingerprint or a restore payload.
  */
 const CELL_SELECTOR = 'td[id^="cell-"]';
 const SCROLL_REGION_SELECTOR = '[id$="-table-container"]';
 const TYPING_SELECTOR = "input, textarea, select, [contenteditable]";
+const EDITOR_SELECTOR = "#cell-editor";
+// The design system's text input, 44 px tall and right-aligned for a clock.
+const EDITOR_INPUT_CLASS =
+  "min-h-11 w-full rounded-control border border-control bg-white px-3 text-right text-sm font-[650] text-strong tabular-nums focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus";
+// The reference's empty-entry hint; the reading itself always comes from the server.
+const EDIT_HINT = "Type 605, 6:05p, 25:10 or +3";
+const EMPTY_COMMIT_MESSAGE = "Type a time, or press Esc to keep the current one.";
+const SAVING_TITLE = "Saving…";
+// Two keystrokes inside this window ask the server for one reading (PM-7).
+const PREVIEW_DEBOUNCE_MS = 150;
+const START_EDIT_KEYS = /^[0-9+\-]$/;
 const NAVIGATION_KEYS = new Set([
   "ArrowDown",
   "ArrowUp",
@@ -39,6 +62,11 @@ const TimetableGrid = {
     this._columnIndex = 0;
     this._rowIndex = 0;
     this._restoreFocus = false;
+    this._editor = null;
+    this._editorElement = this.el.querySelector(EDITOR_SELECTOR);
+    this._editorInput = null;
+    this._editorReadingText = null;
+    this._editorReadingKeys = null;
 
     this._onKeydown = (event) => this._handleKeydown(event);
     this._onClick = (event) => this._handleClick(event);
@@ -46,11 +74,15 @@ const TimetableGrid = {
     this._onFocusOut = (event) => {
       if (!this.el.contains(event.relatedTarget)) this.el.classList.add("grid-idle");
     };
+    this._onViewportChange = () => this._placeEditor();
 
     this.el.addEventListener("keydown", this._onKeydown);
     this.el.addEventListener("click", this._onClick);
     this.el.addEventListener("focusin", this._onFocusIn);
     this.el.addEventListener("focusout", this._onFocusOut);
+    // Capture so the table region's own scrolling keeps the editor on its cell.
+    window.addEventListener("scroll", this._onViewportChange, true);
+    window.addEventListener("resize", this._onViewportChange);
 
     this.el.classList.add("grid-idle");
   },
@@ -64,7 +96,16 @@ const TimetableGrid = {
     this._restoreFocus = false;
     if (!this._cursor && !this._cursorCell) return;
 
-    this._applyCursor({ focus });
+    // An open editor owns the focus ring: re-rendering the cell under it must
+    // not pull focus back to the cell.
+    const editing = this._editorOpen();
+    this._applyCursor({ focus: focus && !editing });
+
+    if (!editing) return;
+
+    const cell = this._cellFor(this._editor);
+    if (cell) this._placeEditor(cell);
+    else this._closeEditor();
   },
 
   destroyed() {
@@ -72,6 +113,9 @@ const TimetableGrid = {
     this.el.removeEventListener("click", this._onClick);
     this.el.removeEventListener("focusin", this._onFocusIn);
     this.el.removeEventListener("focusout", this._onFocusOut);
+    window.removeEventListener("scroll", this._onViewportChange, true);
+    window.removeEventListener("resize", this._onViewportChange);
+    this._stopEditing();
     this._onKeydown = null;
     this._onClick = null;
   },
@@ -127,6 +171,29 @@ const TimetableGrid = {
 
     const modifier = event.metaKey || event.ctrlKey;
 
+    // Enter and F2 open the editor on the cell's current text; a digit, `+` or
+    // `-` opens it already holding that character. The timing cell (no
+    // occurrence position) and a frequency row's cells are not editable here.
+    if (event.key === "Enter" || event.key === "F2") {
+      if (!this._canEdit(cell)) return;
+      event.preventDefault();
+      this._startEdit(cell);
+      return;
+    }
+
+    if (event.key === "Delete" || event.key === "Backspace") {
+      if (!this._canEdit(cell)) return;
+      event.preventDefault();
+      this._clearCell(cell);
+      return;
+    }
+
+    if (!modifier && !event.altKey && START_EDIT_KEYS.test(event.key) && this._canEdit(cell)) {
+      event.preventDefault();
+      this._startEdit(cell, event.key);
+      return;
+    }
+
     switch (event.key) {
       case "ArrowDown":
       case "ArrowUp": {
@@ -166,7 +233,13 @@ const TimetableGrid = {
   _handleClick(event) {
     if (event.defaultPrevented) return;
 
-    const cell = event.target.closest(CELL_SELECTOR);
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+
+    // A click outside the editor ends an open edit; the click still moves the cursor.
+    if (this._editorOpen() && !target.closest(EDITOR_SELECTOR)) this._closeEditor();
+
+    const cell = target.closest(CELL_SELECTOR);
     if (!cell || !this.el.contains(cell)) return;
 
     this._setCursor(cell, { focus: true });
@@ -209,6 +282,378 @@ const TimetableGrid = {
     if (rowHeight <= 0 || regionHeight <= 0) return PAGE_ROWS_FALLBACK;
 
     return Math.max(1, Math.floor(regionHeight / rowHeight));
+  },
+
+  // --- the in-cell time editor ----------------------------------------------
+
+  _editorOpen() {
+    return Boolean(
+      this._editor && this._editorElement && this._editorElement.classList.contains("is-open")
+    );
+  },
+
+  // Only a stop time is edited here: the timing cell carries no occurrence
+  // position, and a frequency trip's cells open its drawer instead (step 24).
+  _canEdit(cell) {
+    if (!cell || !cell.dataset.pos) return false;
+    const row = cell.closest("tr");
+    return !(row && row.querySelector('[id$="-frequency"]'));
+  },
+
+  _cellFor(source) {
+    if (!source) return null;
+    const trip = source.trip ?? null;
+    const pos = source.pos ?? null;
+
+    return (
+      this._cells().find(
+        (cell) => (cell.dataset.trip || null) === trip && (cell.dataset.pos ?? null) === pos
+      ) || null
+    );
+  },
+
+  // The server owns the grammar, so the editor starts from the cell's shown
+  // text: `8:05` without the `+1 day` marker, and empty for a missing time.
+  _cellText(cell) {
+    const shown = cell.querySelector(".tabular-nums") || cell;
+    const text = (shown.textContent || "").trim();
+    return text === "—" ? "" : text;
+  },
+
+  _buildEditor() {
+    if (this._editorInput && this._editorElement.contains(this._editorInput)) return;
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "cell-editor-input";
+    input.className = EDITOR_INPUT_CLASS;
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.inputMode = "text";
+    input.setAttribute("aria-label", "Time at this stop");
+    input.setAttribute("aria-describedby", "cell-reading");
+    input.addEventListener("keydown", (event) => this._handleEditorKeydown(event));
+    input.addEventListener("input", () => this._handleEditorInput());
+    input.addEventListener("blur", () => setTimeout(() => this._closeEditor(), 0));
+
+    const reading = document.createElement("div");
+    reading.id = "cell-reading";
+    reading.innerHTML = '<p class="cell-reading-value"></p><p class="cell-reading-keys"></p>';
+
+    this._editorElement.replaceChildren(input, reading);
+    this._editorInput = input;
+    this._editorReadingText = reading.querySelector(".cell-reading-value");
+    this._editorReadingKeys = reading.querySelector(".cell-reading-keys");
+  },
+
+  _startEdit(cell, initial = null) {
+    if (!this._editorElement || !this._canEdit(cell)) return;
+
+    const value = initial === null ? this._cellText(cell) : initial;
+    this._editor = {
+      trip: cell.dataset.trip,
+      pos: cell.dataset.pos,
+      cell,
+      value,
+      sequence: 0,
+      timer: null,
+      committing: false,
+    };
+
+    this._buildEditor();
+    this._editorInput.value = value;
+    this._editorElement.classList.add("is-open");
+    this._editorElement.classList.remove("is-error");
+    this._renderKeys(cell);
+    this._placeEditor(cell);
+
+    this._editorInput.focus();
+    if (initial === null) this._editorInput.select();
+    else this._editorInput.setSelectionRange(value.length, value.length);
+
+    this._schedulePreview();
+  },
+
+  _handleEditorInput() {
+    if (!this._editor) return;
+    this._editor.value = this._editorInput.value;
+    this._schedulePreview();
+  },
+
+  _handleEditorKeydown(event) {
+    const modifier = event.metaKey || event.ctrlKey;
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const mode = modifier ? "anchor" : event.altKey ? "only" : "later";
+      this._commitEditor(event.shiftKey ? "up" : "down", mode);
+      return;
+    }
+
+    if (event.key === "Tab") {
+      event.preventDefault();
+      this._commitEditor(event.shiftKey ? "left" : "right", "later");
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      this._cancelEditor();
+    }
+  },
+
+  // A reading request per settled keystroke burst; an empty entry keeps the hint.
+  _schedulePreview() {
+    const editor = this._editor;
+    if (!editor) return;
+
+    clearTimeout(editor.timer);
+    editor.timer = null;
+    editor.sequence += 1;
+    this._clearError();
+
+    if (editor.value.trim() === "") {
+      this._renderHint();
+      return;
+    }
+
+    const sequence = editor.sequence;
+    this._editorReadingText.replaceChildren();
+    editor.timer = setTimeout(() => this._pushPreview(sequence), PREVIEW_DEBOUNCE_MS);
+  },
+
+  _pushPreview(sequence) {
+    const editor = this._editor;
+    if (!editor || editor.sequence !== sequence) return;
+
+    editor.timer = null;
+    this.pushEvent(
+      "cell_preview",
+      { trip: editor.trip, position: Number(editor.pos), text: editor.value },
+      (reply) => {
+        if (this._editor !== editor || editor.sequence !== sequence) return;
+        if (reply && reply.ok && reply.reading !== undefined) this._renderReading(reply);
+        else this._renderError(reply && reply.message);
+      }
+    );
+  },
+
+  _commitEditor(move, mode) {
+    const editor = this._editor;
+    if (!editor) return;
+
+    const text = editor.value;
+    if (text.trim() === "") {
+      this._renderError(EMPTY_COMMIT_MESSAGE);
+      return;
+    }
+
+    clearTimeout(editor.timer);
+    editor.timer = null;
+    editor.sequence += 1;
+    editor.committing = true;
+
+    const cell = editor.cell;
+    this._hideEditor();
+    this._setPending(cell);
+
+    this.pushEvent(
+      "cell_commit",
+      { trip: editor.trip, position: Number(editor.pos), text, mode },
+      (reply) => {
+        this._clearPending(this._cellFor(editor) || cell);
+        if (this._editor === editor) editor.committing = false;
+
+        if (reply && reply.ok) {
+          this._clearEditor();
+          this._moveAfterCommit(editor, move);
+          return;
+        }
+
+        // A refused edit keeps the typed text in place with the server's reason.
+        if (this._editor !== editor) return;
+        this._showEditor();
+        this._renderError(reply && reply.message);
+      }
+    );
+  },
+
+  _cancelEditor() {
+    const editor = this._editor;
+    const cell = editor ? this._cellFor(editor) || editor.cell : null;
+
+    this._closeEditor();
+    if (cell) this._setCursor(cell, { focus: true });
+  },
+
+  // Esc and leaving the grid close the editor; `cell_commit` only hides it while
+  // the write is in flight so the cell's pending state is visible underneath.
+  _closeEditor() {
+    if (this._editor && this._editor.committing) return;
+    this._clearEditor();
+  },
+
+  _clearEditor() {
+    this._stopEditing();
+    if (!this._editorElement) return;
+    this._editorElement.classList.remove("is-open", "is-error");
+    this._editorElement.removeAttribute("style");
+  },
+
+  _stopEditing() {
+    if (this._editor) clearTimeout(this._editor.timer);
+    this._editor = null;
+  },
+
+  _hideEditor() {
+    this._editorElement.classList.remove("is-open");
+  },
+
+  _showEditor() {
+    const editor = this._editor;
+    if (!editor || !this._editorElement) return;
+
+    const cell = this._cellFor(editor);
+    if (!cell) return;
+
+    editor.cell = cell;
+    this._editorElement.classList.add("is-open");
+    this._placeEditor(cell);
+    this._editorInput.focus();
+  },
+
+  _moveAfterCommit(editor, move) {
+    const cell = this._cellFor(editor) || editor.cell;
+    if (!cell) return;
+
+    if (move === "up") this._moveV(cell, -1);
+    else if (move === "right") this._moveH(cell, 1);
+    else if (move === "left") this._moveH(cell, -1);
+    else this._moveV(cell, 1);
+  },
+
+  _clearCell(cell) {
+    const trip = cell.dataset.trip;
+    const position = cell.dataset.pos;
+    if (!trip || !position) return;
+
+    this._setPending(cell);
+    this.pushEvent("cell_clear", { trip, position: Number(position) });
+  },
+
+  _setPending(cell) {
+    if (!cell) return;
+    if (cell.dataset.savedTitle === undefined) {
+      cell.dataset.savedTitle = cell.getAttribute("title") || "";
+    }
+
+    cell.classList.add("is-pending");
+    cell.setAttribute("title", SAVING_TITLE);
+  },
+
+  _clearPending(cell) {
+    if (!cell) return;
+    cell.classList.remove("is-pending");
+
+    if (cell.dataset.savedTitle) cell.setAttribute("title", cell.dataset.savedTitle);
+    else cell.removeAttribute("title");
+  },
+
+  _placeEditor(cell = null) {
+    const editor = this._editor;
+    if (!editor || !this._editorOpen()) return;
+
+    const target = cell || this._cellFor(editor) || editor.cell;
+    if (!target || !target.isConnected) return;
+
+    const rect = target.getBoundingClientRect();
+    const style = this._editorElement.style;
+    style.left = `${rect.left}px`;
+    style.top = `${rect.top}px`;
+    style.width = `${rect.width}px`;
+    style.height = `${rect.height}px`;
+  },
+
+  _renderHint() {
+    if (!this._editorReadingText) return;
+
+    const hint = document.createElement("span");
+    hint.className = "text-muted";
+    hint.textContent = EDIT_HINT;
+    this._editorReadingText.replaceChildren(hint);
+  },
+
+  _renderReading(reply) {
+    if (!this._editorReadingText) return;
+
+    const value = document.createElement("span");
+    value.className = "font-[650] text-strong";
+    value.textContent = `Reads as ${reply.reading}`;
+    this._editorReadingText.replaceChildren(value);
+
+    if (reply.note) {
+      const note = document.createElement("span");
+      note.className = "text-muted";
+      note.textContent = ` (${reply.note})`;
+      this._editorReadingText.append(note);
+    }
+
+    if (reply.effect) {
+      const effect = document.createElement("span");
+      effect.className = "text-default";
+      effect.textContent = ` · ${reply.effect}`;
+      this._editorReadingText.append(effect);
+    }
+  },
+
+  _renderError(message) {
+    if (!this._editorReadingText) return;
+
+    const text = document.createElement("span");
+    text.className = "font-[650] text-error-fg";
+    text.textContent = message || "";
+    this._editorReadingText.replaceChildren(text);
+    this._editorElement.classList.add("is-error");
+  },
+
+  _clearError() {
+    if (this._editorElement) this._editorElement.classList.remove("is-error");
+  },
+
+  // The reference's key hints: the first column saves on Enter alone, every
+  // other stop names what each commit key does to the rest of the trip.
+  _renderKeys(cell) {
+    if (!this._editorReadingKeys) return;
+
+    const row = this._rows().find((entry) => entry.cells.includes(cell));
+    const first = Boolean(row && row.cells[0] === cell);
+
+    this._editorReadingKeys.replaceChildren();
+
+    for (const [cap, text] of this._keyHintSegments(first)) {
+      const key = document.createElement("kbd");
+      key.textContent = cap;
+      this._editorReadingKeys.append(key);
+      if (text) this._editorReadingKeys.append(document.createTextNode(text));
+    }
+  },
+
+  _keyHintSegments(first) {
+    if (first) {
+      return [
+        ["Enter", " save · "],
+        ["Esc", " cancel"],
+      ];
+    }
+
+    return [
+      ["Enter", " later stops move · "],
+      ["Alt", "+"],
+      ["Enter", " only this stop · "],
+      ["⌘", "+"],
+      ["Enter", " whole trip moves · "],
+      ["Esc", " cancel"],
+    ];
   },
 
   // Re-applies tabindex=0 and the ring to the remembered cursor, or moves it to

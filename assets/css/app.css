@@ -4855,3 +4855,80 @@ body:has(#home-page) {
 #schedules-grid [id$="-table-container"] {
   scroll-padding-bottom: 78px;
 }
+
+/* ── Schedules timetable grid: the in-cell time editor ──
+   The LiveView renders `#cell-editor` once inside `#schedules-grid` and outside
+   the streamed sections; the grid hook positions it over the cursor cell and
+   fills it with the time input and the reading line under the cell. `fixed`
+   keeps the table region's own scroll and clipping from cutting the reading
+   line away from the cell, and the hook re-places the editor while it is open.
+   The input is the design system's 44 px control; the reading line is the
+   reference's card with the key hints in key caps. */
+#cell-editor {
+  position: fixed;
+  z-index: 40;
+  display: none;
+}
+
+#cell-editor.is-open {
+  display: block;
+}
+
+#cell-editor input {
+  height: 100%;
+}
+
+/* A refused entry keeps the typed value with the cell's error ring. */
+#cell-editor.is-error input,
+#cell-editor.is-error input:focus-visible {
+  outline: 2px solid var(--color-error-fg);
+  outline-offset: -2px;
+}
+
+#cell-reading {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 1;
+  margin-top: 4px;
+  width: max-content;
+  max-width: 440px;
+  white-space: normal;
+  border: 1px solid var(--color-subtle);
+  border-radius: var(--radius-control);
+  background: #fff;
+  padding: 8px 12px;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.375;
+  box-shadow: 0 4px 18px rgb(10 19 48 / 0.09);
+}
+
+#cell-reading p {
+  margin: 0;
+}
+
+#cell-reading .cell-reading-keys {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+#cell-reading kbd {
+  display: inline-flex;
+  min-width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  border: 1px solid var(--color-subtle);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: #fff;
+  color: var(--color-strong);
+  font-family: var(--font-ds);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
