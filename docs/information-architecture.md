@@ -183,7 +183,8 @@ badges; New route drawer.
 
 **Route › Patterns** (Live, with proposed additions):
 - A **Generate missing alignments** bulk action, and a missing-segment count on each pattern row.
-- A "N trips use a different headsign" warning on each pattern row.
+- A headsign count on each pattern row ("All N trips" or "M trips differ"), warning only when
+  likely typos exist.
 
 **Route › Patterns › Compare patterns** (Live): select two patterns, then open a full-width page
 under the route. The Patterns tab stays current.
@@ -213,9 +214,14 @@ under the route. The Patterns tab stays current.
     export sets `shape_dist_traveled`.
 - **Details** (Live), with a proposed addition next to "Headsign for new trips":
   - The line "Used by N trips · M use a different headsign", with **Review trips**.
-  - Changing the headsign asks whether to update the trips that use the old one.
-  - The review drawer resets differing trips to the default or keeps them (for example a short
-    turn).
+  - Changing the headsign shows an inline "Also update N trips" box, checked by default, so the
+    trips that follow the default get the new value when you save.
+  - **Review trips** opens one drawer with two modes: change mode ("Trips the new headsign
+    reaches") preselects the trips that show the old value and hands the selection back to the
+    page, and exceptions mode ("Trips with a different headsign") preselects nothing and applies
+    immediately.
+  - Trips that differ keep their own headsign — for example an interlined trip that continues
+    from another route.
   - There is no separate list of headsigns across the version. A headsign belongs to trips and
     defaults from the timing, then the pattern.
 

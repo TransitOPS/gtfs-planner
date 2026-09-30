@@ -306,8 +306,17 @@ existed:
 The additions:
 - Next to each headsign field: "Used by N trips · M use a different headsign", with **Review
   trips**.
-- Changing a headsign asks whether to update the trips that use the old one.
-- The review drawer resets differing trips or keeps them, for example a short-turn trip.
+- Changing a headsign shows an inline "Also update N trips" box, checked by default, so the
+  trips that follow the default get the new value when you save. It starts unchecked when the
+  edit clears the headsign.
+- **Review trips** opens one drawer with two modes. Change mode ("Trips the new headsign
+  reaches") preselects the trips that show the old value and hands the selection back to the
+  page. Exceptions mode ("Trips with a different headsign") preselects nothing and applies
+  immediately.
+- Trips that differ keep their own headsign — for example an interlined trip that continues
+  from another route.
+- Route › Patterns rows show the headsign as a count ("All N trips" or "M trips differ") and
+  warn only when likely typos exist.
 
 **Rejected.** A version-wide headsign index. It would catch the same destination spelled
 differently across patterns, but the product owner chose pattern level only.
