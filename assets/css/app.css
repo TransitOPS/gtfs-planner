@@ -4792,3 +4792,66 @@ body:has(#home-page) {
 #run-drawer [data-role="pay-total"] {
   border-bottom: none;
 }
+
+/* ── Schedules timetable grid: the editable cells' cursor and states ──
+   The class names are the shared state vocabulary of the server-rendered cells
+   and the grid hook, matching revision 2 of the advanced-trip-editing prototype:
+   `is-preview` (a reviewed change shown before it is written), `is-pending` (a
+   write in flight), `is-error` (an invalid or refused entry), `is-changed` (a row
+   the last write touched) and `err-row` (the full-width error row under a trip).
+   The tones are the design system's editable time cells, just-changed row
+   markers and error pair. */
+#schedules-grid td[id^="cell-"] {
+  cursor: cell;
+  outline: none;
+}
+
+/* One inset ring, drawn inside the cell so the pinned columns never clip it. */
+#schedules-grid td[id^="cell-"]:focus-visible,
+#schedules-grid td[id^="cell-"].is-cursor {
+  box-shadow: inset 0 0 0 2px var(--color-focus);
+}
+
+/* The cursor stays marked, in the muted ring, while focus is elsewhere. */
+#schedules-grid.grid-idle td[id^="cell-"].is-cursor {
+  box-shadow: inset 0 0 0 2px var(--color-navy-300);
+}
+
+#schedules-grid td.is-preview,
+#schedules-grid td.is-pending {
+  background: var(--color-warning-bg);
+  color: var(--color-warning-fg);
+  font-weight: 650;
+  box-shadow: inset 0 -2px 0 var(--color-warning-line);
+}
+
+#schedules-grid td.is-preview span,
+#schedules-grid td.is-pending span {
+  color: inherit;
+}
+
+/* A preview or pending cell that also holds the cursor keeps the full ring. */
+#schedules-grid td.is-cursor.is-preview,
+#schedules-grid td.is-cursor.is-pending {
+  box-shadow: inset 0 0 0 2px var(--color-focus);
+}
+
+#schedules-grid td.is-error {
+  box-shadow: inset 0 0 0 2px var(--color-error-fg);
+}
+
+#schedules-grid tr.is-changed td {
+  background: var(--color-soft);
+}
+
+#schedules-grid tr.err-row td {
+  height: auto;
+  background: var(--color-error-bg);
+}
+
+/* The sticky grid bar (step 28) must never cover the cursor cell. The revision-2
+   prototype's bar measures 66 px at 1440x900 with a 12 px gap from the viewport's
+   bottom edge; the hook scrolls with this padding. */
+#schedules-grid [id$="-table-container"] {
+  scroll-padding-bottom: 78px;
+}

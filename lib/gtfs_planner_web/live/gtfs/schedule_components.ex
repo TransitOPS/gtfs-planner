@@ -41,6 +41,11 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   @focus_inset "focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
 
+  # The grid state a section carries before any action: no reviewed preview, no
+  # just-changed trips and no refused cell. `display_sections/1` puts this on every
+  # section; the fallback keeps a directly rendered section working.
+  @empty_grid %{preview: %{}, just_changed: MapSet.new(), cell_error: nil}
+
   # --- scope bar ---------------------------------------------------------------
 
   @doc """
@@ -1805,7 +1810,9 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
       |> assign(:rows, rows)
       |> assign(:section_id, section.pattern.route_pattern_id)
       |> assign(:first_stop, first_stop)
+      |> assign(:first_position, first_stop && first_stop.position)
       |> assign(:stop_columns, stop_columns)
+      |> assign(:grid, grid(section))
       |> assign(
         :timing_totals,
         Map.new(section.timing_lines, &{&1.timing_id, round_minutes(&1.total_secs)})
@@ -1998,118 +2005,160 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
             </tr>
           </thead>
           <tbody>
-            <tr
-              :for={row <- @rows}
-              id={"trip-#{row.trip_id}"}
-              data-sel={to_string(MapSet.member?(@selected_ids, row.id))}
-              class="group"
-            >
-              <td class={[td_class(), "z-10", selection_cell_class()]}>
-                <label class="flex min-h-11 min-w-11 items-center justify-center">
-                  <input
-                    type="checkbox"
-                    id={"trip-select-#{row.trip_id}"}
-                    checked={MapSet.member?(@selected_ids, row.id)}
-                    phx-click="toggle_trip"
-                    phx-value-trip={row.id}
-                    phx-disconnected={JS.set_attribute({"disabled", ""})}
-                    phx-connected={JS.remove_attribute("disabled")}
-                    aria-label={"Select trip #{row.trip_id}"}
-                    class="size-[18px] accent-action"
-                  />
-                </label>
-              </td>
-              <td class={[td_class(), "z-10 py-2", departs_cell_class()]}>
-                <span
-                  id={"trip-#{row.trip_id}-start"}
-                  class="text-[15px] font-bold tabular-nums text-strong"
-                  title={row.start_cell.title}
-                >
-                  {row.start_cell.text}
-                </span>
-                <span
-                  :if={row.start_cell.marker}
-                  id={"trip-#{row.trip_id}-marker"}
-                  class="ml-1 text-[12px] font-normal text-muted"
-                >
-                  {day_marker(row.start_cell.marker)}
-                </span>
-              </td>
-              <td
-                :if={row.stops_differ? and @stop_columns != []}
-                id={"trip-#{row.trip_id}-stops-differ"}
-                colspan={length(@stop_columns)}
-                class={[td_class(), "text-center text-[13px] italic text-muted"]}
+            <%= for row <- @rows do %>
+              <% preview = Map.get(@grid.preview, row.id, %{})
+              cell_error = cell_error_for(@grid, row) %>
+              <tr
+                id={"trip-#{row.trip_id}"}
+                data-sel={to_string(MapSet.member?(@selected_ids, row.id))}
+                class={["group", MapSet.member?(@grid.just_changed, row.id) && "is-changed"]}
               >
-                Stops differ from this pattern, so its times aren't shown here.
-              </td>
-              <td
-                :for={column <- @stop_columns}
-                :if={not row.stops_differ?}
-                class={[
-                  td_class(),
-                  "whitespace-nowrap text-right text-sm tabular-nums",
-                  row.frequency? && "italic text-muted",
-                  not row.frequency? && "text-default"
-                ]}
-              >
-                <.timetable_cell cell={row_cell(row, column)} />
-              </td>
-              <td class={[td_class(), "py-2 text-left text-sm"]}>
-                <span class="block whitespace-nowrap">
-                  <%= if row.custom? do %>
-                    <span class="inline-flex rounded-badge bg-warning-bg px-2 py-0.5 text-[13px] font-[650] text-warning-fg">
-                      Custom times
-                    </span>
-                  <% else %>
-                    <span class="font-semibold text-strong">{row.timing}</span>
-                    <span class="tabular-nums text-muted">{timing_minutes(@timing_totals, row)}</span>
-                  <% end %>
-                </span>
-                <span
-                  :if={estimate_problem_text(Map.get(row, :estimate_problem))}
-                  id={"trip-#{row.trip_id}-estimate-problem"}
-                  class="mt-1 inline-flex rounded-badge bg-warning-bg px-2 py-0.5 text-[13px] font-[650] text-warning-fg"
-                  role="img"
-                  aria-label={estimate_problem_text(Map.get(row, :estimate_problem))}
+                <td class={[td_class(), "z-10", selection_cell_class()]}>
+                  <label class="flex min-h-11 min-w-11 items-center justify-center">
+                    <input
+                      type="checkbox"
+                      id={"trip-select-#{row.trip_id}"}
+                      checked={MapSet.member?(@selected_ids, row.id)}
+                      phx-click="toggle_trip"
+                      phx-value-trip={row.id}
+                      phx-disconnected={JS.set_attribute({"disabled", ""})}
+                      phx-connected={JS.remove_attribute("disabled")}
+                      aria-label={"Select trip #{row.trip_id}"}
+                      class="size-[18px] accent-action"
+                    />
+                  </label>
+                </td>
+                <td
+                  id={@first_position && "cell-#{row.trip_id}-#{@first_position}"}
+                  data-trip={row.id}
+                  data-pos={@first_position}
+                  tabindex="-1"
+                  title={preview_title(preview, @first_position, row.start_cell.text)}
+                  class={[
+                    td_class(),
+                    "z-10 py-2",
+                    departs_cell_class(),
+                    preview_class(preview, @first_position),
+                    error_class(cell_error, @first_position)
+                  ]}
                 >
-                  <.icon name="hero-exclamation-triangle" class="mr-1 size-3.5" />
-                  {estimate_problem_text(Map.get(row, :estimate_problem))}
-                </span>
-                <span :if={row.headsign} class="block text-[12px] text-muted">
-                  To {row.headsign}
-                </span>
-                <span
-                  :if={row.frequency_label}
-                  id={"trip-#{row.trip_id}-frequency"}
-                  class="block text-[12px] text-muted"
-                >
-                  Frequency service · {row.frequency_label}
-                </span>
-              </td>
-              <td class={[td_class(), "whitespace-nowrap text-left text-sm tabular-nums"]}>
-                <%= if present?(row.block_id) do %>
-                  {row.block_id}
-                <% else %>
-                  <span class="text-muted">—</span>
-                <% end %>
-              </td>
-              <td class={[td_class(), "whitespace-nowrap text-left text-sm"]}>
-                <%= if present?(row.trip_short_name) do %>
-                  <span class="tabular-nums text-default">{row.trip_short_name}</span>
-                <% else %>
+                  <% departs = shown_cell(@first_position, row.start_cell, preview) %>
                   <span
-                    class="font-mono text-[12px] text-muted"
-                    title="No trip number. Showing the trip ID."
+                    id={"trip-#{row.trip_id}-start"}
+                    class="text-[15px] font-bold tabular-nums text-strong"
+                    title={departs.title}
                   >
-                    {row.trip_id}
+                    {departs.text}
                   </span>
-                <% end %>
-              </td>
-              <td class={[td_class(), "z-10", actions_cell_class()]}>
-                <.row_actions row={row} />
-              </td>
-            </tr>
+                  <span
+                    :if={departs.marker}
+                    id={"trip-#{row.trip_id}-marker"}
+                    class="ml-1 text-[12px] font-normal text-muted"
+                  >
+                    {day_marker(departs.marker)}
+                  </span>
+                </td>
+                <td
+                  :if={row.stops_differ? and @stop_columns != []}
+                  id={"trip-#{row.trip_id}-stops-differ"}
+                  colspan={length(@stop_columns)}
+                  class={[td_class(), "text-center text-[13px] italic text-muted"]}
+                >
+                  Stops differ from this pattern, so its times aren't shown here.
+                </td>
+                <td
+                  :for={column <- @stop_columns}
+                  :if={not row.stops_differ?}
+                  id={"cell-#{row.trip_id}-#{column.position}"}
+                  data-trip={row.id}
+                  data-pos={column.position}
+                  tabindex="-1"
+                  title={preview_title(preview, column.position, row_cell(row, column).text)}
+                  class={[
+                    td_class(),
+                    "whitespace-nowrap text-right text-sm tabular-nums",
+                    row.frequency? && "italic text-muted",
+                    not row.frequency? && "text-default",
+                    preview_class(preview, column.position),
+                    error_class(cell_error, column.position)
+                  ]}
+                >
+                  <.timetable_cell cell={shown_cell(column.position, row_cell(row, column), preview)} />
+                </td>
+                <td
+                  id={"cell-#{row.trip_id}-timing"}
+                  data-trip={row.id}
+                  tabindex="-1"
+                  class={[td_class(), "py-2 text-left text-sm"]}
+                >
+                  <span class="block whitespace-nowrap">
+                    <%= if row.custom? do %>
+                      <span class="inline-flex rounded-badge bg-warning-bg px-2 py-0.5 text-[13px] font-[650] text-warning-fg">
+                        Custom times
+                      </span>
+                    <% else %>
+                      <span class="font-semibold text-strong">{row.timing}</span>
+                      <span class="tabular-nums text-muted">
+                        {timing_minutes(@timing_totals, row)}
+                      </span>
+                    <% end %>
+                  </span>
+                  <span
+                    :if={estimate_problem_text(Map.get(row, :estimate_problem))}
+                    id={"trip-#{row.trip_id}-estimate-problem"}
+                    class="mt-1 inline-flex rounded-badge bg-warning-bg px-2 py-0.5 text-[13px] font-[650] text-warning-fg"
+                    role="img"
+                    aria-label={estimate_problem_text(Map.get(row, :estimate_problem))}
+                  >
+                    <.icon name="hero-exclamation-triangle" class="mr-1 size-3.5" />
+                    {estimate_problem_text(Map.get(row, :estimate_problem))}
+                  </span>
+                  <span :if={row.headsign} class="block text-[12px] text-muted">
+                    To {row.headsign}
+                  </span>
+                  <span
+                    :if={row.frequency_label}
+                    id={"trip-#{row.trip_id}-frequency"}
+                    class="block text-[12px] text-muted"
+                  >
+                    Frequency service · {row.frequency_label}
+                  </span>
+                </td>
+                <td class={[td_class(), "whitespace-nowrap text-left text-sm tabular-nums"]}>
+                  <%= if present?(row.block_id) do %>
+                    {row.block_id}
+                  <% else %>
+                    <span class="text-muted">—</span>
+                  <% end %>
+                </td>
+                <td class={[td_class(), "whitespace-nowrap text-left text-sm"]}>
+                  <%= if present?(row.trip_short_name) do %>
+                    <span class="tabular-nums text-default">{row.trip_short_name}</span>
+                  <% else %>
+                    <span
+                      class="font-mono text-[12px] text-muted"
+                      title="No trip number. Showing the trip ID."
+                    >
+                      {row.trip_id}
+                    </span>
+                  <% end %>
+                </td>
+                <td class={[td_class(), "z-10", actions_cell_class()]}>
+                  <.row_actions row={row} />
+                </td>
+              </tr>
+              <tr :if={cell_error} id={"trip-#{row.trip_id}-error"} class="err-row">
+                <td
+                  colspan={length(@stop_columns) + 6}
+                  class="border-b border-subtle bg-error-bg px-0 py-2"
+                >
+                  <p class="sticky left-0 flex max-w-[900px] items-start gap-2 px-4 text-sm font-[650] text-error-fg">
+                    <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4" />
+                    <span>{cell_error.message}</span>
+                  </p>
+                </td>
+              </tr>
+            <% end %>
           </tbody>
         </table>
       </div>
@@ -2256,6 +2305,59 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
     Map.get(row.cells, column.position) ||
       %{text: "—", marker: nil, title: nil, missing?: true, estimated?: false}
   end
+
+  # The grid state a section carries (see `@empty_grid`): the times a review
+  # previews without writing, the trips the last write touched, and the one cell
+  # a refused write points at.
+  defp grid(section), do: Map.get(section, :grid) || @empty_grid
+
+  defp cell_error_for(%{cell_error: %{trip: trip} = error}, row) when trip == row.id, do: error
+  defp cell_error_for(_grid, _row), do: nil
+
+  # A reviewed preview replaces the stored cell; a nil preview value is a cleared
+  # cell. The position comes from the occurrence, so the Departs cell and its stop
+  # column share one cell.
+  defp shown_cell(position, stored, preview) do
+    case Map.fetch(preview, position) do
+      {:ok, seconds} -> preview_cell(seconds)
+      :error -> stored
+    end
+  end
+
+  defp preview_cell(nil) do
+    %{text: "—", marker: nil, title: nil, missing?: true}
+  end
+
+  defp preview_cell(seconds) do
+    %{text: preview_clock(seconds), marker: preview_marker(seconds), title: nil, missing?: false}
+  end
+
+  # The same clock rules a stored cell uses: seconds appear only when nonzero.
+  defp preview_clock(seconds) do
+    formatted = GtfsTime.format(seconds)
+
+    if String.ends_with?(formatted, ":00"),
+      do: binary_part(formatted, 0, byte_size(formatted) - 3),
+      else: formatted
+  end
+
+  defp preview_marker(seconds) do
+    days = div(seconds, 86_400)
+    if days >= 1, do: "+#{days}"
+  end
+
+  defp preview_title(preview, position, stored_text) do
+    if Map.has_key?(preview, position), do: "Was #{stored_text}"
+  end
+
+  defp preview_class(preview, position) do
+    if Map.has_key?(preview, position), do: "is-preview"
+  end
+
+  defp error_class(%{position: error_position}, position) when error_position == position,
+    do: "is-error"
+
+  defp error_class(_error, _position), do: nil
 
   defp after_midnight?(rows) do
     Enum.any?(rows, fn row ->
