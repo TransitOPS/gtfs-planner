@@ -1125,6 +1125,255 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: route pattern routes (ready with 2 patterns, empty, unlinked trips)")
 
+    # ── Pattern comparison fixtures (spec 19, step 11) ──
+    #
+    # Route BROWSER_COMPARE carries the two-pattern states the compare journey
+    # opens. FULL is the six-stop reference whose timing waits 60 s at its
+    # fourth stop; SHORT is the short turn ending at that stop, one minute
+    # quicker on the shared stretch that ends there (R5); DEV replaces the
+    # third stop with two stops; LOOP visits stops 1 and 2 twice ("visit 2 of
+    # 2"); MOVED serves stop 3 before stop 2; BACK is the reversed direction-1
+    # copy, so FULL against it reads as opposite directions.
+    # BROWSER_COMPARE_OTHER shares stops 1 and 5 with FULL and adds its own
+    # terminal, so the picker ranks and finds a cross-route pattern by name.
+    # The comparison page only reads these records (INV-2). The weekday
+    # calendar and its linked trips give the landing pair a deterministic
+    # calendar and non-zero usage.
+    #
+    # Coordinates sit near the pattern-alignment stops, deliberately away from
+    # the stopped-route corner BROWSER_PATTERNS_READY draws: the route Details
+    # map counts the nearby routes of its own viewport, and a comparison route
+    # inside that box would move route_lifecycle.spec.js's seeded total.
+    comparison_stops =
+      [
+        {"BROWSER_CMP_STOP_1", "Browser Compare Stop 1", "40.7000", "-74.0200"},
+        {"BROWSER_CMP_STOP_2", "Browser Compare Stop 2", "40.7012", "-74.0178"},
+        {"BROWSER_CMP_STOP_3", "Browser Compare Stop 3", "40.7024", "-74.0156"},
+        {"BROWSER_CMP_STOP_3A", "Browser Compare Stop 3A", "40.7018", "-74.0170"},
+        {"BROWSER_CMP_STOP_3B", "Browser Compare Stop 3B", "40.7030", "-74.0148"},
+        {"BROWSER_CMP_STOP_4", "Browser Compare Stop 4", "40.7036", "-74.0134"},
+        {"BROWSER_CMP_STOP_5", "Browser Compare Stop 5", "40.7048", "-74.0112"},
+        {"BROWSER_CMP_STOP_6", "Browser Compare Stop 6", "40.7060", "-74.0090"},
+        {"BROWSER_CMP_OTHER_STOP", "Browser Compare Other Terminal", "40.6975", "-74.0245"}
+      ]
+
+    Enum.each(comparison_stops, fn {stop_id, stop_name, lat, lon} ->
+      {:ok, _comparison_stop} =
+        Gtfs.create_stop(%{
+          stop_id: stop_id,
+          stop_name: stop_name,
+          location_type: 0,
+          stop_lat: Decimal.new(lat),
+          stop_lon: Decimal.new(lon),
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id
+        })
+    end)
+
+    comparison_routes =
+      [
+        {"BROWSER_COMPARE", "BC", "Browser Compare"},
+        {"BROWSER_COMPARE_OTHER", "BO", "Browser Compare Other"}
+      ]
+      |> Enum.map(fn {route_id, short_name, long_name} ->
+        {:ok, route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3
+          })
+
+        route
+      end)
+      |> Map.new(&{&1.route_id, &1})
+
+    comparison_route = Map.fetch!(comparison_routes, "BROWSER_COMPARE")
+    comparison_other_route = Map.fetch!(comparison_routes, "BROWSER_COMPARE_OTHER")
+
+    # Explicit literal offsets, so the running-time cases are hand-derivable:
+    # FULL's stop 4 arrives at 570 s and departs at 630 s (the 60 s wait), and
+    # SHORT reaches stop 4 at 510 s, −1:00 on the segment that ends there.
+    comparison_pattern = fn route_id, attrs ->
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(
+        org.id,
+        diagram_version.id,
+        Map.merge(%{route_id: route_id}, attrs)
+      )
+    end
+
+    comparison_full =
+      comparison_pattern.(comparison_route.route_id, %{
+        direction_id: 0,
+        route_pattern_id: "BROWSER-CMP-FULL",
+        route_pattern_name: "Browser Compare Full",
+        route_pattern_sort_order: 1,
+        route_pattern_typicality: 1,
+        timing_name: "Weekday base",
+        stops: [
+          {"BROWSER_CMP_STOP_1", 0, 0, 1},
+          {"BROWSER_CMP_STOP_2", 180, 180, 0},
+          {"BROWSER_CMP_STOP_3", 360, 360, 0},
+          {"BROWSER_CMP_STOP_4", 570, 630, 1},
+          {"BROWSER_CMP_STOP_5", 870, 870, 0},
+          {"BROWSER_CMP_STOP_6", 1110, 1110, 1}
+        ]
+      })
+
+    comparison_short =
+      comparison_pattern.(comparison_route.route_id, %{
+        direction_id: 0,
+        route_pattern_id: "BROWSER-CMP-SHORT",
+        route_pattern_name: "Browser Compare Short",
+        route_pattern_sort_order: 3,
+        route_pattern_typicality: 1,
+        timing_name: "Weekday short",
+        stops: [
+          {"BROWSER_CMP_STOP_1", 0, 0, 1},
+          {"BROWSER_CMP_STOP_2", 180, 180, 0},
+          {"BROWSER_CMP_STOP_3", 360, 360, 0},
+          {"BROWSER_CMP_STOP_4", 510, 510, 1}
+        ]
+      })
+
+    comparison_pattern.(comparison_route.route_id, %{
+      direction_id: 0,
+      route_pattern_id: "BROWSER-CMP-DEV",
+      route_pattern_name: "Browser Compare Dev",
+      route_pattern_sort_order: 2,
+      route_pattern_typicality: 1,
+      timing_name: "Weekday base",
+      stops: [
+        {"BROWSER_CMP_STOP_1", 0, 0, 1},
+        {"BROWSER_CMP_STOP_2", 180, 180, 0},
+        {"BROWSER_CMP_STOP_3A", 600, 600, 0},
+        {"BROWSER_CMP_STOP_3B", 900, 900, 0},
+        {"BROWSER_CMP_STOP_4", 1290, 1290, 1},
+        {"BROWSER_CMP_STOP_5", 1590, 1590, 0},
+        {"BROWSER_CMP_STOP_6", 1830, 1830, 1}
+      ]
+    })
+
+    comparison_pattern.(comparison_route.route_id, %{
+      direction_id: 0,
+      route_pattern_id: "BROWSER-CMP-LOOP",
+      route_pattern_name: "Browser Compare Loop",
+      route_pattern_sort_order: 4,
+      route_pattern_typicality: 1,
+      timing_name: "Weekday base",
+      stops: [
+        {"BROWSER_CMP_STOP_1", 0, 0, 1},
+        {"BROWSER_CMP_STOP_2", 240, 240, 0},
+        {"BROWSER_CMP_STOP_3", 480, 480, 0},
+        {"BROWSER_CMP_STOP_4", 720, 720, 1},
+        {"BROWSER_CMP_STOP_1", 960, 960, 0},
+        {"BROWSER_CMP_STOP_2", 1200, 1200, 1}
+      ]
+    })
+
+    comparison_pattern.(comparison_route.route_id, %{
+      direction_id: 0,
+      route_pattern_id: "BROWSER-CMP-MOVED",
+      route_pattern_name: "Browser Compare Moved",
+      route_pattern_sort_order: 5,
+      route_pattern_typicality: 1,
+      timing_name: "Weekday base",
+      stops: [
+        {"BROWSER_CMP_STOP_1", 0, 0, 1},
+        {"BROWSER_CMP_STOP_3", 240, 240, 0},
+        {"BROWSER_CMP_STOP_2", 480, 480, 0},
+        {"BROWSER_CMP_STOP_4", 720, 720, 1},
+        {"BROWSER_CMP_STOP_5", 1020, 1020, 0},
+        {"BROWSER_CMP_STOP_6", 1260, 1260, 1}
+      ]
+    })
+
+    comparison_pattern.(comparison_route.route_id, %{
+      direction_id: 1,
+      route_pattern_id: "BROWSER-CMP-BACK",
+      route_pattern_name: "Browser Compare Back",
+      route_pattern_sort_order: 1,
+      route_pattern_typicality: 1,
+      timing_name: "Weekday base",
+      stops: [
+        {"BROWSER_CMP_STOP_6", 0, 0, 1},
+        {"BROWSER_CMP_STOP_5", 240, 240, 0},
+        {"BROWSER_CMP_STOP_4", 480, 480, 0},
+        {"BROWSER_CMP_STOP_3", 720, 720, 1},
+        {"BROWSER_CMP_STOP_2", 960, 960, 0},
+        {"BROWSER_CMP_STOP_1", 1200, 1200, 1}
+      ]
+    })
+
+    comparison_pattern.(comparison_other_route.route_id, %{
+      direction_id: 0,
+      route_pattern_id: "BROWSER-CMP-OTHER",
+      route_pattern_name: "Browser Compare Other",
+      route_pattern_sort_order: 1,
+      route_pattern_typicality: 1,
+      timing_name: "Weekday base",
+      stops: [
+        {"BROWSER_CMP_STOP_1", 0, 0, 1},
+        {"BROWSER_CMP_OTHER_STOP", 300, 300, 0},
+        {"BROWSER_CMP_STOP_5", 600, 600, 1}
+      ]
+    })
+
+    comparison_today = Gtfs.DisplayClock.today(org.id, diagram_version.id).date
+
+    GtfsPlanner.GtfsFixtures.calendar_fixture(org.id, diagram_version.id, %{
+      service_id: "BROWSER_CMP_WEEKDAY",
+      monday: 1,
+      tuesday: 1,
+      wednesday: 1,
+      thursday: 1,
+      friday: 1,
+      saturday: 0,
+      sunday: 0,
+      start_date: Date.add(comparison_today, -30),
+      end_date: Date.add(comparison_today, 30)
+    })
+
+    GtfsPlanner.GtfsFixtures.calendar_attribute_fixture(org.id, diagram_version.id, %{
+      service_id: "BROWSER_CMP_WEEKDAY",
+      service_description: "Weekday",
+      service_schedule_name: "Weekday",
+      service_schedule_type: "Weekday",
+      service_schedule_typicality: 1
+    })
+
+    # Two linked trips make FULL the route's busiest pattern, so the entry
+    # default opens FULL against SHORT on the Weekday calendar; SHORT's single
+    # trip gives its side a count in the calendar select.
+    Enum.each(
+      [
+        {"BROWSER_CMP_T1", comparison_full, "06:00:00"},
+        {"BROWSER_CMP_T2", comparison_full, "07:00:00"},
+        {"BROWSER_CMP_T3", comparison_short, "06:30:00"}
+      ],
+      fn {trip_id, pattern, start_time} ->
+        GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+          org.id,
+          diagram_version.id,
+          comparison_route.route_id,
+          pattern,
+          %{
+            service_id: "BROWSER_CMP_WEEKDAY",
+            trip_id: trip_id,
+            start_time: start_time,
+            trip_headsign: "Browser Compare"
+          }
+        )
+      end
+    )
+
+    IO.puts(
+      "Browser seed: pattern comparison routes (FULL with a 60 s wait, short turn, " <>
+        "loop, moved, reverse direction, cross-route picker, weekday trips)"
+    )
+
     # ── Route lifecycle deletion fixtures (spec 16 step 29) ──
     #
     # Two isolated routes give the reviewed-deletion journeys their own
