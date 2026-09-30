@@ -9,6 +9,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Trip
+  alias GtfsPlanner.Gtfs.TripRun
   alias GtfsPlanner.Integrity.OwnershipAudit
   alias GtfsPlanner.Organizations
   alias GtfsPlanner.Organizations.Organization
@@ -28,7 +29,8 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     {"alignment_segments", "from_occurrence_id", "route_pattern_stops"},
     {"flex_areas", "flex_service_id", "flex_services"},
     {"journal_entries", "station_id", "stops"},
-    {"station_editing_statuses", "station_id", "stops"}
+    {"station_editing_statuses", "station_id", "stops"},
+    {"trip_runs", "trip_id", "trips"}
   ]
 
   @organization_parents [
@@ -118,6 +120,19 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     for table <- ~w(garages vehicle_types) do
       assert unique_organization_index?(table)
     end
+
+    assert unique_runs_trip_index?()
+
+    for {column, parent} <- [
+          {"organization_id", "organizations"},
+          {"gtfs_version_id", "gtfs_versions"},
+          {"trip_id", "trips"}
+        ] do
+      assert {"trip_runs", ^parent, definition, "c"} =
+               Map.fetch!(constraints, "trip_runs_#{column}_fkey")
+
+      assert definition =~ "ON DELETE CASCADE"
+    end
   end
 
   test "every organization-only asset link rejects a foreign parent and accepts nil" do
@@ -184,6 +199,76 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
 
     assert error.postgres.code == :foreign_key_violation
     assert error.postgres.constraint == "routes_version_owner_fkey"
+  end
+
+  test "trip assignments reject a foreign version on insert and update" do
+    org = organization_fixture()
+    version = gtfs_version_fixture(org.id)
+    route = route_fixture(org.id, version.id)
+    trip = trip_fixture(org.id, version.id, route.route_id)
+    foreign_org = organization_fixture()
+    foreign_version = gtfs_version_fixture(foreign_org.id)
+
+    # Isolate the version key from the separate trip-parent key.
+    Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_trips_owner_fkey")
+
+    assert_fk_violation!("trip_runs_version_owner_fkey", fn ->
+      insert_trip_run!(org.id, foreign_version.id, trip.id, "R2")
+    end)
+
+    id = insert_trip_run!(org.id, version.id, trip.id, "R1")
+
+    assert_fk_violation!("trip_runs_version_owner_fkey", fn ->
+      Repo.query!("UPDATE trip_runs SET gtfs_version_id = $1 WHERE id = $2", [
+        Ecto.UUID.dump!(foreign_version.id),
+        Ecto.UUID.dump!(id)
+      ])
+    end)
+
+    assert Repo.get!(TripRun, id).gtfs_version_id == version.id
+  end
+
+  test "trip assignments reject same-organization cross-version and foreign-organization trips" do
+    org = organization_fixture()
+    version = gtfs_version_fixture(org.id)
+    other_version = gtfs_version_fixture(org.id)
+    foreign_org = organization_fixture()
+    foreign_version = gtfs_version_fixture(foreign_org.id)
+    route = route_fixture(org.id, version.id)
+    other_route = route_fixture(org.id, other_version.id)
+    foreign_route = route_fixture(foreign_org.id, foreign_version.id)
+    trip = trip_fixture(org.id, version.id, route.route_id)
+    other_trip = trip_fixture(org.id, other_version.id, other_route.route_id)
+    foreign_trip = trip_fixture(foreign_org.id, foreign_version.id, foreign_route.route_id)
+
+    for bad_trip <- [other_trip, foreign_trip] do
+      assert_fk_violation!("trip_runs_trips_owner_fkey", fn ->
+        insert_trip_run!(org.id, version.id, bad_trip.id, "R2")
+      end)
+    end
+
+    id = insert_trip_run!(org.id, version.id, trip.id, "R1")
+
+    for bad_trip <- [other_trip, foreign_trip] do
+      assert_fk_violation!("trip_runs_trips_owner_fkey", fn ->
+        Repo.query!("UPDATE trip_runs SET trip_id = $1 WHERE id = $2", [
+          Ecto.UUID.dump!(bad_trip.id),
+          Ecto.UUID.dump!(id)
+        ])
+      end)
+    end
+
+    assert Repo.get!(TripRun, id).trip_id == trip.id
+  end
+
+  test "trip deletion cascades and populated version deletion still refuses before and after scoped keys" do
+    Repo.query!("SAVEPOINT prior_runs_ownership")
+    Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_version_owner_fkey")
+    Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_trips_owner_fkey")
+    assert_trip_and_version_cascades!()
+    Repo.query!("ROLLBACK TO SAVEPOINT prior_runs_ownership")
+
+    assert_trip_and_version_cascades!()
   end
 
   test "new stop levels reject a parent from another version of the same organization" do
@@ -294,6 +379,8 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
                }
              ])
 
+    run_id = insert_trip_run!(org.id, version.id, trip_id, "R1")
+
     Repo.query!(
       """
       INSERT INTO change_logs
@@ -313,6 +400,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     assert is_nil(Repo.get(GtfsVersion, version.id))
     assert is_nil(Repo.get(Route, route.id))
     assert is_nil(Repo.get(Trip, trip_id))
+    assert is_nil(Repo.get(TripRun, run_id))
 
     for {table, id} <- upstream_ids do
       assert %{rows: [[0]]} =
@@ -323,6 +411,43 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
              Repo.query!("SELECT count(*) FROM change_logs WHERE id = $1", [
                Ecto.UUID.dump!(log_id)
              ])
+  end
+
+  test "organization deletion cascaded trip assignments before the new scoped keys" do
+    Repo.query!("SAVEPOINT prior_runs_organization")
+    Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_version_owner_fkey")
+    Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_trips_owner_fkey")
+
+    org = organization_fixture()
+    version = gtfs_version_fixture(org.id)
+    route = route_fixture(org.id, version.id)
+    trip = trip_fixture(org.id, version.id, route.route_id)
+    run_id = insert_trip_run!(org.id, version.id, trip.id, "R1")
+    log_id = Ecto.UUID.generate()
+
+    Repo.query!(
+      """
+      INSERT INTO change_logs
+        (id, entity_type, entity_external_id, station_stop_id, actor_id, actor_email,
+         action, organization_id, gtfs_version_id, inserted_at)
+      VALUES ($1, 'route', 'R1', 'station', $2, 'operator@example.com', 'created', $3, $4, now())
+      """,
+      Enum.map([log_id, @actor.id, org.id, version.id], &Ecto.UUID.dump!/1)
+    )
+
+    assert {:ok, _} = Organizations.delete_organization(org)
+    assert is_nil(Repo.get(GtfsVersion, version.id))
+    assert is_nil(Repo.get(Route, route.id))
+    assert is_nil(Repo.get(Trip, trip.id))
+    assert is_nil(Repo.get(TripRun, run_id))
+
+    assert %{rows: [[0]]} =
+             Repo.query!("SELECT count(*) FROM change_logs WHERE id = $1", [
+               Ecto.UUID.dump!(log_id)
+             ])
+
+    Repo.query!("ROLLBACK TO SAVEPOINT prior_runs_organization")
+    assert Map.has_key?(constraints(), "trip_runs_trips_owner_fkey")
   end
 
   test "existing stop ownership blocks organization deletion until its journal and stop are removed" do
@@ -431,6 +556,13 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     vehicle_type = vehicle_type_fixture(org.id)
     upstream_ids = insert_upstream_rows!(org.id, version.id, garage.id, vehicle_type.id)
 
+    trip =
+      Repo.all(Trip)
+      |> Enum.find(&(&1.organization_id == org.id and &1.gtfs_version_id == version.id))
+
+    assert trip
+    run_id = insert_trip_run!(org.id, version.id, trip.id, "R1")
+
     assert result.counts
            |> Map.drop([:patterns_created, :timings_created, :trips_linked, :trips_custom])
            |> Enum.all?(fn {_name, count} -> count > 0 end)
@@ -449,6 +581,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
 
     assert {:ok, nil} = Recovery.discard_claimed(run, claimed_version, cleanup_token)
     assert is_nil(Repo.get(GtfsVersion, version.id))
+    assert is_nil(Repo.get(TripRun, run_id))
 
     for {table, id} <- upstream_ids do
       assert %{rows: [[0]]} =
@@ -516,6 +649,132 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
       )
 
     String.ends_with?(definition, "(id, organization_id)")
+  end
+
+  defp unique_runs_trip_index? do
+    %{rows: [[definition]]} =
+      Repo.query!("""
+      SELECT indexdef FROM pg_indexes
+      WHERE schemaname = 'public'
+        AND indexname = 'trips_id_organization_id_gtfs_version_id_owner_index'
+      """)
+
+    String.ends_with?(definition, "(id, organization_id, gtfs_version_id)")
+  end
+
+  defp insert_trip_run!(org_id, version_id, trip_id, run_id) do
+    id = Ecto.UUID.generate()
+    now = DateTime.utc_now()
+
+    assert {1, _} =
+             Repo.insert_all(TripRun, [
+               %{
+                 id: id,
+                 organization_id: org_id,
+                 gtfs_version_id: version_id,
+                 trip_id: trip_id,
+                 day_type_key: "WK",
+                 run_id: run_id,
+                 inserted_at: now,
+                 updated_at: now
+               }
+             ])
+
+    id
+  end
+
+  defp assert_fk_violation!(constraint, operation) do
+    error =
+      assert_raise Postgrex.Error, fn ->
+        Repo.transaction(fn -> operation.() end)
+      end
+
+    assert error.postgres.code == :foreign_key_violation
+    assert error.postgres.constraint == constraint
+  end
+
+  defp assert_trip_and_version_cascades! do
+    org = organization_fixture()
+    route_only_version = gtfs_version_fixture(org.id)
+    route_only = route_fixture(org.id, route_only_version.id)
+
+    assert_fk_violation!("routes_version_owner_fkey", fn ->
+      Repo.query!("DELETE FROM gtfs_versions WHERE id = $1", [
+        Ecto.UUID.dump!(route_only_version.id)
+      ])
+    end)
+
+    assert Repo.get!(GtfsVersion, route_only_version.id)
+    assert Repo.get!(Route, route_only.id)
+    assert {:ok, _} = Repo.delete(route_only)
+    assert {:ok, _} = Repo.delete(route_only_version)
+
+    version = gtfs_version_fixture(org.id)
+    route = route_fixture(org.id, version.id)
+    first = trip_fixture(org.id, version.id, route.route_id)
+    second = trip_fixture(org.id, version.id, route.route_id)
+    first_run = insert_trip_run!(org.id, version.id, first.id, "R1")
+    second_run = insert_trip_run!(org.id, version.id, second.id, "R2")
+    log_id = Ecto.UUID.generate()
+
+    Repo.query!(
+      """
+      INSERT INTO change_logs
+        (id, entity_type, entity_external_id, station_stop_id, actor_id, actor_email,
+         action, organization_id, gtfs_version_id, inserted_at)
+      VALUES ($1, 'route', 'R1', 'station', $2, 'operator@example.com', 'created', $3, $4, now())
+      """,
+      Enum.map([log_id, @actor.id, org.id, version.id], &Ecto.UUID.dump!/1)
+    )
+
+    assert_fk_violation_one_of!(["routes_version_owner_fkey", "trips_version_owner_fkey"], fn ->
+      Repo.query!("DELETE FROM gtfs_versions WHERE id = $1", [Ecto.UUID.dump!(version.id)])
+    end)
+
+    assert Repo.get!(GtfsVersion, version.id)
+    assert Repo.get!(Route, route.id)
+    assert Repo.get!(Trip, first.id)
+    assert Repo.get!(Trip, second.id)
+    assert Repo.get!(TripRun, first_run)
+    assert Repo.get!(TripRun, second_run)
+    assert change_log_exists?(log_id)
+
+    assert {:ok, _} = Repo.delete(first)
+    assert is_nil(Repo.get(TripRun, first_run))
+    assert Repo.get!(TripRun, second_run)
+
+    assert {:ok, _} = Repo.delete(route)
+
+    assert_fk_violation!("trips_version_owner_fkey", fn ->
+      Repo.query!("DELETE FROM gtfs_versions WHERE id = $1", [Ecto.UUID.dump!(version.id)])
+    end)
+
+    assert Repo.get!(TripRun, second_run)
+    assert Repo.get!(Trip, second.id)
+    assert Repo.get!(GtfsVersion, version.id)
+    assert change_log_exists?(log_id)
+    assert {:ok, _} = Repo.delete(second)
+    assert is_nil(Repo.get(TripRun, second_run))
+    assert is_nil(Repo.get(Trip, second.id))
+    Repo.query!("DELETE FROM change_logs WHERE id = $1", [Ecto.UUID.dump!(log_id)])
+    assert {:ok, _} = Repo.delete(version)
+  end
+
+  defp assert_fk_violation_one_of!(constraints, operation) do
+    error =
+      assert_raise Postgrex.Error, fn ->
+        Repo.transaction(fn -> operation.() end)
+      end
+
+    assert error.postgres.code == :foreign_key_violation
+    assert error.postgres.constraint in constraints
+  end
+
+  defp change_log_exists?(id) do
+    %{rows: [[count]]} =
+      Repo.query!("SELECT count(*) FROM change_logs WHERE id = $1", [Ecto.UUID.dump!(id)])
+
+    count == 1
   end
 
   defp insert_upstream_rows!(org_id, version_id, garage_id, vehicle_type_id) do

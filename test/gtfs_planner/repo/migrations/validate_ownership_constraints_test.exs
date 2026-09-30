@@ -2,9 +2,12 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
   use GtfsPlanner.DataCase, async: false
 
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.TripRun
   alias GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraints, as: Migration
+  alias GtfsPlanner.Repo.Migrations.ValidateRunsOwnershipConstraints, as: RunsMigration
   alias GtfsPlanner.Repo.Migrations.ValidateUpstreamOwnershipConstraints, as: UpstreamMigration
 
+  import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
@@ -34,6 +37,21 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
 
   Code.require_file(@upstream_migration_path)
 
+  @runs_migration_path (case Path.wildcard(
+                               Path.expand(
+                                 "../../../../priv/repo/migrations/*_validate_runs_ownership_constraints.exs",
+                                 __DIR__
+                               )
+                             ) do
+                          [path] ->
+                            path
+
+                          paths ->
+                            raise "expected one runs validation migration, got: #{inspect(paths)}"
+                        end)
+
+  Code.require_file(@runs_migration_path)
+
   @constraint "routes_version_owner_fkey"
 
   test "validates every step 8 ownership constraint" do
@@ -43,7 +61,7 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
     assert :ok == Migration.validate_all!(Repo)
 
     assert %{rows: rows} = Repo.query!(constraint_status_sql(), [])
-    assert length(rows) == 66
+    assert length(rows) == 68
     assert Enum.all?(rows, fn [_name, validated?] -> validated? end)
   end
 
@@ -80,6 +98,70 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
     assert error.message =~ name
     assert error.message =~ "missing"
     assert error.message =~ "No rows were changed"
+  end
+
+  test "runs validation marks both exact scoped keys valid" do
+    reset_runs_constraints()
+    assert runs_constraints_validated?() == [false, false]
+
+    assert :ok = RunsMigration.validate_all!(Repo)
+    assert runs_constraints_validated?() == [true, true]
+  end
+
+  test "runs validation checks both definitions before changing either flag" do
+    reset_runs_constraints()
+    Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_trips_owner_fkey")
+
+    error = assert_raise RuntimeError, fn -> RunsMigration.validate_all!(Repo) end
+    assert error.message =~ "trip_runs_trips_owner_fkey"
+    assert error.message =~ "missing or has the wrong key"
+    assert error.message =~ "No rows were changed"
+    assert constraint_validated?("trip_runs", "trip_runs_version_owner_fkey") == false
+
+    Repo.query!("""
+    ALTER TABLE trip_runs ADD CONSTRAINT trip_runs_trips_owner_fkey
+    FOREIGN KEY (trip_id) REFERENCES trips(id) ON DELETE NO ACTION NOT VALID
+    """)
+
+    error = assert_raise RuntimeError, fn -> RunsMigration.validate_all!(Repo) end
+    assert error.message =~ "trip_runs_trips_owner_fkey"
+    assert error.message =~ "wrong key"
+    assert constraint_validated?("trip_runs", "trip_runs_version_owner_fkey") == false
+  end
+
+  test "a pre-existing wrong-version assignment survives NOT VALID installation and failed validation" do
+    drop_runs_constraints()
+    org = organization_fixture()
+    foreign_org = organization_fixture()
+    foreign_version = gtfs_version_fixture(foreign_org.id)
+    route = route_fixture(foreign_org.id, foreign_version.id)
+    trip = trip_fixture(foreign_org.id, foreign_version.id, route.route_id)
+    id = insert_trip_run!(org.id, foreign_version.id, trip.id)
+    before = row_json("trip_runs", id)
+
+    add_runs_constraints_not_valid()
+    assert row_json("trip_runs", id) == before
+    assert runs_constraints_validated?() == [false, false]
+
+    assert_runs_validation_failure!("trip_runs_version_owner_fkey")
+    assert row_json("trip_runs", id) == before
+    assert runs_constraints_validated?() == [false, false]
+  end
+
+  test "a wrong-trip assignment rolls back the earlier validation flag" do
+    drop_runs_constraints()
+    org = organization_fixture()
+    version = gtfs_version_fixture(org.id)
+    other_version = gtfs_version_fixture(org.id)
+    route = route_fixture(org.id, other_version.id)
+    trip = trip_fixture(org.id, other_version.id, route.route_id)
+    id = insert_trip_run!(org.id, version.id, trip.id)
+    before = row_json("trip_runs", id)
+
+    add_runs_constraints_not_valid()
+    assert_runs_validation_failure!("trip_runs_trips_owner_fkey")
+    assert row_json("trip_runs", id) == before
+    assert runs_constraints_validated?() == [false, false]
   end
 
   test "a version anomaly fails additive validation without changing the row" do
@@ -198,6 +280,73 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
   defp reset_route_constraint do
     Repo.query!("ALTER TABLE routes DROP CONSTRAINT #{@constraint}")
     add_route_constraint()
+  end
+
+  defp reset_runs_constraints do
+    drop_runs_constraints()
+    add_runs_constraints_not_valid()
+  end
+
+  defp drop_runs_constraints do
+    for name <- ["trip_runs_version_owner_fkey", "trip_runs_trips_owner_fkey"] do
+      Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT #{name}")
+    end
+  end
+
+  defp add_runs_constraints_not_valid do
+    Repo.query!("""
+    ALTER TABLE trip_runs ADD CONSTRAINT trip_runs_version_owner_fkey
+    FOREIGN KEY (gtfs_version_id, organization_id)
+    REFERENCES gtfs_versions(id, organization_id) ON DELETE NO ACTION NOT VALID
+    """)
+
+    Repo.query!("""
+    ALTER TABLE trip_runs ADD CONSTRAINT trip_runs_trips_owner_fkey
+    FOREIGN KEY (trip_id, organization_id, gtfs_version_id)
+    REFERENCES trips(id, organization_id, gtfs_version_id) ON DELETE NO ACTION NOT VALID
+    """)
+  end
+
+  defp runs_constraints_validated? do
+    for name <- ["trip_runs_version_owner_fkey", "trip_runs_trips_owner_fkey"] do
+      constraint_validated?("trip_runs", name)
+    end
+  end
+
+  defp assert_runs_validation_failure!(name) do
+    error =
+      assert_raise RuntimeError, fn ->
+        Repo.transaction(fn -> RunsMigration.validate_all!(Repo) end)
+      end
+
+    assert error.message =~ name
+    assert error.message =~ "No rows were changed"
+    assert error.message =~ "mix gtfs.audit_ownership"
+
+    assert error.message =~
+             "bin/gtfs_planner eval 'case GtfsPlanner.Release.audit_ownership() do " <>
+               ":ok -> :ok; {:error, _count} -> System.halt(1) end'"
+  end
+
+  defp insert_trip_run!(org_id, version_id, trip_id) do
+    id = Ecto.UUID.generate()
+    now = DateTime.utc_now()
+
+    assert {1, _} =
+             Repo.insert_all(TripRun, [
+               %{
+                 id: id,
+                 organization_id: org_id,
+                 gtfs_version_id: version_id,
+                 trip_id: trip_id,
+                 day_type_key: "WK",
+                 run_id: "R1",
+                 inserted_at: now,
+                 updated_at: now
+               }
+             ])
+
+    id
   end
 
   defp add_route_constraint do

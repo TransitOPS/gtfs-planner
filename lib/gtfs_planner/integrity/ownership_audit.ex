@@ -18,7 +18,7 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
     locations networks pathway_evolutions pathways relief_points rider_categories route_networks
     route_operating_settings route_pattern_stops route_patterns routes shapes station_editing_statuses
     stop_areas stop_levels stop_times stops timed_patterns timeframes transfers
-    translations trips walkability_tests
+    translations trip_runs trips walkability_tests
   )
 
   @containment [
@@ -32,6 +32,7 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
      "from_occurrence_id", "route_pattern_stops"},
     {"flex_areas→flex_services", "flex_areas", "flex_service_id", "flex_services"},
     {"journal_entries.station_id→stops", "journal_entries", "station_id", "stops"},
+    {"trip_runs.trip_id→trips", "trip_runs", "trip_id", "trips"},
     {"station_editing_statuses.station_id→stops", "station_editing_statuses", "station_id",
      "stops"}
   ]

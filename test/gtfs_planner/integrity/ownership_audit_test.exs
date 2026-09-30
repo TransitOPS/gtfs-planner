@@ -3,6 +3,7 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Route
+  alias GtfsPlanner.Gtfs.TripRun
   alias GtfsPlanner.Integrity.OwnershipAudit
 
   import GtfsPlanner.GtfsFixtures
@@ -56,6 +57,8 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
 
     route = route_fixture(org.id, version.id)
     route_pattern_fixture(org.id, version.id, %{route_id: route.route_id})
+    trip = trip_fixture(org.id, version.id, route.route_id)
+    insert_trip_run!(org.id, version.id, trip.id, "R1")
 
     report = OwnershipAudit.run()
     assert report.total == 0
@@ -115,6 +118,41 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
 
     assert relationship.anomalies == 1
     assert stop_level.id in relationship.samples
+  end
+
+  test "trip assignments report version ownership and UUID trip scope independently" do
+    org = organization_fixture()
+    version = gtfs_version_fixture(org.id)
+    other_version = gtfs_version_fixture(org.id)
+    foreign_org = organization_fixture()
+    foreign_version = gtfs_version_fixture(foreign_org.id)
+    other_route = route_fixture(org.id, other_version.id)
+    foreign_route = route_fixture(foreign_org.id, foreign_version.id)
+    other_trip = trip_fixture(org.id, other_version.id, other_route.route_id)
+    foreign_trip = trip_fixture(foreign_org.id, foreign_version.id, foreign_route.route_id)
+
+    Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_version_owner_fkey")
+    Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_trips_owner_fkey")
+
+    wrong_trip_id = insert_trip_run!(org.id, version.id, other_trip.id, "R1")
+    wrong_owner_id = insert_trip_run!(org.id, foreign_version.id, foreign_trip.id, "R2")
+    before = fingerprint("trip_runs")
+    report = OwnershipAudit.run()
+
+    version_link = Enum.find(report.relationships, &(&1.name == "trip_runs→gtfs_versions"))
+    trip_link = Enum.find(report.relationships, &(&1.name == "trip_runs.trip_id→trips"))
+
+    assert version_link.kind == :version_owner
+    assert version_link.anomalies == 1
+    assert version_link.samples == [wrong_owner_id]
+    assert trip_link.kind == :containment
+    assert trip_link.anomalies == 2
+    assert Enum.sort(trip_link.samples) == Enum.sort([wrong_trip_id, wrong_owner_id])
+    assert fingerprint("trip_runs") == before
+
+    bounded = OwnershipAudit.run(sample_limit: 0)
+    assert Enum.find(bounded.relationships, &(&1.name == trip_link.name)).samples == []
+    assert fingerprint("trip_runs") == before
   end
 
   test "all organization-only parent links report foreign assets and ignore nulls" do
@@ -232,6 +270,27 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
       """)
 
     {count, checksum}
+  end
+
+  defp insert_trip_run!(org_id, version_id, trip_id, run_id) do
+    id = Ecto.UUID.generate()
+    now = DateTime.utc_now()
+
+    assert {1, _} =
+             Repo.insert_all(TripRun, [
+               %{
+                 id: id,
+                 organization_id: org_id,
+                 gtfs_version_id: version_id,
+                 trip_id: trip_id,
+                 day_type_key: "WK",
+                 run_id: run_id,
+                 inserted_at: now,
+                 updated_at: now
+               }
+             ])
+
+    id
   end
 
   defp insert_asset_link!(table, column, org_id, version_id, parent_id) do
