@@ -6,9 +6,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareSummaryTest do
   stops, added and skipped stops and stretch time; a short turn; a collapsed
   four-pair move; boarding labels; and the smaller-timing note. The metric strip
   shows end to end with the signed change and percentage, the trips per side on
-  the chosen calendar and 20 departures-by-hour bars per side on one scale. With
-  B absent the card shows the "Suggested comparisons" links, limited to three,
-  patching `b`.
+  the chosen calendar and 24 departures-by-hour bars per side (05:00 to 05:00,
+  the last five after midnight) on one scale. With B absent the card shows the
+  "Suggested comparisons" links, limited to three, patching `b`.
 
   Every case enters through ordinary login and the real `CatalogReadAdapter.Repo`
   on the local test database (`CR-7`); no adapter is substituted because no case
@@ -391,7 +391,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareSummaryTest do
       refute has_element?(view, "#summary-diff-1")
     end
 
-    test "the strip shows end to end, trips and 20 hour bars per side",
+    test "the strip shows end to end, trips and 24 hour bars per side",
          %{conn: conn, version: version} = context do
       %{route: route} = comparison_route(context)
 
@@ -406,14 +406,37 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareSummaryTest do
       assert has_element?(view, "#summary-trips-b", "3")
 
       html = render(view)
-      assert count_matches(html, ~r/data-hour-bar="a-\d+"/) == 20
-      assert count_matches(html, ~r/data-hour-bar="b-\d+"/) == 20
+      assert count_matches(html, ~r/data-hour-bar="a-\d+"/) == 24
+      assert count_matches(html, ~r/data-hour-bar="b-\d+"/) == 24
+      assert has_element?(view, "#compare-summary", "Departures by hour, 05:00 to 05:00")
 
       assert view |> element("[data-hour-bar='a-6']") |> render() =~
                ~s(title="06:00–07:00: 1 trip")
 
       assert view |> element("[data-hour-bar='b-10']") |> render() =~
                ~s(title="10:00–11:00: 1 trip")
+    end
+
+    test "an after-midnight departure shows in its own bar, not the 23:00 bar",
+         %{conn: conn, version: version} = context do
+      %{route: route, full: full} = comparison_route(context)
+
+      schedule_trip_fixture(context.organization.id, version.id, route.route_id, full, %{
+        service_id: "WEEKDAY",
+        start_time: "25:10:00"
+      })
+
+      {:ok, view, _html} =
+        live(conn, compare_path(version, route, %{"a" => "FULL", "b" => "DEV"}))
+
+      assert view |> element("[data-hour-bar='a-25']") |> render() =~
+               ~s(title="01:00–02:00 after midnight: 1 trip")
+
+      assert view |> element("[data-hour-bar='a-23']") |> render() =~
+               ~s(title="23:00–00:00: 0 trips")
+
+      assert view |> element("[data-hour-bar='b-25']") |> render() =~
+               ~s(title="01:00–02:00 after midnight: 0 trips")
     end
 
     test "B absent renders up to three suggestions and patches b",

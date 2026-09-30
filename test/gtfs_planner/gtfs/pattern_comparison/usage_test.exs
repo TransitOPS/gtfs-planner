@@ -215,7 +215,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.UsageTest do
     assert Usage.usage(context.scope, [context.pattern_a], nil)["pattern_a"] == empty
   end
 
-  test "adds an after-midnight departure to the last hour bucket", context do
+  test "counts a 25:10 departure in the 01:00 bucket, not the 23:00 bucket", context do
     linked_trip(
       context.organization,
       context.version,
@@ -230,7 +230,34 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.UsageTest do
 
     assert summary.total == 1
     assert length(summary.hours) == @hours
-    assert summary.hours == hours(%{23 => 1})
+    assert summary.hours == hours(%{1 => 1})
+  end
+
+  test "keeps a 23:45 and a 24:00 departure in separate buckets", context do
+    linked_trip(
+      context.organization,
+      context.version,
+      context.route,
+      "pattern_b",
+      context.other_route,
+      "SATURDAY",
+      "23:45:00"
+    )
+
+    linked_trip(
+      context.organization,
+      context.version,
+      context.route,
+      "pattern_b",
+      context.other_route,
+      "SATURDAY",
+      "24:00:00"
+    )
+
+    summary = Usage.usage(context.scope, [context.pattern_b], "SATURDAY")["pattern_b"]
+
+    assert summary.total == 2
+    assert summary.hours == hours(%{23 => 1, 0 => 1})
   end
 
   defp linked_trip(organization, version, route, pattern_id, timing, service_id, departure) do

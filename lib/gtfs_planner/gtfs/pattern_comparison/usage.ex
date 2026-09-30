@@ -11,8 +11,9 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Usage do
   summary falls back. Departures come from `Schedules.Summary.trips_per_hour/2`,
   so the compare page counts one repeating trip exactly as the Schedules tab
   does (`end_time` is the exclusive window end). A departure after midnight (hour
-  24 or later) joins the last bucket, as the prototype does, so the histogram is
-  always 24 buckets.
+  24 or later) wraps into the bucket of its clock hour (25:10 is bucket 1), so
+  the histogram is always 24 buckets and the chart can show it in the hour it
+  runs. A departure stored as 00:00 to 04:59 shares those buckets.
 
   `calendars/2` adds each pattern's count per calendar for the calendar select
   and the default-calendar rule, with the same R7 expansion.
@@ -53,7 +54,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Usage do
   `:total` counts departures: one per scheduled trip and one per expanded
   frequency departure. `:by_timing` holds that same count per `timed_pattern_id`,
   `:custom` the trips with no timing, `:repeating` the frequency departures, and
-  `:hours` the 24 first-departure buckets.
+  `:hours` the 24 first-departure buckets by clock hour.
   """
   @type usage_summary :: %{
           total: non_neg_integer(),
@@ -202,8 +203,8 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Usage do
     scheduled
     |> Summary.trips_per_hour(Enum.flat_map(entries, & &1.windows))
     |> Enum.reduce(List.duplicate(0, @hours_per_day), fn {hour, count, _approximate?}, hours ->
-      # An after-midnight departure joins the last bucket, as the prototype does.
-      List.update_at(hours, min(hour, @hours_per_day - 1), &(&1 + count))
+      # A GTFS hour past 24 is the next day's clock hour: 25:10 counts in bucket 1.
+      List.update_at(hours, rem(hour, @hours_per_day), &(&1 + count))
     end)
   end
 

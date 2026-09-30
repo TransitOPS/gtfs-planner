@@ -1007,7 +1007,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
       </div>
 
       <div class="bg-canvas px-5 py-3">
-        <dt class="text-[13px] font-[650] text-muted">Departures by hour, 05:00 to midnight</dt>
+        <dt class="text-[13px] font-[650] text-muted">Departures by hour, 05:00 to 05:00</dt>
         <dd class="mt-1.5 grid gap-1.5">
           <.hour_bars letter="A" hours={@comparison.a.usage.hours} max={@hour_max} />
           <.hour_bars letter="B" hours={@comparison.b.usage.hours} max={@hour_max} />
@@ -2270,8 +2270,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
     "#{suggestion.shared} of #{length(comparison.a.stops)} stops in common · #{trips}"
   end
 
-  # The departures-by-hour chart: 05:00 to midnight, 20 bars per side on one
-  # scale, the count in the bar's tooltip (the reference's `hoursChart`).
+  # The departures-by-hour chart: the service day from 05:00 to 05:00, 24 bars
+  # per side on one scale, the count in the bar's tooltip (the reference's
+  # `hoursChart`). Hours 24 to 28 are the after-midnight bars; a departure stored
+  # as 00:00 to 04:59 counts in the same bars.
   attr :letter, :string, required: true, values: ["A", "B"]
   attr :hours, :list, required: true
   attr :max, :integer, required: true
@@ -2282,10 +2284,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
       <.series_chip letter={@letter} />
       <div
         data-hour-bars={String.downcase(@letter)}
-        class="grid h-7 flex-1 grid-cols-[repeat(20,minmax(0,1fr))] items-end gap-[2px]"
+        class="grid h-7 flex-1 grid-cols-[repeat(24,minmax(0,1fr))] items-end gap-[2px]"
       >
         <span
-          :for={hour <- 5..24}
+          :for={hour <- 5..28}
           data-hour-bar={"#{String.downcase(@letter)}-#{hour}"}
           class={[
             "block min-w-0 rounded-t-[2px]",
@@ -2310,7 +2312,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   defp hour_bar_height(count, max), do: max(18, round(count / max * 100))
 
   defp hour_bar_title(hour, count) do
-    "#{clock(rem(hour * 60, 1440))}–#{clock(rem((hour + 1) * 60, 1440))}: #{plural(count, "trip")}"
+    after_midnight = if hour >= 24, do: " after midnight", else: ""
+
+    "#{clock(rem(hour * 60, 1440))}–#{clock(rem((hour + 1) * 60, 1440))}#{after_midnight}: #{plural(count, "trip")}"
   end
 
   defp clock(minutes) do
