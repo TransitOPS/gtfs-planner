@@ -2,11 +2,15 @@ const OverlayDialog = {
   mounted() {
     this._overlayDialog_boundCancel = this._onCancel.bind(this);
     this._overlayDialog_boundClick = this._onBackdropClick.bind(this);
-    this._overlayDialog_boundKeydown = this._onTabKeydown.bind(this);
+    this._overlayDialog_boundTabKeydown = this._onTabKeydown.bind(this);
+    this._overlayDialog_boundDocKeydown = this._onKeydown.bind(this);
 
     this.el.addEventListener("cancel", this._overlayDialog_boundCancel);
     this.el.addEventListener("click", this._overlayDialog_boundClick);
-    this.el.addEventListener("keydown", this._overlayDialog_boundKeydown);
+    this.el.addEventListener("keydown", this._overlayDialog_boundTabKeydown);
+    // A dialog opened with show() gets no native Escape handling and no
+    // cancel event, so a non-modal drawer watches the key itself.
+    document.addEventListener("keydown", this._overlayDialog_boundDocKeydown);
 
     if (this._isOpenRequested() && !this.el.open) {
       this._activate();
@@ -61,6 +65,10 @@ const OverlayDialog = {
     return this.el.dataset.pending === "true";
   },
 
+  _isModal() {
+    return this.el.dataset.modal !== "false";
+  },
+
   _cleanup() {
     if (this._overlayDialog_boundCancel) {
       this.el.removeEventListener("cancel", this._overlayDialog_boundCancel);
@@ -70,9 +78,13 @@ const OverlayDialog = {
       this.el.removeEventListener("click", this._overlayDialog_boundClick);
       this._overlayDialog_boundClick = null;
     }
-    if (this._overlayDialog_boundKeydown) {
-      this.el.removeEventListener("keydown", this._overlayDialog_boundKeydown);
-      this._overlayDialog_boundKeydown = null;
+    if (this._overlayDialog_boundTabKeydown) {
+      this.el.removeEventListener("keydown", this._overlayDialog_boundTabKeydown);
+      this._overlayDialog_boundTabKeydown = null;
+    }
+    if (this._overlayDialog_boundDocKeydown) {
+      document.removeEventListener("keydown", this._overlayDialog_boundDocKeydown);
+      this._overlayDialog_boundDocKeydown = null;
     }
     if (this.el.open) {
       this.el.close();
@@ -82,7 +94,11 @@ const OverlayDialog = {
 
   _activate() {
     this._overlayDialog_opener = document.activeElement;
-    this.el.showModal();
+    if (this._isModal()) {
+      this.el.showModal();
+    } else {
+      this.el.show();
+    }
     this.el.scrollLeft = 0;
     this.el.scrollTop = 0;
     this._applyInitialFocus();
@@ -173,6 +189,22 @@ const OverlayDialog = {
     e.preventDefault();
     e.stopPropagation();
 
+    this._requestClose();
+  },
+
+  _onKeydown(e) {
+    if (this._isModal()) return;
+    if (e.key !== "Escape") return;
+    if (!this.el.open) return;
+    // A nested dialog owns the keyboard while it is open; only this panel or
+    // the page behind it may close on Escape.
+    const owner = e.target && e.target.closest ? e.target.closest("dialog") : null;
+    if (owner && owner !== this.el) return;
+
+    this._requestClose();
+  },
+
+  _requestClose() {
     if (this._isPending()) return;
 
     const dismiss = this._findDismissButton();
