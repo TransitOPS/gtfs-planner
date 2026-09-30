@@ -277,7 +277,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChangesTest do
 
   describe "plan/2" do
     test "returns :invalid_command until a planner owns the tag" do
-      assert TripChanges.plan({:shift, [@trip_a], 300, nil}, %{}) ==
+      # :shift is planned since step 9; these tags still fall through to the dispatch
+      # fallback until their planner steps (12–18) add a clause above it.
+      assert TripChanges.plan({:set_timing, [@trip_a], @trip_c}, %{}) ==
                {:error, :invalid_command}
 
       assert TripChanges.plan({:convert_frequency, @trip_a}, %{}) ==
