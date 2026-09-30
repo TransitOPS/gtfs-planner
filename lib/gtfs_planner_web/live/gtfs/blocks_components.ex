@@ -2965,6 +2965,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :connection_saved, :atom, default: nil
   attr :connection_check, :any, default: nil
   attr :connection_scope, :map, default: nil
+  attr :connection_error, :map, default: nil
+  attr :connection_pending, :boolean, default: false
   attr :discard, :map, default: nil
 
   def gap_drawer(assigns) do
@@ -3011,6 +3013,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       chrome="planner"
       modal={false}
       open={@open}
+      pending={@connection_pending}
       title={@title}
       class="max-w-[min(100vw,30rem)]"
     >
@@ -3266,6 +3269,33 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       </.drawer_scroll>
 
       <.drawer_footer>
+        <%!-- The save's own outcomes, above the footer's actions (AC-15). The
+        pending sentence is the same live region the message replaces, so a reader
+        hears "Saving…" and then either the reason nothing was written or nothing
+        at all, because a success closes the drawer and leaves its result on the
+        page instead. --%>
+        <p
+          id="connection-save-status"
+          class="basis-full text-[13px] text-muted"
+          aria-live="polite"
+          data-pending={to_string(@connection_pending)}
+        >
+          {connection_save_status(@connection_pending, @connection_draft, @connection_saved, @records)}
+        </p>
+
+        <.message
+          :if={@connection_error}
+          id="connection-save-message"
+          kind="error"
+          title={@connection_error.title}
+          tabindex="-1"
+          phx-hook="FormErrorFocus"
+          data-focus-on-mount="connection-save-message"
+          data-role="connection-save-error"
+        >
+          {@connection_error.message}
+        </.message>
+
         <.button
           :for={trip <- [@from, @to]}
           type="button"
@@ -3279,6 +3309,39 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           Inspect {trip.trip_id}
         </.button>
         <.back_to_block :if={@back_block} id="gap-back-to-block" block={@back_block} />
+
+        <button
+          type="button"
+          id="connection-cancel"
+          class="btn btn-ghost min-h-11"
+          phx-click="close_drawer"
+        >
+          Cancel
+        </button>
+        <.button
+          id="connection-save"
+          type="button"
+          class="min-h-11"
+          data-role="connection-save"
+          phx-click="save_connection"
+          phx-disable-with="Saving…"
+          disabled={
+            not connection_save_enabled?(
+              @connection_draft,
+              @connection_saved,
+              @records,
+              @connection_check
+            ) or @connection_pending
+          }
+        >
+          {connection_save_label(
+            @connection_pending,
+            @connection_draft,
+            @connection_saved,
+            @records,
+            @connection_error
+          )}
+        </.button>
       </.drawer_footer>
     </.drawer>
 
@@ -3306,6 +3369,136 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       </p>
     </.confirm_dialog>
     """
+  end
+
+  # --- the connection save ----------------------------------------------------
+
+  # Whether the footer offers Save at all: there is a choice, it differs from the
+  # saved one (or rewrites a drifted record's stops), and the pre-check has not
+  # refused it. "Not stated" is never disabled, because removing a record writes
+  # nothing and the write rule cannot refuse it.
+  defp connection_save_enabled?(draft, saved, records, check) do
+    not is_nil(draft) and connection_unsaved?(draft, saved, records) and
+      not connection_choice_blocked?(check, draft)
+  end
+
+  # A draft is unsaved when it differs from the saved setting, and also when it
+  # matches but the pair's single record's stops drifted: re-choosing the saved
+  # type is how those stops are rewritten (R2, AC-6), so the drawer offers
+  # "Update record" rather than hiding a write the editor still needs.
+  defp connection_unsaved?(draft, saved, [entry]),
+    do: draft != saved or stops_drifted?(draft, saved, entry)
+
+  defp connection_unsaved?(draft, saved, _records), do: draft != saved
+
+  defp stops_drifted?(saved, saved, %{state: {:stale, :stops_changed}}), do: true
+  defp stops_drifted?(_draft, _saved, _entry), do: false
+
+  defp connection_choice_blocked?({:refused, _state}, :not_stated), do: false
+  defp connection_choice_blocked?({:refused, _state}, _choice), do: true
+  defp connection_choice_blocked?(_check, _choice), do: false
+
+  # The footer's button label. A pending save says so, a drifted record whose saved
+  # type is re-chosen offers the narrower "Update record", a failed save offers
+  # "Try again", and everything else is an ordinary "Save setting".
+  defp connection_save_label(true, _draft, _saved, _records, _error), do: "Saving…"
+
+  defp connection_save_label(false, draft, saved, records, error) do
+    cond do
+      is_nil(draft) -> "Save setting"
+      is_map(error) -> "Try again"
+      stops_drifted?(draft, saved, single_record(records)) -> "Update record"
+      true -> "Save setting"
+    end
+  end
+
+  defp single_record([entry]), do: entry
+  defp single_record(_records), do: nil
+
+  # The footer's status line: what Save is about to do, in the page's own words.
+  # It is a polite live region rather than an alert, because it reports an action
+  # the reader chose rather than a failure.
+  defp connection_save_status(true, _draft, _saved, _records), do: "Saving…"
+
+  defp connection_save_status(false, nil, _saved, _records),
+    do: "Choose a setting."
+
+  defp connection_save_status(false, draft, saved, records) do
+    cond do
+      not connection_unsaved?(draft, saved, records) -> "Choose a different setting to save."
+      draft == :not_stated and length(records) > 1 -> "Saving removes both records."
+      draft == :not_stated and records != [] -> "Saving removes the record."
+      length(records) > 1 -> "Saving replaces both records."
+      true -> ""
+    end
+  end
+
+  @doc """
+  Renders the result of one connection save or undo, above the workspace.
+
+  The callout is the page's answer to a write that closed the drawer, so it
+  persists until it is dismissed or replaced (R10, AC-15). It is a polite status
+  rather than an alert: nothing failed unless the sentence says so. Undo is
+  offered only when R9's condition held at the save, and a refused Undo keeps the
+  reviewable pair's own link so the editor can see what changed instead.
+  """
+  attr :result, :map, required: true
+  attr :version_id, :string, required: true
+  attr :day, :string, default: nil
+
+  def connection_result(assigns) do
+    ~H"""
+    <div class="rounded-card border border-subtle bg-selection px-4 py-3">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <p
+          id="connection-result"
+          class="min-w-0 text-sm text-strong"
+          role="status"
+          aria-live="polite"
+          data-role="connection-result"
+        >
+          {@result.text}
+          <.link
+            :if={@result.open?}
+            id="connection-result-open"
+            patch={connection_result_path(@version_id, @day, @result.gap)}
+            class="ml-2 font-semibold text-action underline underline-offset-4 hover:text-action-hover"
+          >
+            Open connection
+          </.link>
+        </p>
+        <div class="flex items-center gap-2">
+          <button
+            :if={@result.undo?}
+            id="connection-undo"
+            type="button"
+            phx-click="undo_connection"
+            class="inline-flex min-h-11 items-center rounded-control px-3 text-sm font-semibold text-action underline underline-offset-4 hover:bg-canvas"
+          >
+            Undo
+          </button>
+          <button
+            id="connection-dismiss"
+            type="button"
+            aria-label="Dismiss save result"
+            phx-click="dismiss_connection_result"
+            class="inline-flex size-11 items-center justify-center rounded-control text-default hover:bg-canvas"
+          >
+            <.icon name="hero-x-mark" class="size-5" />
+          </button>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  # The deep link a refused Undo offers: the same `gap=` parameter the drawer
+  # itself opens from, so the review lands on the pair that changed.
+  defp connection_result_path(version_id, day, gap) do
+    params =
+      [{"gap", gap}] ++ if(is_binary(day), do: [{"day", day}], else: [])
+
+    "/gtfs/#{version_id}/blocks?" <> URI.encode_query(params)
   end
 
   @doc """

@@ -54,6 +54,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Gtfs.Blocking.Connections
+  alias GtfsPlanner.Gtfs.Blocking.RiderOutcomes
   alias GtfsPlanner.Gtfs.Blocking.Summary
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
@@ -210,6 +211,29 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # is applied when it arrives.
   @apply_suggestion_key :suggest_apply
 
+  # Saving one connection's setting is a bounded write under the blocking lock,
+  # so it runs under `start_async` like the page's other bounded work: the drawer
+  # shows "Saving…" with its controls disabled, a second click while the write
+  # runs is refused, and the outcome is applied when it arrives.
+  @save_connection_key :save_connection
+
+  # The save outcomes in the drawer's own words. A stale write keeps the editor's
+  # choice and names what the pair now carries; a refusal keeps the drawer and
+  # disables the two explicit options, because the rule that refused is the one
+  # the drawer's pre-check reads (CR-2); `:busy` and an audit failure say that
+  # nothing changed and the choice is kept (AC-15).
+  @connection_stale_title "This connection changed while you were deciding."
+  @connection_stale_message "Nothing was saved. Your choice is kept; save again to replace it."
+  @connection_busy_title "Couldn't save the setting."
+  @connection_busy_message "Nothing changed and your choice is kept. Try again."
+  @connection_failed_title "Couldn't save the setting."
+  @connection_failed_message "Nothing changed and your choice is kept. Try again."
+
+  # The persistent result of a save or an undo (R10, AC-9, AC-15). It stays on
+  # screen until it is dismissed or replaced, because a write that closes the
+  # drawer has to leave one sentence behind about what it did.
+  @connection_undo_refused "Couldn't undo: the connection changed after your save. Open it to review."
+
   # The three answers in the page's own words. A stale plan is named
   # by what the reader must do about it rather than by an input the page cannot
   # see: `apply_block_plan/3` reports `:stale_plan` without saying which setting,
@@ -304,6 +328,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:replace, @no_replace)
      |> assign(:applied, nil)
      |> assign(:block_attributes, nil)
+     |> assign(:connection_result, nil)
+     |> assign(:connection_error, nil)
+     |> assign(:connection_pending, false)
      |> assign_empty_derived()}
   end
 
@@ -919,6 +946,108 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   def handle_event("change_connection", _params, socket), do: {:noreply, socket}
 
+  # The one write the drawer owns: `Gtfs.set_in_seat_connection/5`, the facade for
+  # `InSeatTransfers.set_connection/5`, under the version's own audit context (R5,
+  # CR-8). The organization, version and actor come from the socket, never from the
+  # event, and the editor role is re-read here exactly as the block writes do it.
+  #
+  # The write runs under `start_async`: it takes the blocking lock, the pair's rows
+  # and a retry loop, so the drawer shows that it is working rather than freezing,
+  # and a second click while it runs is refused by the pending state rather than
+  # writing twice (FH-14).
+  def handle_event("save_connection", _params, %{assigns: %{day_type: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("save_connection", _params, socket) do
+    if editor_access?(socket) do
+      case connection_save_request(socket) do
+        {:ok, request} ->
+          {:noreply,
+           socket
+           |> assign(:connection_error, nil)
+           |> assign(:connection_pending, true)
+           |> start_async(@save_connection_key, fn ->
+             {request,
+              Gtfs.set_in_seat_connection(
+                request.from,
+                request.to,
+                request.choice,
+                request.expected,
+                request.audit
+              )}
+           end)}
+
+        :error ->
+          {:noreply, socket}
+      end
+    else
+      # The refusal is the page flash rather than the drawer's own sentence: the
+      # drawer is a non-modal top-layer `<dialog>`, so the flash behind it is the
+      # page's own answer and the write is the thing that matters here.
+      {:noreply, put_flash(socket, :error, @permission_message)}
+    end
+  end
+
+  # The second guarded write of R9. Its `expected` is the just-saved state rather
+  # than the one before it, so another editor's change between the save and the
+  # Undo is `:stale` with nothing written, and the sentence says so.
+  def handle_event(
+        "undo_connection",
+        _params,
+        %{assigns: %{connection_result: %{undo?: true} = result}} = socket
+      ) do
+    if editor_access?(socket) do
+      case Gtfs.set_in_seat_connection(
+             result.from,
+             result.to,
+             result.previous,
+             result.expected,
+             result.audit
+           ) do
+        {:ok, _saved} ->
+          {:noreply,
+           socket
+           |> assign(:connection_pending, false)
+           |> assign(:connection_result, %{
+             result
+             | text: restored_text(result.previous),
+               undo?: false,
+               open?: false
+           })
+           |> load_day()
+           |> resolve_drawers()
+           |> assign_page_rows_if_loaded()}
+
+        {:error, :stale} ->
+          {:noreply,
+           socket
+           |> assign(:connection_pending, false)
+           |> assign(:connection_result, %{
+             result
+             | text: @connection_undo_refused,
+               undo?: false,
+               open?: true
+           })}
+
+        {:error, _reason} ->
+          {:noreply,
+           socket
+           |> assign(:connection_pending, false)
+           |> assign(:connection_result, %{result | undo?: false, open?: false})}
+      end
+    else
+      {:noreply, put_flash(socket, :error, @permission_message)}
+    end
+  end
+
+  def handle_event("undo_connection", _params, socket), do: {:noreply, socket}
+
+  # The result is the reader's own; it is not a route, so dismissing it leaves the
+  # day, the drawer and the timeline exactly as they are (R10).
+  def handle_event("dismiss_connection_result", _params, socket) do
+    {:noreply, assign(socket, :connection_result, nil)}
+  end
+
   # The two writes in the Block rules drawer. The drawer only
   # exists on a loaded day type, so a submit from another page state is not a
   # save. The settings are saved first through the context's own upsert, which
@@ -1155,6 +1284,60 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       {:noreply, socket}
     end
   end
+
+  # The request the write needs, taken from the state the drawer is showing rather
+  # than from the event: the pair and its `expected` rows are the ones the editor
+  # saw (R4), so a crafted `save_connection` naming a foreign trip names nothing
+  # this write can use. A pair with no chosen setting, or one whose choice the
+  # pre-check has already refused, is not a request at all (AC-5, CR-2).
+  defp connection_save_request(socket) do
+    %{assigns: assigns} = socket
+
+    with gap when not is_nil(gap) <- assigns.gap_view,
+         choice when not is_nil(choice) <- assigns.connection_draft,
+         false <- connection_blocked?(assigns.connection_check, choice) do
+      {:ok,
+       %{
+         from: gap.from.trip_id,
+         to: gap.to.trip_id,
+         choice: choice,
+         expected: expected_rows(gap.records),
+         # A pair with no record has nothing to restore a setting from, so its
+         # Undo writes `:not_stated`, which is what removes the row the save made.
+         previous: assigns.connection_saved || :not_stated,
+         restorable?: connection_restorable?(gap.records),
+         gap: gap_param(gap.from.id, gap.to.id),
+         audit: audit_context(socket)
+       }}
+    else
+      _other -> :error
+    end
+  end
+
+  # R4/INV-4: the rows the editor saw, as the guard's `%{id, transfer_type,
+  # updated_at}` list, in id order.
+  defp expected_rows(records) do
+    records
+    |> Enum.map(
+      &%{id: &1.row.id, transfer_type: &1.row.transfer_type, updated_at: &1.row.updated_at}
+    )
+    |> Enum.sort_by(& &1.id)
+  end
+
+  # R9: Undo is offered only when the previous state was no record, or one record
+  # whose state was `:matches`. A pair of two disagreeing records, or one that
+  # needs review, has no single previous setting to restore, so the save offers
+  # no Undo (AC-9).
+  defp connection_restorable?([]), do: true
+  defp connection_restorable?([%{state: :matches}]), do: true
+  defp connection_restorable?(_records), do: false
+
+  # R1 through the drawer's own pre-check: the two explicit options are refused
+  # together, and "Not stated" is never refused because it removes the record
+  # rather than writing one.
+  defp connection_blocked?({:refused, _state}, :not_stated), do: false
+  defp connection_blocked?({:refused, _state}, _choice), do: true
+  defp connection_blocked?(_check, _choice), do: false
 
   defp patch(socket, overrides, opts \\ []) do
     socket =
@@ -1828,7 +2011,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       connection_saved: nil,
       connection_draft: nil,
       connection_form: connection_form(nil),
-      connection_scope: nil
+      connection_scope: nil,
+      connection_error: nil,
+      connection_pending: false
     )
   end
 
@@ -4030,6 +4215,171 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {:noreply, put_apply(socket, :failed, @apply_failed_title, @apply_failed_message)}
   end
 
+  # The save's own result, in the same group as the page's other asynchronous work
+  # so it too can drop a result that arrives after the reader has moved on.
+  def handle_async(@save_connection_key, {:ok, {request, result}}, socket) do
+    if current_connection_request?(socket, request) do
+      connection_saved(socket, request, result)
+    else
+      {:noreply, assign(socket, :connection_pending, false)}
+    end
+  end
+
+  # A task that exited rather than returning wrote nothing the page can report;
+  # the failure sentence is the one an audit failure and a busy write share.
+  def handle_async(@save_connection_key, {:exit, _reason}, socket) do
+    {:noreply,
+     assign(socket,
+       connection_pending: false,
+       connection_error: %{title: @connection_failed_title, message: @connection_failed_message}
+     )}
+  end
+
+  # The save's result is current while the drawer is still showing the pair the
+  # write was built from. A reader who closed the drawer, or moved to another gap,
+  # while the write was in flight gets no result about a drawer that is no longer
+  # on the page.
+  defp current_connection_request?(%{assigns: %{gap_view: nil}}, _request), do: false
+
+  defp current_connection_request?(%{assigns: %{gap_view: gap}}, request) do
+    gap_param(gap.from.id, gap.to.id) == request.gap
+  end
+
+  defp connection_saved(socket, request, {:ok, result}) do
+    result =
+      %{
+        kind: :saved,
+        text: saved_text(request.choice, result.choice, request.from, request.to),
+        from: request.from,
+        to: request.to,
+        previous: request.previous,
+        gap: request.gap,
+        expected: saved_expected(request.choice, result),
+        audit: request.audit,
+        undo?: request.restorable?,
+        open?: false
+      }
+
+    # AC-15: a success closes the drawer, reloads the day and leaves a persistent
+    # result above the workspace. The reload clears both stream keys, so the
+    # timeline's gap marker is the saved pair's rather than the one the editor
+    # was looking at (FH-14, PM-12).
+    {:noreply,
+     socket
+     |> assign(:connection_pending, false)
+     |> assign(:connection_error, nil)
+     |> assign(:connection_result, result)
+     |> assign(:connection_discard, nil)
+     |> load_day()
+     |> resolve_drawers()
+     |> assign_page_rows_if_loaded()
+     |> close_connection_drawer()
+     |> focus_within("connection-result")}
+  end
+
+  # `:stale` keeps the drawer and the editor's choice and says what the pair now
+  # carries (AC-15). The pair the editor was looking at is unchanged by anyone
+  # else's write, so the drawer stays exactly where it was with the choice still
+  # checked, and saving again replaces it.
+  defp connection_saved(socket, request, {:error, :stale}) do
+    socket = socket |> assign(:connection_pending, false) |> load_day() |> resolve_drawers()
+
+    {:noreply,
+     socket
+     |> put_connection_draft(request.choice)
+     |> assign(:connection_error, %{
+       title: @connection_stale_title,
+       message: @connection_stale_message
+     })
+     |> focus_within("connection-save-message")}
+  end
+
+  # A refusal keeps the drawer and the choice, shows R1's own reason and disables
+  # the two explicit options (AC-15). The state is the write's own, and the
+  # drawer's pre-check reads it back on the next resolve, so the two cannot
+  # disagree (CR-2).
+  defp connection_saved(socket, _request, {:error, {:refused, state}}) do
+    {:noreply,
+     socket
+     |> assign(:connection_pending, false)
+     |> assign(:connection_check, {:refused, state})
+     |> assign(:connection_error, %{
+       title: "Can't save: these trips are no longer one vehicle on every date.",
+       message: connection_refusal_sentence(state)
+     })
+     |> focus_within("connection-save-message")}
+  end
+
+  defp connection_saved(socket, _request, {:error, _reason}) do
+    {:noreply,
+     socket
+     |> assign(:connection_pending, false)
+     |> assign(:connection_error, %{
+       title: @connection_busy_title,
+       message: @connection_busy_message
+     })
+     |> focus_within("connection-save-message")}
+  end
+
+  # The refusal's own words, or the generic sentence when the state carries none.
+  defp connection_refusal_sentence(state) do
+    case RiderOutcomes.refusal_text(state) do
+      nil ->
+        "Nothing was saved and your choice is kept. Only Not stated is available until the blocks change."
+
+      text ->
+        "#{text} Nothing was saved, and only Not stated is available until the blocks change."
+    end
+  end
+
+  # R9: the Undo write is guarded by the state the save left, so its `expected` is
+  # the pair's own row as the save wrote it, or no row at all for "Not stated".
+  defp saved_expected(:not_stated, _result), do: []
+
+  defp saved_expected(_choice, %{transfer: nil}), do: []
+
+  defp saved_expected(_choice, %{transfer: transfer}) do
+    [
+      %{
+        id: transfer.id,
+        transfer_type: transfer.transfer_type,
+        updated_at: transfer.updated_at
+      }
+    ]
+  end
+
+  # "Saved: {setting} from trip {a} to {b}." — the setting in the page's own
+  # words, lowercased as the sentence reads (AC-15).
+  defp saved_text(choice, saved_choice, from, to) do
+    "Saved: #{connection_setting_label(saved_choice || choice)} from trip #{from} to #{to}."
+  end
+
+  # "Restored: not stated." — the state the Undo put back, in the same words.
+  defp restored_text(choice), do: "Restored: #{connection_setting_label(choice)}."
+
+  defp connection_setting_label(:not_stated), do: "not stated"
+  defp connection_setting_label(:stay_on_board), do: "riders stay on board"
+  defp connection_setting_label(:must_reboard), do: "riders must re-board"
+  defp connection_setting_label(_other), do: "not stated"
+
+  # The close itself, without the discard guard, because the draft has just been
+  # saved rather than lost: the success path drops the `gap=` parameter so the
+  # drawer closes and the URL stops naming a pair the editor is no longer in.
+  defp close_connection_drawer(socket) do
+    case do_close_drawer(socket) do
+      {:noreply, socket} -> socket
+    end
+  end
+
+  # Focus lands where the answer is: the drawer's own message while the drawer is
+  # still open, so a keyboard reader is told why the save did not happen instead of
+  # being left on a control that did nothing; the persistent result once the save
+  # closed the drawer. The scoped `FormErrorFocus` hook only moves focus to an
+  # element inside the region that owns it.
+  defp focus_within(socket, id) do
+    push_event(socket, "focus_scoped_target", %{id: id})
+  end
+
   # Dropping the preview is one step whatever the reader does next, so the day is
   # re-derived from the loaded day rather than from the previewed one, and the
   # timeline key is cleared so the container is replaced.
@@ -4296,6 +4646,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 pending={@apply.status == :pending}
               />
 
+              <BlocksComponents.connection_result
+                :if={not is_nil(@connection_result)}
+                result={@connection_result}
+                version_id={@state.version_id}
+                day={@state.day}
+              />
+
               <BlocksComponents.workspace
                 state={@state}
                 counts={@counts}
@@ -4454,6 +4811,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   connection_saved={@connection_saved}
                   connection_check={@connection_check}
                   connection_scope={@connection_scope}
+                  connection_error={@connection_error}
+                  connection_pending={@connection_pending}
                   discard={@connection_discard}
                 />
               <% end %>
