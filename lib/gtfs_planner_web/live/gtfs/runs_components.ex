@@ -1233,6 +1233,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
                 <button
                   type="button"
                   phx-click="create_run"
+                  phx-disable-with="Creating…"
                   phx-value-block={segment.block_id}
                   phx-value-start={segment.start_secs}
                   phx-value-end={segment.end_secs}
@@ -1316,6 +1317,98 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # order with nothing to suggest why.
   defp ordered_segments(segments) do
     Enum.sort_by(segments, &{String.to_integer(&1.block_id), &1.start_secs})
+  end
+
+  @doc """
+  Renders the toast: one line saying what just happened, and an Undo when the
+  write can be taken back.
+
+  **This component and its two assigns are the page's one undo surface**, and
+  steps 30, 31, 32 and 37 all use them rather than building their own. A move, a
+  split, a rename and a create all reach the same reader through the same box, so
+  "where is the Undo" has one answer and the refusal message reads the same way
+  whoever caused it.
+
+  `:toast` is `%{text:, kind:, token:}` or nil; `:undo` is `%{moves:, trips:}` or
+  nil. **Undo is not shown unless there is something to undo** — a toast that
+  offers Undo with nothing behind it is a control that does nothing, which is the
+  same objection step 26 raised about the scale control on the List and step 27
+  raised about it on this panel.
+
+  `data-token` carries the timer token. It is the one piece of internal state the
+  DOM exposes, and it is there so the timer's contract can be TESTED: a stale
+  timer is unobservable from the outside without it, and a test that cannot
+  construct the stale case will not notice its guard being deleted. It renders
+  as a string, because the DOM has no integers.
+
+  `role="status"` with `aria-live="polite"`: the toast arrives while the reader is
+  looking at the row they just edited, and it is an announcement, not a heading.
+  The Undo button is inside the live region, so its arrival is announced too.
+
+  It is `fixed` at the foot of the viewport because it is about the whole edit
+  rather than about the row, and a reader who has scrolled to another block can
+  still undo the change they made above.
+
+  The dark surface is the reference's, and it is the only place on this page with
+  an inverted treatment: a confirmation is not part of the page's reading order
+  and should not look as though it is.
+  """
+  attr :toast, :map, default: nil
+  attr :undo, :map, default: nil
+
+  def toast(assigns) do
+    ~H"""
+    <div
+      :if={@toast}
+      id="runs-toast"
+      role="status"
+      aria-live="polite"
+      data-role="runs-toast"
+      data-kind={@toast.kind}
+      data-token={@toast.token}
+      class="fixed bottom-6 left-1/2 z-[60] flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-control bg-neutral px-[18px] py-2 text-sm text-neutral-content shadow-lg"
+    >
+      <span
+        :if={@toast.kind == :refused}
+        data-role="toast-icon"
+        aria-hidden="true"
+        class="inline-flex size-4 shrink-0 items-center justify-center"
+      >
+        !
+      </span>
+      <span
+        :if={@toast.kind == :done}
+        data-role="toast-icon"
+        aria-hidden="true"
+        class="inline-flex size-4 shrink-0 items-center justify-center"
+      >
+        &check;
+      </span>
+      <span id="runs-toast-text" data-role="toast-text">{@toast.text}</span>
+
+      <button
+        :if={@undo}
+        id="runs-undo"
+        type="button"
+        phx-click="undo"
+        data-role="undo"
+        data-trips={@undo.trips}
+        class="inline-flex min-h-11 items-center gap-1.5 rounded-control px-2 font-semibold underline underline-offset-4 hover:text-neutral-content/80"
+      >
+        Undo
+      </button>
+
+      <button
+        type="button"
+        phx-click="dismiss_toast"
+        data-role="dismiss-toast"
+        aria-label="Dismiss"
+        class="inline-flex size-11 shrink-0 items-center justify-center rounded-control hover:text-neutral-content/80"
+      >
+        &times;
+      </button>
+    </div>
+    """
   end
 
   @doc """

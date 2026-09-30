@@ -71,6 +71,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:dir, :asc)
      |> assign(:scale, :day)
      |> assign(:view, :timeline)
+     # The toast and its undo are EVENT state, not URL state, so they start here
+     # rather than in `handle_params/3` beside `?day=` and `?panel=`. Starting them
+     # empty is also what makes `toast/1` render NOTHING on first paint: a
+     # `role="status"` region present with no text announces nothing and still
+     # occupies the fixed box at the foot of the viewport.
+     |> assign(:toast, nil)
+     |> assign(:undo, nil)
      |> assign(:run_axis, nil)
      |> assign(:run_routes, %{})
      |> stream(:run_rows, [], dom_id: &run_dom_id/1)}
@@ -213,6 +220,80 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   def handle_event("set_panel", _params, socket), do: {:noreply, socket}
 
+  # Create a run from one uncovered segment.
+  #
+  # **The segment is re-read from the loaded day, not taken from the button.**
+  # The button names a block and a span; those three values FIND the segment in
+  # `@runs_day.derived.uncovered`, and the moves are built from the trips that
+  # segment actually has. Passing the button's own trip list would let a stale or
+  # tampered `phx-value` write runs over trips nobody clicked — and the optimistic
+  # check would not catch it, because the check asks whether each trip is still
+  # unassigned, and a trip the page never showed is exactly the kind that is.
+  #
+  # Every move is `from: nil, to: :new`, and `apply_run_moves/4` resolves every
+  # `:new` in one call to the SAME run: an operator covering three trips means one
+  # run over them, not three runs of one trip each.
+  def handle_event("create_run", params, socket) do
+    case find_uncovered(socket.assigns.runs_day, params) do
+      nil ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast(
+           "That block is no longer uncovered. Reload to see the latest runs.",
+           :refused
+         )}
+
+      segment ->
+        moves = Enum.map(segment.trips, fn trip -> %{trip_id: trip.id, from: nil, to: :new} end)
+
+        {:noreply,
+         apply_moves(
+           socket,
+           moves,
+           &created_text/1,
+           "These trips changed since the page loaded. Reload to see the latest runs."
+         )}
+    end
+  end
+
+  # Undo the last move set, through the SAME call with the moves reversed.
+  #
+  # It is the same function and the same optimistic check by design: undo is not a
+  # privileged path that trusts the page, it is an ordinary move set that happens
+  # to run backwards. So a colleague who moved one of those trips in the meantime
+  # refuses the undo rather than reverting their work — which is the card's third
+  # case, and is why the refusal names what changed.
+  def handle_event("undo", _params, socket) do
+    case socket.assigns.undo do
+      nil ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast("There is nothing to undo.", :refused)}
+
+      %{moves: moves} ->
+        # The undo assign is CLEARED whatever the write did.
+        # `apply_run_moves/4` hands back the moves it just made, so a success that
+        # re-armed the button would make Undo repeatable — and a second press
+        # would apply the same reversal again, which is a re-APPLY wearing the
+        # name of an undo. There is no stack: one edit, one Undo, then nothing
+        # left to undo.
+        {:noreply,
+         socket
+         |> apply_moves(
+           moves,
+           fn _id -> "Undone." end,
+           "Can't undo: these runs changed since."
+         )
+         |> put_undo(nil)}
+    end
+  end
+
+  def handle_event("dismiss_toast", _params, socket) do
+    {:noreply, socket |> put_undo(nil) |> put_toast(nil)}
+  end
+
   # Every strip tile opens the same drawer, and the pressed tile is the one the
   # reader pressed. The prototype sends each tile its own `data-act`; only the
   # summary drawer exists at this step, so all six open it — but the tile that
@@ -248,6 +329,128 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # them. It is LAST among the `handle_event` clauses on purpose: a catch-all
   # placed earlier would shadow the drawer events above it.
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  # The timer the reference's JS ran. It carries the toast's token so a timer set
+  # for an EARLIER toast cannot dismiss a LATER one: without the token, a reader
+  # who edits twice quickly watches the second confirmation vanish on the first
+  # one's schedule.
+  @impl true
+  def handle_info({:dismiss_toast, token}, socket) do
+    if socket.assigns.toast && socket.assigns.toast.token == token do
+      {:noreply, socket |> put_undo(nil) |> put_toast(nil)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info(_message, socket), do: {:noreply, socket}
+
+  # One write, one toast, one undo — the shape steps 30, 31, 32 and 37 reuse.
+  #
+  # BOTH messages are parameters, and the success one is a function of the new
+  # run id. They have to be: undo is this same function with the moves reversed,
+  # and a shared success string had it announcing "New run created." after an
+  # undo that had created nothing and deleted something. A caller that does not
+  # get to say what happened cannot be trusted to describe it.
+  #
+  # `refusal` is the message for `:stale_moves`, and it is a parameter because the
+  # two callers want different words for the same refusal. A create and an undo
+  # are refused by one rule and mean different things by it: a create means the
+  # page is behind, an undo means the work moved on without it. "These trips
+  # changed" is true of both and useless for either.
+  #
+  # **Every path re-reads the day**, refusal included. A refusal means somebody
+  # else moved these trips, so the page showing them as uncovered is now wrong in
+  # the same direction the success path is: a page that says "these runs changed"
+  # over a chart that still shows the old run has not told the reader anything
+  # they can act on.
+  defp apply_moves(socket, moves, success, refusal) when is_function(success, 1) do
+    %{day: day, current_organization: organization, current_gtfs_version: version} =
+      socket.assigns
+
+    case Gtfs.apply_run_moves(organization.id, version.id, day, moves) do
+      {:ok, %{new_run_id: id, undo: undo_moves}} ->
+        socket
+        |> put_undo(%{moves: undo_moves, trips: undo_trip_count(undo_moves)})
+        |> put_toast(success.(id), :done)
+        |> load_day()
+
+      {:error, :stale_moves} ->
+        socket |> put_undo(nil) |> put_toast(refusal, :refused) |> load_day()
+
+      {:error, {:invalid_trips, trips}} ->
+        socket
+        |> put_undo(nil)
+        |> put_toast("#{length(trips)} trips on this block are not part of this day.", :refused)
+        |> load_day()
+
+      {:error, :not_found} ->
+        socket
+        |> put_undo(nil)
+        |> put_toast("That day is no longer available. Reload to see the latest runs.", :refused)
+        |> load_day()
+
+      {:error, {:invalid_run_id, _run_id}} ->
+        socket
+        |> put_undo(nil)
+        |> put_toast("That run ID is not usable. Reload to see the latest runs.", :refused)
+    end
+  end
+
+  # This step's own success text. A write that made no run of its own — a move, a
+  # split, a rename — has no number to quote, so it does not invent one, and
+  # steps 30, 31 and 32 pass their own `success` in place of this.
+  defp created_text(id), do: "Run #{id} created."
+
+  defp undo_trip_count(undo_moves) do
+    undo_moves |> Enum.map(& &1.trip_id) |> Enum.uniq() |> length()
+  end
+
+  # The toast, and the timer that takes it away.
+  #
+  # **10 s with an Undo and 4 s without**, the reference's own timing: an Undo the
+  # reader cannot reach in time is not an Undo, and a confirmation with nothing to
+  # take back has earned less of their attention. The Undo is assigned BEFORE the
+  # toast, because the timeout reads it to choose.
+  defp put_toast(socket, text, kind \\ :done)
+
+  defp put_toast(socket, nil, _kind), do: assign(socket, :toast, nil)
+
+  defp put_toast(socket, text, kind) do
+    token = System.unique_integer([:positive, :monotonic])
+
+    Process.send_after(
+      self(),
+      {:dismiss_toast, token},
+      if(socket.assigns.undo, do: 10_000, else: 4_000)
+    )
+
+    assign(socket, :toast, %{text: text, kind: kind, token: token})
+  end
+
+  defp put_undo(socket, nil), do: assign(socket, :undo, nil)
+
+  defp put_undo(socket, %{moves: moves} = undo) when is_list(moves),
+    do: assign(socket, :undo, undo)
+
+  # The segment the button names, found in the day's own uncovered list.
+  #
+  # Compared as STRINGS on purpose: `phx-value` arrives as a string and a segment
+  # carries integers, so a straight `==` would find nothing and every Create run
+  # would report the block as no longer uncovered.
+  defp find_uncovered(nil, _params), do: nil
+
+  defp find_uncovered(%{derived: %{uncovered: segments}}, params) do
+    block = params["block"] || params["value-block"]
+    start_secs = params["start"] || params["value-start"]
+    end_secs = params["end"] || params["value-end"]
+
+    Enum.find(segments, fn segment ->
+      segment.block_id == block and
+        to_string(segment.start_secs) == to_string(start_secs) and
+        to_string(segment.end_secs) == to_string(end_secs)
+    end)
+  end
 
   defp toggle_dir(:asc), do: :desc
   defp toggle_dir(_dir), do: :asc
@@ -505,6 +708,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       <:sub_header>
         <.operations_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:runs} />
       </:sub_header>
+
+      <RunsComponents.toast toast={@toast} undo={@undo} />
 
       <div id="runs-page" data-load-state={@load_state}>
         <div class="w-full space-y-4">
