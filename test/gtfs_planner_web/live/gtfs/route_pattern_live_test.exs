@@ -669,12 +669,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       assert has_element?(view, "#pattern-details-additional")
       assert has_element?(view, "#pattern-details-id", pattern.route_pattern_id)
-      assert has_element?(view, "#pattern-details-form", "Headsign for new trips")
+      assert has_element?(view, "#pattern-details-form", "Headsign")
 
       assert has_element?(
                view,
                "#pattern-details-form",
-               "Existing trips keep their own headsigns"
+               "What the vehicle sign shows"
              )
 
       refute has_element?(view, "#details-impact-dialog[data-open='true']")

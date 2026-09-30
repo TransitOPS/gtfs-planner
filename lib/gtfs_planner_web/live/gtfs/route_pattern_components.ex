@@ -15,6 +15,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents
   alias GtfsPlannerWeb.RouteWorkspace
 
   # ── The editor: header, tabs, tasks and the save bar ──
@@ -251,11 +252,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
   The form has no button of its own: the save bar's primary submits it through
   the `form` attribute.
+
+  The headsign field carries the headsign surfaces: the usage line while the
+  field matches the stored default, and the wording warnings plus the inline
+  update box while it is edited. `headsign_usage` is the map
+  `Gtfs.headsign_usage/4` returns (nil while creating, where no usage exists);
+  `headsign_box` and `headsign_warnings` hold the prepared update-box and
+  warning props the LiveView derives from the draft, or nil when unchanged.
   """
   attr :form, :any, required: true
   attr :submit_event, :string, required: true
   attr :pattern_id, :string, default: nil
   attr :dirty?, :boolean, required: true
+  attr :headsign_usage, :map, default: nil
+  attr :headsign_changed?, :boolean, default: false
+  attr :headsign_box, :map, default: nil
+  attr :headsign_warnings, :map, default: nil
 
   def details_task(assigns) do
     ~H"""
@@ -293,9 +305,33 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           field={@form[:headsign]}
           id="pattern-details-headsign"
           type="text"
-          label="Headsign for new trips (optional)"
-          help="The destination shown on the bus for trips you add later. Existing trips keep their own headsigns."
+          label="Headsign (optional)"
+          help="What the vehicle sign shows, such as “Lincoln City” or “Lincoln City via Depoe Bay”. Trips you add get it."
         />
+        <%= cond do %>
+          <% @headsign_changed? and @headsign_warnings -> %>
+            <RoutePatternHeadsignComponents.wording_warnings
+              id="headsign-warnings"
+              warnings={@headsign_warnings.warnings}
+              value={@headsign_warnings.value}
+              sibling={@headsign_warnings.sibling}
+              route={@headsign_warnings.route}
+            />
+            <RoutePatternHeadsignComponents.update_box
+              id="headsign-update"
+              from={@headsign_box.from}
+              to={@headsign_box.to}
+              followers={@headsign_box.followers}
+              selected_follow={@headsign_box.selected_follow}
+              extra={@headsign_box.extra}
+              others={@headsign_box.others}
+              shielded={@headsign_box.shielded}
+              update?={@headsign_box.update?}
+            />
+          <% @headsign_usage -> %>
+            <RoutePatternHeadsignComponents.usage_line id="headsign-usage" usage={@headsign_usage} />
+          <% true -> %>
+        <% end %>
         <.input
           field={@form[:time_desc]}
           id="pattern-details-description"
@@ -612,9 +648,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   where the person acted.
 
   `primary` holds the button: `:id`, `:label`, `:click` (an event name or a
-  `JS` command) or `:form` (an id the button submits), `:disabled?` and
-  `:title`. `secondary` optionally holds one quiet button with `:id`, `:label`
-  and `:click`.
+  `JS` command) or `:form` (an id the button submits), `:disabled?`, `:title`
+  and the optional `:pending_label` shown by `phx-disable-with` while the
+  submit round-trip is in flight. `secondary` optionally holds one quiet
+  button with `:id`, `:label` and `:click`.
   """
   attr :primary, :map, required: true
   attr :secondary, :map, default: nil
@@ -660,6 +697,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           type={if @primary[:form], do: "submit", else: "button"}
           form={@primary[:form]}
           phx-click={@primary[:click]}
+          phx-disable-with={@primary[:pending_label]}
           data-commit={@primary[:commit]}
           disabled={@primary.disabled?}
           data-unavailable={@primary.disabled? || nil}

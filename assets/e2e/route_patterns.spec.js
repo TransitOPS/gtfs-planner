@@ -248,7 +248,7 @@ for (const viewport of VIEWPORTS) {
     await page.locator("#pattern-task-details").click();
     await page.waitForSelector("#pattern-details-form", { timeout: 10000 });
     await expect(page.locator("#pattern-details-name")).toHaveValue("Central – Valley Hospital");
-    await expect(page.locator("#pattern-details-form")).toContainText("Headsign for new trips");
+    await expect(page.locator("#pattern-details-form")).toContainText("Headsign");
     await page.locator("#pattern-details-additional summary").click();
     await expect(page.locator("#pattern-details-id")).toContainText("BROWSER-P1");
     expect(await bodyFitsViewport(page), "details overflows").toBe(true);

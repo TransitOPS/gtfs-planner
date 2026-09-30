@@ -14,9 +14,9 @@ import { resolve } from "node:path";
  * continuation trips live on the BROWSER_HEADSIGNS_20 route and share each
  * pattern's block id.
  *
- * The details journey here runs against the wired Details task. Until step 11
- * wires the components into the page, the recorded smoke for this spec is the
- * component render test; the selectors below are the final ones.
+ * The details journey here runs against the wired Details task; the read-only
+ * review-drawer render still waits for step 12's `open_headsign_review` wiring,
+ * so its selectors record the pre-wiring state until then.
  */
 
 const EDITOR_USER = {
@@ -83,6 +83,69 @@ test("usage line on details", async ({ page }) => {
   await expect(page.locator("#headsign-usage-review")).toContainText("Review 2 trips");
 
   await capture(page, "details-hs1-usage-1440");
+});
+
+// The mutating Details journey (BROWSER-HS2): edit the headsign, watch the
+// inline update box stage the three followers, save without the impact
+// dialog, and undo. Each assertion pins the AC-5/6/9/10/17 copy the card's
+// verification cases name.
+test("edit, save and undo on details", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openPattern(page, versionId, "BROWSER_HEADSIGNS", "BROWSER-HS2", "details");
+
+  await expect(page.locator("#headsign-usage")).toContainText("Used by 5 trips");
+  await expect(page.locator("#headsign-usage")).toContainText("2 show a different headsign");
+
+  await capture(page, "details-hs2-details-1440");
+
+  await page.fill("#pattern-details-headsign", "Lincoln City via Depoe Bay");
+
+  const box = page.locator("#headsign-update-box");
+  await expect(box).toContainText("Also update 3 trips that show Lincoln City");
+  await expect(box).toContainText("2 trips with a different headsign stay as they are.");
+  await expect(page.locator("#headsign-update-toggle")).toBeChecked();
+  await expect(page.locator("#headsign-warnings")).toHaveCount(0);
+  const save = page.locator("#pattern-details-submit");
+  await expect(save).toHaveText("Save headsign");
+  await expect(page.locator("#pattern-save-status")).toContainText("Saving updates 3 trips");
+
+  await capture(page, "details-hs2-editing-1440");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator("#headsign-update-box")).toBeVisible();
+  await capture(page, "details-hs2-editing-390");
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  await save.click();
+
+  // A headsign-only save opens no "Update N trips?" dialog.
+  await expect(page.locator("#details-impact-dialog[data-open='true']")).toHaveCount(0);
+
+  const result = page.locator("#headsign-result");
+  await expect(result).toContainText("Headsign saved · 3 trips updated");
+  await expect(result).toContainText("3 trips now show Lincoln City via Depoe Bay");
+  await expect(result).toContainText("Undo headsign change");
+  await expect(result).toContainText("Review 2 trips");
+  await expect(page.locator("#pattern-details-headsign")).toHaveValue(
+    "Lincoln City via Depoe Bay",
+  );
+  await expect(page.locator("#headsign-usage")).toContainText("2 show a different headsign");
+  await expect(page.locator("#pattern-save-status")).toContainText("3 trips updated");
+
+  await capture(page, "details-hs2-saved-1440");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator("#headsign-result")).toBeVisible();
+  await capture(page, "details-hs2-saved-390");
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  await page.locator("#headsign-undo").click();
+
+  await expect(page.locator("#headsign-result")).toHaveCount(0);
+  await expect(page.locator("#pattern-save-status")).toContainText("Headsign change undone");
+  await expect(page.locator("#pattern-details-headsign")).toHaveValue("Lincoln City");
+  await expect(page.locator("#headsign-usage")).toContainText("Used by 5 trips");
+  await expect(page.locator("#headsign-usage")).toContainText("2 show a different headsign");
 });
 
 // Read-only render journey: the drawer opens from the usage line's Review link

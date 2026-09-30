@@ -26,6 +26,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.TimingFill
   alias GtfsPlanner.Versions
@@ -33,6 +34,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
   alias GtfsPlannerWeb.Gtfs.RoutePatternComponents
+  alias GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents
   alias GtfsPlannerWeb.Gtfs.RoutePatternListComponents
   alias LiveSelect.Component, as: LiveSelectComponent
 
@@ -49,6 +51,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     retry_review apply_stop_review save_timing apply_timing_review
     refresh_timing_review retry_timing_review confirm_timing_dialog
     confirm_delete_timing copy_pattern confirm_delete_pattern
+    undo_headsign
     alignment_save_requested confirm_alignment_save alignment_conflict_keep_local
     alignment_generate_paths alignment_confirm_generate alignment_cancel_generation
     alignment_follow_streets confirm_bulk_generation reactivate_route
@@ -175,6 +178,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:details_baseline, nil)
      |> assign(:details_form, details_form(@creation_defaults, []))
      |> assign(:dirty?, false)
+     |> assign(:headsign_usage, nil)
+     |> assign(:headsign_selection, nil)
+     |> assign(:headsign_undo, nil)
+     |> assign(:headsign_siblings, [])
      |> assign(:patterns_editable, false)
      |> assign(:impact_dialog, nil)
      |> assign(:pending_navigation, nil)
@@ -218,6 +225,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:blocked_dialog, nil)
     |> assign(:impact_dialog, nil)
     |> assign(:status_message, nil)
+    |> assign(:headsign_undo, nil)
     |> assign(:alignment_pending, nil)
     |> assign(:alignment_save_notice, nil)
     |> assign(:alignment_forced_local, [])
@@ -317,10 +325,42 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      socket
      |> assign(:details_params, params)
      |> assign(:details_form, details_form(params, []))
+     |> sync_headsign_selection()
      |> assign_dirty()}
   end
 
   def handle_event("validate_details", _params, socket), do: {:noreply, socket}
+
+  # The inline update box: whether the save will also write the staged trips.
+  # The box renders nothing while it is unchecked with trips staged, so the
+  # toggle is the only way the selection reaches a save.
+  @impl true
+  def handle_event("toggle_headsign_update", _params, socket) do
+    case socket.assigns.headsign_selection do
+      %{update?: update?} = selection ->
+        {:noreply, assign(socket, :headsign_selection, %{selection | update?: not update?})}
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
+  # The imported variant: adopting a carrying timing's value fills the field
+  # without saving anything.
+  @impl true
+  def handle_event("use_timings_headsign", %{"value" => value}, socket) when is_binary(value) do
+    params = Map.put(socket.assigns.details_params, "headsign", value)
+
+    {:noreply,
+     socket
+     |> assign(:details_params, params)
+     |> assign(:details_form, details_form(params, []))
+     |> sync_headsign_selection()
+     |> assign_dirty()
+     |> push_event("focus_scoped_target", %{id: "pattern-details-headsign"})}
+  end
+
+  def handle_event("use_timings_headsign", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("save_details", %{"pattern" => params}, socket) do
@@ -340,11 +380,41 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   def handle_event("save_details", _params, socket), do: {:noreply, socket}
 
+  # Undo of the last headsign save (or of a review reset, once the drawer
+  # stores one there): the recorded from/to values swap under the per-trip
+  # fence, so a trip edited since the save reports stale and writes nothing.
+  @impl true
+  def handle_event("undo_headsign", _params, socket) do
+    case socket.assigns.headsign_undo do
+      %{undo: undo} when is_map(undo) ->
+        case Gtfs.undo_headsign_update(pattern_uuid(socket), undo, audit_context(socket)) do
+          {:ok, %{applied: applied}} ->
+            {:noreply,
+             socket
+             |> saved(undo_saved_message(undo, applied), :details)
+             |> assign(:headsign_undo, nil)}
+
+          {:error, {:stale, _changed}} ->
+            {:noreply,
+             socket
+             |> assign(:headsign_undo, nil)
+             |> load_screen()
+             |> assign(:error_message, undo_stale_message())}
+
+          {:error, reason} ->
+            {:noreply, reject_editor(socket, reasons_message(reason), nil)}
+        end
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
   @impl true
   def handle_event("apply_details_review", _params, socket) do
     case socket.assigns.impact_dialog do
-      %{attrs: attrs, fingerprint: fingerprint} ->
-        socket |> assign(:impact_dialog, nil) |> apply_details(attrs, fingerprint)
+      %{operation: operation, fingerprint: fingerprint} ->
+        socket |> assign(:impact_dialog, nil) |> apply_details(operation, fingerprint)
 
       nil ->
         {:noreply, socket}
@@ -596,6 +666,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       {:noreply,
        socket
        |> assign(:task, resolved)
+       |> load_headsign_usage()
        |> assign(:error_message, nil)
        |> push_patch(to: task_path(socket, resolved))}
     end
@@ -1455,7 +1526,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   @impl true
   def render(assigns) do
-    assigns = assign(assigns, :save_bar, save_bar_spec(assigns))
+    assigns =
+      assigns
+      |> assign(:save_bar, save_bar_spec(assigns))
+      |> assign(:headsign_view, headsign_view(assigns))
+      |> assign(:headsign_result, headsign_result_view(assigns))
 
     ~H"""
     <Layouts.app
@@ -1605,6 +1680,47 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                   </.message>
                 </div>
 
+                <div :if={@headsign_result} class="pt-4">
+                  <.message kind="success" id="headsign-result" title={@headsign_result.title}>
+                    <span>
+                      <%= if @headsign_result.trips > 0 do %>
+                        {@headsign_result.trips_text} now {@headsign_result.trips_verb}
+                        <RoutePatternHeadsignComponents.headsign_value value={@headsign_result.to} />.
+                      <% else %>
+                        Trips you add get
+                        <RoutePatternHeadsignComponents.headsign_value value={@headsign_result.to} />.
+                      <% end %>
+                      <span :if={@headsign_result.differ > 0}>
+                        {@headsign_result.differ_text}
+                      </span>
+                      Each change is in History.
+                    </span>
+                    <:action>
+                      <div class="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          id="headsign-undo"
+                          phx-click="undo_headsign"
+                          class="btn btn-outline min-h-11"
+                        >
+                          <.icon name="hero-arrow-uturn-left" class="size-4" /> Undo headsign change
+                        </button>
+                        <button
+                          :if={@headsign_result.differ > 0}
+                          type="button"
+                          id="headsign-result-review"
+                          phx-click="open_headsign_review"
+                          phx-value-mode="exceptions"
+                          phx-value-scope="pattern"
+                          class="btn btn-outline min-h-11"
+                        >
+                          Review {@headsign_result.differ_trips}
+                        </button>
+                      </div>
+                    </:action>
+                  </.message>
+                </div>
+
                 <div
                   :if={
                     @task == :stops and
@@ -1641,6 +1757,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                         }
                         pattern_id={if @pattern, do: @pattern.route_pattern_id, else: nil}
                         dirty?={@dirty?}
+                        headsign_usage={@headsign_view.usage}
+                        headsign_changed?={@headsign_view.changed?}
+                        headsign_box={@headsign_view.box}
+                        headsign_warnings={@headsign_view.warnings}
                       />
                     <% @task == :stops -> %>
                       <RoutePatternComponents.stops_task
@@ -1823,10 +1943,52 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     ]
 
     case Gtfs.load_route_pattern_screen(organization_id, version_id, route_id, opts) do
-      {:ok, screen} -> apply_screen(socket, screen)
+      {:ok, screen} -> socket |> apply_screen(screen) |> load_headsign_usage()
       {:error, :not_found} -> not_found(socket)
       {:error, :timing_not_found} -> timing_not_found(socket)
       {:error, :unavailable} -> unavailable(socket)
+    end
+  end
+
+  # The Details task's usage line and inline update box read the pattern
+  # scope's usage; other tasks never render it, so the read waits for the tab.
+  # `from` splits the scope's followers out, so the box knows which trips the
+  # new value reaches; a reload after a save or undo also resets a selection
+  # staged against a different stored default.
+  defp load_headsign_usage(
+         %{assigns: %{task: :details, pattern: %RoutePattern{} = pattern}} = socket
+       ) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    usage =
+      case Gtfs.headsign_usage(organization_id, version_id, pattern.id, :pattern,
+             from: Headsigns.normalize(pattern.headsign)
+           ) do
+        {:ok, usage} -> usage
+        {:error, _not_found} -> nil
+      end
+
+    socket
+    |> assign(:headsign_usage, usage)
+    |> reset_headsign_selection()
+  end
+
+  # Other tasks never render the usage line, so only the read is dropped; the
+  # staged selection survives a tab switch and is re-checked against the
+  # stored default when the Details task loads again.
+  defp load_headsign_usage(socket), do: assign(socket, :headsign_usage, nil)
+
+  # A selection staged against another stored default is stale; the current
+  # one is rebuilt from the fresh followers on the next dirty draft.
+  defp reset_headsign_selection(%{assigns: %{headsign_usage: %{}}} = socket) do
+    key = {:pattern, socket.assigns.headsign_usage.default}
+    selection = socket.assigns.headsign_selection
+
+    if is_map(selection) and selection.key == key do
+      socket
+    else
+      assign(socket, :headsign_selection, nil)
     end
   end
 
@@ -1855,6 +2017,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       |> assign(:custom_trip_count, screen.custom_trip_count)
       |> assign(:derivation_error, screen.derivation_error)
       |> assign(:stop_choices, screen.stop_choices)
+      |> assign(:headsign_siblings, headsign_siblings(screen.patterns))
       |> assign(:load_state, :ready)
       |> assign(:stale?, false)
       |> then(fn socket ->
@@ -2009,6 +2172,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> put_details(params, params)
     |> assign(:review, nil)
     |> assign(:applying?, false)
+    |> assign(:headsign_selection, nil)
     |> put_timing_rows()
   end
 
@@ -2040,6 +2204,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:timing_delete_dialog, nil)
     |> assign(:pattern_delete_dialog, nil)
     |> assign(:applying?, false)
+    |> assign(:headsign_selection, nil)
+    |> assign(:headsign_undo, nil)
     |> assign(:stop_search_options, [])
     |> assign(:stop_search_results, [])
     |> assign(:stop_search_truncated?, false)
@@ -2118,26 +2284,40 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
-  defp submit_details_review(socket, attrs, confirm? \\ false) do
+  # The reviewed details operation carries the inline update box's selection
+  # only when the headsign itself changed and the box is checked; an empty
+  # selection keeps the reviewed operation's existing 2-tuple shape.
+  defp details_operation(socket, attrs) do
+    selection = socket.assigns.headsign_selection
+
+    if Map.has_key?(attrs, :headsign) and is_map(selection) and selection.update? and
+         MapSet.size(selection.ids) > 0 do
+      {:details, attrs, %{headsign_trip_ids: MapSet.to_list(selection.ids)}}
+    else
+      {:details, attrs}
+    end
+  end
+
+  defp submit_details_review(socket, attrs) do
     audit = audit_context(socket)
+    operation = details_operation(socket, attrs)
 
     case Gtfs.review(
            pattern_uuid(socket),
-           {:details, attrs},
+           operation,
            socket.assigns.source_fingerprint,
            audit
          ) do
-      {:ok, %{fingerprint: fingerprint, impact: %{trips_affected: affected}}}
-      when affected > 0 or confirm? ->
+      {:ok, %{fingerprint: fingerprint, impact: %{trips_affected: affected}}} when affected > 0 ->
         {:noreply,
          assign(socket, :impact_dialog, %{
-           attrs: attrs,
+           operation: operation,
            fingerprint: fingerprint,
            trips_affected: affected
          })}
 
       {:ok, %{fingerprint: fingerprint}} ->
-        apply_details(socket, attrs, fingerprint)
+        apply_details(socket, operation, fingerprint)
 
       {:error, reason} ->
         {:noreply,
@@ -2158,12 +2338,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   defp changed_attrs(_pattern, attrs), do: attrs
 
-  defp apply_details(socket, attrs, fingerprint) do
+  defp apply_details(socket, operation, fingerprint) do
     audit = audit_context(socket)
 
-    case Gtfs.apply_review(pattern_uuid(socket), {:details, attrs}, fingerprint, audit) do
-      {:ok, %{trips_updated: updated}} ->
-        {:noreply, saved(socket, affected_message(updated), :details)}
+    case Gtfs.apply_review(pattern_uuid(socket), operation, fingerprint, audit) do
+      {:ok, %{trips_updated: updated, headsign_undo: undo}} ->
+        # For a details apply, trips_updated counts only direction updates (all
+        # the pattern's trips), so the headsign writes are a subset of them and
+        # max is the distinct trip count the status line names.
+        message = affected_message(max(updated, (undo && length(undo.trips)) || 0))
+
+        {:noreply,
+         socket
+         |> saved(message, :details)
+         |> assign(:headsign_undo, headsign_undo_state(undo))}
 
       {:error, reason} ->
         {:noreply,
@@ -2172,6 +2360,263 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          |> assign(:error_message, reasons_message(reason))}
     end
   end
+
+  # --- details headsign wiring ------------------------------------------------
+
+  # The inline update box's staged selection, keyed by the stored default like
+  # the prototype's staged proposal: created from the usage read the first
+  # time a draft becomes dirty, preserved while the key is unchanged (the
+  # editor's toggle and review edits survive typing), and rebuilt when a
+  # reload brings a different default (after a save or undo).
+  defp sync_headsign_selection(%{assigns: %{headsign_usage: %{} = usage}} = socket) do
+    if headsign_dirty?(usage, socket.assigns.details_params["headsign"]) do
+      sync_dirty_headsign_selection(socket, usage)
+    else
+      socket
+    end
+  end
+
+  defp sync_headsign_selection(socket), do: socket
+
+  defp sync_dirty_headsign_selection(socket, usage) do
+    key = {:pattern, usage.default}
+    selection = socket.assigns.headsign_selection
+
+    if is_map(selection) and selection.key == key do
+      socket
+    else
+      assign(socket, :headsign_selection, %{
+        key: key,
+        update?:
+          headsign_update_default(usage.default, socket.assigns.details_params["headsign"]),
+        ids: MapSet.new(follower_ids(usage))
+      })
+    end
+  end
+
+  # The box appears when the draft stops following the stored default, by the
+  # shared rule — a padded edit of the same value shows no box.
+  defp headsign_dirty?(usage, draft) do
+    not Headsigns.follows?(draft, usage.default)
+  end
+
+  # Checked by default; unchecked only when the edit clears a present default
+  # (clearing from blank stays checked — it still gives trips a headsign).
+  defp headsign_update_default(from, draft) do
+    not (is_nil(Headsigns.normalize(draft)) and not is_nil(from))
+  end
+
+  defp follower_ids(%{groups: groups}) do
+    case Enum.find(groups, &(&1.kind == :follows)) do
+      %{trips: trips} -> Enum.map(trips, & &1.id)
+      nil -> []
+    end
+  end
+
+  # The headsign field's companions, derived once per render: the usage line
+  # while the field matches the stored default, and the wording warnings plus
+  # the update box while it is edited.
+  defp headsign_view(%{headsign_usage: %{} = usage} = assigns) do
+    if headsign_dirty?(usage, assigns.details_params["headsign"]) do
+      %{
+        usage: usage,
+        changed?: true,
+        box: headsign_box(usage, assigns),
+        warnings: headsign_warnings(assigns)
+      }
+    else
+      %{usage: usage, changed?: false, box: nil, warnings: nil}
+    end
+  end
+
+  defp headsign_view(_assigns), do: %{usage: nil, changed?: false, box: nil, warnings: nil}
+
+  defp headsign_box(usage, assigns) do
+    followers = follower_trips(usage)
+    follower_id_set = MapSet.new(followers, & &1.id)
+    selection = assigns.headsign_selection
+
+    {selected_follow, extra, update?} =
+      if is_map(selection) do
+        selected_follow = MapSet.size(MapSet.intersection(selection.ids, follower_id_set))
+        {selected_follow, MapSet.size(selection.ids) - selected_follow, selection.update?}
+      else
+        {0, 0, false}
+      end
+
+    %{
+      from: usage.default,
+      to: Headsigns.normalize(assigns.details_params["headsign"]),
+      followers: length(followers),
+      selected_follow: selected_follow,
+      extra: extra,
+      others: max(usage.differ - extra, 0),
+      shielded: usage.shielded,
+      update?: update?
+    }
+  end
+
+  defp follower_trips(%{groups: groups}) do
+    case Enum.find(groups, &(&1.kind == :follows)) do
+      %{trips: trips} -> trips
+      nil -> []
+    end
+  end
+
+  # Wording warnings for the draft, with the route's name facts and the one
+  # sibling pattern whose headsign matches except for case. The Headsigns
+  # module owns every comparison; `Headsigns.difference/3` re-labels the
+  # case-equal sibling so the warning can name it.
+  defp headsign_warnings(assigns) do
+    draft = assigns.details_params["headsign"]
+    siblings = Enum.reject(assigns.headsign_siblings, &(&1.id == pattern_id(assigns.pattern)))
+
+    sibling =
+      Enum.find(siblings, fn candidate ->
+        match?(%{kind: :case_or_spacing}, Headsigns.difference(candidate.headsign, draft, nil))
+      end)
+
+    %{
+      warnings:
+        Headsigns.lint(draft, %{
+          route_short_name: assigns.route && assigns.route.route_short_name,
+          route_long_name: assigns.route && assigns.route.route_long_name,
+          sibling_headsigns: Enum.map(siblings, & &1.headsign)
+        }),
+      value: draft,
+      sibling: sibling && %{name: sibling.name, headsign: sibling.headsign},
+      route: assigns.route && assigns.route.route_short_name
+    }
+  end
+
+  defp pattern_id(%RoutePattern{id: id}), do: id
+  defp pattern_id(_pattern), do: nil
+
+  # The route's patterns with the name the list shows, captured at load for
+  # the sibling-case warning. The loaded pattern is filtered out by id later.
+  defp headsign_siblings(patterns) do
+    Enum.map(patterns, fn row ->
+      %{
+        id: row.pattern.id,
+        name: RoutePatternListComponents.pattern_name(row.pattern),
+        headsign: row.pattern.headsign
+      }
+    end)
+  end
+
+  # The AC-10 success banner: what the save changed and the two actions —
+  # Undo headsign change and, while trips still differ, Review M trips. It is
+  # bound to `headsign_undo`, so a remount drops it with the undo offer.
+  defp headsign_result_view(%{headsign_undo: %{undo: undo}} = assigns) when is_map(undo) do
+    trips = undo.trips
+    differ = usage_differ(assigns.headsign_usage)
+
+    %{
+      title:
+        if(trips == [],
+          do: "Headsign saved",
+          else: "Headsign saved · #{length(trips)} #{trip_noun(length(trips))} updated"
+        ),
+      to: headsign_undo_to(undo),
+      trips: length(trips),
+      trips_text: "#{length(trips)} #{trip_noun(length(trips))}",
+      trips_verb: if(length(trips) == 1, do: "shows", else: "show"),
+      differ: differ,
+      differ_text:
+        "#{differ} #{trip_noun(differ)} #{if(differ == 1, do: "shows", else: "show")} a different headsign.",
+      differ_trips: "#{differ} #{trip_noun(differ)}"
+    }
+  end
+
+  defp headsign_result_view(_assigns), do: nil
+
+  defp usage_differ(%{differ: differ}), do: differ
+  defp usage_differ(_usage), do: 0
+
+  defp headsign_undo_to(%{default: %{to: to}}) when is_binary(to), do: to
+  defp headsign_undo_to(%{default: %{to: nil}}), do: nil
+  defp headsign_undo_to(%{trips: [%{to: to} | _]}), do: to
+  defp headsign_undo_to(_undo), do: nil
+
+  defp headsign_undo_state(nil), do: nil
+  defp headsign_undo_state(undo), do: %{undo: undo}
+
+  # The undo confirmation: the restored default and each trip's restored value.
+  defp undo_saved_message(undo, applied) do
+    parts =
+      [default_part(undo), trips_part(applied)]
+      |> Enum.reject(&is_nil/1)
+
+    case parts do
+      [] -> "Headsign change undone."
+      parts -> "Headsign change undone. " <> Enum.join(parts, " ")
+    end
+  end
+
+  defp default_part(%{default: %{from: from}}),
+    do: "The pattern’s headsign is #{default_word(from)} again."
+
+  defp default_part(_undo), do: nil
+
+  defp trips_part([]), do: nil
+
+  defp trips_part(applied) do
+    count = length(applied)
+    froms = Enum.uniq(Enum.map(applied, & &1.from))
+
+    value =
+      if length(froms) == 1,
+        do: default_word(hd(froms)),
+        else: "their earlier headsign"
+
+    "#{count} #{trip_noun(count)} #{if(count == 1, do: "shows", else: "show")} #{value} again."
+  end
+
+  defp default_word(nil), do: "blank"
+  defp default_word(value), do: value
+
+  # AC-11: the fence refused the undo because a trip or the default moved on;
+  # nothing was written and the audit trail holds the current values.
+  defp undo_stale_message do
+    "The trips changed since the headsign was saved, so the change can no longer be undone. Nothing was changed. Check History to see the current headsigns."
+  end
+
+  defp headsign_only_change?(assigns) do
+    case assigns.details_baseline do
+      baseline when is_map(baseline) ->
+        changed_keys(assigns.details_params, baseline) == ["headsign"]
+
+      _baseline ->
+        false
+    end
+  end
+
+  defp changed_keys(params, baseline) do
+    params
+    |> Enum.reject(fn {field, value} -> Map.get(baseline, field) == value end)
+    |> Enum.map(fn {field, _value} -> field end)
+    |> Enum.sort()
+  end
+
+  defp headsign_save_status(assigns) do
+    count = headsign_selected_count(assigns)
+
+    if count > 0 do
+      "Saving updates #{count} #{trip_noun(count)}"
+    else
+      "Saving changes trips you add later, not existing trips"
+    end
+  end
+
+  defp headsign_selected_count(assigns) do
+    case assigns.headsign_selection do
+      %{update?: true} = selection -> MapSet.size(selection.ids)
+      _selection -> 0
+    end
+  end
+
+  defp trip_noun(1), do: "trip"
+  defp trip_noun(_count), do: "trips"
 
   defp reject_details(socket, params, errors, message) do
     socket
@@ -3696,17 +4141,30 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     }
   end
 
+  # AC-9: while only the headsign is dirty the bar names the narrower save and
+  # says what the checked box will update, or that existing trips stay until
+  # the editor adds them. Any other detail change keeps the wider save.
   defp bar_for(:details, false, dirty, busy?, assigns) do
+    headsign_only? = headsign_only_change?(assigns)
+
+    status =
+      if headsign_only? do
+        bar_status(assigns, dirty.details, headsign_save_status(assigns), nil)
+      else
+        bar_status(assigns, dirty.details, "You have unsaved detail changes.", nil)
+      end
+
     %{
       primary: %{
         id: "pattern-details-submit",
-        label: "Save details",
+        label: if(headsign_only?, do: "Save headsign", else: "Save details"),
         form: "pattern-details-form",
         commit: true,
+        pending_label: "Saving…",
         disabled?: busy? or not dirty.details
       },
       secondary: nil,
-      status: bar_status(assigns, dirty.details, "You have unsaved detail changes.", nil)
+      status: status
     }
   end
 
