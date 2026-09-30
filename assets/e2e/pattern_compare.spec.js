@@ -1,6 +1,8 @@
 import { test, expect } from "@playwright/test";
+import { bodyFitsViewport } from "./browser_helpers";
 import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * Pattern comparison journey (spec 19, step 11 and later visual steps).
@@ -17,7 +19,17 @@ const EDITOR_USER = {
   password: "DiagramTest123!",
 };
 
-const CAPTURE_DIR = process.env.PATTERN_COMPARE_CAPTURE_DIR;
+// Full-page captures go to PATTERN_COMPARE_CAPTURE_DIR when the operator sets
+// it; a normal run writes nothing. The variable's path is anchored at the
+// repository root, because `bin/test-browser` runs the suite through
+// `npm --prefix assets`, whose script working directory is `assets/`: the
+// prepared command names `.specs/19-pattern-comparison/evidence/captures/…`,
+// which must land in the checkout's spec folder, not under `assets/`.
+// An absolute setting is unaffected (resolve returns it as it is).
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const CAPTURE_DIR = process.env.PATTERN_COMPARE_CAPTURE_DIR
+  ? resolve(REPO_ROOT, process.env.PATTERN_COMPARE_CAPTURE_DIR)
+  : null;
 
 // A verified-transparent 1×1 PNG served for every tile request, so captures
 // never depend on the network or on Geoapify credits. (An earlier literal
@@ -591,6 +603,510 @@ test.describe("compare entry (step 22)", () => {
       await page.goto(compareUrl(versionId, "?a=BROWSER-CMP-FULL"));
       await page.waitForSelector("#summary-suggestions");
       await expect(page.locator("#slot-b-empty")).toContainText("Choose a pattern to compare");
+      await capture(page, name);
+    }
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+});
+
+// ── The journey (step 23) ───────────────────────────────────────────────────
+//
+// The end-to-end walk over the step-11 BROWSER_COMPARE fixtures, in acceptance
+// order: the Patterns tab lands on R8's default pair (FULL against SHORT on the
+// weekday calendar); clicking difference 1 marks its rows and reframes the
+// Leaflet map; a stop marker click selects its row; the short turn reports
+// −1:00 at the shared end stop; the loop keeps "visit 2 of 2"; the moved pair's
+// "Go to B's visit" focuses the other row; the opposite pair asks to reverse B
+// and then counts B's rings down; the picker finds the cross-route pattern by a
+// stop name; the overview's two picks open the pair; tiles answering 500
+// degrade only the map pane. The last test holds the 390 px obligations. Every
+// scenario stubs the tiles before navigating (PM-7), so the journey is offline
+// and spends no Geoapify credits.
+
+const OTHER_PATTERN = "BROWSER-CMP-OTHER";
+const STOP_1 = "BROWSER_CMP_STOP_1";
+const STOP_2 = "BROWSER_CMP_STOP_2";
+const STOP_3 = "BROWSER_CMP_STOP_3";
+const STOP_3A = "BROWSER_CMP_STOP_3A";
+const STOP_3B = "BROWSER_CMP_STOP_3B";
+const STOP_4 = "BROWSER_CMP_STOP_4";
+// The page's own formatters write U+2212 for a negative change and U+2019 in
+// "Go to B's visit"; the journey asserts the same characters.
+const MINUS_ONE_MINUTE = "\u22121:00";
+// End to end is FULL's 18:30 against SHORT's 8:30 with R6's whole-percent
+// change on the seeded difference.
+const END_CHANGE = "\u221210:00 (\u221254%)";
+const GOTO_B = "Go to B\u2019s visit";
+
+// The LiveView root reports itself connected, so no interaction is clicked into
+// a server-rendered page that has not hydrated or mounted its hooks yet
+// (copied from pattern_alignment.spec.js).
+async function waitForLiveView(page) {
+  await page.waitForSelector("[data-phx-main]", { state: "attached" });
+
+  await page.waitForFunction(
+    () => {
+      const main = document.querySelector("[data-phx-main]");
+      return (
+        Boolean(main) &&
+        main.classList.contains("phx-connected") &&
+        window.liveSocket?.isConnected()
+      );
+    },
+    { timeout: 20000 },
+  );
+}
+
+// One page load with the parts the scenario waits on. The tiles are already
+// stubbed by the caller.
+async function openCompare(page, versionId, query, ready = "#compare-stops") {
+  await page.goto(compareUrl(versionId, query));
+  await waitForLiveView(page);
+  await page.waitForSelector(ready);
+}
+
+// The drawn route geometry in container pixels: the line paths only, not the
+// stop circles, pins or rings, which are separate overlays. `fitBounds` resets
+// the map pane to translate3d(0, 0, 0) on every setView (Leaflet's
+// `_resetView`), so the pane's own transform cannot witness a reframe; the SVG
+// lines are re-projected at zoomend, so a different set of `d` values is the
+// map pane's evidence that the view moved.
+async function mapGeometry(page) {
+  await expect(page.locator("#compare-map")).not.toHaveClass(/leaflet-zoom-anim/);
+
+  return page.evaluate(() => {
+    const overlay = document.querySelector("#compare-map .leaflet-overlay-pane");
+    if (!overlay) throw new Error("the comparison map has no overlay pane");
+    return [...overlay.querySelectorAll('path[fill="none"]')]
+      .map((path) => path.getAttribute("d"))
+      .join("|");
+  });
+}
+
+// The comparison view's projection origin: the overlay SVG's viewBox is
+// written from the map's pixel origin, so it changes whenever the view is set
+// (a load fit or a difference frame) and stays put while the same view is only
+// decorated with selection or hover overlays.
+async function mapViewBox(page) {
+  return page.evaluate(() => {
+    const svg = document.querySelector("#compare-map .leaflet-overlay-pane svg");
+    if (!svg) throw new Error("the comparison map has no overlay svg");
+    return svg.getAttribute("viewBox");
+  });
+}
+
+// Clicks the square marker for one of DEV's own stops. The only-B stops draw as
+// square divIcons, and their screen order follows their latitude, so the
+// northern square is STOP_3B and the southern one STOP_3A. The click goes
+// through the locator, which scrolls the pane into view and refuses to click
+// when another element is the hit target.
+async function clickStopSquare(page, stopId) {
+  const squares = page.locator("#compare-map .compare-map-stop-square");
+  await expect(squares).toHaveCount(2);
+
+  const ys = await squares.evaluateAll((els) =>
+    els.map((el) => el.getBoundingClientRect().y),
+  );
+  const order = ys[0] < ys[1] ? [0, 1] : [1, 0];
+  const index = stopId === STOP_3B ? order[0] : order[1];
+
+  await squares.nth(index).click();
+}
+
+// Every visible interactive target inside the compare page is at least 44 px
+// high (AC-24), and the count proves the scan looked at real targets. A
+// checkbox's target is the label that wraps it, and Leaflet's own attribution
+// control is the map library's chrome rather than a compare control, so it is
+// out of scope.
+async function interactiveTargets(page) {
+  return page.evaluate(() => {
+    const root = document.querySelector("#compare-page");
+    if (!root) throw new Error("the compare page is not rendered");
+
+    let targets = 0;
+    const short = [];
+    const nodes = root.querySelectorAll(
+      "a[href], button, select, input, summary, [role='button']",
+    );
+
+    for (const node of nodes) {
+      if (node.closest(".leaflet-control-container")) continue;
+
+      const target = node.closest("label") ?? node;
+      const rect = target.getBoundingClientRect();
+      if (node.closest("[hidden]") || rect.width === 0 || rect.height === 0) continue;
+
+      targets += 1;
+
+      if (rect.height < 44) {
+        short.push(
+          `${node.tagName.toLowerCase()}#${node.id || "-"} is ${Math.round(rect.height)}px`,
+        );
+      }
+    }
+
+    return { targets, short };
+  });
+}
+
+test.describe("compare journey (step 23)", () => {
+  test("opens the default pair from the Patterns tab", async ({ page }) => {
+    test.setTimeout(120_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`/gtfs/${versionId}/routes/${COMPARE_ROUTE}/patterns`);
+    await waitForLiveView(page);
+    await page.locator("#patterns-compare").click();
+
+    await page.waitForURL(
+      (url) =>
+        `${url.pathname}${url.search}` ===
+        compareUrl(versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-SHORT"),
+    );
+    await waitForLiveView(page);
+
+    await expect(page.locator("#slot-a")).toContainText("Browser Compare Full");
+    await expect(page.locator("#slot-b")).toContainText("Browser Compare Short");
+    // R8's default calendar is the seeded weekday one: FULL has 2 trips on it
+    // and SHORT 1.
+    await expect(page.locator("#compare-calendar")).toHaveValue("BROWSER_CMP_WEEKDAY");
+    await expect(page.locator("#compare-calendar option:checked")).toHaveText(
+      "Weekday (A 2 · B 1 trips)",
+    );
+    await capture(page, "journey-entry-1440");
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  test("marks a difference's rows, reframes the map and links a stop marker to its row", async ({
+    page,
+  }) => {
+    test.setTimeout(240_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCompare(page, versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-DEV");
+    await page.waitForSelector(".compare-map-pin");
+    // DEV replaces FULL's third stop with two stops and runs +1:00 into stop 5:
+    // two differences, numbered 1 and 2 in the summary and on the map.
+    await expect(page.locator(".compare-map-pin")).toHaveCount(2);
+    const before = await mapGeometry(page);
+
+    await page.locator("#summary-diff-1").click();
+    await expect(page.locator("#summary-diff-1")).toHaveAttribute("aria-pressed", "true");
+
+    const diffRows = (await page.locator("#summary-diff-1").getAttribute("data-diff-rows")).split(
+      ",",
+    );
+    expect(diffRows.length).toBeGreaterThan(0);
+    await expect(page.locator("#compare-rows tr.bg-selection")).toHaveCount(diffRows.length);
+    expect(
+      await page
+        .locator("#compare-rows tr.bg-selection")
+        .evaluateAll((rows) => rows.map((row) => row.dataset.row).sort()),
+    ).toEqual([...diffRows].sort());
+    await expect(page.locator("#stops-position")).toHaveText("Difference 1 of 2");
+
+    // The click frames the map on the difference: the same stops project to a
+    // different place.
+    await expect.poll(() => mapGeometry(page), { timeout: 15000 }).not.toBe(before);
+
+    await capture(page, "journey-difference-1440");
+
+    // A stop marker click selects its row (AC-22). Each of DEV's own stops has
+    // exactly one row, and the two clicks select their own rows.
+    await openCompare(page, versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-DEV", "#compare-rows tr[data-type='b']");
+    await page.waitForSelector(".compare-map-stop-square");
+
+    const loaded = await mapViewBox(page);
+
+    for (const stopId of [STOP_3B, STOP_3A]) {
+      await clickStopSquare(page, stopId);
+      await expect(page.locator(`#compare-rows tr[data-stop-id="${stopId}"]`)).toHaveClass(
+        /bg-selection/,
+      );
+      await expect(page.locator("#compare-rows tr.bg-selection")).toHaveCount(1);
+      // Selecting a row is not a reframe: the map keeps the fit it made once at
+      // load, and only a difference frames it again (FH-29).
+      expect(await mapViewBox(page)).toBe(loaded);
+    }
+
+    await capture(page, "journey-marker-1440");
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  test("reports the short turn's −1:00 at the shared end stop", async ({ page }) => {
+    test.setTimeout(120_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCompare(page, versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-SHORT");
+
+    // The seeded offsets: FULL reaches stop 4 at 570 s and leaves at 630 s,
+    // SHORT arrives at 510 s, so the stretch into stop 4 is 60 s quicker in B
+    // and the two patterns end 10 minutes apart.
+    await expect(page.locator(`#compare-rows tr[data-stop-id="${STOP_4}"]`)).toContainText(
+      MINUS_ONE_MINUTE,
+    );
+    await expect(page.locator("#summary-end-a")).toHaveText("18:30");
+    await expect(page.locator("#summary-end-b")).toHaveText("8:30");
+    await expect(page.locator("#summary-end-change")).toHaveText(END_CHANGE);
+
+    await capture(page, "journey-short-turn-1440");
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  test("keeps the loop's second visit and links the moved pair", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCompare(page, versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-LOOP");
+
+    // LOOP visits stops 1 and 2 twice; each second visit keeps its own row and
+    // says which visit it is. A's own rows carry no visit label.
+    for (const stopId of [STOP_1, STOP_2]) {
+      await expect(
+        page.locator(`#compare-rows tr[data-type="b"][data-stop-id="${stopId}"]`),
+      ).toContainText("visit 2 of 2");
+      await expect(
+        page.locator(`#compare-rows tr[data-type="same"][data-stop-id="${stopId}"]`),
+      ).not.toContainText("visit");
+    }
+
+    await capture(page, "journey-loop-1440");
+
+    // MOVED serves stop 3 before stop 2: both rows show "Order differs", and the
+    // A-side row's link focuses B's visit of the same stop. The link is reached
+    // with the keyboard, so its focusability is observed too.
+    await openCompare(page, versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-MOVED");
+    const movedRow = page.locator(
+      `#compare-rows tr[data-type="a"][data-stop-id="${STOP_3}"][data-moved-row]`,
+    );
+    await expect(movedRow).toContainText("Order differs");
+    await expect(movedRow).toContainText("Stop 3 in A · stop 2 in B");
+    await expect(movedRow).toContainText(GOTO_B);
+    await expect(
+      page.locator(`#compare-rows tr[data-type="b"][data-stop-id="${STOP_3}"][data-moved-row]`),
+    ).toContainText("Go to A\u2019s visit");
+
+    // The difference cell renders twice (a phone copy and a desktop copy), so
+    // the link is taken from the visible one.
+    const link = movedRow.locator("a[data-goto-row]:visible");
+    const target = await link.getAttribute("data-goto-row");
+    await link.focus();
+    await expect(link).toBeFocused();
+    await page.keyboard.press("Enter");
+
+    const targetRow = page.locator(`#compare-rows tr[data-row="${target}"]`);
+    await expect(targetRow).toHaveClass(/bg-selection/);
+    await expect(targetRow).toBeInViewport();
+    await expect(page.locator("#compare-rows tr.bg-selection")).toHaveCount(1);
+    // The anchor's href is the row id; the hook keeps the URL's hash empty.
+    expect(new URL(page.url()).hash).toBe("");
+
+    await capture(page, "journey-moved-1440");
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  test("asks to reverse an opposite pair and then counts B's rings down", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCompare(page, versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-BACK");
+
+    await expect(page.locator("#relation-opposite")).toContainText(
+      "These patterns run in opposite directions",
+    );
+    await expect(page.locator("#compare-reverse-toggle")).toHaveText("Show B in reverse order");
+    await capture(page, "journey-opposite-1440");
+
+    await page.locator("#compare-reverse-toggle").click();
+    await page.waitForSelector("#relation-reversed");
+
+    expect(new URL(page.url()).searchParams.get("reverse")).toBe("1");
+    await expect(page.locator("#compare-reverse-toggle")).toHaveText("Show B in its own order");
+
+    // B's rings count down from its own six visits while A's count up, and no
+    // running times are compared (R4).
+    const [aNumbers, bNumbers] = await page
+      .locator("#compare-rows tr[data-row]")
+      .evaluateAll((rows) => [
+        rows.map((row) => row.children[0].textContent.trim()),
+        rows.map((row) => row.children[1].textContent.trim()),
+      ]);
+    expect(aNumbers).toEqual(["1", "2", "3", "4", "5", "6"]);
+    expect(bNumbers).toEqual(["6", "5", "4", "3", "2", "1"]);
+    await expect(page.locator("#compare-stops")).not.toContainText("B vs A");
+
+    await capture(page, "journey-reversed-1440");
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  test("finds the other route's pattern in the picker by a served stop name", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCompare(
+      page,
+      versionId,
+      "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-SHORT&picker=b",
+      "#picker-list section",
+    );
+
+    // The search reads served stop names: "Other Terminal" is a stop only
+    // BROWSER-CMP-OTHER serves, so the filter leaves that one row.
+    await page.fill("#picker-q", "Other Terminal");
+    const otherRow = page.locator(`#picker-pattern-${OTHER_PATTERN}`);
+    await expect(otherRow).toBeVisible();
+    await expect(page.locator("#picker-list button[id^='picker-pattern-']")).toHaveCount(1);
+    await expect(otherRow).toContainText("Browser Compare Other");
+    await expect(otherRow).toContainText("stops at Browser Compare Other Terminal");
+    await expect(
+      page.locator("#picker-list section").filter({ hasText: "Other routes" }),
+    ).toContainText("Browser Compare Other");
+
+    await capture(page, "journey-picker-1440");
+
+    await otherRow.click();
+    await page.waitForURL(
+      (url) =>
+        url.pathname.endsWith("/patterns/compare") &&
+        url.searchParams.get("a") === "BROWSER-CMP-FULL" &&
+        url.searchParams.get("b") === OTHER_PATTERN &&
+        !url.searchParams.has("picker"),
+    );
+
+    // B is on another route now, so its slot carries that route's badge.
+    await expect(page.locator("#slot-b")).toContainText("Browser Compare Other");
+    await expect(page.locator("#slot-b")).toContainText("BO");
+    await expect(page.locator("#slot-a")).toContainText("Browser Compare Full");
+    await capture(page, "journey-picker-chosen-1440");
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  test("opens the two picked patterns from the overview", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCompare(page, versionId, "?view=all", "#overview-table tbody tr[data-stop-id]");
+
+    await page.click("#overview-pick-BROWSER-CMP-FULL");
+    await page.click("#overview-pick-BROWSER-CMP-SHORT");
+    await expect(page.locator("#overview-pattern-BROWSER-CMP-FULL")).toContainText("Pattern A");
+    await expect(page.locator("#overview-pattern-BROWSER-CMP-SHORT")).toContainText("Pattern B");
+    await expect(page.locator("#overview-compare")).toBeEnabled();
+    await capture(page, "journey-overview-picked-1440");
+
+    await page.locator("#overview-compare").click();
+    await page.waitForURL(
+      (url) =>
+        `${url.pathname}${url.search}` ===
+        compareUrl(versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-SHORT"),
+    );
+
+    await expect(page.locator("#slot-a")).toContainText("Browser Compare Full");
+    await expect(page.locator("#slot-b")).toContainText("Browser Compare Short");
+    await expect(page.locator("#compare-view-two")).toHaveAttribute("aria-current", "page");
+    await capture(page, "journey-overview-compare-1440");
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+
+  test("keeps the stop list when the tiles fail", async ({ page }) => {
+    test.setTimeout(120_000);
+
+    const problems = collectPageErrors(page);
+
+    await page.route("**/map/tiles/**", (route) => route.fulfill({ status: 500, body: "" }));
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openCompare(page, versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-DEV", ".compare-map-pin");
+
+    await expect(page.locator("#compare-map-off")).toBeVisible();
+    await expect(page.locator("#compare-map-off")).toContainText("The map is unavailable");
+    await expect(page.locator("#compare-map-retry")).toHaveText("Retry map");
+    await expect(page.locator("#compare-stops")).toBeVisible();
+    await capture(page, "journey-map-unavailable-1440");
+
+    expect(
+      problems.filter((problem) => !problem.includes("Failed to load resource")),
+      problems.join("\n"),
+    ).toEqual([]);
+  });
+
+  test("holds the compare page at 390 px", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    for (const [name, query, ready] of [
+      ["journey-phone-pair-390", "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-DEV", "#compare-rows tr[data-row]"],
+      ["journey-phone-overview-390", "?view=all", "#overview-table tbody tr[data-stop-id]"],
+    ]) {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await openCompare(page, versionId, query, ready);
+
+      expect(await bodyFitsViewport(page), `horizontal overflow for ${query}`).toBe(true);
+
+      const primaries = await page.locator("#compare-page .btn-primary:visible").count();
+      expect(primaries, `visible primary actions for ${query}`).toBeLessThanOrEqual(1);
+
+      const { targets, short } = await interactiveTargets(page);
+      expect(targets, `interactive targets found for ${query}`).toBeGreaterThan(10);
+      expect(short, `targets under 44 px for ${query}`).toEqual([]);
+
       await capture(page, name);
     }
 
