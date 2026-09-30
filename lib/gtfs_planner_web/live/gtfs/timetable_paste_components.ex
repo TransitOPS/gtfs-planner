@@ -21,6 +21,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   Step 27 owns the row decisions (`row_decision/1`): the pattern select,
   the cell correction, the twelve-hour choice, the pairing radios, skip
   and restore, and Add anyway, plus the discarded-decisions notice.
+  Step 28 owns the apply bar (`apply_bar/1`), the apply outcome notices
+  (`notices/1`) and the Replace and Discard confirmations
+  (`replace_confirm/1`, `discard_confirm/1`).
   """
   use GtfsPlannerWeb, :html
 
@@ -880,6 +883,14 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     default: nil,
     doc: "the open timing-note `pattern_id|name` ref, if any"
 
+  attr :show_errors, :boolean,
+    default: false,
+    doc: "show the apply-time `#paste-review-errors` summary when rows still need a decision"
+
+  attr :notice, :atom,
+    default: nil,
+    doc: "the current step-28 apply outcome, for the apply bar status"
+
   def review_header(assigns) do
     plan = assigns.review.plan
     counts = plan.counts
@@ -1137,6 +1148,29 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
         class="mx-5 mt-4"
       />
       <div
+        :if={@show_errors and attention_rows(@review) != []}
+        id="paste-review-errors"
+        tabindex="-1"
+        role="alert"
+        class="mx-5 mt-4 rounded-card border border-error-line bg-error-bg px-4 py-3 text-sm text-error-fg outline-none"
+      >
+        <p class="font-bold">
+          Nothing applied yet. {attention_title(@counts.needs_decision)}
+        </p>
+        <ul class="mt-1 list-disc pl-5">
+          <li :for={entry <- attention_rows(@review)}>
+            <a
+              href={"#paste-row-#{entry.row}"}
+              class="font-[650] text-error-fg underline"
+            >
+              Row {entry.row}<%= if entry.trip do %>
+                · trip {entry.trip}<% end %>
+            </a>: {entry.hint}
+          </li>
+        </ul>
+        <p class="mt-1">Decide or skip each one. Skipped rows aren’t applied.</p>
+      </div>
+      <div
         id="paste-filters"
         class="flex flex-wrap items-center gap-2 px-5 pb-3 pt-4"
         role="group"
@@ -1167,6 +1201,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
         shown={@shown}
         timing_note={@timing_note}
       />
+      <.apply_bar review={@review} input={@input} notice={@notice} />
     </section>
     """
   end
@@ -2344,4 +2379,528 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
 
     base <> estimated <> " Applying creates it for #{plural(note.users, "trip")}."
   end
+
+  @doc """
+  Renders step 28, the sticky apply bar at the foot of the review: the
+  apply status, Discard paste and the Apply / Replace trips button.
+
+  The button posts `paste_apply` with `phx-disable-with`, so a second
+  click never double-applies; clicking it also marks the hidden
+  `#paste-applying` flag, so a reconnect during the apply recovers
+  through form recovery into the unknown-outcome notice instead of
+  re-applying. A lost socket shows `#paste-notice-offline` and disables
+  the button until it returns, exactly like the Schedules controls.
+  """
+  attr :review, :map, required: true, doc: "the pure paste review with plan counts"
+  attr :input, :map, required: true, doc: "the LiveView paste input with the mode"
+  attr :notice, :atom, default: nil, doc: "the current apply outcome, if any"
+
+  def apply_bar(assigns) do
+    counts = assigns.review.plan.counts
+    mode = review_mode(assigns.input)
+    applied = counts.add + counts.change + counts.remove
+    refusal = assigns.review.plan.refusal
+
+    assigns =
+      assigns
+      |> assign(:applied, applied)
+      |> assign(:mode, mode)
+      |> assign(:refusal, refusal)
+      |> assign(:needs_decision, counts.needs_decision)
+      |> assign(:label, apply_label(mode, applied))
+      |> assign(:disable_with, "Applying #{plural(applied, "change")}…")
+      |> assign(:status, apply_status(mode, assigns.review, assigns.notice))
+      |> assign(
+        :disabled?,
+        not is_nil(refusal) or (applied == 0 and counts.needs_decision == 0) or
+          assigns.notice == :permission
+      )
+
+    ~H"""
+    <div
+      id="paste-apply-bar"
+      class="sticky bottom-0 z-20 flex flex-wrap items-center justify-between gap-3 border-t border-subtle bg-white/95 px-5 py-3.5 backdrop-blur"
+    >
+      <p id="paste-apply-status" role="status" tabindex="-1" class="text-sm text-muted">
+        {@status}
+      </p>
+      <div class="flex flex-wrap gap-3">
+        <.button
+          type="button"
+          id="paste-discard"
+          variant="secondary"
+          class="min-h-11"
+          phx-click="paste_discard"
+        >
+          Discard paste
+        </.button>
+        <.button
+          type="button"
+          id="paste-apply"
+          class="min-h-11"
+          phx-click={
+            JS.set_attribute({"value", "true"}, to: "#paste-applying")
+            |> JS.push("paste_apply")
+          }
+          phx-disable-with={@disable_with}
+          disabled={@disabled?}
+          aria-describedby="paste-apply-status"
+          phx-disconnected={
+            JS.show(to: "#paste-notice-offline")
+            |> JS.set_attribute({"disabled", ""}, to: "#paste-apply")
+          }
+          phx-connected={
+            JS.hide(to: "#paste-notice-offline")
+            |> JS.remove_attribute("disabled", to: "#paste-apply")
+          }
+        >
+          {@label}
+        </.button>
+      </div>
+      <input type="hidden" id="paste-applying" name="paste[applying]" value="false" />
+    </div>
+    """
+  end
+
+  @doc """
+  Renders step 28, the apply outcome notices above the review: stale,
+  busy, failed, unknown, reconnected and permission, plus the always
+  present (hidden) offline notice the apply bar's socket pair toggles.
+  """
+  attr :notice, :atom, default: nil, doc: "the current apply outcome, if any"
+  attr :failed_reference, :string, default: nil, doc: "the failed notice's reference id"
+  attr :scope, :map, required: true, doc: "the loaded paste scope"
+  attr :review, :map, default: nil, doc: "the pure paste review, for the unknown count"
+  attr :version_id, :any, required: true, doc: "the current GTFS version id"
+  attr :route_id, :string, required: true, doc: "the natural route id"
+
+  def notices(assigns) do
+    assigns =
+      assigns
+      |> assign(:calendar_name, review_calendar_name(assigns.scope))
+      |> assign(:direction_adjective, review_direction_adjective(assigns.scope))
+      |> assign(:unknown_count, unknown_change_count(assigns.review))
+      |> assign(:schedules_path, paste_schedules_path(assigns))
+
+    ~H"""
+    <div id="paste-notices" class="mt-4 grid gap-3 empty:hidden">
+      <.message
+        :if={@notice == :stale}
+        id="paste-notice-stale"
+        kind="warning"
+        role="status"
+        tabindex="-1"
+        title={"Nothing was applied. #{@calendar_name} #{@direction_adjective} changed after this review."}
+        class="outline-none"
+      >
+        Review again to compare your paste with the current schedule. Your paste,
+        columns and decisions stay.
+        <:action>
+          <.button
+            type="button"
+            id="paste-review-again"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="paste_review_again"
+          >
+            Review again
+          </.button>
+        </:action>
+      </.message>
+      <.message
+        :if={@notice == :busy}
+        id="paste-notice-busy"
+        kind="warning"
+        role="status"
+        tabindex="-1"
+        title="Nothing was applied. Someone else was saving this route."
+        class="outline-none"
+      >
+        Another change to this route finished first. Apply again; if the schedule
+        changed, the review is rebuilt first.
+        <:action>
+          <.button
+            type="button"
+            id="paste-apply-again"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="paste_apply"
+          >
+            Apply again
+          </.button>
+        </:action>
+      </.message>
+      <.message
+        :if={@notice == :failed}
+        id="paste-notice-failed"
+        kind="error"
+        role="alert"
+        tabindex="-1"
+        title="Nothing was applied. The schedule couldn’t be saved."
+        class="outline-none"
+      >
+        The server stopped before finishing, so every change was rolled back. Your
+        paste, columns and decisions stay. Reference {@failed_reference}.
+        <:action>
+          <.button
+            type="button"
+            id="paste-try-again"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="paste_apply"
+          >
+            Try again
+          </.button>
+        </:action>
+      </.message>
+      <.message
+        :if={@notice == :unknown}
+        id="paste-notice-unknown"
+        kind="warning"
+        role="status"
+        tabindex="-1"
+        title="The connection dropped while applying. It isn’t known whether the changes were saved."
+        class="outline-none"
+      >
+        Check Schedules before applying again. If the {plural(@unknown_count, "change")} {unknown_verb(
+          @unknown_count
+        )} saved, reviewing again shows {unknown_them(@unknown_count)} as trips that already exist.
+        <:action>
+          <div class="flex flex-wrap gap-2">
+            <.link
+              id="paste-open-schedules"
+              navigate={@schedules_path}
+              class="btn btn-outline min-h-11"
+            >
+              Open Schedules
+            </.link>
+            <.button
+              type="button"
+              id="paste-unknown-review-again"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="paste_review_again"
+            >
+              Review again
+            </.button>
+          </div>
+        </:action>
+      </.message>
+      <.message
+        :if={@notice == :reconnected}
+        id="paste-notice-reconnected"
+        kind="info"
+        role="status"
+        tabindex="-1"
+        title="Reconnected. Your paste was restored."
+        class="outline-none"
+      >
+        The timetable, columns and decisions came back with the page, and the review
+        was rebuilt against the current schedule.
+        <:action>
+          <.button
+            type="button"
+            id="paste-dismiss-notice"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="paste_dismiss_notice"
+          >
+            Dismiss
+          </.button>
+        </:action>
+      </.message>
+      <.message
+        :if={@notice == :permission}
+        id="paste-notice-permission"
+        kind="error"
+        role="alert"
+        tabindex="-1"
+        title="Nothing was applied. You can’t edit this version any more."
+        class="outline-none"
+      >
+        Your role changed while this page was open. Ask an organization administrator
+        for Editor access. Your paste stays here until you leave.
+      </.message>
+      <.message
+        id="paste-notice-offline"
+        kind="warning"
+        role="status"
+        title="Connection lost. Reconnecting…"
+        hidden
+        phx-disconnected={JS.remove_attribute("hidden")}
+        phx-connected={JS.set_attribute({"hidden", ""})}
+      >
+        Your paste stays on this page. You can keep reviewing; applying waits for the
+        connection.
+      </.message>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders step 28, the Replace confirmation: a `confirm_dialog` naming the
+  removed trips, the counts, the patterns and the transfers, focused on
+  Keep reviewing with Replace trips as the confirm.
+  """
+  attr :open, :boolean, required: true, doc: "the dialog is requested open"
+  attr :review, :map, required: true, doc: "the pure paste review with the plan"
+  attr :scope, :map, required: true, doc: "the loaded paste scope"
+  attr :input, :map, required: true, doc: "the LiveView paste input with the mode"
+
+  def replace_confirm(assigns) do
+    plan = assigns.review.plan
+    counts = plan.counts
+
+    assigns =
+      assigns
+      |> assign(:counts, counts)
+      |> assign(:removals, replace_removals(plan))
+      |> assign(:transfers, plan.transfers_removed || 0)
+      |> assign(:patterns, replace_pattern_names(assigns.scope, plan))
+      |> assign(:calendar_name, review_calendar_name(assigns.scope))
+      |> assign(:direction_adjective, review_direction_adjective(assigns.scope))
+
+    ~H"""
+    <.confirm_dialog
+      id="paste-replace-confirm"
+      chrome="planner"
+      open={@open}
+      title={"Replace #{@calendar_name} #{@direction_adjective} trips?"}
+      confirm_label="Replace trips"
+      pending_label="Replacing…"
+      cancel_label="Keep reviewing"
+      on_confirm="paste_replace_confirm"
+      on_cancel="paste_replace_cancel"
+      return_focus_id="paste-apply"
+      described_by="paste-replace-confirm-body"
+    >
+      <div>
+        <p>
+          This removes {plural(@counts.remove, "trip")} ({replace_removal_list(@removals)}),
+          changes {@counts.change} and adds {@counts.add} on {@patterns}.
+        </p>
+        <p :if={@transfers > 0} class="mt-2">
+          <strong class="text-strong">{plural(@transfers, "transfer")}</strong>
+          that {transfer_verb(@transfers)} the removed {plural_noun(@counts.remove, "trip")} {transfer_are(
+            @transfers
+          )} removed too.
+        </p>
+        <p class="mt-2 text-muted">
+          Other patterns, calendars and the other direction stay as they are. History
+          records the removed trips, but applying can’t be undone here.
+        </p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  @doc """
+  Renders step 28, the Discard paste confirmation: a `confirm_dialog`
+  that clears the pasted timetable, the columns and the decisions.
+  Nothing has been applied, so discarding only drops the draft input.
+  """
+  attr :open, :boolean, required: true, doc: "the dialog is requested open"
+
+  def discard_confirm(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="paste-discard-confirm"
+      chrome="planner"
+      open={@open}
+      title="Discard this paste?"
+      confirm_label="Discard paste"
+      pending_label="Discarding…"
+      cancel_label="Keep reviewing"
+      on_confirm="paste_discard_confirm"
+      on_cancel="paste_discard_cancel"
+      return_focus_id="paste-discard"
+      described_by="paste-discard-confirm-body"
+    >
+      <p>
+        The pasted timetable, columns and decisions go away. Nothing has been applied.
+      </p>
+    </.confirm_dialog>
+    """
+  end
+
+  # --- Apply bar, notices and confirmations (step 28) ---
+
+  defp apply_label(:replace, applied), do: "Replace trips · #{plural(applied, "change")}"
+  defp apply_label(_mode, applied), do: "Apply #{plural(applied, "change")}"
+
+  defp apply_status(_mode, _review, :permission),
+    do: "Editing isn’t available with your current role."
+
+  defp apply_status(_mode, %{plan: %{refusal: refusal}}, _notice) when not is_nil(refusal),
+    do: "Replace can’t run on this schedule."
+
+  defp apply_status(_mode, %{plan: plan}, _notice) do
+    counts = plan.counts
+    applied = counts.add + counts.change + counts.remove
+
+    cond do
+      plan.refusal == :nothing_accepted ->
+        "Replace needs at least one pasted trip."
+
+      applied == 0 and counts.needs_decision == 0 ->
+        "Nothing to apply."
+
+      counts.needs_decision > 0 ->
+        "#{plural(counts.needs_decision, "row")} need a decision before applying."
+
+      true ->
+        "Ready. Nothing has been saved yet."
+    end
+  end
+
+  defp attention_title(1), do: "1 row needs a decision."
+  defp attention_title(count), do: "#{count} rows need a decision."
+
+  # Rows still needing a decision, in plan order, for the
+  # `#paste-review-errors` summary: each links to its matrix row.
+  defp attention_rows(%{plan: %{changes: changes}}) when is_list(changes) do
+    changes
+    |> Enum.filter(&(change_op(&1) == :needs_decision))
+    |> Enum.map(&attention_entry/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp attention_rows(_review), do: []
+
+  defp attention_entry(change) do
+    case attention_row_no(change) do
+      nil -> nil
+      row -> %{row: row, trip: attention_trip(change), hint: attention_hint(change)}
+    end
+  end
+
+  defp change_op(change) when is_map(change) do
+    Map.get(change, :op, Map.get(change, "op"))
+  end
+
+  defp change_op(_change), do: nil
+
+  defp attention_row_no(change) do
+    row = Map.get(change, :row, Map.get(change, "row"))
+
+    cond do
+      is_map(row) and is_integer(Map.get(row, :row, Map.get(row, "row"))) ->
+        Map.get(row, :row, Map.get(row, "row"))
+
+      is_integer(Map.get(change, :row_no, Map.get(change, "row_no"))) ->
+        Map.get(change, :row_no, Map.get(change, "row_no"))
+
+      true ->
+        nil
+    end
+  end
+
+  defp attention_trip(change) do
+    case Map.get(change, :trip_short_name, Map.get(change, "trip_short_name")) do
+      short when is_binary(short) and short != "" -> short
+      _short -> nil
+    end
+  end
+
+  defp attention_hint(change) do
+    row = Map.get(change, :row, Map.get(change, "row"))
+    issue = if is_map(row), do: Map.get(row, :issue, Map.get(row, "issue")), else: nil
+    candidates = List.wrap(Map.get(change, :candidates, Map.get(change, "candidates", [])))
+
+    cond do
+      match?({:pattern, _}, issue) -> "choose a pattern"
+      issue == :no_pattern -> "no pattern fits"
+      match?({:cell, _, _}, issue) -> "fix a time"
+      match?({:backwards, _, _}, issue) -> "fix a time"
+      match?({:twelve_hour, _}, issue) -> "confirm the start time"
+      issue == :empty -> "add times"
+      Enum.any?(candidates, &is_map/1) -> "choose the trip it replaces"
+      true -> "choose a pattern"
+    end
+  end
+
+  defp unknown_change_count(%{plan: %{counts: counts}}) when is_map(counts) do
+    (Map.get(counts, :add) || 0) + (Map.get(counts, :change) || 0) +
+      (Map.get(counts, :remove) || 0)
+  end
+
+  defp unknown_change_count(_review), do: 0
+
+  defp unknown_verb(1), do: "was"
+  defp unknown_verb(_count), do: "were"
+
+  defp unknown_them(1), do: "it"
+  defp unknown_them(_count), do: "them"
+
+  defp paste_schedules_path(%{version_id: version_id, route_id: route_id, scope: scope})
+       when is_map(scope) do
+    query =
+      URI.encode_query([
+        {"service_id", scope_service_id(scope)},
+        {"direction", scope_direction_param(scope)},
+        {"pattern", to_string(scope_pattern_id(scope))}
+      ])
+
+    "/gtfs/#{version_id}/routes/#{route_id}/schedules?#{query}"
+  end
+
+  defp paste_schedules_path(%{version_id: version_id, route_id: route_id}) do
+    "/gtfs/#{version_id}/routes/#{route_id}/schedules"
+  end
+
+  defp scope_service_id(%{calendar: %{service_id: service_id}}), do: service_id
+  defp scope_service_id(%{calendar: %{"service_id" => service_id}}), do: service_id
+  defp scope_service_id(_scope), do: ""
+
+  defp scope_direction_param(%{direction_id: 1}), do: "1"
+  defp scope_direction_param(_scope), do: "0"
+
+  defp scope_pattern_id(%{pattern_id: pattern_id}), do: pattern_id
+  defp scope_pattern_id(_scope), do: ""
+
+  # Removals in plan order for the Replace confirmation: each names its
+  # natural trip id and start clock.
+  defp replace_removals(%{changes: changes}) when is_list(changes) do
+    changes
+    |> Enum.filter(&(change_op(&1) == :remove))
+    |> Enum.map(fn change ->
+      trip = Map.get(change, :trip, Map.get(change, "trip", %{}))
+      %{id: removal_trip_id(trip), start: removal_start(trip)}
+    end)
+  end
+
+  defp replace_removals(_plan), do: []
+
+  defp removal_trip_id(trip) when is_map(trip) do
+    Map.get(trip, :trip_id, Map.get(trip, "trip_id", "this trip"))
+  end
+
+  defp removal_trip_id(_trip), do: "this trip"
+
+  defp removal_start(trip) when is_map(trip) do
+    case Map.get(trip, :start_secs, Map.get(trip, "start_secs")) do
+      secs when is_integer(secs) -> TimetablePasteReview.format_clock(secs)
+      _secs -> nil
+    end
+  end
+
+  defp removal_start(_trip), do: nil
+
+  defp replace_removal_list([]), do: "no trips"
+
+  defp replace_removal_list(removals) do
+    Enum.map_join(removals, ", ", fn
+      %{id: id, start: nil} -> id
+      %{id: id, start: start} -> "#{id} at #{start}"
+    end)
+  end
+
+  defp transfer_verb(1), do: "names"
+  defp transfer_verb(_count), do: "name"
+
+  defp transfer_are(1), do: "is"
+  defp transfer_are(_count), do: "are"
+
+  defp plural_noun(1, one), do: one
+  defp plural_noun(_count, one), do: "#{one}s"
 end
