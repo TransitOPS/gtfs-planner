@@ -19,6 +19,11 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter.Rows do
   `calendars` and `calendar_dates` are the service rows `active_timeframes/3`
   needs: a timeframe group counts only when one of its `service_id` values runs
   on the event's date.
+
+  `fare_product_details` says which products are single rides, passes or transfer
+  fees, which the Fares v2 files do not record, and `rider_categories` and
+  `fare_media` carry the names `Fares.Pricing` reads in a rider's price
+  explanation.
   """
 
   @type t :: %__MODULE__{
@@ -36,6 +41,9 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter.Rows do
           stop_zones: %{optional(String.t()) => String.t()},
           fare_attributes: [GtfsPlanner.Gtfs.FareAttribute.t()],
           fare_rules: [GtfsPlanner.Gtfs.FareRule.t()],
+          fare_product_details: [GtfsPlanner.Gtfs.FareProductDetail.t()],
+          rider_categories: [GtfsPlanner.Gtfs.RiderCategory.t()],
+          fare_media: [GtfsPlanner.Gtfs.FareMedia.t()],
           calendars: [GtfsPlanner.Gtfs.Calendar.t()],
           calendar_dates: [GtfsPlanner.Gtfs.CalendarDate.t()]
         }
@@ -54,6 +62,9 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter.Rows do
             stop_zones: %{},
             fare_attributes: [],
             fare_rules: [],
+            fare_product_details: [],
+            rider_categories: [],
+            fare_media: [],
             calendars: [],
             calendar_dates: []
 end

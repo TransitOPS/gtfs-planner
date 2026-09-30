@@ -50,12 +50,15 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
   alias GtfsPlanner.Gtfs.CalendarDate
   alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FareLegRule
+  alias GtfsPlanner.Gtfs.FareMedia
   alias GtfsPlanner.Gtfs.FareProduct
+  alias GtfsPlanner.Gtfs.FareProductDetail
   alias GtfsPlanner.Gtfs.FareRule
   alias GtfsPlanner.Gtfs.Fares
   alias GtfsPlanner.Gtfs.Fares.Interpreter.Rows
   alias GtfsPlanner.Gtfs.FareTransferRule
   alias GtfsPlanner.Gtfs.Network
+  alias GtfsPlanner.Gtfs.RiderCategory
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Gtfs.Stop
@@ -107,9 +110,38 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
       stop_zones: stop_zones(organization_id, gtfs_version_id),
       fare_attributes: scoped(FareAttribute, organization_id, gtfs_version_id),
       fare_rules: scoped(FareRule, organization_id, gtfs_version_id),
+      fare_product_details: scoped(FareProductDetail, organization_id, gtfs_version_id),
+      rider_categories: scoped(RiderCategory, organization_id, gtfs_version_id),
+      fare_media: scoped(FareMedia, organization_id, gtfs_version_id),
       calendars: scoped(ServiceCalendar, organization_id, gtfs_version_id),
       calendar_dates: scoped(CalendarDate, organization_id, gtfs_version_id)
     }
+  end
+
+  @doc """
+  The rules that price one leg: the ones the five steps select, in rule order.
+
+  `leg_products/5` is this function's `fare_product_id` values, and a caller that
+  also needs the rules themselves — `GtfsPlanner.Gtfs.Fares.Pricing` reads their
+  `leg_group_id` — reads them here, so the two never match a leg differently.
+  """
+  @spec leg_rules(Rows.t(), String.t() | nil, String.t() | nil, String.t() | nil, [String.t()]) ::
+          [map()]
+  def leg_rules(%Rows{} = rows, network_id, from_area_id, to_area_id, timeframe_ids) do
+    leg = %{
+      network_id: presence(network_id),
+      from_area_id: presence(from_area_id),
+      to_area_id: presence(to_area_id),
+      timeframes: MapSet.new(timeframe_ids, &presence/1)
+    }
+
+    if priority_semantics?(rows.fare_leg_rules) do
+      rows.fare_leg_rules
+      |> Enum.filter(&matches?(&1, leg))
+      |> highest_priority()
+    else
+      empty_semantics(rows.fare_leg_rules, leg)
+    end
   end
 
   @doc """
@@ -126,20 +158,9 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
   @spec leg_products(Rows.t(), String.t() | nil, String.t() | nil, String.t() | nil, [String.t()]) ::
           [String.t()]
   def leg_products(%Rows{} = rows, network_id, from_area_id, to_area_id, timeframe_ids) do
-    leg = %{
-      network_id: presence(network_id),
-      from_area_id: presence(from_area_id),
-      to_area_id: presence(to_area_id),
-      timeframes: MapSet.new(timeframe_ids, &presence/1)
-    }
-
-    if priority_semantics?(rows.fare_leg_rules) do
-      rows.fare_leg_rules
-      |> Enum.filter(&matches?(&1, leg))
-      |> highest_priority()
-    else
-      empty_semantics(rows.fare_leg_rules, leg)
-    end
+    rows
+    |> leg_rules(network_id, from_area_id, to_area_id, timeframe_ids)
+    |> products()
   end
 
   @doc """
@@ -237,7 +258,7 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
 
   defp highest_priority(matched) do
     top = matched |> Enum.map(&rule_priority/1) |> Enum.max()
-    matched |> Enum.filter(&(rule_priority(&1) == top)) |> products()
+    Enum.filter(matched, &(rule_priority(&1) == top))
   end
 
   defp rule_priority(%{rule_priority: nil}), do: 0
@@ -246,8 +267,8 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
   # Reference steps 2 and 3.
   defp empty_semantics(rules, leg) do
     case Enum.filter(rules, &exact_match?(&1, leg)) do
-      [] -> rules |> Enum.filter(&others_semantics_match?(&1, rules, leg)) |> products()
-      exact -> products(exact)
+      [] -> Enum.filter(rules, &others_semantics_match?(&1, rules, leg))
+      exact -> exact
     end
   end
 
