@@ -2356,9 +2356,15 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
                     <.icon name="hero-exclamation-triangle" class="mr-1 size-3.5" />
                     {estimate_problem_text(Map.get(row, :estimate_problem))}
                   </span>
-                  <span :if={row.headsign} class="block text-[12px] text-muted">
-                    To {row.headsign}
-                  </span>
+                  <%!-- Today's display over the new Timetable headsign shapes;
+                       step 16 owns the final markup (warning ink, "No headsign"). --%>
+                  <%= case row.headsign do %>
+                    <% {:differs, value, _kind} -> %>
+                      <span class="block text-[12px] text-muted">
+                        To {value}
+                      </span>
+                    <% _ -> %>
+                  <% end %>
                   <span
                     :if={row.frequency_label}
                     id={"trip-#{row.trip_id}-frequency"}
