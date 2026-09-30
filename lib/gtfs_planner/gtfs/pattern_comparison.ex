@@ -369,8 +369,9 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
   foreign or unpublished scope has no patterns: `{:ok, []}`.
 
   Ceiling: one query joins the version's patterns, routes, occurrences and stops
-  (about 200 patterns × 40 stops, so about 8,000 rows), plus one row per trip on
-  the calendar and its frequency rows. When a version grows past that, search
+  (about 200 patterns × 40 stops, so about 8,000 rows), plus one grouped count
+  row per pattern for the calendar's trips without frequency rows and one row per
+  frequency row of the trips that repeat. When a version grows past that, search
   stops on the server and return matches with a per-pattern count instead of the
   whole list (PM-6); the in-memory filter is the current upgrade path.
   """
@@ -635,7 +636,9 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
   # A pattern's trips on the calendar under R7, without Usage's departure
   # histogram: the picker ranks the whole version, so it must not scan every
   # trip's stop times. `service_id: nil` counts nothing, as an unresolved
-  # calendar leaves Usage empty.
+  # calendar leaves Usage empty. Trips without frequency rows are counted by one
+  # grouped query; only the trips that have frequency rows are read, with their
+  # frequencies, to expand their departures. A pattern with no trips has no key.
   defp picker_trip_counts(_scope, [], _service_id), do: %{}
 
   defp picker_trip_counts(_scope, _patterns, nil), do: %{}
@@ -643,37 +646,65 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
   defp picker_trip_counts(scope, patterns, service_id) do
     route_pattern_ids = Enum.map(patterns, & &1.route_pattern_id)
 
-    trips =
-      from(trip in Trip,
-        where:
-          trip.organization_id == ^scope.organization_id and
-            trip.gtfs_version_id == ^scope.gtfs_version_id and
-            trip.route_pattern_id in ^route_pattern_ids and trip.service_id == ^service_id,
-        order_by: [asc: trip.trip_id, asc: trip.id],
-        select: %{trip_id: trip.trip_id, route_pattern_id: trip.route_pattern_id}
-      )
-      |> Repo.all()
+    plain = picker_plain_trip_counts(scope, route_pattern_ids, service_id)
+    repeating = picker_frequency_trips(scope, route_pattern_ids, service_id)
 
-    frequencies = picker_frequencies(scope, Enum.map(trips, & &1.trip_id))
-
-    Enum.reduce(trips, %{}, fn trip, counts ->
-      count = picker_departures(Map.get(frequencies, trip.trip_id, []))
-      Map.update(counts, trip.route_pattern_id, count, &(&1 + count))
+    Enum.reduce(repeating, plain, fn {route_pattern_id, frequencies}, counts ->
+      departures = picker_departures(frequencies)
+      Map.update(counts, route_pattern_id, departures, &(&1 + departures))
     end)
   end
 
-  defp picker_frequencies(_scope, []), do: %{}
-
-  defp picker_frequencies(scope, trip_ids) do
-    from(frequency in Frequency,
+  # Each trip without a frequency row is one departure. The frequency lookup is
+  # scoped by organization and version as the trip is, so a frequency row of
+  # another version with the same trip ID does not turn a trip into a repeating one.
+  defp picker_plain_trip_counts(scope, route_pattern_ids, service_id) do
+    from(trip in Trip,
+      as: :trip,
       where:
-        frequency.organization_id == ^scope.organization_id and
-          frequency.gtfs_version_id == ^scope.gtfs_version_id and
-          frequency.trip_id in ^trip_ids,
-      order_by: [asc: frequency.trip_id, asc: frequency.start_time]
+        trip.organization_id == ^scope.organization_id and
+          trip.gtfs_version_id == ^scope.gtfs_version_id and
+          trip.route_pattern_id in ^route_pattern_ids and trip.service_id == ^service_id,
+      where:
+        not exists(
+          from(frequency in Frequency,
+            where:
+              frequency.organization_id == parent_as(:trip).organization_id and
+                frequency.gtfs_version_id == parent_as(:trip).gtfs_version_id and
+                frequency.trip_id == parent_as(:trip).trip_id
+          )
+        ),
+      group_by: trip.route_pattern_id,
+      select: {trip.route_pattern_id, count(trip.id)}
     )
     |> Repo.all()
-    |> Enum.group_by(& &1.trip_id)
+    |> Map.new()
+  end
+
+  # One `{route_pattern_id, frequency rows}` per trip that has frequency rows;
+  # the inner join reads no other trip.
+  defp picker_frequency_trips(scope, route_pattern_ids, service_id) do
+    from(trip in Trip,
+      join: frequency in Frequency,
+      on:
+        frequency.organization_id == trip.organization_id and
+          frequency.gtfs_version_id == trip.gtfs_version_id and
+          frequency.trip_id == trip.trip_id,
+      where:
+        trip.organization_id == ^scope.organization_id and
+          trip.gtfs_version_id == ^scope.gtfs_version_id and
+          trip.route_pattern_id in ^route_pattern_ids and trip.service_id == ^service_id,
+      order_by: [asc: frequency.start_time],
+      select: {trip.route_pattern_id, trip.id, frequency}
+    )
+    |> Repo.all()
+    |> Enum.group_by(
+      fn {route_pattern_id, trip_id, _frequency} -> {route_pattern_id, trip_id} end,
+      fn {_route_pattern_id, _trip_id, frequency} -> frequency end
+    )
+    |> Enum.map(fn {{route_pattern_id, _trip_id}, frequencies} ->
+      {route_pattern_id, frequencies}
+    end)
   end
 
   # R7: a trip with usable frequency windows counts as its expanded departures
