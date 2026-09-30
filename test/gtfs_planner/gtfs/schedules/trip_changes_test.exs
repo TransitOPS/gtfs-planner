@@ -277,12 +277,15 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChangesTest do
 
   describe "plan/2" do
     test "dispatches a planned tag and returns :invalid_command until a planner owns the rest" do
-      # :shift is planned since step 9, :set_timing since step 14 and :move_calendar since
-      # step 15; :convert_frequency still falls through to the dispatch fallback until its
-      # planner step (18) adds a clause above it.
+      # :shift is planned since step 9, :set_timing since step 14, :move_calendar since
+      # step 15 and :copy since step 16; :convert_frequency still falls through to the
+      # dispatch fallback until its planner step (18) adds a clause above it.
       assert TripChanges.plan({:set_timing, [@trip_a], @trip_c}, %{}) == {:error, :not_found}
 
       assert TripChanges.plan({:move_calendar, [@trip_a], "SAT"}, %{}) ==
+               {:error, :not_found}
+
+      assert TripChanges.plan({:copy, [@trip_a], "SAT", 0, true}, %{}) ==
                {:error, :not_found}
 
       assert TripChanges.plan({:convert_frequency, @trip_a}, %{}) ==

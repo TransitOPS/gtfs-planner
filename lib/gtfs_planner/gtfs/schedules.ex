@@ -3100,7 +3100,12 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         shape_dist_traveled: st.shape_dist_traveled,
         pickup_type: st.pickup_type,
         drop_off_type: st.drop_off_type,
-        stop_headsign: st.stop_headsign
+        stop_headsign: st.stop_headsign,
+        # A copy writes a full stop-time row (R7), so the loader reads the two
+        # continuous flags and the shape distance it must reproduce.
+        continuous_pickup: st.continuous_pickup,
+        continuous_drop_off: st.continuous_drop_off,
+        shape_dist_traveled: st.shape_dist_traveled
       }
     )
     |> Repo.all()
