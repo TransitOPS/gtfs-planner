@@ -326,6 +326,30 @@ defmodule GtfsPlanner.Versions do
     end
   end
 
+  @doc """
+  Locks one organization-scoped version `FOR UPDATE` for a natural-ID mutation.
+
+  Call inside a transaction, at entry before reading entity rows. The caller
+  chooses this lock instead of a share lock; it must never upgrade a held lock.
+  An absent or foreign version rolls the transaction back with `:not_found`.
+  """
+  @spec lock_for_exclusive_write!(Ecto.UUID.t(), Ecto.UUID.t()) :: GtfsVersion.t()
+  def lock_for_exclusive_write!(organization_id, version_id) do
+    version =
+      if uuid?(organization_id) and uuid?(version_id) do
+        from(v in GtfsVersion,
+          where: v.id == ^version_id and v.organization_id == ^organization_id,
+          lock: "FOR UPDATE"
+        )
+        |> Repo.one()
+      end
+
+    case version do
+      %GtfsVersion{} = scoped_version -> scoped_version
+      nil -> Repo.rollback(:not_found)
+    end
+  end
+
   # --- private --------------------------------------------------------------
 
   # A literal lock string is required by Ecto. This is the same scoped share lock the
