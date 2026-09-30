@@ -1567,6 +1567,32 @@ defmodule GtfsPlanner.Gtfs do
 
   def preview_left_out(_route_id, _audit_context), do: {:error, :not_found}
 
+  @doc """
+  Applies a confirmed grouping review to one route's left-out trips.
+
+  `review` is the open review's own map: `%{selections: [...], fingerprint:
+  hex}` where each selection carries a group's preview key, its confirmed
+  direction and its target (`:new`, a pattern id, or absent to take the rule-5
+  candidate head). The organization and version come from the audit context, so
+  a route outside that scope is `{:error, :not_found}`. A review whose trips
+  have changed since it opened is `{:error, :stale}` with nothing written.
+  """
+  def group_left_out_trips(
+        route_id,
+        %{selections: selections, fingerprint: fingerprint},
+        %AuditContext{} = audit_context
+      )
+      when is_binary(fingerprint) and is_list(selections) do
+    Derivation.group_left_out(
+      route_id,
+      selections,
+      fingerprint,
+      audit_context
+    )
+  end
+
+  def group_left_out_trips(_route_id, _review, _audit_context), do: {:error, :invalid_input}
+
   @doc "Loads the alignment editor read model for one pattern in its published route scope."
   def alignment_editor(organization_id, gtfs_version_id, route_id, route_pattern_id),
     do: Alignments.editor(organization_id, gtfs_version_id, route_id, route_pattern_id)
@@ -8183,6 +8209,7 @@ defmodule GtfsPlanner.Gtfs do
       "timings_created" =>
         normalize_value(Map.get(attrs, :timings_created, Map.get(attrs, "timings_created")))
     }
+    |> put_grouped_trips(attrs)
   end
 
   defp build_changed_fields(_entity_type, _action, _snapshot, _attrs), do: nil
@@ -8204,6 +8231,16 @@ defmodule GtfsPlanner.Gtfs do
         })
       end
     end)
+  end
+
+  # A grouped apply lists each trip it moved and the direction that trip had
+  # before, so the route's build history records what the review changed. A
+  # build with no grouped trips keeps its previous shape.
+  defp put_grouped_trips(changed, attrs) do
+    case Map.get(attrs, :grouped_trips, Map.get(attrs, "grouped_trips")) do
+      nil -> changed
+      trips -> Map.put(changed, "grouped_trips", normalize_value(trips))
+    end
   end
 
   # A reviewed bulk deletion shares one operation id across its route, trip and

@@ -215,6 +215,190 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   defp retryable_conflict?(_reason), do: false
 
+  @typedoc "One confirmed group: its preview key, the exported direction and the target it joins."
+  @type selection :: %{key: String.t(), direction_id: 0 | 1, target: :new | Ecto.UUID.t()}
+
+  @doc """
+  Applies a confirmed grouping review to one route's left-out trips.
+
+  The whole apply runs in the reviewed-apply transaction, so the route's row
+  lock, the fingerprint comparison, the trip updates and derivation's own
+  planning commit or roll back together. The preview is recomputed inside that
+  transaction and compared with the caller's fingerprint: any linkage change
+  since the review opened is `{:error, :stale}` and writes nothing (rule 7).
+
+  Every selected group must exist in the recomputed preview and carry a
+  direction of 0 or 1, and an explicit target must be a pattern of this route;
+  anything else is `{:error, :invalid_selection}`. A group with no target joins
+  the rule-5 candidate head, and `:new` plans a new pattern.
+
+  The confirmed groups' trips are set pending with the confirmed direction and
+  then handed to derivation's own planning with a target map, so a grouped
+  route is planned, named and timed exactly as a derived one (CR-4). Only trip
+  linkage, direction, `updated_at`, pattern/timing rows and the route audit
+  entry are written; imported `stop_times` are never touched (rule 3, INV-2).
+  """
+  @spec group_left_out(String.t(), [selection()], String.t(), AuditContext.t()) ::
+          {:ok, summary()}
+          | {:error, :stale | :not_found | :busy | :invalid_selection | term()}
+  def group_left_out(route_id, selections, fingerprint, %AuditContext{} = audit)
+      when is_binary(route_id) and is_list(selections) and is_binary(fingerprint) do
+    case run_editor_transaction(fn ->
+           group_left_out_transaction(
+             audit.organization_id,
+             audit.gtfs_version_id,
+             route_id,
+             selections,
+             fingerprint,
+             audit
+           )
+         end) do
+      # An unknown route is reported as not found rather than as a
+      # derivation-internal reason, matching how the preview answers the same
+      # scope question.
+      {:error, :missing_route} -> {:error, :not_found}
+      result -> result
+    end
+  end
+
+  def group_left_out(_route_id, _selections, _fingerprint, _audit),
+    do: {:error, :invalid_input}
+
+  defp group_left_out_transaction(
+         organization_id,
+         version_id,
+         route_id,
+         selections,
+         fingerprint,
+         audit
+       ) do
+    route = lock_route!(organization_id, version_id, route_id, {:editor, audit})
+    review = left_out_review(route)
+
+    if review.fingerprint != fingerprint, do: Repo.rollback(:stale)
+
+    confirmed = confirm_selections!(selections, review, route)
+    grouped = mark_grouped_pending!(route, confirmed, review)
+
+    derive_locked_route(route, {:editor, audit}, %{
+      targets: selection_targets(confirmed),
+      timing_names: selection_timing_names(confirmed),
+      grouped: grouped
+    })
+  end
+
+  defp confirm_selections!(selections, review, route) do
+    Enum.map(selections, &confirm_selection!(&1, review, route))
+  end
+
+  defp confirm_selection!(selection, review, route) when is_map(selection) do
+    with key when is_binary(key) <- Map.get(selection, :key),
+         group when not is_nil(group) <- Map.get(review.groups_by_key, key),
+         direction when direction in [0, 1] <- Map.get(selection, :direction_id) do
+      {key, group, direction, resolve_target(selection, group, direction, review, route)}
+    else
+      _other -> Repo.rollback(:invalid_selection)
+    end
+  end
+
+  defp confirm_selection!(_selection, _review, _route), do: Repo.rollback(:invalid_selection)
+
+  # `:new` plans a pattern, an explicit id must name a pattern of this route, and
+  # an absent target takes the rule-5 candidate head, so an unconfirmed chooser
+  # still resolves to one deterministic pattern.
+  defp resolve_target(selection, group, direction, review, route) do
+    case Map.get(selection, :target) do
+      :new ->
+        nil
+
+      id when is_binary(id) ->
+        case Map.get(route_patterns(route), cast_pattern_id(id)) do
+          %RoutePattern{} = pattern -> pattern
+          _other -> Repo.rollback(:invalid_selection)
+        end
+
+      _absent ->
+        case Grouping.candidates(group, direction, review.pattern_refs) do
+          [%{id: id} | _rest] -> Map.get(route_patterns(route), id)
+          [] -> nil
+        end
+    end
+  end
+
+  defp cast_pattern_id(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, uuid} -> uuid
+      :error -> id
+    end
+  end
+
+  # Each confirmed group's trips become pending with the confirmed direction, so
+  # derivation's own first pass sees them as the trips it is meant to classify.
+  # The prior direction is read from the same rows the fingerprint covered, so
+  # the audit entry reports what the review was looking at.
+  defp mark_grouped_pending!(route, confirmed, review) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    confirmed
+    |> Enum.flat_map(fn {_key, group, direction, _target} ->
+      prior = Map.new(group.trip_ids, &{&1, Map.get(review.directions, &1)})
+
+      {count, nil} =
+        from(t in Trip,
+          where:
+            t.organization_id == ^route.organization_id and
+              t.gtfs_version_id == ^route.gtfs_version_id and t.route_id == ^route.route_id and
+              t.id in ^Map.keys(prior)
+        )
+        |> Repo.update_all(
+          set: [
+            direction_id: direction,
+            pattern_derivation_state: "pending",
+            pattern_derivation_reason: nil,
+            updated_at: now
+          ]
+        )
+
+      # A trip the review counted that this transaction cannot write means the
+      # review and the write disagree, which is the stale case.
+      if count != map_size(prior), do: Repo.rollback(:stale)
+
+      Enum.map(prior, fn {trip_id, prior_direction_id} ->
+        %{trip_id: trip_id, prior_direction_id: prior_direction_id}
+      end)
+    end)
+    |> Enum.sort_by(& &1.trip_id)
+  end
+
+  # The target override is keyed the way derivation's own planning keys a
+  # derived group, so the confirmed pattern is the one the group's trips join.
+  defp selection_targets(confirmed) do
+    confirmed
+    |> Enum.flat_map(fn {_key, group, direction, target} ->
+      case target do
+        %RoutePattern{} = pattern -> [{plan_group_key(group, direction), pattern}]
+        nil -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  # Rule 6: the preview already named each group's timing, so the apply reuses
+  # that name instead of naming a second time from a different answer.
+  defp selection_timing_names(confirmed) do
+    confirmed
+    |> Enum.flat_map(fn {_key, group, direction, _target} ->
+      case group.timing_names do
+        [name | _rest] when is_binary(name) -> [{plan_group_key(group, direction), name}]
+        _other -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  defp plan_group_key(group, direction),
+    do: {direction, derivation_key(direction, group.stop_ids)}
+
   @doc """
   Counts the trips still pending derivation for one route.
 
@@ -280,16 +464,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   def preview_left_out(organization_id, version_id, route_id) when is_binary(route_id) do
     case RoutePatterns.published_route(organization_id, version_id, route_id) do
       {:ok, route} ->
-        context = preview_context(route)
-        {rows, vectors, blocked} = collect_left_out(route, context)
-
-        groups = Grouping.group(vectors)
+        review = left_out_review(route)
 
         {:ok,
          %{
-           groups: preview_groups(route, context, groups),
-           blocked: blocked_reasons(blocked),
-           fingerprint: Grouping.fingerprint(rows)
+           groups: review.groups,
+           blocked: review.blocked,
+           fingerprint: review.fingerprint
          }}
 
       {:error, :not_found} ->
@@ -299,6 +480,31 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   def preview_left_out(_organization_id, _version_id, _route_id),
     do: {:error, :not_found}
+
+  # One read of the review the editor is looking at. The preview returns its
+  # display fields and the apply confirms against the same groups, so a rule
+  # cannot answer one way on screen and another way in the transaction.
+  defp left_out_review(route) do
+    context = preview_context(route)
+    {rows, vectors, blocked} = collect_left_out(route, context)
+
+    groups = Grouping.group(vectors)
+    previews = preview_groups(route, context, groups)
+
+    cards =
+      Enum.zip(groups, previews) |> Enum.map(fn {group, preview} -> Map.merge(group, preview) end)
+
+    %{
+      # Key order is the preview's own order, so the cards a review shows and
+      # the groups an apply confirms are the same collection in the same order.
+      groups: cards,
+      groups_by_key: Map.new(cards, &{&1.key, &1}),
+      blocked: blocked_reasons(blocked),
+      fingerprint: Grouping.fingerprint(rows),
+      pattern_refs: context.pattern_refs,
+      directions: Map.new(rows, &{&1.id, &1.direction_id})
+    }
+  end
 
   defp preview_context(route) do
     %{
@@ -773,16 +979,25 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   defp derive_route_transaction(organization_id, version_id, route_id, provenance) do
     route = lock_route!(organization_id, version_id, route_id, provenance)
+    derive_locked_route(route, provenance, %{})
+  end
+
+  # The body of a route derivation, for a route this transaction already holds
+  # the row lock on. `overrides` carries what a caller has confirmed outside a
+  # fresh import: the grouping review's target map and timing names, and the
+  # trips it set pending. An import passes none, so a derived route is planned
+  # from the imported data alone.
+  defp derive_locked_route(route, provenance, overrides) do
     before = trip_totals(route)
 
     if before.pending == 0 do
       zero_summary()
     else
-      context = load_context(route)
+      context = load_context(route, overrides)
       stage_one = first_pass(route, context)
       plan = plan_patterns!(route, context, stage_one)
 
-      maybe_inject_route_failure!(route_id)
+      maybe_inject_route_failure!(route.route_id)
 
       state =
         second_pass(route, plan)
@@ -793,7 +1008,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       clear_route_error!(route)
       summary = state.summary
 
-      audit_build!(provenance, route, before, trip_totals(route), summary)
+      audit_build!(
+        provenance,
+        route,
+        before,
+        trip_totals(route),
+        summary,
+        Map.get(overrides, :grouped, [])
+      )
+
       summary
     end
   end
@@ -869,7 +1092,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   # --- route context ---------------------------------------------------------
 
-  defp load_context(route) do
+  defp load_context(route, overrides) do
     supplied_ids = pending_supplied_ids(route)
     supplied = supplied_patterns(route, supplied_ids)
     derived = derived_patterns(route)
@@ -883,7 +1106,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       occurrences: occurrence_rows(pattern_ids(supplied, derived)),
       representatives: representative_sequences(route, supplied, eligible_stops),
       eligible_stops: eligible_stops,
-      names: pattern_names(route)
+      names: pattern_names(route),
+      targets: Map.get(overrides, :targets, %{}),
+      timing_names: Map.get(overrides, :timing_names, %{})
     }
   end
 
@@ -1223,23 +1448,62 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
          group_key,
          entry,
          planning,
-         {created, names} = progress
+         progress
        ) do
     {direction, _key} = group_key
     derivation_key = derivation_key(direction, entry.sequence)
+    timing_name = Map.get(context.timing_names, {direction, derivation_key})
 
+    # A confirmed grouping target wins over a pattern derivation already owns:
+    # the editor chose the pattern the group's trips join, and derivation's
+    # second pass reaches the same group through this same key.
+    {target, progress} =
+      case Map.get(context.targets, {direction, derivation_key}) do
+        %RoutePattern{} = pattern ->
+          {existing_target(pattern, entry, context), progress}
+
+        _absent ->
+          plan_derived_target_from_context(
+            route,
+            context,
+            group_key,
+            entry,
+            planning,
+            derivation_key,
+            progress
+          )
+      end
+
+    # The confirmed name travels on the target, so a timing the review already
+    # named is created under that name and every other one keeps derivation's
+    # own next-timing-name rule.
+    {Map.put(target, :timing_name, timing_name), progress}
+  end
+
+  defp plan_derived_target_from_context(
+         route,
+         context,
+         group_key,
+         entry,
+         planning,
+         derivation_key,
+         progress
+       ) do
     case Map.get(context.derived, derivation_key) do
       %RoutePattern{} = pattern ->
-        target =
-          case Map.get(context.occurrences, pattern.id) do
-            nil -> existing_derived_target(pattern, entry.sequence, true)
-            occurrences -> existing_derived_target(pattern, occurrences, false)
-          end
-
-        {target, progress}
+        {existing_derived_target(pattern, entry.sequence, context), progress}
 
       nil ->
-        create_derived_target(route, group_key, derivation_key, entry, planning, {created, names})
+        create_derived_target(route, group_key, derivation_key, entry, planning, progress)
+    end
+  end
+
+  # A pattern's target is its own occurrences, or the sequence derivation would
+  # have given it when it has none yet.
+  defp existing_target(pattern, entry, context) do
+    case Map.get(context.occurrences, pattern.id) do
+      nil -> existing_derived_target(pattern, entry.sequence, true)
+      occurrences -> existing_derived_target(pattern, occurrences, false)
     end
   end
 
@@ -1558,7 +1822,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     {:custom, reason, bump(state, :trips_custom)}
   end
 
+  # Rule 7: linking bumps `updated_at`, so a review that was open over these
+  # trips goes stale for the next editor instead of applying twice.
   defp flush_links!(links) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
     Enum.each(links, fn {{pattern_natural_id, timing_id}, trip_ids} ->
       from(t in Trip, where: t.id in ^trip_ids)
       |> Repo.update_all(
@@ -1566,7 +1834,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
           route_pattern_id: pattern_natural_id,
           pattern_derivation_state: "linked",
           pattern_derivation_reason: nil,
-          timed_pattern_id: timing_id
+          timed_pattern_id: timing_id,
+          updated_at: now
         ]
       )
     end)
@@ -1792,7 +2061,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         route_pattern: pattern,
         organization_id: pattern.organization_id,
         gtfs_version_id: pattern.gtfs_version_id,
-        name: RoutePatterns.next_timing_name(pattern.id),
+        name: timing_name_for(target, pattern),
         headsign: nil,
         derivation_key: derivation_key
       })
@@ -1826,6 +2095,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
     {timing.id, state}
   end
+
+  # A grouping review already named the timing it would create (rule 6), so
+  # that name is used. Every other timing keeps derivation's own rule, so an
+  # import names timings exactly as before.
+  defp timing_name_for(%{timing_name: name}, _pattern) when is_binary(name), do: name
+  defp timing_name_for(_target, pattern), do: RoutePatterns.next_timing_name(pattern.id)
 
   defp record_headsign(state, timing_id, headsign) do
     if MapSet.member?(state.created_timings, timing_id) do
@@ -1989,9 +2264,17 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   # --- audit -----------------------------------------------------------------
 
-  defp audit_build!({:import, _import_run_id}, _route, _before, _after, _summary), do: :ok
+  defp audit_build!({:import, _import_run_id}, _route, _before, _after, _summary, _grouped),
+    do: :ok
 
-  defp audit_build!({:editor, %AuditContext{} = audit}, route, before, after_totals, summary) do
+  defp audit_build!(
+         {:editor, %AuditContext{} = audit},
+         route,
+         before,
+         after_totals,
+         summary,
+         grouped
+       ) do
     if changed?(before, after_totals, summary) do
       attrs = %{
         before: totals(before),
@@ -1999,6 +2282,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         patterns_created: summary.patterns_created,
         timings_created: summary.timings_created
       }
+
+      # A grouped apply records the direction each trip had before the review
+      # wrote it, so the route's build history can answer what grouping changed.
+      attrs =
+        if grouped == [] do
+          attrs
+        else
+          Map.put(attrs, :grouped_trips, grouped)
+        end
 
       case Gtfs.record_change_in_transaction(
              %{audit | station_stop_id: nil},
