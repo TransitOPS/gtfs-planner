@@ -620,6 +620,52 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       assert schedule.summary.vehicles.count == summary.vehicles_after
     end
 
+    test "adds that would newly mix listed trips with frequency service are refused",
+         context do
+      scope = apply_case!(context)
+      saturday_only = %{monday: 0, tuesday: 0, wednesday: 0, thursday: 0, friday: 0, saturday: 1}
+      saturday = weekly_calendar!(context, "SAT-APPLY", "Apply Saturday", saturday_only)
+
+      frequency_service =
+        weekly_calendar!(context, "SATF-APPLY", "Apply Saturday frequency", saturday_only)
+
+      frequency_trip =
+        schedule_trip_fixture(
+          context.organization.id,
+          context.version.id,
+          scope.route_id,
+          scope.main,
+          %{trip_id: "R-APPLY-FREQ", service_id: frequency_service, start_time: "09:00:00"}
+        ).trip
+
+      frequency_fixture(context.organization.id, context.version.id, frequency_trip.trip_id, %{
+        start_time: "09:00:00",
+        end_time: "12:00:00",
+        headway_secs: 1200
+      })
+
+      saturday_scope = %{scope | service: saturday}
+      input = add_input("Central Station\tHospital\n08:00\t08:12\n")
+      review = prepare_review!(context, saturday_scope, input)
+
+      assert review.plan.counts.add == 1
+      counts_before = scoped_counts(context)
+
+      assert {:error, {:mixed_service, details}} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 scope_params(saturday_scope),
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+
+      # The seven Saturdays from 2026-01-10 to 2026-02-21 become mixed.
+      assert details == %{service_ids: ["SAT-APPLY", "SATF-APPLY"], date_count: 7}
+      assert scoped_counts(context) == counts_before
+      assert timing_logs(context) == []
+    end
+
     test "an add sharing a vector with changes uses the same new timing", context do
       scope = apply_case!(context)
 
@@ -1205,7 +1251,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
     }
   end
 
-  defp weekly_calendar!(context, service_id, name) do
+  defp weekly_calendar!(context, service_id, name, days \\ %{}) do
     attrs = %{
       service_id: service_id,
       name: name,
@@ -1221,6 +1267,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       end_date: ~D[2026-02-27]
     }
 
+    attrs = Map.merge(attrs, days)
     assert {:ok, _payload} = Gtfs.create_calendar(attrs, context.audit)
     service_id
   end

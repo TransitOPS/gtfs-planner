@@ -75,7 +75,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   re-checks the editor role like `RouteSchedulesLive.editor_access?/1`
   before calling `Gtfs.apply_timetable_paste/5`. `:stale_plan` keeps the
   input and offers Review again (which reloads the scope); `:busy` offers
-  Apply again; anything else failed offers Try again with a reference id;
+  Apply again; an R9 `{:mixed_service, details}` refusal shows Schedules'
+  refusal copy; anything else failed offers Try again with a reference id;
   a missing role shows the permission notice and writes nothing. Clicking
   Apply also marks the hidden `#paste-applying` flag, so a reconnect
   during the apply recovers through form recovery into the unknown
@@ -107,6 +108,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   alias GtfsPlanner.Gtfs.TimetablePaste
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
+  alias GtfsPlannerWeb.Gtfs.ScheduleComponents
   alias GtfsPlannerWeb.Gtfs.TimetablePasteComponents
   alias GtfsPlannerWeb.Gtfs.TimetablePasteReview
 
@@ -140,6 +142,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
      |> assign(:timing_note, nil)
      |> assign(:apply_notice, nil)
      |> assign(:failed_reference, nil)
+     |> assign(:refusal_message, nil)
      |> assign(:paste_rejoined, rejoined_mount?(socket))
      |> assign(:replace_confirm, false)
      |> assign(:discard_confirm, false)
@@ -708,6 +711,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
             :if={is_nil(setup_reason(@scope))}
             notice={@apply_notice}
             failed_reference={@failed_reference}
+            refusal_message={@refusal_message}
             scope={@scope}
             review={@review}
             version_id={@current_gtfs_version.id}
@@ -1674,6 +1678,13 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
         {:error, :busy} ->
           apply_outcome(socket, :busy, "paste-notice-busy")
+
+        # R9: the adds would mix listed trips and frequency service on a
+        # pattern; the notice uses the refusal copy Schedules shows.
+        {:error, {:mixed_service, _details} = reason} ->
+          socket
+          |> assign(:refusal_message, ScheduleComponents.error_message(reason))
+          |> apply_outcome(:mixed_service, "paste-notice-mixed-service")
 
         {:error, _reason} ->
           socket

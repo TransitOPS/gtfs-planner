@@ -2396,6 +2396,67 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       assert Repo.get_by(Trip, trip_id: "PASTE28-0-PASTE28_WKD-0830") == nil
     end
 
+    test "adds that would mix listed trips with frequency service show the refusal",
+         %{conn: conn, organization: organization, version: version} = context do
+      setup = apply_setup(context)
+
+      # Saturday frequency service already runs on the Main pattern, so listed
+      # Saturday trips would share its dates for the first time (R9).
+      saturday_only = %{monday: 0, tuesday: 0, wednesday: 0, thursday: 0, friday: 0, saturday: 1}
+
+      calendar_fixture(
+        organization.id,
+        version.id,
+        Map.put(saturday_only, :service_id, "PASTE28_SATF")
+      )
+
+      calendar_fixture(
+        organization.id,
+        version.id,
+        Map.put(saturday_only, :service_id, "PASTE28_SAT")
+      )
+
+      schedule_trip_fixture(organization.id, version.id, setup.route.route_id, setup.main, %{
+        service_id: "PASTE28_SATF",
+        trip_id: "PASTE28_FREQ",
+        start_time: "09:00:00"
+      })
+
+      frequency_fixture(organization.id, version.id, "PASTE28_FREQ", %{
+        start_time: "09:00:00",
+        end_time: "12:00:00",
+        headway_secs: 1200
+      })
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+
+      _html =
+        follow(
+          view,
+          paste_path(version, setup.route, %{
+            "service_id" => "PASTE28_SAT",
+            "direction" => "0",
+            "pattern" => setup.main.pattern.id
+          })
+        )
+
+      apply_read(view, apply_headers() <> "\n08:30\t08:35\t08:40")
+      assert has_element?(view, "#paste-apply", "Apply 1 change")
+
+      render_click(view, "paste_apply")
+      refute_redirected(view)
+
+      assert has_element?(view, "#paste-notice-mixed-service", "Nothing was applied.")
+
+      assert has_element?(
+               view,
+               "#paste-notice-mixed-service",
+               "PASTE28_SAT, PASTE28_SATF already run frequency service on this pattern."
+             )
+
+      assert service_trip_count(organization, version, "PASTE28_SAT") == 0
+    end
+
     test "a stale plan keeps the text and decisions and offers Review again",
          %{conn: conn, version: version} = context do
       setup = apply_setup(context)
