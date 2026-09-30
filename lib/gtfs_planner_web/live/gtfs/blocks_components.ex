@@ -33,6 +33,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     only: [drawer_footer: 1, drawer_scroll: 1, first_use: 1, message: 1]
 
   alias GtfsPlanner.Gtfs.Blocking.Checks
+  alias GtfsPlanner.Gtfs.Blocking.RiderOutcomes
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlannerWeb.Components.RouteIdentity
 
@@ -2905,10 +2906,22 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   end
 
   @doc """
-  Renders the gap drawer: the pair's times, the time available, the drive without
-  riders with its source, the wait behind it and whether an operator can change
-  there, then the rider note for a handoff a rider can make on foot, and any type
-  4/5 record for the pair.
+  Renders the connection drawer for one pair of trips: the connection's own title
+  and subtitle, its times and the handoff, the hints that follow from them, the
+  note its saved record earns, the table of what each trip planner will tell a
+  rider, and the pair's own driving-time and operator-change links.
+
+  It is a non-modal inspector: it opens beside the page rather than over it, so
+  the reader can keep the timeline behind it while they read the connection.
+
+  The title names the two routes the way the timeline's own badges do — through
+  the day's route map, never a stored route ID when a short name exists — and the
+  subtitle names the block, the two trips and the place the connection is decided
+  at, all of which `Blocking.Connections` already grouped.
+
+  The hints, the rider rows, the footnote and the refusal text are
+  `Blocking.RiderOutcomes`, so the drawer's claim about what a planner will do is
+  written once and the drawer and the refused save cannot disagree.
 
   The drive, the wait and the windows come from the block's own
   `Movements.build/3` gap and the `Relief.windows/3` of that gap, so the drawer
@@ -2940,27 +2953,50 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :day_label, :string, default: nil
   attr :block_id, :string, required: true
   attr :records, :list, required: true
+  attr :routes, :map, required: true
+  attr :setting, :atom, default: :none, values: [:none, :stay, :reboard, :conflict]
+  attr :place, :string, default: nil
+  attr :turnback?, :boolean, default: false
   attr :short?, :boolean, default: false
   attr :back_block, :string, default: nil
 
   def gap_drawer(assigns) do
+    connection = %{
+      from: assigns.from,
+      to: assigns.to,
+      gap: assigns.gap,
+      turnback?: assigns.turnback?
+    }
+
     assigns =
       assigns
+      |> assign(:connection, connection)
       |> assign(:text, gap_text(assigns.gap, assigns.from, assigns.to, assigns.movement))
-      |> assign(:title, gap_title(assigns.gap, assigns.movement, assigns.short?))
+      |> assign(
+        :title,
+        connection_title(assigns.routes, assigns.from, assigns.to, assigns.turnback?)
+      )
       |> assign(:note, gap_note(assigns.gap, assigns.movement))
       |> assign(:places, window_places(assigns.windows, assigns.from, assigns.to))
       |> assign(:pair, drive_pair(assigns.movement, assigns.from, assigns.to))
+      |> assign(:hints, RiderOutcomes.hints(connection))
+      |> assign(:rider_rows, RiderOutcomes.rows(connection, assigns.setting))
+      |> assign(:rider_footnote, RiderOutcomes.footnote())
+      |> assign(:record_note, record_note(assigns.records, assigns.to))
+      |> assign(:on_board, on_board_text(assigns.gap, assigns.movement))
 
     ~H"""
     <.drawer
       id="gap-drawer"
       chrome="planner"
+      modal={false}
       open={@open}
       title={@title}
-      class="max-w-[520px]"
+      class="max-w-[min(100vw,30rem)]"
     >
-      <:lede>Block {@block_id} · {@from.trip_id} → {@to.trip_id}{day_label(@day_label)}</:lede>
+      <:lede>
+        Block {@block_id} · trip {@from.trip_id} → {@to.trip_id} · {@place}{day_label(@day_label)}
+      </:lede>
 
       <.drawer_scroll>
         <%!-- A layover below the minimum is the block's own :short_layover finding,
@@ -2989,11 +3025,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           <.trip_field wide? label="Arrives">
             <strong>{clock(@from.last_arrival)}</strong> · {stop_name(@from.last_stop)}
           </.trip_field>
-          <.trip_field wide? label="Next trip departs">
+          <.trip_field wide? label="Departs">
             <strong>{clock(@to.first_departure)}</strong> · {stop_name(@to.first_stop)}
           </.trip_field>
-          <.trip_field wide? label="Time available">
-            <span id="gap-available">{available_text(@gap)}</span>
+          <.trip_field wide? label="On board">
+            <span id="gap-available">{@on_board}</span>
           </.trip_field>
           <.trip_field wide? label="Driving without riders">
             <span id="gap-drive">{drive_text(@movement, @gap)}</span>
@@ -3011,6 +3047,32 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             <span id="gap-operators">{operator_change_text(@relief_checked?, @places)}</span>
           </.trip_field>
         </dl>
+
+        <%!-- `RiderOutcomes` owns the order these arrive in — the route change, the
+        turnback, the wait, then the distance — so the list here is the same list
+        the rejected save explains itself with. --%>
+        <ul :if={@hints != []} id="gap-hints" class="grid gap-1.5">
+          <li
+            :for={hint <- @hints}
+            data-role="gap-hint"
+            data-hint={hint.kind}
+            class="flex gap-2 text-[13px] text-default"
+          >
+            <.icon name={hint_icon(hint.kind)} class="mt-0.5 size-4 shrink-0" />
+            <span class="min-w-0">{hint.text}</span>
+          </li>
+        </ul>
+
+        <.message
+          :if={@record_note}
+          id="gap-record-note"
+          data-role="gap-record"
+          data-quiet={to_string(!@record_note.quiet?)}
+          kind={if @record_note.quiet?, do: "info", else: "warning"}
+          title={@record_note.title}
+        >
+          {@record_note.body}
+        </.message>
 
         <p :if={rider_note?(@gap)} id="gap-rider-note" class="text-sm">
           Trip planners such as Google Maps may tell riders they can stay on board.
@@ -3046,48 +3108,52 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           never a change: one operator drives it.
         </p>
 
-        <.drawer_section id="gap-transfers" title={"Stay-on-board records · #{length(@records)}"}>
-          <div class="space-y-3">
-            <div
-              :for={entry <- @records}
-              data-role="gap-transfer"
-              data-transfer-type={entry.row.transfer_type}
-              class="border-l-4 border-subtle pl-3"
-            >
-              <div class="flex flex-wrap items-center gap-2">
-                <strong class="text-sm">{transfer_type_label(entry.row.transfer_type)}</strong>
-                <.finding_badge
-                  tone={transfer_state_tone(entry.state)}
-                  label={transfer_state_label(entry.state)}
-                />
-              </div>
-              <p class="text-sm">Trip {entry.row.from_trip_id} → {entry.row.to_trip_id}</p>
-              <p data-role="gap-transfer-state" class="text-[13px] text-muted">
-                {in_seat_state_text(entry.state)}
-              </p>
-            </div>
+        <.drawer_section id="gap-riders" title="What trip planners show riders">
+          <div class="max-w-full overflow-x-auto">
+            <table class="w-full border-collapse text-left text-[13px]">
+              <tbody>
+                <tr
+                  :for={row <- @rider_rows}
+                  data-role="gap-rider-row"
+                  data-app={row.app}
+                  class="border-t border-subtle align-top"
+                >
+                  <th
+                    scope="row"
+                    class="w-[8.5rem] py-2 pr-3 font-semibold text-default"
+                  >
+                    {row.app}
+                  </th>
+                  <td class="py-2">
+                    <span class="font-semibold text-strong">{row.title}</span>
+                    <br />
+                    <span class="text-muted">{row.detail}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-          <p :if={@records == []} class="text-sm text-muted">
-            No record for this pair. Whether riders can stay on board depends on the trip planner.
+          <p id="gap-rider-footnote" class="mt-2 text-[13px] text-muted">
+            {@rider_footnote}
           </p>
         </.drawer_section>
-
-        <div class="flex flex-wrap gap-2 border-t border-subtle pt-5">
-          <.button
-            :for={trip <- [@from, @to]}
-            type="button"
-            variant="secondary"
-            class="min-h-11"
-            data-role="gap-inspect"
-            phx-click="open_trip"
-            phx-value-trip={trip.trip_id}
-            phx-value-block={@back_block}
-          >
-            Inspect {trip.trip_id}
-          </.button>
-          <.back_to_block :if={@back_block} id="gap-back-to-block" block={@back_block} />
-        </div>
       </.drawer_scroll>
+
+      <.drawer_footer>
+        <.button
+          :for={trip <- [@from, @to]}
+          type="button"
+          variant="secondary"
+          class="min-h-11"
+          data-role="gap-inspect"
+          phx-click="open_trip"
+          phx-value-trip={trip.trip_id}
+          phx-value-block={@back_block}
+        >
+          Inspect {trip.trip_id}
+        </.button>
+        <.back_to_block :if={@back_block} id="gap-back-to-block" block={@back_block} />
+      </.drawer_footer>
     </.drawer>
     """
   end
@@ -4167,15 +4233,132 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       "Driving time is unknown#{qualifier}."
   end
 
-  # The gap drawer's title names what the gap is, then the message under it says
-  # what that means.
-  defp gap_title(%{gap_secs: secs}, _movement, _short?) when secs < 0,
-    do: "#{minutes(-secs)} overlap"
+  # The connection's own name, in the two forms a reader can act on: which route
+  # continues as which, or that one route's two directions meet here. A pair of
+  # the same route in the same direction simply continues.
+  defp connection_title(routes, from, to, turnback?) do
+    from_route = route_badge_name(routes, from.route_id)
+    to_route = route_badge_name(routes, to.route_id)
 
-  defp gap_title(_gap, %{feasible?: false}, _short?), do: "Can't reach the next trip"
-  defp gap_title(%{gap_secs: secs}, _movement, true), do: "Short layover · #{minutes(secs)}"
-  defp gap_title(%{handoff: {:moves, _meters}}, _movement, _short?), do: "Deadhead between trips"
-  defp gap_title(%{gap_secs: secs}, _movement, _short?), do: "#{minutes(secs)} between trips"
+    cond do
+      turnback? -> "Route #{from_route} turns back"
+      from.route_id == to.route_id -> "Route #{from_route} continues"
+      true -> "Route #{from_route} continues as Route #{to_route}"
+    end
+  end
+
+  # Each hint's mark, from the same vocabulary the rest of the page uses: a route
+  # change is an arrow, a turnback a U-turn, a wait a clock and a distance a bus.
+  defp hint_icon(:route_change), do: "hero-arrow-right"
+  defp hint_icon(:turnback), do: "hero-arrow-uturn-left"
+  defp hint_icon(:wait), do: "hero-clock"
+  defp hint_icon(:distance), do: "hero-truck"
+
+  # The time between the trips and the handoff it happens over, which is the one
+  # fact a rider feels. An empty move adds that the driving time is unknown,
+  # because that is what the version cannot say — a move whose drive time the day
+  # load derived keeps its own number in the row below.
+  defp on_board_text(%{handoff: handoff} = gap, movement) do
+    text = "#{available_text(gap)} · #{handoff_text(handoff)}"
+
+    # The prototype appends the unknown only to a gap whose vehicle drives empty:
+    # a handoff at one stop has no drive to be unsure about, and calling it
+    # unknown there reads as a missing fact rather than as "none needed".
+    if moves_empty?(handoff) and unknown_drive?(movement) do
+      text <> " · Driving time is unknown."
+    else
+      text
+    end
+  end
+
+  defp moves_empty?({:moves, _meters}), do: true
+  defp moves_empty?(_handoff), do: false
+
+  defp unknown_drive?(nil), do: true
+  defp unknown_drive?(%{drive_secs: secs}), do: not is_integer(secs)
+  defp unknown_drive?(_movement), do: false
+
+  defp handoff_text(:same_stop), do: "Same stop"
+  defp handoff_text(:same_station), do: "Another stop in the same station"
+
+  defp handoff_text({:nearby, meters}) when is_integer(meters),
+    do: "#{meters} m walk between stops"
+
+  defp handoff_text({:moves, meters}) when is_integer(meters),
+    do: "Vehicle moves empty #{meters} m"
+
+  defp handoff_text({:moves, _meters}), do: "Vehicle moves empty, distance unknown"
+
+  # The note a pair's saved record earns. Two records are one conflict to
+  # resolve, a stale or unconfirmed one explains itself in `RiderOutcomes`'
+  # words, and a record that matches the block earns only a quiet line naming it,
+  # because the rider table below already says what each app will do.
+  defp record_note([], _to), do: nil
+
+  defp record_note([_one, _two | _rest], _to) do
+    %{
+      title: "Two imported records disagree",
+      body:
+        "One says riders stay on board and one says they must re-board, so apps pick one " <>
+          "arbitrarily. Choose a setting to replace both with one record.",
+      quiet?: false
+    }
+  end
+
+  defp record_note([entry], to) do
+    case entry.state do
+      {:stale, {:not_next, _failures}} ->
+        %{
+          title: "Saved record needs review",
+          body:
+            RiderOutcomes.refusal_text(entry.state) <>
+              " Choose Not stated to remove it, or fix the blocks on the day type named below.",
+          quiet?: false
+        }
+
+      {:stale, :stops_changed} ->
+        %{
+          title: "Saved record has old stops",
+          body:
+            "It names #{stored_stop_name(entry.row, to)}, but trip #{to.trip_id} now starts at " <>
+              "#{stop_name(to.first_stop)}. Validators report this as an error and " <>
+              "OpenTripPlanner drops the record. Save to update its stops.",
+          quiet?: false
+        }
+
+      _state ->
+        case RiderOutcomes.refusal_text(entry.state) do
+          nil ->
+            %{
+              title: transfer_type_label(entry.row.transfer_type),
+              body: in_seat_state_text(:matches),
+              quiet?: true
+            }
+
+          body ->
+            %{
+              title: record_note_title(entry.state),
+              body: body
+            }
+        end
+    end
+  end
+
+  # The record's stored stop, named the way the stored record names it. The
+  # version's own stops are not loaded for this drawer, so the stored ID stands
+  # for a stop the day load did not describe — the same fallback the rest of
+  # this module uses for a stop it cannot name.
+  defp stored_stop_name(row, to) do
+    cond do
+      is_nil(row.to_stop_id) -> row.from_stop_id
+      is_nil(to.first_stop) -> row.to_stop_id
+      row.to_stop_id == to.first_stop.stop_id -> row.from_stop_id
+      true -> row.to_stop_id
+    end
+  end
+
+  defp record_note_title({_state, :unconfirmed}), do: "Saved record can't be confirmed"
+  defp record_note_title(_state), do: "Saved record needs review"
 
   # The message's tone follows the block's own verdict: an overlap and a drive the
   # vehicle cannot make in time are the errors the reader has to act on, a layover
