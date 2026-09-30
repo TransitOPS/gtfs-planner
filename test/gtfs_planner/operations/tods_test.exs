@@ -463,4 +463,42 @@ defmodule GtfsPlanner.Operations.TodsTest do
       assert ignored == ["notes", "depot"]
     end
   end
+
+  describe "run_events_spec/0" do
+    # Hand-written from the TODS `run_events.txt` column list. No production
+    # function computes an expected value here, so reordering the spec cannot
+    # make this pass.
+    @headers ~w(
+      service_id run_id event_sequence piece_id block_id job_type event_type
+      trip_id start_location start_time start_mid_trip end_location end_time
+      end_mid_trip
+    )
+
+    test "names the run_events.txt file" do
+      assert Tods.run_events_spec().filename == "run_events.txt"
+    end
+
+    test "carries the fourteen columns in header order" do
+      headers = Tods.run_events_spec().fields |> Enum.map(&elem(&1, 0))
+
+      # The ORDER is the claim: a consumer reads this file positionally, so a
+      # spec that listed the same fourteen columns in a different order would
+      # write a file every consumer misreads. Asserted as one list rather than
+      # as a set, because a set cannot tell a reordering from a match.
+      assert headers == @headers
+      assert length(headers) == 14
+    end
+
+    test "pairs every column with the field atom the exporter writes" do
+      for {header, atom} <- Tods.run_events_spec().fields do
+        # The spec is the one place the file's shape is written down, so the
+        # column name and the key the exporter supplies must not drift apart.
+        # This is the pattern every other `*_spec/0` follows, including
+        # `trips_supplement.txt`, where `TODS_trip_type` pairs with
+        # `:tods_trip_type`.
+        assert Atom.to_string(atom) == String.downcase(header),
+               "#{header} should pair with the downcased field atom, got #{inspect(atom)}"
+      end
+    end
+  end
 end

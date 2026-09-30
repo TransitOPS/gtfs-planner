@@ -15,12 +15,13 @@ defmodule GtfsPlanner.Operations.Tods do
   value, possibly `""` for a blank; an absent column is missing from the map, so
   the caller can apply the TODS absent/blank rules.
 
-  The `*_spec/0` functions are the export's column specs for the six files an
-  operations export may write. Four of them — the movement supplements
+  The `*_spec/0` functions are the export's column specs for the seven files an
+  operations export may write. Five of them — the movement supplements
   `calendar_dates_supplement.txt`, `routes_supplement.txt`, `trips_supplement.txt`
-  and `stop_times_supplement.txt` — hold the rows `GtfsPlanner.Gtfs.Blocking.TodsExport`
-  derives; their column names are that module's row keys, and this module is the
-  one place the file's shape is written down.
+  and `stop_times_supplement.txt`, and `run_events.txt` — hold the rows
+  `GtfsPlanner.Gtfs.Blocking.TodsExport` derives; their column names are that
+  module's row keys, and this module is the one place the file's shape is written
+  down.
   """
 
   alias GtfsPlanner.Gtfs.Import.{CsvParser, ParseError}
@@ -253,6 +254,42 @@ defmodule GtfsPlanner.Operations.Tods do
         {"departure_time", :departure_time},
         {"stop_id", :stop_id},
         {"stop_sequence", :stop_sequence}
+      ]
+    }
+  end
+
+  @doc """
+  Column spec for the exported `run_events.txt`.
+
+  One row per run event, the finest grain the export reaches: a run is cut into
+  pieces and a piece into events, so this file is what lets a consumer line an
+  event up against the block and the trip it falls in.
+
+  `event_sequence` orders the events within a piece and `piece_id` names the piece
+  itself, so a consumer can rebuild the run from the events without reading any
+  other file. The `start_*` and `end_*` triples mirror each other, and the
+  `*_mid_trip` flags say whether the matching endpoint falls partway along the
+  trip rather than at a stop.
+  """
+  @spec run_events_spec() :: %{filename: String.t(), fields: [{String.t(), atom()}]}
+  def run_events_spec do
+    %{
+      filename: "run_events.txt",
+      fields: [
+        {"service_id", :service_id},
+        {"run_id", :run_id},
+        {"event_sequence", :event_sequence},
+        {"piece_id", :piece_id},
+        {"block_id", :block_id},
+        {"job_type", :job_type},
+        {"event_type", :event_type},
+        {"trip_id", :trip_id},
+        {"start_location", :start_location},
+        {"start_time", :start_time},
+        {"start_mid_trip", :start_mid_trip},
+        {"end_location", :end_location},
+        {"end_time", :end_time},
+        {"end_mid_trip", :end_mid_trip}
       ]
     }
   end
