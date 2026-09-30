@@ -39,6 +39,11 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   - **R5 — scope.** Organization, version and actor come from the audit context
     only. A trip ID naming no trip of that version is `:not_found`, so a crafted
     event cannot write a foreign tenant's pair.
+  - **R6 — the bulk command.** `set_connections/3` applies the same rule, guard and
+    per-pair write to a reviewed list of at most 500 pairs in one transaction. A
+    pair that is `:not_found`, `:stale` or `{:refused, state}` is skipped with that
+    reason and the rest are committed together; every log of one call shares one
+    operation id, and no route-pair rule is stored.
 
   The write runs in this module's own three-attempt retry loop over the
   configured `ReviewedApplyTransaction` module, copied from `Transfers` and
@@ -56,6 +61,7 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   alias GtfsPlanner.Repo
 
   @write_attempts 3
+  @max_bulk_pairs 500
   @choices [:not_stated, :stay_on_board, :must_reboard]
   @in_seat_types [4, 5]
 
@@ -68,6 +74,22 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
           transfer_type: 4 | 5,
           updated_at: DateTime.t()
         }
+
+  @typedoc "The trip pair a connection is."
+  @type pair :: {from_trip_id :: String.t(), to_trip_id :: String.t()}
+
+  @typedoc "One reviewed entry of a bulk command."
+  @type entry :: %{pair: pair(), expected: [expected_row()]}
+
+  @typedoc "The result of one accepted bulk command."
+  @type bulk_result :: %{
+          saved: [pair()],
+          skipped: [%{pair: pair(), reason: skip_reason()}],
+          operation_id: Ecto.UUID.t() | nil
+        }
+
+  @typedoc "The rule that stopped one pair of a bulk command."
+  @type skip_reason :: :not_found | :stale | {:refused, Blocking.InSeat.state()}
 
   @typedoc "The result of one accepted choice."
   @type result :: %{
@@ -120,15 +142,60 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
     end
   end
 
+  @doc """
+  Writes one record per included pair of a reviewed group, in one transaction.
+
+  `entries` is the list of `%{pair: {from_trip_id, to_trip_id}, expected: [...]}` the
+  Set-all review left checked, `choice` the one setting they are all set to, and
+  `audit` the audit context naming the organization, version and actor (R5). More
+  than #{@max_bulk_pairs} entries, a malformed entry, a repeated pair or an unknown
+  setting is refused before a transaction opens.
+
+  Every pair is decided by the same rule, guard and per-pair write
+  `set_connection/5` uses, so one call cannot answer differently from a single save
+  (R1, R4, CR-2). A pair is skipped with its own reason and the rest are committed
+  together: `:not_found` for a trip this version does not hold, `:stale` for a
+  mismatched `expected`, and `{:refused, state}` for a pair the rule refuses under
+  the locks, carrying R1's own state (R6, AC-7). `:not_stated` is never refused.
+
+  `saved` names the written pairs in input order, `skipped` names every pair that
+  was not, and `operation_id` is the one id all of this call's `"transfer"` change
+  logs share, or `nil` when no pair changed anything (INV-5). No route-pair rule is
+  stored: the record is the pair's only record, as it is for a single save (R3). An
+  audit failure rolls the whole batch back, and serialization failures and
+  deadlocks retry up to three attempts before `{:error, :busy}` (R4).
+  """
+  @spec set_connections([entry()], choice(), AuditContext.t()) ::
+          {:ok, bulk_result()}
+          | {:error,
+             :invalid_input
+             | :invalid_choice
+             | :too_many
+             | :busy
+             | {:audit_failed, term()}
+             | Ecto.Changeset.t()}
+  def set_connections(entries, choice, %AuditContext{} = audit) do
+    with :ok <- validate_choice(choice),
+         {:ok, entries} <- validate_entries(entries) do
+      operation_id = Ecto.UUID.generate()
+
+      run_write(fn -> write_entries(entries, choice, audit, operation_id) end)
+    end
+  end
+
   # The whole command body, so the rollback decisions stay at one depth. R4's lock
   # order runs first (the rule under the block writers' locks, then the pair's rows),
-  # then the guard, then the write.
+  # then the guard, then the write. A refusal is this command's own rollback, so the
+  # locks are released with the rest of the transaction and nothing is written.
   defp write_connection({from_trip_id, to_trip_id} = pair, choice, expected, audit, operation_id) do
     endpoints = locked_endpoints!(audit, pair)
     rows = lock_pair_rows!(audit, from_trip_id, to_trip_id)
 
     if expected_matches?(rows, expected) do
-      write_pair!(choice, endpoints, rows, audit, operation_id)
+      case write_pair(choice, endpoints, rows, audit, operation_id) do
+        {:ok, result} -> result
+        {:error, reason} -> Repo.rollback(reason)
+      end
     else
       Repo.rollback(:stale)
     end
@@ -141,30 +208,176 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   # version does not hold comes back as a nil row, which is the same answer for
   # a pair.
   defp locked_endpoints!(audit, pair) do
-    %{from: from, to: to, check: check} =
-      Map.fetch!(Blocking.lock_and_check_connections!(audit, [pair]), pair)
-
-    if is_nil(from) or is_nil(to) do
-      Repo.rollback(:not_found)
-    else
-      %{from: from, to: to, check: check}
-    end
+    audit
+    |> Blocking.lock_and_check_connections!([pair])
+    |> Map.fetch!(pair)
+    |> found_endpoints!()
   end
+
+  defp found_endpoints!(%{from: from, to: to}) when is_nil(from) or is_nil(to),
+    do: Repo.rollback(:not_found)
+
+  defp found_endpoints!(%{from: _, to: _} = endpoints), do: endpoints
 
   # R3: "the connection's record" is every type 4/5 row naming the pair, whatever
   # its stops. Locked in id order, the last lock the write takes (R4, INV-1).
   defp lock_pair_rows!(audit, from_trip_id, to_trip_id) do
+    audit
+    |> lock_pairs_rows!([{from_trip_id, to_trip_id}])
+    |> Map.get({from_trip_id, to_trip_id}, [])
+  end
+
+  # The bulk command's one row lock: every listed pair's rows in a single query, in
+  # the same id order the single write locks them in, grouped by pair for the
+  # per-pair write. A from/to combination the command did not list is locked too,
+  # because the query carries the two id lists rather than the pair list; that is
+  # more of R4's one lock order, never a different one.
+  defp lock_pairs_rows!(audit, pairs) do
+    from_trip_ids = pairs |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+    to_trip_ids = pairs |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+
     from(t in Transfer,
       where:
         t.organization_id == ^audit.organization_id and
           t.gtfs_version_id == ^audit.gtfs_version_id and
-          t.transfer_type in ^@in_seat_types and t.from_trip_id == ^from_trip_id and
-          t.to_trip_id == ^to_trip_id,
+          t.transfer_type in ^@in_seat_types and t.from_trip_id in ^from_trip_ids and
+          t.to_trip_id in ^to_trip_ids,
       order_by: [asc: t.id],
       lock: "FOR UPDATE"
     )
     |> Repo.all()
+    |> Enum.group_by(&{&1.from_trip_id, &1.to_trip_id})
   end
+
+  # -- R6, the bulk command --------------------------------------------------
+
+  # Every lock R4 orders is taken once for the whole command, then the pairs are
+  # written in the reviewer's input order. The result names what changed, never
+  # what was merely attempted.
+  defp write_entries(entries, choice, audit, operation_id) do
+    pairs = Enum.map(entries, & &1.pair)
+    checks = Blocking.lock_and_check_connections!(audit, pairs)
+    rows_by_pair = lock_pairs_rows!(audit, pairs)
+
+    {written, skipped} =
+      Enum.reduce(entries, {[], []}, fn entry, {written, skipped} ->
+        case write_entry(entry, choice, checks, rows_by_pair, audit, operation_id) do
+          {:saved, result} -> {[{entry.pair, result} | written], skipped}
+          {:skipped, reason} -> {written, [%{pair: entry.pair, reason: reason} | skipped]}
+        end
+      end)
+
+    %{
+      saved: written |> Enum.reverse() |> Enum.map(fn {pair, _result} -> pair end),
+      skipped: Enum.reverse(skipped),
+      operation_id: written_operation_id(written, operation_id)
+    }
+  end
+
+  # A trip this version does not hold is R5's `:not_found`, decided from the one
+  # rule call's answer rather than by a second query.
+  defp write_entry(entry, choice, checks, rows_by_pair, audit, operation_id) do
+    case Map.get(checks, entry.pair) do
+      %{from: from, to: to, check: check} when not is_nil(from) and not is_nil(to) ->
+        write_guarded_entry(
+          choice,
+          %{from: from, to: to, check: check},
+          entry,
+          rows_by_pair,
+          audit,
+          operation_id
+        )
+
+      _missing ->
+        {:skipped, :not_found}
+    end
+  end
+
+  # R4: the same guard, over the rows this command locked for the pair. A pair the
+  # guard stops is skipped and the other pairs still commit (R6).
+  defp write_guarded_entry(choice, endpoints, entry, rows_by_pair, audit, operation_id) do
+    rows = Map.get(rows_by_pair, entry.pair, [])
+
+    if expected_matches?(rows, entry.expected) do
+      write_pair_in_batch(choice, endpoints, rows, audit, operation_id)
+    else
+      {:skipped, :stale}
+    end
+  end
+
+  # The one per-pair write, shared with the single save. The only difference
+  # between the two callers is what a refusal means: here it skips this pair and
+  # leaves the other pairs' rows exactly as they were, because a refusal is a
+  # returned value and not this command's rollback. An audit failure and a row the
+  # database would not take still roll the whole batch back, because neither is a
+  # pair-level reason R6 names.
+  defp write_pair_in_batch(choice, endpoints, rows, audit, operation_id) do
+    case write_pair(choice, endpoints, rows, audit, operation_id) do
+      {:ok, result} ->
+        {:saved, result}
+
+      {:error, {:refused, _} = reason} ->
+        {:skipped, reason}
+
+      {:error, {:audit_failed, _} = reason} ->
+        Repo.rollback(reason)
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        Repo.rollback(changeset)
+    end
+  end
+
+  # One operation id for the command, reported only when a pair actually changed
+  # something — the same rule the single save reports it under (INV-5).
+  defp written_operation_id(written, operation_id) do
+    if Enum.any?(written, fn {_pair, result} -> result.operation_id end) do
+      operation_id
+    end
+  end
+
+  # The bound, the shapes and the uniqueness, all before a transaction opens.
+  defp validate_entries(entries) when is_list(entries) do
+    with :ok <- check_bulk_size(entries),
+         :ok <- check_entry_shapes(entries),
+         :ok <- check_unique_pairs(entries) do
+      {:ok, entries}
+    end
+  end
+
+  defp validate_entries(_entries), do: {:error, :invalid_input}
+
+  defp check_bulk_size(entries) when length(entries) > @max_bulk_pairs, do: {:error, :too_many}
+  defp check_bulk_size(_entries), do: :ok
+
+  defp check_entry_shapes(entries) do
+    if Enum.all?(entries, &bulk_entry?/1), do: :ok, else: {:error, :invalid_input}
+  end
+
+  defp check_unique_pairs(entries) do
+    pairs = Enum.map(entries, & &1.pair)
+
+    if Enum.uniq(pairs) == pairs do
+      :ok
+    else
+      {:error, :invalid_input}
+    end
+  end
+
+  defp bulk_entry?(%{pair: {from_trip_id, to_trip_id}, expected: expected})
+       when is_binary(from_trip_id) and is_binary(to_trip_id) and is_list(expected),
+       do: Enum.all?(expected, &expected_row?/1)
+
+  defp bulk_entry?(_entry), do: false
+
+  defp expected_row?(%{id: id, transfer_type: type, updated_at: %DateTime{}})
+       when is_binary(id),
+       do: type in @in_seat_types
+
+  defp expected_row?(%{id: id, transfer_type: type, updated_at: updated_at})
+       when is_binary(id) and is_binary(updated_at),
+       do: type in @in_seat_types
+
+  defp expected_row?(_row), do: false
 
   # R4: the guard compares the locked rows with the list the editor saw, so a
   # session that saved in between ends `:stale` instead of overwriting (AC-4).
@@ -199,10 +412,13 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
 
   defp asked_entry(_entry), do: nil
 
-  # The per-pair write, shared with the bulk command: it decides the choice
-  # against the locked rule and rows, and answers the row the command left plus
-  # the operation id its logs carry, or nil when nothing changed.
-  defp write_pair!(choice, endpoints, rows, audit, operation_id) do
+  # The per-pair write, shared by the single and the bulk command: it decides the
+  # choice against the locked rule and rows, and answers the row the command left
+  # plus the operation id its logs carry, or nil when nothing changed. A refusal, a
+  # rejected changeset and an audit failure are returned rather than raised, because
+  # what a refusal means is the caller's decision: `set_connection/5` rolls its whole
+  # command back, and the bulk command skips this pair and commits the rest (R6).
+  defp write_pair(choice, endpoints, rows, audit, operation_id) do
     case choice do
       :not_stated -> clear_pair_rows(rows, audit, operation_id)
       recorded -> write_record(recorded, endpoints, rows, audit, operation_id)
@@ -212,42 +428,45 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   # R3: "Not stated" deletes every row of the pair, whatever its stops, and is
   # never refused by R1.
   defp clear_pair_rows([], _audit, _operation_id),
-    do: %{choice: :not_stated, transfer: nil, operation_id: nil}
+    do: {:ok, %{choice: :not_stated, transfer: nil, operation_id: nil}}
 
   defp clear_pair_rows(rows, audit, operation_id) do
-    delete_audited_transfers!(rows, audit, operation_id, Enum.map(rows, & &1.id))
-
-    %{choice: :not_stated, transfer: nil, operation_id: operation_id}
+    with :ok <- delete_audited_transfers!(rows, audit, operation_id, Enum.map(rows, & &1.id)) do
+      {:ok, %{choice: :not_stated, transfer: nil, operation_id: operation_id}}
+    end
   end
 
   defp write_record(choice, endpoints, rows, audit, operation_id) do
     with :ok <- checked(endpoints.check),
-         {:ok, attrs} <- record_attrs(choice, endpoints) do
-      kept = first_row(rows)
-      replaced = replaced_rows(rows)
-      affected_ids = affected_ids(rows, kept)
+         {:ok, attrs} <- record_attrs(choice, endpoints),
+         {:ok, transfer, saved?} <- keep_one_row!(attrs, rows, audit, operation_id) do
+      # A choice that changed nothing — a matching record already carrying the
+      # saved type and the endpoint stops, with no other row of the pair — wrote
+      # no log, so it reports no operation id (AC-3).
+      {:ok,
+       %{
+         choice: choice,
+         transfer: transfer,
+         operation_id: if(saved? or replaced_rows(rows) != [], do: operation_id, else: nil)
+       }}
+    end
+  end
 
-      # The pair's other rows go first (R3). The six-field key is unique per
-      # version and does not include the type, so saving the kept row's new stops
-      # before these rows are gone would collide with one of them. They are locked
-      # already, so deleting them here and updating the kept row below stays inside
-      # R4's one lock order.
-      delete_audited_transfers!(replaced, audit, operation_id, affected_ids)
+  # R3: the pair holds one row afterwards — its first row by id is kept and the
+  # others go.
+  #
+  # The siblings are deleted first: the six-field key is unique per version and
+  # does not include the type, so saving the kept row's new stops before these rows
+  # are gone would collide with one of them. Every check that can refuse or reject
+  # the pair has already answered by this point, so the only failure left after the
+  # deletes is one the caller rolls its whole command back for, and no command ever
+  # commits half a pair.
+  defp keep_one_row!(attrs, rows, audit, operation_id) do
+    kept = first_row(rows)
+    affected_ids = affected_ids(rows, kept)
 
-      with {:ok, transfer, saved?} <- save_record(attrs, kept, affected_ids, audit, operation_id) do
-        # A choice that changed nothing — a matching record already carrying the
-        # saved type and the endpoint stops, with no other row of the pair — wrote
-        # no log, so it reports no operation id (AC-3).
-        %{
-          choice: choice,
-          transfer: transfer,
-          operation_id: if(saved? or replaced != [], do: operation_id, else: nil)
-        }
-      end
-    else
-      # A refusal is this command's own rollback, so the locks are released with the
-      # rest of the transaction and nothing is written.
-      {:error, reason} -> Repo.rollback(reason)
+    with :ok <- delete_audited_transfers!(replaced_rows(rows), audit, operation_id, affected_ids) do
+      save_record(attrs, kept, affected_ids, audit, operation_id)
     end
   end
 
@@ -305,7 +524,7 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   defp save_record(attrs, kept, affected_ids, audit, operation_id) do
     case Transfer.in_seat_changeset(kept, attrs) do
       %Ecto.Changeset{valid?: false} = changeset ->
-        Repo.rollback(changeset)
+        {:error, changeset}
 
       %Ecto.Changeset{changes: changes} when changes == %{} ->
         {:ok, kept, false}
@@ -315,42 +534,32 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
     end
   end
 
-  defp insert_created_transfer(
-         %Ecto.Changeset{valid?: false} = changeset,
-         _affected,
-         _audit,
-         _id
-       ),
-       do: Repo.rollback(changeset)
-
   defp insert_created_transfer(changeset, affected_ids, audit, operation_id) do
     case Repo.insert(changeset) do
       {:ok, transfer} ->
-        audit_created_transfer(transfer, audit, operation_id, [transfer.id | affected_ids])
-        {:ok, transfer, true}
+        case audit_created_transfer(transfer, audit, operation_id, [transfer.id | affected_ids]) do
+          :ok -> {:ok, transfer, true}
+          {:error, _reason} = error -> error
+        end
 
       {:error, changeset} ->
-        Repo.rollback(changeset)
+        {:error, changeset}
     end
   end
 
   defp persist_updated_transfer(changeset, transfer, affected_ids, audit, operation_id) do
     before_snapshot = Transfer.audit_snapshot(transfer)
+    ids = Enum.uniq([transfer.id | affected_ids])
 
     case Repo.update(changeset) do
       {:ok, updated} ->
-        audit_updated_transfer(
-          updated,
-          before_snapshot,
-          audit,
-          operation_id,
-          Enum.uniq([updated.id | affected_ids])
-        )
-
-        {:ok, updated, true}
+        case audit_updated_transfer(updated, before_snapshot, audit, operation_id, ids) do
+          :ok -> {:ok, updated, true}
+          {:error, _reason} = error -> error
+        end
 
       {:error, changeset} ->
-        Repo.rollback(changeset)
+        {:error, changeset}
     end
   end
 
@@ -363,19 +572,31 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
   defp delete_audited_transfers!(rows, audit, operation_id, affected_ids) do
     deleted_ids = Enum.map(rows, & &1.id)
 
-    Repo.delete_all(
-      from(t in Transfer,
-        where:
-          t.organization_id == ^audit.organization_id and
-            t.gtfs_version_id == ^audit.gtfs_version_id and t.id in ^deleted_ids
-      )
-    )
+    with {_count, _returned} <-
+           Repo.delete_all(
+             from(t in Transfer,
+               where:
+                 t.organization_id == ^audit.organization_id and
+                   t.gtfs_version_id == ^audit.gtfs_version_id and t.id in ^deleted_ids
+             )
+           ) do
+      audit_deletions(rows, affected_ids, operation_id, audit)
+    end
+  end
 
-    Enum.each(rows, fn row ->
-      audit_deleted_transfer(row, Transfer.audit_snapshot(row), affected_ids, operation_id, audit)
+  defp audit_deletions(rows, affected_ids, operation_id, audit) do
+    Enum.reduce_while(rows, :ok, fn row, :ok ->
+      case audit_deleted_transfer(
+             row,
+             Transfer.audit_snapshot(row),
+             affected_ids,
+             operation_id,
+             audit
+           ) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
     end)
-
-    :ok
   end
 
   # Every row the command affected: the kept row (or the inserted one, when there
@@ -414,12 +635,12 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
     })
   end
 
-  # An audit failure rolls the whole command back, so a record is never written
-  # unaudited (INV-5).
+  # An audit failure is the caller's rollback: no record is ever written unaudited
+  # (INV-5), and the caller decides whether that is one pair or a whole command.
   defp record_transfer_change(audit, transfer, action, attrs) do
     case Gtfs.record_change_in_transaction(audit, :transfer, transfer, action, attrs) do
       {:ok, _log} -> :ok
-      {:error, changeset} -> Repo.rollback({:audit_failed, changeset})
+      {:error, changeset} -> {:error, {:audit_failed, changeset}}
     end
   end
 

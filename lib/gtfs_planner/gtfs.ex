@@ -6315,6 +6315,40 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Writes one in-seat record per included pair of a reviewed group through
+  `GtfsPlanner.Gtfs.InSeatTransfers.set_connections/3`.
+
+  `entries` is the list of `%{pair: {from_trip_id, to_trip_id}, expected: [...]}` the
+  Set-all review left checked and `choice` the one setting they are all set to (R6).
+  More than 500 entries, a malformed entry, a repeated pair or an unknown setting is
+  refused before a transaction opens. The organization, version and actor come from
+  the audit context alone (R5).
+
+  Every pair goes through the same rule, guard and per-pair write a single save uses,
+  so the two cannot answer differently (R1, R4, CR-2). A pair is skipped with its own
+  reason — `:not_found`, `:stale` or `{:refused, state}` — and the rest commit
+  together; `:not_stated` is never refused. All of one call's `"transfer"` change logs
+  share its `operation_id`, which is `nil` when nothing changed, and an audit failure
+  rolls the batch back (INV-5). No route-pair rule is stored (R3).
+  """
+  @spec set_in_seat_connections(
+          [GtfsPlanner.Gtfs.InSeatTransfers.entry()],
+          GtfsPlanner.Gtfs.InSeatTransfers.choice(),
+          AuditContext.t()
+        ) ::
+          {:ok, GtfsPlanner.Gtfs.InSeatTransfers.bulk_result()}
+          | {:error,
+             :invalid_input
+             | :invalid_choice
+             | :too_many
+             | :busy
+             | {:audit_failed, term()}
+             | Ecto.Changeset.t()}
+  def set_in_seat_connections(entries, choice, %AuditContext{} = audit) do
+    InSeatTransfers.set_connections(entries, choice, audit)
+  end
+
+  @doc """
   Returns every Block rules setting for an organization's GTFS version.
 
   A version with no stored setting returns the defaults (5 minutes minimum layover,
