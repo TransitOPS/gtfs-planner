@@ -3188,6 +3188,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     default: nil,
     doc: "the service day the page is showing; the preview never names it as “also”"
 
+  attr :connection_settings, :map,
+    default: %{},
+    doc:
+      "the per-connection setting entries keyed by the two trip ids joined by a bar, the same map the timeline gaps read"
+
   def block_drawer(assigns) do
     assigns =
       assigns
@@ -3201,6 +3206,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           assigns.routes,
           assigns.max_piece_minutes
         )
+        |> Enum.map(&block_day_row(&1, assigns.connection_settings))
       )
       |> assign(:estimated?, estimated_leg?(assigns.movements))
       |> assign(
@@ -3375,19 +3381,26 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                   <td class="px-3 py-2 align-top font-[650] text-strong">{row.activity}</td>
                   <td class={["px-3 py-2 align-top", row.error? && "font-semibold text-error-fg"]}>
                     <%= if gap = row.gap do %>
-                      <button
-                        type="button"
-                        data-role="block-gap"
-                        data-kind={row.kind}
-                        data-minutes={gap_minutes(gap)}
-                        phx-click="open_gap"
-                        phx-value-from={gap.from_id}
-                        phx-value-to={gap.to_id}
-                        phx-value-block={@summary.block_id}
-                        class={[link_class(), "text-left", row.error? && "text-error-fg"]}
-                      >
-                        {row.detail}
-                      </button>
+                      <%!-- The gap's own text and the connection's setting sit in one
+                    wrapping row, so a long label drops to its own line under the
+                    link rather than beside it, and the two keep a readable gap
+                    whichever way the drawer's column falls. --%>
+                      <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <button
+                          type="button"
+                          data-role="block-gap"
+                          data-kind={row.kind}
+                          data-minutes={gap_minutes(gap)}
+                          phx-click="open_gap"
+                          phx-value-from={gap.from_id}
+                          phx-value-to={gap.to_id}
+                          phx-value-block={@summary.block_id}
+                          class={[link_class(), "text-left", row.error? && "text-error-fg"]}
+                        >
+                          {row.detail}
+                        </button>
+                        <.block_gap_note :if={row.connection} connection={row.connection} />
+                      </div>
                     <% else %>
                       <span>{row.detail}</span>
                       <button
@@ -3765,6 +3778,101 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # from the same `Relief.window`s the timeline reads — the later trip's sequence
   # index is the window's own `gap_index`, as `plotted/1` uses it. Nothing here
   # re-derives a movement or a window.
+  # The connection a gap note names in words. A gap is one connection, and a
+  # connection whose movement the day load split into a drive and a wait is two
+  # rows of the vehicle's day, so the note rides the row that is about the
+  # connection — the wait between the two trips, or the overlap that leaves no
+  # wait at all — and not the drive, which is about moving the vehicle. A row
+  # with no gap, and a connection the day's derivation holds nothing for, name
+  # no setting: undecided rather than an error.
+  defp block_day_row(row, settings) do
+    case {row.kind, row.gap} do
+      {kind, gap} when kind in [:wait, :overlap] and not is_nil(gap) ->
+        Map.put(row, :connection, block_gap_connection(settings, gap))
+
+      _other ->
+        row
+    end
+  end
+
+  defp block_gap_connection(settings, gap) do
+    case Map.get(settings, "#{gap.from_id}|#{gap.to_id}") do
+      %{setting: setting, review?: review?} -> block_gap_note(setting, review?)
+      _undecided -> block_gap_note(:none, false)
+    end
+  end
+
+  @doc """
+  The connection's setting in words, beside a block drawer's gap note.
+
+  The timeline's `gap_marker/2` decides the setting, the icon and the words, so
+  one derivation names a connection in both places. A decided connection is a
+  badge in the same ground the timeline's chips and the key carry; a pair nobody
+  has decided says so in muted words rather than showing an empty badge, because
+  the text is what the reader is here for.
+  """
+  attr :connection, :map, required: true, doc: "a `block_gap_note/2` result"
+
+  def block_gap_note(assigns) do
+    ~H"""
+    <span
+      data-role="block-gap-setting"
+      data-setting={@connection.setting}
+      class={[
+        "inline-flex items-center gap-1 rounded-badge border px-1.5 py-0.5 align-middle text-[13px] font-semibold",
+        @connection.class
+      ]}
+    >
+      <.icon :if={@connection.icon} name={@connection.icon} class="size-3.5" />
+      {@connection.label}
+    </span>
+    """
+  end
+
+  # The same words and grounds the timeline's gap chips carry, so a connection
+  # reads the same in the chart, in the key and in the drawer's list. An undecided
+  # pair is muted words with no ground, so the drawer's list is not striped with
+  # badges nobody decided.
+  defp block_gap_note(:none, _review?) do
+    %{setting: "none", class: "border-transparent text-muted", icon: nil, label: "Not stated"}
+  end
+
+  defp block_gap_note(_setting, true) do
+    %{
+      setting: "review",
+      class: "border-warning-line bg-warning-bg text-warning-fg",
+      icon: "hero-exclamation-triangle-mini",
+      label: "Needs review"
+    }
+  end
+
+  defp block_gap_note(:stay, false) do
+    %{
+      setting: "stay",
+      class: "border-subtle bg-soft text-cyan-800",
+      icon: "hero-link-mini",
+      label: "Riders stay on board"
+    }
+  end
+
+  defp block_gap_note(:reboard, false) do
+    %{
+      setting: "reboard",
+      class: "border-navy-700 bg-navy-700 text-white",
+      icon: "hero-arrow-right-start-on-rectangle-mini",
+      label: "Riders must re-board"
+    }
+  end
+
+  defp block_gap_note(:conflict, false) do
+    %{
+      setting: "review",
+      class: "border-warning-line bg-warning-bg text-warning-fg",
+      icon: "hero-exclamation-triangle-mini",
+      label: "Needs review"
+    }
+  end
+
   defp vehicle_day_rows(block, movements, routes, max_piece_minutes) do
     sequence = Checks.sequence(block.trips)
     sequenced = MapSet.new(sequence, & &1.id)

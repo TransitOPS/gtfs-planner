@@ -4227,6 +4227,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   route_settings={@route_settings}
                   day_types={@day_types}
                   selected_day_type={@day_type}
+                  connection_settings={@connection_settings}
                 />
               <% end %>
 
