@@ -152,6 +152,8 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExportTest do
     end
 
     test "dates a run signing on before midnight a day earlier on the previous service" do
+      result = rows(roster())
+
       before_midnight =
         result.rows
         |> Enum.filter(&(&1.run_id == "7002"))
@@ -166,7 +168,12 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExportTest do
     test "leaves out the stale slot, the errored run and the line with no operator" do
       result = rows(roster())
 
-      assert Enum.map(result.rows, & &1.run_id) |> Enum.uniq() == ["1001", "7001", "7002"]
+      assert Enum.map(result.rows, & &1.run_id) |> Enum.uniq() |> Enum.sort() == [
+               "1001",
+               "7001",
+               "7002"
+             ]
+
       assert %{stale_slots: 1, left_out_slots: 1, unassigned_lines: 1} = result
     end
 
@@ -193,20 +200,31 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExportTest do
     end
 
     test "sorts by date, then service ID, run ID and employee ID" do
-      # Two lines work Monday, which the writers would refuse, but sorting is a
-      # property of the result rather than of the writes. The higher employee ID
-      # is on the lower run ID, so a sort that reached employee ID first would
-      # put 1021 ahead of 1001.
-      monday = [
-        line(12, [held(1, "weekday", @run_1001)], operator("E4300", "Ana Ruiz")),
-        line(13, [held(1, "weekday", @run_1021)], operator("E4100", "Bo Silva"))
+      # Two lines work the same Monday and Tuesday, which the writers would
+      # refuse, but sorting is a property of the result rather than of the
+      # writes. The higher employee ID is on the lower run ID, so a sort that
+      # reached employee ID first would put 1021 ahead of 1001. Monday is 10-05
+      # (10-12 is the holiday) and Tuesday is 10-06 and 10-13.
+      monday_tuesday = [
+        line(
+          12,
+          [held(1, "weekday", @run_1001), held(2, "weekday", @run_1001)],
+          operator("E4300", "Ana Ruiz")
+        ),
+        line(
+          13,
+          [held(1, "weekday", @run_1021), held(2, "weekday", @run_1021)],
+          operator("E4100", "Bo Silva")
+        )
       ]
 
-      result = rows(roster(monday), nil)
+      result = rows(roster(monday_tuesday), nil)
 
-      assert Enum.filter(result.rows, &(Date.day_of_week(&1.date) == 1)) == [
+      assert result.rows == [
                row(~D[2026-10-05], nil, "1001", "E4300", "Ana Ruiz"),
                row(~D[2026-10-05], nil, "1021", "E4100", "Bo Silva"),
+               row(~D[2026-10-06], nil, "1001", "E4300", "Ana Ruiz"),
+               row(~D[2026-10-06], nil, "1021", "E4100", "Bo Silva"),
                row(~D[2026-10-13], nil, "1001", "E4300", "Ana Ruiz"),
                row(~D[2026-10-13], nil, "1021", "E4100", "Bo Silva")
              ]
