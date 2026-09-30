@@ -43,7 +43,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   @focus_inset "focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
 
   # The grid state a section carries before any action: no reviewed preview, no
-  # just-changed trips and no refused cell. `display_sections/1` puts this on every
+  # just-changed trips and no refused cell. `display_sections/2` puts this on every
   # section; the fallback keeps a directly rendered section working.
   @empty_grid %{preview: %{}, just_changed: MapSet.new(), cell_error: nil}
 
@@ -185,6 +185,8 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   attr :patterns, :list, required: true
   attr :filters, :map, required: true
   attr :row_count, :integer, required: true
+  attr :custom_count, :integer, required: true
+  attr :custom_filter?, :boolean, required: true
   attr :calendar_label, :string, required: true
   attr :direction_label, :string, required: true
 
@@ -221,6 +223,24 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
           />
         </.form>
       </div>
+
+      <button
+        :if={@custom_count > 0 or @custom_filter?}
+        id="custom-times-chip"
+        type="button"
+        aria-pressed={to_string(@custom_filter?)}
+        phx-click="filters"
+        phx-value-custom={if(@custom_filter?, do: "0", else: "1")}
+        class={[
+          "inline-flex min-h-11 items-center gap-1.5 rounded-control border px-3 text-sm font-[650]",
+          @custom_filter? && "border-action bg-selection text-strong",
+          !@custom_filter? && "border-control bg-white text-strong hover:bg-canvas",
+          focus_inset()
+        ]}
+      >
+        <.icon :if={@custom_filter?} name="hero-check-circle" class="size-4 text-action" />
+        Custom times <span class="tabular-nums font-normal text-muted">{@custom_count}</span>
+      </button>
 
       <p id="schedules-view-counts" role="status" class="ml-auto text-sm text-muted">
         <span class="font-semibold tabular-nums text-strong">{trip_count(@row_count)}</span>
@@ -1915,6 +1935,44 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   defp direction_phrase("To " <> destination), do: "to #{destination}"
   defp direction_phrase(label), do: label
+
+  # --- filtered-empty state --------------------------------------------------
+
+  @doc """
+  Renders the filtered-empty state of AC-22: the Custom times filter is on and no
+  row in this view has custom times. Show all trips clears the parameter, which
+  brings the view's trips back.
+
+  It is deliberately not the first-use card: the view has trips, the filter is
+  what emptied it, and the copy and action say so.
+  """
+  attr :calendar_label, :string, required: true
+  attr :direction_label, :string, required: true
+
+  def custom_empty(assigns) do
+    ~H"""
+    <div class="mt-8">
+      <.first_use
+        id="custom-empty"
+        title={"No trips with custom times on #{@calendar_label} · #{@direction_label}"}
+      >
+        Every trip in this view follows a timing. The Custom times filter is on.
+        <:action>
+          <.button
+            id="clear-custom"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="filters"
+            phx-value-custom="0"
+          >
+            Show all trips
+          </.button>
+        </:action>
+      </.first_use>
+    </div>
+    """
+  end
 
   # --- sections --------------------------------------------------------------------
 
