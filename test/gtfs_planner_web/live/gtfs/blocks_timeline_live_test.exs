@@ -278,7 +278,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
       # The strip is the whole day type's, so a filter cannot move it.
       assert strip_value(view, "blocks") == "2"
       assert strip_value(view, "unassigned") == "0"
-      assert has_element?(view, "#blocks-summary-note", "Whole service day")
+      assert has_element?(view, "#blocks-summary-note", "Whole day type")
     end
 
     test "problems only keeps error and warning blocks", %{version: version} = context do
@@ -370,8 +370,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
       view |> element("#panel-pool") |> render_click()
 
       assert_patch(view, base <> "?panel=pool&scale=zoom")
-      assert has_element?(view, "#panel-pool[aria-selected='true']")
-      assert has_element?(view, "#panel-blocks[aria-selected='false']")
+      assert has_element?(view, "#panel-pool[aria-pressed='true']")
+      assert has_element?(view, "#panel-blocks[aria-pressed='false']")
     end
 
     test "the timeline keeps the pager out of a day with no blocks",
@@ -385,7 +385,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
       assert has_element?(
                view,
                "#blocks-workspace-guidance",
-               "Select trips and place them on a new block."
+               "Start by selecting trips and assigning them to a new block."
              )
 
       refute has_element?(view, "#blocks-pager")

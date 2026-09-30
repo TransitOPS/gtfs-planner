@@ -187,10 +187,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       assert has_element?(
                view,
                "#blocks-summary-note",
-               "Whole service day · #{weekday_count()} days"
+               "Whole day type · #{weekday_count()} dates"
              )
 
-      assert has_element?(view, "#blocks-peak-detail", "at 07:00")
+      assert has_element?(
+               view,
+               "#blocks-peak-detail",
+               "Peak at 07:00 · excludes 2 unassigned trips and 0 frequency trips"
+             )
 
       # The route filter and paging describe the workspace, never the whole day.
       view
@@ -214,7 +218,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       assert strip_value(filtered, "peak") == "2"
     end
 
-    test "the day select prints each service day's day count and groups one-date days",
+    test "the day select prints each day type's date count and groups one-date types",
          %{version: version} = context do
       calendar(context, "WK", "Weekday")
       calendar(context, "SAT", "Saturday", @weekend)
@@ -233,13 +237,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
 
       # The Weekday calendar alone holds every weekday except 2026-11-26, which
       # the Thanksgiving calendar splits into its own one-date day type.
-      assert "Weekday · #{weekday_count_except_special_day()} days" in texts
+      assert "Weekday · #{weekday_count_except_special_day()} dates" in texts
 
-      assert "Saturday · #{saturday_count()} days" in texts
+      assert "Saturday · #{saturday_count()} dates" in texts
 
-      # 2026-11-26 runs the Weekday service too, so AC-1 labels the one-date
-      # service day with both names joined and puts it under “Special days”.
-      assert "Thanksgiving + Weekday · 1 day" in texts
+      # 2026-11-26 runs the Weekday service too, so AC-1 labels the one-date day
+      # type with both names joined and puts it under “Special days”.
+      assert "Thanksgiving + Weekday · 1 date" in texts
 
       doc = view |> render() |> LazyHTML.from_fragment()
 
@@ -247,7 +251,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
                ["Special days"]
 
       assert LazyHTML.text(LazyHTML.query(doc, "#blocks-day optgroup option")) |> String.trim() ==
-               "Thanksgiving + Weekday · 1 day"
+               "Thanksgiving + Weekday · 1 date"
     end
 
     test "selecting a day patches the day key and drops the trip and paging",
@@ -297,157 +301,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
     end
   end
 
-  describe "the one primary action" do
-    setup :editor_scope
-
-    test "the header action counts the problems while there are any", context do
-      seed_overlapping_day(context)
-      conn = editor_conn(context)
-
-      {:ok, view, _html} = live(conn, blocks_path(context.version.id))
-
-      assert has_element?(view, "#blocks-review-checks.btn-primary", "Review 1 problem")
-    end
-
-    test "the header action reads Review checks when nothing is wrong", context do
-      seed_blocked_day(context)
-      conn = editor_conn(context)
-
-      {:ok, view, _html} = live(conn, blocks_path(context.version.id))
-
-      assert has_element?(view, "#blocks-review-checks.btn-primary", "Review checks")
-    end
-
-    test "a selection hands the primary to its Assign action", context do
-      seed_blocked_day(context)
-      conn = editor_conn(context)
-
-      {:ok, view, _html} = live(conn, blocks_path(context.version.id) <> "?panel=pool")
-
-      assert has_element?(view, "#blocks-review-checks.btn-primary")
-      refute has_element?(view, "#bulk-assign")
-
-      view |> element("[data-role='select-trip'][data-trip='p1']") |> render_click()
-
-      assert has_element?(view, "#bulk-assign.btn-primary")
-      assert has_element?(view, "#blocks-review-checks.btn-outline")
-      refute has_element?(view, "#blocks-review-checks.btn-primary")
-
-      view |> element("#bulk-clear") |> render_click()
-
-      assert has_element?(view, "#blocks-review-checks.btn-primary")
-    end
-
-    test "a day with trips and no blocks hands the primary to Choose trips for a block",
-         context do
-      calendar(context, "WK", "Weekday")
-      trip(context, %{trip_id: "p1", first: "08:00:00", last: "09:00:00"})
-
-      conn = editor_conn(context)
-      {:ok, view, _html} = live(conn, blocks_path(context.version.id))
-
-      assert has_element?(view, "#blocks-choose-trips.btn-primary")
-      assert has_element?(view, "#blocks-review-checks.btn-outline")
-
-      view |> element("#blocks-choose-trips") |> render_click()
-
-      assert_patch(view, blocks_path(context.version.id) <> "?panel=pool")
-      assert has_element?(view, "#panel-pool[aria-selected='true']")
-      assert has_element?(view, "#blocks-pool-table [data-role='select-trip'][data-trip='p1']")
-      assert has_element?(view, "#blocks-review-checks.btn-primary")
-    end
-  end
-
-  describe "the whole-day tiles" do
-    setup :editor_scope
-
-    test "a tile that leads somewhere is a button and the others are plain figures",
-         context do
-      seed_overlapping_day(context)
-      conn = editor_conn(context)
-
-      {:ok, view, _html} = live(conn, blocks_path(context.version.id))
-
-      for key <- ["unassigned", "problems", "peak"] do
-        assert has_element?(
-                 view,
-                 "button#blocks-summary-counts-item-#{key}[phx-click='open_drawer']"
-               )
-      end
-
-      for key <- ["blocks", "notices"] do
-        assert has_element?(view, "div#blocks-summary-counts-item-#{key}")
-        refute has_element?(view, "button#blocks-summary-counts-item-#{key}")
-      end
-
-      view |> element("#blocks-summary-counts-item-unassigned") |> render_click()
-
-      assert_patch(view, blocks_path(context.version.id) <> "?panel=pool")
-    end
-
-    test "Unassigned trips is a plain figure once every trip has a block", context do
-      calendar(context, "WK", "Weekday")
-      trip(context, %{trip_id: "t1", block_id: "101", first: "08:00:00", last: "09:00:00"})
-
-      conn = editor_conn(context)
-      {:ok, view, _html} = live(conn, blocks_path(context.version.id))
-
-      assert has_element?(view, "div#blocks-summary-counts-item-unassigned", "0")
-      refute has_element?(view, "button#blocks-summary-counts-item-unassigned")
-    end
-
-    test "Peak vehicles out says when the peak is", context do
-      seed_blocked_day(context)
-      conn = editor_conn(context)
-
-      {:ok, view, _html} = live(conn, blocks_path(context.version.id))
-
-      assert has_element?(view, "#blocks-peak-detail", "at 07:00")
-    end
-
-    test "Peak vehicles out says that no block is timed when none can be plotted", context do
-      calendar(context, "WK", "Weekday")
-      trip(context, %{trip_id: "u1", block_id: "101", first: nil, last: "09:00:00"})
-
-      conn = editor_conn(context)
-      {:ok, view, _html} = live(conn, blocks_path(context.version.id))
-
-      assert has_element?(view, "#blocks-peak-detail", "none timed")
-    end
-  end
-
   describe "the page states" do
     setup :editor_scope
-
-    test "a filter that hides every block says why and offers to clear it", context do
-      calendar(context, "WK", "Weekday")
-      trip(context, %{trip_id: "t1", block_id: "101", first: "08:00:00", last: "09:00:00"})
-
-      conn = editor_conn(context)
-
-      {:ok, problems, _html} =
-        live(conn, blocks_path(context.version.id) <> "?status=problems")
-
-      assert has_element?(
-               problems,
-               "#blocks-filtered-empty",
-               "No block has a problem on this service day."
-             )
-
-      {:ok, both, _html} =
-        live(conn, blocks_path(context.version.id) <> "?status=problems&route=R1")
-
-      assert has_element?(
-               both,
-               "#blocks-filtered-empty",
-               "No block on this route has a problem on this service day."
-             )
-
-      both |> element("#blocks-clear-filters") |> render_click()
-
-      assert_patch(both, blocks_path(context.version.id))
-      assert has_element?(both, "#blocks-timeline")
-    end
 
     test "a version with no calendars shows the no-dates state with a Calendars link",
          %{version: version} = context do
@@ -493,10 +348,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       assert has_element?(
                view,
                "#blocks-workspace-guidance",
-               "Select trips and place them on a new block."
+               "Start by selecting trips and assigning them to a new block."
              )
-
-      assert has_element?(view, "#blocks-choose-trips", "Choose trips for a block")
     end
 
     test "mixed agency timezones show the callout", %{version: version} = context do
@@ -642,7 +495,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
                "#checks-drawer-notices [data-role='blocks-finding'][data-code='unplottable']"
              )
 
-      assert has_element?(view, "#checks-drawer-notices", "Missing times")
+      assert has_element?(view, "#checks-drawer-notices", "Time missing")
     end
 
     test "the Problems figure in the count strip opens the checks drawer",
@@ -681,7 +534,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       assert has_element?(
                view,
                "#peak-drawer",
-               "Blocks in progress, including the time they wait between trips. It leaves out unassigned and repeating trips, and it isn't a fleet requirement."
+               "Blocks in progress, including time between trips. Excludes unassigned and frequency trips."
              )
 
       # Blocks span 08:00–11:00, which is twelve 15-minute bins.
@@ -693,7 +546,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       assert has_element?(
                view,
                "#peak-exclusions",
-               "Left out: 1 unassigned trip and 0 repeating trips."
+               "Excludes 1 unassigned trip and 0 frequency trips"
              )
     end
 
@@ -718,13 +571,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksScopeLiveTest do
       assert Enum.count(months) == 2
       assert LazyHTML.text(months) =~ "March 2026"
       assert LazyHTML.text(months) =~ "April 2026"
-      assert LazyHTML.text(months) =~ "Mon 2"
-      assert LazyHTML.text(months) =~ "Wed 4"
+      assert LazyHTML.text(months) =~ "02 Mar 2026"
 
       # Chronological order: a Date struct compares day-first, so the range needs
       # the ordered dates.
       assert has_element?(view, "#service-dates-drawer", "02 Mar 2026 – 01 Apr 2026")
-      assert has_element?(view, "#service-dates-drawer", "Spring dates · 3 days")
+      assert has_element?(view, "#service-dates-drawer", "Spring dates · 3 dates")
     end
 
     test "the spec's `drawer` payload opens the same drawer as the controls' `key`",

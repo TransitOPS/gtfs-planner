@@ -423,7 +423,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBulkLiveTest do
       bulk_assign(view)
 
       assert has_element?(view, "#bulk-assign-dialog[data-open='true']")
-      assert has_element?(view, "#assign-form", "3 trips · applies on #{weekday_dates()} days")
+      assert has_element?(view, "#assign-form", "3 trips · #{weekday_dates()} affected dates")
 
       submit_bulk(view, "new")
 
@@ -504,7 +504,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBulkLiveTest do
       assert has_element?(
                view,
                "#bulk-ineligible",
-               "No trips will change until every selected trip can be assigned."
+               "No trips will be changed until the selection is eligible."
              )
 
       assert has_element?(

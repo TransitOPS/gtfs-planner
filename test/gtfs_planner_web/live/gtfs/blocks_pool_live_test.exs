@@ -174,7 +174,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
 
       {:ok, view, _html} = live(conn, base <> "?panel=pool")
 
-      assert has_element?(view, "#panel-pool", ~r/Unassigned trips\s+150\b/)
+      assert has_element?(view, "#panel-pool", "Unassigned · 150")
       assert element_count(view, "#blocks-pool-table tr") == @page_size
 
       page_one = pool_trip_ids(view)
@@ -223,7 +223,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
       assert has_element?(
                view,
                "#blocks-pool-table a[href='/gtfs/#{version.id}/routes/R1/schedules?service_id=WK']",
-               "Fix times in Schedules"
+               "Open in Schedules"
              )
     end
 
@@ -326,7 +326,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
       conn = editor_conn(context)
       {:ok, view, _html} = live(conn, blocks_path(version.id) <> "?panel=pool")
 
-      assert has_element?(view, "#blocks-pool-empty", "Every trip has a block")
+      assert has_element?(view, "#blocks-pool-empty", "All trips have a block")
       refute has_element?(view, "#blocks-pool-filtered-empty")
     end
 
@@ -349,7 +349,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
       {:ok, view, _html} = live(conn, base <> "?panel=pool")
 
       # The Weekday day type is the default (more dates), so the pool starts on it.
-      assert has_element?(view, "#panel-pool", ~r/Unassigned trips\s+2\b/)
+      assert has_element?(view, "#panel-pool", "Unassigned · 2")
       assert pool_trip_ids(view) == ["wk_pool_a", "wk_pool_b"]
 
       saturday = day_key(view, "Saturday")
@@ -360,7 +360,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
       assert_patch(view, base <> "?day=#{saturday}&panel=pool")
 
       # The pool is re-streamed, not reused: the new day's own rows and count.
-      assert has_element?(view, "#panel-pool", ~r/Unassigned trips\s+1\b/)
+      assert has_element?(view, "#panel-pool", "Unassigned · 1")
       assert pool_trip_ids(view) == ["sat_pool"]
     end
 
@@ -375,7 +375,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
       assert has_element?(
                view,
                "#blocks-workspace-guidance",
-               "Start by selecting trips and placing them on a new block."
+               "Start by selecting trips and assigning them to a new block."
              )
 
       assert pool_trip_ids(view) == ["only_pool"]
@@ -501,7 +501,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
       assert has_element?(
                view,
                "#blocks-untimed a[href='/gtfs/#{version.id}/routes/R1/schedules?service_id=WK']",
-               "Fix times in Schedules"
+               "Open in Schedules"
              )
 
       refute has_element?(
