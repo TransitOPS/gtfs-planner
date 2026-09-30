@@ -3,14 +3,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   The compare page shell and its pattern slots (spec 19, `AC-13`, `AC-14`,
   `AC-16`): the route header, the title row with its view toggle and calendar
   select, the loading skeleton, the unavailable state, and the A/B slot cards
-  with the swap between them.
+  with the swap between them. The summary card adds the difference list and the
+  metric strip (`AC-7`, `AC-9`, `AC-18`); the `#compare-stops` and `#compare-map`
+  containers stay empty for the later steps that fill them.
 
-  The ready state leaves the `#compare-summary`, `#compare-stops` and
-  `#compare-map` containers empty for the later steps that fill them, and owns
-  the `#compare-workspace` grid they sit in. Every state decision stays in
-  `RoutePatternCompareLive`; these components present it. They reuse
-  `RouteWorkspace.route_header/1`, `PlannerComponents.message/1` and `<.button>`
-  and add no parallel header, callout, button or dialog (`CR-1`).
+  The ready state owns the `#compare-workspace` grid the containers sit in.
+  Every state decision stays in `RoutePatternCompareLive`; these components
+  present it. They reuse `RouteWorkspace.route_header/1`,
+  `PlannerComponents.message/1` and `<.button>` and add no parallel header,
+  callout, button or dialog (`CR-1`).
+
+  The difference sentences are rendered from `Alignment.differences/2`'s detail
+  (`INV-5`): the components format the read's values and recompute nothing. The
+  item buttons carry the `data-diff-*` attributes the workspace hook reads and
+  post no events (`INV-4`).
 
   A slot card is a box with a coloured left rule, so it rounds only its right
   side (`rounded-r-card`, `CR-3`): A's rule is navy, B's is cyan. The card's
@@ -237,7 +243,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
         class="mt-6 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(340px,400px)]"
       >
         <div class="grid min-w-0 gap-6">
-          <section id="compare-summary" aria-label="What’s different"></section>
+          <section
+            id="compare-summary"
+            aria-labelledby="summary-title"
+            class="rounded-card border border-subtle bg-white"
+          >
+            <.summary comparison={@comparison} />
+          </section>
           <section id="compare-stops" aria-label="Stop by stop"></section>
         </div>
         <aside
@@ -382,6 +394,604 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   end
 
   def relation(assigns), do: ~H""
+
+  # The summary card (`AC-7`, `AC-9`, `AC-18`): the stop-count line, the numbered
+  # difference list, the smaller-timing note and the metric strip (end to end,
+  # trips and departures by hour). With B absent it renders the "Suggested
+  # comparisons" links instead (`AC-15`). The item buttons carry `data-diff-*`
+  # for the workspace hook and post no events (`INV-4`).
+  attr :comparison, :map, required: true
+
+  def summary(%{comparison: %{b: nil}} = assigns) do
+    assigns = assign(assigns, :calendar_name, calendar_name(assigns.comparison))
+
+    ~H"""
+    <div id="summary-suggestions" class="px-5 py-5">
+      <h3 id="summary-title" class="font-sans text-base font-bold">Suggested comparisons</h3>
+      <p class="mt-1 text-sm text-default">
+        Other patterns in the same direction as
+        <.series_chip letter="A" />, most used on {@calendar_name} first.
+      </p>
+      <ul class="mt-3 grid gap-2">
+        <li :for={suggestion <- @comparison.suggestions}>
+          <.link
+            id={"summary-suggestion-" <> suggestion.route_pattern_id}
+            patch={suggestion_path(@comparison, suggestion)}
+            class="flex min-h-14 w-full items-center gap-3 rounded-control border border-subtle px-4 py-2 text-left hover:border-control hover:bg-canvas"
+          >
+            <span class="min-w-0 flex-1">
+              <span class="block text-sm font-[650] text-strong">{suggestion.name}</span>
+              <span class="block text-[13px] text-muted">
+                {suggestion_meta(@comparison, suggestion, @calendar_name)}
+              </span>
+            </span>
+            <span class="shrink-0 text-sm font-[650] text-action">Compare</span>
+          </.link>
+        </li>
+      </ul>
+    </div>
+    """
+  end
+
+  def summary(assigns) do
+    comparison = assigns.comparison
+    alignment = comparison.alignment
+    counts = alignment.counts
+
+    assigns =
+      assigns
+      |> assign(:alignment, alignment)
+      |> assign(:counts, counts)
+      |> assign(:items, if(counts.shared == 0, do: [], else: alignment.differences.items))
+      |> assign(:smaller_timing, alignment.differences.smaller_timing)
+      |> assign(:calendar_name, calendar_name(comparison))
+      |> assign(:hour_max, hour_max(comparison))
+      |> assign(:timed?, timed?(comparison))
+
+    ~H"""
+    <div id="summary-differences" class="px-5 pb-4 pt-5">
+      <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <h3 id="summary-title" class="font-sans text-base font-bold">What’s different</h3>
+        <p
+          id="summary-counts"
+          class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-default"
+        >
+          <span class="flex items-center gap-1">
+            Stops:<.sentence_part :for={part <- count_parts(@comparison)} part={part} />
+          </span>
+        </p>
+      </div>
+
+      <ol :if={@items != []} class="mt-3 grid gap-1">
+        <li :for={{item, index} <- Enum.with_index(@items)}>
+          <button
+            type="button"
+            id={"summary-diff-#{index + 1}"}
+            data-diff-index={index}
+            data-diff-rows={Enum.join(item.rows, ",")}
+            data-diff-stops={Enum.join(difference_stops(item, @comparison), ",")}
+            aria-pressed="false"
+            class="group flex min-h-11 w-full items-start gap-3 rounded-control px-2 py-2 text-left hover:bg-canvas aria-pressed:bg-selection"
+          >
+            <span class="mt-px inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-inverse text-[12px] font-bold text-white group-aria-pressed:bg-action">
+              {index + 1}
+            </span>
+            <span class="min-w-0 flex-1 text-sm leading-relaxed text-default">
+              <.sentence_part :for={part <- sentence_parts(item, @comparison)} part={part} />
+            </span>
+            <span class="mt-0.5 hidden shrink-0 text-[13px] font-[650] text-action sm:inline">
+              Show
+            </span>
+          </button>
+        </li>
+      </ol>
+
+      <p
+        :if={@items == [] and @counts.shared > 0}
+        class="mt-3 flex items-center gap-2 text-sm text-default"
+      >
+        <.icon name="hero-check" class="size-4 text-success-fg" />
+        {if @timed?,
+          do: "No differences in stops or running times.",
+          else: "No differences in stops."}
+      </p>
+
+      <p
+        :if={@smaller_timing > 0}
+        id="summary-smaller-timing"
+        class="mt-1 px-2 text-[13px] text-muted"
+      >
+        {plural(@smaller_timing, "smaller timing difference")}
+        {if @smaller_timing == 1, do: "is", else: "are"} in the stop list.
+      </p>
+    </div>
+
+    <dl class="grid gap-px border-t border-subtle bg-subtle sm:grid-cols-[1fr_1fr_1.4fr]">
+      <div class="bg-canvas px-5 py-3">
+        <dt class="text-[13px] font-[650] text-muted">End to end (min:sec)</dt>
+        <dd id="summary-end" class="mt-1 grid gap-0.5 text-sm text-strong">
+          <span class="flex items-center gap-2">
+            <.series_chip letter="A" />
+            <span
+              id="summary-end-a"
+              class={["tabular-nums", is_nil(@alignment.end_a) && "text-muted"]}
+            >
+              {end_value(@alignment.end_a)}
+            </span>
+          </span>
+          <span class="flex items-center gap-2">
+            <.series_chip letter="B" />
+            <span
+              id="summary-end-b"
+              class={["tabular-nums", is_nil(@alignment.end_b) && "text-muted"]}
+            >
+              {end_value(@alignment.end_b)}
+            </span>
+            <span
+              :if={is_integer(@alignment.end_change)}
+              id="summary-end-change"
+              class="text-[13px] font-[650] text-muted"
+            >
+              {change_label(@alignment)}
+            </span>
+          </span>
+        </dd>
+      </div>
+
+      <div class="bg-canvas px-5 py-3">
+        <dt class="text-[13px] font-[650] text-muted">Trips on {@calendar_name}</dt>
+        <dd id="summary-trips" class="mt-1 grid gap-0.5 text-sm text-strong">
+          <span class="flex items-center gap-2">
+            <.series_chip letter="A" />
+            <span id="summary-trips-a" class="tabular-nums">{@comparison.a.usage.total}</span>
+          </span>
+          <span class="flex items-center gap-2">
+            <.series_chip letter="B" />
+            <span id="summary-trips-b" class="tabular-nums">{@comparison.b.usage.total}</span>
+          </span>
+        </dd>
+      </div>
+
+      <div class="bg-canvas px-5 py-3">
+        <dt class="text-[13px] font-[650] text-muted">Departures by hour, 05:00 to midnight</dt>
+        <dd class="mt-1.5 grid gap-1.5">
+          <.hour_bars letter="A" hours={@comparison.a.usage.hours} max={@hour_max} />
+          <.hour_bars letter="B" hours={@comparison.b.usage.hours} max={@hour_max} />
+        </dd>
+      </div>
+    </dl>
+    """
+  end
+
+  # The difference sentence is a list of text, bold name, series chip and count
+  # parts so the chips sit inside the copy; every part is escaped unless it is
+  # this module's own markup.
+  attr :part, :any, required: true
+
+  defp sentence_part(%{part: {:text, text}} = assigns) do
+    assigns = assign(assigns, :text, text)
+    ~H"{@text}"
+  end
+
+  defp sentence_part(%{part: {:bold, text}} = assigns) do
+    assigns = assign(assigns, :text, text)
+    ~H"<b>{@text}</b>"
+  end
+
+  defp sentence_part(%{part: {:count, count}} = assigns) do
+    assigns = assign(assigns, :count, count)
+    ~H|<span class="font-[650] tabular-nums text-strong">{@count}</span>|
+  end
+
+  defp sentence_part(%{part: {:chip, letter}} = assigns) do
+    assigns = assign(assigns, :letter, letter)
+    ~H"<.series_chip letter={@letter} />"
+  end
+
+  # The stop-count line: "12 in common · 1 only in A · 2 only in B · 4 in a
+  # different order", with a zero count dropped and the separators spaced like
+  # the reference's flex row (the reference's counts line).
+  defp count_parts(comparison) do
+    %{shared: shared, a_only: a_only, b_only: b_only, moved: moved} = comparison.alignment.counts
+
+    [
+      [{:text, " "}, {:count, shared}, {:text, " in common"}],
+      a_only > 0 && [{:count, a_only}, {:text, " only in "}, {:chip, "A"}],
+      b_only > 0 && [{:count, b_only}, {:text, " only in "}, {:chip, "B"}],
+      moved > 0 && [{:count, moved}, {:text, " in a different order"}]
+    ]
+    |> Enum.reject(&(&1 == false))
+    |> Enum.intersperse([{:text, " · "}])
+    |> List.flatten()
+  end
+
+  # The sentence templates follow the reference engine's `differences()` wording;
+  # `Alignment.differences/2` supplies only the detail (`INV-5`).
+  defp sentence_parts(%{kind: :stops, detail: detail}, comparison) do
+    stop_parts(detail, comparison) ++ segment_parts(detail.segment)
+  end
+
+  defp sentence_parts(%{kind: :moved, detail: %{count: 1}} = item, comparison) do
+    {a_row, b_row} = moved_pair(item, comparison)
+
+    [
+      {:chip, "B"},
+      {:text, " serves "},
+      {:bold, stop_name(comparison, a_row.stop_id)},
+      {:text,
+       " #{if b_row.b_pos < a_row.a_pos, do: "earlier", else: "later"} in the trip: stop "},
+      {:text, Integer.to_string(b_row.b_pos)},
+      {:text, " of "},
+      {:text, Integer.to_string(length(comparison.b.stops))},
+      {:text, ", not stop "},
+      {:text, Integer.to_string(a_row.a_pos)},
+      {:text, " of "},
+      {:text, Integer.to_string(length(comparison.a.stops))},
+      {:text, "."}
+    ]
+  end
+
+  defp sentence_parts(%{kind: :moved, detail: %{count: count}} = item, comparison) do
+    {a_row, b_row} = moved_pair(item, comparison)
+
+    [
+      {:text, "#{count} stops are served in a different order, such as "},
+      {:bold, stop_name(comparison, a_row.stop_id)},
+      {:text, ": stop "},
+      {:text, Integer.to_string(b_row.b_pos)},
+      {:text, " in "},
+      {:chip, "B"},
+      {:text, ", stop "},
+      {:text, Integer.to_string(a_row.a_pos)},
+      {:text, " in "},
+      {:chip, "A"},
+      {:text, "."}
+    ]
+  end
+
+  defp sentence_parts(%{kind: :boarding, rows: [index], detail: detail}, comparison) do
+    stop_id = comparison.alignment.rows |> Enum.at(index) |> Map.fetch!(:stop_id)
+
+    [
+      {:text, "At "},
+      {:bold, stop_name(comparison, stop_id)},
+      {:text, ", "},
+      {:chip, "B"},
+      {:text, " " <> boarding_label(detail.b) <> "; "},
+      {:chip, "A"},
+      {:text, " " <> boarding_label(detail.a) <> "."}
+    ]
+  end
+
+  defp sentence_parts(%{kind: :time, detail: %{segment: segment}}, comparison) do
+    [
+      {:text, "From "},
+      {:bold, stop_name(comparison, row_stop(comparison, segment.from))},
+      {:text, " to "},
+      {:bold, stop_name(comparison, row_stop(comparison, segment.to))},
+      {:text, ", "},
+      {:chip, "B"},
+      {:text, " allows "},
+      {:text, format_words(segment.diff)},
+      {:text, if(segment.diff > 0, do: " more", else: " less")},
+      {:text, " ("},
+      {:text, format_duration(segment.b_secs)},
+      {:text, " against "},
+      {:text, format_duration(segment.a_secs)},
+      {:text, ")."}
+    ]
+  end
+
+  defp stop_parts(%{before: nil, after: nil}, _comparison),
+    do: [{:text, "These patterns share no stops."}]
+
+  defp stop_parts(%{before: nil, after: after_, a_only: a_only, b_only: b_only}, comparison),
+    do: start_parts(after_, a_only, b_only, comparison)
+
+  defp stop_parts(%{before: before, after: nil, a_only: a_only, b_only: b_only}, comparison),
+    do: end_parts(before, a_only, b_only, comparison)
+
+  defp stop_parts(%{before: before, after: after_} = detail, comparison) do
+    if detail.a_only != [] and detail.b_only != [] do
+      [
+        {:text, "Between "},
+        {:bold, stop_name(comparison, before)},
+        {:text, " and "},
+        {:bold, stop_name(comparison, after_)},
+        {:text, ", "},
+        {:chip, "B"},
+        {:text, " serves "},
+        {:text, list_names(comparison, detail.b_only)},
+        {:text, " instead of "},
+        {:text, list_names(comparison, detail.a_only)},
+        {:text, "."}
+      ]
+    else
+      {verb, ids} =
+        if detail.b_only != [], do: {"adds", detail.b_only}, else: {"skips", detail.a_only}
+
+      [
+        {:chip, "B"},
+        {:text, " #{verb} "},
+        {:text, list_names(comparison, ids)},
+        {:text, " between "},
+        {:bold, stop_name(comparison, before)},
+        {:text, " and "},
+        {:bold, stop_name(comparison, after_)},
+        {:text, "."}
+      ]
+    end
+  end
+
+  defp start_parts(after_, [], b_only, comparison) do
+    [
+      {:chip, "B"},
+      {:text, " starts "},
+      {:text, Integer.to_string(length(b_only))},
+      {:text, plural_suffix(b_only)},
+      {:text, " earlier, at "},
+      {:bold, stop_name(comparison, hd(b_only))},
+      {:text, ", and joins "},
+      {:chip, "A"},
+      {:text, " at "},
+      {:bold, stop_name(comparison, after_)},
+      {:text, "."}
+    ]
+  end
+
+  defp start_parts(after_, a_only, [], comparison) do
+    [
+      {:chip, "B"},
+      {:text, " starts at "},
+      {:bold, stop_name(comparison, after_)},
+      {:text, ". "},
+      {:chip, "A"},
+      {:text, " starts "},
+      {:text, Integer.to_string(length(a_only))},
+      {:text, plural_suffix(a_only)},
+      {:text, " earlier, at "},
+      {:bold, stop_name(comparison, hd(a_only))},
+      {:text, "."}
+    ]
+  end
+
+  defp start_parts(after_, a_only, b_only, comparison) do
+    [
+      {:text, "They start at different stops: "},
+      {:chip, "A"},
+      {:text, " at "},
+      {:bold, stop_name(comparison, hd(a_only))},
+      {:text, ", "},
+      {:chip, "B"},
+      {:text, " at "},
+      {:bold, stop_name(comparison, hd(b_only))},
+      {:text, ". Both reach "},
+      {:bold, stop_name(comparison, after_)},
+      {:text, "."}
+    ]
+  end
+
+  defp end_parts(before, a_only, [], comparison) do
+    [
+      {:chip, "B"},
+      {:text, " ends at "},
+      {:bold, stop_name(comparison, before)},
+      {:text, ". "},
+      {:chip, "A"},
+      {:text, " continues "},
+      {:text, Integer.to_string(length(a_only))},
+      {:text, " more "},
+      {:text, if(length(a_only) == 1, do: "stop", else: "stops")},
+      {:text, " to "},
+      {:bold, stop_name(comparison, List.last(a_only))},
+      {:text, "."}
+    ]
+  end
+
+  defp end_parts(before, [], b_only, comparison) do
+    [
+      {:chip, "B"},
+      {:text, " continues past "},
+      {:bold, stop_name(comparison, before)},
+      {:text, " to "},
+      {:text, list_names(comparison, b_only)},
+      {:text, "."}
+    ]
+  end
+
+  defp end_parts(before, a_only, b_only, comparison) do
+    [
+      {:text, "After "},
+      {:bold, stop_name(comparison, before)},
+      {:text, " they end at different stops: "},
+      {:chip, "A"},
+      {:text, " at "},
+      {:bold, stop_name(comparison, List.last(a_only))},
+      {:text, ", "},
+      {:chip, "B"},
+      {:text, " at "},
+      {:bold, stop_name(comparison, List.last(b_only))},
+      {:text, "."}
+    ]
+  end
+
+  defp segment_parts(nil), do: []
+  defp segment_parts(%{diff: nil}), do: []
+  defp segment_parts(%{diff: 0}), do: [{:text, " The stretch takes the same time in both."}]
+
+  defp segment_parts(%{diff: diff, a_secs: a_secs, b_secs: b_secs}) do
+    [
+      {:text, " That stretch takes "},
+      {:chip, "B"},
+      {:text, " " <> format_words(diff) <> if(diff > 0, do: " longer", else: " less") <> " ("},
+      {:text, format_duration(b_secs)},
+      {:text, " against "},
+      {:text, format_duration(a_secs)},
+      {:text, ")."}
+    ]
+  end
+
+  defp moved_pair(item, comparison) do
+    rows = comparison.alignment.rows
+    a_index = Enum.find(item.rows, &match?(%{type: :a}, Enum.at(rows, &1)))
+    a_row = Enum.at(rows, a_index)
+
+    {a_row, Enum.at(rows, a_row.moved_to)}
+  end
+
+  defp row_stop(comparison, index),
+    do: comparison.alignment.rows |> Enum.at(index) |> Map.fetch!(:stop_id)
+
+  defp stop_name(comparison, stop_id) do
+    case Map.get(comparison.stops_by_id, stop_id) do
+      %{stop_name: name} when is_binary(name) and name != "" -> name
+      _ -> stop_id
+    end
+  end
+
+  defp list_names(comparison, [stop_id]), do: stop_name(comparison, stop_id)
+
+  defp list_names(comparison, ids) do
+    names = Enum.map(ids, &stop_name(comparison, &1))
+
+    if length(names) > 4 do
+      Enum.take(names, 3) |> Enum.join(", ") |> Kernel.<>(" and #{length(names) - 3} more")
+    else
+      {last, rest} = List.pop_at(names, -1)
+      Enum.join(rest, ", ") <> " and " <> last
+    end
+  end
+
+  defp plural_suffix([_one]), do: " stop"
+  defp plural_suffix(_ids), do: " stops"
+
+  defp boarding_label(%{pickup_type: 1, drop_off_type: 1}), do: "passes without stopping"
+  defp boarding_label(%{pickup_type: 1}), do: "only lets riders off"
+  defp boarding_label(%{drop_off_type: 1}), do: "only picks riders up"
+  defp boarding_label(_row), do: "picks up and lets off"
+
+  defp difference_stops(item, comparison) do
+    rows = comparison.alignment.rows
+
+    item.frame
+    |> Enum.map(&Enum.at(rows, &1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(& &1.stop_id)
+    |> Enum.uniq()
+  end
+
+  defp end_value(nil), do: "No running times"
+  defp end_value(secs), do: format_duration(secs)
+
+  defp change_label(%{end_change: change, end_percent: nil}), do: format_change(change)
+
+  defp change_label(%{end_change: change, end_percent: percent}),
+    do: "#{format_change(change)} (#{format_percent(percent)})"
+
+  defp format_change(0), do: "Same"
+
+  defp format_change(secs),
+    do: "#{if secs > 0, do: "+", else: "−"}#{format_duration(secs)}"
+
+  defp format_percent(0), do: "0%"
+  defp format_percent(percent) when percent > 0, do: "+#{percent}%"
+  defp format_percent(percent), do: "−#{abs(percent)}%"
+
+  defp format_duration(secs) do
+    secs = abs(secs)
+    "#{div(secs, 60)}:#{String.pad_leading(Integer.to_string(rem(secs, 60)), 2, "0")}"
+  end
+
+  defp format_words(secs) do
+    secs = abs(secs)
+    minutes = div(secs, 60)
+    rest = rem(secs, 60)
+
+    cond do
+      minutes == 0 -> "#{rest} s"
+      rest == 0 -> "#{minutes} min"
+      true -> "#{minutes} min #{rest} s"
+    end
+  end
+
+  defp timed?(comparison) do
+    not is_nil(comparison.a.timing_id) and not is_nil(comparison.b && comparison.b.timing_id) and
+      not reversed?(comparison)
+  end
+
+  defp hour_max(comparison) do
+    comparison.a.usage.hours
+    |> Enum.concat(comparison.b.usage.hours)
+    |> Enum.max(fn -> 0 end)
+    |> max(1)
+  end
+
+  defp suggestion_path(comparison, suggestion) do
+    route = comparison.route
+
+    params =
+      [{"a", comparison.a.pattern.route_pattern_id}, {"b", suggestion.route_pattern_id}] ++
+        if(comparison.service_id, do: [{"service", comparison.service_id}], else: [])
+
+    "/gtfs/#{route.gtfs_version_id}/routes/#{route.route_id}/patterns/compare?" <>
+      URI.encode_query(params)
+  end
+
+  defp suggestion_meta(comparison, suggestion, calendar_name) do
+    trips =
+      if suggestion.trips > 0,
+        do: "#{plural(suggestion.trips, "trip")} on #{calendar_name}",
+        else: "not used on #{calendar_name}"
+
+    "#{suggestion.shared} of #{length(comparison.a.stops)} stops in common · #{trips}"
+  end
+
+  # The departures-by-hour chart: 05:00 to midnight, 20 bars per side on one
+  # scale, the count in the bar's tooltip (the reference's `hoursChart`).
+  attr :letter, :string, required: true, values: ["A", "B"]
+  attr :hours, :list, required: true
+  attr :max, :integer, required: true
+
+  defp hour_bars(assigns) do
+    ~H"""
+    <div class="flex items-center gap-2">
+      <.series_chip letter={@letter} />
+      <div
+        data-hour-bars={String.downcase(@letter)}
+        class="grid h-7 flex-1 grid-cols-[repeat(20,minmax(0,1fr))] items-end gap-[2px]"
+      >
+        <span
+          :for={hour <- 5..24}
+          data-hour-bar={"#{String.downcase(@letter)}-#{hour}"}
+          class={[
+            "block min-w-0 rounded-t-[2px]",
+            hour_bar_class(@letter, hour_count(@hours, hour))
+          ]}
+          style={"height: #{hour_bar_height(hour_count(@hours, hour), @max)}%"}
+          title={hour_bar_title(hour, hour_count(@hours, hour))}
+        >
+        </span>
+      </div>
+    </div>
+    """
+  end
+
+  defp hour_count(hours, hour), do: Enum.at(hours, rem(hour, 24), 0)
+
+  defp hour_bar_class(_letter, 0), do: "bg-subtle/40"
+  defp hour_bar_class("A", _count), do: "bg-navy-800"
+  defp hour_bar_class("B", _count), do: "bg-cyan-700"
+
+  defp hour_bar_height(0, _max), do: 6
+  defp hour_bar_height(count, max), do: max(18, round(count / max * 100))
+
+  defp hour_bar_title(hour, count) do
+    "#{clock(rem(hour * 60, 1440))}–#{clock(rem((hour + 1) * 60, 1440))}: #{plural(count, "trip")}"
+  end
+
+  defp clock(minutes) do
+    "#{String.pad_leading(Integer.to_string(div(minutes, 60)), 2, "0")}:#{String.pad_leading(Integer.to_string(rem(minutes, 60)), 2, "0")}"
+  end
 
   attr :label, :string, required: true
   attr :path, :string, required: true
