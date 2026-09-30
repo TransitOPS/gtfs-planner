@@ -6378,6 +6378,30 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Lists the in-seat records of a version that "don't match any block" through
+  `Blocking.unmatched_in_seat_records/2` (R8).
+
+  This is the version-level scope a removal confirms: a record is listed exactly
+  when its state over every day type is stale for one of the three reasons no
+  block can reach — `:trip_missing`, `:no_shared_date` or `:no_block`. A
+  `{:not_next, _}` record is stale on a day type it is still reachable on, and an
+  unconfirmed state is not a broken record, so neither is listed. Each row carries
+  its `id` and `updated_at` beside the reason, which is what
+  `remove_in_seat_records/2` expects (R7, INV-4).
+
+  The state comes from the one `Blocking.InSeat.state/2` the day load, the
+  pre-check and the block review read, over every day type both trips run in
+  (INV-2), and the read costs a fixed number of queries whatever the number of
+  records. A foreign or unpublished version is `{:error, :not_found}`.
+  """
+  @spec unmatched_in_seat_records(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, [GtfsPlanner.Gtfs.Blocking.unmatched_in_seat_record()]}
+          | {:error, :not_found}
+  def unmatched_in_seat_records(organization_id, gtfs_version_id) do
+    Blocking.unmatched_in_seat_records(organization_id, gtfs_version_id)
+  end
+
+  @doc """
   Returns every Block rules setting for an organization's GTFS version.
 
   A version with no stored setting returns the defaults (5 minutes minimum layover,

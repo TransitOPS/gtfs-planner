@@ -301,6 +301,39 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
   end
 
   @doc """
+  Loads every type 4/5 transfer record of one version, in the version's own order.
+
+  This is `in_seat_rows/3` without a day: the whole record set, for a caller that
+  asks about the version rather than about the trips one day type runs. The rows
+  are the same shape and carry the same `order_by` - by their two trip IDs and
+  their UUID - so the version's listing is stable and reads as the day's listing
+  restricted and extended, not as a second ordering.
+
+  Rows are not joined to the trips they name, so a record whose trip is absent
+  from the version is returned like any other. One query answers whatever the
+  number of records.
+  """
+  @spec all_in_seat_rows(Ecto.UUID.t(), Ecto.UUID.t()) :: [in_seat_row()]
+  def all_in_seat_rows(organization_id, gtfs_version_id) do
+    from(t in Transfer,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^gtfs_version_id and
+          t.transfer_type in [4, 5],
+      order_by: [asc: t.from_trip_id, asc: t.to_trip_id, asc: t.id],
+      select: %{
+        id: t.id,
+        from_trip_id: t.from_trip_id,
+        to_trip_id: t.to_trip_id,
+        transfer_type: t.transfer_type,
+        from_stop_id: t.from_stop_id,
+        to_stop_id: t.to_stop_id,
+        updated_at: t.updated_at
+      }
+    )
+    |> Repo.all()
+  end
+
+  @doc """
   Loads the four planning-input kinds a context needs, one query per kind.
 
   Route operating settings, entered driving times and relief points are scoped to

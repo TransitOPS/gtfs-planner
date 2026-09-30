@@ -194,6 +194,24 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   @type in_seat_entry :: %{row: Queries.in_seat_row(), state: InSeat.state()}
 
+  # R8's listed row: the stored record's own fields with the one reason that no
+  # block in the version reaches.
+  @type unmatched_in_seat_record :: %{
+          id: Ecto.UUID.t(),
+          from_trip_id: String.t(),
+          to_trip_id: String.t(),
+          transfer_type: 4 | 5,
+          from_stop_id: String.t() | nil,
+          to_stop_id: String.t() | nil,
+          updated_at: DateTime.t(),
+          reason: InSeat.reason()
+        }
+
+  # The three stale reasons R8 lists. A `{:not_next, _}` record is stale on a day
+  # type it is still reachable on, and an unconfirmed state is not a broken
+  # record, so neither reason belongs to the version's listing.
+  @unmatched_reasons [:trip_missing, :no_shared_date, :no_block]
+
   @typedoc """
   What `export_movements/2` hands the operations export: the day types in
   derivation order, each one's blocks in the shape `TodsExport.rows/1` reads
@@ -1697,6 +1715,37 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   @doc """
+  Lists the type 4/5 records of one version that "don't match any block" (R8).
+
+  A record qualifies exactly when its state over every day type is `{:stale,
+  reason}` with reason `:trip_missing`, `:no_shared_date` or `:no_block` - the
+  three reasons that no block in the version can reach. A `{:not_next, _}` record
+  is stale on a day type and is still reachable there, and an unconfirmed state is
+  not a broken record at all, so neither is listed. Each returned row carries the
+  stored record's `id` and `updated_at` with its `reason`, which is what a
+  removal confirms (R7).
+
+  The state comes from the one `InSeat.state/2` the day load, the pre-check and the
+  block review read, over the same `in_seat_context_for_rows/6` context, so the
+  version's listing can never disagree with a day's (INV-2). The read is bounded:
+  the calendars, the records, the trips the records name, and the trips of the
+  blocks those records are evaluated in - a fixed number of queries whatever the
+  number of records.
+
+  A foreign or unpublished version is `{:error, :not_found}`.
+  """
+  @spec unmatched_in_seat_records(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, [unmatched_in_seat_record()]} | {:error, :not_found}
+  def unmatched_in_seat_records(organization_id, gtfs_version_id) do
+    case Repo.transaction(fn ->
+           read_unmatched!(organization_id, gtfs_version_id)
+         end) do
+      {:ok, records} -> {:ok, records}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
   Draws the day a plan would leave behind, as a day of exactly the shape
   `load_day/3` returns.
 
@@ -2884,6 +2933,51 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # A service the version does not hold has no dates, so it never shares one.
   defp service_dates_for(service_dates, service_id) do
     Map.get(service_dates, service_id, MapSet.new())
+  end
+
+  # -- Version-level unmatched records ---------------------------------------
+
+  # R8's read path: the version's calendars and day types, every type 4/5 record
+  # once, the trips those records name once, and the one `in_seat_context_for_rows/6`
+  # context the day load and the pre-check build. The count of queries is fixed by
+  # those kinds rather than by the number of records, which is what makes a
+  # version-wide removal list possible on a feed with thousands of records.
+  defp read_unmatched!(organization_id, gtfs_version_id) do
+    calendars = load_calendars!(organization_id, gtfs_version_id)
+    day_types = DayTypes.derive(calendars)
+    service_dates = DayTypes.service_dates(calendars)
+    rows = Queries.all_in_seat_rows(organization_id, gtfs_version_id)
+
+    trips =
+      Queries.trip_rows(organization_id, gtfs_version_id, {:trip_ids, record_trip_ids(rows)})
+
+    context =
+      in_seat_context_for_rows(
+        organization_id,
+        gtfs_version_id,
+        day_types,
+        service_dates,
+        trips,
+        rows
+      ).context
+
+    Enum.flat_map(rows, &unmatched_record(&1, context))
+  end
+
+  defp record_trip_ids(rows) do
+    rows
+    |> Enum.flat_map(&[&1.from_trip_id, &1.to_trip_id])
+    |> Enum.uniq()
+  end
+
+  # One state per record, and only the three reasons no block reaches survive. The
+  # record's own fields travel with the reason, so a caller can confirm a removal
+  # against the `updated_at` it read here (R7, INV-4).
+  defp unmatched_record(row, context) do
+    case InSeat.state(row, context) do
+      {:stale, reason} when reason in @unmatched_reasons -> [Map.put(row, :reason, reason)]
+      _state -> []
+    end
   end
 
   # -- Candidate in-seat connections -----------------------------------------
