@@ -7968,14 +7968,14 @@ defmodule GtfsPlanner.Gtfs do
       to_string(key) in ~w(
         route_pattern_name route_pattern_time_desc direction_id
         route_pattern_typicality headsign canonical_route_pattern route_pattern_sort_order
-        occurrences timings before after affected_trips
+        occurrences timings before after affected_trips operation_id
       )
     end)
   end
 
   defp audited_attrs_for(type, attrs) when type in [:timed_pattern, "timed_pattern"] do
     Map.filter(attrs, fn {key, _value} ->
-      to_string(key) in ~w(name headsign rows before after affected_trips)
+      to_string(key) in ~w(name headsign rows before after affected_trips operation_id)
     end)
   end
 
@@ -8116,24 +8116,21 @@ defmodule GtfsPlanner.Gtfs do
     }
   end
 
+  # A pattern or timing update diffs the audited fields against the live
+  # snapshot and carries the shared operation id at the top level, exactly like
+  # the trip rows a headsign save writes alongside it. Logs without an
+  # operation id keep the previous shape unchanged.
+  defp build_changed_fields(entity_type, "updated", snapshot, attrs)
+       when entity_type in [:route_pattern, "route_pattern", :timed_pattern, "timed_pattern"] and
+              not is_nil(snapshot) do
+    snapshot
+    |> field_diffs(attrs)
+    |> put_shared_operation(attrs)
+  end
+
   defp build_changed_fields(_entity_type, action, snapshot, attrs)
        when action == "updated" and not is_nil(snapshot) do
-    snapshot_str_keys = stringify_map_keys(snapshot)
-
-    attrs
-    |> stringify_map_keys()
-    |> Enum.reduce(%{}, fn {field, new_value}, acc ->
-      current_value = Map.get(snapshot_str_keys, field)
-
-      if same_value?(current_value, new_value) do
-        acc
-      else
-        Map.put(acc, field, %{
-          "from" => normalize_value(current_value),
-          "to" => normalize_value(new_value)
-        })
-      end
-    end)
+    field_diffs(snapshot, attrs)
   end
 
   defp build_changed_fields(entity_type, "created", snapshot, attrs)
@@ -8161,6 +8158,25 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   defp build_changed_fields(_entity_type, _action, _snapshot, _attrs), do: nil
+
+  defp field_diffs(snapshot, attrs) do
+    snapshot_str_keys = stringify_map_keys(snapshot)
+
+    attrs
+    |> stringify_map_keys()
+    |> Enum.reduce(%{}, fn {field, new_value}, acc ->
+      current_value = Map.get(snapshot_str_keys, field)
+
+      if same_value?(current_value, new_value) do
+        acc
+      else
+        Map.put(acc, field, %{
+          "from" => normalize_value(current_value),
+          "to" => normalize_value(new_value)
+        })
+      end
+    end)
+  end
 
   # A reviewed bulk deletion shares one operation id across its route, trip and
   # pattern logs, so structured deleted entries carry it when provided. Logs
