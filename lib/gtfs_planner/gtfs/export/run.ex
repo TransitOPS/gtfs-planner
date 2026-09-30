@@ -20,6 +20,8 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
     field :export_type, Ecto.Enum, values: @export_types, default: :full
     field :state, Ecto.Enum, values: @states, default: :pending
     field :include_flex, :boolean, default: false
+    field :estimate_missing_times, :boolean, default: false
+    field :estimate_method, Ecto.Enum, values: [:distance, :even]
     field :phase, Ecto.Enum, values: @phases
     field :progress_current, :integer
     field :progress_total, :integer
@@ -55,7 +57,7 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
   def states, do: @states
   def terminal_states, do: @terminal_states
 
-  @doc "Public params cannot alter durable scope, actor, lease, flex inclusion, artifact, receipt, or lifecycle state."
+  @doc "Public params cannot alter durable scope, actor, lease, flex inclusion, missing-time estimates, artifact, receipt, or lifecycle state."
   def changeset(run, _attrs), do: change(run)
 
   @doc false
@@ -65,6 +67,8 @@ defmodule GtfsPlanner.Gtfs.Export.Run do
       :export_type,
       :state,
       :include_flex,
+      :estimate_missing_times,
+      :estimate_method,
       :phase,
       :progress_current,
       :progress_total,
