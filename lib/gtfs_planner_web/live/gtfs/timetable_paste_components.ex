@@ -12,7 +12,11 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   replace with real UI. Step 24 owns the Columns step (`columns_step/1`):
   the pasted grid with a Use-as select per column, status badges with
   one-line reasons, Confirm match for close matches, the Review-trips error
-  summary, the all-unmatched layout hint and the pattern stop strip.
+  summary, the all-unmatched layout hint and the pattern stop strip. Step 25
+  owns the Review header (`review_header/1`): How to apply, Fill other stops
+  from, Stops view, the three metrics, the refusal and nothing callouts, the
+  filter buttons and the `#paste-rows` placeholder step 26 streams its matrix
+  into.
   """
   use GtfsPlannerWeb, :html
 
@@ -820,21 +824,598 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   end
 
   @doc """
-  Placeholder for step 3, the Review (steps 25-28 replace this with the
-  review header, matrix, decisions and apply bar).
+  Renders step 3, the Review header: How to apply, Fill other stops from,
+  Stops view, the three current → after metrics, the refusal and nothing
+  callouts, the filter buttons and the `#paste-rows` placeholder step 26
+  streams its matrix into.
+
+  The mode radios (`paste[mode]`) and the stops radios (`paste[stops_view]`)
+  are native inputs inside the page's `#paste-form`, so every change flows
+  through the form's `input` event and recomputes the pure review;
+  `CoreComponents.segmented_control/1` is not used because it renders its
+  own form, which cannot nest inside `#paste-form` (the vehicle drawer in
+  `fleet_live.ex` carries the same note). The template select posts
+  `paste[template_timing_id]`. The filter buttons are plain `type="button"`
+  `phx-click="paste_filter"` controls carrying `phx-value-filter`:
+  `pressed_filter/1` only emits a bare `phx-value`, which the LiveView
+  client never collects (it gathers `phx-value-*` plus the element's own
+  value, empty on a button). The metrics are hand-rolled rather than
+  `metric/1` because each carries a sub-line; the refusals and the nothing
+  notice reuse `message/1` (alert for errors, status for info, like the
+  prototype). Copy follows the prototype's review stage.
   """
-  def review_placeholder(assigns) do
+  attr :review, :map, required: true, doc: "the pure paste review with grid, rows and plan"
+
+  attr :scope, :map,
+    required: true,
+    doc: "the loaded paste scope with calendar, patterns and route"
+
+  attr :input, :map,
+    required: true,
+    doc: "the LiveView paste input with mode, template, stops view and filter"
+
+  def review_header(assigns) do
+    plan = assigns.review.plan
+    counts = plan.counts
+    mode = review_mode(assigns.input)
+
+    assigns =
+      assigns
+      |> assign(:plan, plan)
+      |> assign(:counts, counts)
+      |> assign(:mode, mode)
+      |> assign(:stops_view, review_stops_view(assigns.input))
+      |> assign(:filter, review_filter(assigns.input))
+      |> assign(:calendar_name, review_calendar_name(assigns.scope))
+      |> assign(:direction_name, review_direction_name(assigns.scope))
+      |> assign(:direction_adjective, review_direction_adjective(assigns.scope))
+      |> assign(:pasted_rows, length(assigns.review.rows || []))
+      |> assign(:consequence, apply_consequence(mode, assigns.scope, plan))
+      |> assign(:template_options, template_options(assigns.scope))
+      |> assign(:template_value, effective_template(assigns.input, assigns.scope))
+      |> assign(:trips_before, plan.trips.before)
+      |> assign(:trips_after, plan.trips.after)
+      |> assign(:vehicles_before, plan.vehicles.before)
+      |> assign(:vehicles_after, plan.vehicles.after)
+      |> assign(:timings, plan.new_timings || [])
+      |> assign(:applied, counts.add + counts.change + counts.remove)
+      |> assign(:route_short, review_route_short(assigns.scope))
+      |> assign(:filters, visible_filters(assigns.input, plan))
+      |> assign(:refusal, plan.refusal)
+
     ~H"""
     <section
       id="paste-review"
       aria-label="Review"
-      class="rounded-card border border-subtle bg-white px-5 py-4"
+      class="overflow-hidden rounded-card border border-subtle bg-white"
     >
-      <h2 class="text-[15px] font-bold text-strong">Review</h2>
-      <p class="mt-1 text-sm text-muted">The review will appear here.</p>
+      <div class="flex flex-wrap items-center gap-3 border-b border-subtle bg-canvas px-5 py-3.5">
+        <span class="grid size-7 shrink-0 place-items-center rounded-full bg-soft text-[13px] font-bold text-strong">
+          3
+        </span>
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="text-[17px] font-bold tracking-normal text-strong">Review</h2>
+            <.status_badge status="warning" label="Not applied" />
+          </div>
+          <p class="text-[13px] text-muted">
+            {@calendar_name} · {@direction_name} · {plural(@pasted_rows, "pasted row")}
+          </p>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-end gap-x-8 gap-y-4 border-b border-subtle px-5 py-4">
+        <div class="min-w-0 flex-1 basis-[420px]">
+          <fieldset id="paste-mode">
+            <legend class="text-[13px] font-[650] text-strong">How to apply</legend>
+            <div class="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-2">
+              <div class="inline-flex overflow-hidden rounded-control border border-control">
+                <label class={[
+                  "inline-flex min-h-11 cursor-pointer items-center px-4 text-sm font-[650] transition-colors focus-within:outline-2 focus-within:outline-focus",
+                  @mode == :add && "bg-navy-800 text-white",
+                  @mode != :add && "bg-white text-strong hover:bg-canvas"
+                ]}>
+                  <input
+                    type="radio"
+                    name="paste[mode]"
+                    value="add"
+                    checked={@mode == :add}
+                    class="sr-only"
+                  /> Add trips
+                </label>
+                <label class={[
+                  "inline-flex min-h-11 cursor-pointer items-center px-4 text-sm font-[650] transition-colors focus-within:outline-2 focus-within:outline-focus",
+                  @mode == :replace && "bg-navy-800 text-white",
+                  @mode != :replace && "bg-white text-strong hover:bg-canvas"
+                ]}>
+                  <input
+                    type="radio"
+                    name="paste[mode]"
+                    value="replace"
+                    checked={@mode == :replace}
+                    class="sr-only"
+                  /> Replace trips
+                </label>
+              </div>
+              <p
+                id="paste-mode-help"
+                class="min-w-0 flex-1 basis-[240px] text-[13px] text-muted"
+              >
+                {@consequence}
+              </p>
+            </div>
+          </fieldset>
+        </div>
+        <div class="flex flex-wrap items-end gap-x-6 gap-y-3">
+          <div class="w-full sm:w-[210px]">
+            <.input
+              type="select"
+              id="paste-template"
+              name="paste[template_timing_id]"
+              label="Fill other stops from"
+              value={@template_value}
+              options={@template_options}
+            />
+          </div>
+          <fieldset id="paste-stops-view">
+            <legend class="text-[13px] font-[650] text-strong">Stops view</legend>
+            <div class="mt-1.5 inline-flex overflow-hidden rounded-control border border-control">
+              <label class={[
+                "inline-flex min-h-11 cursor-pointer items-center px-4 text-sm font-[650] transition-colors focus-within:outline-2 focus-within:outline-focus",
+                @stops_view == :pasted && "bg-navy-800 text-white",
+                @stops_view != :pasted && "bg-white text-strong hover:bg-canvas"
+              ]}>
+                <input
+                  type="radio"
+                  name="paste[stops_view]"
+                  value="pasted"
+                  checked={@stops_view == :pasted}
+                  class="sr-only"
+                /> Pasted
+              </label>
+              <label class={[
+                "inline-flex min-h-11 cursor-pointer items-center px-4 text-sm font-[650] transition-colors focus-within:outline-2 focus-within:outline-focus",
+                @stops_view == :all && "bg-navy-800 text-white",
+                @stops_view != :all && "bg-white text-strong hover:bg-canvas"
+              ]}>
+                <input
+                  type="radio"
+                  name="paste[stops_view]"
+                  value="all"
+                  checked={@stops_view == :all}
+                  class="sr-only"
+                /> All stops
+              </label>
+            </div>
+          </fieldset>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 gap-4 border-b border-subtle px-5 py-4 sm:grid-cols-3">
+        <div id="paste-metric-trips" class="min-w-0">
+          <p class="text-[13px] text-muted">Trips · {@calendar_name} {@direction_adjective}</p>
+          <p class="mt-1 font-display text-[26px] font-semibold tabular-nums text-strong">
+            {@trips_before}
+            <%= if @trips_before == @trips_after do %>
+              <span class="font-sans text-[15px] font-normal text-muted">no change</span>
+            <% else %>
+              → {@trips_after}
+            <% end %>
+          </p>
+          <p class="text-[13px] text-muted">{trips_detail(@counts)}</p>
+        </div>
+        <div id="paste-metric-vehicles" class="min-w-0">
+          <p class="text-[13px] text-muted">Vehicles needed · route {@route_short} alone</p>
+          <p class="mt-1 font-display text-[26px] font-semibold tabular-nums text-strong">
+            {@vehicles_before}
+            <%= if @vehicles_before == @vehicles_after do %>
+              <span class="font-sans text-[15px] font-normal text-muted">no change</span>
+            <% else %>
+              → {@vehicles_after}
+            <% end %>
+          </p>
+          <p class="text-[13px] text-muted">
+            {@calendar_name}, both directions<%= if @counts.needs_decision > 0 do %>
+              · rows that need a decision aren’t counted
+            <% end %>
+          </p>
+        </div>
+        <div id="paste-metric-timings" class="min-w-0">
+          <p class="text-[13px] text-muted">New timings</p>
+          <p class="mt-1 font-display text-[26px] font-semibold tabular-nums text-strong">
+            {length(@timings)}
+          </p>
+          <p class="text-[13px] text-muted">
+            <%= if @timings == [] do %>
+              Every row matches an existing timing
+            <% else %>
+              {timing_names(@timings)}
+            <% end %>
+          </p>
+        </div>
+      </div>
+      <.message
+        :if={match?({:frequency, _trip}, @refusal)}
+        id="paste-refusal-frequency"
+        kind="error"
+        title="Replace can’t run on this schedule."
+        class="mx-5 mt-4"
+      >
+        {frequency_detail(@scope, @refusal)} Replace would remove it, and frequency service is
+        changed on Schedules. Add the trips instead, or change the frequency service first.
+        <:action>
+          <button
+            type="button"
+            id="paste-use-add"
+            class="btn btn-outline min-h-11"
+            phx-click="use_add"
+          >
+            Use Add trips
+          </button>
+        </:action>
+      </.message>
+      <.message
+        :if={match?({:stops_differ, _trip}, @refusal)}
+        id="paste-refusal-stops"
+        kind="error"
+        title="Replace can’t run on this schedule."
+        class="mx-5 mt-4"
+      >
+        {stops_differ_detail(@scope, @refusal)} Replace would remove it, and custom service is
+        changed on Schedules. Add the trips instead, or fix the trip first.
+        <:action>
+          <button
+            type="button"
+            id="paste-use-add"
+            class="btn btn-outline min-h-11"
+            phx-click="use_add"
+          >
+            Use Add trips
+          </button>
+        </:action>
+      </.message>
+      <.message
+        :if={@refusal == :nothing_accepted}
+        id="paste-refusal-empty"
+        kind="error"
+        title="Replace needs at least one pasted trip."
+        class="mx-5 mt-4"
+      >
+        Every row is skipped, so applying would remove all {plural(@trips_before, "trip")} and
+        add none. Restore a row, or use Add trips.
+        <:action>
+          <button
+            type="button"
+            id="paste-use-add"
+            class="btn btn-outline min-h-11"
+            phx-click="use_add"
+          >
+            Use Add trips
+          </button>
+        </:action>
+      </.message>
+      <.message
+        :if={@refusal == nil and @applied == 0 and @counts.needs_decision == 0}
+        id="paste-nothing"
+        kind="info"
+        title="Nothing to apply."
+        class="mx-5 mt-4"
+      >
+        Every row repeats a trip that already exists, so there is nothing to apply.
+      </.message>
+      <div
+        id="paste-filters"
+        class="flex flex-wrap items-center gap-2 px-5 pb-3 pt-4"
+        role="group"
+        aria-label="Show rows"
+      >
+        <button
+          :for={{key, label, count} <- @filters}
+          type="button"
+          id={"paste-filter-#{key}"}
+          phx-click="paste_filter"
+          phx-value-filter={key}
+          aria-pressed={to_string(@filter == key)}
+          class={[
+            "inline-flex min-h-11 items-center gap-1.5 rounded-control border px-3 text-[13px] font-[650]",
+            @filter == key && "border-action bg-selection text-action",
+            @filter != key && "border-control bg-white text-strong hover:bg-canvas"
+          ]}
+        >
+          {label}<span class={["tabular-nums", @filter != key && "text-muted"]}>{count}</span>
+        </button>
+      </div>
+      <%!-- Step 26 streams the review matrix into `#paste-rows`. --%>
+      <div id="paste-rows" class="border-t border-subtle px-5 py-4">
+        <p class="text-sm text-muted">The review rows will appear here.</p>
+      </div>
     </section>
     """
   end
+
+  # --- Review header (step 25) ---
+
+  @review_filter_defs [
+    {"all", "All rows"},
+    {"add", "Add"},
+    {"change", "Change"},
+    {"remove", "Remove"},
+    {"unchanged", "No change"},
+    {"duplicate", "Already exists"},
+    {"skipped", "Skipped"},
+    {"needs_decision", "Needs decision"}
+  ]
+
+  defp review_mode(%{mode: :replace}), do: :replace
+  defp review_mode(%{mode: "replace"}), do: :replace
+  defp review_mode(_input), do: :add
+
+  defp review_stops_view(%{stops_view: :all}), do: :all
+  defp review_stops_view(%{stops_view: "all"}), do: :all
+  defp review_stops_view(_input), do: :pasted
+
+  defp review_filter(%{filter: filter})
+       when filter in ~w(all add change remove unchanged duplicate skipped needs_decision),
+       do: filter
+
+  defp review_filter(_input), do: "all"
+
+  defp review_calendar_name(%{calendar: %{name: name}})
+       when is_binary(name) and name != "",
+       do: name
+
+  defp review_calendar_name(_scope), do: "this calendar"
+
+  defp review_direction_name(%{direction_id: 1}), do: "Inbound"
+  defp review_direction_name(_scope), do: "Outbound"
+
+  defp review_direction_adjective(%{direction_id: 1}), do: "inbound"
+  defp review_direction_adjective(_scope), do: "outbound"
+
+  defp review_route_short(%{route: %{route_short_name: short}})
+       when is_binary(short) and short != "",
+       do: short
+
+  defp review_route_short(%{route: %{route_id: id}}) when is_binary(id), do: id
+  defp review_route_short(_scope), do: "this route"
+
+  defp apply_consequence(:add, _scope, _plan),
+    do: "Existing trips stay. Rows that repeat an existing departure are skipped."
+
+  defp apply_consequence(:replace, scope, plan) do
+    "Trips on #{review_calendar_name(scope)} · #{review_direction_adjective(scope)} on " <>
+      "#{replace_pattern_names(scope, plan)} that aren’t in your paste are removed. " <>
+      "Other patterns, calendars and the other direction stay."
+  end
+
+  defp replace_pattern_names(scope, plan) do
+    ids = if is_list(plan.replace_patterns), do: plan.replace_patterns, else: []
+    patterns = if is_list(Map.get(scope, :patterns)), do: scope.patterns, else: []
+
+    names =
+      ids
+      |> Enum.map(fn id ->
+        Enum.find_value(patterns, fn pattern ->
+          if pattern_id(pattern) == id, do: pattern_name(pattern)
+        end)
+      end)
+      |> Enum.reject(&is_nil/1)
+
+    case names do
+      [] -> "the pasted patterns"
+      names -> Enum.join(names, " and ")
+    end
+  end
+
+  defp pattern_id(%{id: id}), do: id
+  defp pattern_id(%{"id" => id}), do: id
+  defp pattern_id(_pattern), do: nil
+
+  defp review_pattern(scope) when is_map(scope) do
+    patterns = Map.get(scope, :patterns, []) || []
+
+    Enum.find(List.wrap(patterns), fn pattern ->
+      pattern_id(pattern) == Map.get(scope, :pattern_id)
+    end)
+  end
+
+  defp review_pattern(_scope), do: nil
+
+  defp template_options(scope) do
+    case review_pattern(scope) do
+      %{timings: timings} when is_list(timings) ->
+        Enum.map(timings, fn timing ->
+          {"#{timing_name(timing)} · #{timing_minutes(timing)} min", timing_id(timing)}
+        end)
+
+      _pattern ->
+        []
+    end
+  end
+
+  # The select shows the input timing when it belongs to the pattern, else
+  # the pattern's most-used timing (highest trip count, ties keep scope
+  # order) — the same fallback `RowResolver` reviews with.
+  defp effective_template(input, scope) do
+    timings =
+      case review_pattern(scope) do
+        %{timings: timings} when is_list(timings) -> timings
+        _pattern -> []
+      end
+
+    ids = timings |> Enum.map(&timing_id/1) |> Enum.reject(&is_nil/1)
+    wanted = Map.get(input, :template_timing_id) || Map.get(input, "template_timing_id")
+
+    cond do
+      is_binary(wanted) and wanted in ids -> wanted
+      true -> most_used_timing(timings) || ""
+    end
+  end
+
+  defp most_used_timing([]), do: nil
+
+  defp most_used_timing(timings) do
+    timings |> Enum.sort_by(&timing_trip_count/1, :desc) |> List.first() |> timing_id()
+  end
+
+  defp timing_name(timing) when is_map(timing) do
+    Map.get(timing, :name) || Map.get(timing, "name") || "Timing"
+  end
+
+  defp timing_name(_timing), do: "Timing"
+
+  defp timing_id(timing) when is_map(timing) do
+    Map.get(timing, :id) || Map.get(timing, "id")
+  end
+
+  defp timing_id(_timing), do: nil
+
+  defp timing_trip_count(timing) when is_map(timing) do
+    Map.get(timing, :trip_count) || Map.get(timing, "trip_count") || 0
+  end
+
+  defp timing_trip_count(_timing), do: 0
+
+  defp timing_names(timings), do: Enum.map_join(timings, ", ", &timing_name/1)
+
+  defp timing_minutes(timing) when is_map(timing) do
+    departures =
+      timing
+      |> timing_rows()
+      |> Enum.map(&timing_departure/1)
+      |> Enum.reject(&is_nil/1)
+
+    case departures do
+      [] -> 0
+      departures -> div(Enum.max(departures) - Enum.min(departures), 60)
+    end
+  end
+
+  defp timing_minutes(_timing), do: 0
+
+  defp timing_rows(timing) do
+    List.wrap(Map.get(timing, :rows) || Map.get(timing, "rows"))
+  end
+
+  defp timing_departure(row) when is_map(row) do
+    case Map.get(row, :departure_offset, Map.get(row, "departure_offset")) do
+      offset when is_integer(offset) -> offset
+      _offset -> nil
+    end
+  end
+
+  defp timing_departure(_row), do: nil
+
+  defp trips_detail(counts) do
+    parts =
+      [{"added", counts.add}, {"removed", counts.remove}, {"changed", counts.change}]
+      |> Enum.filter(fn {_label, count} -> is_integer(count) and count > 0 end)
+      |> Enum.map(fn {label, count} -> "#{count} #{label}" end)
+
+    case parts do
+      [] -> "Nothing added or removed"
+      parts -> Enum.join(parts, " · ")
+    end
+  end
+
+  defp visible_filters(input, plan) do
+    counts = plan.counts
+    total = if is_list(plan.changes), do: length(plan.changes), else: 0
+    current = review_filter(input)
+
+    @review_filter_defs
+    |> Enum.map(fn {key, label} -> {key, label, filter_count(key, counts, total)} end)
+    |> Enum.filter(fn {key, _label, count} ->
+      key == "all" or key == current or count > 0
+    end)
+  end
+
+  defp filter_count("all", _counts, total), do: total
+  defp filter_count(key, counts, _total), do: Map.get(counts, String.to_atom(key), 0)
+
+  defp refusal_trip({kind, trip}) when kind in [:frequency, :stops_differ] and is_map(trip),
+    do: trip
+
+  defp refusal_trip(_refusal), do: %{}
+
+  defp refusal_trip_id(refusal) do
+    trip = refusal_trip(refusal)
+    Map.get(trip, :trip_id) || Map.get(trip, "trip_id")
+  end
+
+  defp trip_pattern_name(scope, trip) do
+    ref = Map.get(trip, :route_pattern_id) || Map.get(trip, "route_pattern_id")
+    patterns = Map.get(scope, :patterns, []) || []
+
+    Enum.find_value(patterns, fn pattern ->
+      pattern_ref =
+        Map.get(pattern, :route_pattern_id) || Map.get(pattern, "route_pattern_id")
+
+      if pattern_ref == ref, do: pattern_name(pattern)
+    end) || "This pattern"
+  end
+
+  defp frequency_detail(scope, refusal) do
+    trip = refusal_trip(refusal)
+    pattern = trip_pattern_name(scope, trip)
+    calendar = review_calendar_name(scope)
+
+    case frequency_window(trip) do
+      %{headway: headway, start: start, finish: finish}
+      when is_binary(start) and is_binary(finish) ->
+        "#{pattern} also has frequency service on #{calendar}: " <>
+          "every #{headway} min, #{start}–#{finish}."
+
+      _window ->
+        "#{pattern} also has frequency service on #{calendar}."
+    end
+  end
+
+  defp stops_differ_detail(scope, refusal) do
+    trip = refusal_trip(refusal)
+    pattern = trip_pattern_name(scope, trip)
+
+    case refusal_trip_id(refusal) do
+      nil -> "The trip on #{pattern} has custom stop times that differ from the pattern."
+      id -> "Trip #{id} on #{pattern} has custom stop times that differ from the pattern."
+    end
+  end
+
+  defp frequency_window(trip) when is_map(trip) do
+    rows =
+      Map.get(trip, :frequencies) || Map.get(trip, "frequencies") ||
+        Map.get(trip, :frequency_rows) || Map.get(trip, "frequency_rows")
+
+    case List.first(List.wrap(rows)) do
+      %{headway_secs: headway} = window when is_integer(headway) ->
+        %{
+          headway: div(headway, 60),
+          start: clock_time(window, :start_time),
+          finish: clock_time(window, :end_time)
+        }
+
+      _row ->
+        nil
+    end
+  end
+
+  defp frequency_window(_trip), do: nil
+
+  defp clock_time(window, key) when is_map(window) do
+    case Map.get(window, key) || Map.get(window, to_string(key)) do
+      %Time{} = time ->
+        Calendar.strftime(time, "%H:%M")
+
+      binary when is_binary(binary) ->
+        case String.split(binary, ":") do
+          [hour, minute | _rest] -> "#{hour}:#{minute}"
+          _parts -> nil
+        end
+
+      _time ->
+        nil
+    end
+  end
+
+  defp clock_time(_window, _key), do: nil
 
   @doc """
   The inline message for a failed read. Copy follows the spec proposal §1
