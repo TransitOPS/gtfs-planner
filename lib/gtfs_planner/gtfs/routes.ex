@@ -80,8 +80,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   import Ecto.Changeset, only: [add_error: 3]
   import Ecto.Query
 
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.Attribution
@@ -464,7 +463,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   # The transaction body of `create_editor_route/3`: authorize and lock first,
   # then either insert the route or replay the committed attempt.
   defp insert_or_replay_created_route(attrs, attempt_id, digest, audit) do
-    :ok = authorize_editor!(audit)
+    Authorization.lock_editor!(audit)
     _version = lock_published_version!(audit)
 
     case find_creation_log(audit, attempt_id) do
@@ -496,7 +495,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   # The transaction body of `reconcile_creation/2`: authorize, lock, then
   # resolve the attempt's committed result without inserting.
   defp reconcile_committed_creation(attempt_id, audit) do
-    :ok = authorize_editor!(audit)
+    Authorization.lock_editor!(audit)
     _version = lock_published_version!(audit, false)
 
     case find_creation_log(audit, attempt_id) do
@@ -547,7 +546,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   def update_route(route_id, attrs, base, choices, %AuditContext{} = audit)
       when is_binary(route_id) and is_map(attrs) and is_map(base) and is_map(choices) do
     run_command_transaction(fn ->
-      :ok = authorize_editor!(audit)
+      Authorization.lock_editor!(audit)
       _version = lock_published_version!(audit)
 
       case lock_scoped_route(route_id, audit) do
@@ -581,7 +580,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   def set_route_active(route_id, active, source, %AuditContext{} = audit)
       when is_binary(route_id) and is_boolean(active) and is_map(source) do
     run_command_transaction(fn ->
-      :ok = authorize_editor!(audit)
+      Authorization.lock_editor!(audit)
       _version = lock_published_version!(audit)
 
       case lock_scoped_route(route_id, audit) do
@@ -642,7 +641,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
              :not_found | :forbidden | :busy | :invalid_input | :malformed_cross_route_timing}
   def review_route_deletion(route_id, %AuditContext{} = audit) when is_binary(route_id) do
     run_command_transaction(fn ->
-      :ok = authorize_editor!(audit)
+      Authorization.lock_editor!(audit)
       _version = lock_published_version!(audit, false)
 
       case scoped_route(route_id, audit) do
@@ -931,25 +930,6 @@ defmodule GtfsPlanner.Gtfs.Routes do
   defp attempt_field(attempt, key) do
     Map.get(attempt, key) || Map.get(attempt, Atom.to_string(key))
   end
-
-  # Active organization editors only (AC-1); the rule matches the established
-  # Calendars editor gate and is rechecked inside every create transaction so
-  # denied mutations write nothing.
-  defp authorize_editor!(%AuditContext{} = audit) do
-    with true <- uuid?(audit.actor_id),
-         true <- uuid?(audit.organization_id),
-         %UserOrgMembership{} = membership <-
-           Accounts.get_user_org_membership(audit.actor_id, audit.organization_id),
-         true <- is_nil(membership.deactivated_at),
-         true <- editor_role?(membership.roles) do
-      :ok
-    else
-      _other -> Repo.rollback(:forbidden)
-    end
-  end
-
-  defp editor_role?(roles) when is_list(roles), do: "pathways_studio_editor" in roles
-  defp editor_role?(_roles), do: false
 
   # Published scope only (AC-1). The create command locks the version row FOR
   # UPDATE before any read or write so allocation and agency resolution see
@@ -2255,7 +2235,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   # compare its fingerprint exactly, then remove the reviewed sets and audit
   # with one shared operation id. The exact reviewed UUID is deleted last.
   defp delete_route_transaction(route_id, fingerprint, audit) do
-    :ok = authorize_editor!(audit)
+    Authorization.lock_editor!(audit)
     _version = lock_published_version!(audit, true)
     route = RoutePatterns.lock_published_route!(audit, route_id)
 

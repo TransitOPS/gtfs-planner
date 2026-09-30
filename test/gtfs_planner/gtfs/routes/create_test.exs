@@ -113,6 +113,25 @@ defmodule GtfsPlanner.Gtfs.Routes.CreateTest do
   end
 
   describe "create_editor_route/3 authorization and scope" do
+    test "a deactivated editor cannot create a route or its audit record" do
+      fixture = create_fixture()
+      on_exit(fn -> cleanup_fixture(fixture) end)
+
+      unboxed(fn ->
+        membership =
+          Repo.get_by!(UserOrgMembership,
+            user_id: fixture.actor.id,
+            organization_id: fixture.organization.id
+          )
+
+        deactivate_membership_fixture(membership)
+      end)
+
+      assert {:error, :forbidden} = create_route(route_attrs(), fixture.attempt, fixture.audit)
+      assert scoped_routes(fixture) == []
+      assert created_logs(fixture) == []
+    end
+
     test "a denied actor writes nothing and loses no access" do
       fixture = create_fixture()
       on_exit(fn -> cleanup_fixture(fixture) end)
