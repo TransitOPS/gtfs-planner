@@ -44,6 +44,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
+  # The domain's `:not_found` is "the version is no longer published". The drawer
+  # says so in the reader's terms and names what to do, because the alternative —
+  # silently doing nothing — reads as a broken button.
+  @crew_not_found "That version is no longer published, so these rules cannot be saved."
+
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
@@ -86,6 +91,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:move_runs, [])
      |> assign(:piece_windows, %{})
      |> assign(:problems_open, false)
+     |> assign(:crew_open, false)
+     |> assign(:crew_entries, %{})
+     |> assign(:crew_errors, %{})
+     |> assign(:crew_notice, nil)
      |> assign(:next_run_id, "1")
      |> assign(:run_axis, nil)
      |> assign(:run_routes, %{})
@@ -351,6 +360,69 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       # is not rendered without a loaded day, so the first case is unreachable
       # from the page — and a no-op is still better than a drawer of zeros.
       {:noreply, socket}
+    end
+  end
+
+  # The Crew rules drawer: a draft, its per-field errors, and the save.
+  #
+  # The draft lives in `@crew_entries` and is NEVER rebuilt from the stored crew
+  # once the drawer has opened, because the two things AC-30 asks of a failed
+  # save are "keeps entries" and "focuses the first error" — both of which are
+  # false the moment a refusal re-reads the stored values.
+  def handle_event("open_crew", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:crew_open, true)
+     |> assign(:crew_errors, %{})
+     |> assign(:crew_notice, nil)
+     |> assign_crew_entries(crew_stored(socket))}
+  end
+
+  def handle_event("close_crew", _params, socket) do
+    {:noreply, assign(socket, :crew_open, false)}
+  end
+
+  # `phx-change` on the whole form, so one event carries every field and the rule
+  # sentence is recomputed from all five at once. `phx-debounce="blur"` means this
+  # arrives when a field loses focus rather than on every keystroke, which is the
+  # "validate on blur" the form guide asks for (AC-30).
+  def handle_event("validate_crew", params, socket) do
+    entries = crew_entries(params, socket.assigns.crew_entries)
+
+    # ONLY the field that was touched is re-checked. Re-validating all five on one
+    # blur would put an error on a field the reader has not reached yet, and
+    # would clear an error they are still typing towards the end of.
+    touched = crew_touched(params, socket.assigns.crew_entries)
+
+    {:noreply,
+     socket
+     |> assign(:crew_entries, entries)
+     |> assign(:crew_errors, put_crew_error(socket.assigns.crew_errors, touched, entries))
+     |> assign(:crew_notice, nil)}
+  end
+
+  def handle_event("save_crew", params, socket) do
+    entries = crew_entries(params, socket.assigns.crew_entries)
+    errors = crew_validate(entries)
+
+    cond do
+      errors != %{} ->
+        # Keep every entry and mark the fields. Focus is NOT named here: the
+        # `focus_form_error` hook lands on the first control the form marks
+        # `aria-invalid`, and a payload naming one field would be a second place
+        # the order of the form is written down.
+        {:noreply,
+         socket
+         |> assign(:crew_entries, entries)
+         |> assign(:crew_errors, errors)
+         |> assign(:crew_notice, nil)
+         |> push_event("focus_form_error", %{
+           form_id: "crew-rules-form",
+           fallback_id: "crew-rules-notice"
+         })}
+
+      true ->
+        save_crew_settings(socket, entries)
     end
   end
 
@@ -623,6 +695,199 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # them. It is LAST among the `handle_event` clauses on purpose: a catch-all
   # placed earlier would shadow the drawer events above it.
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  defp save_crew_settings(socket, entries) do
+    %{current_organization: organization, current_gtfs_version: version} = socket.assigns
+    attrs = crew_attrs(entries)
+
+    case Gtfs.update_crew_settings(organization.id, version.id, attrs) do
+      {:ok, _crew} ->
+        # The rules feed every derivation, so the day is reloaded and the drawer
+        # closes: the reader asked to change the rules, not to keep editing them.
+        # The pay table and the paid cells come from the reloaded figures, so the
+        # change is visible in the page rather than only in the button.
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> assign(:crew_errors, %{})
+         |> assign(:crew_notice, nil)
+         |> assign(:crew_open, false)
+         |> put_toast("Crew rules saved.", :done)
+         |> load_day()}
+
+      # The version went unpublished between the drawer opening and the save.
+      # The domain refuses the write, so the drawer says why and KEEPS the
+      # entries: the reader typed them and nothing about the version's state
+      # makes them worth retyping.
+      #
+      # Assigning the entries back is the whole of that promise. Without it the
+      # form re-renders from `@crew_entries`, which still holds the values from
+      # the last CHANGE event — so an entry typed and submitted in one go, with
+      # no blur in between, would silently revert to the stored value.
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> assign(:crew_entries, entries)
+         |> assign(:crew_errors, %{})
+         |> assign(:crew_notice, @crew_not_found)}
+
+      # A changeset error the client-side pass did not reach — a value the domain
+      # casts differently, or a race on the stored row. Its field errors are shown
+      # under their own inputs and the entries are kept.
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         socket
+         |> assign(:crew_entries, entries)
+         |> assign(:crew_errors, crew_errors_from(changeset))
+         |> push_event("focus_form_error", %{
+           form_id: "crew-rules-form",
+           fallback_id: "crew-rules-notice"
+         })}
+    end
+  end
+
+  # The five crew rules, as the form posts them.
+  #
+  # ONLY these five are read from the payload, so a crafted event cannot name an
+  # organization or a version: those come from the socket, never from `params`
+  # (CR-4). `max_piece_minutes` is absent on purpose — it belongs to the BLOCK
+  # rules, and accepting it here would let a posted value write a column this
+  # drawer shows as read-only.
+  @crew_keys [
+    :report_pull_out_minutes,
+    :report_relief_minutes,
+    :sign_off_minutes,
+    :paid_break_max_minutes,
+    :max_spread_minutes
+  ]
+
+  # The form is named `:crew`, so its fields post under `params["crew"]`. Both
+  # callers pass the WHOLE payload rather than the inner map, so the nesting is
+  # unwrapped in one place: reading `params["report_pull_out_minutes"]` here
+  # would find nothing, and every entry would look blank.
+  defp crew_values(params) do
+    case params do
+      %{"crew" => values} when is_map(values) -> values
+      values when is_map(values) -> values
+    end
+  end
+
+  defp crew_entries(params, current) do
+    values = crew_values(params)
+
+    Map.new(@crew_keys, fn key ->
+      {key, Map.get(values, to_string(key)) || Map.get(current, key, "")}
+    end)
+  end
+
+  # Which field the change event was about.
+  #
+  # A form posts every field on every change, so "the event named a field" is not
+  # in the payload. The draft's own change is: a value that differs from the one
+  # held is a field the reader has just touched.
+  # The stored rules as the form holds them: STRINGS.
+  #
+  # Every later comparison — "did this field change", "is this entry the same as
+  # what the last event carried" — is between form values, and an integer from
+  # the database against a string from a box would make every field look edited
+  # on the first blur.
+  defp assign_crew_entries(socket, crew) do
+    assign(socket, :crew_entries, Map.new(crew, fn {key, value} -> {key, to_string(value)} end))
+  end
+
+  defp crew_touched(params, current) do
+    values = crew_values(params)
+
+    Enum.find(@crew_keys, fn key ->
+      name = to_string(key)
+      Map.has_key?(values, name) and Map.get(values, name) != Map.get(current, key)
+    end)
+  end
+
+  # The ranges the DOMAIN enforces, spelled the way the domain spells them, so a
+  # message shown before a save and a message from the changeset are one voice.
+  defp crew_ranges do
+    %{
+      report_pull_out_minutes: {0, 30},
+      report_relief_minutes: {0, 15},
+      sign_off_minutes: {0, 15},
+      paid_break_max_minutes: {0, 90},
+      max_spread_minutes: {240, 1080}
+    }
+  end
+
+  # Client-side validation, so a range error appears on blur rather than only
+  # after a save. The domain still checks every value: this is a courtesy, not a
+  # gate, and a test asserts the server still refuses a bad submit.
+  defp crew_validate(entries) do
+    Enum.reduce(@crew_keys, %{}, fn key, acc ->
+      case crew_field_error(entries, key) do
+        nil -> acc
+        message -> Map.put(acc, key, message)
+      end
+    end)
+  end
+
+  defp crew_field_error(entries, key) do
+    {min, max} = Map.fetch!(crew_ranges(), key)
+    raw = entries |> Map.get(key, "") |> to_string() |> String.trim()
+
+    cond do
+      raw == "" ->
+        "Enter a number of minutes."
+
+      not Regex.match?(~r/^\d+$/, raw) ->
+        "Enter a whole number from #{min} to #{max}."
+
+      true ->
+        value = String.to_integer(raw)
+
+        if value < min or value > max,
+          do: "Enter a whole number from #{min} to #{max}.",
+          else: nil
+    end
+  end
+
+  # One field's error is re-checked and the rest are left alone.
+  defp put_crew_error(errors, nil, _entries), do: errors
+
+  defp put_crew_error(errors, key, entries) do
+    case crew_field_error(entries, key) do
+      nil -> Map.delete(errors, key)
+      message -> Map.put(errors, key, message)
+    end
+  end
+
+  # The changeset\'s own field errors, flattened to the form\'s messages. Traversed
+  # rather than read off the struct, because a schemaless form cannot be named by
+  # `to_form/2` and the messages would otherwise never reach an input.
+  defp crew_errors_from(changeset) do
+    Enum.reduce(changeset.errors, %{}, fn {field, {message, _opts}}, acc ->
+      Map.put_new(acc, field, message)
+    end)
+  end
+
+  defp crew_attrs(entries) do
+    Map.new(@crew_keys, fn key ->
+      {key, entries |> Map.get(key, "") |> to_string() |> String.trim()}
+    end)
+  end
+
+  # The STORED rules for the version.
+  #
+  # This reads the settings row rather than `@runs_day.crew`, because a drawer can
+  # be opened before any day is loaded and because the stored row is what a save
+  # replaces — showing the loaded day's copy would be showing a derivation of the
+  # rules rather than the rules themselves. `get_crew_settings/2` already answers
+  # with the researched defaults when the version has no row, so an unsaved
+  # version opens on the values a save would start from rather than five empty
+  # boxes, and no second defaults list is written here.
+  defp crew_stored(socket) do
+    organization = socket.assigns.current_organization
+    version = socket.assigns.current_gtfs_version
+
+    Gtfs.get_crew_settings(organization.id, version.id)
+  end
 
   # The timer the reference's JS ran. It carries the toast's token so a timer set
   # for an EARLIER toast cannot dismiss a LATER one: without the token, a reader
@@ -1251,6 +1516,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
             day_types={@day_types}
             selected={@day || ""}
           >
+            <:crew_summary>
+              <RunsComponents.crew_button
+                :if={@runs_day}
+                crew={@runs_day.crew}
+              />
+            </:crew_summary>
             <:counts>
               <RunsComponents.count_strip
                 :if={@runs_day}
@@ -1352,6 +1623,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
           <RunsComponents.page_footnote :if={@load_state == :loaded} />
         </div>
       </div>
+
+      <RunsComponents.crew_drawer
+        open={@crew_open}
+        entries={@crew_entries}
+        errors={@crew_errors}
+        notice={@crew_notice}
+        max_piece_minutes={crew_piece_limit(assigns)}
+        version_id={@current_gtfs_version.id}
+        day_type_key={@day || ""}
+      />
 
       <RunsComponents.problems_drawer
         :if={@runs_day}
@@ -1459,6 +1740,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # which is a base64 hash a reader cannot check against anything — and rather
   # than every day type the version has, which would name days the drawer says
   # nothing about.
+  # The piece limit is block data, not crew data, and it only exists once a day
+  # is loaded. `is_map/1` rather than `and`: `runs_day` is a map or `nil`, and
+  # `and` refuses a non-boolean left side.
+  defp crew_piece_limit(assigns) do
+    case assigns do
+      %{runs_day: %{day: %{context: %{max_piece_minutes: minutes}}}} -> minutes
+      _ -> nil
+    end
+  end
+
   defp day_label(nil), do: "this day"
 
   defp day_label(runs_day) do

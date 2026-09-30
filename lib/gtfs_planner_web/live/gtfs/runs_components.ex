@@ -1062,6 +1062,205 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   @doc """
+  Renders the Crew rules button for the scope bar.
+
+  The label carries the STORED values, not the values in the open drawer, so
+  the button is the page's own statement of the rules in force rather than of a
+  draft the reader has not saved. A draft is in the drawer and nowhere else.
+  """
+  def crew_button(assigns) do
+    # `variant` is set EXPLICITLY rather than left to the default. The default is
+    # `primary`, and the scope bar already gives its one primary to the Review
+    # problems action when the day has problems; a default here would put two
+    # primary controls on one bar and make neither the obvious next step.
+    ~H"""
+    <.button
+      id="runs-crew-rules-button"
+      type="button"
+      phx-click="open_crew"
+      variant="secondary"
+      data-role="crew-rules-button"
+      class="min-h-11"
+    >
+      <.icon name="hero-identification" class="size-4" />
+      Crew rules &middot; {crew_button_text(assigns.crew)}
+    </.button>
+    """
+  end
+
+  # The button's own sentence. "12 h spread" rather than "720 min spread",
+  # because the number a reader checks against their own schedule is hours; the
+  # 720 is still exact in the drawer, which is where a value is EDITED.
+  defp crew_button_text(crew) do
+    "#{crew.report_pull_out_minutes} / #{crew.report_relief_minutes} min report · " <>
+      "#{crew.paid_break_max_minutes} min paid break · " <>
+      "#{div(crew.max_spread_minutes, 60)} h spread"
+  end
+
+  @doc """
+  Renders the Crew rules drawer: the five editable rules, the read-only piece
+  limit, and the paid-time rule in words.
+
+  The drawer is NOT URL state, for the reason the problems drawer is not: every
+  restorable parameter on this page is a lens on the same day, and a draft the
+  reader has not saved is not a view of anything yet.
+
+  `:entries` is the draft and `:errors` the per-field messages. They are SEPARATE
+  from the stored `crew` on purpose: a refused save keeps everything the reader
+  typed, so a form built from the stored values would silently undo their work.
+  """
+  def crew_drawer(assigns) do
+    # Every button here sets `variant` explicitly. The component's default is
+    # `primary`, so a button that omits it still renders `btn-primary` — and the
+    # drawer is in the DOM even when closed, so a stray default shows up as a
+    # second primary on the page.
+    # The form is built from the DRAFT, not from the stored crew. A refused save
+    # has to keep every entry (AC-30), and a form built from the stored values
+    # would put the old numbers back in the boxes the moment one was rejected.
+    # STRING keys: `to_form/2` warns on an atom-keyed map because maps are
+    # treated as parameters, and parameters arrive with string keys. The draft is
+    # held with atoms because that is how the domain names the rules, and it is
+    # translated exactly here — the one place the two spellings meet.
+    assigns =
+      assign(
+        assigns,
+        :form,
+        to_form(Map.new(assigns.entries, fn {key, value} -> {to_string(key), value} end),
+          as: :crew
+        )
+      )
+
+    ~H"""
+    <.drawer
+      id="runs-crew-rules-drawer"
+      open={@open}
+      on_close="close_crew"
+      title="Crew rules"
+      return_focus_id="runs-crew-rules-button"
+    >
+      <p id="runs-crew-rules-subtitle" class="text-sm text-base-content/70">
+        This version &middot; all day types
+      </p>
+
+      <p class="mt-2 text-[13px] text-base-content/70">
+        Used for every run in this version. Changing them rechecks every run; saved runs don&rsquo;t move.
+      </p>
+
+      <p
+        :if={@notice}
+        id="runs-crew-rules-notice"
+        role="alert"
+        class="mt-3 rounded-card border border-error-line bg-error-container px-4 py-3 text-sm"
+      >
+        {@notice}
+      </p>
+
+      <form
+        id="crew-rules-form"
+        phx-change="validate_crew"
+        phx-submit="save_crew"
+        novalidate
+        class="mt-4 grid gap-5"
+      >
+        <.input
+          :for={field <- crew_field_names()}
+          id={"crew-#{field}"}
+          field={@form[to_string(field)]}
+          type="number"
+          label={crew_label(field)}
+          min={crew_min(field)}
+          max={crew_max(field)}
+          step={1}
+          inputmode="numeric"
+          errors={List.wrap(Map.get(@errors, field))}
+          help={crew_help(field)}
+          class="input input-lg w-28 block"
+        />
+
+        <div class="grid gap-1">
+          <p class="text-[13px] font-semibold">Longest piece before an operator change</p>
+          <p id="crew-piece-limit" class="text-sm">
+            {piece_limit(@max_piece_minutes)}
+            <span class="text-base-content/70">&middot; set with the relief points in Blocks</span>
+          </p>
+          <p class="text-[13px] text-base-content/70">
+            Approximates no more than 5&frac12; hours without a meal break.
+          </p>
+          <.link
+            href={"/gtfs/#{@version_id}/blocks?day=#{@day_type_key}"}
+            id="crew-piece-limit-link"
+            data-role="crew-blocks-link"
+            class="min-h-11 font-semibold text-action underline underline-offset-4"
+          >
+            Edit in Blocks &rsaquo; Operator changes
+          </.link>
+        </div>
+
+        <div class="rounded-card border border-info-line bg-info-container px-4 py-3 text-sm">
+          <p id="crew-rule-text" data-role="crew-rule-text">{crew_rule_text(@entries)}</p>
+        </div>
+
+        <div class="flex flex-wrap justify-end gap-2">
+          <.button type="button" phx-click="close_crew" variant="secondary">
+            Cancel
+          </.button>
+          <.button type="submit" id="crew-rules-save" variant="primary">
+            Save crew rules
+          </.button>
+        </div>
+      </form>
+    </.drawer>
+    """
+  end
+
+  # The five rules, in the order the prototype lists them, each with the range
+  # the DOMAIN validates. The ranges are read from the same numbers
+  # `BlockingSetting.crew_changeset/2` checks, so a client-side message and a
+  # changeset message cannot disagree about what is acceptable.
+  defp crew_fields do
+    [
+      {:report_pull_out_minutes, "Report before a pull-out (min)", 0, 30,
+       "Charged before every piece that starts at the garage, including a split's second pull-out. 0-30."},
+      {:report_relief_minutes, "Report before a relief (min)", 0, 15,
+       "Charged before every piece that starts at a relief point. 0-15."},
+      {:sign_off_minutes, "Sign-off (min)", 0, 15, "Once per run, after the last piece. 0-15."},
+      {:paid_break_max_minutes, "Paid break up to (min)", 0, 90,
+       "A break this long or shorter is paid and makes a straight run; a longer one is unpaid and makes a split. 60 is the main alternative. 0-90."},
+      {:max_spread_minutes, "Longest spread (min)", 240, 1080,
+       "Sign-on to sign-off, including report, travel and sign-off. Suggest runs never exceeds it; a hand edit past it shows a warning. 720 is 12 hours. 240-1080."}
+    ]
+  end
+
+  defp crew_field_names, do: Enum.map(crew_fields(), &elem(&1, 0))
+
+  defp crew_label(:report_pull_out_minutes), do: "Report before a pull-out (min)"
+  defp crew_label(:report_relief_minutes), do: "Report before a relief (min)"
+  defp crew_label(:sign_off_minutes), do: "Sign-off (min)"
+  defp crew_label(:paid_break_max_minutes), do: "Paid break up to (min)"
+  defp crew_label(:max_spread_minutes), do: "Longest spread (min)"
+
+  defp crew_min(field), do: Enum.find(crew_fields(), &(elem(&1, 0) == field)) |> elem(2)
+  defp crew_max(field), do: Enum.find(crew_fields(), &(elem(&1, 0) == field)) |> elem(3)
+  defp crew_help(field), do: Enum.find(crew_fields(), &(elem(&1, 0) == field)) |> elem(4)
+
+  # The rule in words, recomputed from the DRAFT rather than from the stored
+  # crew. A sentence that still named the saved values while the reader edited
+  # them would be a second, competing statement of the rules.
+  def crew_rule_text(entries) do
+    "Paid time = report (#{number(entries, :report_pull_out_minutes)} min before each pull-out, " <>
+      "#{number(entries, :report_relief_minutes)} min before each relief) + time on vehicles + " <>
+      "travel + a break of #{number(entries, :paid_break_max_minutes)} minutes or less + " <>
+      "sign-off (#{number(entries, :sign_off_minutes)} min)."
+  end
+
+  defp number(entries, field) do
+    case Map.get(entries, field) do
+      value when is_binary(value) -> if String.trim(value) == "", do: "–", else: value
+      value -> to_string(value)
+    end
+  end
+
+  @doc """
   Renders the problems drawer: every run's findings, the uncovered work, and
   the orphan notice.
 
