@@ -573,7 +573,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
           # directly is worth the extra fields: it is the only way to reach the
           # clean-run branch, which no fixture in this file produces.
           rename_form: Phoenix.Component.to_form(%{"run_id" => ""}, as: :run),
-          rename_errors: []
+          rename_errors: [],
+          # Step 31 added the per-piece move forms inside the drawer, so this
+          # hand-built assign set carries them too. This run has no pieces, so
+          # `move_runs` is empty and no move form is rendered.
+          move_form: Phoenix.Component.to_form(%{"to" => ""}, as: :move),
+          move_runs: [],
+          next_run_id: "1"
         )
 
       assert html =~ "No problems"

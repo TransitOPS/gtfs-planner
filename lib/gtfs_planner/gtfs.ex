@@ -5905,6 +5905,16 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  The run number a NEWLY created run would take on this day type.
+
+  Delegates to the numbering module rather than letting a page do the
+  arithmetic, so the "New run (N)" a reader is shown is the number the write
+  will actually use.
+  """
+  @spec next_run_id([String.t()]) :: String.t()
+  def next_run_id(run_ids), do: Runs.Numbering.next_run_id(run_ids)
+
+  @doc """
   Renames a run on one day type and returns an undo.
 
   Every row carrying `old_id` becomes a row carrying `new_id`; no other day

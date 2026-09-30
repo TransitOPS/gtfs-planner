@@ -81,6 +81,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:undo, nil)
      |> assign(:rename_form, to_form(%{"run_id" => ""}, as: :run))
      |> assign(:rename_errors, [])
+     |> assign(:move_form, to_form(%{"to" => ""}, as: :move))
+     |> assign(:move_runs, [])
+     |> assign(:next_run_id, "1")
      |> assign(:run_axis, nil)
      |> assign(:run_routes, %{})
      |> stream(:run_rows, [], dom_id: &run_dom_id/1)}
@@ -145,6 +148,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         socket
         |> assign(:drawer, {:run, run_id})
         |> reset_rename_form()
+        |> sync_run_context()
     end
   end
 
@@ -362,7 +366,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
          socket
          |> assign(:drawer, {:run, run.run_id})
          |> assign(:run, run.run_id)
-         |> reset_rename_form()}
+         |> reset_rename_form()
+         |> sync_run_context()}
     end
   end
 
@@ -443,6 +448,47 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
+  # Move ONE piece to another run, from the drawer.
+  #
+  # The piece is named by its POSITION in the drawer's own list, and the trips
+  # come from that piece on the server. A form that posted `trip_id`s would let a
+  # reader — or anything posting the form — move trips that are not in the piece
+  # they are looking at, and the "From" in the page would be a claim rather than
+  # the truth.
+  #
+  # `from:` is the run the drawer is showing, so a piece whose `from` has changed
+  # underneath the page makes the write STALE and the shared optimistic check
+  # refuses it. That is the whole protection: there is no separate "is this still
+  # the right piece" test, because the moves themselves carry it.
+  def handle_event("move_piece", %{"piece" => index, "move" => %{"to" => to}}, socket) do
+    with {:ok, piece} <- piece_at(socket, index),
+         {:ok, destination} <- destination(to) do
+      moves =
+        Enum.map(piece.trips, &%{trip_id: &1.id, from: socket.assigns.run, to: destination})
+
+      {:noreply,
+       apply_moves(
+         socket,
+         moves,
+         moved_text(destination),
+         "This run changed since the page loaded. Reload to see the latest runs.",
+         fn socket, new_run_id -> follow_run(socket, new_run_id, destination) end
+       )}
+    else
+      :no_piece ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast("That piece is no longer here. Reload to see the latest runs.", :refused)}
+
+      :nothing_chosen ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast("Choose a run to move this piece to.", :refused)}
+    end
+  end
+
   def handle_event("close_drawer", _params, socket) do
     {:noreply,
      socket
@@ -492,16 +538,140 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # the same direction the success path is: a page that says "these runs changed"
   # over a chart that still shows the old run has not told the reader anything
   # they can act on.
-  defp apply_moves(socket, moves, success, refusal) when is_function(success, 1) do
+  # Everything the drawer's move forms need, recomputed from the day's runs and
+  # the run being drawn.
+  #
+  # The CURRENT run is left out of the move targets: moving a piece to the run it
+  # is already on is not a move, the domain allows it as a no-op, and offering it
+  # would put a choice in the list that cannot mean anything.
+  defp sync_run_context(socket) do
+    day = socket.assigns.runs_day
+    current = socket.assigns.run
+
+    socket
+    |> assign(:run_pieces, (find_run(day, current) || %{pieces: []}).pieces)
+    |> assign(:next_run_id, Gtfs.next_run_id(run_ids(day)))
+    |> assign(:move_runs, move_runs(day, current))
+  end
+
+  defp run_ids(day) do
+    day.derived.runs |> Enum.map(& &1.run_id) |> Enum.sort()
+  end
+
+  # The day's runs, minus the one being drawn, in sign-on order. The LABELS are
+  # built by the component, which already owns the wording for a run's type —
+  # a second spelling of "one piece" in the move select would be a move form that
+  # called a run by a different name than the rest of the page does.
+  defp move_runs(day, current) do
+    day.derived.runs
+    |> Enum.reject(&(&1.run_id == current))
+    |> Enum.sort_by(&{&1.work.sign_on_secs, &1.run_id})
+  end
+
+  # The drawer's piece, by the position the fieldset named. Out of range is
+  # refused rather than clamped: piece 9 of a 2-piece run is a page that no
+  # longer matches the database, and guessing piece 2 would move the WRONG
+  # vehicle work.
+  defp piece_at(socket, index) do
+    # The fieldset says "Piece 1", "Piece 2" — one-based, as a reader counts.
+    # The list is zero-based, and `Enum.at(pieces, 1)` is the SECOND piece, so
+    # the 1 is taken off here and nowhere else. With it left on, "Move piece 1"
+    # moves piece 2's vehicle work and the page says it moved the right one.
+    case Enum.at(socket.assigns.run_pieces, String.to_integer(index) - 1) do
+      nil -> :no_piece
+      piece -> {:ok, piece}
+    end
+  rescue
+    ArgumentError -> :no_piece
+  end
+
+  # The value the select carried, in the shape `apply_run_moves/4` wants.
+  defp destination("__new"), do: {:ok, :new}
+  defp destination(""), do: :nothing_chosen
+  defp destination(run_id), do: {:ok, run_id}
+
+  # This step's own success text, naming the run the piece ended up on.
+  #
+  # `apply_run_moves/4` returns `new_run_id: nil` whenever it made no run of its
+  # own, which is exactly the "joined a run that already existed" case. A text
+  # that branched on `nil` alone would say the same bare "Piece moved." for every
+  # move into an existing run, naming nothing the reader just chose — so the
+  # destination they picked is quoted back to them instead.
+  defp moved_text(destination) do
+    fn
+      nil -> "Piece moved to run #{destination}."
+      new_run_id -> "Piece moved to run #{new_run_id}."
+    end
+  end
+
+  # The drawer follows the PIECE. A piece moved into a run of its own leaves the
+  # reader looking at a different run from the one they chose from, and a drawer
+  # left on the source would show them a run that no longer holds what they just
+  # moved. The number of a new run is only known AFTER the write, so this takes
+  # the value `apply_run_moves/4` returned; for an existing run that value is
+  # nil and the destination the reader chose is the one to follow.
+  defp follow_run(socket, new_run_id, destination) do
+    target = new_run_id || destination
+
+    socket
+    |> load_day()
+    |> push_patch(to: runs_path(socket, socket.assigns.day, %{run: target}))
+  end
+
+  # `after_success` runs ONLY on a success, and is handed the socket and the
+  # `new_run_id` the write returned. It exists so a caller that has something
+  # more to do after a write — step 31 moving the drawer to the piece's new run —
+  # does not have to learn the return shape a second time, and so no caller can
+  # put that work on a REFUSAL, where the write never happened. A refusal must
+  # leave the reader on what they were looking at.
+  defp apply_moves(socket, moves, success, refusal, after_success \\ fn socket, _id -> socket end)
+
+  defp apply_moves(socket, moves, success, refusal, after_success)
+       when is_function(success, 1) and is_function(after_success, 2) do
     %{day: day, current_organization: organization, current_gtfs_version: version} =
       socket.assigns
 
+    # An EMPTY move set is refused here, once, for every caller.
+    #
+    # `apply_run_moves/4` answers `[]` with `{:ok, changed_trips: 0}` — a
+    # SUCCESS for a write that changed nothing. Left unguarded, a caller with
+    # nothing to move (a segment or a piece that carries no trips) would show
+    # "Piece moved to run 1002." and arm an Undo over zero moves, and the reader
+    # would believe vehicle work had changed places when none had.
+    #
+    # No fixture in this package reaches it, so unlike the guards around it this
+    # one is defence in depth rather than proof. It stays because the false
+    # success is a property of the SHARED helper, and every caller — create a
+    # run, move a piece, undo — would otherwise inherit it.
+    case moves do
+      [] ->
+        socket
+        |> put_undo(nil)
+        |> put_toast("There is nothing to move.", :refused)
+        |> load_day()
+
+      _ ->
+        apply_moves_now(
+          socket,
+          organization,
+          version,
+          day,
+          moves,
+          success,
+          refusal,
+          after_success
+        )
+    end
+  end
+
+  defp apply_moves_now(socket, organization, version, day, moves, success, refusal, after_success) do
     case Gtfs.apply_run_moves(organization.id, version.id, day, moves) do
       {:ok, %{new_run_id: id, undo: undo_moves}} ->
         socket
         |> put_undo(%{moves: undo_moves, trips: undo_trip_count(undo_moves)})
         |> put_toast(success.(id), :done)
         |> load_day()
+        |> after_success.(id)
 
       {:error, :stale_moves} ->
         socket |> put_undo(nil) |> put_toast(refusal, :refused) |> load_day()
@@ -964,6 +1134,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         stop_names={@run_stop_names}
         rename_form={@rename_form}
         rename_errors={@rename_errors}
+        move_form={@move_form}
+        move_runs={@move_runs}
+        next_run_id={@next_run_id}
         return_focus_id={"runs-run-#{@run}"}
       />
 
