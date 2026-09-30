@@ -1,5 +1,5 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksMovementsLiveTest do
-  # EV-27, rejecting FH-27 for CL-27: the timeline's garage legs, drives, waits,
+  # The timeline's garage legs, drives, waits,
   # relief marks and legend, read through the ordinary `/gtfs/:version/blocks`
   # route on the production `CatalogReadAdapter.Repo` and the scoped `Blocking`
   # context. Rows are created inside the SQL Sandbox transaction and rolled back;
@@ -11,9 +11,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksMovementsLiveTest do
   # assertions would fail if the page re-derived a geometry of its own. The axis
   # is the day's platform spans snapped outwards to the hour, which is what makes
   # a pull-out before 00:00 land on the track instead of off its left edge.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_movements_live_test.exs`.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -212,7 +209,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksMovementsLiveTest do
       assert attribute(view, wait, "data-minutes") == "22"
       assert attribute(view, wait, "data-short") == "false"
 
-      # The drive is drawn before the wait, as in the reference.
+      # The drive is drawn before the wait, before the wait it precedes.
       roles = attributes(view, "#{row("101")} [data-role]", "data-role")
 
       assert Enum.find_index(roles, &(&1 == "drive")) <

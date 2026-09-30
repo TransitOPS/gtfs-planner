@@ -419,6 +419,16 @@ body {
 
 #blocks-page .blocks-block-button:hover { color: var(--color-action-hover); }
 
+/* A secondary control the page has ruled out, such as Suggest blocks while a
+   suggestion is previewed, reads as unavailable: a hairline on the canvas
+   ground with muted ink. */
+#blocks-page .btn-outline:disabled {
+  border-color: var(--color-subtle);
+  background: var(--color-canvas);
+  color: var(--color-muted);
+  cursor: not-allowed;
+}
+
 #blocks-page .blocks-sort {
   display: inline-flex;
   align-items: center;
@@ -519,9 +529,10 @@ body {
   z-index: 4;
 }
 
-/* A gap is a button spanning the layover. Four states differ by more than
-   colour: a waiting line, a short layover's "!" chip, a deadhead's dashed line
-   with an arrow, and an overlap, which draws no gap and outlines its bars. */
+/* A gap is a button spanning the wait between two trips. Its states differ by
+   more than colour: a waiting line with its minutes, a short layover's "!" chip,
+   and an overlap, which draws no gap and outlines its bars. A deadhead between
+   the trips is drawn as a separate drive mark before the wait (see below). */
 #blocks-page .blocks-gap {
   position: absolute;
   top: 6px;
@@ -559,13 +570,6 @@ body {
 
 #blocks-page .blocks-gap-short:hover { background: var(--color-warning-bg); }
 
-#blocks-page .blocks-gap-move {
-  z-index: 3;
-  border-bottom-style: dashed;
-  border-bottom-color: var(--color-info-line);
-  color: var(--color-info-fg);
-}
-
 /* The minutes print only when the gap's own bar is at least 26px wide. */
 #blocks-page .blocks-gap-label {
   display: none;
@@ -588,8 +592,8 @@ body {
    box: same top, same height, same rounded corners, above the grid rules. */
 #blocks-page .blocks-track-mark {
   position: absolute;
-  top: 6px;
-  height: 24px;
+  top: 8px;
+  height: 28px;
   min-width: 2px;
   z-index: 1;
   display: inline-flex;
@@ -641,6 +645,7 @@ body {
 /* A drive the version cannot compute: no hatch and no feasibility claim, just a
    dashed edge and a "?". */
 #blocks-page .blocks-drive-unknown {
+  background-image: none;
   background-color: var(--color-canvas);
   border: 1px dashed var(--color-control);
   color: var(--color-default);

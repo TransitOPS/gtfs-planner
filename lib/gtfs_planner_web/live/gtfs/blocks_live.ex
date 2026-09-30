@@ -2,11 +2,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   @moduledoc """
   LiveView for Operations › Blocks.
 
-  Blocks shows which trips one vehicle works in sequence for a day type, and it
-  is the only place a block is edited. This page owns the day-type scope, the
-  whole-day count strip, the Service dates, Checks, Peak and Minimum layover
-  drawers and every page state; the timeline, the List view, the unassigned pool
-  and the trip, gap and block drawers render inside the same page.
+  Blocks shows which trips one vehicle works in sequence for a service day, and
+  it is the only place a block is edited. This page owns the service-day scope,
+  the whole-day count strip and plan figures, the Service dates, Checks, Plan
+  summary, Block rules, Driving times, Operator changes and Suggest blocks
+  drawers, the suggestion preview and every page state; the timeline, the List
+  view, the unassigned pool and the trip, gap and block drawers render inside the
+  same page.
 
   The page mounts through the ordinary `:gtfs_routes` session, which decides
   whether a request reaches it; the editor guard is declared here because a
@@ -18,27 +20,27 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   The whole loaded day lives in the server-only `:day` assign, which `render/1`
   never reads: the render assigns (`:day_types`, `:day_type`, `:counts`,
   `:peak`, `:bins`, `:axis`, the trip's in-seat records and the rest) are derived
-  from it, so a route filter, a page change or a drawer never re-reads the trips
-  (CR-6). A load runs when the connected page has no day for the requested key;
+  from it, so a route filter, a page change or a drawer never re-reads the trips.
+  A load runs when the connected page has no day for the requested key;
   every other URL change only re-renders. An unknown `day` key keeps its recovery
-  state and applies no default (INV-6), and a failed load keeps the last loaded
+  state and applies no default, and a failed load keeps the last loaded
   day on screen.
 
   `trip=` is a deep link to one trip's read-only drawer: `handle_params/3`
   resolves it against the loaded day, opens `#trip-drawer` on the page that holds
   the trip (overriding a requested `page`/`pool_page`), and shows
   `#blocks-trip-elsewhere` with the trip's own day types or the unavailable
-  sentence when the loaded day type or the version does not hold it (AC-29).
+  sentence when the loaded day type or the version does not hold it.
 
   `gap=` (`<from trip uuid>|<to trip uuid>`) and `block=` are the other two
   drawers, and the three together are a small stack: `block=` keeps its context
   in the URL while a gap or a trip is open on top of it, so the gap and trip
   drawers offer “Back to block <id>”. The top of the stack is the one drawer
   rendered open (trip, then gap, then block), one URL change resolves it against
-  the loaded day and no drawer reaches into the day in `render/1` (CR-6).
+  the loaded day and no drawer reaches into the day in `render/1`.
 
   `drawer=driving_times&pair=stop:<id>|stop:<id>` and `drawer=operator_changes`
-  are the planning-input drawers the gap drawer links to (AC-38). They are page
+  are the planning-input drawers the gap drawer links to. They are page
   drawers rather than a stack entry, so the link that opens one clears the stack:
   one open panel over the page, and a link that reopens the same drawer.
   """
@@ -56,25 +58,27 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
 
+  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
+
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
   @drawers %{
     "service_dates" => :service_dates,
     "checks" => :checks,
     "problems" => :checks,
-    # The plan figures send `plan_summary` (AC-34, AC-35). The old `peak` key
+    # The plan figures send `plan_summary`. The old `peak` key
     # maps to the same drawer so an older link still opens the page's plan
     # summary rather than a drawer that no longer exists.
     "plan_summary" => :plan_summary,
     "peak" => :plan_summary,
     # The two planning-input drawers are reached from a link that names them in
     # the URL, so `?drawer=driving_times&pair=…` opens the same drawer a click
-    # does (step 41, step 42). Nothing renders them until those steps build them.
+    # does.
     "driving_times" => :driving_times,
     "operator_changes" => :operator_changes,
     # The Suggest blocks drawer is a page drawer too, and the selection bar's
-    # “Rebuild selected blocks” reaches it by patching `?drawer=suggest` (step 43
-    # wrote the hand-off, step 44 builds what it opens). The Block rules key is
+    # “Rebuild selected blocks” reaches it by patching `?drawer=suggest`. The
+    # Block rules key is
     # here for the same reason: the suggest drawer's “Block rules” link is a
     # navigation, not a panel swap, so the URL it leaves behind is one the page
     # can resolve again.
@@ -120,14 +124,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   }
 
   # The drawer's own sentences. It is a top-layer `<dialog>`, so the page flash
-  # renders behind it and cannot carry a refusal the reader is looking at (AC-31).
+  # renders behind it and cannot carry a refusal the reader is looking at.
   @driving_times_unreadable "These driving times couldn't be read. Your entries are kept."
-  @driving_times_unknown_pair "That driving time isn't in this day type."
+  @driving_times_unknown_pair "That driving time isn't in this service day."
   @driving_times_nothing_to_reset "That driving time had nothing to reset."
 
   @driving_times_save_failed "These driving times could not be saved. Your entries are retained. Try again."
 
-  # The reference's own row error, over the range the context's changeset
+  # The row error, over the range the context's changeset
   # enforces on a driving time.
   @driving_minutes_error "Enter 0–600 min."
 
@@ -144,20 +148,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   }
 
   # The drawer's own sentences. Its error is the top-layer dialog's own, not the
-  # page flash behind it (AC-31).
+  # page flash behind it.
   @operator_changes_unreadable "These operator changes couldn't be read. Your entries are kept."
 
   @operator_changes_save_failed "These operator changes could not be saved. Your entries are retained. Try again."
 
-  # The reference's own limit error, over the range the context's changeset
-  # enforces on the relief limit (AC-1).
+  # The limit error, over the range the context's changeset
+  # enforces on the relief limit.
   @operator_limit_error "Enter a whole number from 60 to 720, or leave it blank."
 
-  # The researched common contract limit, pre-filled when the version has none
-  # (AC-1, research question 1).
+  # The researched common contract limit, pre-filled when the version has none.
   @default_piece_minutes 330
 
-  # The Suggest blocks drawer's transient state (AC-43). The scope is the mode the
+  # The Suggest blocks drawer's transient state. The scope is the mode the
   # reader chose, `:too_large` the trips the generator refused to plan, and
   # `:busy` the one suggestion being built at a time. Everything else the drawer
   # prints is derived from the loaded day.
@@ -165,7 +168,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # The panel's own data, empty until a plan is previewed. It is a render assign
   # rather than something `render/1` derives, so the render never reads the loaded
-  # day (CR-6).
+  # day.
   @empty_suggestion %{
     plan: nil,
     scope: nil,
@@ -176,20 +179,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     changed_block_ids: MapSet.new()
   }
 
-  # A scope of no selection cannot reach the generator's `{:selected, ids}` mode
-  # (AC-26), so a payload that asks for one is refused here in the drawer's own
+  # A scope of no selection cannot reach the generator's `{:selected, ids}` mode,
+  # so a payload that asks for one is refused here in the drawer's own
   # words rather than turned into a scope the reader did not choose.
   @suggest_no_selection "Select blocks on the timeline first."
 
   @suggest_unavailable "A suggestion could not be built. Your blocks are unchanged. Try again."
 
-  # A suggestion is one bounded read of the day type (AC-26, AC-28), so it runs
+  # A suggestion is one bounded read of the day type, so it runs
   # under `start_async` the way the page's other bounded reads do: the drawer shows
   # that it is working instead of freezing on the button, and the result is applied
   # when it arrives.
   @suggest_preview_key :suggest_preview
 
-  # Applying a suggestion is the page's own state (AC-45): the result of the
+  # Applying a suggestion is the page's own state: the result of the
   # last attempt, and the applied message that outlives the preview it belongs
   # to. `:none` is a preview with nothing to say, `:pending` a write in flight,
   # and `:stale`, `:busy` and `:failed` the three answers that keep the preview
@@ -197,7 +200,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   @empty_apply %{status: :none, title: nil, message: nil, reason: nil}
 
   # The replace-all confirmation, its own assign rather than part of the result:
-  # it is a question the reader is asked, not an outcome (AC-45).
+  # it is a question the reader is asked, not an outcome.
   @no_replace %{open?: false, moves: 0, days: []}
 
   # Applying is one bounded write under the blocking lock, so it runs under
@@ -206,11 +209,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # is applied when it arrives.
   @apply_suggestion_key :suggest_apply
 
-  # The reference's three answers in the page's own words. A stale plan is named
+  # The three answers in the page's own words. A stale plan is named
   # by what the reader must do about it rather than by an input the page cannot
   # see: `apply_block_plan/3` reports `:stale_plan` without saying which setting,
   # trip or driving time moved, so the message names the class of change and
-  # turns Apply off with its reason beside it (AC-45).
+  # turns Apply off with its reason beside it.
   @apply_stale_title "This suggestion is out of date."
   @apply_stale_message "A driving time, trip, block or setting changed after this preview was built. Nothing was applied. Suggest again before applying."
 
@@ -235,13 +238,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # The timeline and the List view hold one page of the day type's blocks and the
   # Unassigned panel one page of its pool trips. Every page is derived from the
-  # loaded day, so paging, sorting and the filters never re-read trips (CR-6).
+  # loaded day, so paging, sorting and the filters never re-read trips.
   @page_size 100
 
   # A page number is clamped to a positive integer. `@max_page` is the absolute
   # guard against a crafted URL; the day's own page count is applied when the page
   # is sliced, so an out-of-range page renders the last page's rows rather than a
-  # page the pager would deny. The URL keeps the requested page (EV-19).
+  # page the pager would deny. The URL keeps the requested page.
   @max_page 10_000
 
   @empty_counts %{blocks: 0, trips: 0, unassigned: 0, problems: 0, notices: 0}
@@ -253,10 +256,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   @bin_secs 900
 
   # The destination picker offers at most this many matches, so a day type with
-  # thousands of blocks still narrows by search rather than by scrolling (AC-26).
+  # thousands of blocks still narrows by search rather than by scrolling.
   @destination_limit 25
 
   @permission_message "You don't have permission to change blocks in this version."
+
+  @subtitle "A block is one vehicle's trips for a service day, in order. Check that they fit, and give every trip a vehicle."
 
   @impl true
   def mount(_params, _session, socket) do
@@ -272,7 +277,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      # The block selection is the Blocks tab's own cross-page selection of block
      # IDs, kept beside the trip selection rather than inside it: the two are
      # never read together, so selecting blocks cannot change what the Unassigned
-     # panel's bar counts and selecting trips cannot change this one (AC-42).
+     # panel's bar counts and selecting trips cannot change this one.
      |> assign(:block_selection, MapSet.new())
      |> assign(:visible_count, 0)
      |> assign(:timeline_key, nil)
@@ -310,14 +315,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   @impl true
   # A day type is a different plan, so its blocks are not the blocks the reader
-  # was selecting; the trip selection clears with it (AC-24, AC-42).
+  # was selecting; the trip selection clears with it.
   def handle_event("select_day", %{"day" => _day}, %{assigns: %{plan_preview: plan}} = socket)
       when not is_nil(plan) do
     # A preview is a proposal over one day type. Changing what it was built from
     # would leave the panel describing a plan the page no longer shows, so the
     # control is disabled while it is up and its event is refused here as well: a
-    # disabled control that still fired would be a lie about the page's state
-    # (AC-44).
+    # disabled control that still fired would be a lie about the page's state.
     {:noreply, socket}
   end
 
@@ -338,12 +342,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     status = if params["status"] == "problems", do: :problems, else: :all
     route = blank_to_nil(params["route"])
 
-    # AC-24: a route filter keeps only the selected trips that run on that route.
+    # A route filter keeps only the selected trips that run on that route.
     # The selection is not in the URL, so it is pruned before the patch and both
     # stream keys carry it, which re-sends the page with its new checked state.
     # The block selection is not pruned: the filters narrow which blocks a
     # rebuild would plan, and a block the reader picked under one filter is not
-    # a block the reader picked under the next, so the filter clears it (AC-42).
+    # a block the reader picked under the next, so the filter clears it.
     socket =
       socket
       |> assign(:selection, retain_on_route(socket, route))
@@ -384,7 +388,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_event("set_scale", _params, socket), do: {:noreply, socket}
 
   # Sorting the same key again reverses it; any other key starts ascending. The
-  # sort covers the whole day type, so it returns to page 1 (AC-22).
+  # sort covers the whole day type, so it returns to page 1.
   def handle_event("sort", %{"key" => key}, socket) do
     case Map.fetch(@sort_keys, key) do
       {:ok, sort} ->
@@ -404,7 +408,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # The row checkbox toggles one trip by its UUID, so the selection survives a
-  # page change and a trip that leaves the page keeps its place in it (AC-24).
+  # page change and a trip that leaves the page keeps its place in it.
   def handle_event("toggle_trip", %{"trip" => trip_id}, socket) do
     case find_day_trip(socket.assigns.day, trip_id) do
       nil ->
@@ -418,7 +422,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_event("toggle_trip", _params, socket), do: {:noreply, socket}
 
   # “Select this page” adds every trip the current pool page or List page holds
-  # to the selection, so a large selection is built a page at a time (AC-24).
+  # to the selection, so a large selection is built a page at a time.
   def handle_event("select_page", _params, socket) do
     selection = MapSet.union(socket.assigns.selection, visible_page_ids(socket.assigns))
 
@@ -429,7 +433,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {:noreply, put_selection(socket, MapSet.new())}
   end
 
-  # --- the block selection (step 43, AC-42) ------------------------------------
+  # --- the block selection ------------------------------------
 
   # The row checkbox toggles one block by its own block ID, so the selection
   # survives a page change and a sort exactly as the trip selection does, and the
@@ -457,8 +461,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   def handle_event("toggle_block", _params, socket), do: {:noreply, socket}
 
   # The header checkbox selects the whole page, and unselects it when the page is
-  # already selected, so one control builds and clears a page-sized selection
-  # (AC-42).
+  # already selected, so one control builds and clears a page-sized selection.
   def handle_event("select_block_page", _params, %{assigns: %{plan_preview: plan}} = socket)
       when not is_nil(plan),
       do: {:noreply, socket}
@@ -470,8 +473,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {:noreply, put_block_selection(socket, selection)}
   end
 
-  # The Suggest blocks drawer's "Selected blocks" scope is step 44's; this step
-  # only carries the reader to it, and only with a selection to plan (AC-42).
+  # Rebuilding selected blocks only carries the reader to the Suggest blocks
+  # drawer's “Selected blocks” scope, and only with a selection to plan.
   def handle_event("rebuild_selected", _params, socket) do
     if MapSet.size(socket.assigns.block_selection) == 0 do
       {:noreply, socket}
@@ -486,8 +489,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # The assignment form lives in the trip drawer, so opening it from a pool row
   # patches `trip=` to open that drawer; a trip already in the URL keeps its URL,
-  # including any `block=` context its “Back to block” link reads. Step 26 adds
-  # the `selection` scope beside this one.
+  # including any `block=` context its “Back to block” link reads. The
+  # `selection` scope sits beside this one.
   def handle_event("open_assign", %{"scope" => "trip", "trip" => trip_id}, socket) do
     case find_day_trip(socket.assigns.day, trip_id) do
       nil ->
@@ -507,9 +510,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # The bulk bar opens the same form for the whole selection. The selection scope
   # previews its ineligible trips from their own flags, so a repeating or untimed
   # trip is named before the reader submits rather than silently dropped — and
-  # the apply still refuses the command if eligibility is all that changed
-  # (R10, FH-18). “Use eligible trips” drops them and keeps the dialog open on
-  # what remains (AC-24).
+  # the apply still refuses the command if eligibility is all that changed.
+  # “Use eligible trips” drops them and keeps the dialog open on
+  # what remains.
   def handle_event("open_assign", %{"scope" => "selection", "eligible" => "true"}, socket) do
     {:noreply, use_eligible_selection(socket)}
   end
@@ -559,10 +562,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
-  # The block drawer's three actions (AC-27). The block a command acts on comes
+  # The block drawer's three actions. The block a command acts on comes
   # from the loaded day's own drawer and a remove-all's trip IDs from the same
-  # block, so a crafted event can never name another block or trip (CR-4); the
-  # submit then runs the same reviewed command path as an assignment (CL-18).
+  # block, so a crafted event can never name another block or trip; the
+  # submit then runs the same reviewed command path as an assignment.
   def handle_event("submit_block_action", params, socket) do
     case socket.assigns.block_action do
       nil ->
@@ -588,7 +591,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {:noreply, put_block_attributes(socket, params, nil)}
   end
 
-  # The one attribute write this drawer offers (AC-37). The form exists only on a
+  # The one attribute write this drawer offers. The form exists only on a
   # loaded day type with a block open, so a submit from another page state is not
   # a save; the context then validates, locks and decides the confirmation.
   def handle_event("save_block_attributes", _params, %{assigns: %{day_type: nil}} = socket),
@@ -604,9 +607,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # “Remove from block” runs the same reviewed command path as an assignment, so
-  # a removal that adds a problem opens the review too (R10, AC-26). The bulk bar
+  # a removal that adds a problem opens the review too. The bulk bar
   # removes every blocked trip of the selection; the ones already in the pool are
-  # not part of the command (AC-24).
+  # not part of the command.
   def handle_event("unassign", %{"scope" => "trip", "trip" => trip_id}, socket) do
     case find_day_trip(socket.assigns.day, trip_id) do
       nil -> {:noreply, socket}
@@ -640,9 +643,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     {:noreply, assign(socket, review: nil, review_stale?: false)}
   end
 
-  # The Block rules drawer's form sends its change event through its own name
-  # (CR-8): the values the reader typed are kept and re-validated, so a field
-  # error appears before a save rather than only after one (AC-39). The Route
+  # The Block rules drawer's form sends its change event through its own name:
+  # the values the reader typed are kept and re-validated, so a field
+  # error appears before a save rather than only after one. The Route
   # switches control is its own form and posts the same event with only
   # `interlining`, so one handler covers both: a payload with the form's own
   # `block_rules` map replaces the settings values, and one with `interlining`
@@ -654,10 +657,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # The two planning-input drawers are part of the URL, because a link names what
   # it opens: the gap drawer's “Enter a known driving time” names the pair it is
-  # about, so the drawer can highlight and focus that row (AC-38, step 41). They
+  # about, so the drawer can highlight and focus that row. They
   # are page drawers, so the drawer stack is dropped rather than stacked under
-  # them — the reference opens one drawer over another, and two open panels would
-  # cover the page twice.
+  # them — two open panels would cover the page twice.
   def handle_event(
         "open_drawer",
         %{"key" => key} = _params,
@@ -665,7 +667,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       )
       when not is_nil(plan) and key in ["block_rules", "driving_times", "suggest"] do
     # The rules and the driving times a plan was built on, and the drawer that
-    # builds another, are all off while a preview is up (AC-44).
+    # builds another, are all off while a preview is up.
     {:noreply, socket}
   end
 
@@ -730,7 +732,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   def handle_event("open_drawer", _params, socket), do: {:noreply, socket}
 
-  # The Suggest blocks drawer's own two events (AC-43). Choosing a scope is a
+  # The Suggest blocks drawer's own two events. Choosing a scope is a
   # client-side answer the page keeps, not a URL change: the drawer is reached by
   # `?drawer=suggest` and the scope is one of the generator's modes, so a reader
   # who opens the drawer again is offered the scope that is offered now — the
@@ -750,7 +752,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   def handle_event("suggest_scope_change", _params, socket), do: {:noreply, socket}
 
-  # Preview builds the plan and stores it; it writes nothing (AC-26, AC-43). A
+  # Preview builds the plan and stores it; it writes nothing. A
   # second submit while one is being built is refused, and a submit on a page with
   # no loaded day type is not a preview at all.
   def handle_event("preview_suggestion", _params, %{assigns: %{day_type: nil}} = socket),
@@ -774,7 +776,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # Discarding a suggestion puts the saved day back on the page. Nothing was
   # written to produce the preview, so there is nothing to undo here: the plan is
   # dropped, the loaded day is re-derived, and the timeline is re-sent with the
-  # markers gone (AC-44, CR-4).
+  # markers gone.
   def handle_event("discard_suggestion", _params, %{assigns: %{plan_preview: nil}} = socket),
     do: {:noreply, socket}
 
@@ -792,12 +794,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     patch(drop_preview(socket), %{trip: nil, gap: nil, block: nil, drawer: "suggest", pair: nil})
   end
 
-  # --- applying a suggestion (step 46, AC-45) ----------------------------------
+  # --- applying a suggestion ----------------------------------
 
   # Apply writes the previewed plan, so it is refused in the states where there
   # is nothing to write or where a write is already in flight: a second click
   # while one runs is dropped rather than queued, and the plan's own fingerprint
-  # (INV-7) is what stops a stale preview being written twice. A rebuild is
+  # is what stops a stale preview being written twice. A rebuild is
   # confirmed first, because it replaces hand-tuned blocks (PM-5); the other two
   # scopes apply directly.
   def handle_event("apply_suggestion", _params, %{assigns: %{plan_preview: nil}} = socket),
@@ -873,11 +875,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
-  # The two writes in the Block rules drawer (AC-39, AC-2). The drawer only
+  # The two writes in the Block rules drawer. The drawer only
   # exists on a loaded day type, so a submit from another page state is not a
   # save. The settings are saved first through the context's own upsert, which
   # decides whether the version is publishable and whether each value is inside
-  # its AC-1 range; a field error keeps the drawer and every entry the reader
+  # its range; a field error keeps the drawer and every entry the reader
   # typed, and the route table is not written at all. Only after the settings
   # writer accepts the row are the per-route garages and types saved, and only
   # then does the day reload so the blocks, warnings and scope button use the new
@@ -911,13 +913,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       end
     else
       # The refusal is the drawer's own sentence: the drawer is a top-layer
-      # `<dialog>` and the page flash renders behind it (AC-31).
+      # `<dialog>` and the page flash renders behind it.
       {:noreply, put_block_rules(socket, params, @permission_message)}
     end
   end
 
-  # The Driving times drawer's three events, all in the loaded day type's scope
-  # (AC-3). None of them is a save on its own: the filter only narrows what the
+  # The Driving times drawer's three events, all in the loaded day type's scope.
+  # None of them is a save on its own: the filter only narrows what the
   # drawer shows, a reset writes one row, and the save writes the rows whose
   # minutes differ from the ones the drawer listed.
   def handle_event("filter_driving_times", params, socket) do
@@ -926,7 +928,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
     # The checkbox and the rows share one form, so its change event carries every
     # row the reader typed as well as the filter: hiding the entered rows must not
-    # discard an entry someone has not saved yet (AC-3).
+    # discard an entry someone has not saved yet.
     {:noreply,
      assign(socket, :driving_times, %{
        put_driving_draft(state, driving_times_params(params))
@@ -1002,7 +1004,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
-  # The Operator changes drawer's one event (AC-41, AC-4). The limit and the
+  # The Operator changes drawer's one event. The limit and the
   # marks are the version's own settings, so the save is a single call to
   # `Gtfs.update_relief_settings/4`: the page validates the limit itself and
   # nothing is written when it refuses, and a save that reaches the context
@@ -1020,7 +1022,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       save_operator_changes(socket, state, limit, marked)
     else
       # The refusal is the drawer's own sentence: the drawer is a top-layer
-      # `<dialog>` and the page flash renders behind it (AC-31).
+      # `<dialog>` and the page flash renders behind it.
       {:noreply, put_operator_error(socket, state, limit, marked, @permission_message)}
     end
   end
@@ -1117,7 +1119,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # The URL state (Pages). Unknown values fall back to their default; the day key
-  # is kept as given so an unknown key can reach its recovery state (INV-6).
+  # is kept as given so an unknown key can reach its recovery state.
   defp parse_state(params, version) do
     %{
       version_id: to_string(version.id),
@@ -1167,10 +1169,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # Every non-default parameter, in a fixed order, so a patch carries only what
-  # the reader needs and an empty day type stays at `/blocks` (CR-7).
+  # the reader needs and an empty day type stays at `/blocks`.
   #
   # `drawer` carries the page's own drawers, including the Suggest blocks drawer
-  # that `rebuild_selected` opens; step 44 adds the drawer itself.
+  # that `rebuild_selected` opens.
   defp blocks_path(state) do
     case path_params(state) do
       [] -> "/gtfs/#{state.version_id}/blocks"
@@ -1370,8 +1372,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # The day the rows are drawn from. While a suggestion is previewed that is the
   # proposal's own day — a block the plan creates is a row, and a trip the plan
   # places has left the pool — while `:day` stays the saved day, so discarding
-  # needs no reload and a later apply still matches the plan's fingerprint
-  # (CR-4). The two are the same map when nothing is previewed.
+  # needs no reload and a later apply still matches the plan's fingerprint.
+  # The two are the same map when nothing is previewed.
   defp drawn_day(socket), do: socket.assigns.preview_day || socket.assigns.day
 
   # Both streamed pages are re-derived together, so the timeline, the List view
@@ -1382,15 +1384,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # chance to move it (`trip=`, `gap=` and `block=` override the requested page).
   # Streaming in `load_day/1` as well would queue the first page and then the
   # overriding one, and a stream reset never discards inserts already queued in
-  # the same render, so both pages would render (AC-29).
+  # the same render, so both pages would render.
   defp assign_page_rows_if_loaded(%{assigns: %{day: nil}} = socket), do: socket
   defp assign_page_rows_if_loaded(socket), do: assign_page_rows(socket)
 
-  # --- the cross-page selection (step 26) --------------------------------------
+  # --- the cross-page selection --------------------------------------
 
   # The selection is a MapSet of trip UUIDs, so it survives a page change, a
   # panel change and a sort; it is not in the URL, so a reload starts empty and
-  # the page clears it on a day or version change (AC-24). `selected_trips` is the
+  # the page clears it on a day or version change. `selected_trips` is the
   # same selection resolved against the loaded day, which is what the bar counts,
   # the eligibility preview and the bulk commands read — an id the day no longer
   # holds is never counted, and every streamed row is re-sent when the selection
@@ -1418,7 +1420,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # A day holds every trip of its day type exactly once: in the block named by
-  # its `block_id` or in the pool (AC-2).
+  # its `block_id` or in the pool.
   defp day_trips(day), do: Enum.flat_map(day.blocks, & &1.trips) ++ day.pool
 
   defp toggle_selection(selected, id) do
@@ -1427,7 +1429,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       else: MapSet.put(selected, id)
   end
 
-  # --- the block selection (step 43, AC-42) -------------------------------------
+  # --- the block selection -------------------------------------
 
   # A MapSet of block IDs, resolved against the loaded day the same way the trip
   # selection is: `selected_blocks` is what the bar counts and what the Suggest
@@ -1462,7 +1464,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # A route filter keeps only the selected trips that run on that route; clearing
-  # the filter keeps the whole selection (AC-24).
+  # the filter keeps the whole selection.
   defp retain_on_route(socket, nil), do: socket.assigns.selection
 
   defp retain_on_route(socket, route_id) do
@@ -1493,7 +1495,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # The trips the current page holds: the pool's own page in the Unassigned panel
   # and the page's blocks' trips in the Blocks panel, where the List view's rows
-  # and the timeline's bars are the same page of blocks (AC-24).
+  # and the timeline's bars are the same page of blocks.
   defp visible_page_ids(%{state: %{panel: :pool}} = assigns), do: assigns.pool_page_ids
   defp visible_page_ids(assigns), do: assigns.timeline_page_ids
 
@@ -1513,8 +1515,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # The selection's affected dates: every date of every day type one of the
   # selected trips runs in, summed the way the review's effect cards count them,
-  # so the bulk form's scope line means the same thing as the trip form's
-  # (AC-24).
+  # so the bulk form's scope line means the same thing as the trip form's.
   defp selection_dates(assigns) do
     services = MapSet.new(assigns.selected_trips, & &1.service_id)
 
@@ -1526,8 +1527,35 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     |> Enum.sum()
   end
 
+  # The page has one primary action. A previewed suggestion hands it to the panel's
+  # Apply suggestion; a selection of trips hands it to the selection bar's Assign
+  # and a selection of blocks to its Rebuild selected blocks; a service day with
+  # trips but no blocks hands it to the first-use panel's “Choose trips for a
+  # block” while that panel is on screen; otherwise the header's Review action
+  # holds it.
+  defp primary_owner(assigns, bulk) do
+    cond do
+      assigns.load_state != :loaded -> :head
+      not is_nil(assigns.plan_preview) -> :preview
+      bulk.count > 0 -> :bulk
+      assigns.selected_blocks != [] -> :blocks
+      first_use_panel?(assigns) -> :empty
+      true -> :head
+    end
+  end
+
+  defp first_use_panel?(assigns) do
+    assigns.state.panel == :blocks and assigns.counts.blocks == 0 and
+      assigns.counts.unassigned > 0
+  end
+
+  # The header action counts the work: it names the problems while there are any.
+  defp review_label(0), do: "Review checks"
+  defp review_label(1), do: "Review 1 problem"
+  defp review_label(count), do: "Review #{count} problems"
+
   # The trips of the selection that still have a block on this day type: the bulk
-  # bar's “Remove from block” command names exactly those (AC-24).
+  # bar's “Remove from block” command names exactly those.
   defp blocked_selected_ids(socket) do
     socket.assigns.selected_trips
     |> Enum.filter(& &1.block_id)
@@ -1537,7 +1565,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # “Change selection” returns focus to whichever opener the reader used: the
   # bulk bar's “Assign N trips” for a selection, the trip drawer's own control
   # for one trip, and the block drawer's own control for one of its three
-  # actions (AC-27).
+  # actions.
   defp review_focus(%{assign: %{scope: :selection}}), do: "bulk-assign"
   defp review_focus(%{assign: %{scope: :trip}}), do: "trip-change-assignment"
   defp review_focus(%{block_action: %{kind: :rename}}), do: "block-rename-id"
@@ -1601,10 +1629,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
-  # A `trip` deep link resolves to that trip's drawer on the page that holds it
-  # (AC-29). The trip's day types come from `Blocking.trip_day_types/3`, the one
+  # A `trip` deep link resolves to that trip's drawer on the page that holds it.
+  # The trip's day types come from `Blocking.trip_day_types/3`, the one
   # derivation the day load also uses, so the drawer's all-dates scope and an
-  # “another day type” notice agree with the loaded day (INV-6, CR-2). The page
+  # “another day type” notice agree with the loaded day. The page
   # holding the trip overrides the requested `page`/`pool_page` (Pages), which is
   # why the resolved page is written back before either streamed page is sliced.
   defp resolve_trip_view(socket, _day, nil), do: {socket, nil}
@@ -1636,7 +1664,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # A `gap` deep link names the pair of consecutive trips; the drawer reads the
-  # block's own gap entry (R5's handoff and the layover seconds), the block's own
+  # block's own gap entry (its handoff and the layover seconds), the block's own
   # movement for that gap (its drive, its source and the wait behind it) and the
   # relief windows of that same gap, so neither is recomputed or re-derived here.
   # Operator changes are read as "checked" only while a relief limit is set, which
@@ -1696,7 +1724,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # Every type 4/5 record naming both trips of the pair, whichever of the two
-  # trips the day's own map lists it under (INV-3: a record is read, never
+  # trips the day's own map lists it under (a record is read, never
   # written, and one whose pair has no hosting gap is still shown).
   defp pair_records(in_seat, from, to) do
     (Map.get(in_seat, from.id, []) ++ Map.get(in_seat, to.id, []))
@@ -1746,7 +1774,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # The page holding the trip: its block's own panel and page for a blocked trip,
   # the pool's for an unassigned one. An unassigned trip is rendered by the pool
   # panel alone, so following one there — after an unassign, or through a `trip=`
-  # deep link (AC-26, AC-29) — switches the panel as well as the page, and the
+  # deep link — switches the panel as well as the page, and the
   # reverse switch names the Blocks panel again once the trip is in a block. The
   # same visible order the page slices decides the page, so the resolved page is
   # the one that renders the trip; a filter that hides it leaves the requested
@@ -1792,11 +1820,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
-  # --- reviewed block commands (step 25) --------------------------------------
+  # --- reviewed block commands --------------------------------------
 
   # A confirmed review re-runs the command the review carries, so a confirmation
   # writes exactly what was reviewed. An attribute save is one of those commands
-  # (`{:attributes, block_id, garage_id, vehicle_type_id}`, R12), so it takes the
+  # (`{:attributes, block_id, garage_id, vehicle_type_id}`), so it takes the
   # same path as an assignment rather than a second reviewed implementation.
   defp run_reviewed(socket, {:attributes, block_id, garage_id, vehicle_type_id}, confirmation) do
     run_attributes(socket, block_id, garage_id, vehicle_type_id, confirmation)
@@ -1804,10 +1832,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   defp run_reviewed(socket, command, confirmation), do: run_command(socket, command, confirmation)
 
-  # Every apply on this page goes through here (CR-8): the editor role is
+  # Every apply on this page goes through here: the editor role is
   # re-read from the membership first, so a role revoked while the page is open
   # refuses the next write, and the audit context is built from the socket rather
-  # than from any parameter (CR-4). The context resolves the command against the
+  # than from any parameter. The context resolves the command against the
   # organization, version and selected day type again, so a crafted event can
   # never widen the scope.
   defp run_command(%{assigns: %{day_type: nil}} = socket, _command, _confirmation),
@@ -1834,7 +1862,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # A write reloads the day, drops the form and the review and follows the first
   # changed trip to the page that holds it, so the reader sees the row the flash
-  # names (AC-26). Nothing here re-derives a review: the result carries the one
+  # names. Nothing here re-derives a review: the result carries the one
   # the context built.
   defp applied(socket, command, result) do
     socket = load_day(socket)
@@ -1849,7 +1877,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     |> assign_page_rows_if_loaded()
     |> assign(assign: nil, review: nil, review_stale?: false)
     |> put_flash(:info, success_message(command, result))
-    # A successful command also clears step 26's selection, because those trips
+    # A successful command also clears the trip selection, because those trips
     # are no longer the trips the reader selected.
     |> then(&patch(&1, %{trip: nil, gap: nil, block: nil}, clear_selection: true))
   end
@@ -1885,8 +1913,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp source_label(_review), do: "its block"
 
   # The review keeps the command and its fingerprint, so confirming re-runs it
-  # under the lock and writes only when the recomputed fingerprint still matches
-  # (AC-12). The failure sentence is cleared by the new review.
+  # under the lock and writes only when the recomputed fingerprint still matches.
+  # The failure sentence is cleared by the new review.
   defp show_review(socket, review, stale?) do
     socket
     |> clear_command_error()
@@ -1913,7 +1941,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # An ineligible trip is named in the form rather than dropped: the reason comes
-  # from the trip's own flags, so the reader sees which rule refused it (FH-18).
+  # from the trip's own flags, so the reader sees which rule refused it.
   defp refuse_ineligible(socket, ids) do
     case socket.assigns.assign do
       nil ->
@@ -1925,9 +1953,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # A failed save keeps the form, its target and its review: only the sentence
-  # changes, so a retry repeats exactly the reviewed command (AC-26). A block
+  # changes, so a retry repeats exactly the reviewed command. A block
   # drawer action keeps its own control's sentence and the value the reader
-  # typed (AC-27).
+  # typed.
   defp refuse(socket, reason) do
     message = command_error(reason, socket.assigns.block_action)
 
@@ -1943,12 +1971,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     end
   end
 
-  defp command_error(:busy, _state), do: "Another change is being saved. Try again."
-  defp command_error(:not_found, _state), do: "That trip isn't in this version."
-  defp command_error(:unknown_day_type, _state), do: "This day type isn't in this version."
+  defp command_error(:busy, _state), do: "Another change is being saved. Try again in a moment."
+
+  defp command_error(:not_found, _state),
+    do: "That trip isn't in this version anymore. Reload blocks."
+
+  defp command_error(:unknown_day_type, _state), do: "This service day isn't in this version."
 
   # A rename onto the block's own ID is the one `:invalid_command` the drawer can
-  # cause, and it gets its own sentence (AC-27).
+  # cause, and it gets its own sentence.
   defp command_error(:invalid_command, %{kind: :rename, block_id: block_id, rename: value})
        when is_binary(value) do
     if String.trim(value) == block_id,
@@ -1962,14 +1993,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     do: "Enter a block ID of 1 to 255 characters."
 
   # A taken ID names the ID the reader typed, so the sentence says which one to
-  # change (AC-27).
+  # change.
   defp command_error(:block_id_taken, %{kind: :rename, rename: value}) when is_binary(value),
     do: "Block #{String.trim(value)} already runs on these dates. Choose another ID or merge."
 
   defp command_error(:block_id_taken, _state),
     do: "That block ID already runs on these dates. Choose another ID or merge."
 
-  defp command_error(:too_many_trips, _state), do: "This change touches too many trips."
+  defp command_error(:too_many_trips, _state),
+    do: "This change touches more than 500 trips. Select fewer trips."
 
   defp command_error({:audit_failed, _reason}, _state),
     do: "The change couldn't be saved. Nothing was written."
@@ -1977,20 +2009,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp command_error(_reason, _state), do: "The change couldn't be saved. Try again."
 
   # The sentence a review shows above itself when the confirmation failed: the
-  # pending form's own failure, whichever form opened the review (AC-26, AC-27).
+  # pending form's own failure, whichever form opened the review.
   defp pending_error(%{assign: %{error: error}}) when is_binary(error), do: error
   defp pending_error(%{block_action: %{error: error}}) when is_binary(error), do: error
   defp pending_error(%{block_attributes: %{error: error}}) when is_binary(error), do: error
   defp pending_error(_assigns), do: nil
 
-  # --- the block's garage and vehicle type (step 38) --------------------------
+  # --- the block's garage and vehicle type --------------------------
 
   # The drawer's own state, rebuilt from the loaded block whenever that block
   # changes (a day-type switch, a reload or another writer's trip), so the two
   # pickers start on the resolution the day load already made and never on a
   # previous block's values. A block whose calendars disagree has no single
   # garage to start on, so the picker starts on the prompt and the save asks for
-  # one (AC-37, R4).
+  # one.
   defp block_attributes_state(_state, nil), do: nil
 
   defp block_attributes_state(%{block_id: block_id} = state, %{summary: %{block_id: block_id}}),
@@ -2019,9 +2051,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # A block whose calendars name different garages has no garage to save, and the
   # context would store `nil` for it and resolve the block from its route instead.
   # That is a different plan from the one on screen, so the save is refused here
-  # with the sentence under the field and focus on the picker (AC-37). Every
+  # with the sentence under the field and focus on the picker. Every
   # other value goes to the context, which owns the validation, the lock and the
-  # confirmation decision (AC-19, INV-7).
+  # confirmation decision.
   defp submit_block_attributes(
          %{assigns: %{block_view: %{resolution: %{conflict: [_ | _]}}}} = socket,
          %{garage_id: ""}
@@ -2054,12 +2086,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
        ),
        do: {:noreply, socket}
 
-  # The one attribute write this drawer offers (AC-37). It runs on the same
+  # The one attribute write this drawer offers. It runs on the same
   # reviewed path as every other apply on the page: the editor role is re-read
   # from the membership first, the audit context comes from the socket and the
   # block from the loaded drawer's own resolution, so a crafted event can never
-  # name another block (CR-4). The context then takes the version lock, rebuilds
-  # the context under it and decides the confirmation (AC-19, INV-7).
+  # name another block. The context then takes the version lock, rebuilds
+  # the context under it and decides the confirmation.
   defp run_attributes(socket, block_id, garage_id, vehicle_type_id, confirmation) do
     if editor_access?(socket) do
       case Gtfs.set_block_attributes(
@@ -2081,10 +2113,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # A saved attribute reloads the day so the block's own resolution, its garage
   # travel and the row's Garage · type cell all read the row that was just
-  # written (INV-9), and drops the review. The patch takes the block out of the
+  # written, and drops the review. The patch takes the block out of the
   # URL, which closes the drawer and leaves the reader looking at the row the
-  # flash names; the reference has no post-save state of its own, so closing is
-  # this page's existing rule for a command the drawer owns (AC-37).
+  # flash names; the drawer has no post-save state of its own, so closing is this
+  # page's existing rule for a command the drawer owns.
   #
   # This pushes the patch itself rather than going through `patch/3`, which
   # returns the `{:noreply, socket}` tuple its callers hand straight back to
@@ -2102,7 +2134,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # A refused save keeps the form, its values and its review, so a retry repeats
-  # exactly the reviewed save; only the sentence changes (AC-26, AC-37).
+  # exactly the reviewed save; only the sentence changes.
   defp refuse_attributes(socket, reason) do
     message = command_error(reason, nil)
 
@@ -2139,14 +2171,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp block_attributes_string(value, _current) when is_binary(value), do: value
   defp block_attributes_string(_value, current), do: current
 
-  # --- the assignment form (step 25) -----------------------------------------
+  # --- the assignment form -----------------------------------------
 
   defp new_assign(trip), do: new_assign(:trip, [trip])
 
   # A selection-scoped form holds the whole selection: its trip count (which the
   # form's own line already prints), whether any of its trips has a block to
   # remove, and the ineligible trips their own flags refuse, named before any
-  # submit (AC-24).
+  # submit.
   defp new_selection_assign(trips), do: new_assign(:selection, trips)
 
   defp new_assign(scope, trips) do
@@ -2201,8 +2233,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp destination_value(block_id), do: block_id
 
   # The destination options are the day type's own block IDs, filtered by a
-  # case-insensitive substring, with an exact match first and at most 25 entries
-  # (AC-26). `total` is the match count before the cap, so the form can say the
+  # case-insensitive substring, with an exact match first and at most 25 entries.
+  # `total` is the match count before the cap, so the form can say the
   # list was cut rather than pretending it is complete.
   defp destination_options(blocks, nil),
     do: {Enum.take(blocks, @destination_limit), length(blocks)}
@@ -2231,14 +2263,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp count_label(1), do: "1 trip"
   defp count_label(count), do: "#{count} trips"
 
-  # --- the block drawer's actions (step 27) ----------------------------------
+  # --- the block drawer's actions ----------------------------------
 
   # The drawer's three actions share one state, rebuilt from the loaded day's own
   # block whenever that block or its trips change (a day-type switch, a reload or
   # another writer's trip). The trip IDs a remove-all unassigns come from that
-  # block, so no parameter names them (CR-4), and the rename field starts on the
+  # block, so no parameter names them, and the rename field starts on the
   # block's own ID, so resubmitting it unchanged is the “Enter a different block
-  # ID.” case rather than a silent no-op (AC-27).
+  # ID.” case rather than a silent no-op.
   defp block_action_state(_action, nil), do: nil
 
   defp block_action_state(action, %{summary: %{block_id: block_id}} = block) do
@@ -2311,7 +2343,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # The merge picker offers the day type's other blocks — never the block being
   # merged, and no “New block” or “No block”, because a merge always joins an
-  # existing ID (AC-13, reference picker).
+  # existing ID.
   defp merge_destinations(%{block_action: nil}), do: {[], 0}
 
   defp merge_destinations(%{block_action: action, destination_blocks: blocks}) do
@@ -2329,11 +2361,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     )
   end
 
-  # --- the Block rules drawer (step 40) --------------------------------------
+  # --- the Block rules drawer --------------------------------------
 
   # Opening the drawer reads the version's routes once, so the Route garages
   # table lists every route whether or not a row is stored for it. The read is
-  # scoped to the socket's own organization and version (CR-4), and the settings
+  # scoped to the socket's own organization and version, and the settings
   # values come from the day load the page already holds rather than a second
   # read. Re-opening starts from the stored values, so a previous refusal never
   # reappears.
@@ -2372,7 +2404,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # Only the drawer's own settings fields are read from the payload, so a
   # crafted event cannot name an organization or a version (those come from the
-  # socket, CR-4), and the relief limit the drawer does not show is not read
+  # socket), and the relief limit the drawer does not show is not read
   # from it either.
   defp block_rules_params(%{"block_rules" => values}) when is_map(values),
     do:
@@ -2401,7 +2433,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # The form the drawer renders: the stored settings with the reader's own values
   # on top, so an out-of-range value keeps both the input and the context's field
-  # error (AC-39). The `:validate` action is what makes an Ecto changeset render
+  # error. The `:validate` action is what makes an Ecto changeset render
   # its own field errors — without it `Phoenix.HTML.FormData.Ecto.Changeset`
   # drops every error — and the values the reader sent stay in the fields. The
   # relief limit is carried through from the stored settings, because the writer
@@ -2620,7 +2652,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # The ordered pair of one listed row, in the stored `from|to` form
   # `list_deadhead_pairs/3` hands out. A pair the drawer does not show is `nil`,
-  # so neither a reset nor a save can write a reference from the payload (CR-4).
+  # so neither a reset nor a save can write a reference from the payload.
   defp listed_pair(state, key) do
     case Enum.find(state.pairs, &(pair_key(&1) == key)) do
       %{from: from, to: to} -> {from, to}
@@ -2640,7 +2672,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
         # A row the filter is hiding is not in the payload at all, so the value
         # to judge is the one the reader typed for it earlier, not the listed
-        # value: hiding a row must not throw away an entry (AC-3).
+        # value: hiding a row must not throw away an entry.
         value =
           Map.get(submitted, key) || Map.get(state.params, key) || minutes_text(pair.minutes)
 
@@ -2681,8 +2713,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # The Driving times drawer lists the loaded day type's pairs through the
   # context's own `list_deadhead_pairs/3`, so a row's minutes and source are the
-  # ones the day's movements were built from (AC-3). The read happens here, in
-  # the URL change that opens the drawer, and never in `render/1` (CR-4). A draft
+  # ones the day's movements were built from. The read happens here, in
+  # the URL change that opens the drawer, and never in `render/1`. A draft
   # is kept while the same version and day type stay on screen, so opening the
   # drawer again, filtering it or pressing a gap drawer's link does not discard
   # what was typed; a day type or version change drops it, because those minutes
@@ -2731,7 +2763,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # The Operator changes drawer reads the same day load's candidates through the
   # context's own `list_relief_candidates/3`, in the URL change that opens it and
-  # never in `render/1` (CR-4). A draft is kept while the same version and day
+  # never in `render/1`. A draft is kept while the same version and day
   # type stay on screen, so opening the drawer again does not discard what was
   # typed; a day type or version change drops it, because those marks belonged to
   # another day's candidates.
@@ -2782,7 +2814,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp operator_changes_key(socket, day),
     do: {socket.assigns.state.version_id, day.day_type && day.day_type.key}
 
-  # --- the Suggest blocks drawer (step 44, AC-43) ----------------------------
+  # --- the Suggest blocks drawer ----------------------------
 
   # The drawer's scope is derived, not read: the reader chose it, and opening the
   # drawer is the moment the choice is made. A block selection is an explicit
@@ -2818,7 +2850,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # names changes nothing, and a payload that is one of them is stored as the
   # atom the rest of the page compares against — a scope the reader chose but the
   # page ignored would plan the default scope and say it had planned the chosen
-  # one (AC-26).
+  # one.
   defp suggest_scope?(value) when is_binary(value),
     do: Enum.any?(@scopes, &(to_string(&1) == value))
 
@@ -2832,7 +2864,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp put_suggest(socket, state), do: assign(socket, :suggest, state)
 
   # The three scopes are the generator's three modes, so the drawer carries the
-  # names a reader reads and the context carries the modes (AC-26). The selected
+  # names a reader reads and the context carries the modes. The selected
   # mode names the blocks the reader actually selected, in the order the timeline
   # lists them, so the plan and the bar agree on which blocks are in scope.
   defp suggest_mode(:unassigned_only, _socket), do: :unassigned_only
@@ -2865,7 +2897,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   #
   # A stored plan is drawn on the page by `Blocking.preview_day/2`, which is pure:
   # the render assigns come from the proposal, the saved day in `:day` is
-  # untouched, and no row is written (CR-4, CR-6, AC-44). The preview is derived
+  # untouched, and no row is written. The preview is derived
   # here rather than in `render/1` for that reason, and the timeline is
   # re-streamed so a row that is now a different block arrives with its marker.
   defp apply_suggestion(socket, {:ok, plan}) do
@@ -2945,7 +2977,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # The context call itself: the facade's `apply_block_plan/3`, which is the one
-  # write path for a plan (AC-27).
+  # write path for a plan.
   defp run_apply(request) do
     Gtfs.apply_block_plan(request.day_type_key, request.plan, request.audit)
   end
@@ -2956,7 +2988,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp request_matches?(%{plan: plan}, plan), do: true
   defp request_matches?(_request, _plan), do: false
 
-  # The three answers and the success (AC-45):
+  # The three answers and the success:
   #
   #   * `:stale_plan` keeps the preview and turns Apply off, because the plan the
   #     reader reviewed is not the plan the context would write; “Suggest again”
@@ -2982,7 +3014,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           "#{moves} #{plural(moves, "trip")} changed block across #{days}. " <>
             "Each trip's change history lists its previous block."
       })
-      # A successful apply clears the block selection (AC-45): those blocks were
+      # A successful apply clears the block selection: those blocks were
       # rebuilt, so a selection of them describes work that is already done.
       |> assign(:block_selection, MapSet.new())
       |> assign(:selected_blocks, [])
@@ -3034,10 +3066,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     })
   end
 
-  # The three scope cards, in the reference's order. Each carries the generator's
+  # The three scope cards. Each carries the generator's
   # own mode under the name a reader reads, the trips the scope would plan, and
   # whether it can be chosen at all on this day type. “Selected blocks” names the
-  # blocks in the timeline's own order, so the card, the selection bar and the
+  # blocks in the timeline's own order, so the drawer, the selection bar and the
   # mode the plan was built from are the same list.
   defp suggest_scope_options(assigns) do
     selected = Enum.map(assigns.selected_blocks, & &1.summary.block_id)
@@ -3064,7 +3096,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       },
       %{
         value: :replace_all,
-        title: "Rebuild this day type’s blocks",
+        title: "Rebuild this service day’s blocks",
         description:
           "Plan every scheduled trip again. Hand-tuned blocks may change; applying asks you to confirm.",
         disabled?: false
@@ -3081,7 +3113,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # The rules the suggestion would use, read from the loaded day's own settings
   # and relief marks. They are the same answers the Block rules and Operator
   # changes drawers print, taken from the same load, so the drawer cannot describe
-  # rules the generator would not apply (CR-6).
+  # rules the generator would not apply.
   defp suggest_rules(assigns) do
     settings = assigns.settings
 
@@ -3113,7 +3145,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # With no stored limit the field is pre-filled with the researched common
   # contract limit rather than left blank, because a blank limit is a real
   # answer — it turns the checks off — and an empty field would offer that answer
-  # before the reader has read it (AC-1).
+  # before the reader has read it.
   defp piece_limit_text(nil), do: to_string(@default_piece_minutes)
   defp piece_limit_text(minutes), do: to_string(minutes)
 
@@ -3143,8 +3175,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # The ticked candidate IDs of a submitted form, narrowed to the candidates the
   # drawer listed, so a crafted payload cannot mark a stop the day type does not
   # offer as one. The context recomputes them under its own lock anyway; this
-  # keeps the tick the reader is shown and the tick that is written the same set
-  # (CR-4).
+  # keeps the tick the reader is shown and the tick that is written the same set.
   defp listed_marks(state, marked) when is_list(marked) do
     candidates = MapSet.new(state.candidates, & &1.stop_id)
 
@@ -3213,9 +3244,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp operator_changes_saved(nil), do: "Operator checks turned off"
   defp operator_changes_saved(_minutes), do: "Operator changes saved"
 
-  # The save closes the drawer, as the reference does: the page behind it is
+  # The save closes the drawer: the page behind it is
   # where the answer is read, and the flash only renders once the top-layer
-  # dialog is gone (AC-31). The `open_drawer` assign is cleared as well as the
+  # dialog is gone. The `open_drawer` assign is cleared as well as the
   # URL parameter, because `resolve_drawers/1` keeps the last open panel when the
   # URL names none — patching the parameter alone would reload the day's answers
   # and leave the drawer standing on top of them.
@@ -3231,7 +3262,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # The limit is 60–720 or blank, exactly the range the context's changeset
-  # enforces on the relief limit (AC-1). A blank limit stores `nil`, which turns
+  # enforces on the relief limit. A blank limit stores `nil`, which turns
   # the `:no_relief_opportunity` checks off rather than refusing the save.
   defp piece_limit_entry(value) do
     trimmed = String.trim(value)
@@ -3329,7 +3360,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # The role is re-read from the membership on every mutating event, so a role
   # revoked while the page is open refuses the next write. This is the stricter
   # form of the `has_role?(@user_roles, :pathways_studio_editor)` check: the
-  # assign is only a snapshot from mount (AC-31).
+  # assign is only a snapshot from mount.
   defp editor_access?(socket) do
     EnsureRole.has_role?(live_roles(socket), :pathways_studio_editor)
   end
@@ -3381,7 +3412,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp block_matching_status?(block, :problems), do: block.summary.status in [:error, :warning]
 
   # The stream needs a stable id per block, and a block ID may hold any Unicode;
-  # the URL-safe Base64 token keeps the id within ASCII (Setup and hazards).
+  # the URL-safe Base64 token keeps the id within ASCII.
   defp block_dom_id(block),
     do: "block-" <> Base.url_encode64(block.summary.block_id, padding: false)
 
@@ -3389,7 +3420,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # Each finding names trips by UUID, and the List view, the pool and the
   # untimed list print a trip's own findings. Grouping once per load keeps that
-  # lookup out of the render path (CR-6).
+  # lookup out of the render path.
   defp findings_by_trip(findings) do
     findings
     |> Enum.flat_map(fn finding -> Enum.map(finding.trip_ids, &{&1, finding}) end)
@@ -3415,10 +3446,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       plan_chart: plan_chart(day),
       longest_stretch: day.longest_stretch,
       relief_stop_count: MapSet.size(day.context.relief_stop_ids),
-      # The Suggest blocks drawer's two day facts (AC-43): how many trips the
+      # The Suggest blocks drawer's two day facts: how many trips the
       # unassigned scope would plan, and which repeating service is left out of
       # every scope. Both come from the day's own pool, so the drawer and the
-      # generator read the same trips (CR-6). Repeating service is never blocked,
+      # generator read the same trips. Repeating service is never blocked,
       # so it is always in the pool.
       suggest_pool_count: Enum.count(day.pool, &(not &1.frequency?)),
       suggest_repeating_trip_ids: repeating_trip_ids(day),
@@ -3439,17 +3470,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       findings_by_trip: findings_by_trip(day.findings),
       destination_blocks: Enum.map(day.blocks, &destination_option/1),
       min_layover_minutes: day.settings.min_layover_minutes,
-      # The whole settings row, so the Block rules drawer renders every AC-1
+      # The whole settings row, so the Block rules drawer renders every
       # field from the day load rather than a second read.
       settings: day.settings,
       untimed_trips: Enum.filter(day.unplottable, & &1.block_id),
       # The Garage and Vehicle type form's pickers read the planning inputs the
-      # day load already gathered, in the order a reader scans them (INV-9).
+      # day load already gathered, in the order a reader scans them.
       garages: garage_options(day.context.garages),
       vehicle_types: vehicle_type_options(day.context.vehicle_types),
       # The per-route requirements behind the form's two help lines. They are
       # planning inputs like the rest of the context and are read here only to
-      # explain a value, never to resolve one (R4).
+      # explain a value, never to resolve one.
       route_settings: day.context.route_settings
     )
   end
@@ -3474,7 +3505,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # The timeline's axis spans the day's *platform* spans, not only its trips, so
   # a garage pull-out before the first departure and a pull-back after the last
   # arrival are on the track rather than clipped off its left and right edges.
-  # The movements are the platform spans R2 and R3 already derived, and the
+  # The movements are the platform spans the block movements already derived, and the
   # hours are snapped outwards so the axis keeps the whole-hour ticks the axis
   # has always printed. A day with no plottable trip has no span and no axis.
   defp timeline_axis(%{axis: nil}), do: nil
@@ -3567,9 +3598,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # the bin width is one constant rather than two that could drift apart.
   @bin_secs 900
 
-  # The plan figures of one day type, as Day loading step 4 derived them, and the
+  # The plan figures of one day type, as the day load derived them, and the
   # short fleet rows with the garage and type names the day resolved, so
-  # `render/1` prints numbers and words rather than re-deriving either (CR-6).
+  # `render/1` prints numbers and words rather than re-deriving either.
   # A row is short only against a real listing, so `at_secs` is always set here.
   defp fleet_shortfall_rows(day) do
     for %{status: :short} = row <- day.fleet do
@@ -3585,7 +3616,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   # Every fleet row of the Plan summary's table, in `Fleet.rows/2`'s own order
   # (typed rows then the garage total, garages in order), with the garage and
-  # type names the day resolved (INV-9). The `:all` row is the garage's total,
+  # type names the day resolved. The `:all` row is the garage's total,
   # which the table prints muted and never charts, because a bar above a total
   # is checked twice over. Each row carries its own index rather than the
   # row's UUIDs, so the table's DOM ids stay short and stable.
@@ -3737,7 +3768,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   end
 
   # Everything the Suggested blocks panel renders, derived here rather than in
-  # `render/1` so the render never reaches into the loaded day (CR-6). The plan's
+  # `render/1` so the render never reaches into the loaded day. The plan's
   # own numbers are read by the panel; the two this page owns are the minimum
   # vehicle count, which is the proposal's day load figure, and the problems the
   # plan takes away, which is the saved day's problems the proposal's no longer
@@ -3776,7 +3807,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # The saved day's own problems that the plan does not add: the day type's
   # errors and warnings less the keys the review lists as added, so “N existing
   # problems remain” counts what a reader sees on the page rather than only the
-  # blocks the plan touched (AC-44).
+  # blocks the plan touched.
   defp existing_problem_count(day, plan) do
     added =
       plan.review.effects
@@ -3810,6 +3841,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       )
 
     {merge_options, merge_total} = merge_destinations(assigns)
+    bulk = bulk_summary(assigns)
 
     block_rules_form = block_rules_form(assigns)
     driving_rows = driving_times_rows(assigns)
@@ -3830,8 +3862,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       |> assign(:destination_total, total)
       |> assign(:merge_options, merge_options)
       |> assign(:merge_total, merge_total)
-      |> assign(:bulk, bulk_summary(assigns))
+      |> assign(:bulk, bulk)
       |> assign(:selection_dates, selection_dates(assigns))
+      |> assign(:primary, primary_owner(assigns, bulk))
+      |> assign(:subtitle, @subtitle)
 
     ~H"""
     <Layouts.app
@@ -3848,73 +3882,82 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         <.operations_sub_nav gtfs_version_id={@current_gtfs_version.id} active_tab={:blocks} />
       </:sub_header>
 
-      <div id="blocks-page">
-        <section class="min-h-screen bg-base-100">
-          <div class="w-full space-y-4">
-            <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <.header>
-                Blocks
-                <:subtitle>A block is one vehicle's sequence of trips.</:subtitle>
-              </.header>
-
-              <button
-                :if={@load_state == :loaded}
-                id="blocks-review-checks"
-                type="button"
-                phx-click="open_drawer"
-                phx-value-key="checks"
-                class="btn btn-sm min-h-11"
-              >
-                Review checks
-              </button>
-
-              <%!-- A suggestion is built from garages, so a version with none
-              cannot produce one; the button says so rather than opening a
-              drawer that could only fail. --%>
-              <button
-                :if={@load_state == :loaded}
-                id="blocks-suggest"
-                type="button"
-                phx-click="open_drawer"
-                phx-value-key="suggest"
-                disabled={not @garages? or not is_nil(@plan_preview)}
-                title={suggest_title(@garages?, not is_nil(@plan_preview))}
-                class={[
-                  "btn btn-sm min-h-11",
-                  (not @garages? or not is_nil(@plan_preview)) && "btn-disabled"
-                ]}
-              >
-                Suggest blocks
-              </button>
-            </div>
-
-            <.callout
-              :if={@load_state == :unavailable}
-              id="blocks-unavailable"
-              kind="error"
-              title="We couldn't load blocks."
+      <div id="blocks-page" class="ds-page">
+        <.header>
+          Blocks
+          <:subtitle>{@subtitle}</:subtitle>
+          <%!-- The header's Review action is the page's primary until the selection
+          bar, the first-use panel or a previewed suggestion takes it. --%>
+          <:actions :if={@load_state == :loaded}>
+            <%!-- A suggestion is built from garages, so a version with none cannot
+            produce one; the button says why it is off rather than opening a drawer
+            that could only fail. --%>
+            <.button
+              id="blocks-suggest"
+              type="button"
+              variant="secondary"
+              class="min-h-11"
+              phx-click="open_drawer"
+              phx-value-key="suggest"
+              disabled={not @garages? or not is_nil(@plan_preview)}
+              title={suggest_title(@garages?, not is_nil(@plan_preview))}
             >
-              Your saved assignments haven't changed.
-              <button
+              Suggest blocks
+            </.button>
+            <.button
+              id="blocks-review-checks"
+              type="button"
+              variant={if @primary == :head, do: "primary", else: "secondary"}
+              class="min-h-11"
+              phx-click="open_drawer"
+              phx-value-key="checks"
+            >
+              {review_label(@counts.problems)}
+            </.button>
+          </:actions>
+        </.header>
+
+        <div class="space-y-4">
+          <.message
+            :if={@load_state == :unavailable}
+            id="blocks-unavailable"
+            kind="error"
+            title="We couldn't load blocks."
+          >
+            Your saved assignments haven't changed. Reload to try again.
+            <:action>
+              <.button
                 id="blocks-retry"
                 type="button"
+                variant="secondary"
+                class="min-h-11"
                 phx-click="retry"
-                class="link link-primary min-h-11"
               >
-                Retry loading
-              </button>
-            </.callout>
+                <.icon name="hero-arrow-path" class="size-4" /> Reload blocks
+              </.button>
+            </:action>
+          </.message>
 
-            <%= cond do %>
-              <% @load_state == :loading -> %>
-                <BlocksComponents.page_state kind={:loading} />
-              <% @load_state == :no_dates -> %>
-                <BlocksComponents.page_state kind={:no_dates} version_id={@state.version_id} />
-              <% @load_state == :empty -> %>
-                <BlocksComponents.page_state kind={:empty} version_id={@state.version_id} />
-              <% @load_state == :unknown -> %>
-                <BlocksComponents.page_state kind={:unknown} day_types={@day_types} />
-              <% @day_type -> %>
+          <%= cond do %>
+            <% @load_state == :loading -> %>
+              <BlocksComponents.page_state kind={:loading} />
+            <% @load_state == :no_dates -> %>
+              <BlocksComponents.page_state kind={:no_dates} version_id={@state.version_id} />
+            <% @load_state == :empty -> %>
+              <BlocksComponents.page_state kind={:empty} version_id={@state.version_id} />
+            <% @load_state == :unknown -> %>
+              <BlocksComponents.page_state kind={:unknown} day_types={@day_types} />
+            <% @day_type -> %>
+              <.message
+                :if={@mixed_timezones?}
+                id="blocks-mixed-timezones"
+                kind="warning"
+                title="Agencies in this version use different time zones."
+              >
+                Times are shown as stored, so trips from different agencies may not line up.
+              </.message>
+
+              <div class="rounded-card border border-subtle bg-white">
                 <BlocksComponents.scope_header
                   day_types={@day_types}
                   day_type={@day_type}
@@ -3924,16 +3967,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   estimated_pairs={@estimated_pairs}
                   preview?={not is_nil(@plan_preview)}
                 />
-
-                <.callout
-                  :if={@mixed_timezones?}
-                  id="blocks-mixed-timezones"
-                  kind="warning"
-                  title="Agencies in this version use different timezones."
-                >
-                  Times are shown as stored.
-                </.callout>
-
                 <BlocksComponents.summary_strip
                   day_type={@day_type}
                   counts={@counts}
@@ -3942,239 +3975,241 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   open_drawer={@open_drawer}
                   preview?={not is_nil(@plan_preview)}
                 />
+              </div>
 
-                <BlocksComponents.plan_notices
-                  fleet_shortfalls={@fleet_shortfalls}
-                  garages?={@garages?}
-                  vehicles?={@vehicles?}
-                  version_id={@state.version_id}
+              <BlocksComponents.plan_notices
+                fleet_shortfalls={@fleet_shortfalls}
+                garages?={@garages?}
+                vehicles?={@vehicles?}
+                version_id={@state.version_id}
+              />
+
+              <%!-- The panel sits between the notices and the workbench so the
+              proposal, the counts above and the rows it changes are all on one
+              screen: a preview is a reading of the page, not a replacement of it. --%>
+              <BlocksComponents.suggestion_panel
+                :if={not is_nil(@plan_preview)}
+                plan={@suggestion.plan}
+                day_type={@day_type}
+                scope={@suggestion.scope}
+                picked={@suggestion.picked}
+                minimum={@suggestion.minimum}
+                existing_problems={@suggestion.existing}
+                fixed_problems={@suggestion.fixed}
+                repeating_trip_ids={@suggest_repeating_trip_ids}
+                estimated_pairs={@estimated_pairs}
+                apply={@apply}
+              />
+
+              <%!-- The applied message takes the panel's place once the plan is
+              saved: there is no preview left to read, and the sentence that
+              outlives it is the page's answer to what changed. --%>
+              <BlocksComponents.suggestion_applied
+                :if={is_nil(@plan_preview) and not is_nil(@applied)}
+                applied={@applied}
+              />
+
+              <BlocksComponents.suggestion_replace_dialog
+                :if={not is_nil(@plan_preview)}
+                replace={@replace}
+                day_type={@day_type}
+                pending={@apply.status == :pending}
+              />
+
+              <BlocksComponents.workspace
+                state={@state}
+                counts={@counts}
+                visible_count={@visible_count}
+                pool_visible_count={@pool_visible_count}
+                page_size={@page_size}
+                block_rows={@streams.block_rows}
+                list_rows={@streams.list_rows}
+                pool_rows={@streams.pool_rows}
+                untimed_trips={@untimed_trips}
+                findings_by_trip={@findings_by_trip}
+                axis={@axis}
+                max_piece_minutes={@max_piece_minutes}
+                routes={@routes}
+                selected_ids={@selection}
+                selected_block_ids={@block_selection}
+                page_block_ids={@timeline_block_ids}
+                block_selected_count={length(@selected_blocks)}
+                bulk={@bulk}
+                primary={@primary}
+                preview?={not is_nil(@plan_preview)}
+                changed_block_ids={@suggestion.changed_block_ids}
+              />
+
+              <BlocksComponents.service_dates_drawer
+                open={@open_drawer == :service_dates}
+                day_type={@day_type}
+              />
+              <BlocksComponents.checks_drawer
+                open={@open_drawer == :checks}
+                day_type={@day_type}
+                findings={@findings}
+                trip_labels={@trip_labels}
+              />
+              <BlocksComponents.plan_summary_drawer
+                open={@open_drawer == :plan_summary}
+                figures={@figures}
+                peak={@peak}
+                fleet_rows={@fleet}
+                chart={@plan_chart}
+                day_type={@day_type}
+                min_layover_minutes={@min_layover_minutes}
+                longest_stretch={@longest_stretch}
+                max_piece_minutes={@max_piece_minutes}
+                relief_stop_count={@relief_stop_count}
+                estimated?={@estimated?}
+                repeating?={@repeating?}
+                errors?={@errors?}
+                garages?={@garages?}
+                vehicles?={@vehicles?}
+                version_id={@state.version_id}
+              />
+              <BlocksComponents.block_rules_drawer
+                open={@open_drawer == :block_rules}
+                form={@block_rules_form}
+                interlining={@block_rules.interlining || to_string(@settings.interlining)}
+                routes={@routes}
+                route_rows={block_rules_rows(assigns)}
+                route_errors={@block_rules.route_errors}
+                garages={@garages}
+                vehicle_types={@vehicle_types}
+                error={@block_rules.error}
+                error_count={@block_rules_error_count}
+              />
+
+              <BlocksComponents.driving_times_drawer
+                open={@open_drawer == :driving_times}
+                rows={@driving_times_rows}
+                day_label={@day_type.label}
+                circuity={@settings.deadhead_circuity}
+                speed={@settings.deadhead_speed_kmh}
+                estimated_only?={@driving_times.estimated_only?}
+                estimated_count={driving_times_estimated_count(@driving_times.pairs)}
+                total_count={length(@driving_times.pairs)}
+                focus_id={driving_times_focus_id(@driving_times_rows)}
+                error={@driving_times.error}
+              />
+
+              <BlocksComponents.operator_changes_drawer
+                open={@open_drawer == :operator_changes}
+                rows={@operator_changes_rows}
+                limit={@operator_changes.limit}
+                limit_error={@operator_changes.limit_error}
+                error={@operator_changes.error}
+              />
+
+              <BlocksComponents.suggest_drawer
+                open={@open_drawer == :suggest}
+                scope={@suggest.scope}
+                options={suggest_scope_options(assigns)}
+                rules={suggest_rules(assigns)}
+                estimated_pairs={@estimated_pairs}
+                repeating_trip_ids={@suggest_repeating_trip_ids}
+                operator_checked?={not is_nil(@max_piece_minutes)}
+                too_large={@suggest.too_large}
+                error={@suggest.error}
+                busy={@suggest.busy}
+                day_label={@day_type.label}
+              />
+
+              <%= case @trip_view do %>
+                <% {:trip, trip, day_types} -> %>
+                  <BlocksComponents.trip_drawer
+                    open={true}
+                    trip={trip}
+                    routes={@routes}
+                    version_id={@state.version_id}
+                    calendar_label={calendar_label(day_types, trip)}
+                    day_types={day_types}
+                    findings={Map.get(@findings_by_trip, trip.id, [])}
+                    in_seat={Map.get(@in_seat, trip.id, [])}
+                    back_block={@back_block}
+                    assign={@assign}
+                    assign_form={@assign_form}
+                    destination_options={@destination_options}
+                    destination_total={@destination_total}
+                  />
+                <% {:elsewhere, trip_id, day_types} -> %>
+                  <BlocksComponents.trip_elsewhere
+                    open={true}
+                    trip_id={trip_id}
+                    day_types={day_types}
+                    version_id={@state.version_id}
+                  />
+                <% {:unknown, trip_id} -> %>
+                  <BlocksComponents.trip_elsewhere
+                    open={true}
+                    trip_id={trip_id}
+                    version_id={@state.version_id}
+                  />
+                <% _other -> %>
+              <% end %>
+
+              <%= if gap = @gap_view do %>
+                <BlocksComponents.gap_drawer
+                  open={true}
+                  from={gap.from}
+                  to={gap.to}
+                  gap={gap.gap}
+                  movement={gap.movement}
+                  windows={gap.windows}
+                  relief_checked?={gap.relief_checked?}
+                  day_label={gap.day_label}
+                  block_id={gap.block_id}
+                  records={gap.records}
+                  short?={gap.short?}
+                  back_block={@back_block}
                 />
+              <% end %>
 
-                <%!-- The panel sits between the notices and the workbench so the
-                proposal, the counts above and the rows it changes are all on one
-                screen: a preview is a reading of the page, not a replacement of
-                it (AC-44). --%>
-                <BlocksComponents.suggestion_panel
-                  :if={not is_nil(@plan_preview)}
-                  plan={@suggestion.plan}
-                  day_type={@day_type}
-                  scope={@suggestion.scope}
-                  picked={@suggestion.picked}
-                  minimum={@suggestion.minimum}
-                  existing_problems={@suggestion.existing}
-                  fixed_problems={@suggestion.fixed}
-                  repeating_trip_ids={@suggest_repeating_trip_ids}
-                  estimated_pairs={@estimated_pairs}
-                  apply={@apply}
-                />
-
-                <%!-- The applied message takes the panel's place once the plan is
-                saved: there is no preview left to read, and the sentence that
-                outlives it is the page's answer to what changed (AC-45). --%>
-                <BlocksComponents.suggestion_applied
-                  :if={is_nil(@plan_preview) and not is_nil(@applied)}
-                  applied={@applied}
-                />
-
-                <BlocksComponents.suggestion_replace_dialog
-                  :if={not is_nil(@plan_preview)}
-                  replace={@replace}
-                  day_type={@day_type}
-                  pending={@apply.status == :pending}
-                />
-
-                <BlocksComponents.workspace
-                  state={@state}
-                  counts={@counts}
-                  visible_count={@visible_count}
-                  pool_visible_count={@pool_visible_count}
-                  page_size={@page_size}
-                  block_rows={@streams.block_rows}
-                  list_rows={@streams.list_rows}
-                  pool_rows={@streams.pool_rows}
-                  untimed_trips={@untimed_trips}
-                  findings_by_trip={@findings_by_trip}
-                  axis={@axis}
-                  max_piece_minutes={@max_piece_minutes}
+              <%= if block = @block_view do %>
+                <BlocksComponents.block_drawer
+                  open={true}
+                  block={block}
                   routes={@routes}
-                  selected_ids={@selection}
-                  selected_block_ids={@block_selection}
-                  page_block_ids={@timeline_block_ids}
-                  block_selected_count={length(@selected_blocks)}
-                  bulk={@bulk}
-                  preview?={not is_nil(@plan_preview)}
-                  changed_block_ids={@suggestion.changed_block_ids}
-                />
-
-                <BlocksComponents.service_dates_drawer
-                  open={@open_drawer == :service_dates}
-                  day_type={@day_type}
-                />
-                <BlocksComponents.checks_drawer
-                  open={@open_drawer == :checks}
-                  findings={@findings}
-                  trip_labels={@trip_labels}
-                />
-                <BlocksComponents.plan_summary_drawer
-                  open={@open_drawer == :plan_summary}
-                  figures={@figures}
-                  fleet_rows={@fleet}
-                  chart={@plan_chart}
-                  day_type={@day_type}
-                  min_layover_minutes={@min_layover_minutes}
-                  longest_stretch={@longest_stretch}
+                  movements={block.movements}
                   max_piece_minutes={@max_piece_minutes}
-                  relief_stop_count={@relief_stop_count}
-                  estimated?={@estimated?}
-                  repeating?={@repeating?}
-                  errors?={@errors?}
-                  garages?={@garages?}
-                  vehicles?={@vehicles?}
-                  version_id={@state.version_id}
-                />
-                <BlocksComponents.block_rules_drawer
-                  open={@open_drawer == :block_rules}
-                  form={@block_rules_form}
-                  interlining={@block_rules.interlining || to_string(@settings.interlining)}
-                  routes={@routes}
-                  route_rows={block_rules_rows(assigns)}
-                  route_errors={@block_rules.route_errors}
+                  action={@block_action}
+                  form={@block_action_form}
+                  merge_options={@merge_options}
+                  merge_total={@merge_total}
+                  attributes={@block_attributes}
+                  attributes_form={block_attributes_form(@block_attributes)}
                   garages={@garages}
                   vehicle_types={@vehicle_types}
-                  error={@block_rules.error}
-                  error_count={@block_rules_error_count}
+                  route_settings={@route_settings}
+                  day_types={@day_types}
+                  selected_day_type={@day_type}
                 />
+              <% end %>
 
-                <BlocksComponents.driving_times_drawer
-                  open={@open_drawer == :driving_times}
-                  rows={@driving_times_rows}
-                  day_label={@day_type.label}
-                  circuity={@settings.deadhead_circuity}
-                  speed={@settings.deadhead_speed_kmh}
-                  estimated_only?={@driving_times.estimated_only?}
-                  estimated_count={driving_times_estimated_count(@driving_times.pairs)}
-                  total_count={length(@driving_times.pairs)}
-                  focus_id={driving_times_focus_id(@driving_times_rows)}
-                  error={@driving_times.error}
-                />
+              <%!-- The selection-scoped form sits in its own dialog (the trip
+              drawer holds the single-trip one); the review renders after it, so
+              a confirmation is the top of the stack. --%>
+              <BlocksComponents.assign_dialog
+                :if={@assign && @assign.scope == :selection}
+                assign={@assign}
+                form={@assign_form}
+                options={@destination_options}
+                total={@destination_total}
+                total_dates={@selection_dates}
+              />
 
-                <BlocksComponents.operator_changes_drawer
-                  open={@open_drawer == :operator_changes}
-                  rows={@operator_changes_rows}
-                  limit={@operator_changes.limit}
-                  limit_error={@operator_changes.limit_error}
-                  error={@operator_changes.error}
-                />
-
-                <BlocksComponents.suggest_drawer
-                  open={@open_drawer == :suggest}
-                  scope={@suggest.scope}
-                  options={suggest_scope_options(assigns)}
-                  rules={suggest_rules(assigns)}
-                  estimated_pairs={@estimated_pairs}
-                  repeating_trip_ids={@suggest_repeating_trip_ids}
-                  operator_checked?={not is_nil(@max_piece_minutes)}
-                  too_large={@suggest.too_large}
-                  error={@suggest.error}
-                  busy={@suggest.busy}
-                  day_label={@day_type.label}
-                />
-
-                <%= case @trip_view do %>
-                  <% {:trip, trip, day_types} -> %>
-                    <BlocksComponents.trip_drawer
-                      open={true}
-                      trip={trip}
-                      routes={@routes}
-                      version_id={@state.version_id}
-                      calendar_label={calendar_label(day_types, trip)}
-                      day_types={day_types}
-                      findings={Map.get(@findings_by_trip, trip.id, [])}
-                      in_seat={Map.get(@in_seat, trip.id, [])}
-                      back_block={@back_block}
-                      assign={@assign}
-                      assign_form={@assign_form}
-                      destination_options={@destination_options}
-                      destination_total={@destination_total}
-                    />
-                  <% {:elsewhere, trip_id, day_types} -> %>
-                    <BlocksComponents.trip_elsewhere
-                      open={true}
-                      trip_id={trip_id}
-                      day_types={day_types}
-                      version_id={@state.version_id}
-                    />
-                  <% {:unknown, trip_id} -> %>
-                    <BlocksComponents.trip_elsewhere
-                      open={true}
-                      trip_id={trip_id}
-                      version_id={@state.version_id}
-                    />
-                  <% _other -> %>
-                <% end %>
-
-                <%= if gap = @gap_view do %>
-                  <BlocksComponents.gap_drawer
-                    open={true}
-                    from={gap.from}
-                    to={gap.to}
-                    gap={gap.gap}
-                    movement={gap.movement}
-                    windows={gap.windows}
-                    relief_checked?={gap.relief_checked?}
-                    day_label={gap.day_label}
-                    block_id={gap.block_id}
-                    records={gap.records}
-                    short?={gap.short?}
-                    back_block={@back_block}
-                  />
-                <% end %>
-
-                <%= if block = @block_view do %>
-                  <BlocksComponents.block_drawer
-                    open={true}
-                    block={block}
-                    routes={@routes}
-                    movements={block.movements}
-                    max_piece_minutes={@max_piece_minutes}
-                    action={@block_action}
-                    form={@block_action_form}
-                    merge_options={@merge_options}
-                    merge_total={@merge_total}
-                    attributes={@block_attributes}
-                    attributes_form={block_attributes_form(@block_attributes)}
-                    garages={@garages}
-                    vehicle_types={@vehicle_types}
-                    route_settings={@route_settings}
-                    day_types={@day_types}
-                    selected_day_type={@day_type}
-                  />
-                <% end %>
-
-                <%!-- The selection-scoped form sits in its own dialog (the trip
-                drawer holds the single-trip one); the review renders after it, so
-                a confirmation is the top of the stack. --%>
-                <BlocksComponents.assign_dialog
-                  :if={@assign && @assign.scope == :selection}
-                  assign={@assign}
-                  form={@assign_form}
-                  options={@destination_options}
-                  total={@destination_total}
-                  total_dates={@selection_dates}
-                />
-
-                <BlocksComponents.review_dialog
-                  review={@review}
-                  stale?={@review_stale?}
-                  error={pending_error(assigns)}
-                  day_type={@day_type}
-                  version_name={@current_gtfs_version.name}
-                  return_focus_id={review_focus(assigns)}
-                />
-              <% true -> %>
-            <% end %>
-          </div>
-        </section>
+              <BlocksComponents.review_dialog
+                review={@review}
+                stale?={@review_stale?}
+                error={pending_error(assigns)}
+                day_type={@day_type}
+                version_name={@current_gtfs_version.name}
+                return_focus_id={review_focus(assigns)}
+              />
+            <% true -> %>
+          <% end %>
+        </div>
       </div>
     </Layouts.app>
     """

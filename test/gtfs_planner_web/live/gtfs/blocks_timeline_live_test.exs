@@ -1,15 +1,11 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
-  # EV-20: the paged block timeline, observed through the ordinary
+  # The paged block timeline, observed through the ordinary
   # `/gtfs/:version/blocks` route on the production `CatalogReadAdapter.Repo` and
   # the scoped `Blocking` context. Rows are created inside the SQL Sandbox
   # transaction and rolled back; nothing here substitutes an adapter.
   #
-  # The card's tenth case is a browser case: the 1440x1000 density, sticky header,
-  # zoom and overflow measurements live in `assets/e2e/blocks.spec.js`, which step
-  # 29 owns with EV-28. This file writes the nine server cases.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_timeline_live_test.exs`.
+  # The 1440x1000 density, sticky header, zoom and overflow measurements are
+  # browser cases and live in `assets/e2e/blocks.spec.js`.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.Component
@@ -112,9 +108,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
     # Block 5's handoff is the empty move the status sort must separate from the
     # other blocks: every other fixture stop shares the default coordinates, so
     # its second trip starts at a stop more than the 200 m proximity bound away
-    # and R5 makes the gap a `{:moves, _}`. The two stops are ninety kilometres
-    # apart, so the ten minutes between the trips cannot hold the drive and R9
-    # reports the gap as `:cannot_reach`.
+    # and the handoff check makes the gap a `{:moves, _}`. The two stops are ninety kilometres
+    # apart, so the ten minutes between the trips cannot hold the drive and the
+    # block check reports the gap as `:cannot_reach`.
     far =
       stop_fixture(context.organization.id, context.version.id, %{
         stop_lat: Decimal.new("41.0000"),
@@ -284,7 +280,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
       # The strip is the whole day type's, so a filter cannot move it.
       assert strip_value(view, "blocks") == "2"
       assert strip_value(view, "unassigned") == "0"
-      assert has_element?(view, "#blocks-summary-note", "Whole day type")
+      assert has_element?(view, "#blocks-summary-note", "Whole service day")
     end
 
     test "problems only keeps error and warning blocks", %{version: version} = context do
@@ -376,8 +372,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
       view |> element("#panel-pool") |> render_click()
 
       assert_patch(view, base <> "?panel=pool&scale=zoom")
-      assert has_element?(view, "#panel-pool[aria-pressed='true']")
-      assert has_element?(view, "#panel-blocks[aria-pressed='false']")
+      assert has_element?(view, "#panel-pool[aria-selected='true']")
+      assert has_element?(view, "#panel-blocks[aria-selected='false']")
     end
 
     test "the timeline keeps the pager out of a day with no blocks",
@@ -391,7 +387,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTimelineLiveTest do
       assert has_element?(
                view,
                "#blocks-workspace-guidance",
-               "Start by selecting trips and assigning them to a new block."
+               "Select trips and place them on a new block."
              )
 
       refute has_element?(view, "#blocks-pager")

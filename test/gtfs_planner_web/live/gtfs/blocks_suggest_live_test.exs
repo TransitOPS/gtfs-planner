@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
-  # EV-37, rejecting FH-37 for CL-37: the Suggest blocks drawer as a planner
-  # chooses a scope — AC-43. The drawer is read through the ordinary
+  # The Suggest blocks drawer as a planner
+  # chooses a scope. The drawer is read through the ordinary
   # `/gtfs/:version/blocks` route on the production `CatalogReadAdapter.Repo` and
   # the scoped `Blocking` context: which trips each scope would plan, which
   # scopes the day type can offer, the rules the suggestion would use, the
@@ -10,11 +10,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
   # Rows are created inside the SQL Sandbox transaction and rolled back; nothing
   # here substitutes an adapter, a context or a plan. `:plan_preview` is read from
   # the rendered LiveView's own assigns, the way the version switcher's tests read
-  # theirs, because step 45 — not this step — renders the panel.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_suggest_live_test.exs`.
+  # theirs.
   use GtfsPlannerWeb.ConnCase, async: false
+
+  # The ceiling for `render_async/2`: it returns as soon as the page's async task
+  # has finished, so the value only bounds a failure.
+  @async_timeout 5_000
 
   import Phoenix.LiveViewTest
 
@@ -112,7 +113,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
 
   # Two blocks, one unassigned trip the unassigned scope can plan, and one
   # repeating trip, which is never blocked and is therefore the repeating
-  # service the drawer has to name (AC-43).
+  # service the drawer has to name.
   defp block_day!(context) do
     trip!(context, %{trip_id: "6101", block_id: "101", first: "06:00:00", last: "06:35:00"})
 
@@ -130,7 +131,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
     trip!(context, %{trip_id: "pool_trip", first: "14:00:00", last: "14:30:00"})
 
     # Repeating service is never blocked, so its trip is the one trip the day type
-    # holds that no scope of the drawer can plan (AC-43).
+    # holds that no scope of the drawer can plan.
     trip!(context, %{trip_id: "F30", first: "16:00:00", last: "16:30:00"})
 
     frequency_row_fixture(context.organization.id, context.version.id, %{trip_id: "F30"})
@@ -199,24 +200,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
 
   defp assigns(view), do: :sys.get_state(view.pid).socket.assigns
 
-  # A suggestion is built under `start_async`, so the drawer's close follows the
-  # task's result rather than the click. This waits for it the way the alignment
-  # generation tests wait for their own async work, and gives up rather than
-  # hanging.
-  defp wait_for(condition, timeout \\ 5_000) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-
-    do_wait(condition, deadline)
-  end
-
-  defp do_wait(fun, deadline) do
-    cond do
-      fun.() -> :ok
-      System.monotonic_time(:millisecond) > deadline -> :timeout
-      true -> Process.sleep(25) && do_wait(fun, deadline)
-    end
-  end
-
   describe "the Suggest blocks page action" do
     test "it opens the drawer with unassigned trips only selected", context do
       garage!(context)
@@ -268,7 +251,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
       {:ok, view, _html} = live(editor_conn(context), blocks_path(context.version.id))
       open_suggest(view)
 
-      # FH-37: the scope is offered with its reason rather than silently
+      # The scope is offered with its reason rather than silently
       # available, so a reader is never asked to plan nothing.
       assert has_element?(view, "#suggest-scope-selected[disabled]")
       assert has_element?(view, "#suggest-scopes", "Select blocks on the timeline first.")
@@ -284,8 +267,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
       toggle_block(view, "101")
       toggle_block(view, "102")
 
-      # “Rebuild selected blocks” is step 43's hand-off; this step is what it
-      # opens, and it opens on the scope the reader just chose.
+      # “Rebuild selected blocks” hands off to the drawer, which opens on the scope
+      # the reader just chose.
       rebuild_selected(view)
 
       assert has_element?(view, "#suggest-drawer-overlay[data-open='true']")
@@ -461,12 +444,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
 
       refute assigns(view)[:plan_preview]
 
+      # A suggestion is built under `start_async`, so the drawer's close follows the
+      # task's result rather than the click.
       view |> element("#suggest-preview") |> render_click()
+      _ = render_async(view, @async_timeout)
 
-      assert wait_for(fn ->
-               not has_element?(view, "#suggest-drawer-overlay[data-open='true']")
-             end) ==
-               :ok
+      refute has_element?(view, "#suggest-drawer-overlay[data-open='true']")
 
       plan = assigns(view)[:plan_preview]
       assert plan.mode == :unassigned_only
@@ -489,12 +472,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
       toggle_block(view, "101")
       rebuild_selected(view)
 
+      # A suggestion is built under `start_async`, so the drawer's close follows the
+      # task's result rather than the click.
       view |> element("#suggest-preview") |> render_click()
+      _ = render_async(view, @async_timeout)
 
-      assert wait_for(fn ->
-               not has_element?(view, "#suggest-drawer-overlay[data-open='true']")
-             end) ==
-               :ok
+      refute has_element?(view, "#suggest-drawer-overlay[data-open='true']")
 
       plan = assigns(view)[:plan_preview]
       assert {:selected, ids} = plan.mode
@@ -512,7 +495,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
 
       view |> element("#suggest-preview") |> render_click()
 
-      assert wait_for(fn -> has_element?(view, "#suggest-too-large") end) == :ok
+      _ = render_async(view, 60_000)
+
+      assert has_element?(view, "#suggest-too-large")
 
       assert has_element?(view, "#suggest-too-large", "3001")
       assert has_element?(view, "#suggest-too-large", "up to 3,000 trips")
@@ -548,7 +533,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksSuggestLiveTest do
 
   # The oversized day is 3,001 unassigned trips, inserted in bulk inside the
   # sandbox transaction: the generator's bound is 3,000 trips in scope, so this is
-  # the smallest day type that can be refused (AC-26). The rows are the same
+  # the smallest day type that can be refused. The rows are the same
   # shape the fixture builds, and they roll back with the test.
   defp oversized_day!(context, count \\ 3_001) do
     stop_fixture(context.organization.id, context.version.id, %{

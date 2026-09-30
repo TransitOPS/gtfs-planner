@@ -1,26 +1,23 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksColumnsLiveTest do
-  # EV-26, rejecting FH-26 for CL-26: the timeline's Garage · type, Time out,
+  # The timeline's Garage · type, Time out,
   # Hours and Status columns, the two new sort keys and the List view's distance
   # figures, read through the ordinary `/gtfs/:version/blocks` route on the
   # production `CatalogReadAdapter.Repo` and the scoped `Blocking` context. Rows
   # are created inside the SQL Sandbox transaction and rolled back; nothing here
   # substitutes an adapter or hand-builds a summary.
   #
-  # The garage and type names come from the one R4 resolution
-  # (`Blocking.Context.resolve_block/3`, INV-9) and the Time out span from
+  # The garage and type names come from the one resolution
+  # (`Blocking.Context.resolve_block/3`) and the Time out span from
   # `Blocking.Movements.build/3`, so a cell that disagreed with the day would
-  # fail here rather than in a browser. FH-26 is exactly "a conflict shows one
-  # garage, a status label is missing, or the sort covers only the page", so each
-  # case reads the whole rendered header, the row's own cells and the row order.
+  # fail here rather than in a browser. The failures worth catching are "a conflict
+  # shows one garage, a status label is missing, or the sort covers only the
+  # page", so each case reads the whole rendered header, the row's own cells and the row order.
   #
   # Every expected time is an entered driving time or a fixture clock, never an
   # estimate: Main → S1 is 2 minutes and S1 → Main is 3, so block 101's platform
   # span is 05:48–08:33 and the overnight block's is 23:45 −1d–01:33 +1d. The
   # kilometre figures are only required to be the block's own positive movement
   # totals, which the day load already asserts as literals elsewhere.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_columns_live_test.exs`.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -50,7 +47,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksColumnsLiveTest do
     route = route_fixture(organization.id, version.id, %{route_id: "R1", route_short_name: "1"})
 
     # Two services on the same dates, so they share one day type and a block can
-    # carry one attribute row per calendar — the R4 conflict.
+    # carry one attribute row per calendar — the garage conflict.
     for {service_id, name} <- [{"WK", "Weekday"}, {"WK2", "Weekday 2"}] do
       calendar_service_fixture(organization.id, version.id, %{service_id: service_id, name: name})
     end
@@ -185,9 +182,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksColumnsLiveTest do
 
       {:ok, view, _html} = live(editor_conn(context), blocks_path(context.version.id))
 
-      # The row-select control leads the header, and the Block column carries the
-      # current sort arrow, so the five data columns are read after them.
-      assert headers(view) == "Select Block ↑ Garage · type Time out Hours Status"
+      # The row-select column has no visible label, and the Block column carries the
+      # current sort arrow.
+      assert headers(view) == "Block ↑ Garage · type Time out Hours Status"
 
       # The three removed columns are gone from the header and from every row.
       refute has_element?(view, "th.blocks-meta-trips")
@@ -394,12 +391,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksColumnsLiveTest do
         |> LazyHTML.attribute("class")
 
       assert length(icons) == 4
-      assert Enum.all?(icons, &(&1 =~ "size-3.5 shrink-0"))
+      assert Enum.all?(icons, &(&1 =~ "size-4 shrink-0"))
 
-      assert Enum.map(icons, &(&1 =~ "hero-x-circle-mini")) ==
+      assert Enum.map(icons, &(&1 =~ "hero-x-circle")) ==
                [true, false, true, false]
 
-      assert Enum.map(icons, &(&1 =~ "hero-exclamation-triangle-mini")) ==
+      assert Enum.map(icons, &(&1 =~ "hero-exclamation-triangle")) ==
                [false, true, false, true]
     end
   end

@@ -1,12 +1,12 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksApplyPlanLiveTest do
-  # EV-39, rejecting FH-39 for CL-39: applying a suggestion from the page and
-  # every answer the apply can have — AC-45. The flow is driven through the
+  # Applying a suggestion from the page and every answer the apply can have. The
+  # flow is driven through the
   # ordinary `/gtfs/:version/blocks` route on the production
   # `CatalogReadAdapter.Repo` and the scoped `Blocking` context: `#blocks-suggest`
   # → drawer → Preview → Apply, and for a rebuild the confirmation dialog before
   # the same write.
   #
-  # FH-39 is a claim about two failures, and both are asserted directly: a stale
+  # Two failures are asserted directly: a stale
   # plan must not be writable, and a replace-all must not skip its confirmation.
   # The first is proved by entering a driving time between the preview and the
   # apply and reading the saved rows afterwards — the context refuses the write
@@ -14,10 +14,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksApplyPlanLiveTest do
   # The second by the dialog's own title and count, and by “Keep current blocks”
   # closing it with the saved rows untouched.
   #
-  # The panel's numbers are this day's own. The card's sample figures (six trips,
-  # “Weekday + School days and Weekday”) are the prototype's data, so each case
-  # asserts the relationship — the message names the plan's own moves and the
-  # plan's own affected day types — rather than a pasted number.
+  # The panel's numbers are this day's own, so each case asserts the
+  # relationship — the message names the plan's own moves and the plan's own
+  # affected service days — rather than a pasted number.
   #
   # The `:busy` and audit-failure answers are the one place a mock stands in:
   # `ReviewedApplyTransaction` is the repository's own transaction boundary, and
@@ -26,10 +25,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksApplyPlanLiveTest do
   # and the mock is restored in `on_exit`.
   #
   # Rows are created inside the SQL Sandbox transaction and rolled back.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_apply_plan_live_test.exs`.
   use GtfsPlannerWeb.ConnCase, async: false
+
+  # The ceiling for `render_async/2`: it returns as soon as the page's async task
+  # has finished, so the value only bounds a failure.
+  @async_timeout 5_000
 
   import Phoenix.LiveViewTest
 
@@ -174,37 +174,22 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksApplyPlanLiveTest do
 
   defp preview(view) do
     view |> element("#suggest-preview") |> render_click()
+    _ = render_async(view, @async_timeout)
 
-    assert wait_for(fn -> has_element?(view, "#suggestion") end) == :ok
+    assert has_element?(view, "#suggestion")
   end
 
-  # The apply is asynchronous, so the click returns before its result lands. A
-  # refusal has no message to wait for — it is an apply *state* — so the wait is
-  # for the pending state to be replaced by any other one.
+  # The apply runs under `start_async`, so the click returns before its result
+  # lands. A refusal has no message to wait for — it is an apply *state* — so the
+  # check is that the pending state has been replaced once the task has finished.
   defp apply_suggestion(view) do
     view |> element("#apply-suggestion") |> render_click()
+    _ = render_async(view, @async_timeout)
 
-    # The click answers with the pending state, and the result replaces it. The
-    # wait is on that assign rather than on the rendered DOM, so it cannot be
-    # satisfied by a render that has not caught up.
-    assert wait_for(fn -> assigns(view)[:apply].status != :pending end) == :ok
+    assert assigns(view)[:apply].status != :pending
   end
 
   defp applied?(view), do: not is_nil(assigns(view)[:applied])
-
-  defp wait_for(condition, timeout \\ 5_000) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-
-    do_wait(condition, deadline)
-  end
-
-  defp do_wait(fun, deadline) do
-    cond do
-      fun.() -> :ok
-      System.monotonic_time(:millisecond) > deadline -> :timeout
-      true -> Process.sleep(25) && do_wait(fun, deadline)
-    end
-  end
 
   defp plan(view), do: assigns(view)[:suggestion].plan
 
@@ -384,7 +369,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksApplyPlanLiveTest do
       view |> element("#apply-suggestion") |> render_click()
       view |> element("#suggestion-replace-confirm") |> render_click()
 
-      assert wait_for(fn -> applied?(view) end) == :ok
+      _ = render_async(view, @async_timeout)
+      assert applied?(view)
 
       refute has_element?(view, "#suggestion-replace[data-open='true']")
 
@@ -406,7 +392,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksApplyPlanLiveTest do
       moved = plan(view).moves
 
       # Another writer enters a driving time after this preview was built, so the
-      # plan's fingerprint no longer matches the locked rows (INV-7). The pair is
+      # plan's fingerprint no longer matches the locked rows. The pair is
       # the one the unassigned scope planned — 8105 ends at Valley College and
       # 6106 leaves Riverside Station — so this drive is one the plan read.
       deadhead_time_fixture(context.organization.id, context.version.id, %{
@@ -533,7 +519,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksApplyPlanLiveTest do
     |> Enum.uniq()
   end
 
-  # One `"trip"` change log per moved trip under one operation (INV-4), so the
+  # One `"trip"` change log per moved trip under one operation, so the
   # count is the write count: it is how “submits once” is proved without a mock.
   defp change_logs(context) do
     Repo.all(

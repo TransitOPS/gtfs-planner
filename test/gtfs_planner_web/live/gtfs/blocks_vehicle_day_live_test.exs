@@ -1,20 +1,17 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
-  # EV-30, rejecting FH-30 for CL-30: the block drawer as the vehicle's day, read
+  # The block drawer as the vehicle's day, read
   # through the ordinary `/gtfs/:version/blocks` route on the production
   # `CatalogReadAdapter.Repo` and the scoped `Blocking` context. Rows are created
   # inside the SQL Sandbox transaction and rolled back; nothing here substitutes an
   # adapter, a context or a hand-built movement.
   #
-  # The fixture is the reference's own block 101 at its own geometry: a Main
+  # The fixture is a block 101: a Main
   # garage, three trips between Riverside Station, Valley College and Market
   # Square, an 8-minute gap the vehicle needs 14 minutes to cover, and a 22-minute
   # wait at the marked Riverside Station. Every driving time is an *entered* row in
   # `deadhead_times`, so the row times and the `! Needs` numbers are the fixture's
   # own minutes rather than an estimate over its geometry; the one case that needs
   # an estimate says `est.` and asserts the mark rather than a distance.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_vehicle_day_live_test.exs`.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Ecto.Query
@@ -55,7 +52,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
 
     # One meridian, a hundredth of a degree apart, so every leg has a real
     # distance and a real estimate; two platforms of the one station share a point
-    # the way the reference's Riverside Station does.
+    # the way a real station does.
     for {stop_id, name, lat} <- [
           {"AB_RS_A", "Riverside Station", "40.0100"},
           {"AB_RS_B", "Riverside Station", "40.0100"},
@@ -121,7 +118,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
     )
   end
 
-  # The reference's block 101: 06:00 and 07:40 out of Riverside Station, the
+  # Block 101: 06:00 and 07:40 out of Riverside Station, the
   # 06:43 Crosstown out of Market Square between them, and an 8-minute gap the
   # vehicle needs 14 minutes to cover.
   defp block_101!(context) do
@@ -157,10 +154,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
     drive!(context, {:stop, "AB_VALLEY"}, {:garage, context.main.id}, 7)
     drive!(context, {:stop, "AB_VALLEY"}, {:stop, "AB_MKT"}, 14)
     block_101!(context)
-  end
-
-  defp text(view, selector) do
-    view |> render() |> LazyHTML.from_fragment() |> LazyHTML.query(selector) |> LazyHTML.text()
   end
 
   defp texts(view, selector) do
@@ -251,7 +244,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
       # colour rather than as a claim it could make the connection.
       drive = "#block-day tr[data-kind='drive']"
       assert has_element?(view, drive, "! Needs 14 min; has 8")
-      assert has_element?(view, "#{drive} td.text-error", "! Needs 14 min; has 8")
+      assert has_element?(view, "#{drive} td.text-error-fg", "! Needs 14 min; has 8")
 
       assert has_element?(view, "#block-day tr[data-kind='wait']", "22 min")
     end
@@ -317,7 +310,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
         live(editor_conn(context), blocks_path(context.version.id) <> "?block=101")
 
       assert activities(view) |> List.last() == "Trip 6109 · route 12"
-      assert has_element?(view, "#block-day tr[data-kind='trip']", "Time missing")
+      assert has_element?(view, "#block-day tr[data-kind='trip']", "Missing times")
 
       assert attributes(view, "#block-day [data-role='block-inspect']", "phx-value-trip") ==
                ["6101", "8101", "6103", "6109"]
@@ -347,7 +340,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
           "?gap=#{trips.first.id}%7C#{trips.second.id}&block=101"
       )
 
-      assert has_element?(view, "#gap-drawer", "Open block 101")
+      assert has_element?(view, "#gap-drawer", "Back to block 101")
     end
 
     test "a trip row keeps Inspect and a drive row opens the gap, both with the block kept",
@@ -410,7 +403,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksVehicleDayLiveTest do
                "Remove all trips"
              )
 
-      # INV-3: nothing in this drawer edits a transfer, and the gap drawer's record
+      # Nothing in this drawer edits a transfer, and the gap drawer's record
       # list is a read-only report.
       refute has_element?(view, "#block-drawer [phx-value-action='confirm_in_seat']")
       refute has_element?(view, "#block-drawer [data-role='block-in-seat-edit']")

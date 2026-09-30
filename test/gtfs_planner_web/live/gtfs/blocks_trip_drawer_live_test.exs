@@ -1,12 +1,9 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
-  # EV-22: the read-only trip drawer and the `trip=` deep links, observed through
+  # The read-only trip drawer and the `trip=` deep links, observed through
   # the ordinary `/gtfs/:version/blocks` route on the production
   # `CatalogReadAdapter.Repo` and the scoped `Blocking` context. Rows are created
   # inside the SQL Sandbox transaction and rolled back; nothing here substitutes
   # an adapter or a fake day.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_trip_drawer_live_test.exs`.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -196,7 +193,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
       # also holds the shared Thanksgiving date, so its sentence sums to 261.
       weekdays = weekday_dates()
 
-      assert has_element?(view, "#trip-day-types", "Runs on #{weekdays} dates in:")
+      assert has_element?(
+               view,
+               "#trip-day-types",
+               "This trip runs on #{weekdays} days, in these service days:"
+             )
+
       assert element_count(view, "#trip-day-types a[data-role='trip-day-type']") == 2
 
       texts =
@@ -205,17 +207,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
         |> LazyHTML.query("#trip-day-types a[data-role='trip-day-type']")
         |> Enum.map(&(LazyHTML.text(&1) |> String.trim()))
 
-      assert hd(texts) == "Weekday · #{weekdays - 1} dates"
-      assert List.last(texts) == "Thanksgiving + Weekday · 1 date"
+      assert hd(texts) == "Weekday · #{weekdays - 1} days"
+      assert List.last(texts) == "Thanksgiving + Weekday · 1 day"
 
       assert has_element?(
                view,
                "#trip-day-types",
-               "Changes apply to all #{weekdays} dates this trip runs."
+               "A block assignment belongs to the trip, so a change applies on all #{weekdays} days it runs."
              )
 
       # Each link carries the day key and the trip, so following it changes the
-      # day type and opens the same drawer there (AC-29).
+      # day type and opens the same drawer there.
       weekday_key = day_key(view, "Weekday")
       thanksgiving_key = day_key(view, "Thanksgiving")
 
@@ -228,7 +230,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
         live(conn, base <> "?day=#{thanksgiving_key}&trip=wk_1")
 
       assert has_element?(followed, "#trip-drawer", "Trip wk_1")
-      assert has_element?(followed, "#trip-day-types", "Runs on #{weekdays} dates in:")
+
+      assert has_element?(
+               followed,
+               "#trip-day-types",
+               "This trip runs on #{weekdays} days, in these service days:"
+             )
+
       refute has_element?(followed, "#blocks-trip-elsewhere")
     end
 
@@ -236,7 +244,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
          %{version: version} = context do
       # Both calendars run the same weekdays, so the day type holds two services
       # and its label names no single calendar; the row names the trip's own
-      # service rather than the joined day-type label (AC-25).
+      # service rather than the joined day-type label.
       calendar(context, "WK", "Weekday")
       calendar(context, "SCHOOL", "School days")
 
@@ -267,7 +275,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
       in_seat_transfer_fixture(context.organization.id, context.version.id, a, b)
 
       # x and y do not host each other: they are in different blocks, so the
-      # record has no hosting gap and stays visible with its own state (INV-3).
+      # record has no hosting gap and stays visible with its own state.
       record = in_seat_transfer_fixture(context.organization.id, context.version.id, x, y)
 
       transfer_fixture(context.organization.id, context.version.id, %{
@@ -286,19 +294,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
 
       {:ok, view, _html} = live(conn, base <> "?trip=a")
 
-      assert has_element?(view, "#trip-transfers", "Transfer records · 1")
+      assert has_element?(view, "#trip-transfers", "Stay-on-board records · 1")
       assert has_element?(view, "#trip-transfers", "Riders stay on board")
       assert has_element?(view, "#trip-transfers", "Trip a → b")
 
       assert has_element?(
                view,
                "#trip-transfers [data-role='trip-transfer-state']",
-               "Matches the block on all shared dates"
+               "Matches the block on every shared day."
              )
 
       {:ok, elsewhere, _html} = live(conn, base <> "?trip=x")
 
-      assert has_element?(elsewhere, "#trip-transfers", "Transfer records · 2")
+      assert has_element?(elsewhere, "#trip-transfers", "Stay-on-board records · 2")
 
       assert has_element?(
                elsewhere,
@@ -317,7 +325,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
       assert has_element?(
                elsewhere,
                "#trip-transfers [data-role='trip-transfer-state']",
-               "Not next on this vehicle on Weekday, #{weekday_dates()} dates"
+               "isn't next on this vehicle on Weekday (#{weekday_dates()} days)"
              )
     end
   end
@@ -366,14 +374,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
       # The Weekday day type is the default one, so the Saturday trip is elsewhere.
       {:ok, view, _html} = live(conn, base <> "?trip=sat_1")
 
-      assert has_element?(view, "#blocks-trip-elsewhere", "Trip sat_1 is not in this day type.")
+      assert has_element?(
+               view,
+               "#blocks-trip-elsewhere",
+               "Trip sat_1 isn't part of this service day."
+             )
+
       assert element_count(view, "#blocks-trip-elsewhere a[data-role='trip-day-type']") == 1
       refute has_element?(view, "#trip-drawer")
 
       assert has_element?(
                view,
                "#blocks-trip-elsewhere a[data-role='trip-day-type']",
-               "Saturday · #{saturday_dates()} dates"
+               "Saturday · #{saturday_dates()} days"
              )
 
       assert hrefs(view, "#blocks-trip-elsewhere a") == [
@@ -382,7 +395,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
 
       {:ok, missing, _html} = live(conn, base <> "?trip=missing")
 
-      assert has_element?(missing, "#trip-elsewhere", "Trip missing isn't in this version.")
+      assert has_element?(
+               missing,
+               "#trip-elsewhere",
+               "We couldn't find trip missing in this version."
+             )
+
       refute has_element?(missing, "#trip-drawer")
     end
 
@@ -394,8 +412,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
       {:ok, view, _html} = live(conn, blocks_path(version.id) <> "?trip=untimed_1")
 
       assert has_element?(view, "#trip-drawer", "Trip untimed_1")
-      assert has_element?(view, "#trip-drawer", "An endpoint time is missing.")
-      assert has_element?(view, "#trip-drawer", "Time missing")
+      assert has_element?(view, "#trip-drawer", "A time is missing.")
+      assert has_element?(view, "#trip-drawer", "Missing times")
     end
 
     test "a frequency trip's drawer shows the repeat text", %{version: version} = context do
@@ -414,11 +432,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksTripDrawerLiveTest do
 
       assert has_element?(view, "#trip-drawer", "Trip freq_1")
 
+      assert has_element?(view, "#trip-frequency", "Repeats every 20 min.")
+
       assert has_element?(
                view,
-               "#trip-drawer",
-               "Repeats every 20 min; individual vehicle work can't be checked here. " <>
-                 "An imported block can be removed."
+               "#trip-frequency",
+               "This view can't check the vehicle work of a repeating trip. " <>
+                 "An imported block can still be removed."
              )
     end
   end

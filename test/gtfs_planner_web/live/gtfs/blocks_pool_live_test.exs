@@ -1,16 +1,12 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
-  # EV-21: the List view, the paged Unassigned panel and the “not plotted” list,
+  # The List view, the paged Unassigned panel and the “not plotted” list,
   # observed through the ordinary `/gtfs/:version/blocks` route on the production
   # `CatalogReadAdapter.Repo` and the scoped `Blocking` context. Rows are created
   # inside the SQL Sandbox transaction and rolled back; nothing here substitutes
   # an adapter.
   #
-  # The card's browser case (stacked narrow records and no page-level horizontal
-  # overflow at 375px) belongs to `assets/e2e/blocks.spec.js`, which step 29 owns
-  # with EV-28; this file writes the six server cases.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_pool_live_test.exs`.
+  # The browser case (stacked narrow records and no page-level horizontal
+  # overflow at 375px) belongs to `assets/e2e/blocks.spec.js`.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -106,7 +102,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
 
   # 149 plottable pool trips, one per minute from 06:00, plus a trip whose last
   # time is missing: page 1 is the first 100 departures, page 2 the remaining 49
-  # and then the untimed trip (EV-21's 150-trip case).
+  # and then the untimed trip (the 150-trip case).
   defp seed_pool_day(context) do
     calendar(context, "WK", "Weekday")
 
@@ -174,7 +170,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
 
       {:ok, view, _html} = live(conn, base <> "?panel=pool")
 
-      assert has_element?(view, "#panel-pool", "Unassigned · 150")
+      assert has_element?(view, "#panel-pool", ~r/Unassigned trips\s+150\b/)
       assert element_count(view, "#blocks-pool-table tr") == @page_size
 
       page_one = pool_trip_ids(view)
@@ -223,7 +219,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
       assert has_element?(
                view,
                "#blocks-pool-table a[href='/gtfs/#{version.id}/routes/R1/schedules?service_id=WK']",
-               "Open in Schedules"
+               "Fix times in Schedules"
              )
     end
 
@@ -291,7 +287,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
 
       # R2 must name a trip of this day type for the filter to survive the load:
       # `normalize_route/2` falls back to all routes when the day holds none of
-      # the route (EV-19's “an unknown route falls back to all routes”), so a
+      # the route (an unknown route falls back to all routes), so a
       # blocked R2 trip keeps the route while the pool holds none of it.
       trip(context, %{
         trip_id: "r2_blocked",
@@ -326,7 +322,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
       conn = editor_conn(context)
       {:ok, view, _html} = live(conn, blocks_path(version.id) <> "?panel=pool")
 
-      assert has_element?(view, "#blocks-pool-empty", "All trips have a block")
+      assert has_element?(view, "#blocks-pool-empty", "Every trip has a block")
       refute has_element?(view, "#blocks-pool-filtered-empty")
     end
 
@@ -349,7 +345,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
       {:ok, view, _html} = live(conn, base <> "?panel=pool")
 
       # The Weekday day type is the default (more dates), so the pool starts on it.
-      assert has_element?(view, "#panel-pool", "Unassigned · 2")
+      assert has_element?(view, "#panel-pool", ~r/Unassigned trips\s+2\b/)
       assert pool_trip_ids(view) == ["wk_pool_a", "wk_pool_b"]
 
       saturday = day_key(view, "Saturday")
@@ -360,7 +356,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
       assert_patch(view, base <> "?day=#{saturday}&panel=pool")
 
       # The pool is re-streamed, not reused: the new day's own rows and count.
-      assert has_element?(view, "#panel-pool", "Unassigned · 1")
+      assert has_element?(view, "#panel-pool", ~r/Unassigned trips\s+1\b/)
       assert pool_trip_ids(view) == ["sat_pool"]
     end
 
@@ -375,7 +371,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
       assert has_element?(
                view,
                "#blocks-workspace-guidance",
-               "Start by selecting trips and assigning them to a new block."
+               "Start by selecting trips and placing them on a new block."
              )
 
       assert pool_trip_ids(view) == ["only_pool"]
@@ -385,7 +381,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
   describe "the List view" do
     setup :editor_scope
 
-    test "each streamed block renders its own trip table with the reference's columns",
+    test "each streamed block renders its own trip table with its columns",
          %{version: version} = context do
       calendar(context, "WK", "Weekday")
       block_trips(context, "101", [{"08:00:00", "08:40:00"}, {"08:50:00", "09:30:00"}])
@@ -501,7 +497,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPoolLiveTest do
       assert has_element?(
                view,
                "#blocks-untimed a[href='/gtfs/#{version.id}/routes/R1/schedules?service_id=WK']",
-               "Open in Schedules"
+               "Fix times in Schedules"
              )
 
       refute has_element?(

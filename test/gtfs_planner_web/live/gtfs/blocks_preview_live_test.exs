@@ -1,11 +1,11 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
-  # EV-38, rejecting FH-38 for CL-38: the Suggested blocks panel as a preview
-  # reader inspects before anything is saved — AC-44. The panel is read through
+  # The Suggested blocks panel as a preview a
+  # reader inspects before anything is saved. The panel is read through
   # the ordinary `/gtfs/:version/blocks` route on the production
   # `CatalogReadAdapter.Repo` and the scoped `Blocking` context, through the same
   # `#blocks-suggest` → drawer → Preview path a planner uses.
   #
-  # FH-38 is a claim about two things, and both are asserted here directly: that
+  # Two claims are asserted here directly: that
   # the preview never edits saved state, and that the controls it would conflict
   # with are off while it is up. The first is checked two ways — every trip's
   # `block_id` in the database, and a second LiveView reading the same day
@@ -13,20 +13,18 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
   # select, the two settings buttons, the page action and the block checkboxes,
   # and by the block selection bar being gone.
   #
-  # The panel's numbers are this day's own. The card's sample figures (four
-  # vehicles, two moves, "2 existing problems remain", 143 and 38 dates) belong to
-  # the prototype's sample data rather than to any fixture this repository owns, so
-  # each case asserts the structure and the relationship — the metric reads the
-  # plan's before and after pair, the note reads the plan's review, the day-type
-  # card reads the affected set — instead of a number that would be pasted rather
-  # than read.
+  # The panel's numbers are this day's own, so each case asserts the structure
+  # and the relationship — the metric reads the plan's before and after pair, the
+  # note reads the plan's review, the service-day card reads the affected set —
+  # instead of a number that would be pasted rather than read.
   #
   # Rows are created inside the SQL Sandbox transaction and rolled back; nothing
   # here substitutes an adapter, a context or a plan.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_preview_live_test.exs`.
   use GtfsPlannerWeb.ConnCase, async: false
+
+  # The ceiling for `render_async/2`: it returns as soon as the page's async task
+  # has finished, so the value only bounds a failure.
+  @async_timeout 5_000
 
   import Phoenix.LiveViewTest
 
@@ -176,26 +174,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
   end
 
   # Preview builds the plan under `start_async`, so the panel follows the task's
-  # result rather than the click. This waits for it and gives up rather than
-  # hanging, so a failure is a failed assertion and not a stalled suite.
+  # result rather than the click.
   defp preview(view) do
     view |> element("#suggest-preview") |> render_click()
+    _ = render_async(view, @async_timeout)
 
-    assert wait_for(fn -> has_element?(view, "#suggestion") end) == :ok
-  end
-
-  defp wait_for(condition, timeout \\ 5_000) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-
-    do_wait(condition, deadline)
-  end
-
-  defp do_wait(fun, deadline) do
-    cond do
-      fun.() -> :ok
-      System.monotonic_time(:millisecond) > deadline -> :timeout
-      true -> Process.sleep(25) && do_wait(fun, deadline)
-    end
+    assert has_element?(view, "#suggestion")
   end
 
   # The panel's own numbers, read from the plan rather than from the DOM, so a
@@ -234,7 +218,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
 
       assert has_element?(view, "#suggestion", "minimum possible #{suggestion(view).minimum}")
 
-      # Deadhead hours as the reference prints them: one decimal of an hour.
+      # Deadhead hours print as one decimal of an hour.
       assert has_element?(view, "#suggestion", "Driving without riders · h")
 
       assert has_element?(
@@ -286,7 +270,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
       existing = suggestion(view).existing
       fixed = suggestion(view).fixed
 
-      # The note is the reference's: what is already there beside what is new,
+      # The note says what is already there beside what is new,
       # and a plan over a day with neither says so rather than printing nothing.
       expected =
         [
@@ -331,12 +315,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
         refute has_element?(view, "#suggestion", "fixed")
       end
 
-      # A rebuild re-plans the whole day type, so the panel says so in the
-      # reference's own words.
+      # A rebuild re-plans the whole service day, so the panel says so.
       assert has_element?(
                view,
                "#suggestion",
-               "Every scheduled trip in this day type was planned again"
+               "Every scheduled trip in this service day was planned again"
              )
     end
   end
@@ -410,7 +393,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
                "Also changes"
              )
 
-      # The scope sentence is the reference's per scope, and the repeating trip
+      # The scope sentence depends on the scope, and the repeating trip
       # the plan left alone is named rather than counted.
       assert has_element?(view, "#suggestion-scope-note", "Existing assignments stay")
       assert has_element?(view, "#suggestion-scope-note", "F30")
@@ -509,8 +492,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
       # The pool table holds all three unassigned trips at once, so each is found
       # by its own row rather than by matching the whole table's text.
       # The pool arrives as a stream, so its rows land in a patch after the
-      # first render and the assertions wait for them.
-      assert wait_for(fn -> has_element?(other, "#blocks-pool-table tr") end) == :ok
+      # first render.
+      _ = render_async(other, @async_timeout)
+      assert has_element?(other, "#blocks-pool-table tr")
 
       for trip_id <- ["8105", "6106", "F30"] do
         assert has_element?(other, "#blocks-pool-table tr", trip_id)
@@ -564,6 +548,22 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
       assert has_element?(view, "#blocks-select-all-blocks[disabled]")
 
       refute has_element?(view, "#block-selection-bar")
+    end
+
+    test "Apply suggestion holds the page's one primary while the plan is shown", context do
+      garage!(context)
+      block_day!(context)
+
+      {:ok, view, _html} = live(editor_conn(context), blocks_path(context.version.id))
+
+      assert has_element?(view, "#blocks-review-checks.btn-primary")
+
+      open_suggest(view)
+      preview(view)
+
+      assert has_element?(view, "#apply-suggestion.btn-primary")
+      assert has_element?(view, "#blocks-review-checks.btn-outline")
+      refute has_element?(view, "#blocks-review-checks.btn-primary")
     end
 
     test "their events are refused even when they are sent", context do

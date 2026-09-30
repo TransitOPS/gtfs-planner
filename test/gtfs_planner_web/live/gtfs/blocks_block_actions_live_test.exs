@@ -1,16 +1,12 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksBlockActionsLiveTest do
-  # EV-26: the block drawer's rename, merge and remove-all actions, observed
+  # The block drawer's rename, merge and remove-all actions, observed
   # through the ordinary `/gtfs/:version/blocks` route on the production
   # `CatalogReadAdapter.Repo` and the scoped `Blocking` context, so every action
   # reaches the real `Gtfs.apply_block_change/4`. Rows are created inside the SQL
   # Sandbox transaction and rolled back; nothing here substitutes an adapter.
   #
-  # The card's browser scenarios (the rename form, the split review and the merge
-  # picker at 1440×1000) belong to `assets/e2e/blocks.spec.js`, which step 29 owns
-  # with EV-28; this file writes the EV-26 cases.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_block_actions_live_test.exs`.
+  # The browser scenarios (the rename form, the split review and the merge picker
+  # at 1440×1000) belong to `assets/e2e/blocks.spec.js`.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -196,9 +192,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBlockActionsLiveTest do
       %{view: view, base: base, key: key} = open_block_day(context, "Weekday", "101")
       school_key = day_key(view, "School")
 
-      # The drawer's three actions are the reference's; the rename field starts on
-      # the block's own ID.
-      assert has_element?(view, "#block-drawer", "Block actions")
+      # The drawer offers three actions; the rename field starts on the block's
+      # own ID.
+      assert has_element?(view, "#block-drawer", "Change this block")
       assert has_element?(view, "#block-rename-form")
       assert has_element?(view, "#block-rename-id[value='101']")
       assert has_element?(view, "#block-rename-submit", "Rename block")
@@ -211,7 +207,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBlockActionsLiveTest do
       # A rename always needs the review, and the review writes nothing.
       assert has_element?(view, "#block-review[data-open='true']")
       assert has_element?(view, "#block-review-confirm", "Rename block")
-      assert has_element?(view, "#block-review-cancel", "Change selection")
+      assert has_element?(view, "#block-review-cancel", "Change name")
       assert has_element?(view, "#block-review-changes-table", "wk1")
       assert has_element?(view, "#block-review-changes-table", "wk2")
       refute has_element?(view, "#block-review-changes-table", "z1")
@@ -248,7 +244,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBlockActionsLiveTest do
       refute has_element?(view, "#block-drawer")
       assert_patch(view, base <> "?day=#{key}")
 
-      # One audit entry per changed trip, in the Schedules shape (INV-4): both
+      # One audit entry per changed trip, in the Schedules shape: both
       # logs name the whole command's changed trips and its one operation.
       changed = Enum.sort([wk1.id, wk2.id])
 
