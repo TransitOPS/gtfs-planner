@@ -500,6 +500,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
                 sort={@sort}
                 dir={@dir}
                 scale={@scale}
+                crew={runs_crew(@runs_day)}
               />
             </RunsComponents.plan_card>
           </div>
@@ -547,4 +548,15 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # which reads as a failure to load.
   defp panel_state?(state) when state in [:loading, :no_dates, :empty, :unknown], do: true
   defp panel_state?(_state), do: false
+
+  # The crew rules for the loaded day, or nil.
+  #
+  # The chart's block renders in the `:unavailable` state as well as `:loaded`,
+  # because a failed RELOAD keeps the runs already on screen. A failed FIRST
+  # load has no `runs_day` at all, so this is a map check and not a truthiness
+  # check — the same nil trap step 21 recorded on the count strip, reached here
+  # through a different door. A nil crew makes the footnote's paid-break limit
+  # read as an em dash, which is the right thing to say about a limit nobody set.
+  defp runs_crew(runs_day) when is_map(runs_day), do: runs_day.crew
+  defp runs_crew(_runs_day), do: nil
 end

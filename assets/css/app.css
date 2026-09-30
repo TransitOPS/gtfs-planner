@@ -4550,3 +4550,15 @@ body:has(#home-page) {
 #runs-page .runs-key-travel {
   top: 13px;
 }
+
+/* The roving-row footnote sits under the chart in the muted type of every other
+   aside on the page, so it reads as a note about the table rather than as a
+   control. It is visible words and not a tooltip: a keyboard rule a reader has
+   to discover is a rule most readers never find. */
+#runs-timeline-foot #roving-hint {
+  flex: 1 1 22rem;
+}
+
+#runs-timeline-foot #paid-time-note {
+  flex: 1 1 22rem;
+}
