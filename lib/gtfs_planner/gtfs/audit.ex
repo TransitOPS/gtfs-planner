@@ -8,6 +8,7 @@ defmodule GtfsPlanner.Gtfs.Audit do
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.ChangeLog
+  alias GtfsPlanner.Gtfs.FareVersionSetting
   alias GtfsPlanner.Gtfs.Level
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
@@ -247,6 +248,12 @@ defmodule GtfsPlanner.Gtfs.Audit do
   # complete before/after snapshots are passed explicitly by Transfers, so the
   # entity itself never yields a snapshot.
   defp build_snapshot(type, %Transfer{}) when type in [:transfer, "transfer"], do: nil
+
+  # A fare operation addresses the version's fares section. Its settings row is
+  # the entity key; the operation's explicit row snapshots live in changed_fields.
+  defp build_snapshot(type, %FareVersionSetting{}) when type in [:fare_version, "fare_version"],
+    do: nil
+
   # Alignment segments snapshot their scope, stop-pair identity, override
   # linkage, optimistic-lock revision and interior points. Pattern shapes
   # snapshot the owning pattern's shape identity; the replaced-shape detail
@@ -428,6 +435,10 @@ defmodule GtfsPlanner.Gtfs.Audit do
        when type in [:transfer, "transfer"],
        do: Transfer.audit_external_id(transfer)
 
+  defp entity_external_id_for(type, %FareVersionSetting{}, _attrs)
+       when type in [:fare_version, "fare_version"],
+       do: "fares"
+
   # A shared segment is addressed by its stop pair; an override also names the
   # visit it belongs to (INV-6). A pattern shape is addressed by the pattern's
   # natural GTFS ID.
@@ -540,6 +551,13 @@ defmodule GtfsPlanner.Gtfs.Audit do
     Map.filter(attrs, fn {key, _value} -> to_string(key) in ~w(before after) end)
   end
 
+  # Fare changes are audited as one operation with explicit row snapshots.
+  defp audited_attrs_for(type, attrs) when type in [:fare_version, "fare_version"] do
+    Map.filter(attrs, fn {key, _value} ->
+      to_string(key) in ~w(operation_id summary before after)
+    end)
+  end
+
   defp audited_attrs_for(entity_type, attrs), do: reversible_attrs_for(entity_type, attrs)
 
   # -- Diff and rollback helpers --
@@ -606,6 +624,18 @@ defmodule GtfsPlanner.Gtfs.Audit do
       "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
     }
     |> put_transfer_operation(attrs)
+  end
+
+  defp build_changed_fields(entity_type, action, _snapshot, attrs)
+       when entity_type in [:fare_version, "fare_version"] and
+              action in ["created", "updated", "deleted"] do
+    %{
+      "operation_id" =>
+        normalize_value(Map.get(attrs, :operation_id, Map.get(attrs, "operation_id"))),
+      "summary" => normalize_value(Map.get(attrs, :summary, Map.get(attrs, "summary"))),
+      "before" => normalize_value(Map.get(attrs, :before, Map.get(attrs, "before"))),
+      "after" => normalize_value(Map.get(attrs, :after, Map.get(attrs, "after")))
+    }
   end
 
   # Alignment entries, like trips, store the explicit before/after aggregates

@@ -45,6 +45,7 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
             | :station
             | :stop
             | :transfers
+            | :fares
             | :none,
           title: String.t(),
           context: String.t(),
@@ -350,6 +351,10 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
     base_item(:transfers, "Transfers", "Transfers", transfer_detail(group), params: %{})
   end
 
+  defp resolve(%{destination: :fares} = group, _lookups) do
+    base_item(:fares, "Fares", "Fares", fare_detail(group), params: %{})
+  end
+
   defp resolve(%{destination: :alignment} = group, _lookups) do
     base_item(:none, "Shape", "Shape", alignment_detail(group), exists?: false)
   end
@@ -549,6 +554,17 @@ defmodule GtfsPlanner.Gtfs.RecentChanges.Describe do
       "created" -> "transfer rule added"
       "deleted" -> "transfer rule removed"
       _ -> "transfer rule changed"
+    end
+  end
+
+  # A fare operation's summary is written by the writer that made it, so the
+  # history line reads in the editor's own words.
+  defp fare_detail(group) do
+    row = newest_row(group)
+
+    case changed_fields(row)["summary"] do
+      summary when is_binary(summary) and summary != "" -> summary
+      _ -> change_detail(row, "fares changed")
     end
   end
 
