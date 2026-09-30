@@ -833,6 +833,23 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
           Frequency service can't be duplicated.
         </p>
         <button
+          :if={@row.frequency?}
+          id={"trip-#{@row.trip_id}-convert"}
+          type="button"
+          role="menuitem"
+          popovertarget={@menu_id}
+          popovertargetaction="hide"
+          phx-click="open_change"
+          phx-value-kind="convert"
+          phx-value-trip={@row.id}
+          class={[
+            "flex min-h-11 w-full items-center rounded-control px-3 text-left text-sm text-strong hover:bg-canvas",
+            focus_inset()
+          ]}
+        >
+          Convert to scheduled trips…
+        </button>
+        <button
           id={"trip-#{@row.trip_id}-delete"}
           type="button"
           role="menuitem"
@@ -1278,7 +1295,19 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
             Changes save to {@version_name} right away.
           </p>
           <.button
-            :if={@drawer.mode == :edit}
+            :if={@drawer.mode == :edit and @frequency?}
+            id="fw-convert"
+            type="button"
+            variant="quiet"
+            class="mr-auto min-h-11"
+            phx-click="open_change"
+            phx-value-kind="convert"
+            phx-value-trip={@drawer.trip.id}
+          >
+            Convert to scheduled trips…
+          </.button>
+          <.button
+            :if={@drawer.mode == :edit and not @frequency?}
             id="trip-drawer-delete"
             type="button"
             variant="quiet"
@@ -1514,6 +1543,14 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   def error_message(:invalid_interval) do
     "Enter a whole number of minutes greater than zero."
+  end
+
+  # Convert refuses a source whose stored windows cannot be followed (an
+  # overlap, a reversed span or a headway that is not a whole number of
+  # minutes), because the conversion would otherwise delete a service it cannot
+  # faithfully list (R8, AC-19).
+  def error_message({:invalid_windows, _errors}) do
+    "These frequency windows can't be converted. Edit the frequency service, then convert it."
   end
 
   def error_message(:until_before_start) do

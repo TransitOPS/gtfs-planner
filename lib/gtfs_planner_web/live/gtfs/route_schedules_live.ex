@@ -1510,6 +1510,25 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
+  # Convert opens on one frequency row: the only trip a `:convert_frequency`
+  # command names. The Edit drawer's own Convert action arrives here too, so the
+  # drawer closes with the dialog (the delete flow opens the dialog the same
+  # way). A forged UUID is refused (FH-30) and a listed row has no dialog.
+  defp open_reviewed_change(socket, "convert", trip_id) when is_binary(trip_id) do
+    case find_row(socket, trip_id) do
+      %{frequency?: true} = row ->
+        socket
+        |> assign(:drawer, nil)
+        |> review_change(:convert, [row.id], %{})
+
+      %{frequency?: false} ->
+        socket
+
+      nil ->
+        warning_outcome(socket, ScheduleComponents.error_message(:not_found))
+    end
+  end
+
   # Convert plugs in here with its step's builder; an unknown kind is ignored.
   defp open_reviewed_change(socket, _kind, _trip_id), do: socket
 
@@ -1817,6 +1836,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     copy_command(ids, params)
   end
 
+  # Convert names one frequency trip; the engine's Convert planner expands its
+  # stored windows into listed trips and removes the source (AC-19).
+  defp change_command(_socket, %{kind: :convert, ids: [trip_id]}) when is_binary(trip_id) do
+    {:ok, {:convert_frequency, trip_id}}
+  end
+
   defp change_command(_socket, _change), do: :incomplete
 
   defp copy_command(ids, params) do
@@ -1965,6 +1990,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     |> merge_paste_departure(raw["first_departure"])
     |> merge_change_skip(raw["skip_existing"])
   end
+
+  # Convert has no controls to merge: its command is the change's own trip, so a
+  # stray post cannot widen or alter it.
+  defp merge_change_params(_socket, %{kind: :convert} = change, _raw), do: change.params
 
   # Only a service day the paste dialog offered can become the target, so a
   # forged id never widens the reviewed command (CR-5, FH-30).
@@ -2204,6 +2233,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       "#{calendar_name(socket, params.service_id)}.#{skipped_clause(skipped)}"
   end
 
+  # Convert names the listed trips it created. It is not undoable, so its outcome
+  # offers no Undo (R10, AC-19).
+  defp change_outcome(_socket, %{kind: :convert}, result) do
+    count = length(result.created_trip_ids)
+    noun = if count == 1, do: "scheduled trip", else: "scheduled trips"
+    "Converted frequency service to #{count} #{noun}."
+  end
+
   defp skipped_clause(0), do: " They start without a block."
 
   defp skipped_clause(1),
@@ -2241,8 +2278,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
-  defp timing_name(socket, timing_id) do
-    timings = Enum.flat_map(socket.assigns.payload.patterns, &Map.get(&1, :timings, []))
+  defp timing_name(socket, timing_id), do: timing_label(socket.assigns, timing_id)
+
+  defp timing_label(assigns, timing_id) do
+    timings = Enum.flat_map(assigns.payload.patterns, &Map.get(&1, :timings, []))
 
     case Enum.find(timings, &(&1.id == timing_id)) do
       nil -> "the timing"
@@ -2348,6 +2387,82 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end)
     |> Enum.sort_by(&{&1.clock, &1.label})
   end
+
+  # The Convert dialog's loaded view data: the context line (the pattern, the
+  # service day and the stored window summary), the service day and natural trip
+  # ID the card names, the timing every departure follows and the focus the
+  # dialog returns to when it closes. The review stays the component's own input,
+  # so its inserts fill the departures table, its deletes and transfer note fill
+  # the metrics and its consequences raise the refusal banner.
+  defp convert_dialog_view(%{change: %{kind: :convert} = change} = assigns) do
+    row = change.ids |> List.first() |> then(&strip_row(assigns, &1))
+
+    %{
+      context: convert_context(assigns, row),
+      service_name: convert_service_name(assigns, row),
+      trip_id: row && row.trip_id,
+      departures_label: convert_departures_label(assigns, row),
+      return_focus_id: row && "trip-#{row.trip_id}-edit"
+    }
+  end
+
+  defp convert_dialog_view(_assigns), do: nil
+
+  defp convert_context(assigns, row) do
+    [
+      convert_pattern_name(assigns, row),
+      convert_service_name(assigns, row),
+      convert_window_summary(row)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  defp convert_pattern_name(assigns, %{route_pattern_id: route_pattern_id}) do
+    case Enum.find(assigns.payload.patterns, &(&1.route_pattern_id == route_pattern_id)) do
+      nil -> nil
+      pattern -> pattern.name
+    end
+  end
+
+  defp convert_pattern_name(_assigns, _row), do: nil
+
+  defp convert_service_name(assigns, %{service_id: service_id}) when is_binary(service_id) do
+    calendar_label(assigns.payload.calendars, service_id)
+  end
+
+  defp convert_service_name(assigns, _row) do
+    calendar_label(assigns.payload.calendars, assigns.filters.service_id)
+  end
+
+  # The reference's context fragment: the first window's headway and the span
+  # every stored window covers. A row without stored windows contributes none.
+  defp convert_window_summary(%{frequencies: [_ | _] = frequencies}) do
+    windows = Enum.sort_by(frequencies, & &1.start_time)
+    first = hd(windows)
+    last = List.last(windows)
+    minutes = round((first.headway_secs || 0) / 60)
+
+    "every #{minutes} min, #{stored_clock(first.start_time)}–#{stored_clock(last.end_time)}"
+  end
+
+  defp convert_window_summary(_row), do: nil
+
+  defp stored_clock(value) do
+    case GtfsTime.parse(value) do
+      {:ok, secs} -> clock(secs)
+      {:error, _reason} -> to_string(value)
+    end
+  end
+
+  # The departures table's label names the timing each new trip follows, the way
+  # the reference's does; a custom source follows its own stored times.
+  defp convert_departures_label(assigns, %{timed_pattern_id: timing_id})
+       when is_binary(timing_id) do
+    "Departures, each a trip with #{timing_label(assigns, timing_id)} timing"
+  end
+
+  defp convert_departures_label(_assigns, _row), do: "Departures"
 
   # The paste and duplicate dialog's loaded view data: the context line (the
   # service day the trips come from and their departures, or the duplicate's own
@@ -4406,6 +4521,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                 change={@change}
                 paste={change_paste}
                 version_name={@current_gtfs_version.name}
+              />
+
+              <% convert_dialog = convert_dialog_view(assigns) %>
+              <ScheduleChangeComponents.convert_dialog
+                :if={convert_dialog}
+                change={@change}
+                convert={convert_dialog}
               />
 
               <ScheduleComponents.delete_dialog
