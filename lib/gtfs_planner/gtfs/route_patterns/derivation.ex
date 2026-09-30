@@ -10,9 +10,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   Classification keeps supplied `trips.route_pattern_id` values verbatim and
   links only trips whose ordered stop-ID sequence matches a canonical sequence
-  and whose ordered timing vector is representable. Everything else is stored as
-  a terminal custom classification with a bounded reason; imported stop-time rows
-  are never rewritten.
+  and whose timing rows are valid. A stop without a scheduled time is kept as a
+  nil offset pair, so a trip blank between its ends and its timepoints links and
+  every other trip is stored as a terminal custom classification with a bounded
+  reason; imported stop-time rows are never rewritten.
 
   Grouping is bounded: the first pass retains only hash/count/representative
   records for canonical sequences and the second pass loads one trip vector at a
@@ -30,6 +31,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
+  alias GtfsPlanner.Gtfs.RoutePatterns.TimingRules
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
@@ -1111,50 +1113,72 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   # --- timings ---------------------------------------------------------------
 
+  # A blank arrival and departure is the absence of a scheduled time, not a
+  # malformed row: it becomes a nil offset pair and `TimingRules` decides whether
+  # its position allows the blank. A half pair is carried through the same way so
+  # the rule that rejects it stays in one owner.
   defp timing_rows(vector) do
-    with :ok <- present_times(vector),
-         {:ok, parsed} <- parse_times(vector),
-         :ok <- valid_chronology(parsed),
+    with {:ok, parsed} <- parse_times(vector),
+         rows = timing_row_values(vector, parsed),
+         :ok <- valid_timing_rows(rows),
          :ok <- valid_attributes(vector) do
-      base = parsed |> hd() |> elem(1)
-
-      rows =
-        vector
-        |> Enum.zip(parsed)
-        |> Enum.map(fn {stop_time, {arrival, departure}} ->
-          %{
-            arrival_offset: arrival - base,
-            departure_offset: departure - base,
-            timepoint: stop_time.timepoint,
-            pickup_type: stop_time.pickup_type,
-            drop_off_type: stop_time.drop_off_type,
-            stop_headsign: stop_time.stop_headsign
-          }
-        end)
-
       {:ok, rows}
     else
       {:error, _reason} = error -> error
     end
   end
 
-  defp present_times(vector) do
-    missing? =
-      Enum.any?(vector, fn row ->
-        not is_binary(row.arrival_time) or not is_binary(row.departure_time) or
-          row.arrival_time == "" or row.departure_time == ""
-      end)
+  # Offsets stay relative to the trip's first departure, and a blank row keeps
+  # its nil pair instead of an offset of zero. A trip whose first row is blank is
+  # rejected as a blank terminal below, so its neutral zero base never persists.
+  defp timing_row_values(vector, parsed) do
+    base =
+      case parsed do
+        [{_arrival, departure} | _rest] -> if(is_integer(departure), do: departure, else: 0)
+      end
 
-    if missing?, do: {:error, :missing_times}, else: :ok
+    vector
+    |> Enum.zip(parsed)
+    |> Enum.map(fn {stop_time, {arrival, departure}} ->
+      %{
+        arrival_offset: relative_offset(arrival, base),
+        departure_offset: relative_offset(departure, base),
+        timepoint: stop_time.timepoint,
+        pickup_type: stop_time.pickup_type,
+        drop_off_type: stop_time.drop_off_type,
+        stop_headsign: stop_time.stop_headsign
+      }
+    end)
   end
+
+  defp relative_offset(nil, _base), do: nil
+  defp relative_offset(seconds, base), do: seconds - base
+
+  defp valid_timing_rows(rows) do
+    case TimingRules.validate(rows) do
+      :ok -> :ok
+      {:error, violations} -> timing_reason(violations)
+    end
+  end
+
+  # Both reasons are custom classifications, so a trip that breaks more than one
+  # rule keeps the more specific one: out of order is a different mistake from a
+  # missing time.
+  defp timing_reason(violations) do
+    if Enum.any?(violations, &match?({_index, :out_of_order}, &1)) do
+      {:error, :invalid_chronology}
+    else
+      {:error, :missing_times}
+    end
+  end
+
+  defp parse_times([]), do: {:error, :missing_times}
 
   defp parse_times(vector) do
     Enum.reduce_while(vector, {:ok, []}, fn row, {:ok, acc} ->
-      with {:ok, arrival} <- GtfsTime.parse(row.arrival_time),
-           {:ok, departure} <- GtfsTime.parse(row.departure_time) do
-        {:cont, {:ok, [{arrival, departure} | acc]}}
-      else
-        {:error, _reason} -> {:halt, {:error, :invalid_time}}
+      case parse_row_times(row) do
+        {:ok, times} -> {:cont, {:ok, [times | acc]}}
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
     |> case do
@@ -1163,29 +1187,29 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     end
   end
 
-  defp valid_chronology(parsed) do
-    case parsed do
-      [{first_arrival, first_departure} | rest] ->
-        if first_departure >= first_arrival do
-          validate_chronology(rest, first_departure)
-        else
-          {:error, :invalid_chronology}
-        end
-
-      [] ->
-        {:error, :missing_times}
+  defp parse_row_times(row) do
+    case {time_value(row.arrival_time), time_value(row.departure_time)} do
+      {{:ok, arrival}, {:ok, departure}} -> {:ok, {arrival, departure}}
+      {:blank, :blank} -> {:ok, {nil, nil}}
+      {{:ok, arrival}, :blank} -> {:ok, {arrival, nil}}
+      {:blank, {:ok, departure}} -> {:ok, {nil, departure}}
+      {{:invalid, _value}, _departure} -> {:error, :invalid_time}
+      {_arrival, {:invalid, _value}} -> {:error, :invalid_time}
     end
   end
 
-  defp validate_chronology([], _preceding_departure), do: :ok
+  # An imported blank is nil or an empty string; anything else that is not a
+  # parseable time is malformed input rather than an absent one.
+  defp time_value(value) when value in [nil, ""], do: :blank
 
-  defp validate_chronology([{arrival, departure} | rest], preceding_departure) do
-    if arrival >= preceding_departure and departure >= arrival do
-      validate_chronology(rest, departure)
-    else
-      {:error, :invalid_chronology}
+  defp time_value(value) when is_binary(value) do
+    case GtfsTime.parse(value) do
+      {:ok, seconds} -> {:ok, seconds}
+      {:error, _reason} -> {:invalid, value}
     end
   end
+
+  defp time_value(value), do: {:invalid, value}
 
   defp valid_attributes(vector) do
     valid? =
