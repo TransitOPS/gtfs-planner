@@ -6247,6 +6247,30 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Decides whether a type 4/5 record may be written for each candidate trip pair.
+
+  This is the pre-check the connection drawer and the Set-all review read: it is the
+  same `Blocking.InSeat.state/2` rule the day load uses, evaluated over every day type
+  both trips run in, so a pair that is not consecutive on some other date is refused
+  with the day types and intervening trip named. `:ok` means the pair may be written
+  now; `{:refused, state}` is the write's own refusal, carried unchanged.
+
+  The read takes no lock, so it is advisory: the save repeats the same rule under the
+  block writers' locks. A foreign or unpublished version is `{:error, :not_found}` and
+  a lost database connection `{:error, :unavailable}`.
+  """
+  @spec check_in_seat_connections(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          [GtfsPlanner.Gtfs.Blocking.pair()]
+        ) ::
+          {:ok, %{GtfsPlanner.Gtfs.Blocking.pair() => :ok | {:refused, term()}}}
+          | {:error, :not_found | :unavailable}
+  def check_in_seat_connections(organization_id, gtfs_version_id, pairs) do
+    Blocking.check_connections(organization_id, gtfs_version_id, pairs)
+  end
+
+  @doc """
   Returns every Block rules setting for an organization's GTFS version.
 
   A version with no stored setting returns the defaults (5 minutes minimum layover,
@@ -6359,7 +6383,7 @@ defmodule GtfsPlanner.Gtfs do
   unpublished version `{:error, :not_found}`.
   """
   @spec list_deadhead_pairs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
-          {:ok, [Blocking.pair()]}
+          {:ok, [Blocking.deadhead_pair()]}
           | {:error,
              :not_found | {:unknown_day_type, [GtfsPlanner.Gtfs.Blocking.DayTypes.day_type()]}}
   def list_deadhead_pairs(organization_id, gtfs_version_id, day_type_key) do

@@ -39,6 +39,14 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   assembly is re-run over them, with no read and no write — so a page can show the
   suggestion on the page itself and the saved day is never mutated.
 
+  `check_connections/3` and `lock_and_check_connections!/2` answer R1 for candidate trip
+  pairs with the same `InSeat.state/2` the day load uses, so the drawer's pre-check, the
+  review and the save cannot disagree (CR-2, INV-2). The read runs in a transaction; the
+  locked variant runs inside the caller's, after the version `FOR SHARE` read and the
+  blocking lock, and locks the named trips and their blocks' trips before re-reading them
+  (INV-1). Both evaluate a stopless candidate row per pair, so the stops a write will
+  store are not part of the decision.
+
   `project_calendar_combination/2` and `project_trip_changes/2` are the pure batch
   producers a calendar combination and a per-trip change review read. The first projects
   every proposed service-ID move and destination date change at once and decides which
@@ -202,6 +210,9 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           # the day load's own inputs rather than recomputing them.
           contexts_by_day_type: %{optional(String.t()) => Context.t()}
         }
+
+  @typedoc "One candidate in-seat connection: the two natural trip IDs it would join."
+  @type pair :: {from_trip_id :: String.t(), to_trip_id :: String.t()}
 
   @type problem :: %{
           code: Checks.code(),
@@ -405,7 +416,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   the day that drove this exact direction, `minutes` is `nil` when the drive is
   unknown, and `source` says which of the three answers it is.
   """
-  @type pair :: %{
+  @type deadhead_pair :: %{
           from: String.t(),
           to: String.t(),
           from_label: String.t(),
@@ -784,7 +795,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   foreign or unpublished version is `{:error, :not_found}`.
   """
   @spec list_deadhead_pairs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
-          {:ok, [pair()]} | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]}}
+          {:ok, [deadhead_pair()]} | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]}}
   def list_deadhead_pairs(organization_id, gtfs_version_id, day_type_key) do
     case Repo.transaction(fn ->
            day = read_day(organization_id, gtfs_version_id, day_type_key)
@@ -1662,6 +1673,29 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   @doc """
+  Decides R1 for candidate in-seat connections without writing anything.
+
+  Each pair is evaluated as a stopless candidate type-4 row through the same
+  `InSeat.state/2` the day load and the block review use, over every derived day type
+  both of its trips run in: `:matches` is `:ok` and any other state is
+  `{:refused, state}`, refusal included, so the caller can name the day types and the
+  intervening trip a not-next state carries (R1, INV-2). The read takes no lock, so it
+  is a pre-check and never a guarantee: the save repeats it under the locks.
+
+  A foreign or unpublished version is `{:error, :not_found}`, and a pair naming a trip
+  this version does not hold is refused as `{:stale, :trip_missing}` rather than
+  silently dropped.
+  """
+  @spec check_connections(Ecto.UUID.t(), Ecto.UUID.t(), [pair()]) ::
+          {:ok, %{pair() => :ok | {:refused, InSeat.state()}}} | {:error, :not_found}
+  def check_connections(organization_id, gtfs_version_id, pairs) do
+    case Repo.transaction(fn -> read_connections!(organization_id, gtfs_version_id, pairs) end) do
+      {:ok, checks} -> {:ok, checks}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
   Draws the day a plan would leave behind, as a day of exactly the shape
   `load_day/3` returns.
 
@@ -1759,6 +1793,76 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     }
 
     %{source | block_rows: block_rows, context: context}
+  end
+
+  @doc """
+  Decides R1 for candidate in-seat connections under the block writers' locks.
+
+  Call this inside the caller's transaction, after its version `FOR SHARE` read. The
+  order is `load_calendars!/2` (which re-takes that read before the publication and
+  calendar reads), `lock_blocking!/1`, the named trips' `FOR UPDATE` rows with every
+  trip of their blocks on the day types both of each pair's services run in, then a
+  re-read of the locked rows and the evaluation (INV-1). Nothing is written and no
+  refusal rolls the caller back: the caller decides what a refusal means.
+
+  Every pair answers `%{from, to, check}`, where the trip rows are the locked rows and
+  `nil` for a trip this version does not hold, whose check is then
+  `{:refused, {:stale, :trip_missing}}`. The write stores the handoff stops from
+  `from.last_stop` and `to.first_stop`, which is why they travel with the check.
+
+  A foreign or unpublished version rolls the caller's transaction back with `:not_found`.
+  """
+  @spec lock_and_check_connections!(AuditContext.t(), [pair()]) ::
+          %{
+            pair() => %{
+              from: Queries.trip_row() | nil,
+              to: Queries.trip_row() | nil,
+              check: :ok | {:refused, InSeat.state()}
+            }
+          }
+  def lock_and_check_connections!(%AuditContext{} = audit, pairs) do
+    organization_id = audit.organization_id
+    version_id = audit.gtfs_version_id
+
+    calendars = load_calendars!(organization_id, version_id)
+    day_types = DayTypes.derive(calendars)
+    service_dates = DayTypes.service_dates(calendars)
+
+    lock_blocking!(version_id)
+
+    named = Queries.trip_rows(organization_id, version_id, {:trip_ids, named_trip_ids(pairs)})
+
+    locked_ids =
+      Queries.lock_trips!(
+        organization_id,
+        version_id,
+        Enum.map(named, & &1.id),
+        named |> Enum.map(& &1.block_id) |> Enum.reject(&is_nil/1) |> Enum.uniq(),
+        shared_service_ids(day_types, pairs, named)
+      )
+
+    rows = Queries.trip_rows(organization_id, version_id, {:uuids, locked_ids})
+
+    checks =
+      evaluate_connections(
+        organization_id,
+        version_id,
+        day_types,
+        service_dates,
+        rows,
+        pairs
+      )
+
+    trips_by_id = Map.new(rows, &{&1.trip_id, &1})
+
+    Map.new(pairs, fn pair = {from_trip_id, to_trip_id} ->
+      {pair,
+       %{
+         from: Map.get(trips_by_id, from_trip_id),
+         to: Map.get(trips_by_id, to_trip_id),
+         check: Map.fetch!(checks, pair)
+       }}
+    end)
   end
 
   @doc """
@@ -2781,6 +2885,102 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     Map.get(service_dates, service_id, MapSet.new())
   end
 
+  # -- Candidate in-seat connections -----------------------------------------
+
+  # R1's read path: the calendars and day types of the scoped version, the trips the
+  # pairs name, and one stopless candidate row per pair. The candidate carries no stops
+  # because the rule's stop comparison is about a stored record's own stops; the stops a
+  # write stores come from the locked trip rows instead.
+  defp read_connections!(organization_id, gtfs_version_id, pairs) do
+    calendars = load_calendars!(organization_id, gtfs_version_id)
+    day_types = DayTypes.derive(calendars)
+    service_dates = DayTypes.service_dates(calendars)
+
+    trips =
+      Queries.trip_rows(organization_id, gtfs_version_id, {:trip_ids, named_trip_ids(pairs)})
+
+    evaluate_connections(
+      organization_id,
+      gtfs_version_id,
+      day_types,
+      service_dates,
+      trips,
+      pairs
+    )
+  end
+
+  # One `InSeat.state/2` per pair over the shared context: `:matches` is `:ok` and
+  # every other state is refused as it stands, so a refusal names the day types and the
+  # intervening trip without a second evaluation anywhere.
+  defp evaluate_connections(
+         organization_id,
+         gtfs_version_id,
+         day_types,
+         service_dates,
+         trips,
+         pairs
+       ) do
+    rows = Map.new(pairs, fn pair -> {pair, candidate_row(pair)} end)
+
+    context =
+      in_seat_context_for_rows(
+        organization_id,
+        gtfs_version_id,
+        day_types,
+        service_dates,
+        trips,
+        Map.values(rows)
+      ).context
+
+    Map.new(rows, fn {pair, row} -> {pair, connection_check(row, context)} end)
+  end
+
+  # A candidate is evaluated exactly as a stopless type 4 record would be, which is what
+  # an unsaved choice describes. It has no id and is never turned into a finding.
+  defp candidate_row({from_trip_id, to_trip_id}) do
+    %{
+      id: nil,
+      from_trip_id: from_trip_id,
+      to_trip_id: to_trip_id,
+      transfer_type: 4,
+      from_stop_id: nil,
+      to_stop_id: nil
+    }
+  end
+
+  defp connection_check(row, context) do
+    case InSeat.state(row, context) do
+      :matches -> :ok
+      state -> {:refused, state}
+    end
+  end
+
+  defp named_trip_ids(pairs) do
+    pairs
+    |> Enum.flat_map(fn {from_trip_id, to_trip_id} -> [from_trip_id, to_trip_id] end)
+    |> Enum.uniq()
+  end
+
+  # The services R1 can evaluate a pair in: those of every day type both of the pair's
+  # trips run in. Locking the named trips' block trips in exactly these services is the
+  # set whose `block_id` the evaluation reads, so nothing it depends on can move under it
+  # (INV-1). A pair whose trips are not both in hand, or never share a day type,
+  # contributes nothing here and the rule decides that pair without an order.
+  defp shared_service_ids(day_types, pairs, trips) do
+    by_trip_id = Map.new(trips, &{&1.trip_id, &1})
+
+    for {from_trip_id, to_trip_id} <- pairs,
+        %{service_id: from_service} <- [Map.get(by_trip_id, from_trip_id)],
+        %{service_id: to_service} <- [Map.get(by_trip_id, to_trip_id)],
+        day_type <- day_types,
+        from_service in day_type.service_ids,
+        to_service in day_type.service_ids,
+        service_id <- day_type.service_ids do
+      service_id
+    end
+    |> Enum.uniq()
+  end
+
   # -- Calendar combination projection --------------------------------------
 
   # One projection: the day types and service dates of its calendars, the trips it holds,
@@ -3562,6 +3762,28 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     rows =
       Queries.in_seat_rows(organization_id, gtfs_version_id, Enum.map(trips, & &1.trip_id))
 
+    in_seat_context_for_rows(
+      organization_id,
+      gtfs_version_id,
+      day_types,
+      service_dates,
+      trips,
+      rows
+    )
+  end
+
+  # R1's read and locked paths evaluate candidate rows they hold rather than stored
+  # records, so they share this context builder with the day load and the block review:
+  # one `InSeat.state/2` decides a pair the pre-check shows and a save writes (CR-2,
+  # INV-2).
+  defp in_seat_context_for_rows(
+         organization_id,
+         gtfs_version_id,
+         day_types,
+         service_dates,
+         trips,
+         rows
+       ) do
     trips = named_trips(organization_id, gtfs_version_id, rows, trips)
     evaluated = both_service_day_types(day_types, rows, trips)
     block_rows = block_rows(organization_id, gtfs_version_id, evaluated, rows, trips)
