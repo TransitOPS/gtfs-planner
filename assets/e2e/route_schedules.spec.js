@@ -139,9 +139,13 @@ for (const viewport of VIEWPORTS) {
       );
 
       // The write path is wired, so the mutation controls are present and the
-      // page is no longer read-only for an editor.
+      // page is no longer read-only for an editor. The grid bar reads its idle
+      // hint until a selection replaces it with the bulk verbs.
       await expect(page.locator("#schedules-add-trips")).toBeVisible();
-      await expect(page.locator("#schedules-bulk-toolbar")).toHaveCount(0);
+      await expect(page.locator("#grid-bar")).toContainText(
+        "Select trips to shift, copy or change them.",
+      );
+      await expect(page.locator("#selection-count")).toHaveCount(0);
       await expect(page.getByRole("button", { name: "Add trips" })).toHaveCount(1);
 
       await capture(page, `step-006-${viewport.label}-default`);
@@ -395,10 +399,10 @@ test.describe("Schedules editing journeys", () => {
     await page.locator("#trip-select-SM_CUSTOM_DIFF").check();
     await page.locator("#trip-select-SM_LATE").check();
 
-    await expect(page.locator("#schedules-bulk-toolbar")).toContainText("2 trips selected");
-    await expect(page.locator("#schedules-delete-selected")).toHaveText("Delete 2 trips");
+    await expect(page.locator("#selection-count")).toHaveText("2 trips selected");
+    await expect(page.locator("#bulk-delete")).toHaveText("Delete 2 trips");
 
-    await page.locator("#schedules-delete-selected").click();
+    await page.locator("#bulk-delete").click();
     await expect(page.locator("#delete-dialog")).toBeVisible();
     await expect(page.locator("#delete-dialog-title")).toHaveText(
       "Delete 2 trips from Every day service?",
@@ -410,25 +414,25 @@ test.describe("Schedules editing journeys", () => {
     // Cancelling returns focus to the toolbar control and deletes nothing.
     await page.locator("#delete-dialog-cancel").click();
     await expect(page.locator("#delete-dialog")).toBeHidden();
-    await expect(page.locator("#schedules-delete-selected")).toBeFocused();
+    await expect(page.locator("#bulk-delete")).toBeFocused();
     await expect(page.locator("#trip-SM_LATE-start")).toBeVisible();
 
     // Changing the view clears the selection, so the delete has nothing to act on.
     await page.locator('label[for="direction-filter-option-1"]').click();
-    await expect(page.locator("#schedules-bulk-toolbar")).toHaveCount(0);
+    await expect(page.locator("#selection-count")).toHaveCount(0);
     await page.locator('label[for="direction-filter-option-0"]').click();
     await expect(page.locator("#trip-SM_LATE-start")).toBeVisible();
 
     // The real bulk delete removes both and shows the vehicle marker.
     await page.locator("#trip-select-SM_CUSTOM_DIFF").check();
     await page.locator("#trip-select-SM_LATE").check();
-    await page.locator("#schedules-delete-selected").click();
+    await page.locator("#bulk-delete").click();
     await page.locator("#delete-dialog-confirm").click();
     await expect(page.locator("#delete-dialog")).toBeHidden();
 
     await expect(page.locator("#trip-SM_LATE-start")).toHaveCount(0);
     await expect(page.locator("#trip-SM_CUSTOM_DIFF-start")).toHaveCount(0);
-    await expect(page.locator("#schedules-bulk-toolbar")).toHaveCount(0);
+    await expect(page.locator("#selection-count")).toHaveCount(0);
 
     await capture(page, "step-007-deleted-1440x1000");
   });

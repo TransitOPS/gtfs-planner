@@ -1104,11 +1104,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       assert has_element?(view, "#trip-select-SCH1_TNOTIME")
       refute has_element?(view, "#trip-select-SCH1_TUNL1")
 
-      # The step-7 mutation controls are present; the bulk toolbar still needs a
-      # selection.
+      # The step-7 mutation controls are present; the grid bar reads its idle
+      # hint and its bulk verbs still need a selection.
       assert has_element?(view, "#schedules-add-trips")
       assert has_element?(view, "#trip-SCH1_T0600-edit")
-      refute has_element?(view, "#schedules-bulk-toolbar")
+      assert has_element?(view, "#grid-bar", "Select trips to shift, copy or change them.")
+      refute has_element?(view, "#selection-count")
     end
 
     test "a selection never enters the URL and clears on a params change",

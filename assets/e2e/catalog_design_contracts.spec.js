@@ -691,14 +691,29 @@ test.describe("Route schedules contracts", () => {
     await expect(page.locator("#trip-drawer-save")).toHaveText("Add 1 trip");
   });
 
-  test("selecting rows reveals the bulk toolbar with a labelled delete", async ({ page }) => {
+  test("selecting rows reveals the grid bar's bulk verbs with a labelled delete", async ({ page }) => {
     await openSchedulesPage(page);
 
     await page.locator("#trip-select-SM_T1").check();
     await page.locator("#trip-select-SM_P2_1").check();
 
-    await expect(page.locator("#schedules-bulk-toolbar")).toContainText("2 trips selected");
-    await expect(page.locator("#schedules-delete-selected")).toHaveText("Delete 2 trips");
-    await expect(page.locator("#schedules-clear-selection")).toHaveText("Clear selection");
+    await expect(page.locator("#grid-bar")).toContainText("2 trips selected");
+    await expect(page.locator("#bulk-shift")).toHaveText("Shift times");
+    await expect(page.locator("#bulk-delete")).toHaveText("Delete 2 trips");
+    await expect(page.locator("#clear-selection")).toHaveText("Clear selection");
+
+    // The bar's verbs are the design system's 44px targets.
+    for (const selector of [
+      "#bulk-shift",
+      "#bulk-timing",
+      "#bulk-copy",
+      "#bulk-more",
+      "#bulk-delete",
+      "#clear-selection",
+    ]) {
+      const box = await page.locator(selector).boundingBox();
+      expect(box, selector).not.toBeNull();
+      expect(box.height, selector).toBeGreaterThanOrEqual(44);
+    }
   });
 });

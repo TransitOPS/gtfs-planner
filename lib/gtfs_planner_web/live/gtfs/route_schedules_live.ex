@@ -1,7 +1,7 @@
 defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   @moduledoc """
   LiveView for one route's Schedules view: the timetable read plus the trip
-  drawers, row actions, bulk toolbar and delete confirmations.
+  drawers, row actions, the sticky grid bar and the delete confirmations.
 
   The route, calendar, direction, pattern and stop columns are URL parameters, so
   reload, back and forward restore the same view; a missing, unknown or invalid
@@ -36,6 +36,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   alias GtfsPlanner.Gtfs.Schedules.TimeEntry
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
+  alias GtfsPlannerWeb.Gtfs.ScheduleChangeComponents
   alias GtfsPlannerWeb.Gtfs.ScheduleComponents
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -460,7 +461,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
         detail: departures_detail(selected),
         frequency?: Enum.any?(selected, & &1.frequency?),
         service_id: service_id,
-        return_focus_id: "schedules-delete-selected",
+        return_focus_id: "bulk-delete",
         transfer_count:
           Gtfs.count_trip_transfers(
             socket.assigns.current_organization.id,
@@ -2352,10 +2353,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
-  # An empty state below the toolbar carries the page's primary action when it
-  # offers to add the first trip, so the toolbar's own Add trips steps back.
-  defp add_primary?(can_add?, sections_empty?, filters),
-    do: not (can_add? and sections_empty? and filters.pattern == :all)
+  # The scope bar keeps the page's one primary for Add trips while nothing else
+  # carries one: an empty view's own card when it offers to add the first trip,
+  # or the grid bar's selection verbs (the design system's primary hand-off).
+  defp add_primary?(can_add?, sections_empty?, filters, selected_count),
+    do: selected_count == 0 and not (can_add? and sections_empty? and filters.pattern == :all)
 
   defp scope_visible?(%{calendars: calendars, patterns: patterns}),
     do: calendars != [] and patterns != []
@@ -2384,6 +2386,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
         />
 
         <p id="schedules-live-region" role="status" aria-live="polite" class="sr-only">
+          <%= if @outcome do %>
+            {@outcome.text}
+          <% end %>
           <%= if @vehicle_change do %>
             Vehicles needed changed from {@vehicle_change.from} to {@vehicle_change.to}
           <% end %>
@@ -2403,7 +2408,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
               paste_path={paste_path(@current_gtfs_version.id, @route_id, @filters)}
               can_add?={@can_add?}
               add_reason={@add_reason}
-              add_primary?={add_primary?(@can_add?, @sections_empty?, @filters)}
+              add_primary?={add_primary?(@can_add?, @sections_empty?, @filters, @selected_count)}
             />
 
             <ScheduleComponents.connectivity_notice />
@@ -2487,7 +2492,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                     <div id="cell-editor" phx-update="ignore"></div>
                   </div>
 
-                  <ScheduleComponents.bulk_toolbar selected_count={@selected_count} />
+                  <ScheduleChangeComponents.grid_bar
+                    selected_count={@selected_count}
+                    outcome={@outcome}
+                    undo_stack={@undo_stack}
+                  />
               <% end %>
 
               <ScheduleComponents.trip_drawer
