@@ -35,6 +35,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
   alias GtfsPlannerWeb.Gtfs.RoutePatternComponents
+  alias GtfsPlannerWeb.Gtfs.RoutePatternGroupingComponents
   alias GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents
   alias GtfsPlannerWeb.Gtfs.RoutePatternListComponents
   alias LiveSelect.Component, as: LiveSelectComponent
@@ -56,7 +57,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     alignment_save_requested confirm_alignment_save alignment_conflict_keep_local
     alignment_generate_paths alignment_confirm_generate alignment_cancel_generation
     alignment_follow_streets confirm_bulk_generation reactivate_route
+    grouping_submit
   )
+
+  @grouping_review "group"
 
   @detail_fields ~w(name direction_id headsign time_desc typicality sort_order)
   @creation_defaults %{
@@ -192,6 +196,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:details_stale?, false)
      |> assign(:error_message, nil)
      |> assign(:status_message, nil)
+     |> assign(:grouping, nil)
+     |> assign(:grouped_summary, nil)
      |> stream(:patterns, [])
      |> attach_hook(:editor_write_gate, :handle_event, &editor_write_gate/3)}
   end
@@ -269,11 +275,68 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
           socket
       end
 
+    socket = maybe_load_grouping(socket, params)
+
     case RoutePatternAlignmentEvents.ensure_loaded(socket) do
       {:ok, socket} -> {:noreply, socket}
       {:error, :not_found} -> {:noreply, not_found(socket)}
     end
   end
+
+  # `?review=group` is the Patterns tab with the grouping review open. The preview
+  # is read once per patch rather than once per screen load: leaving the review and
+  # coming back must re-read it, and a stale review must be able to reload without
+  # leaving. It is not read on the dead render, so the first response is the same
+  # loading skeleton every other patch shows and the preview is read once.
+  defp maybe_load_grouping(socket, params) do
+    cond do
+      not connected?(socket) ->
+        assign(socket, :grouping, nil)
+
+      socket.assigns.live_action == :index and params["review"] == @grouping_review ->
+        load_grouping(socket)
+
+      true ->
+        assign(socket, :grouping, nil)
+    end
+  end
+
+  defp load_grouping(socket) do
+    case Gtfs.preview_left_out(socket.assigns.route_id, audit_context(socket)) do
+      {:ok, preview} ->
+        socket
+        |> assign(:grouping, grouping_state(preview, initial_grouping_params(preview), :ready))
+        |> assign(:error_message, nil)
+        |> assign(:status_message, nil)
+
+      {:error, :not_found} ->
+        socket |> assign(:grouping, nil) |> not_found()
+    end
+  end
+
+  # The review's whole state is the preview, the selections the operator has made
+  # or been shown, and which of the three failure states it is in. Keeping them in
+  # one map means a reload cannot leave half of an old review on screen.
+  defp grouping_state(preview, selections, state) do
+    %{
+      preview: preview,
+      selections: selections,
+      state: state,
+      missing_key: nil,
+      failed_reason: nil
+    }
+  end
+
+  # Opening a review preselects each group's own suggestion, which is what the
+  # preview decided for it; a paired group has none and waits for the operator.
+  defp initial_grouping_params(preview) do
+    Map.new(preview.groups, fn group ->
+      {group.key, %{"direction_id" => direction_param(group.direction_id)}}
+    end)
+  end
+
+  defp direction_param(nil), do: nil
+  defp direction_param(direction), do: Integer.to_string(direction)
 
   @impl true
   def handle_event("reload_patterns", _params, socket) do
@@ -317,6 +380,41 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          |> assign(:build_summary, nil)
          |> load_screen()}
     end
+  end
+
+  # --- grouping review -------------------------------------------------------
+
+  # Each change carries the whole form, so the review keeps one map keyed by group
+  # key, in the string-keyed shape both the form and the parameters use. A change
+  # also clears a refusal: the operator has just answered it.
+  @impl true
+  def handle_event("grouping_change", %{"grouping" => params}, socket) do
+    case socket.assigns.grouping do
+      nil ->
+        {:noreply, socket}
+
+      grouping ->
+        {:noreply, assign(socket, :grouping, %{grouping | selections: params, state: :ready})}
+    end
+  end
+
+  def handle_event("grouping_change", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("grouping_submit", _params, socket) do
+    case socket.assigns.grouping do
+      nil -> {:noreply, socket}
+      grouping -> submit_grouping(socket, grouping)
+    end
+  end
+
+  # The way out writes nothing: it only returns to the list.
+  @impl true
+  def handle_event("grouping_cancel", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:grouping, nil)
+     |> push_patch(to: grouping_lists_path(socket))}
   end
 
   # --- details ---------------------------------------------------------------
@@ -1745,6 +1843,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
           />
 
           <%= cond do %>
+            <% @grouping != nil and @route != nil -> %>
+              <RoutePatternGroupingComponents.page
+                route={@route}
+                version={@current_gtfs_version}
+                preview={@grouping.preview}
+                selections={@grouping.selections}
+                state={@grouping.state}
+                missing_key={@grouping.missing_key}
+                failed_reason={@grouping.failed_reason}
+                editable?={@patterns_editable and not @editor_revoked?}
+              />
             <% @live_action == :index -> %>
               <RoutePatternListComponents.page
                 load_state={@load_state}
@@ -1774,6 +1883,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                 bulk_result={@bulk_result}
                 bulk_error={@bulk_error}
                 bulk_pending={@alignment_bulk != nil}
+                grouped_summary={@grouped_summary}
               />
             <% @load_state == :loading -> %>
               <.skeleton id="patterns-loading" label="Loading patterns" rows={3} aria-busy="true" />
@@ -2131,6 +2241,129 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       </div>
     </Layouts.app>
     """
+  end
+
+  # A card with no direction blocks the apply and names the card, so nothing is
+  # written and the operator is taken to the question rather than to a server
+  # error. The confirm would refuse it too; checking here says which card.
+  defp submit_grouping(socket, grouping) do
+    case grouping_selections(grouping) do
+      {:missing, key} ->
+        {:noreply,
+         socket
+         |> assign(:grouping, %{grouping | state: :missing, missing_key: key})
+         |> push_event("focus_scoped_target", %{
+           id: RoutePatternGroupingComponents.missing_id(key)
+         })}
+
+      {:ok, selections} ->
+        apply_grouping(socket, grouping, selections)
+    end
+  end
+
+  defp grouping_selections(grouping) do
+    grouping.preview.groups
+    |> Enum.reduce_while({:ok, []}, fn group, {:ok, selections} ->
+      case direction_of(Map.get(grouping.selections, group.key, %{})) do
+        direction when direction in ["0", "1"] ->
+          {:cont, {:ok, [grouping_selection(group, direction, grouping.selections) | selections]}}
+
+        _no_direction ->
+          {:halt, {:missing, group.key}}
+      end
+    end)
+    |> case do
+      {:ok, selections} -> {:ok, Enum.reverse(selections)}
+      missing -> missing
+    end
+  end
+
+  defp direction_of(selections), do: Map.get(selections, "direction_id")
+
+  # A target is sent only when the operator chose one, which the chooser renders
+  # only for a card with more than one candidate. Without one the apply takes the
+  # rule-5 candidate head, and creates a new pattern when there is no candidate --
+  # which is the same outcome as an explicit `:new`, so nothing is guessed here.
+  defp grouping_selection(group, direction, selections) do
+    base = %{key: group.key, direction_id: String.to_integer(direction)}
+
+    case Map.get(Map.get(selections, group.key, %{}), "target") do
+      "new" -> Map.put(base, :target, :new)
+      target when is_binary(target) -> Map.put(base, :target, target)
+      _default -> base
+    end
+  end
+
+  defp apply_grouping(socket, grouping, selections) do
+    review = %{selections: selections, fingerprint: grouping.preview.fingerprint}
+
+    case Gtfs.group_left_out_trips(socket.assigns.route_id, review, audit_context(socket)) do
+      {:ok, summary} ->
+        {:noreply,
+         socket
+         |> assign(:grouping, nil)
+         |> assign(:grouped_summary, summary)
+         |> put_flash(:info, grouped_message(summary))
+         # The list the patch lands on is the same LiveView at the same route and
+         # pattern, so `handle_params` would call the reload a no-op and the list
+         # would keep counting the trips that have just been grouped. Reading the
+         # screen here is what makes the done message agree with the numbers.
+         |> load_screen()
+         |> push_patch(to: grouping_lists_path(socket))}
+
+      # A stale review writes nothing by construction; re-reading it keeps the
+      # operator's choices where their groups still exist.
+      {:error, :stale} ->
+        {:noreply, reload_grouping(socket, grouping.selections, :stale, nil)}
+
+      {:error, :invalid_selection} ->
+        {:noreply,
+         reload_grouping(socket, grouping.selections, :missing, missing_group_key(grouping))}
+
+      {:error, reason} ->
+        {:noreply, reload_grouping(socket, grouping.selections, :failed, inspect(reason))}
+    end
+  end
+
+  defp missing_group_key(grouping) do
+    Enum.find_value(grouping.preview.groups, fn group ->
+      case direction_of(Map.get(grouping.selections, group.key, %{})) do
+        direction when direction in ["0", "1"] -> nil
+        _no_direction -> group.key
+      end
+    end)
+  end
+
+  # The state the refusal is shown in is layered onto a fresh read of the review,
+  # so the operator sees the groups that are there now rather than a page built
+  # from what it saw before.
+  defp reload_grouping(socket, selections, state, detail) do
+    grouping = load_grouping(socket).assigns.grouping
+
+    assign(socket, :grouping, %{
+      grouping
+      | selections: kept_selections(selections, grouping.preview),
+        state: state,
+        missing_key: missing_key_for(state, detail),
+        failed_reason: detail
+    })
+  end
+
+  # A group whose stop order no longer exists cannot keep its choice, so the
+  # reloaded review asks it again rather than carrying a selection no key answers.
+  defp kept_selections(selections, preview) do
+    Map.take(selections, Enum.map(preview.groups, & &1.key))
+  end
+
+  defp missing_key_for(:missing, key), do: key
+  defp missing_key_for(_state, _detail), do: nil
+
+  defp grouping_lists_path(socket),
+    do:
+      ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/patterns"
+
+  defp grouped_message(%{trips_linked: linked}) do
+    "Grouped #{linked} #{if linked == 1, do: "trip", else: "trips"} into patterns"
   end
 
   # --- loading ---------------------------------------------------------------

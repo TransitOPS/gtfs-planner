@@ -1134,6 +1134,7 @@ case Accounts.register_first_admin(%{
         route_pattern_time_desc: "All day",
         route_pattern_typicality: 1,
         direction_id: 0,
+        derivation_key: "d0-#{shapes_route.route_id}",
         route_pattern_sort_order: 1
       })
 
