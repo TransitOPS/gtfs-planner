@@ -492,6 +492,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
             </div>
 
             <RunsComponents.plan_card version_id={@current_gtfs_version.id}>
+              <RunsComponents.chart_key />
               <RunsComponents.timeline
                 run_rows={@streams.run_rows}
                 axis={@run_axis}
