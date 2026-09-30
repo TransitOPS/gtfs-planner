@@ -64,6 +64,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
      |> assign(:picker, nil)
      |> assign(:map_payload, nil)
      |> assign(:load_state, :loading)
+     |> assign(:load_count, 0)
      |> stream(:compare_rows, [], dom_id: & &1.dom_id)}
   end
 
@@ -225,6 +226,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
         view={@view}
         comparison={@comparison}
         rows={@streams.compare_rows}
+        load_count={@load_count}
         two_path={compare_path(@current_gtfs_version.id, @route_id, @requested, %{"view" => nil})}
         all_path={compare_path(@current_gtfs_version.id, @route_id, @requested, %{"view" => "all"})}
         patterns_path={patterns_path(@current_gtfs_version.id, @route_id)}
@@ -299,6 +301,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
           socket
           |> assign(:comparison, comparison)
           |> assign(:load_state, :ready)
+          |> update(:load_count, &(&1 + 1))
           |> assign(:map_payload, nil)
           |> stream(:compare_rows, RoutePatternCompareComponents.stop_table_items(comparison),
             reset: true
