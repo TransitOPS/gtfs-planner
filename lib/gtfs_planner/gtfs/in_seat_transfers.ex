@@ -44,6 +44,12 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
     pair that is `:not_found`, `:stale` or `{:refused, state}` is skipped with that
     reason and the rest are committed together; every log of one call shares one
     operation id, and no route-pair rule is stored.
+  - **R7 — explicit removal.** `remove_records/2` deletes exactly the listed
+    `{id, updated_at}` rows of one version's type 4/5 records, all-or-nothing, and
+    audits each deletion with one operation id. It never evaluates R1 and never
+    validates references, so a row an import left damaged is still removable, and
+    a listed id that names nothing, names a type 0–3 row or names another version
+    is `:not_found` while one stale member makes the request `:stale`.
 
   The write runs in this module's own three-attempt retry loop over the
   configured `ReviewedApplyTransaction` module, copied from `Transfers` and
@@ -182,6 +188,169 @@ defmodule GtfsPlanner.Gtfs.InSeatTransfers do
       run_write(fn -> write_entries(entries, choice, audit, operation_id) end)
     end
   end
+
+  @doc """
+  Deletes exactly the listed in-seat records, all-or-nothing.
+
+  `pairs` is the caller's exact target list of `{id, updated_at}` rows — the ones
+  the trip drawer, the day type or the version listed as unmatched — and `audit`
+  the audit context naming the organization, version and actor (R5). The rows are
+  loaded `FOR UPDATE`, scoped to that organization, version and
+  `transfer_type in [4, 5]`, and each one's stored `updated_at` is compared with
+  the timestamp the editor saw (INV-4).
+
+  An empty list or a malformed pair is `{:error, :invalid_input}` before a
+  transaction opens. A listed id that names no row of that scope — a missing id, a
+  type 0–3 row or a row of another version — is `{:error, :not_found}`, and any
+  stale member is `{:error, :stale}`; both delete nothing. Otherwise every listed
+  row is deleted, each with its own `"deleted"` change log sharing one operation id
+  (INV-5), and the call answers `{:ok, count}`. An audit failure rolls the whole
+  batch back, and serialization failures and deadlocks retry up to three attempts
+  before `{:error, :busy}` (R4).
+  """
+  @spec remove_records([{Ecto.UUID.t(), DateTime.t() | String.t()}], AuditContext.t()) ::
+          {:ok, pos_integer()}
+          | {:error, :invalid_input | :not_found | :stale | :busy | {:audit_failed, term()}}
+  def remove_records(pairs, %AuditContext{} = audit) do
+    case removal_targets(pairs) do
+      {:ok, targets} ->
+        operation_id = Ecto.UUID.generate()
+
+        run_write(fn -> remove_records_transaction(targets, audit, operation_id) end)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # R7: the batch is the caller's exact list, decided under the row locks. The
+  # count is what the caller listed, so a filter never widens or narrows it, and
+  # the two refusals leave every listed row exactly as it was.
+  defp remove_records_transaction(targets, audit, operation_id) do
+    case cast_removal_targets(targets) do
+      {:ok, canonical} ->
+        ids = Map.keys(canonical)
+        rows = lock_in_seat_rows!(audit, ids)
+
+        cond do
+          length(rows) != length(ids) ->
+            Repo.rollback(:not_found)
+
+          Enum.any?(rows, &removal_stale?(&1, Map.fetch!(canonical, &1.id))) ->
+            Repo.rollback(:stale)
+
+          true ->
+            delete_audited_records(rows, audit, operation_id)
+        end
+
+      :error ->
+        Repo.rollback(:not_found)
+    end
+  end
+
+  # The pair write's own delete and audit, over exactly the rows this command
+  # locked, so removal and a `:not_stated` write log identically (R3, INV-5).
+  defp delete_audited_records(rows, audit, operation_id) do
+    case delete_audited_transfers!(rows, audit, operation_id, Enum.map(rows, & &1.id)) do
+      :ok -> length(rows)
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # R4/INV-1: the transfer rows are the last lock a command takes, in id order.
+  # Removal takes only this lock — it never evaluates R1, so it holds no block
+  # writer's locks and can never invert INV-1's order.
+  defp lock_in_seat_rows!(audit, ids) do
+    from(t in Transfer,
+      where:
+        t.organization_id == ^audit.organization_id and
+          t.gtfs_version_id == ^audit.gtfs_version_id and t.transfer_type in ^@in_seat_types and
+          t.id in ^ids,
+      order_by: [asc: t.id],
+      lock: "FOR UPDATE"
+    )
+    |> Repo.all()
+  end
+
+  # The shapes are checked before the transaction opens, and grouping on the
+  # canonical UUID makes two spellings of one id a single target whose conflicting
+  # timestamps are `:stale` (R7, INV-4).
+  defp removal_targets(pairs) when is_list(pairs) and pairs != [] do
+    Enum.reduce_while(pairs, {:ok, %{}}, &accumulate_removal_target/2)
+  end
+
+  defp removal_targets(_pairs), do: {:error, :invalid_input}
+
+  defp accumulate_removal_target(pair, {:ok, targets}) do
+    case removal_target(pair) do
+      {:ok, id, timestamp} -> continue_removal_target(targets, id, timestamp)
+      :error -> {:halt, {:error, :invalid_input}}
+    end
+  end
+
+  defp continue_removal_target(targets, id, timestamp) do
+    case Map.fetch(targets, id) do
+      :error -> {:cont, {:ok, Map.put(targets, id, timestamp)}}
+      {:ok, existing} -> halt_or_keep(targets, existing, timestamp)
+    end
+  end
+
+  defp halt_or_keep(targets, existing, timestamp) do
+    if same_timestamp?(existing, timestamp),
+      do: {:cont, {:ok, targets}},
+      else: {:halt, {:error, :stale}}
+  end
+
+  defp removal_target({id, %DateTime{} = timestamp}) when is_binary(id),
+    do: {:ok, canonical_uuid(id), timestamp}
+
+  defp removal_target({id, timestamp}) when is_binary(id) and is_binary(timestamp),
+    do: {:ok, canonical_uuid(id), timestamp}
+
+  defp removal_target(_pair), do: :error
+
+  # An id that is not a UUID cannot name a row, so it keeps its raw form and
+  # fails later with `:not_found` rather than `:invalid_input`.
+  defp canonical_uuid(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, uuid} -> uuid
+      :error -> id
+    end
+  end
+
+  # The locked rows are matched back by canonical UUID, so a differently cased id
+  # still finds its row.
+  defp cast_removal_targets(targets) do
+    Enum.reduce_while(targets, {:ok, %{}}, fn {id, timestamp}, {:ok, acc} ->
+      case Ecto.UUID.cast(id) do
+        {:ok, uuid} -> {:cont, {:ok, Map.put(acc, uuid, timestamp)}}
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  # INV-4: the caller's timestamp may be the stored `DateTime` or its ISO 8601
+  # form; anything missing or unparseable is stale, so a delete is never blind.
+  defp removal_stale?(row, expected_updated_at) do
+    case normalize_removal_timestamp(expected_updated_at) do
+      %DateTime{} = expected -> DateTime.compare(row.updated_at, expected) != :eq
+      nil -> true
+    end
+  end
+
+  defp same_timestamp?(first, second),
+    do: normalize_removal_timestamp(first) == normalize_removal_timestamp(second)
+
+  defp normalize_removal_timestamp(%DateTime{} = value), do: value
+
+  defp normalize_removal_timestamp(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> datetime
+      _error -> nil
+    end
+  end
+
+  defp normalize_removal_timestamp(_value), do: nil
 
   # The whole command body, so the rollback decisions stay at one depth. R4's lock
   # order runs first (the rule under the block writers' locks, then the pair's rows),
