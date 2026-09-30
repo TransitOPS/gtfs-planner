@@ -1,7 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Blocking.Fleet do
   @moduledoc """
   The day's exact fleet demand, and how it compares with the vehicles a garage
-  actually lists, as R7 defines them.
+  actually lists.
 
   A planner's fleet error has to answer one question exactly: at the busiest
   instant, how many vehicles does the plan need at this garage, and does the
@@ -36,7 +36,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Fleet do
   findings and what the Plan summary's fleet table renders.
 
   The module is pure: it computes from its arguments and calls no repository,
-  clock, file or network (CR-1). The buckets are the `fleet_bucket()` list the
+  clock, file or network. The buckets are the `fleet_bucket()` list the
   planning context already carries, keyed by UUID.
   """
 
@@ -45,7 +45,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Fleet do
 
   @typedoc """
   One block's platform span and the garage and type it is resolved to by
-  `Blocking.Context.resolve_block/3` (INV-9), so the counting rule is read from
+  `Blocking.Context.resolve_block/3`, so the counting rule is read from
   one place rather than re-derived here.
   """
   @type span :: %{

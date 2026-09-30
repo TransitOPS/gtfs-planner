@@ -49,7 +49,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddAdvancedBlocking do
       add :block_id, :string, null: false
 
       # NO ACTION so deleting a referenced garage or type fails closed behind the
-      # in-use guard, matching spec 06's vehicles FKs.
+      # in-use guard, matching the vehicles table's FKs.
       add :garage_id, references(:garages, type: :binary_id, on_delete: :nothing)
 
       add :vehicle_type_id, references(:vehicle_types, type: :binary_id, on_delete: :nothing)

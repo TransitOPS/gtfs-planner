@@ -1,14 +1,13 @@
 defmodule GtfsPlanner.Gtfs.Blocking.GeneratorTest do
   @moduledoc """
-  EV-1, EV-2 and EV-3 for the suggested-blocks generator.
+  Tests for the suggested-blocks generator.
 
   The oracle is never the generator's own bookkeeping. Every instance is checked
   by applying `run/4`'s assignments to the rows it was given and handing the
   result to `Checks.block_findings/3` with the same context, so a rule the
   generator believes about itself and a rule the checks enforce are compared
-  rather than assumed (EV-1, FH-1). Coverage is recomputed from the input row set
-  (EV-2, FH-2) and the whole result is compared across three input orders
-  (EV-3, FH-3).
+  rather than assumed. Coverage is recomputed from the input row set and the
+  whole result is compared across three input orders.
   """
 
   use ExUnit.Case, async: true
@@ -40,7 +39,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.GeneratorTest do
   @singleton_reasons [:exceeds_vehicle_limit, :exceeds_relief_limit]
   @allowed_singleton_codes [:too_long, :no_relief_opportunity]
 
-  describe "EV-1: generated plans add no error or forbidden warning" do
+  describe "generated plans add no error or forbidden warning" do
     test "on every instance, added findings are only the allowed singleton exceptions" do
       for instance <- instances() do
         result = run(instance)
@@ -97,7 +96,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.GeneratorTest do
     end
   end
 
-  describe "EV-2: coverage, mode boundaries and R11 identifiers" do
+  describe "coverage, mode boundaries and block identifiers" do
     test "every scheduled trip is in exactly one block or in the leftovers with a reason" do
       for instance <- instances() do
         result = run(instance)
@@ -216,7 +215,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.GeneratorTest do
     end
   end
 
-  describe "EV-3: determinism" do
+  describe "determinism" do
     test "three input orders give identical results" do
       for instance <- instances() do
         rows = Map.fetch!(instance, :rows)
@@ -287,7 +286,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.GeneratorTest do
 
   # A fixed block is one the run did not create: its findings are inherited, so
   # every one of them has to survive. A block the run created is a new block, and
-  # AC-21's guarantee for it is that the run added nothing, which the added-side
+  # the guarantee for it is that the run added nothing, which the added-side
   # assertions already cover.
   defp fixed_block?(result, block_id) do
     not Enum.any?(result.blocks, &(&1.id == block_id and &1.new?))

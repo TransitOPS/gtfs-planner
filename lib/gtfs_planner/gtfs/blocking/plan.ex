@@ -2,20 +2,20 @@ defmodule GtfsPlanner.Gtfs.Blocking.Plan do
   @moduledoc """
   A suggested plan: the moves, the new blocks and their attribute rows, the review
   of what the moves change, the figures before and after, and the fingerprint a
-  later apply must match (AC-25).
+  later apply must match.
 
   `build/1` is the assembly step between `Blocking.Generator.run/4` and
   `Blocking.suggest_blocks/4`. The generator decides *which* block each trip ends up
   on; this module turns that decision into the shape a reviewer reads and a writer
   can be asked to confirm, and it is the only place a plan's fingerprint is
   produced. The plan is pure: it computes from the map it is given and makes no
-  repository, clock, file or network call (CR-1). Only `apply_block_plan/3` moves a
+  repository, clock, file or network call. Only `apply_block_plan/3` moves a
   trip's `block_id`.
 
   Nothing here re-decides anything. The moves are the generator's assignments read
   against the rows as they stand, the findings are `Blocking.Checks`' own, the
   review is `Blocking.Review`'s, the seconds are `Blocking.Movements`' and the
-  input digest is `Blocking.Context.digest/1` (INV-7, INV-8, INV-9). One plan is
+  input digest is `Blocking.Context.digest/1`. One plan is
   never reviewed by a second implementation, and a garage or vehicle type reaches
   a plan only through `Context.resolve_block/3`.
 
@@ -26,12 +26,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.Plan do
   Each new block gets one attribute row per service its trips run on, carrying the
   garage and vehicle type the generator resolved for it. `block_attributes` is
   keyed by `(service_id, block_id)`, so a block whose trips span two services
-  needs two rows; both carry the same garage and type, which is what R4 would
-  resolve for that block. The plan does not pass a `context_after` to the review
-  because it does not need one: a new block ID keys no attribute row, and a
-  selected block's ID is resolved by the generator *through* the row it already
-  has, so the row the plan writes names the resolution the review already read and
-  the after-findings cannot disagree with the before-findings about it.
+  needs two rows; both carry the same garage and type, which is what
+  `Context.resolve_block/3` would resolve for that block. The plan does not pass a
+  `context_after` to the review because it does not need one: a new block ID keys no
+  attribute row, and a selected block's ID is resolved by the generator *through* the row
+  it already has, so the row the plan writes names the resolution the review already read
+  and the after-findings cannot disagree with the before-findings about it.
 
   The figures are counted on the selected day type only, over its blocks and
   after the moves are applied: the block count, the platform and drive seconds
@@ -45,7 +45,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Plan do
   added findings, `Context.digest/1` of every planning input and a hash of the
   selected day type's trip set. So a setting, an entered driving time, a relief
   mark, a route setting, an attribute row, a garage coordinate, a fleet count or
-  one added or removed trip all make an unreviewed plan (R12, INV-7).
+  one added or removed trip all make a previously reviewed plan stale.
   """
 
   alias GtfsPlanner.Gtfs.Blocking.Checks
@@ -234,9 +234,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.Plan do
   defp rows_on(rows, day_type),
     do: Enum.filter(rows, &(&1.service_id in day_type.service_ids))
 
-  # R2/R3's seconds, through the one owner of them. `resolve_block/3` is read for
+  # The movement seconds, through the one owner of them. `resolve_block/3` is read for
   # the same trips the movements are built from, so a block's garage and type here
-  # are the ones the checks, the export and the page read (INV-9).
+  # are the ones the checks, the export and the page read.
   defp build_movements(block_id, trips, context) do
     Movements.build(trips, Context.resolve_block(context, block_id, trips), context)
   end
@@ -266,7 +266,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Plan do
   # covers inputs the plan did not read (a garage coordinate, a fleet count, an
   # attribute row for a service this day does not run) — an over-stale preview costs
   # one regeneration, while a fingerprint that missed an input would apply a plan
-  # nobody reviewed (R12, critique Must 2). The trip set is hashed separately
+  # nobody reviewed. The trip set is hashed separately
   # because a row added to or removed from the day type is a change no context field
   # can see.
   defp inputs_digest(context, rows, day_type) do

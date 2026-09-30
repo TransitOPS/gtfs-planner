@@ -1,16 +1,15 @@
 defmodule GtfsPlanner.Gtfs.Blocking.MovementsTest do
   @moduledoc """
-  Merge evidence (EV-40) for CL-40 / R2 and R3: pulls, gaps, the platform span,
-  the totals and the distances of one block.
+  Pulls, gaps, the platform span, the totals and the distances of one block.
 
-  Every expected movement time is derived here from the R1/R3 rules rather than
-  from the module under test. The expected great-circle distance is computed in
-  this file from the haversine formula with the same 6 371 000 m earth radius the
-  production helper uses, and the expected minutes are R1's formula over that
+  Every expected movement time is derived here from the driving-time and movement rules
+  rather than from the module under test. The expected great-circle distance is computed
+  in this file from the haversine formula with the same 6 371 000 m earth radius the
+  production helper uses, and the expected minutes are the estimate formula over that
   independently computed distance, so a change to the estimate or to the movement
-  arithmetic cannot quietly redefine the expectation. One degree of latitude
-  measures about 111 194.9 m on this sphere, and at the version defaults 30 km/h
-  is 500 m per minute with 1.3 circuity.
+  arithmetic cannot quietly redefine the expectation. One degree of latitude measures
+  about 111 194.9 m on this sphere, and at the version defaults 30 km/h is 500 m per
+  minute with 1.3 circuity.
 
   The geometries below are each chosen to land on a whole-minute answer, and each
   is asserted against its own literal as well as the formula:
@@ -25,11 +24,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.MovementsTest do
   clock, file or network, so these cases run in the local ExUnit process with no
   sandbox, no fixtures and no cleanup.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/movements_test.exs`. This test
   establishes the movement arithmetic, the gap classification and the totals. It
   says nothing about whether a version's entered driving times or garages are
-  correct: those are read from the database and are EV-14's subject.
+  correct: those are read from the database and are covered by the day load tests.
   """
   use ExUnit.Case, async: true
 
@@ -93,7 +92,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.MovementsTest do
       assert movements.vehicle_type_id == @type_uuid
     end
 
-    test "the estimated pull is R1's formula over the garage-to-stop distance" do
+    test "the estimated pull is the estimate formula over the garage-to-stop distance" do
       movements = Movements.build([trip("06:00")], resolved(), context())
 
       metres = haversine_m(@depot, @bay_a)
@@ -201,7 +200,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.MovementsTest do
       assert only_gap(movements).kind == :layover
     end
 
-    test "a 120 m nearby handoff is a layover, per R2" do
+    test "a 120 m nearby handoff is a layover" do
       movements =
         Movements.build(
           [trip("06:00"), trip("06:30", first_stop: @first_stop, last_stop: @far_last_stop)],

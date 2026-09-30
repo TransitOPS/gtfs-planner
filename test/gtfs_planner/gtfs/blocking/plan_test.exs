@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.Blocking.PlanTest do
   @moduledoc """
-  Merge evidence (EV-22) for the block plan.
+  Tests for the block plan.
 
   The plan is built over a real `Blocking.Generator.run/4` result and over
   hand-written rows, contexts and day types: nothing here stubs the modules the
@@ -8,7 +8,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanTest do
   movement the same block derives through `Blocking.Movements.build/3` rather
   than against the plan's own bookkeeping.
 
-  The cases are the ones the step card names:
+  The cases are:
 
   - `moves` lists exactly the trips whose block changes, with `from` and `to`, and
     a trip that keeps its block is absent;
@@ -24,9 +24,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanTest do
   - the generator's leftovers pass through unchanged, including one whose trip
     kept its block;
   - the fingerprint is equal for identical input and changes when one planning
-    input or the day type's trip set changes (AC-25, R12, INV-7).
+    input or the day type's trip set changes.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/plan_test.exs`.
   """
 
@@ -285,10 +285,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanTest do
 
   # --- harness ----------------------------------------------------------------
 
-  # The plan is composed the way step 26 composes it: the day types and their
-  # service dates come from the calendars, the affected day types are the ones
-  # holding a moved trip's service, and the generator's result is the plan's
-  # input. Nothing about the plan is stubbed.
+  # The plan is composed the way `Blocking.suggest_blocks/4` composes it: the day types
+  # and their service dates come from the calendars, the affected day types are the ones
+  # holding a moved trip's service, and the generator's result is the plan's input.
+  # Nothing about the plan is stubbed.
   defp build(instance) do
     calendars = Map.fetch!(instance, :calendars)
     day_types = DayTypes.derive(calendars)

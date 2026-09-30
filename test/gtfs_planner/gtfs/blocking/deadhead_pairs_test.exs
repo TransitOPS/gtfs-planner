@@ -1,17 +1,18 @@
 defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
   @moduledoc """
-  Merge evidence (EV-19) for CL-19: the Driving times drawer lists every ordered
-  pair the day type's blocks drive, and one direction at a time can be entered,
-  reset and refused — so FH-19's three failures stay rejected.
+  The Driving times list shows every ordered pair the day type's blocks drive, and
+  one direction at a time can be entered, reset and refused — so a save that stores
+  both directions, a reset that leaves a row and an accepted foreign reference stay
+  rejected.
 
-  Every case goes through the `Gtfs` facade, which is the path step 41's
+  Every case goes through the `Gtfs` facade, which is the path the page's
   `save_driving_times` and `reset_driving_time` use, and the list is read from a
   real day load: nothing here builds a context, a movement or a pair by hand.
   A pair the list shows is a leg the day's own blocks drove.
 
   The expected minutes are derived independently of the module under test: the
   haversine formula is restated here with the same 6 371 000 m earth radius
-  `StationReport2.Helpers.haversine/4` uses, and the minutes are R1's formula
+  `StationReport2.Helpers.haversine/4` uses, and the minutes are the estimate formula
   over that distance at the version defaults (30 km/h, 1.3 circuity). The four
   points sit on one meridian, so the values are checkable by hand: 0.04° is
   4 448 m and 12 minutes, 0.02° is 2 224 m and 6 minutes.
@@ -25,7 +26,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
   The module is `async: false` because the lock case observes another backend's
   `pg_stat_activity` wait.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/deadhead_pairs_test.exs`.
   """
   use GtfsPlanner.DataCase, async: false
@@ -48,14 +49,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
   @moduletag timeout: 120_000
 
   # The lock case holds one lock open and observes another backend's wait, so it is
-  # bounded: EV-19's 120 s command deadline per test, and a 10 s self-release for a
+  # bounded: a 120 s deadline per test, and a 10 s self-release for a
   # hold the test never gets to release.
   @hold_timeout 10_000
   @receive_timeout 5_000
   @lock_wait_attempts 500
   @task_timeout 15_000
 
-  # R1 at the version defaults: 30 km/h is 500 m per minute, circuity 1.3.
+  # The estimate at the version defaults: 30 km/h is 500 m per minute, circuity 1.3.
   @circuity 1.3
   @metres_per_minute 500.0
   @earth_radius_m 6_371_000.0
@@ -117,7 +118,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
       garage_ref = "garage:#{main.id}"
 
       # Most used first, and within a use count by the labels: "Main" before
-      # "Riverside". The estimates are R1's formula over the fixture's own
+      # "Riverside". The estimates are the estimate formula over the fixture's own
       # coordinates, recomputed here rather than asked of the module.
       assert pairs == [
                %{
@@ -194,7 +195,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
                Gtfs.list_deadhead_pairs(organization.id, version.id, "SAT")
 
       # The derived list is handed back, so a caller can show what exists rather
-      # than falling back to another day type (INV-6).
+      # than falling back to another day type.
       assert Enum.map(day_types, & &1.key) == [day_type.key]
 
       # The derived key itself is the one that answers, and it answers with the
@@ -387,7 +388,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
         {"garage:#{foreign_garage.id}", "stop:S1"},
         {"stop:S1", "garage:#{foreign_garage.id}"},
         {"garage:#{Ecto.UUID.generate()}", "stop:S1"},
-        # A correctable public `garage_id` is not a reference (CR-7).
+        # A correctable public `garage_id` is not a reference.
         {"garage:#{main.garage_id}", "stop:S1"},
         # And neither is a hand-edited or empty reference.
         {"garage:not-a-uuid", "stop:S1"},
@@ -628,7 +629,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadPairsTest do
   defp pair(pairs, from_ref, to_ref),
     do: Enum.find(pairs, &(&1.from == from_ref and &1.to == to_ref))
 
-  # R1's formula over a distance computed here, so the expected minutes never
+  # The estimate formula over a distance computed here, so the expected minutes never
   # come from the module under test.
   defp estimated_minutes(from, to) do
     round(haversine_m(from, to) * @circuity / @metres_per_minute)

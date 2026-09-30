@@ -5872,10 +5872,10 @@ defmodule GtfsPlanner.Gtfs do
 
   The write takes the version's `FOR SHARE` lock and `Blocking.lock_blocking!/1`
   before deciding anything, rebuilds the planning context under that lock and
-  fingerprints it (INV-7, INV-1). A block the selected day type does not run, a
+  fingerprints it. A block the selected day type does not run, a
   garage or a vehicle type of another organization and an unknown day type are
   `{:error, :not_found}` or `{:error, {:unknown_day_type, day_types}}`; no trip
-  row changes and no `transfers` row is written (INV-3).
+  row changes and no `transfers` row is written.
   """
   @spec set_block_attributes(
           String.t(),
@@ -5944,7 +5944,7 @@ defmodule GtfsPlanner.Gtfs do
 
   `mode` is `:unassigned_only`, `{:selected, block_ids}` or `:replace_all`; the
   day types come from the published version's own calendars, so `day_type_key`
-  names exactly one of them and nothing falls back to another (INV-6). The read
+  names exactly one of them and nothing falls back to another. The read
   takes the version row `FOR SHARE` and no blocking lock, so it never waits on a
   writer and never blocks one.
 
@@ -5953,7 +5953,7 @@ defmodule GtfsPlanner.Gtfs do
   `{:error, :no_selection}` for an empty or absent block selection, and
   `{:error, {:too_large, n}}` when more than 3,000 trips are in scope; the bound is
   checked before the generator runs, so an oversized day type is refused rather
-  than answered slowly and partially (AC-26).
+  than answered slowly and partially.
 
   The plan carries the moves, the new blocks and their attribute rows, the review
   of what the moves change on every affected day type, the before and after
@@ -5985,15 +5985,15 @@ defmodule GtfsPlanner.Gtfs do
   writes only when the fresh fingerprint still matches the reviewed one, so a setting,
   a driving time, a relief mark, a route setting, an attribute, a garage coordinate,
   a fleet count or a trip added or removed since the review is
-  `{:error, :stale_plan}` and changes nothing (INV-7).
+  `{:error, :stale_plan}` and changes nothing.
 
   Every move, every new block's attribute row and every `"trip"` change log is written
   in the one transaction, or nothing is: a failed audit returns
   `{:error, {:audit_failed, reason}}` and a count mismatch or three serialization
-  failures return `{:error, :busy}`, both with no `block_id` changed (AC-27). A plan
+  failures return `{:error, :busy}`, both with no `block_id` changed. A plan
   that is not a plan, a day type the version does not derive and a version of another
   organization are `{:error, :invalid_plan}`, `{:error, {:unknown_day_type, day_types}}`
-  and `{:error, :not_found}`. No `transfers` row is ever written (INV-3).
+  and `{:error, :not_found}`. No `transfers` row is ever written.
   """
   @spec apply_block_plan(
           String.t(),

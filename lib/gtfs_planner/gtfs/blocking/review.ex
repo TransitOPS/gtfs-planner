@@ -29,12 +29,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
   hex of the deterministic encoding of the resolved command, the sorted changes, the
   sorted locked rows (block ID, service ID, the four times and the ISO 8601
   `updated_at`) and the sorted added finding keys, so a confirmation whose inputs
-  changed no longer matches (Mutation steps 8 and 9). A caller that reviewed a
+  changed no longer matches. A caller that reviewed a
   planning input adds `inputs_digest` and it is appended to that encoding, so a
-  write whose inputs were recomputed and found unchanged still matches (INV-7).
+  write whose inputs were recomputed and found unchanged still matches.
 
   The planning context is passed through, not unpacked: `Context.layover_only/1`
-  reproduces spec 05's review and fingerprint exactly (CR-2), and a context with
+  reproduces the layover-only review and fingerprint exactly, and a context with
   planning inputs produces the same added keys in the same order.
 
   One review describes a many-target plan and an attribute save as well as a single
@@ -44,7 +44,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
   every change's `from` and `to` on that day type plus the caller's `:touched` list,
   which is how an attribute save names the block whose attribute rows change while
   no trip moves. `context_after` is the context the write will leave behind, so an
-  attribute row that would break a route requirement is reported as added (AC-19).
+  attribute row that would break a route requirement is reported as added.
   """
 
   alias GtfsPlanner.Gtfs.Blocking
@@ -95,7 +95,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
   - `:context_after` — optional `%Blocking.Context{}` the write leaves behind; the
     before findings use `:context` (default);
   - `:inputs_digest` — optional `Blocking.Context.digest/1` of the context this
-    review read, appended to the fingerprint when present (INV-7);
+    review read, appended to the fingerprint when present;
   - `:in_seat` — `%{rows: [in_seat_row()], context: InSeat.context()}`;
   - `:service_dates` — the canonical `%{service_id => MapSet.t(Date.t())}`;
   - `:context` — the version's `%Blocking.Context{}` planning inputs.
@@ -152,7 +152,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
   end
 
   # A block command applies without confirmation only when it is an assign or
-  # unassign of exactly one trip that adds no error or warning (Mutation step 9).
+  # unassign of exactly one trip that adds no error or warning.
   # A plan always needs one: it rewrites many trips' blocks at once. An attribute
   # save moves no trip, so it needs one only when it reaches a day type the operator
   # is not looking at or when the saved row adds a problem.
@@ -364,7 +364,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Review do
 
   defp fingerprint(command, target, changes, rows, effects, inputs_digest) do
     # The digest is appended, not folded in, so a block command that passes none
-    # encodes the same four-element tuple it always did (CR-2).
+    # encodes the same four-element tuple it always did.
     canonical =
       [
         resolved_command(command, target),

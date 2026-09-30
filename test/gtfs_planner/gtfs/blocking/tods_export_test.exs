@@ -1,9 +1,8 @@
 defmodule GtfsPlanner.Gtfs.Blocking.TodsExportTest do
   @moduledoc """
-  Merge evidence (EV-24) for CL-24 / R13 and AC-29: the supplement rows one
-  version's derived movements become.
+  The supplement rows one version's derived movements become.
 
-  The expected values here are recomputed from R13's own rule rather than read
+  The expected values here are recomputed from the identifier rule rather than read
   back from the module: a day type's service ID is the SHA-256 of its key at the
   width the identifier takes, which this file computes with `:crypto` directly,
   and the previous day's dates are `Date.add/2` away from the day type's own. The
@@ -12,19 +11,19 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportTest do
   appeared twice on a date, or a date that was missing, would fail.
 
   The module under test is pure: it reads its arguments and touches no database,
-  clock, file or network (CR-1), so these cases run in the local ExUnit process
+  clock, file or network, so these cases run in the local ExUnit process
   with no sandbox, no fixtures and no cleanup. Movements are handed over as the
   literal `Movements.t()` maps the day load produces — they are derived and never
-  stored (INV-8) — and garage endpoints carry the garage's UUID, with this export
-  the only place they become the public `garage_id` (CR-7).
+  stored — and garage endpoints carry the garage's UUID, with this export
+  the only place they become the public `garage_id`.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/tods_export_test.exs`. What it
   establishes is the row construction: the services, the one-per-date rule, the
   `_prev` day, the clock, the identifiers and their collision handling, and the
   omitted count. Whether the ZIP those rows are written into passes the Mobility
   Data validator, and whether a version's blocks and driving times are right, are
-  EV-8's and EV-14's.
+  covered by the export and day load tests.
   """
   use ExUnit.Case, async: true
 
@@ -159,7 +158,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportTest do
     )
   end
 
-  # R13's service ID, recomputed here from the rule: `ops_dt_` plus `width` hex
+  # The service ID, recomputed here from the rule: `ops_dt_` plus `width` hex
   # characters of the SHA-256 of the day-type key.
   defp service_id(key, width \\ 6), do: "ops_dt_" <> hex(key, width)
 
@@ -181,7 +180,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportTest do
     Enum.filter(rows, &(&1.tods_trip_type == kind))
   end
 
-  describe "one supplement service per day type (R13)" do
+  describe "one supplement service per day type" do
     setup do
       # Block 101 on the weekday day type: out of the garage, one drive, back.
       weekday_block = %{
@@ -322,7 +321,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportTest do
     end
   end
 
-  describe "a movement before midnight moves to the previous service day (R13)" do
+  describe "a movement before midnight moves to the previous service day" do
     setup do
       # A 00:05 first departure behind a 20-minute pull-out starts at −900 s.
       block = %{
@@ -407,7 +406,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportTest do
     end
   end
 
-  describe "per-date uniqueness (FH-24)" do
+  describe "per-date uniqueness" do
     test "every (movement, date) pair appears once, recomputed from the day types' dates" do
       blocks = [
         %{
@@ -443,7 +442,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportTest do
     end
   end
 
-  describe "identifier allocation (R13, PM-8)" do
+  describe "identifier allocation" do
     test "a public service ID equal to ops_dt_<6 hex> forces the 8-hex form" do
       rows = one_movement(service_ids: [service_id(@weekday_key)])
 

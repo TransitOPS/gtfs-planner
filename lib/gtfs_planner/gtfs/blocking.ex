@@ -31,13 +31,13 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   day type, scopes its trips by mode, refuses a scope above `@max_plan_trips`, calls
   `Blocking.Generator.run/4` and hands the result to `Blocking.Plan.build/1`. It
   writes nothing and takes no blocking lock, so a suggestion is always a proposal
-  the page can render and only `apply_block_plan/3` can write (AC-26).
+  the page can render and only `apply_block_plan/3` can write.
 
   `preview_day/2` draws the day one such plan would leave behind, as a day of
   exactly the shape `load_day/3` returns. It is pure — the plan's moves and
   attribute rows are applied to the loaded day and the day load's own per-block
   assembly is re-run over them, with no read and no write — so a page can show the
-  suggestion on the page itself and the saved day is never mutated (AC-44, CR-4).
+  suggestion on the page itself and the saved day is never mutated.
 
   `project_calendar_combination/2` is the pure batch producer a calendar combination
   review reads: it projects every proposed service-ID move and destination date change at
@@ -94,7 +94,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
-  # The settings a version with no stored row reads (AC-1). The map is the single
+  # The settings a version with no stored row reads. The map is the single
   # definition of the defaults: the reader merges stored columns over it and the form
   # changeset fills a partial map from it, so the database defaults, this map and the
   # drawn inputs cannot drift apart.
@@ -110,7 +110,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   }
 
   # Every settings column plus the write timestamp: an upsert that replaced only
-  # some of them would leave a previous save's value behind on the same row (FH-17).
+  # some of them would leave a previous save's value behind on the same row.
   @replace_columns BlockingSetting.settings_fields() ++ [:updated_at]
 
   # The two value columns of one route's row plus the write timestamp: an upsert
@@ -120,24 +120,23 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   # The one value column of a driving-time pair plus the write timestamp. A save
   # replaces the minutes of the same ordered pair and never writes its reverse, so
-  # an entered A→B value cannot be shadowed by a later B→A save (AC-3, CR-7).
+  # an entered A→B value cannot be shadowed by a later B→A save.
   @replace_deadhead_columns [:minutes, :updated_at]
 
   # The one column the Operator changes drawer owns, plus the write timestamp. The
   # relief limit shares its row with the eight Block rules settings, and a save
   # here replaces only this one of them: writing the limit must not blank a stored
-  # layover, interlining rule or default garage (AC-4, R12).
+  # layover, interlining rule or default garage.
   @replace_piece_columns [:max_piece_minutes, :updated_at]
 
   # The two value columns of one block's row on one service, plus the write
   # timestamp. A save replaces both: clearing a garage and setting a type must
   # never leave the earlier value behind on the same row, and a repeated save of
-  # the same values is the same row rather than a second one (AC-19).
+  # the same values is the same row rather than a second one.
   @replace_attribute_columns [:garage_id, :vehicle_type_id, :updated_at]
 
   # The pair sources a Movements leg can carry. Every leg of the day is listed for
-  # the Driving times drawer; only an estimated one is counted as "N estimated"
-  # (AC-3, AC-40).
+  # the Driving times drawer; only an estimated one is counted as "N estimated".
   @estimated_sources [:estimated]
   @driven_sources [:estimated, :entered, :unknown]
 
@@ -155,10 +154,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   @max_command_trips 500
 
   # One suggestion reads at most this many trip rows. It is the measured target
-  # EV-12 checks a generated day type against (AC-28), and it is the largest scope
-  # `Generator.run/4` and `Plan.build/1` are meant to answer in the time the page can
-  # wait for a preview. A scope above it is refused rather than truncated, so a
-  # suggestion is never a partial answer (AC-26).
+  # the `blocking_scale` test checks a generated day type against, and it is the
+  # largest scope `Generator.run/4` and `Plan.build/1` are meant to answer in the
+  # time the page can wait for a preview. A scope above it is refused rather than
+  # truncated, so a suggestion is never a partial answer.
   @max_plan_trips 3_000
 
   # The transaction boundary is retried as a whole three times, for a serialization
@@ -171,12 +170,13 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           trips: [Queries.trip_row()],
           gaps: [Checks.gap()],
           findings: [Checks.finding()],
-          # R4, R2 and R6 for this block, derived once and attached so every
-          # consumer (the page, the export, the plan) reads the same answer.
+          # Garage and type resolution, movements and relief stretches for this block,
+          # derived once and attached so every consumer (the page, the export, the plan)
+          # reads the same answer.
           resolution: Context.resolve_result(),
           movements: Movements.t(),
           # The instants an operator change may happen in this block, attached
-          # beside the stretches R6 measures from them, so a consumer that marks
+          # beside the stretches measured from them, so a consumer that marks
           # where a change is possible reads the same windows the checks did.
           windows: [Relief.window()],
           stretches: [Relief.stretch()]
@@ -188,7 +188,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   What `export_movements/2` hands the operations export: the day types in
   derivation order, each one's blocks in the shape `TodsExport.rows/1` reads
   them, and the garages by UUID so a pull's garage can be written by its public
-  `garage_id` (CR-7).
+  `garage_id`.
   """
   @type export_movements_result :: %{
           day_types: [DayTypes.day_type()],
@@ -204,7 +204,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         }
 
   @typedoc """
-  The plan figures of one day type, as Day loading step 4 defines them.
+  The plan figures of one day type.
 
   `vehicles` counts blocks, `minimum` is `Blocking.LowerBound`'s floor (a bound,
   never a target), and the four second totals and two kilometre totals are the sums
@@ -274,8 +274,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           axis: %{start_secs: integer(), end_secs: integer()} | nil,
           mixed_timezones?: boolean(),
           # The type 4/5 rows, the rows their block orders were read over and the
-          # context they were evaluated in, kept so `preview_day/2` can re-run R6
-          # over a plan without reading them again. Server-side state like
+          # context they were evaluated in, kept so `preview_day/2` can re-run the relief
+          # stretches over a plan without reading them again. Server-side state like
           # `context` itself: the page never reads it.
           in_seat_source: %{
             rows: [InSeat.in_seat_row()],
@@ -364,7 +364,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   @typedoc """
   One route of a version and its stored operating settings. `nil` is a route the
-  planner has not set, which R4 falls back from.
+  planner has not set, which `Context.resolve_block/3` falls back from.
   """
   @type route_setting :: %{
           route_id: String.t(),
@@ -373,7 +373,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         }
 
   @typedoc """
-  One directional driving-time pair of a day, as AC-3 lists it.
+  One directional driving-time pair of a day.
 
   `from` and `to` are the stored reference strings — `"stop:<stop_id>"` or
   `"garage:<uuid>"` — so a planner can hand a row straight back to
@@ -393,7 +393,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         }
 
   @typedoc """
-  One place an operator change may be made on a day type, as AC-4 lists it.
+  One place an operator change may be made on a day type.
 
   `stop_id` is the candidate's own ID — the `parent_station` where a stop has one,
   the stop itself otherwise — so marking a station covers its bays and a mark is
@@ -455,10 +455,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   cannot change under a calendar combination that owns the version, and this save
   waits behind such an owner in turn. It then takes `lock_blocking!/1`, so a settings
   save serializes with every other block writer and cannot slip between a plan's
-  review and its apply (INV-1, INV-7, R12).
+  review and its apply.
 
   Returns `{:error, :not_found}` when the version is unpublished or belongs to
-  another organization, and `{:error, changeset}` when a value is outside its AC-1
+  another organization, and `{:error, changeset}` when a value is outside its
   range, names an interlining value that does not exist, or names a
   `default_garage_id` that is not a garage of this organization. One row is kept per
   organization and version, so a repeated save replaces every settings column of the
@@ -479,10 +479,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # so no caller upgrades the share lock, and the transaction makes the check and the write
   # one unit while returning the upsert's own result tuple.
   #
-  # `lock_blocking!/1` follows the version lock and nothing else, in INV-1's order, so
-  # this writer joins the same serialization point as the block writers. It is taken
-  # before the garage lookup, which is a read of another table, and before the upsert's
-  # row lock.
+  # `lock_blocking!/1` follows the version lock and nothing else, in the order every block
+  # writer takes locks, so this writer joins the same serialization point as the block
+  # writers. It is taken before the garage lookup, which is a read of another table, and
+  # before the upsert's row lock.
   defp write_settings!(organization_id, gtfs_version_id, attrs) do
     version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
 
@@ -543,8 +543,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   Every route of the organization and version appears exactly once, ordered by
   `route_short_name` and then `route_id` (the drawer lists the routes the
   planner recognizes, not the rows that happen to exist). A route with no
-  stored row answers `nil` for both values, which is how R4 tells "no home
-  garage" from "no row" (AC-2).
+  stored row answers `nil` for both values, which is how `Context.resolve_block/3` tells
+  "no home garage" from "no row".
   """
   @spec list_route_operating_settings(Ecto.UUID.t(), Ecto.UUID.t()) :: [route_setting()]
   def list_route_operating_settings(organization_id, gtfs_version_id) do
@@ -575,12 +575,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   validated first, and one bad entry returns
   `{:error, {:invalid, [%{route_id: id, field: field, message: message}]}}`
   with nothing stored — a garage or type of another organization, and a route
-  the version does not have, are both invalid (AC-2, FH-18).
+  the version does not have, are both invalid.
 
   The save runs in one transaction whose first statement is the scoped version
   row `FOR SHARE` and whose next is `lock_blocking!/1`, so it serializes with
   every other block writer and cannot slip between a plan's review of the route
-  settings and its apply (INV-1, INV-7, R12). A staging version or another
+  settings and its apply. A staging version or another
   organization's version is `{:error, :not_found}` and stores nothing.
   """
   @spec update_route_operating_settings(Ecto.UUID.t(), Ecto.UUID.t(), [map()]) ::
@@ -598,7 +598,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   # The version share lock is the first statement of the write transaction, exactly as
   # `write_settings!/3` takes it, and `lock_blocking!/1` follows it and nothing else,
-  # so this writer joins the same serialization point as every block writer (INV-1).
+  # so this writer joins the same serialization point as every block writer.
   defp write_route_settings!(organization_id, gtfs_version_id, entries) do
     version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
 
@@ -745,20 +745,19 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   transaction: every block's pull-out, pull-back and driving or unknown gap names
   one ordered `{from_ref, to_ref}` pair, and each distinct pair is listed once
   with the number of legs that drove it. Nothing here re-reads the movements or
-  re-derives a drive, so a pair in this list is a leg the day really has
-  (INV-8).
+  re-derives a drive, so a pair in this list is a leg the day really has.
 
   Each pair carries its `minutes` and `source` from `DeadheadTimes.lookup/5` over
   that day's own context — an entered value for exactly this direction first, the
   symmetric estimate otherwise, and `:unknown` with `nil` minutes when an end has
   no coordinates. Pairs are ordered by uses descending, then by the two labels
   and the two stored references, so the busiest directions are first and the
-  order never depends on the order the blocks came back in (AC-3).
+  order never depends on the order the blocks came back in.
 
   `from` and `to` are the stored reference strings, so the drawer can hand a row
   straight to `put_deadhead_time/4` or `clear_deadhead_time/3`. A `nil` key
   selects the first day type; an unknown key is
-  `{:error, {:unknown_day_type, day_types}}` and selects none (INV-6), and a
+  `{:error, {:unknown_day_type, day_types}}` and selects none, and a
   foreign or unpublished version is `{:error, :not_found}`.
   """
   @spec list_deadhead_pairs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
@@ -781,7 +780,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   version and a garage ref a garage of this organization, and anything else — an
   unknown stop, another organization's garage, a hand-edited reference — is
   `{:error, :invalid_ref}` with nothing stored. Garage references are the garage
-  UUID and never its correctable `garage_id` (CR-7).
+  UUID and never its correctable `garage_id`.
 
   `minutes` is 0–600, checked by `DeadheadTime.changeset/2` and again by the
   named database constraint, so an out-of-range or non-numeric value is a
@@ -790,7 +789,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   The save runs in one transaction whose first statement is the scoped version row
   `FOR SHARE` and whose next is `lock_blocking!/1`, so it serializes with every
   other planning-input writer and cannot slip between a plan's review of the
-  entered driving times and its apply (INV-7, R12). It replaces the minutes of
+  entered driving times and its apply. It replaces the minutes of
   exactly this ordered pair: the reverse direction keeps whatever it had, and
   writing A→B never writes B→A. A staging or foreign version is
   `{:error, :not_found}`.
@@ -821,8 +820,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   `{:error, :not_found}` as well.
 
   The delete takes the same locks as a save, the version row `FOR SHARE` and then
-  `lock_blocking!/1`, so a reset cannot land between a plan's review and its apply
-  (INV-7, R12).
+  `lock_blocking!/1`, so a reset cannot land between a plan's review and its apply.
   """
   @spec clear_deadhead_time(Ecto.UUID.t(), Ecto.UUID.t(), {String.t(), String.t()}) ::
           :ok | {:error, :not_found}
@@ -928,8 +926,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   # The version share lock is the first statement of the write transaction and
-  # `lock_blocking!/1` follows it and nothing else, in INV-1's order, exactly as
-  # the settings and route-settings writers take them (INV-7).
+  # `lock_blocking!/1` follows it and nothing else, in the order every block writer takes
+  # locks, exactly as the settings and route-settings writers take them.
   defp write_deadhead_time!(organization_id, gtfs_version_id, {from_ref, to_ref}, minutes) do
     version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
 
@@ -1010,9 +1008,9 @@ defmodule GtfsPlanner.Gtfs.Blocking do
       else: {:error, :invalid_ref}
   end
 
-  # The version share lock and the blocking lock are taken in INV-1's order, and
-  # the delete is by the four-column key of the one ordered pair: the reverse
-  # direction is a different row and is never touched.
+  # The version share lock and the blocking lock are taken in the order every block writer
+  # takes locks, and the delete is by the four-column key of the one ordered pair: the
+  # reverse direction is a different row and is never touched.
   defp clear_deadhead_time!(organization_id, gtfs_version_id, {from_ref, to_ref}) do
     version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
 
@@ -1055,16 +1053,16 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   is a place a vehicle may be handed over whether or not a block has been cut
   yet. A stop with a `parent_station` is grouped under that station, so the two
   bays of a Riverside Station are one candidate and one mark; a stop without one
-  is its own candidate (AC-4, R5).
+  is its own candidate.
 
   `waits` counts the feasible gaps of the day's movements whose wait happens at
   that candidate, read off the movements the day load already built rather than a
-  second pass over the trips (INV-8). A layover's wait happens where the vehicle
+  second pass over the trips. A layover's wait happens where the vehicle
   stands between the two trips — the arrival stop, which is the endpoint
   `Relief` names for a marked layover — and a drive's wait happens at both of its
-  ends, which are R5's two windows. A gap with no positive wait is not a place a
-  change can happen and is not counted, and neither is an infeasible gap or one
-  whose drive the version cannot compute.
+  ends, which are the two windows `Relief` names for a drive. A gap with no positive wait
+  is not a place a change can happen and is not counted, and neither is an infeasible gap
+  or one whose drive the version cannot compute.
 
   Candidates are ordered by waits descending, then name, then ID: the places
   where relief is most available come first, and the order never depends on the
@@ -1076,7 +1074,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   not light this row up.
 
   A `nil` key selects the first day type; an unknown key is
-  `{:error, {:unknown_day_type, day_types}}` and selects none (INV-6), and a
+  `{:error, {:unknown_day_type, day_types}}` and selects none, and a
   foreign or unpublished version is `{:error, :not_found}`.
   """
   @spec list_relief_candidates(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
@@ -1096,8 +1094,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   Stores the relief limit and which of the day type's candidates are marked.
 
   `attrs` is a map with `max_piece_minutes` and `marked`; the limit is 60–720 or
-  a blank, which stores `nil` and turns the `:no_relief_opportunity` checks off
-  (AC-1, AC-4). The limit is validated through `BlockingSetting.changeset/2` and
+  a blank, which stores `nil` and turns the `:no_relief_opportunity` checks off.
+  The limit is validated through `BlockingSetting.changeset/2` and
   written to the one column this drawer owns, so saving it never disturbs the
   other seven settings of the same row. `marked` is the list of candidate IDs
   the drawer shows as ticked.
@@ -1105,13 +1103,13 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   The save is all-or-nothing and runs in one transaction whose first statement is
   the scoped version row `FOR SHARE` and whose next is `lock_blocking!/1`, so it
   serializes with every other block writer and cannot slip between a plan's review
-  of the relief inputs and its apply (INV-1, INV-7, R12). The candidates are
+  of the relief inputs and its apply. The candidates are
   recomputed inside that transaction, under the lock, from the same day load the
   list reads: only the day's own candidates are written. An ID in `marked` that is
   not a candidate of this day type is ignored, and a mark on a stop outside these
   candidates stays exactly as the last save left it. An unknown day type key
   answers `{:error, {:unknown_day_type, day_types}}` and stores nothing, because
-  the day cannot be read to learn its candidates (INV-6); a staging or foreign
+  the day cannot be read to learn its candidates; a staging or foreign
   version is `{:error, :not_found}`.
 
   Returns `{:ok, :ok}` on success, matching the other writers' shape so a caller
@@ -1135,10 +1133,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   # The version share lock is the first statement of the write transaction and
-  # `lock_blocking!/1` follows it and nothing else, in INV-1's order, exactly as
-  # the settings and driving-time writers take them (INV-7). The candidates are
-  # read from the day load *after* the lock, so a mark cannot be saved against a
-  # candidate list a concurrent plan has already made stale.
+  # `lock_blocking!/1` follows it and nothing else, in the order every block writer takes
+  # locks, exactly as the settings and driving-time writers take them. The candidates are
+  # read from the day load *after* the lock, so a mark cannot be saved against a candidate
+  # list a concurrent plan has already made stale.
   defp write_relief_settings!(organization_id, gtfs_version_id, day_type_key, attrs) do
     version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
 
@@ -1158,7 +1156,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   # The limit is cast and range-checked by the settings changeset itself, so the
-  # range lives in one place (AC-1). The stored row is the base rather than a bare
+  # range lives in one place. The stored row is the base rather than a bare
   # struct, so the seven columns this drawer does not own are present and satisfy
   # the changeset's required fields; the upsert then replaces only the limit
   # column and the write timestamp, so writing the limit cannot blank a stored
@@ -1191,7 +1189,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # that stopped being a candidate has to go, and a row that became one has to
   # arrive, and neither is visible as a change to the marks themselves. The delete
   # is scoped to the candidate IDs, so a mark on a stop outside them is never
-  # touched (AC-4).
+  # touched.
   defp save_relief_marks!(organization_id, gtfs_version_id, day, marked) do
     candidates = candidate_groups(relief_stops(day)) |> Map.keys()
 
@@ -1337,7 +1335,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # The feasible gaps of the day's movements, counted at the candidate each gap's
   # wait happens at. A layover's wait is one wait where the vehicle stands, which
   # is the arrival stop `Relief` names for a marked layover; a drive's wait is
-  # R5's two windows, one at each end. An infeasible gap, an unknown drive and a
+  # two windows, one at each end. An infeasible gap, an unknown drive and a
   # gap with no positive wait are all places no change can be planned into, so
   # they count for nobody.
   defp candidate_waits(%{blocks: blocks}) do
@@ -1407,13 +1405,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   The day also carries the version's `context`: its settings, garages, vehicle
   types, route settings, block attributes, entered driving times, marked relief
   stops, fleet summary and per-trip distances, gathered by `build_context!/4` in
-  a fixed number of reads. Every block is resolved against it (R4, INV-9) and
-  carries its `resolution`, `movements` (R2, R3) and relief `stretches` (R6); the
+  a fixed number of reads. Every block is resolved against it and
+  carries its `resolution`, `movements` and relief `stretches`; the
   day's `figures`, `fleet`, `longest_stretch` and `estimated_pairs` are the sums
-  and rows over those (Day loading step 4), and `peak` and `bins` are counted
+  and rows over those, and `peak` and `bins` are counted
   over platform spans rather than trip spans. The context itself is server-side
-  state: the page never reads it, it derives render assigns from the loaded day
-  (CR-5).
+  state: the page never reads it, it derives render assigns from the loaded day.
   """
   @spec load_day(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
           {:ok, day()} | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]}}
@@ -1431,10 +1428,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   returns it in the shape `Blocking.TodsExport.rows/1` takes: the day types in
   derivation order, each one's blocked trips grouped into blocks carrying their
   own movements, and the garages by UUID so a pull's garage can be written by its
-  correctable `garage_id` (CR-7). Blocks are resolved through the same
+  correctable `garage_id`. Blocks are resolved through the same
   `Context.resolve_block/3` every other consumer uses, so the export's garage is
-  the day load's garage (INV-9), and the movements are rebuilt from
-  `Movements.build/3` on every call — nothing here is stored (INV-8).
+  the day load's garage, and the movements are rebuilt from
+  `Movements.build/3` on every call — nothing here is stored.
 
   Every day type is read, not one, because a consumer hangs a movement on a
   service of its own day type: a block running on two day types contributes its
@@ -1590,11 +1587,11 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   `Calendars.list_calendars/3`, derives the day types through `DayTypes.derive/1`
   and resolves the key, so an unknown key answers
   `{:error, {:unknown_day_type, day_types}}` and nothing falls back to another day
-  type (INV-6). A foreign or unpublished version is `{:error, :not_found}`. No lock
+  type. A foreign or unpublished version is `{:error, :not_found}`. No lock
   is taken and no row is written: this function owns the reads the suggestion is
   built from, and only `apply_block_plan/3` moves a trip's `block_id`.
 
-  The mode decides what is in scope (R10, AC-26):
+  The mode decides what is in scope:
 
     * `:unassigned_only` — the day type's whole trip set. The generator keeps every
       existing assignment and offers the blocks already on the page as open blocks,
@@ -1608,7 +1605,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   A scope above `@max_plan_trips` rows is `{:error, {:too_large, n}}` before the
   generator runs, so an oversized day type is refused rather than answered slowly
-  and partially (AC-26). A version that derives no day type at all has nothing in
+  and partially. A version that derives no day type at all has nothing in
   scope to suggest and answers `{:error, :no_selection}`.
 
   The returned `%Blocking.Plan{}` carries the moves, the new blocks and their
@@ -1635,12 +1632,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   @doc """
   Draws the day a plan would leave behind, as a day of exactly the shape
-  `load_day/3` returns (AC-44).
+  `load_day/3` returns.
 
   The function is pure: it reads the loaded day and the plan it was built from
   and makes no repository, clock, file or network call, so a page can draw a
-  suggestion without touching the database and without ever writing a row
-  (CR-1, CR-4). `day` is the day the plan was reviewed against — the one the
+  suggestion without touching the database and without ever writing a row.
+  `day` is the day the plan was reviewed against — the one the
   reader is looking at — and the answer is a new map: the saved day is never
   mutated, and a plan that is never applied leaves nothing behind.
 
@@ -1650,11 +1647,11 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   a trip no move names keeps the block it has. The plan's own attribute rows are
   added to the context, so a new block resolves through `Context.resolve_block/3`
   on the garage and vehicle type the generator gave it and not through a second
-  rule (INV-9, R4). The per-block assembly is then re-run over the moved trips by
+  rule. The per-block assembly is then re-run over the moved trips by
   the same `day_assemble/3` the day load uses, so a preview's blocks, resolution,
   movements, relief stretches, findings, figures, fleet rows, counts, peak, bins
-  and axis are the day load's own answers rather than a second derivation
-  (CR-6). R6's in-seat states are re-evaluated too, over the rows and the block
+  and axis are the day load's own answers rather than a second derivation.
+  The in-seat states are re-evaluated too, over the rows and the block
   orders the day load already read and the context it already built, which travel
   with the day as `:in_seat_source`; nothing is read to do it.
 
@@ -1707,9 +1704,9 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     %{context | attributes: attributes}
   end
 
-  # R6 over the moved trips. The records and the context are the day load's own;
-  # what the moves change is which block each trip is in, and therefore both the
-  # context's own trip rows and the block orders it was built from, so the
+  # In-seat states over the moved trips. The records and the context are the day
+  # load's own; what the moves change is which block each trip is in, and therefore
+  # both the context's own trip rows and the block orders it was built from, so the
   # sequences are rebuilt over the moved rows. The day's trips join the order's
   # rows so a block a move fills — one no record named, and so one the day load
   # never read orders for — is still ordered.
@@ -1933,7 +1930,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   @doc """
-  Reviews and stores one block's garage and required vehicle type (AC-19, R12).
+  Reviews and stores one block's garage and required vehicle type.
 
   `attrs` carries `garage_id` and `vehicle_type_id`; a blank value is stored as
   `nil`, and a value that is not a UUID is a changeset error raised before the
@@ -1943,10 +1940,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   count and the problems the saved value adds.
 
   The write takes the same prefix as a block command — the scoped version `FOR
-  SHARE` and its published check, the calendars and their derived day types
-  (INV-6), `lock_blocking!/1` (INV-1) and then the block's own trip rows `FOR
+  SHARE` and its published check, the calendars and their derived day types,
+  `lock_blocking!/1` and then the block's own trip rows `FOR
   UPDATE` in UUID order — rebuilds the planning context under that lock and
-  compares `Context.digest/1` of it through the review's fingerprint (INV-7), so
+  compares `Context.digest/1` of it through the review's fingerprint, so
   a driving time, a route setting or another attribute entered after the review
   makes the confirmation stale rather than silently overwriting.
 
@@ -1959,7 +1956,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   longer matches returns `{:error, {:stale_review, review}}` and writes nothing.
 
   No trip row changes, so no `"trip"` change log is written and no `transfers`
-  row is ever inserted, updated or deleted (INV-3).
+  row is ever inserted, updated or deleted.
   """
   @spec set_block_attributes(String.t(), String.t(), map(), AuditContext.t(), String.t() | nil) ::
           {:ok, %{review: Review.review()}}
@@ -1989,26 +1986,26 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   @doc """
-  Applies a reviewed suggestion as one reviewed transaction (AC-27, R12).
+  Applies a reviewed suggestion as one reviewed transaction.
 
   `plan` is a `%Blocking.Plan{}` from `suggest_blocks/4`; the write is decided from
   the plan's `mode` and `day_type_key` and from nothing else the caller carries. The
   plan's own `moves` are never trusted as the thing to write: the run is repeated
   under `lock_blocking!/1` from the locked rows and the fresh plan's fingerprint is
   compared with the caller's, so a plan whose contents were edited, or whose inputs
-  moved since the review, is `{:error, :stale_plan}` rather than a partial write
-  (INV-7). The plan's shape is checked before any transaction: a plan that does not
+  moved since the review, is `{:error, :stale_plan}` rather than a partial write.
+  The plan's shape is checked before any transaction: a plan that does not
   carry a `day_type_key`, a `mode` and a `fingerprint` is
   `{:error, :invalid_plan}` and costs no query.
 
-  Everything else runs in the configured transaction in the order `spec.md`
-  Mutation prescribes: the scoped version `FOR SHARE` with its published check
-  (AC-5), the calendars and their derived day types (INV-6), `lock_blocking!/1`
-  (INV-1), the plan's moved trips and the touched blocks' trips `FOR UPDATE` in UUID
+  Everything else runs in the configured transaction in this order: the scoped
+  version `FOR SHARE` with its published check,
+  the calendars and their derived day types, `lock_blocking!/1`,
+  the plan's moved trips and the touched blocks' trips `FOR UPDATE` in UUID
   order, the repeated generator run and `Plan.build/1` from the locked rows, the
   fingerprint comparison, the per-destination `update_all` batches of at most
   `@max_command_trips` IDs, the `block_attributes` rows of the plan's new blocks and
-  one `"trip"` change log per moved trip under a single `operation_id` (INV-4). A
+  one `"trip"` change log per moved trip under a single `operation_id`. A
   write whose `update_all` count does not match the moves it covers rolls back with
   `:busy`; an audit the database or the audit layer refuses rolls back with
   `{:error, {:audit_failed, reason}}`; a serialization failure or deadlock is
@@ -2017,7 +2014,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   A day type the version does not derive is `{:error, {:unknown_day_type, day_types}}`
   and a version of another organization, or an unpublished one, is
   `{:error, :not_found}`; both change nothing. No `transfers` row is ever inserted,
-  updated or deleted (INV-3), and no trip is left holding a block it did not keep.
+  updated or deleted, and no trip is left holding a block it did not keep.
 
   A plan with nothing to move still writes the attribute rows of its new blocks and
   reports `{:ok, %{operation_id: nil, changed_trip_ids: []}}`: a plan that only
@@ -2055,9 +2052,9 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   defp plan_mode(_plan), do: :error
 
-  # Mutation steps 1-8. The plan's own moves are re-derived rather than written: the
+  # The plan's own moves are re-derived rather than written: the
   # run is repeated from the locked rows in the plan's mode and only the fresh
-  # fingerprint decides whether the reviewed plan is still the current one (INV-7).
+  # fingerprint decides whether the reviewed plan is still the current one.
   defp apply_plan!(day_type_key, mode, plan, %AuditContext{} = audit) do
     organization_id = audit.organization_id
     version_id = audit.gtfs_version_id
@@ -2085,13 +2082,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     end
   end
 
-  # Mutation steps 2-4 under the blocking lock: lock the plan's moved trips and the
-  # trips of every block it touches on an affected service `FOR UPDATE` in UUID order
-  # (INV-1), then rebuild the context and repeat the run and `Plan.build/1` from the
+  # Under the blocking lock: lock the plan's moved trips and the
+  # trips of every block it touches on an affected service `FOR UPDATE` in UUID order,
+  # then rebuild the context and repeat the run and `Plan.build/1` from the
   # rows as they stand under that lock. The scope read and the rebuild are the same
   # private path `suggest_blocks/4` uses, so a reviewed plan and the plan re-derived
-  # under the lock are two answers to the same question rather than two questions
-  # (INV-7, CR-1).
+  # under the lock are two answers to the same question rather than two questions.
   #
   # The lock set is named by the caller's plan — its moves and the blocks they leave
   # and join — because that is the set the reviewed plan said it would write. The rows
@@ -2121,10 +2117,10 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
     locked_ids = Queries.lock_trips!(organization_id, version_id, moved, touched, services)
 
-    # Mutation step 5: every trip the reviewed plan moves belongs to this version and
+    # Every trip the reviewed plan moves belongs to this version and
     # to a service this apply is scoped over. A plan naming a row this version does not
     # hold is not a stale plan — it is a plan about another version — so it is answered
-    # `:not_found` rather than made to match this version's fingerprint (AC-5). The
+    # `:not_found` rather than made to match this version's fingerprint. The
     # comparison reads the IDs the lock just took, so a plan can neither name a row it
     # did not lock nor pass on a row the lock never reached.
     check_plan_scope!(plan, locked_ids, Enum.uniq(Enum.map(scope, & &1.service_id)))
@@ -2181,7 +2177,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # The scope check itself. `locked` is this organization's and version's own locked IDs
   # and `services` the scope's services, so a plan about another organization, another
   # version or a service this day type does not run is refused rather than partially
-  # applied (AC-5, CR-3).
+  # applied.
   defp check_plan_scope!(plan, locked_ids, services) do
     held = MapSet.new(locked_ids)
     scoped = MapSet.new(services)
@@ -2203,9 +2199,9 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     |> Enum.uniq()
   end
 
-  # Mutation steps 6-8: the moves' block IDs in `update_all` batches grouped by
+  # The moves' block IDs in `update_all` batches grouped by
   # destination, the attribute rows of the plan's new blocks, and one `"trip"` change
-  # log per moved trip sharing one operation ID (INV-4). A count mismatch is a row
+  # log per moved trip sharing one operation ID. A count mismatch is a row
   # this transaction expected and did not find, so the whole plan rolls back rather
   # than leaving part of it written.
   defp write_plan!(%AuditContext{} = audit, plan) do
@@ -2216,7 +2212,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
     # The rows are read before the write, not after: the audit's `before` side is the
     # stored row, so reading it once the blocks are written would record the new block
-    # on both sides and no audit would name a change (INV-4).
+    # on both sides and no audit would name a change.
     structs = trip_structs(organization_id, version_id, changed_ids)
 
     update_trip_blocks!(organization_id, version_id, moves)
@@ -2248,7 +2244,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # `update_all` takes a single value per statement. The batch bound is
   # `@max_command_trips`, the same 500-row bound a block command works in, so a large
   # plan is several bounded statements inside the one transaction rather than one
-  # unbounded one (AC-27). The count is checked per batch and against the moves it
+  # unbounded one. The count is checked per batch and against the moves it
   # covers: a trip the plan moves that this transaction did not update is
   # `:busy`, never a partial plan.
   defp update_trip_blocks!(organization_id, version_id, moves) do
@@ -2282,7 +2278,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # One row per `(service_id, block_id)` the plan proposed, replacing both value
   # columns and the write timestamp. A repeated apply of the same plan writes the
   # same rows rather than failing on the unique index, and the scoping fields are set
-  # on the struct and never cast (CR-3). No `transfers` row is touched (INV-3).
+  # on the struct and never cast. No `transfers` row is touched.
   defp store_plan_attributes!(organization_id, version_id, attribute_rows) do
     Enum.each(attribute_rows, fn row ->
       changeset =
@@ -2395,11 +2391,11 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   # --- suggestion ------------------------------------------------------------
 
-  # The read behind `suggest_blocks/4`. The order is the card's and the spec's: the
+  # The read behind `suggest_blocks/4`. The order is: the
   # version and its calendars, the day types and the key, the scope and its bound,
   # and only then the context, the generator and the plan. Everything the bound
   # refuses is refused before a context is built or a row is walked, so an oversized
-  # day type costs one query and not a generator run (AC-26).
+  # day type costs one query and not a generator run.
   defp read_suggestion(organization_id, gtfs_version_id, day_type_key, mode) do
     calendars = load_calendars!(organization_id, gtfs_version_id)
     day_types = DayTypes.derive(calendars)
@@ -2413,7 +2409,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     settings = get_settings(organization_id, gtfs_version_id)
     context = build_context!(organization_id, gtfs_version_id, settings, rows)
 
-    # R11 numbers the blocks a rebuild creates after the highest numeric ID in use on
+    # The blocks a rebuild creates are numbered after the highest numeric ID in use on
     # an affected date. The affected set is read from the scope's own services
     # rather than from the run's moves, which are not known until the run has
     # happened: every moved trip runs in a scoped service, so this set is a superset
@@ -2445,7 +2441,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # The rows one mode reads. The additive and the replace-all modes both read the
   # day type's whole trip set and let `Generator.run/4` split it, because the run's
   # own scope is what keeps every existing assignment and holds a frequency trip
-  # back in every mode (AC-22); reading only the pool here would leave the run no
+  # back in every mode; reading only the pool here would leave the run no
   # existing block to extend. `{:selected, ids}` reads exactly the selected blocks'
   # trips on the day type and refuses a selection the day type does not run.
   defp suggestion_rows(_organization_id, _gtfs_version_id, _day_type, {:selected, []}) do
@@ -2477,8 +2473,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   defp held_on_day_type?(rows, block_id),
     do: Enum.any?(rows, &(&1.block_id == block_id))
 
-  # The day types the scope reaches, and so the services whose block IDs R11
-  # continues after. A scope with no trip reaches no day type.
+  # The day types the scope reaches, and so the services whose block IDs new block
+  # numbering continues after. A scope with no trip reaches no day type.
   defp scope_day_types(day_types, rows) do
     rows
     |> Enum.flat_map(&DayTypes.containing(day_types, &1.service_id))
@@ -2499,7 +2495,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   # The trips whose block the run changes. A trip the run held where it was, and a
   # frequency trip that keeps its assignment in every mode, compare equal here and
-  # are not a move — so neither puts its service in the affected set (AC-22).
+  # are not a move — so neither puts its service in the affected set.
   defp moved_trips(rows, assignments) do
     Enum.filter(rows, &(Map.get(assignments, &1.id) != &1.block_id))
   end
@@ -2939,16 +2935,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   # The one place a `Context` is built. It lives here rather than in the pure
   # module because it is the only function that needs both a version's settings
-  # and the reads behind them, and CR-1 keeps every database call in `Blocking`,
+  # and the reads behind them, and every database call lives in `Blocking`,
   # `Blocking.Queries` and `Operations`.
-  #
-  # Step 16 passes this result into `assemble` and resolves blocks against it. The
-  # call from `read_day/3` is here rather than there only so that the builder is
-  # reachable from the real day load and its reads can be proved against it: an
-  # uncalled private function cannot compile under the `--warnings-as-errors` that
-  # `mix precommit` runs, and Elixir's `{:nowarn_unused_function, _}` compile option
-  # does not apply to `defp`. Nothing consumes the context yet, so this changes no
-  # finding, count, peak or bin that `load_day/3` returns today.
   #
   # `trips` are the `Queries.trip_rows/3` rows the caller has already read for
   # its own purpose, and they carry the `shape_id` this needs. They are not read
@@ -2959,7 +2947,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   #
   # The cost is fixed: the four planning-input kinds, the garages, the vehicle
   # types and the fleet summary, then one shape query and one stop-path query. It
-  # does not grow with the number of trips, routes, stops or shapes (AC-3).
+  # does not grow with the number of trips, routes, stops or shapes.
   #
   # The bang marks a read that exits rather than answering with a partial
   # context. A context missing an input would be indistinguishable from a version
@@ -2990,9 +2978,9 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     }
   end
 
-  # Both keys are always present, `nil` included. R4 distinguishes a route with
-  # no home garage from a route with no row at all, and a map that omitted the
-  # `nil` keys could not say which one it was.
+  # Both keys are always present, `nil` included. `Context.resolve_block/3` distinguishes
+  # a route with no home garage from a route with no row at all, and a map that omitted
+  # the `nil` keys could not say which one it was.
   defp route_setting(row) do
     {row.route_id,
      %{garage_id: row.garage_id, required_vehicle_type_id: row.required_vehicle_type_id}}
@@ -3021,7 +3009,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # `fleet_summary/1` answers `%{garage: %Garage{} | nil, vehicle_type: %VehicleType{} | nil,
   # count: n}` for the settings pages. The context keeps only the two IDs and the
   # count, so a fleet bucket cannot drag a garage's correctable public ID or an
-  # unrelated column into a fingerprint (CR-7).
+  # unrelated column into a fingerprint.
   defp fleet_buckets(buckets) do
     Enum.map(buckets, fn bucket ->
       %{
@@ -3036,7 +3024,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   defp id_of(%{id: id}), do: id
 
   # A trip's distance is its shape's length when it names one, and its own stop
-  # path when it does not (AC-7). Each distinct shape is measured once and shared
+  # path when it does not. Each distinct shape is measured once and shared
   # by every trip naming it, and the two reads are asked for separately so the
   # cost is two queries however many trips the day has.
   defp build_trip_km(organization_id, gtfs_version_id, trips) do
@@ -3060,7 +3048,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   # A trip that names a shape is a shaped trip, and a shape the version does not
-  # describe measures zero — the same answer step 5's `Distance.path_km/1` gives
+  # describe measures zero — the same answer `Distance.path_km/1` gives
   # a path of fewer than two points. It is deliberately not re-measured from its
   # stops: a second measurement for the same trip would need another query and
   # would report a number the feed never supplied. Such a shape is a malformed
@@ -3124,7 +3112,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
     pool = order_pool(pool_trips)
 
-    # One span per block, used for both the fleet rows (R7) and the peak, so the
+    # One span per block, used for both the fleet rows and the peak, so the
     # two can never be counted over different intervals.
     spans = fleet_spans(blocks)
     fleet_rows = Fleet.rows(spans, context.fleet)
@@ -3167,7 +3155,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   # The day's platform spans, one per block that has one, each carrying the
-  # garage and type the block resolved to (INV-9). A block with no plottable trip
+  # garage and type the block resolved to. A block with no plottable trip
   # has no platform span at all and is not a vehicle anyone has to account for, so
   # it is left out rather than counted as a zero-length one.
   defp fleet_spans(blocks) do
@@ -3203,7 +3191,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     end
   end
 
-  # Day loading step 4. The seconds and kilometres are the sums of the blocks'
+  # The seconds and kilometres are the sums of the blocks'
   # movements rather than a second derivation, so a figure and the block it came
   # from can never disagree. `riders` is a share of platform time and is 0 with no
   # platform time rather than a division by zero.
@@ -3253,8 +3241,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   # The distinct directional pairs the day's drives are estimated rather than
-  # entered, which is what the Driving times drawer counts as "N estimated"
-  # (AC-3). A pull names its own refs; a gap names its trips, so the pair is read
+  # entered, which is what the Driving times drawer counts as "N estimated".
+  # A pull names its own refs; a gap names its trips, so the pair is read
   # off the same `sequence/1` the movements were built from and lines up by
   # construction. The pair is a `Context.ref/0` tuple, so `A → B` and `B → A` are
   # two pairs exactly as the `deadhead_times` rows are, and two blocks driving
@@ -3325,7 +3313,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     movements = Movements.build(sequence, resolution, context)
     windows = Relief.windows(trips, movements, context)
 
-    # R6's search is over the marked locations, not over the trips, so a block with
+    # The stretch search is over the marked locations, not over the trips, so a block with
     # no marked point has no windows and one stretch over its whole platform span.
     # That is still the honest answer for the day's longest stretch, so the limit
     # is passed whether or not one is set: `nil` means the display schedule, which
@@ -3352,7 +3340,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   # The timeline's Garage · type column reads these three keys, so the names are
-  # resolved here, off the one resolution every other consumer uses (INV-9), and
+  # resolved here, off the one resolution every other consumer uses, and
   # not re-derived by the page. A garage or type the resolution names but the
   # context does not hold — a row deleted since the load — falls back to `nil`,
   # which the page prints as no garage rather than as a blank cell.
@@ -3900,12 +3888,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     end
   end
 
-  # Step 10: one `update_all` sets the block and the clock on the changed rows, the
+  # One `update_all` sets the block and the clock on the changed rows, the
   # rows that follow the moved block follow it, then one `"trip"` change log per
   # changed trip carries the Schedules snapshot shape, the shared operation ID and
-  # the whole affected list (INV-4). The snapshots are built from the pre-update
+  # the whole affected list. The snapshots are built from the pre-update
   # rows, so `before` and `after` differ only in the block ID, and an audit failure
-  # rolls the whole command back. No transfer row is written (INV-3).
+  # rolls the whole command back. No transfer row is written.
   defp write_changes!(%AuditContext{} = audit, command, target, changes, review) do
     organization_id = audit.organization_id
     version_id = audit.gtfs_version_id
@@ -3938,7 +3926,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     }
   end
 
-  # AC-18: a rename or a merge carries the source block's attribute rows to the
+  # A rename or a merge carries the source block's attribute rows to the
   # destination. `:assign` and `:unassign` change which trips carry an ID without
   # moving a block's attributes, so they leave every row untouched.
   defp carry_attributes!(%AuditContext{} = audit, command, target, changes) do
@@ -3994,8 +3982,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   # The copy carries the source row's two stored values. The destination row is
-  # never overwritten: a merge into a block that already has attributes keeps them
-  # (AC-18), and the write timestamp is the command's own.
+  # never overwritten: a merge into a block that already has attributes keeps them,
+  # and the write timestamp is the command's own.
   defp copy_attribute_row!(organization_id, version_id, target, row, now) do
     Repo.insert_all(
       BlockAttribute,
@@ -4043,7 +4031,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   # One `"trip"` change log per changed trip, in the Schedules snapshot shape with the
   # command's or plan's operation ID, the whole affected list and *this* trip's own
-  # destination (INV-4). A block command sends every changed trip to one target; a plan
+  # destination. A block command sends every changed trip to one target; a plan
   # sends each move to its own, so the destination is a per-call argument rather than a
   # property of the caller. Any audit failure rolls the write back first and then leaves
   # as the returned `{:error, {:audit_failed, reason}}`: a returned `{:error, changeset}`
@@ -4115,7 +4103,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   # The two stored values, validated before the transaction opens: a blank is
   # "unset" and a value the schema cannot cast is a changeset error, so a malformed
-  # value never reaches a lock. The schema's own cast is the only rule here (CR-3).
+  # value never reaches a lock. The schema's own cast is the only rule here.
   defp attribute_values(attrs) do
     changeset =
       BlockAttribute.changeset(%BlockAttribute{}, %{
@@ -4144,13 +4132,13 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   # The attribute write takes the same prefix as a block command — the scoped
   # version `FOR SHARE` and its published check, the calendars and the day types
-  # derived from them (INV-6), `lock_blocking!/1` (INV-1) and then the block's own
+  # derived from them, `lock_blocking!/1` and then the block's own
   # trip rows `FOR UPDATE` in UUID order — and only then decides what to write, so
   # a confirmation is compared against the same locked state it reviewed.
   #
   # `run_write/2` wraps the closure's own return value, so every refusal leaves
   # here as a rollback and reaches the caller as `{:error, reason}` rather than as
-  # a success carrying an error tuple (AC-5).
+  # a success carrying an error tuple.
   defp write_attributes!(day_type_key, block_id, values, %AuditContext{} = audit, confirmation) do
     organization_id = audit.organization_id
     version_id = audit.gtfs_version_id
@@ -4221,7 +4209,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # The day types the rows reach: every day type containing one of those services
   # and holding a trip of this block, in derived order. A day type that shares the
   # service but runs no trip of the block reads no row, so it is not affected and
-  # the operator is not asked to confirm for a date the save cannot change (AC-19).
+  # the operator is not asked to confirm for a date the save cannot change.
   defp attribute_day_types(%AuditContext{} = audit, day_types, services, block_id) do
     candidates =
       services
@@ -4245,7 +4233,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   # A garage or a vehicle type of another organization is `:not_found`, the same
   # answer an unknown value gives. Stored, it would resolve as nothing at every
-  # consumer (R4) and the block would silently plan from its route or the default
+  # consumer and the block would silently plan from its route or the default
   # garage instead of the one the operator chose.
   defp check_attribute_owners!(organization_id, values) do
     if owned_garage?(organization_id, values.garage_id) and
@@ -4270,7 +4258,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   # The rows the review reads are the block's own trips on every affected service,
   # taken in UUID order after the blocking lock and re-read, so the review and its
-  # fingerprint describe the locked state rather than the pre-lock read (INV-1).
+  # fingerprint describe the locked state rather than the pre-lock read.
   defp lock_attribute_rows!(%AuditContext{} = audit, block_id, affected) do
     organization_id = audit.organization_id
     version_id = audit.gtfs_version_id
@@ -4284,7 +4272,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # The planning context the review read and the one this save leaves behind. Only
   # the rows of the saved services differ: every other planning input is held stable
   # by the lock, and recomputing it would make the after context disagree with the
-  # digest the confirmation matched (INV-7).
+  # digest the confirmation matched.
   defp attribute_contexts(organization_id, version_id, rows, block_id, services, values) do
     before =
       build_context!(organization_id, version_id, get_settings(organization_id, version_id), rows)
@@ -4298,7 +4286,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   # One row per service, replacing both value columns and the write timestamp: a
   # save that clears a garage and sets a type must not leave the earlier garage
   # behind, and a repeated save is the same row rather than a second one. The
-  # scoping fields are set on the struct and never cast (CR-3).
+  # scoping fields are set on the struct and never cast.
   #
   # A refused insert is a rollback rather than a raised constraint error: the
   # ownership check above already refused a value this organization does not own,

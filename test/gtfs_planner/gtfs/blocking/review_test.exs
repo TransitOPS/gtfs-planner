@@ -19,7 +19,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReviewTest do
     `updated_at`, any of its four times, or the resolved target changes.
   - The selected day type is the first effect and `affected_date_count` is the sum
     of the affected day types' dates.
-  - A spec 05 `:assign` still produces the fingerprint it produced before this
+  - A layover-only `:assign` still produces the fingerprint it produced before this
     review learned about plans, and a review that names an `:inputs_digest` is
     fingerprinted with it.
   - A plan's changes land in their own `to` blocks, a `:touched` block is diffed
@@ -40,8 +40,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReviewTest do
   @wednesday ~D[2026-01-07]
 
   # The fingerprint this review produced for the safe single-trip assign below
-  # before it learned about plans, attribute saves and input digests (CR-2).
-  @spec05_assign_fingerprint "ea82baed9c78d58c607f36e071881c8b5341e9d7cfe4f23f67373a104673b3bc"
+  # before it learned about plans, attribute saves and input digests.
+  @layover_only_assign_fingerprint "ea82baed9c78d58c607f36e071881c8b5341e9d7cfe4f23f67373a104673b3bc"
 
   describe "build/1 with a shared trip across day types" do
     test "lists the added overlap on the other day type and needs confirmation" do
@@ -411,7 +411,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReviewTest do
   end
 
   describe "build/1 for plans and attribute saves" do
-    test "a spec 05 assign keeps the fingerprint it produced before this step" do
+    test "a layover-only assign keeps the fingerprint it produced before plans existed" do
       {day_type, service_dates} = solo_day()
       x = trip("x", "A", nil, at(8, 0), at(9, 0))
 
@@ -426,7 +426,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReviewTest do
           service_dates: service_dates
         })
 
-      assert review.fingerprint == @spec05_assign_fingerprint
+      assert review.fingerprint == @layover_only_assign_fingerprint
       assert review.target == "7"
       assert Enum.map(review.effects, & &1.changed_trip_ids) == [[x.id]]
     end

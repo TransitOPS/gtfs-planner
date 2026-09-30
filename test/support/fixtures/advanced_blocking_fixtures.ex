@@ -65,7 +65,7 @@ defmodule GtfsPlanner.AdvancedBlockingFixtures do
   `{:garage, garage_uuid}` — or the encoded string already stored in the row
   (`"stop:<stop_id>"`, `"garage:<uuid>"`). The encoding is written here rather
   than called from `Blocking.DeadheadTimes`, so these fixtures stand on their
-  own before that module exists; step 4's `encode_ref/1` keeps the same two forms.
+  own; `DeadheadTimes.encode_ref/1` keeps the same two forms.
 
   The pair is ordered: a row for A→B says nothing about B→A.
   """
@@ -129,8 +129,8 @@ defmodule GtfsPlanner.AdvancedBlockingFixtures do
     end
   end
 
-  # Step 4's `Blocking.DeadheadTimes.encode_ref/1`, inlined so these fixtures do
-  # not depend on a module that does not exist yet. A string is already encoded.
+  # `Blocking.DeadheadTimes.encode_ref/1`, inlined so these fixtures do not depend
+  # on the module they exercise. A string is already encoded.
   defp encode_ref(ref) when is_binary(ref), do: ref
   defp encode_ref({:stop, stop_id}), do: "stop:#{stop_id}"
   defp encode_ref({:garage, garage_uuid}), do: "garage:#{garage_uuid}"

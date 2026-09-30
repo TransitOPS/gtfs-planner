@@ -27,8 +27,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.RenameMergeTest do
   data and not only on its return value. The focused gate command is deferred to
   branch review: `mix test test/gtfs_planner/gtfs/blocking/rename_merge_test.exs`.
 
-  The attribute cases below are merge evidence (EV-16) for AC-18, and they read
-  `block_attributes` back from the database the same way:
+  The attribute cases below read `block_attributes` back from the database the
+  same way:
 
   - renaming 101 to 201 on `{WKDY}`, where every 101 trip of that day type moves,
     leaves `(WKDY, 201)` holding 101's garage and vehicle type and no `(WKDY, 101)`
@@ -41,7 +41,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RenameMergeTest do
   - merging into a block with no row copies the source's row to the destination;
   - an `:assign` and an `:unassign` write no row and change no row's `updated_at`;
   - a rejected change log rolls the copied and the deleted row back with the trip
-    update (AC-10).
+    update.
   """
   use GtfsPlanner.DataCase, async: false
 
@@ -552,7 +552,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RenameMergeTest do
   end
 
   # WKDY runs Monday to Friday all year, so the version derives the `{WKDY}` day
-  # type AC-18 names and the case needs no second service.
+  # type and the case needs no second service.
   defp wkdy_service(scope) do
     service(scope, "WKDY", %{monday: 1, tuesday: 1, wednesday: 1, thursday: 1, friday: 1})
   end

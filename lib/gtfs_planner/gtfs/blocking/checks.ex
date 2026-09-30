@@ -191,7 +191,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
   (`nil` meters when a stop has no coordinates), and `headway_secs` for a
   frequency-based trip.
 
-  A planning context (R9) adds what the movements and the relief schedule of the
+  A planning context adds what the movements and the relief schedule of the
   block say about it. The block is resolved once through
   `Context.resolve_block/3`, its movements and relief stretches are built once,
   and the findings are then read off those results rather than a second rule:
@@ -206,17 +206,17 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
     * `:too_long` compares the platform minutes with the lower of the resolved
       vehicle type's `max_out_minutes` and `max_block_minutes`, when either is set
     * every unrelieved stretch longer than `max_piece_minutes` raises one
-      `:no_relief_opportunity`, and an unset limit raises none (R6)
+      `:no_relief_opportunity`, and an unset limit raises none
     * `:type_mismatch` per trip whose route requires a type the block does not
       have, and one `:block_attributes_conflict` per block whose attribute rows
-      disagree (R4)
+      disagree
     * `:interlining_not_allowed` per gap where the setting forbids switching
       route: `:same_stop` allows a switch only at the same stop or the same
       station, and `:none` allows none
 
   `Context.layover_only/1` carries the stored minimum layover and nothing else
-  and reproduces spec 05's findings exactly through it (CR-2); a context with
-  planning inputs adds the findings R9 describes.
+  and reproduces the layover-only findings exactly; a context with
+  planning inputs adds the findings listed above.
   """
   @spec block_findings(String.t() | nil, [trip_row()], Context.t()) :: [finding()]
   def block_findings(block_id, trips, %Context{} = context) do
@@ -313,9 +313,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
 
   defp reposition(_block_id, _gap), do: []
 
-  # --- planning findings (R9) ------------------------------------------------
+  # --- planning findings ------------------------------------------------
 
-  # R4 decides the block's garage and type once (INV-9). A check that has no
+  # `Context.resolve_block/3` decides the block's garage and type once. A check that has no
   # block of its own - the pool notices `Blocking` raises for a candidate trip -
   # resolves to nothing rather than borrowing another block's rows, so a trip
   # outside every block is never described as one that runs from a garage.
@@ -345,7 +345,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
     end)
   end
 
-  # R9: an infeasible gap is an error, not an empty move. The drive is known
+  # An infeasible gap is an error, not an empty move. The drive is known
   # here - an unknown one is a `:unknown` gap with no feasibility claim at all -
   # so the finding can name the number that does not fit.
   defp reach_finding(block_id, %{kind: :drive, feasible?: false} = gap) do
@@ -359,12 +359,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
 
   defp reach_finding(_block_id, _gap), do: []
 
-  # R9: the layover is the wait the vehicle gets, not the gap it sits in. A gap
+  # The layover is the wait the vehicle gets, not the gap it sits in. A gap
   # whose drive could not be computed has no wait to measure, and its gap is the
-  # most the wait can be, so that is what is compared - the same answer spec 05
-  # gave, and never a silent pass on a gap that is really short. A gap the
-  # vehicle cannot reach is left to `:cannot_reach`: its wait is negative, and
-  # "short layover" would be a weaker restatement of the error above it.
+  # most the wait can be, so that is what is compared - the same answer the layover-only
+  # check gave, and never a silent pass on a gap that is really short. A gap the vehicle
+  # cannot reach is left to `:cannot_reach`: its wait is negative, and "short layover"
+  # would be a weaker restatement of the error above it.
   defp layover_finding(_block_id, %{feasible?: false}, _context), do: []
 
   defp layover_finding(block_id, gap, context) do
@@ -382,7 +382,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
     end
   end
 
-  # R9: the notice survives only where the drive is unknown. A reachable deadhead
+  # The notice survives only where the drive is unknown. A reachable deadhead
   # is the vehicle's work, and `drive: :unknown` is what tells the page that the
   # move is unmeasured rather than merely measured as short.
   defp reposition_finding(block_id, %{kind: :unknown} = gap, {:moves, meters} = _handoff) do
@@ -475,7 +475,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
     end
   end
 
-  # R6's stretches come from the block's own relief windows, and a limit that is
+  # Stretches come from the block's own relief windows, and a limit that is
   # not set raises nothing: an operator has not said this block needs a break, so
   # there is no contract for it to fail.
   defp relief_findings(block_id, movements, sequence, context) do
@@ -528,9 +528,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.Checks do
     trip.first_departure < to_secs and trip.last_arrival >= from_secs
   end
 
-  # R4's type against every trip's route requirement. A route that names a type
-  # the block does not have is an error on that trip, and it is an error rather
-  # than a warning because the block cannot legally run it at all.
+  # The block's resolved type against every trip's route requirement. A route that names a
+  # type the block does not have is an error on that trip, and it is an error rather than
+  # a warning because the block cannot legally run it at all.
   defp type_findings(block_id, sequence, resolution, context) do
     Enum.flat_map(sequence, fn trip ->
       case Map.get(context.route_settings, trip.route_id) do

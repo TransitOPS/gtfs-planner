@@ -1,13 +1,13 @@
 defmodule GtfsPlanner.Gtfs.Blocking.DeadheadTimesTest do
   @moduledoc """
-  Merge evidence (EV-6) for CL-6 / R1: a driving-time lookup answers the entered
-  value for exactly one direction, the estimate follows the R1 formula, and a
-  missing coordinate gives `:unknown` rather than `0`.
+  A driving-time lookup answers the entered value for exactly one direction, the
+  estimate follows the published formula, and a missing coordinate gives `:unknown`
+  rather than `0`.
 
   Every expectation is derived independently of the module under test. The
   expected great-circle distance is computed here from the haversine formula with
   the same 6 371 000 m earth radius the production helper uses, never by calling
-  `StationReport2.Helpers.haversine/4`, and the expected minutes are R1's formula
+  `StationReport2.Helpers.haversine/4`, and the expected minutes are the estimate formula
   over that independently computed distance. The two fixed points are about
   5.0038 km apart, so the default 30 km/h and 1.3 circuity give
   `round(5003.772 × 1.3 ÷ 500) = 13` minutes — a value checkable by hand from the
@@ -17,7 +17,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadTimesTest do
   clock, file or network, so these cases run in the local ExUnit process with no
   sandbox, no fixtures and no cleanup.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/deadhead_times_test.exs`. This test
   establishes the formula, the lookup precedence and the ref encoding; it says
   nothing about how accurate a straight-line estimate is against real roads.
@@ -32,7 +32,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadTimesTest do
   @b {42.045, -71.0}
   @straight_line_m 5003.772
 
-  # R1 at the version defaults: 30 km/h is 500 m per minute, circuity 1.3. The
+  # The estimate at the version defaults: 30 km/h is 500 m per minute, circuity 1.3. The
   # speed reaches the module as `Context.deadhead_speed_kmh`, whose default is 30.
   @circuity 1.3
   @metres_per_minute 500.0
@@ -42,7 +42,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadTimesTest do
   @earth_radius_m 6_371_000.0
 
   describe "estimate_minutes/3" do
-    test "estimates the R1 minutes for two points about 5 km apart" do
+    test "estimates the driving minutes for two points about 5 km apart" do
       assert_in_delta haversine_m(@a, @b), @straight_line_m, 0.01
 
       assert DeadheadTimes.estimate_minutes(@a, @b, context()) ==
@@ -159,7 +159,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.DeadheadTimesTest do
 
     test "refuses to encode a garage that is not a UUID" do
       # A garage's public `garage_id` is correctable, so it must never become a
-      # stored driving-time reference (CR-7).
+      # stored driving-time reference.
       assert_raise ArgumentError, fn -> DeadheadTimes.encode_ref({:garage, "GAR-1"}) end
     end
   end

@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.Blocking.LowerBound do
   @moduledoc """
-  The fewest vehicles the day could possibly need, as R8 defines it.
+  The fewest vehicles the day could possibly need.
 
   A planner asks "how low could this go?" as a sanity check on a plan, and the
   honest answer is a bound rather than a target. Counting every plottable trip as
@@ -30,7 +30,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.LowerBound do
   the difference is the interesting number, not this one.
 
   The module is pure: it computes from its arguments and calls no repository,
-  clock, file or network (CR-1).
+  clock, file or network.
   """
 
   alias GtfsPlanner.Gtfs.Blocking.Checks

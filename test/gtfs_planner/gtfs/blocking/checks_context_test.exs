@@ -1,9 +1,9 @@
 defmodule GtfsPlanner.Gtfs.Blocking.ChecksContextTest do
   @moduledoc """
-  Merge evidence (EV-13) for the checks a planning context adds: R9's findings
-  over `Blocking.Movements` and `Blocking.Relief`.
+  The checks a planning context adds: the findings over `Blocking.Movements` and
+  `Blocking.Relief`.
 
-  The cases follow R9 one at a time:
+  The cases follow the planning findings one at a time:
 
   - a 14-minute drive into an 8-minute gap is one `:cannot_reach` error carrying
     `drive_secs` 840 and `gap_secs` 480, and no `:repositions`
@@ -23,26 +23,27 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksContextTest do
   - a route switch across a drive is `:interlining_not_allowed` under
     `:same_stop` and not at a `:same_station` handoff, and `:none` forbids
     every switch
-  - a layover-only context still answers exactly as spec 05 did, the same answer
-    `checks_test.exs` and the other two unchanged files assert
+  - a layover-only context still answers exactly as it did before planning inputs
+    existed, the same answer `checks_test.exs` and the other two unchanged files
+    assert
 
-  Every expected time is derived here from R1 and R3 rather than from the module
-  under test. The great-circle distance is computed in this file from the
-  haversine formula with the same 6 371 000 m earth radius the production helper
-  uses, and the expected drive is R1's formula over that independently computed
-  distance at the version defaults, so a change to the estimate cannot quietly
-  redefine the expectation:
+  Every expected time is derived here from the driving-time and movement rules rather than
+  from the module under test. The great-circle distance is computed in this file from the
+  haversine formula with the same 6 371 000 m earth radius the production helper uses, and
+  the expected drive is the estimate formula over that independently computed distance at
+  the version defaults, so a change to the estimate cannot quietly redefine the
+  expectation:
 
     * 0.0475° ≈ 5 281.8 m, and 5 281.8 × 1.3 ÷ 500 = 14 min (the deadhead)
     * 0.00108° ≈ 120.1 m, inside `Checks`' 200 m nearby threshold (a layover)
 
   The module under test is pure: it reads its arguments and touches no database,
-  clock, file or network (CR-1), so these cases need no sandbox and no fixtures.
+  clock, file or network, so these cases need no sandbox and no fixtures.
 
-  The gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/checks_test.exs test/gtfs_planner/gtfs/blocking/review_test.exs test/gtfs_planner/gtfs/blocking/problems_test.exs test/gtfs_planner/gtfs/blocking/checks_context_test.exs`.
-  The first three files are spec 05's, unchanged since #706, and are the
-  regression oracle for CR-2; the fourth establishes the new findings.
+  The first three files cover the layover-only findings and are the regression
+  oracle for the layover-only context; this one covers the new findings.
   """
   use ExUnit.Case, async: true
 
@@ -375,8 +376,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksContextTest do
     end
   end
 
-  describe "CR-2: a layover-only context" do
-    test "answers exactly as spec 05 did for the unreachable block" do
+  describe "a layover-only context" do
+    test "reproduces the layover-only findings for the unreachable block" do
       findings = Checks.block_findings("101", unreachable_pair(), Context.layover_only(5))
 
       assert findings == [
@@ -391,7 +392,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksContextTest do
              ]
     end
 
-    test "answers exactly as spec 05 did for a short gap" do
+    test "reproduces the layover-only findings for a short gap" do
       pair = [
         trip("t1", "R1", at(7, 0), at(8, 0)),
         trip("t2", "R1", at(8, 4), at(9, 0))
@@ -412,7 +413,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksContextTest do
 
   # --- fixtures --------------------------------------------------------------
 
-  # Two trips whose deadhead is the R1 estimate between @bay_a and @northgate, in
+  # Two trips whose deadhead is the estimated drive between @bay_a and @northgate, in
   # a gap shorter than that estimate.
   defp unreachable_pair do
     [
@@ -487,7 +488,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksContextTest do
   end
 
   # A trip row in the shape `Blocking.Queries.trip_rows/3` produces, including the
-  # `shape_id` the context measures from. Times are integer seconds (CR-3), and
+  # `shape_id` the context measures from. Times are integer seconds, and
   # a trip starts and ends at Riverside Bay A unless a case says otherwise.
   defp trip(id, route_id, first_departure, last_arrival, opts \\ []) do
     %{
@@ -514,7 +515,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ChecksContextTest do
 
   defp at(hours, minutes), do: hours * 3600 + minutes * 60
 
-  # The expected R1 estimate, computed here from the haversine distance rather
+  # The expected driving-time estimate, computed here from the haversine distance rather
   # than from `DeadheadTimes`, so this file does not agree with the module under
   # test by construction.
   defp northgate_minutes do

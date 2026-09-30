@@ -1,35 +1,35 @@
 defmodule GtfsPlanner.Gtfs.Blocking.ReliefTest do
   @moduledoc """
-  Merge evidence (EV-10) for CL-10 / R5 and R6: the instants a relief change may
-  happen in a block, and the unrelieved stretches between the changes taken.
+  The instants a relief change may happen in a block, and the unrelieved stretches
+  between the changes taken.
 
   Windows and stretches are pure functions of the block's movements and the
   version's marked relief points, so these cases run in the local ExUnit process
   with no sandbox, no fixtures and no cleanup. The module under test calls no
-  repository, clock, file or network (CR-1).
+  repository, clock, file or network.
 
-  The independence the critique asked for (Must 3) is the last describe block: an
+  The independent check is the last describe block: an
   exhaustive oracle that enumerates one instant per window or none, at 60-second
   steps, and takes the smallest longest stretch any of those plans can achieve.
-  It is written from R5 and R6 directly and shares no code with the search, so
+  It is written from the relief rules directly and shares no code with the search, so
   agreement is evidence rather than a tautology. Blocks come from a fixed seed,
   so a failure reproduces.
 
-  ## A note on R6's wording
+  ## A note on the greedy rule
 
-  R6 asks for "the latest change instant reachable within the limit" and states
-  that this greedy is optimal for "can every stretch be within the limit". That
-  is not true, and the test pins the case that shows it -- see
+  A greedy that takes "the latest change instant reachable within the limit" is not
+  optimal for "can every stretch be within the limit", and the test pins the case
+  that shows it -- see
   "a schedule the latest-reachable greedy would strand" below. The implementation
-  therefore returns the best schedule available, which is what AC-11 and this
-  oracle hold it to. The difference matters to a planner: the greedy reports
+  therefore returns the best schedule available, which is what this
+  oracle holds it to. The difference matters to a planner: the greedy reports
   "No operator change" for blocks that are perfectly staffable.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/relief_test.exs`. This test
   establishes the window and stretch arithmetic. It says nothing about whether
   the relief limit, the marked stops or the day load are correct, which is
-  EV-14's and EV-20's subject.
+  covered by the day load and relief settings tests.
   """
   use ExUnit.Case, async: true
 
@@ -128,7 +128,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefTest do
 
       assert origin.side == :origin
       assert destination.side == :destination
-      # R5's two windows: the origin change happens at trip n's stop before the
+      # The two windows: the origin change happens at trip n's stop before the
       # drive, the destination change at trip n+1's stop after it.
       assert origin.start_secs == 0
       assert origin.end_secs == 1_200 - 14 * @minute
@@ -184,8 +184,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefTest do
       assert [%{secs: 300}, %{secs: 300}] = Relief.stretches(movements, windows, 600)
     end
 
-    test "R5's counterexample: 100-minute gap, 80-minute drive, both marked, limit 60" do
-      # The worked example from R5. A change at the origin and one at the
+    test "counterexample: 100-minute gap, 80-minute drive, both marked, limit 60" do
+      # The worked example. A change at the origin and one at the
       # destination are a whole drive apart, so the stretch that must span the
       # drive is 80 minutes: over the limit, and exactly what should be reported.
       movements = platform(0, 10_800)
@@ -232,7 +232,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefTest do
     end
 
     test "a schedule the latest-reachable greedy would strand" do
-      # R6's wording asks for the latest instant reachable within the limit.
+      # The greedy takes the latest instant reachable within the limit.
       # Taking 1920 here spends the last window near its far end and strands a
       # 2040 s tail, so that greedy calls the block uncoverable. Changing at 120
       # and 2040 keeps every stretch within the limit, so the block is
@@ -294,11 +294,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefTest do
       assert [origin, destination] = windows
       assert origin.side == :origin
       assert destination.side == :destination
-      # R5's bounds against the real gap: the origin window closes a drive
+      # The bounds against the real gap: the origin window closes a drive
       # before the gap ends and the destination window opens a drive after it
       # starts. The two overlap whenever the wait outlasts the drive, which is
       # why the invariant that matters is the spacing rule rather than disjoint
-      # windows -- see the R5 counterexample above.
+      # windows -- see the 100-minute counterexample above.
       assert origin.start_secs == gap.arrival_secs
       assert origin.end_secs == gap.departure_secs - gap.drive_secs
       assert destination.start_secs == gap.arrival_secs + gap.drive_secs
@@ -343,9 +343,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefTest do
 
   # --- exhaustive oracle -----------------------------------------------------
   #
-  # Written from R5 and R6, not from the implementation: for every window
+  # Written from the relief rules, not from the implementation: for every window
   # independently choose one 60-second-step instant or none, keep the plans that
-  # respect R5's same-gap spacing, and take the smallest longest stretch any of
+  # respect the same-gap spacing, and take the smallest longest stretch any of
   # them achieves. The generated blocks are kept small precisely so this stays a
   # complete enumeration rather than a sample.
 
@@ -361,7 +361,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefTest do
   end
 
   # A plan is a list of `{instant, window}`. Each window independently takes one
-  # instant or none, so this is the full space R6 allows.
+  # instant or none, so this is the full space the rules allow.
   defp plans(windows), do: plans(windows, [])
 
   defp plans([], acc), do: [acc]
@@ -378,7 +378,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefTest do
     end)
   end
 
-  # R5: a `:destination` change of a gap whose `:origin` change was also taken
+  # A `:destination` change of a gap whose `:origin` change was also taken
   # must be at least the drive later, because the vehicle is driving between.
   defp spaced?(plan) do
     plan

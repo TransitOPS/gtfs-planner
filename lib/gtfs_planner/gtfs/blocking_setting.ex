@@ -72,8 +72,7 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
 
   # A value that must always be submitted: a blank string is not a valid number or
   # enum member here, so it is left to `cast/4` as an "is invalid" field error
-  # rather than becoming the default (CR-3 keeps a submitted value from inventing
-  # a setting).
+  # rather than becoming the default.
   @required_fields [
     :min_layover_minutes,
     :pull_out_buffer_minutes,
@@ -93,7 +92,7 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
 
   Only `settings_fields/0` is cast, so `organization_id` and `gtfs_version_id` in
   submitted parameters are ignored; the caller sets those on the struct. Every
-  range from AC-1 is checked here and again by the named database constraint, so a
+  range is checked here and again by the named database constraint, so a
   value that reaches the table outside this changeset still cannot store.
   """
   @spec changeset(t(), map()) :: Ecto.Changeset.t()

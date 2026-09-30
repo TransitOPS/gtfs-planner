@@ -1,11 +1,10 @@
 defmodule GtfsPlanner.Gtfs.Blocking.SuggestTest do
   @moduledoc """
-  Merge evidence (EV-23) for CL-23: `suggest_blocks/4` reads the day type, scopes
-  its trips by mode and refuses a selection or a scope it cannot answer, so
-  FH-23's two failures — an empty selection rebuilding everything, and a huge scope
-  running unbounded — stay rejected (AC-26).
+  `suggest_blocks/4` reads the day type, scopes its trips by mode and refuses a
+  selection or a scope it cannot answer, so two failures — an empty selection
+  rebuilding everything, and a huge scope running unbounded — stay rejected.
 
-  One case covers each observation EV-23 rejects FH-23 with:
+  One case covers each observation:
 
   - `:unassigned_only` on a day type with four existing blocks and two pool trips
     moves exactly those two pool trips; every already-assigned trip keeps its block
@@ -22,7 +21,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.SuggestTest do
   - 3,001 trips in scope are refused as `{:too_large, 3001}`, and the refusal costs
     no plan: the scope is read and counted and the generator never runs;
   - a key the version does not derive is `{:unknown_day_type, day_types}` and
-    nothing falls back to another day type (INV-6); a version of another
+    nothing falls back to another day type; a version of another
     organization is `:not_found`;
   - a suggestion writes nothing: the row counts of `trips`, `stop_times`,
     `frequencies`, `transfers`, `block_attributes` and `blocking_settings` are
@@ -35,7 +34,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.SuggestTest do
   The "too large" case writes its 3,001 trips with `Repo.insert_all/3` inside this
   test's SQL Sandbox transaction, which rolls them back.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/suggest_test.exs`.
   """
   use GtfsPlanner.DataCase, async: false
@@ -162,7 +161,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.SuggestTest do
       assert Enum.all?(plan.moves, &is_nil(&1.from))
 
       # Every trip that already had a block keeps it: no move names one, and the
-      # stored assignments are exactly what the fixture wrote (AC-22).
+      # stored assignments are exactly what the fixture wrote.
       assert stored_blocks(
                scope,
                Enum.map(@blocked_trips, &elem(&1, 0)) ++ [@frequency_trip_id]
@@ -293,7 +292,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.SuggestTest do
       assert Enum.sort(Enum.map(plan.moves, & &1.trip.trip_id)) == every_scheduled
 
       # Every scheduled trip ends in exactly one block, and no trip is proposed
-      # twice (AC-22).
+      # twice.
       assert length(Enum.uniq_by(plan.moves, & &1.trip.id)) == length(plan.moves)
       assert Enum.all?(plan.moves, &(not is_nil(&1.to)))
 

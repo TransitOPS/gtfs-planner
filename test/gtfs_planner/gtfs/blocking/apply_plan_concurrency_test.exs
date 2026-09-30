@@ -1,9 +1,9 @@
 defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanConcurrencyTest do
   @moduledoc """
-  The lock half of merge evidence (EV-5) for CL-5: a plan apply is serialized with a
+  The lock half of the plan apply guarantee: a plan apply is serialized with a
   `Schedules` trip writer on the same blocking lock, so a writer that retimes a trip
   the plan touches either loses the race or makes the apply stale — never slips
-  between the plan's review and its write (AC-27, INV-1, R12).
+  between the plan's review and its write.
 
   One case covers the observation:
 
@@ -26,7 +26,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanConcurrencyTest do
   `concurrency_test.exs` and `schedules_test.exs` state for their own lock cases. The
   `40001` path is simulated through the Mox mock in `apply_plan_test.exs`, not here.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/apply_plan_concurrency_test.exs`.
   """
 
@@ -59,7 +59,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanConcurrencyTest do
   alias GtfsPlanner.Versions.GtfsVersion
 
   # Every case holds one lock open and observes another backend's wait, so each test
-  # is bounded by EV-5's 180 s command budget and a 10 s self-release for a hold the
+  # is bounded by the module timeout and a 10 s self-release for a hold the
   # test never gets to release.
   @moduletag timeout: 120_000
 

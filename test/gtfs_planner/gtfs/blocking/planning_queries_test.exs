@@ -1,16 +1,15 @@
 defmodule GtfsPlanner.Gtfs.Blocking.PlanningQueriesTest do
   @moduledoc """
-  Merge evidence for the reads a loaded planning context is built from: the
+  Tests for the reads a loaded planning context is built from: the
   `shape_id` a trip row now carries, the four planning-input kinds, shape points,
   stop paths and the garage and vehicle-type maps.
 
   Every case is scoped: the same rows are written into a foreign organization and
   into a second version of this organization, and the reads must not return any of
-  them. The scope is the whole of CR-4's guarantee for these reads, so it is
+  them. The scope is the whole guarantee for these reads, so it is
   asserted per kind rather than once.
 
-  Rows are created inside the SQL Sandbox transaction and rolled back. The focused
-  gate command is deferred to branch review:
+  Rows are created inside the SQL Sandbox transaction and rolled back. Run with:
   `mix test test/gtfs_planner/gtfs/blocking/planning_queries_test.exs`.
   """
   use GtfsPlanner.DataCase, async: true
@@ -163,8 +162,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanningQueriesTest do
                :count
              ) == 1
 
-      # Every returned reference is one step 7 can decode; a row whose refs do not
-      # decode is skipped by the builder, so the read must not invent a form.
+      # Every returned reference is one `DeadheadTimes.decode_ref/1` can decode; a row
+      # whose refs do not decode is skipped by the builder, so the read must not invent a
+      # form.
       assert DeadheadTimes.decode_ref(own_deadhead.from_ref) == {:ok, {:garage, garage.id}}
       assert DeadheadTimes.decode_ref(own_deadhead.to_ref) == {:ok, {:stop, "S1"}}
     end
@@ -231,7 +231,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanningQueriesTest do
         assert Enum.all?(path, fn {lat, lon} -> is_float(lat) and is_float(lon) end)
       end
 
-      # The answer is the input step 7 hands to the path measure.
+      # The answer is the input the context builder hands to the path measure.
       assert Distance.path_km(points["SH-A"]) > 0.0
       assert Distance.path_km(points["SH-B"]) > 0.0
     end
@@ -282,7 +282,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanningQueriesTest do
       assert parent.stop_id == "P2A"
       assert origin.stop_lat == Decimal.new("42.0000")
 
-      # The answer is the input step 7 hands to the path measure.
+      # The answer is the input the context builder hands to the path measure.
       assert Distance.path_km(Queries.stop_paths(o.id, v.id, [trip.trip_id])["t1"]) > 0.0
     end
 

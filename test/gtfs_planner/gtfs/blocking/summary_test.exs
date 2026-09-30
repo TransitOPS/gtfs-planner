@@ -16,10 +16,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
   - Natural order is `2 < 10 < 101 < A1`; status sorting puts errors first and
     breaks ties by natural block ID; `nil` values sort last in both directions.
     The timeline sorts by `:garage` (the garage's name, then the type's name) and
-    by `:out` (the platform start), the two keys AC-32 gives the timeline; the
+    by `:out` (the platform start), the two timeline sort keys; the
     removed Trips, Start and End columns are not keys.
   - A block's status is the worst severity of its own findings with the first code
-    of that severity in the fixed order, and hours are one decimal. AC-16's order
+    of that severity in the fixed order, and hours are one decimal. The order
     puts the errors Overlap, Can't reach and Wrong type ahead of the warnings
     Short layover, In-seat row, Too long, No operator change, Route switch and
     Garage differs, and puts the notices last.
@@ -175,10 +175,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
       assert {summary.status, summary.status_code} == {:ok, nil}
     end
 
-    # AC-16 and Copy: the errors are Overlap, Can't reach and Wrong type; the
-    # warnings follow in Copy order (Short layover, In-seat row, Too long, No
+    # The errors are Overlap, Can't reach and Wrong type; the
+    # warnings follow in the fixed order (Short layover, In-seat row, Too long, No
     # operator change, Route switch, Garage differs); the notices come last.
-    test "orders the two errors of R9 after Overlap and before any warning" do
+    test "orders the two planning errors after Overlap and before any warning" do
       assert status([finding(:type_mismatch, :error), finding(:cannot_reach, :error)]) ==
                {:error, :cannot_reach}
 
@@ -189,7 +189,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.SummaryTest do
                {:error, :cannot_reach}
     end
 
-    test "orders the warnings in Copy order" do
+    test "orders the warnings in their fixed order" do
       warnings = [
         finding(:block_attributes_conflict, :warning),
         finding(:interlining_not_allowed, :warning),

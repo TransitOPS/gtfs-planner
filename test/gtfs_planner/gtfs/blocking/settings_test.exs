@@ -1,8 +1,8 @@
 defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
   @moduledoc """
-  Merge evidence (EV-17) for CL-17: the eight Block rules settings are read with
-  their defaults, validated on every range, and written under the blocking lock, so
-  FH-17's three failures stay rejected.
+  The eight Block rules settings are read with their defaults, validated on every
+  range, and written under the blocking lock, so an upsert that keeps a stale
+  column, an unchecked range and a writer without the lock stay rejected.
 
   Rows are created inside the SQL Sandbox transaction and rolled back. The one
   exception is the lock case, which needs an organization and version that another
@@ -13,7 +13,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
   `pg_stat_activity` wait; the settings cases themselves are sandboxed like any
   other `DataCase`.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/settings_test.exs`.
   """
   use GtfsPlanner.DataCase, async: false
@@ -56,7 +56,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.SettingsTest do
   @moduletag timeout: 120_000
 
   # The lock case holds one lock open and observes another backend's wait, so it is
-  # bounded: EV-17's 120 s command deadline per test, and a 10 s self-release for a
+  # bounded: a 120 s deadline per test, and a 10 s self-release for a
   # hold the test never gets to release.
   @hold_timeout 10_000
   @receive_timeout 5_000

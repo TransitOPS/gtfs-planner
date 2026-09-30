@@ -1,10 +1,10 @@
 defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
   @moduledoc """
-  Merge evidence for the planning context: the layover-only context that
-  reproduces spec 05's behaviour, the fingerprint every reviewed planning write
-  carries (INV-7, R12), the builder that fills the struct from a version's
+  Tests for the planning context: the layover-only context that
+  reproduces the pre-planning behaviour, the fingerprint every reviewed planning write
+  carries, the builder that fills the struct from a version's
   reads, and `resolve_block/3` — the one rule that decides a block's garage and
-  vehicle type (R4, INV-9).
+  vehicle type.
 
   The first three groups are pure — `Context` reads its arguments and touches no
   repository, clock, file or network — so `layover_only/1`, `digest/1` and
@@ -15,16 +15,15 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
   would use, because that is the path the rule runs on and the only place its
   reads can be observed as a whole.
 
-  The digest cases are the ones that matter for INV-7, and they are written to
+  The digest cases are the ones that matter most, and they are written to
   fail if the fingerprint narrows. A digest covering only the inputs one plan
   happened to read would let a write through that nobody reviewed, so every
   field is asserted to change it — including a field for a service the day does
-  not use, which is the over-invalidation the spec accepts on purpose (Notes:
-  "`Context.digest/1` fingerprints the whole context instead of enumerating
-  inputs; it over-invalidates a preview when an unrelated planning input
-  changes, which is safe").
+  not use, which is over-invalidation accepted on purpose: `Context.digest/1`
+  fingerprints the whole context instead of enumerating inputs, so an unrelated
+  planning input changes a preview's fingerprint, which is safe.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/context_test.exs`.
   """
   use GtfsPlanner.DataCase, async: true
@@ -251,7 +250,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
       expected = %{garage_id: nil, vehicle_type_id: nil, garage_source: :none, conflict: nil}
 
       # A route row that sets neither value is the same answer as no route row:
-      # "no row at all" and "a row that says nothing" both fall through, and R4
+      # "no row at all" and "a row that says nothing" both fall through, and the resolution
       # never invents a garage between them.
       route_says_nothing =
         complete_context(
@@ -304,7 +303,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
       assert result.vehicle_type_id == @vehicle_type_uuid
 
       # Every row for the block's services is listed, in `service_id` order and
-      # not in trip order, and not only the two that disagree — AC-8 asks for
+      # not in trip order, and not only the two that disagree — the report lists
       # "every calendar's values".
       assert result.conflict == [
                %{
@@ -561,7 +560,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
       [block] = day.blocks
       resolution = Context.resolve_block(day.context, "101", block.trips)
 
-      # The row wins over the route's home garage, which is the whole of R4's
+      # The row wins over the route's home garage, which is the whole of the
       # first rule, and the row's type is the block's type.
       assert resolution.garage_id == main.id
       assert resolution.vehicle_type_id == cutaway.id
@@ -853,8 +852,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
 
       assert {:ok, day} = load_day(organization.id, version.id, nil)
 
-      # Nothing consumes `context` yet, so the day the spec 05 tests assert is
-      # the day this still returns.
+      # With no planning inputs set, the day is the one the layover-only checks give.
       assert day.counts == %{blocks: 1, trips: 2, unassigned: 0, problems: 0, notices: 0}
       assert Enum.map(day.blocks, & &1.summary.block_id) == ["101"]
       assert day.peak.count == 1
@@ -880,7 +878,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ContextTest do
 
   # Two garages and two types, so a resolution can be asked for one of each and
   # for a second one to disagree with. `@garage_uuid` is Main and
-  # `@garage_north_uuid` is North, which is what the R4 cases below name.
+  # `@garage_north_uuid` is North, which is what the resolution cases below name.
   defp known_garages do
     %{
       @garage_uuid => garage(@garage_uuid, "Main"),

@@ -1,13 +1,13 @@
 defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
   @moduledoc """
-  Merge evidence (EV-18) for CL-18: the Block rules drawer's route garage and
-  required type are read one entry per route of the version and written as one
-  all-or-nothing batch that rejects a foreign garage, a foreign type and a route
-  the version does not have, so FH-18's two failures stay rejected.
+  The Block rules drawer's route garage and required type are read one entry per
+  route of the version and written as one all-or-nothing batch that rejects a
+  foreign garage, a foreign type and a route the version does not have, so an
+  accepted foreign garage and a partially stored batch stay rejected.
 
   The entries are read and written through the `Gtfs` facade, which is the path
-  step 40's `save_block_rules` uses, and the values come from AC-2 and R4's
-  fallbacks: a route with no row answers `nil` for both values.
+  the page's `save_block_rules` uses. A route with no row answers `nil` for both
+  values.
 
   Rows are created inside the SQL Sandbox transaction and rolled back. The one
   exception is the lock case, which needs an organization and version another
@@ -18,7 +18,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
   `pg_stat_activity` wait; the other cases are sandboxed like any other
   `DataCase`.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/route_operating_settings_test.exs`.
   """
   use GtfsPlanner.DataCase, async: false
@@ -41,7 +41,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
   @moduletag timeout: 120_000
 
   # The lock case holds one lock open and observes another backend's wait, so it is
-  # bounded: EV-18's 120 s command deadline per test, and a 10 s self-release for a
+  # bounded: a 120 s deadline per test, and a 10 s self-release for a
   # hold the test never gets to release.
   @hold_timeout 10_000
   @receive_timeout 5_000
@@ -328,7 +328,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.RouteOperatingSettingsTest do
                ])
 
       # `Blocking.Queries.planning_rows/3` is what `load_day/3` builds
-      # `Context.route_settings` from (R4), so a row stored here is the row the
+      # `Context.route_settings` from, so a row stored here is the row the
       # generator and the export resolve against.
       rows = Queries.planning_rows(organization.id, version.id, [])
 

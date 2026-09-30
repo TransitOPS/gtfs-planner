@@ -14,7 +14,7 @@ defmodule GtfsPlanner.Operations do
   `deadhead_times` rows whose reference is `"garage:<uuid>"` in the same
   transaction as the guarded delete, and restores them when the delete is
   refused. Garage references are the garage UUID, never the correctable
-  `garage_id` (CR-7).
+  `garage_id`.
   """
 
   import Ecto.Query, warn: false
@@ -249,7 +249,7 @@ defmodule GtfsPlanner.Operations do
   `Blocking.Distance.path_km/1` take.
 
   The key is the UUID, because that is the identity a `block_attributes` or
-  `route_operating_settings` row references (CR-7). The correctable public
+  `route_operating_settings` row references. The correctable public
   `garage_id` travels in the value for the TODS export but is never a key.
   """
   @spec planning_garages(Ecto.UUID.t()) :: %{
@@ -288,7 +288,7 @@ defmodule GtfsPlanner.Operations do
 
   The ownership check every `route_operating_settings` and `block_attributes`
   writer makes: a type of another organization is a rejected field value, not a
-  stored reference resolved later (AC-2, CR-3).
+  stored reference resolved later.
   """
   @spec get_vehicle_type(Ecto.UUID.t(), Ecto.UUID.t()) :: VehicleType.t() | nil
   def get_vehicle_type(organization_id, id) do
@@ -383,7 +383,8 @@ defmodule GtfsPlanner.Operations do
   `route_operating_settings` row references. `max_out_minutes` is passed through
   as stored, so an absent limit stays `nil` and a caller can tell "no limit" from
   "a limit of zero". A type no planning row references is still returned, because
-  R4 falls back to the first trip's route type rather than to an attribute.
+  `Context.resolve_block/3` falls back to the first trip's route type rather than to an
+  attribute.
   """
   @spec planning_vehicle_types(Ecto.UUID.t()) :: %{
           Ecto.UUID.t() => GtfsPlanner.Gtfs.Blocking.Context.vehicle_type()
@@ -1069,7 +1070,7 @@ defmodule GtfsPlanner.Operations do
 
   # A garage owns its entered driving times, so they are removed in the same
   # transaction as the guarded delete and restored by the rollback when a
-  # reference refuses it. The reference is the garage UUID (CR-7).
+  # reference refuses it. The reference is the garage UUID.
   defp delete_garage_with_driving_times(organization_id, garage) do
     counts_fun = fn -> garage_in_use_counts(organization_id, garage.id) end
 
