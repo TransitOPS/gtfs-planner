@@ -25,12 +25,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   import Ecto.Query
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
+  alias GtfsPlanner.Gtfs.RoutePatterns.Grouping
   alias GtfsPlanner.Gtfs.RoutePatterns.TimingRules
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Stop
@@ -44,6 +47,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   # A bounded page keeps every read/write batch constant in size for a feed of
   # any length: one label page and one vector page per iteration.
   @trip_page_size 500
+  # Equirectangular projection radius in metres. Stop-to-line distance is a
+  # review-time advisory, and one shared constant keeps it in the same units as
+  # the materializer's haversine lengths.
+  @earth_radius_m 6_371_008.8
   # A whole-route derivation commits in one transaction (INV: a route commits its
   # complete derivation or none of it), so the transaction budget must cover a
   # route-sized feed section. The deployment already budgets 300s for large GTFS
@@ -224,6 +231,475 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       :count
     )
   end
+
+  # --- grouping preview (read-only) ------------------------------------------
+
+  @typedoc "One group's card data, as the grouping review reads it."
+  @type preview_group :: %{
+          key: String.t(),
+          stop_ids: [String.t()],
+          stop_names: [String.t()],
+          trip_count: pos_integer(),
+          services: [{String.t(), pos_integer()}],
+          shapes: [{String.t(), pos_integer()}],
+          direction_id: 0 | 1 | nil,
+          suggestion: Grouping.suggestion(),
+          candidates: [Grouping.pattern_ref()],
+          timing_names: [String.t()],
+          stop_distances_m: [{String.t(), float()}] | nil
+        }
+
+  @type preview :: %{
+          groups: [preview_group()],
+          blocked: [%{reason: atom(), trip_ids: [Ecto.UUID.t()]}],
+          fingerprint: String.t()
+        }
+
+  @doc """
+  Previews the grouping of one route's left-out trips without writing anything.
+
+  The route's `custom` trips are paged in `trip_id` order with the same keyset
+  helpers derivation uses, so a feed of any length is read in bounded pages.
+  Each vector is re-checked with the same eligibility rules derivation applies,
+  except that a missing direction is not a failure here: naming a direction is
+  what the review is for. A vector that fails for any other reason is reported
+  in `blocked` with that reason, so the editor sees why a trip is not being
+  offered rather than a silently smaller total.
+
+  The rest are grouped by the pure `Grouping` rules, which decide the direction
+  suggestion (rule 4), the ordered candidates (rule 5), the timing names (rule 6)
+  and the fingerprint (rule 7). `stop_distances_m` is present only when the
+  first candidate already has a saved map line, because distance to a line that
+  does not exist yet would be an invented number.
+
+  An unknown route in the organization/version scope is `{:error, :not_found}`,
+  so a foreign or unpublished route cannot be previewed.
+  """
+  @spec preview_left_out(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, preview()} | {:error, :not_found}
+  def preview_left_out(organization_id, version_id, route_id) when is_binary(route_id) do
+    case RoutePatterns.published_route(organization_id, version_id, route_id) do
+      {:ok, route} ->
+        context = preview_context(route)
+        {rows, vectors, blocked} = collect_left_out(route, context)
+
+        groups = Grouping.group(vectors)
+
+        {:ok,
+         %{
+           groups: preview_groups(route, context, groups),
+           blocked: blocked_reasons(blocked),
+           fingerprint: Grouping.fingerprint(rows)
+         }}
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+    end
+  end
+
+  def preview_left_out(_organization_id, _version_id, _route_id),
+    do: {:error, :not_found}
+
+  defp preview_context(route) do
+    %{
+      eligible_stops: eligible_stop_ids(route),
+      pattern_refs: pattern_refs(route),
+      patterns: route_patterns(route)
+    }
+  end
+
+  # The route's own patterns, with their stop orders, linked-trip counts and
+  # label owners, are what rules 4 and 5 are answered from. This is the same
+  # shape `Grouping.suggest_direction/3` and `candidates/3` take, so the preview
+  # introduces no second notion of a pattern reference.
+  defp route_patterns(route) do
+    from(p in RoutePattern,
+      where:
+        p.organization_id == ^route.organization_id and
+          p.gtfs_version_id == ^route.gtfs_version_id and p.route_id == ^route.route_id,
+      order_by: [asc: p.route_pattern_id]
+    )
+    |> Repo.all()
+    |> Map.new(&{&1.id, &1})
+  end
+
+  defp pattern_refs(route) do
+    patterns = route_patterns(route) |> Map.values()
+    stops_by_pattern = occurrence_stop_ids(Enum.map(patterns, & &1.id))
+    linked = linked_trip_counts(route, Enum.map(patterns, & &1.route_pattern_id))
+
+    Enum.map(patterns, fn pattern ->
+      %{
+        id: pattern.id,
+        route_pattern_id: pattern.route_pattern_id,
+        direction_id: pattern.direction_id,
+        stop_ids: Map.get(stops_by_pattern, pattern.id, []),
+        derivation_key: pattern.derivation_key,
+        linked_trip_count: Map.get(linked, pattern.route_pattern_id, 0),
+        # Step 13 adds the label owner column; until it exists no pattern is a
+        # label child, and `Grouping` already treats a nil owner as ownerless.
+        label_pattern_id: nil
+      }
+    end)
+  end
+
+  defp occurrence_stop_ids([]), do: %{}
+
+  defp occurrence_stop_ids(pattern_ids) do
+    from(o in RoutePatternStop,
+      where: o.route_pattern_id in ^pattern_ids,
+      order_by: [asc: o.route_pattern_id, asc: o.position],
+      select: {o.route_pattern_id, o.stop_id}
+    )
+    |> Repo.all()
+    |> Enum.group_by(&elem(&1, 0), fn {_pattern_id, stop_id} -> stop_id end)
+  end
+
+  defp linked_trip_counts(_route, []), do: %{}
+
+  defp linked_trip_counts(route, natural_ids) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^route.organization_id and
+          t.gtfs_version_id == ^route.gtfs_version_id and t.route_id == ^route.route_id and
+          t.route_pattern_id in ^natural_ids and t.pattern_derivation_state == "linked",
+      group_by: t.route_pattern_id,
+      select: {t.route_pattern_id, count(t.id)}
+    )
+    |> Repo.all()
+    |> Map.new()
+  end
+
+  # One bounded page of custom trips plus its stop-time vectors, exactly as the
+  # second pass reads them. The retained window is the page, not the feed.
+  defp collect_left_out(route, context) do
+    each_custom_trip_page(route, {[], [], %{}}, fn trips, acc ->
+      rows_by_trip = page_rows(route, page_range(trips))
+      Enum.reduce(trips, acc, &accumulate_left_out(&1, &2, rows_by_trip, context))
+    end)
+  end
+
+  # Every left-out trip contributes to the fingerprint, blocked ones included:
+  # rule 7 makes the review stale on any linkage change, and a blocked trip can
+  # become groupable by exactly such a change.
+  defp accumulate_left_out(trip, {rows, vectors, blocked}, rows_by_trip, context) do
+    {id, trip_row, vector, reason} =
+      classify_vector(trip, Map.get(rows_by_trip, trip.trip_id, []), context)
+
+    blocked = if reason, do: block(blocked, reason, id), else: blocked
+
+    {[trip_row | rows], if(vector, do: [vector | vectors], else: vectors), blocked}
+  end
+
+  defp block(blocked, reason, id), do: Map.update(blocked, reason, [id], &[id | &1])
+
+  # Re-checks one vector with derivation's own rules, direction aside. Only a
+  # missing direction is forgivable: the review exists to supply it. A vector
+  # that no longer passes the step-3 stop and timing rules is blocked with the
+  # reason it fails, so the preview cannot offer a trip derivation would refuse.
+  defp classify_vector(trip, rows, context) do
+    trip_row = fingerprint_row(trip)
+
+    with :ok <- preview_labels(rows, context),
+         {:ok, _timing} <- timing_rows(rows) do
+      {trip.id, trip_row, groupable_vector(trip, rows), nil}
+    else
+      {:error, reason} -> {trip.id, trip_row, nil, reason}
+    end
+  end
+
+  defp preview_labels(rows, context) do
+    if usable_labels?(Enum.map(rows, &{&1.stop_id, &1.stop_sequence}), context.eligible_stops) do
+      :ok
+    else
+      {:error, :unusable_stops}
+    end
+  end
+
+  # The linkage fields rule 7 fingerprints, read from the page's own row.
+  defp fingerprint_row(trip) do
+    %{
+      id: trip.id,
+      pattern_derivation_state: trip.pattern_derivation_state,
+      route_pattern_id: trip.route_pattern_id,
+      timed_pattern_id: trip.timed_pattern_id,
+      direction_id: trip.direction_id,
+      updated_at: trip.updated_at
+    }
+  end
+
+  defp groupable_vector(trip, rows) do
+    %{
+      id: trip.id,
+      trip_id: trip.trip_id,
+      direction_id: trip.direction_id,
+      route_pattern_id: trip.route_pattern_id,
+      service_id: trip.service_id,
+      shape_id: trip.shape_id,
+      stop_ids: Enum.map(rows, & &1.stop_id)
+    }
+  end
+
+  # A supplied pattern ID that names no pattern of this route is a stale
+  # reference, not a groupable stop order: step 15 links those as children.
+  defp blocked_reasons(blocked) do
+    blocked
+    |> Enum.map(fn {reason, trip_ids} ->
+      %{reason: reason, trip_ids: Enum.sort(trip_ids)}
+    end)
+    |> Enum.sort_by(& &1.reason)
+  end
+
+  defp each_custom_trip_page(route, acc, fun, cursor \\ "") do
+    trips = custom_trip_page(route, cursor)
+
+    case trips do
+      [] ->
+        acc
+
+      trips ->
+        each_custom_trip_page(route, fun.(trips, acc), fun, List.last(trips).trip_id)
+    end
+  end
+
+  # The custom-trip page is `pending_trip_page/2` with one state changed, so the
+  # two passes read a route's trips the same way and a preview can never show a
+  # trip derivation has not yet classified.
+  defp custom_trip_page(route, cursor) do
+    from(t in Trip,
+      where:
+        t.organization_id == ^route.organization_id and
+          t.gtfs_version_id == ^route.gtfs_version_id and t.route_id == ^route.route_id and
+          t.pattern_derivation_state == "custom" and t.trip_id > ^cursor,
+      order_by: [asc: t.trip_id],
+      limit: ^@trip_page_size,
+      select: %{
+        id: t.id,
+        trip_id: t.trip_id,
+        direction_id: t.direction_id,
+        route_pattern_id: t.route_pattern_id,
+        timed_pattern_id: t.timed_pattern_id,
+        service_id: t.service_id,
+        shape_id: t.shape_id,
+        pattern_derivation_state: t.pattern_derivation_state,
+        updated_at: t.updated_at
+      }
+    )
+    |> Repo.all()
+  end
+
+  # The direction the card is about: the one the route's own patterns decided,
+  # or the one the trips already agree on. A group with neither has no
+  # direction yet and so has no candidates, which is what leaves the editor to
+  # answer.
+  defp preview_direction(group, groups, refs) do
+    case Grouping.suggest_direction(group, groups, refs) do
+      {:suggested, direction, _reason} -> direction
+      _ -> group.direction_id
+    end
+  end
+
+  defp preview_groups(route, context, groups) do
+    refs = context.pattern_refs
+    service_names = service_names(route, groups)
+    taken = taken_timing_names(refs)
+
+    Enum.map(groups, fn group ->
+      direction = preview_direction(group, groups, refs)
+      candidates = if is_nil(direction), do: [], else: Grouping.candidates(group, direction, refs)
+
+      %{
+        key: group.key,
+        stop_ids: group.stop_ids,
+        stop_names: stop_labels(group.stop_ids, route),
+        trip_count: length(group.trip_ids),
+        services: ordered_counts(group.services),
+        shapes: ordered_counts(group.shapes),
+        direction_id: direction,
+        suggestion: Grouping.suggest_direction(group, groups, refs),
+        candidates: candidates,
+        timing_names: timing_names(group, service_names, taken, candidates),
+        stop_distances_m: stop_distances(context, group, candidates)
+      }
+    end)
+  end
+
+  # Rule 6: one service is named after it, two are joined with "and", and any
+  # other number falls back to the pattern's own next timing name. A new pattern
+  # has no timings yet, so the fallback is the name derivation would give it.
+  defp timing_names(group, service_names, taken, candidates) do
+    names =
+      group.services
+      |> Enum.map(fn {service_id, _count} -> Map.get(service_names, service_id, service_id) end)
+      |> Enum.sort()
+
+    case Grouping.timing_name(names, taken) do
+      :fallback -> [fallback_timing_name(candidates)]
+      name -> [name]
+    end
+  end
+
+  defp fallback_timing_name([]), do: "Timing A"
+  defp fallback_timing_name([%{id: id} | _rest]), do: RoutePatterns.next_timing_name(id)
+
+  # The names a target's timings already hold, so rule 6's " 2", " 3" suffix
+  # never proposes a name the pattern owns.
+  defp taken_timing_names(refs) do
+    pattern_ids = Enum.map(refs, & &1.id)
+
+    if pattern_ids == [] do
+      MapSet.new()
+    else
+      from(t in TimedPattern,
+        where: t.route_pattern_id in ^pattern_ids,
+        select: t.name
+      )
+      |> Repo.all()
+      |> MapSet.new()
+    end
+  end
+
+  defp service_names(_route, []), do: %{}
+
+  defp service_names(route, groups) do
+    service_ids =
+      groups
+      |> Enum.flat_map(fn group -> Map.keys(group.services) end)
+      |> Enum.uniq()
+
+    from(a in CalendarAttribute,
+      where:
+        a.organization_id == ^route.organization_id and
+          a.gtfs_version_id == ^route.gtfs_version_id and a.service_id in ^service_ids,
+      select: {a.service_id, a.service_description}
+    )
+    |> Repo.all()
+    |> Map.new(fn {service_id, description} ->
+      {service_id, service_name(description, service_id)}
+    end)
+  end
+
+  defp service_name(description, _service_id)
+       when is_binary(description) and description != "",
+       do: description
+
+  defp service_name(_description, service_id), do: service_id
+
+  defp stop_labels(stop_ids, route) do
+    names = stop_names(route, Enum.uniq(stop_ids))
+    Enum.map(stop_ids, &stop_label(&1, names))
+  end
+
+  defp ordered_counts(counts) do
+    counts
+    |> Enum.sort_by(fn {value, count} -> {-count, value} end)
+  end
+
+  # Distances are measured against the first candidate's own saved map line, so
+  # the card shows how far a group's stops sit from the line the editor is about
+  # to join. A candidate with no saved line reports `nil` rather than a distance
+  # to a line that does not exist.
+  defp stop_distances(_context, _group, []), do: nil
+
+  defp stop_distances(context, group, [%{id: pattern_id} | _rest]) do
+    case Map.fetch(context.patterns, pattern_id) do
+      {:ok, pattern} -> measure_stop_distances(pattern, group.stop_ids)
+      :error -> nil
+    end
+  end
+
+  # The line is drawn from the pattern's own resolved visits and sections
+  # through the one resolver every reader uses (R3), so the preview measures the
+  # same geometry export draws and cannot drift from it.
+  defp measure_stop_distances(pattern, stop_ids) do
+    resolved = Alignments.resolve(pattern)
+    polyline = polyline(resolved)
+
+    if polyline == [] do
+      nil
+    else
+      coordinates = Map.new(resolved.visits, &{&1.stop_id, {&1.lon, &1.lat}})
+      reference = reference_latitude(polyline)
+
+      stop_ids
+      |> Enum.map(fn stop_id ->
+        {stop_id, distance_to_polyline(Map.get(coordinates, stop_id), polyline, reference)}
+      end)
+    end
+  end
+
+  # A saved line is the pattern's drawn sections in position order: an override
+  # or a shared segment, joined through its visits' coordinates. A section with
+  # no stored segment is a gap in the line, not a straight leg, so the line
+  # stops where the drawing stops instead of inventing the missing road.
+  #
+  # Stored points arrive as `[lon, lat]` lists, so every vertex is normalized to
+  # a `{lon, lat}` tuple here and the projection reads one shape.
+  defp polyline(%{visits: visits, sections: sections}) do
+    coordinates = Map.new(visits, &{&1.occurrence_id, {&1.lon, &1.lat}})
+
+    sections
+    |> Enum.filter(&(&1.kind in [:override, :shared]))
+    |> Enum.flat_map(fn section ->
+      from = Map.get(coordinates, section.from_occurrence_id)
+      to = Map.get(coordinates, section.to_occurrence_id)
+      interior = Enum.map(section.points, fn [lon, lat] -> {lon, lat} end)
+
+      [from, to] |> Enum.reject(&is_nil/1) |> Enum.concat(interior)
+    end)
+  end
+
+  # Equirectangular projection: longitude degrees are scaled by the cosine of a
+  # reference latitude, which is accurate over the few kilometres one feed's
+  # route line spans and keeps the answer in metres.
+  defp project({lon, lat}, reference) do
+    {
+      @earth_radius_m * radians(lon) * :math.cos(radians(reference)),
+      @earth_radius_m * radians(lat)
+    }
+  end
+
+  defp reference_latitude(points) do
+    Enum.sum(Enum.map(points, fn {_lon, lat} -> lat end)) / max(length(points), 1)
+  end
+
+  # A stop with no usable coordinates cannot be measured, and neither can a line
+  # with no vertices; both report zero rather than a fabricated number, and the
+  # review's own copy is what tells the editor a stop has no location.
+  defp distance_to_polyline(nil, _polyline, _reference), do: 0.0
+
+  defp distance_to_polyline({lon, lat}, polyline, reference) do
+    projected = Enum.map(polyline, &project(&1, reference))
+    point = project({lon, lat}, reference)
+
+    projected
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.map(fn [{ax, ay}, to] ->
+      :math.sqrt(distance_squared(point, {ax, ay}, to))
+    end)
+    |> Enum.min(fn -> 0.0 end)
+  end
+
+  # The standard point-to-segment distance, clamped to the segment so a stop
+  # beyond either end measures to that end.
+  defp distance_squared({px, py}, {ax, ay}, {bx, by}) do
+    dx = bx - ax
+    dy = by - ay
+    denominator = dx * dx + dy * dy
+
+    t =
+      if denominator == 0.0 do
+        0.0
+      else
+        ((px - ax) * dx + (py - ay) * dy) / denominator
+      end
+
+    t = max(min(t, 1.0), 0.0)
+
+    (px - (ax + t * dx)) ** 2 + (py - (ay + t * dy)) ** 2
+  end
+
+  defp radians(value), do: :math.pi() * value / 180.0
 
   # --- orchestration ---------------------------------------------------------
 

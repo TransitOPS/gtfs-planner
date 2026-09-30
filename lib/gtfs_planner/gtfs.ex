@@ -1552,6 +1552,22 @@ defmodule GtfsPlanner.Gtfs do
   def left_out_trips(organization_id, gtfs_version_id, route_id \\ nil),
     do: RoutePatterns.left_out(organization_id, gtfs_version_id, route_id)
 
+  @doc """
+  Previews the grouping review for one route without writing anything.
+
+  The organization and version come from the audit context, so a route outside
+  that scope is `{:error, :not_found}`.
+  """
+  def preview_left_out(route_id, %AuditContext{} = audit_context),
+    do:
+      Derivation.preview_left_out(
+        audit_context.organization_id,
+        audit_context.gtfs_version_id,
+        route_id
+      )
+
+  def preview_left_out(_route_id, _audit_context), do: {:error, :not_found}
+
   @doc "Loads the alignment editor read model for one pattern in its published route scope."
   def alignment_editor(organization_id, gtfs_version_id, route_id, route_pattern_id),
     do: Alignments.editor(organization_id, gtfs_version_id, route_id, route_pattern_id)
