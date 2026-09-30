@@ -354,6 +354,26 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimetableTest do
       assert row.frequency?
       assert row.frequency_label == "Every 20 min, 09:00–12:00; Every 30 min, 12:00–15:00"
     end
+
+    test "carries the stored frequency rows earliest first, reading unpadded clocks" do
+      occurrences = [occurrence(1, "A"), occurrence(2, "B")]
+
+      frequencies = [
+        %{start_time: "10:00:00", end_time: "12:00:00", headway_secs: 1_800, exact_times: 0},
+        %{start_time: "9:00:00", end_time: "10:00:00", headway_secs: 1_200, exact_times: 1}
+      ]
+
+      trips = [
+        trip_fields("T-freq", %{
+          frequencies: frequencies,
+          stop_times: stop_times(["A", "B"], ["09:00:00", "09:12:00"])
+        })
+      ]
+
+      [row] = Timetable.build(@pattern, occurrences, @stops, [], trips).rows
+
+      assert Enum.map(row.frequencies, & &1.start_time) == ["9:00:00", "10:00:00"]
+    end
   end
 
   describe "build/6 estimate preview" do

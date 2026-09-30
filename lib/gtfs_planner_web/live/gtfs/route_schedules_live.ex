@@ -2536,7 +2536,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # The reference's context fragment: the first window's headway and the span
   # every stored window covers. A row without stored windows contributes none.
   defp convert_window_summary(%{frequencies: [_ | _] = frequencies}) do
-    windows = Enum.sort_by(frequencies, & &1.start_time)
+    windows = Enum.sort_by(frequencies, &stored_start_sort_key/1)
     first = hd(windows)
     last = List.last(windows)
     minutes = round((first.headway_secs || 0) / 60)

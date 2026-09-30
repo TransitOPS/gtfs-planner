@@ -10,7 +10,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.FrequencyWindows do
 
   `validate/1` reports every offending window with its 0-based index. Overlap is judged
   in start order among windows whose own span is well formed, like the prototype
-  validator: a later window overlaps when it starts before the previous one ends. An
+  validator: a later window overlaps when it starts before any earlier one ends. An
   empty or reversed window already carries `:until_not_after_from` and contributes no
   overlap of its own.
 
@@ -83,14 +83,14 @@ defmodule GtfsPlanner.Gtfs.Schedules.FrequencyWindows do
     |> Enum.with_index()
     |> Enum.filter(fn {window, _index} -> until_after_from?(window) end)
     |> Enum.sort_by(fn {window, _index} -> window.start_secs end)
-    |> Enum.chunk_every(2, 1, :discard)
-    |> Enum.flat_map(fn [{previous, _previous_index}, {window, index}] ->
-      if window.start_secs < previous.end_secs do
-        [%{index: index, reason: :overlap}]
-      else
-        []
-      end
+    |> Enum.map_reduce(nil, fn {window, index}, latest_end ->
+      error =
+        if latest_end && window.start_secs < latest_end, do: %{index: index, reason: :overlap}
+
+      {error, max(latest_end || window.end_secs, window.end_secs)}
     end)
+    |> elem(0)
+    |> Enum.reject(&is_nil/1)
   end
 
   defp until_after_from?(%{start_secs: start, end_secs: finish}), do: finish > start
