@@ -43,7 +43,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsValidatorTest do
     "trips_supplement.txt",
     "stop_times_supplement.txt"
   ]
-  @validator_version "7.1.0"
+  @validator_version "8.0.1"
 
   test "the operations ZIP with movements adds no error-severity notice the full ZIP lacks" do
     organization = organization_fixture()
@@ -195,7 +195,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsValidatorTest do
 
   defp report_summary(report), do: report["summary"]
 
-  # The 7.1.0 report holds one entry per notice code:
+  # The 8.0.1 report holds one entry per notice code:
   # %{"code" => ..., "severity" => "ERROR" | "WARNING" | "INFO",
   #   "totalNotices" => n, "sampleNotices" => [%{"filename" => ...}, ...]}
   defp error_codes(report) do
