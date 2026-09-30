@@ -150,27 +150,26 @@ defmodule GtfsPlanner.Gtfs.Alignments do
       if is_nil(visit[:lat]) or is_nil(visit[:lon]) do
         {nil, {known_index, known_cum}}
       else
-        dist =
-          cond do
-            is_nil(known_index) ->
-              0.0
-
-            known_index == index - 1 ->
-              known_cum +
-                section_length(
-                  Enum.at(sections, index - 1),
-                  Enum.at(visits, index - 1),
-                  visit
-                )
-
-            true ->
-              known_cum + straight_m(Enum.at(visits, known_index), visit)
-          end
-
+        dist = visit_distance(visit, index, known_index, known_cum, sections, visits)
         {dist, {index, dist}}
       end
     end)
     |> elem(0)
+  end
+
+  defp visit_distance(_visit, _index, nil, _known_cum, _sections, _visits), do: 0.0
+
+  defp visit_distance(visit, index, known_index, known_cum, sections, visits) do
+    if known_index == index - 1 do
+      known_cum +
+        section_length(
+          Enum.at(sections, index - 1),
+          Enum.at(visits, index - 1),
+          visit
+        )
+    else
+      known_cum + straight_m(Enum.at(visits, known_index), visit)
+    end
   end
 
   defp section_length(%{kind: :blocked, blocked_reason: :zero_length}, _from, _to), do: 0.0

@@ -23,7 +23,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillComponentsTest do
   end
 
   defp count(html, selector) do
-    html |> doc() |> LazyHTML.filter(selector) |> Enum.count()
+    html |> doc() |> LazyHTML.query(selector) |> Enum.count()
   end
 
   defp grid_row(position, arrival, departure, timepoint, extra \\ %{}) do
@@ -172,8 +172,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillComponentsTest do
 
     test "preview cells show the estimate and its was text", %{html: html} do
       assert text(html, "#timing-cell-estimate-2") =~ ~r/\d\d:\d\d/
-      assert text(html, "#timing-cell-estimate-2") =~ "was blank"
-      assert text(html, "#timing-cell-estimate-3") =~ "was blank"
+      assert text(html, "#timing-row-2") =~ "was blank"
+      assert text(html, "#timing-row-3") =~ "was blank"
     end
 
     test "the chart marks two anchors and two estimates", %{html: html} do
@@ -236,7 +236,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillComponentsTest do
 
       assert text(html, "#fill-summary") =~ "Recalculates 1 stop"
       assert count(html, "#fill-scope-between[checked]") == 1
-      assert text(html, "#timing-cell-estimate-2") =~ "was 06:00"
+      assert text(html, "#timing-row-2") =~ "was 06:00"
     end
   end
 
@@ -273,7 +273,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillComponentsTest do
 
       assert count(html, "#fill-method-even[checked]") == 1
       assert text(html, "#fill-summary") =~ "Fills 2 stops"
-      assert text(html, "#timing-cell-estimate-2") =~ "was blank"
+      assert text(html, "#timing-row-2") =~ "was blank"
     end
   end
 
@@ -414,7 +414,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillComponentsTest do
         staged(3, "01:00", "01:00", true)
       ]
 
-      distances = [0, 5000, 10000]
+      distances = [0, 5000, 10_000]
       fill = %{scope: :missing, method: :distance, only_anchor: nil}
 
       preview =
@@ -445,7 +445,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillComponentsTest do
       label_texts =
         html
         |> doc()
-        |> LazyHTML.filter("#fill-profile svg text")
+        |> LazyHTML.query("#fill-profile svg text")
         |> Enum.map(&LazyHTML.text/1)
 
       assert Enum.count(label_texts, &(&1 =~ ~r/\d+ mph/)) == 1

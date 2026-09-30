@@ -143,7 +143,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEstimatesTest do
       assert {"EST_FILL", "08:00:00", "08:00:00"} in before
       assert {"EST_FILL", nil, nil} in before
 
-      {:ok, view, _html} = live(conn, schedules_path(version, route))
+      # The estimate cell only renders for a visible estimated stop, so mount
+      # with every stop shown (the deterministic QA tour prescribes ?stops=all
+      # for this surface).
+      {:ok, view, _html} = live(conn, schedules_path(version, route, %{"stops" => "all"}))
 
       assert has_element?(view, "#trip-EST_FILL")
       assert has_element?(view, "#trip-EST_NOLAST")

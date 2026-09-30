@@ -13,10 +13,10 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesExportTest do
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
+  alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.Export.Worker
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
-  alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.Flex
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.Validator

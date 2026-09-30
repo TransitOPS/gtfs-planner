@@ -114,7 +114,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillTest do
 
   # Three stops on a straight north-south line, so distance fill splits the
   # 0→600 s span into an exact 300 s half for the middle stop.
-  defp three_stop_pattern(organization, version, route_id) do
+  defp three_stop_pattern(
+         organization,
+         version,
+         route_id,
+         offsets \\ [{0, 0}, {300, 300}, {600, 660}]
+       ) do
     route = route(organization, version, route_id)
 
     stops = [
@@ -125,13 +130,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillTest do
 
     pattern = pattern(organization, version, route, "P-#{route_id}")
     occurrence_rows = occurrences(pattern, stops)
-    timing_row = timing(pattern, occurrence_rows, "Weekday", [{0, 0}, {300, 300}, {600, 660}])
+    timing_row = timing(pattern, occurrence_rows, "Weekday", offsets)
 
     %{route: route, stops: stops, pattern: pattern, timing: timing_row}
   end
 
   defp used_pattern(organization, version, route_id) do
-    context = three_stop_pattern(organization, version, route_id)
+    # The stored middle offset (04:00) deliberately differs from the distance
+    # fill estimate (05:00): a submitted vector that matches the stored timing
+    # row-for-row is a no-op by design, so the save only reaches linked trips
+    # when the applied estimate is a genuine change.
+    context =
+      three_stop_pattern(organization, version, route_id, [{0, 0}, {240, 240}, {600, 660}])
 
     trip =
       linked_trip(
@@ -181,9 +191,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillTest do
     |> Enum.map(&{&1.arrival_time, &1.departure_time, &1.timepoint})
   end
 
-  defp change_timing(view, position, field, value) do
+  defp change_timing(view, position, field, value, extra \\ %{}) do
     render_change(view, "validate_timing_row", %{
-      "timing" => %{Integer.to_string(position) => %{field => value}},
+      "timing" => %{Integer.to_string(position) => Map.merge(%{field => value}, extra)},
       "_target" => ["timing", Integer.to_string(position), field]
     })
   end
@@ -259,7 +269,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillTest do
       {:ok, view, _} = live(conn, pattern_path(version, route, pattern))
       blank_middle(view)
       render_click(view, "open_fill")
-      render_click(view, "fill-apply")
+      render_click(view, "apply_fill")
 
       assert has_element?(view, "#timing-arrival-2[value='05:00']")
       assert has_element?(view, "#timing-departure-2[value='05:00']")
@@ -292,7 +302,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillTest do
       {:ok, view, _} = live(conn, pattern_path(version, route, pattern))
       blank_middle(view)
       render_click(view, "open_fill")
-      render_click(view, "fill-apply")
+      render_click(view, "apply_fill")
       assert has_element?(view, "#timing-arrival-2[data-estimated]")
 
       change_timing(view, 2, "arrival", "06:00")
@@ -370,7 +380,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillTest do
       set_timepoints(timing, [1, 1, 0, 1])
       {:ok, view, _} = live(conn, pattern_path(version, route, pattern))
 
-      change_timing(view, 2, "departure", "07:00")
+      change_timing(view, 2, "departure", "07:00", %{"timepoint" => "1"})
 
       assert has_element?(view, "#timing-retime", "Stop 2 moved by 02:00 later")
       assert has_element?(view, "#timing-retime", "1 stop would move")

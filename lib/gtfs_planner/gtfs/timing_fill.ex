@@ -263,31 +263,53 @@ defmodule GtfsPlanner.Gtfs.TimingFill do
 
       case changed do
         [{row, index}] ->
-          {base_arrival, base_departure} = Enum.at(base_times, index)
-          {edited_arrival, edited_departure} = Enum.at(edited_times, index)
-
-          with moved when is_integer(moved) <-
-                 move_delta(base_arrival, base_departure, edited_arrival, edited_departure),
-               true <- moved != 0 do
-            sub =
-              preview(edited_rows, distances, coords,
-                scope: :between,
-                method: method,
-                only_anchor: index
-              )
-
-            %{
-              anchor: Map.get(row, :position, index + 1),
-              moved_seconds: moved,
-              stops: sub.changed
-            }
-          else
-            _ -> nil
-          end
+          retime_single_change(
+            row,
+            index,
+            base_times,
+            edited_times,
+            edited_rows,
+            distances,
+            coords,
+            method
+          )
 
         _ ->
           nil
       end
+    end
+  end
+
+  defp retime_single_change(
+         row,
+         index,
+         base_times,
+         edited_times,
+         edited_rows,
+         distances,
+         coords,
+         method
+       ) do
+    {base_arrival, base_departure} = Enum.at(base_times, index)
+    {edited_arrival, edited_departure} = Enum.at(edited_times, index)
+
+    with moved when is_integer(moved) <-
+           move_delta(base_arrival, base_departure, edited_arrival, edited_departure),
+         true <- moved != 0 do
+      sub =
+        preview(edited_rows, distances, coords,
+          scope: :between,
+          method: method,
+          only_anchor: index
+        )
+
+      %{
+        anchor: Map.get(row, :position, index + 1),
+        moved_seconds: moved,
+        stops: sub.changed
+      }
+    else
+      _ -> nil
     end
   end
 

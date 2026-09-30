@@ -447,9 +447,7 @@ defmodule GtfsPlanner.Gtfs.Export do
              %{},
              garage_map,
              mapper,
-             %{},
-             estimate,
-             coords
+             %{appended_rows: %{}, estimate: estimate, coords: coords}
            ) do
       conflict_rollback(emitted_conflicts)
 
@@ -488,9 +486,7 @@ defmodule GtfsPlanner.Gtfs.Export do
              %{},
              %{},
              mapper,
-             %{},
-             estimate,
-             coords
+             %{appended_rows: %{}, estimate: estimate, coords: coords}
            ) do
       {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id),
        MissingTimes.cap_warnings(missing_warnings)}
@@ -538,9 +534,7 @@ defmodule GtfsPlanner.Gtfs.Export do
             %{},
             %{},
             mapper,
-            rows,
-            estimate,
-            coords
+            %{appended_rows: rows, estimate: estimate, coords: coords}
           )
 
         file_path
@@ -609,9 +603,10 @@ defmodule GtfsPlanner.Gtfs.Export do
   # garage/stop collisions seen in the records actually written, ordered by
   # garage ID, and the missing-times warnings from estimated `stop_times.txt`
   # files in trip order. `garage_map` holds the organization's garage IDs and names; it is
-  # empty for exports that check no collisions. `appended_rows` adds flex rows
-  # after the streamed records, keyed by filename. `estimate` fills missing
-  # stop times per trip against `coords`; nil writes stored rows unchanged.
+  # empty for exports that check no collisions. `opts` carries the optional tail:
+  # `:appended_rows` adds flex rows after the streamed records, keyed by filename
+  # (a map here); `:estimate` fills missing stop times per trip against `:coords`;
+  # nil writes stored rows unchanged.
   # A version with no records for
   # any spec and no appended rows answers `{:error, :no_data}` without rolling
   # the snapshot back, so a caller that still has flex files can keep building.
@@ -623,10 +618,12 @@ defmodule GtfsPlanner.Gtfs.Export do
          lookup_maps,
          garage_map \\ %{},
          mapper \\ & &1,
-         appended_rows \\ %{},
-         estimate \\ nil,
-         coords \\ %{}
+         opts \\ %{}
        ) do
+    appended_rows = Map.get(opts, :appended_rows, %{})
+    estimate = Map.get(opts, :estimate)
+    coords = Map.get(opts, :coords, %{})
+
     specs =
       Enum.filter(file_specs, fn spec ->
         has_records?(spec.schema, organization_id, gtfs_version_id) or
@@ -646,9 +643,11 @@ defmodule GtfsPlanner.Gtfs.Export do
             lookup_maps,
             garage_map,
             mapper,
-            Map.get(appended_rows, spec.filename, []),
-            estimate,
-            coords
+            %{
+              appended_rows: Map.get(appended_rows, spec.filename, []),
+              estimate: estimate,
+              coords: coords
+            }
           )
         end)
 
@@ -675,8 +674,9 @@ defmodule GtfsPlanner.Gtfs.Export do
   # estimated stop-time trips in trip order. The garage map is checked against the
   # exact streamed stop records, so a stop ID that changed after the preliminary
   # conflict query is still caught before any ZIP can be returned. The R3 mapper
-  # is applied to stop time records only; `appended_rows` follow the streamed
-  # records through the file's own spec. An estimating `stop_times.txt` chunks
+  # is applied to stop time records only; `:appended_rows` in `opts` follow the
+  # streamed records through the file's own spec (a list here). An estimating
+  # `stop_times.txt` chunks
   # its trip-ordered stream by trip through `MissingTimes.fill_trip/3` before
   # the mapper, so filled rows on a detour route keep their doubled sequence.
   defp export_file(
@@ -687,10 +687,12 @@ defmodule GtfsPlanner.Gtfs.Export do
          lookup_maps,
          garage_map,
          mapper,
-         appended_rows,
-         estimate,
-         coords
+         opts
        ) do
+    appended_rows = Map.get(opts, :appended_rows, [])
+    estimate = Map.get(opts, :estimate)
+    coords = Map.get(opts, :coords, %{})
+
     file_path = Path.join(temp_dir, spec.filename)
     file = File.open!(file_path, [:write, :utf8])
 
