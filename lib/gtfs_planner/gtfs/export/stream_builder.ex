@@ -28,6 +28,7 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
     |> where([s], s.organization_id == ^organization_id)
     |> where([s], s.gtfs_version_id == ^gtfs_version_id)
     |> exclude_inactive_service(schema, organization_id, gtfs_version_id)
+    |> exported_label_selection(schema, organization_id, gtfs_version_id)
     |> order_by_for_schema(schema)
     |> repo.stream(max_rows: 1000)
   end
@@ -43,6 +44,47 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
   def exclude_inactive(query, schema, organization_id, gtfs_version_id) do
     exclude_inactive_service(query, schema, organization_id, gtfs_version_id)
   end
+
+  # Rule 9 / INV-4: a labelled pattern is an editor-only construct, so a trip
+  # naming one exports its owner's natural ID and `route_patterns.txt` lists the
+  # owners alone. Both values come from
+  # `GtfsPlanner.Gtfs.RoutePatterns.exported_pattern_ids/2`, never from the
+  # trip's stored column, and the join is on `(route_id, route_pattern_id)`,
+  # which is unique per version. A trip naming a pattern that does not exist —
+  # or one on an already excluded inactive route — keeps its stored reference
+  # through `coalesce/2`.
+
+  defp exported_label_selection(query, GtfsPlanner.Gtfs.Trip, organization_id, gtfs_version_id) do
+    from(trip in query,
+      left_join:
+        pattern in subquery(
+          GtfsPlanner.Gtfs.RoutePatterns.exported_pattern_ids(
+            organization_id,
+            gtfs_version_id
+          )
+        ),
+      on:
+        pattern.route_id == trip.route_id and
+          pattern.route_pattern_id == trip.route_pattern_id,
+      select_merge: %{
+        route_pattern_id: coalesce(pattern.exported_id, trip.route_pattern_id)
+      }
+    )
+  end
+
+  # The child stays in the database for the editor and the derivation rerun, but
+  # exporting it would give `trips.txt` an ID no row in `route_patterns.txt`
+  # names, so only owners are written.
+  defp exported_label_selection(
+         query,
+         GtfsPlanner.Gtfs.RoutePattern,
+         _organization_id,
+         _version_id
+       ) do
+    where(query, [pattern], is_nil(pattern.label_pattern_id))
+  end
+
+  defp exported_label_selection(query, _schema, _organization_id, _gtfs_version_id), do: query
 
   # R6 export selection: exclude whole rows in the inactive route closure. The
   # closure is an explicitly `active = false` route and the trips naming it;

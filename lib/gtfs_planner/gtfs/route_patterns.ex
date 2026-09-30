@@ -1346,6 +1346,41 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end)
   end
 
+  @doc """
+  Selects every route pattern of one organization and version with the natural
+  ID it is exported under.
+
+  This is the single source of the exported `trips.route_pattern_id` (rule 9):
+  a pattern labelled by an owner exports the owner's `route_pattern_id`, and any
+  other pattern exports its own. The join is scoped to the pattern's own
+  organization and version, so a label can never resolve across a tenant, and a
+  pattern with no owner keeps its stored value through `coalesce/2`.
+
+  Each row is `%{id: uuid, route_id: String.t(), route_pattern_id: String.t(),
+  exported_id: String.t()}`. The trip export joins this on
+  `(route_id, route_pattern_id)`, which is unique per version, so no trip is
+  ever duplicated by the join.
+  """
+  @spec exported_pattern_ids(Ecto.UUID.t(), Ecto.UUID.t()) :: Ecto.Query.t()
+  def exported_pattern_ids(organization_id, gtfs_version_id) do
+    from(pattern in RoutePattern,
+      left_join: owner in RoutePattern,
+      on:
+        owner.id == pattern.label_pattern_id and
+          owner.organization_id == pattern.organization_id and
+          owner.gtfs_version_id == pattern.gtfs_version_id,
+      where:
+        pattern.organization_id == ^organization_id and
+          pattern.gtfs_version_id == ^gtfs_version_id,
+      select_merge: %{
+        id: pattern.id,
+        route_id: pattern.route_id,
+        route_pattern_id: pattern.route_pattern_id,
+        exported_id: coalesce(owner.route_pattern_id, pattern.route_pattern_id)
+      }
+    )
+  end
+
   @doc false
   def audit_snapshot(%RoutePattern{} = pattern), do: pattern_snapshot(pattern)
 
