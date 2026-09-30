@@ -1168,6 +1168,87 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   def apply_review(_, _, _, _), do: {:error, :invalid_input}
 
+  @type change :: %{
+          id: Ecto.UUID.t(),
+          trip_id: String.t(),
+          from: String.t() | nil,
+          to: String.t() | nil
+        }
+
+  @type undo :: %{
+          default: nil | %{scope: scope(), from: String.t() | nil, to: String.t() | nil},
+          trips: [change()]
+        }
+
+  @doc """
+  Resets the selected trips to their current effective defaults, fenced per trip.
+
+  `scope` is the pattern scope (`:pattern`) or one timing's scope
+  (`{:timing, timing_id}`); `selections` carry the reviewed `%{id, from}` pairs
+  the drawer showed, where `from` is the normalized value each trip must still
+  carry. One serializable transaction locks the published route through
+  `lock_published_route!/2` and the pattern through `lock_pattern!/2`, then
+  validates every id against the scope (Domain rule 3): a shielded,
+  foreign-pattern or cross-organization trip rolls back `:invalid_selection`
+  and writes nothing. Each selected trip's target is its current effective
+  default, written through `Schedules.write_trip_headsigns!/3`, whose per-trip
+  fence rolls back `{:stale, [%{id, trip_id, reviewed, current}]}` when any
+  trip changed since the list was loaded — unrelated stop-time edits do not
+  block the reset. The returned `undo` covers exactly the written trips and
+  has no default, because a reset never moves the pattern or timing headsign.
+  """
+  @spec reset_trip_headsigns(
+          Ecto.UUID.t(),
+          scope(),
+          [%{id: Ecto.UUID.t(), from: String.t() | nil}],
+          AuditContext.t()
+        ) ::
+          {:ok, %{applied: [change()], undo: undo()}}
+          | {:error, {:stale, [map()]} | :invalid_selection | :not_found}
+  def reset_trip_headsigns(pattern_id, scope, selections, %AuditContext{} = audit_context)
+      when is_binary(pattern_id) and is_list(selections) do
+    with {:ok, route_id} <- route_id_for_pattern(pattern_id, audit_context) do
+      run_serializable_write(fn ->
+        route = lock_published_route!(audit_context, route_id)
+        pattern = lock_pattern!(route, pattern_id)
+        reset_scope_trips!(pattern, scope, selections, audit_context)
+      end)
+    end
+  end
+
+  def reset_trip_headsigns(_, _, _, _), do: {:error, :invalid_input}
+
+  @doc """
+  Reverses a headsign save or reset under the recorded fences.
+
+  `undo` is the value a successful default save returned as `headsign_undo` or
+  a reset returned as `undo`. When `undo.default` is present (a default save),
+  the scope's current stored default must still normalize to the recorded `to`
+  — for `:pattern` the pattern row's headsign, for a timing scope the timing's
+  effective default — otherwise the transaction rolls back
+  `{:stale, [%{default: current}]}` and writes nothing. The recorded `from` is
+  then restored on the row that owns the default, and the recorded trip values
+  are swapped and rewritten through `Schedules.write_trip_headsigns!/3`, whose
+  per-trip fence rolls back `{:stale, ...}` when any trip changed since the
+  save. The pattern or timing audit row and every rewritten trip row share one
+  new operation id; a deleted timing or unknown pattern rolls back
+  `:not_found`.
+  """
+  @spec undo_headsign_update(Ecto.UUID.t(), undo(), AuditContext.t()) ::
+          {:ok, %{applied: [change()]}} | {:error, {:stale, [map()]} | :not_found}
+  def undo_headsign_update(pattern_id, undo, %AuditContext{} = audit_context)
+      when is_binary(pattern_id) and is_map(undo) do
+    with {:ok, route_id} <- route_id_for_pattern(pattern_id, audit_context) do
+      run_serializable_write(fn ->
+        route = lock_published_route!(audit_context, route_id)
+        pattern = lock_pattern!(route, pattern_id)
+        undo_headsign_write!(pattern, undo, audit_context)
+      end)
+    end
+  end
+
+  def undo_headsign_update(_, _, _), do: {:error, :invalid_input}
+
   @doc false
   def audit_snapshot(%RoutePattern{} = pattern), do: pattern_snapshot(pattern)
 
@@ -1976,6 +2057,198 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       %{default: default, trips: written}
     end
   end
+
+  # -- Fenced reset and undo (Domain rules 6 and 9) ---------------------------
+
+  # The reset's scope read re-applies Domain rule 3 through the shared scope
+  # queries, so a shielded pattern-scope trip is as absent as a foreign one and
+  # a missing id fails closed as `:invalid_selection`.
+  defp reset_scope_trips!(pattern, scope, selections, audit_context) do
+    case reset_scope_query(pattern, scope) do
+      {:ok, scope_query} ->
+        reset_selected_trips!(pattern, scope_query, selections, audit_context)
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp reset_selected_trips!(pattern, scope_query, selections, audit_context) do
+    ids = selections |> Enum.map(&map_value(&1, :id)) |> cast_selection_ids() |> Enum.uniq()
+    trips_by_id = reset_scope_trips(scope_query, ids)
+
+    if Enum.all?(ids, &Map.has_key?(trips_by_id, &1)) do
+      timing_headsigns = timing_headsigns_by_id(pattern)
+      changes = Enum.map(selections, &reset_change(&1, trips_by_id, pattern, timing_headsigns))
+      {written, _operation_id} = write_selection!(changes, audit_context)
+
+      %{applied: written, undo: %{default: nil, trips: written}}
+    else
+      Repo.rollback(:invalid_selection)
+    end
+  end
+
+  defp reset_scope_query(pattern, :pattern), do: {:ok, scope_query_for(pattern, :pattern)}
+
+  defp reset_scope_query(pattern, {:timing, timing_id}) do
+    if Enum.any?(pattern_timings(pattern.id), &(&1.id == timing_id)),
+      do: {:ok, timing_scope_query(pattern, timing_id)},
+      else: {:error, :not_found}
+  end
+
+  defp reset_scope_query(_pattern, _scope), do: {:error, :not_found}
+
+  defp reset_scope_trips(scope_query, ids) do
+    from(trip in scope_query,
+      where: trip.id in ^ids,
+      select: %{
+        id: trip.id,
+        trip_id: trip.trip_id,
+        trip_headsign: trip.trip_headsign,
+        timed_pattern_id: trip.timed_pattern_id
+      }
+    )
+    |> Repo.all()
+    |> Map.new(&{&1.id, &1})
+  end
+
+  # One timings read per reset; a trip whose `timed_pattern_id` names no timing
+  # of this pattern has no timing default (Domain rule 2), so it targets the
+  # pattern headsign.
+  defp timing_headsigns_by_id(pattern) do
+    pattern.id
+    |> pattern_timings()
+    |> Map.new(&{&1.id, &1.headsign})
+  end
+
+  # Every selected trip returns to its current effective default; `from` is the
+  # reviewed value the writer fences on.
+  defp reset_change(selection, trips_by_id, pattern, timing_headsigns) do
+    trip = Map.fetch!(trips_by_id, map_value(selection, :id))
+
+    %{
+      id: trip.id,
+      trip_id: trip.trip_id,
+      from: Headsigns.normalize(map_value(selection, :from)),
+      to:
+        Headsigns.effective_default(
+          Map.get(timing_headsigns, trip.timed_pattern_id),
+          pattern.headsign
+        )
+    }
+  end
+
+  # Fences and restores the recorded default first (when present), then swaps
+  # and rewrites the recorded trip values under one fresh operation id. The
+  # default's audit row is written after the trip rewrite like every other
+  # audited pattern/timing save, so `affected_trips` is the exact count under
+  # the shared operation id.
+  defp undo_headsign_write!(pattern, undo, audit_context) do
+    operation_id = Ecto.UUID.generate()
+    default = map_value(undo, :default)
+    swapped = swapped_trip_changes(map_value(undo, :trips))
+
+    audited_default = if default, do: undo_default_headsign!(pattern, default)
+
+    written = Schedules.write_trip_headsigns!(swapped, operation_id, audit_context)
+
+    if audited_default do
+      audit_undo_default!(
+        audited_default.entity,
+        audited_default.type,
+        audited_default.restored,
+        length(written),
+        operation_id,
+        audit_context
+      )
+    end
+
+    %{applied: written}
+  end
+
+  # The default fence (Domain rule 9): the scope's current stored default must
+  # still normalize to the recorded `to`, or nothing is written and the stale
+  # entry names the current default. Restoring the recorded `from` writes the
+  # row that owns the default — the pattern itself, or the timing cleared back
+  # to the pattern's value when `from` is what the pattern still carries. Every
+  # comparison goes through `Headsigns` (INV-2).
+  defp undo_default_headsign!(pattern, default) do
+    to = Headsigns.normalize(map_value(default, :to))
+    from = Headsigns.normalize(map_value(default, :from))
+
+    case map_value(default, :scope) do
+      :pattern -> undo_pattern_default!(pattern, from, to)
+      {:timing, timing_id} -> undo_timing_default!(pattern, timing_id, from, to)
+      _ -> Repo.rollback(:invalid_input)
+    end
+  end
+
+  defp undo_pattern_default!(pattern, from, to) do
+    current = Headsigns.normalize(pattern.headsign)
+
+    if current == to do
+      pattern
+      |> RoutePattern.changeset(%{headsign: from})
+      |> update_or_rollback!()
+
+      %{type: :route_pattern, entity: pattern, restored: from}
+    else
+      Repo.rollback({:stale, [%{default: current}]})
+    end
+  end
+
+  defp undo_timing_default!(pattern, timing_id, from, to) do
+    timing = undo_timing!(pattern, timing_id)
+    current = Headsigns.effective_default(timing.headsign, pattern.headsign)
+
+    if current == to do
+      # The timing owns the default only when `from` is not what the pattern
+      # still carries; restoring the pattern's value means clearing the timing's
+      # own headsign so the scope follows the pattern again.
+      restored = if Headsigns.normalize(pattern.headsign) == from, do: nil, else: from
+
+      timing
+      |> TimedPattern.changeset(%{headsign: restored})
+      |> update_or_rollback!()
+
+      %{type: :timed_pattern, entity: timing, restored: restored}
+    else
+      Repo.rollback({:stale, [%{default: current}]})
+    end
+  end
+
+  defp undo_timing!(pattern, timing_id) do
+    case pattern.id |> pattern_timings() |> Enum.find(&(&1.id == timing_id)) do
+      %TimedPattern{} = timing -> timing
+      nil -> Repo.rollback(:not_found)
+    end
+  end
+
+  # The restored row keeps the exact shape of the save it reverses: the
+  # operation id top-level and the affected trip count (Domain rule 8).
+  defp audit_undo_default!(entity, type, restored, affected, operation_id, audit_context) do
+    audit!(audit_context, type, entity, "updated", %{
+      headsign: restored,
+      affected_trips: affected,
+      operation_id: operation_id
+    })
+  end
+
+  # The recorded values swap sides; both were normalized when the save wrote
+  # them, and re-normalizing keeps a tampered assign from reaching the writer's
+  # fence as a non-normalized value.
+  defp swapped_trip_changes(trips) when is_list(trips) do
+    Enum.map(trips, fn trip ->
+      %{
+        id: map_value(trip, :id),
+        trip_id: map_value(trip, :trip_id),
+        from: Headsigns.normalize(map_value(trip, :to)),
+        to: Headsigns.normalize(map_value(trip, :from))
+      }
+    end)
+  end
+
+  defp swapped_trip_changes(_), do: Repo.rollback(:invalid_input)
 
   defp put_operation_id(attrs, nil), do: attrs
   defp put_operation_id(attrs, operation_id), do: Map.put(attrs, :operation_id, operation_id)

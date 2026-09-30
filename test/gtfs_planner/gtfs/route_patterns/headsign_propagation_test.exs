@@ -22,6 +22,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.HeadsignPropagationTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.Headsigns
+  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Repo
@@ -367,10 +368,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.HeadsignPropagationTest do
     )
   end
 
+  # Row order must match the pattern's occurrence positions: the timing-row
+  # review compares the submitted stop-id sequence with `pattern_occurrences/1`
+  # (position order), so ordering by the random UUID flaked the gate.
   defp timing_rows(timing_id) do
     from(row in TimedPatternStop,
+      join: occurrence in RoutePatternStop,
+      on: occurrence.id == row.route_pattern_stop_id,
       where: row.timed_pattern_id == ^timing_id,
-      order_by: [asc: row.route_pattern_stop_id]
+      order_by: [asc: occurrence.position]
     )
     |> Repo.all()
     |> Enum.map(fn row ->
