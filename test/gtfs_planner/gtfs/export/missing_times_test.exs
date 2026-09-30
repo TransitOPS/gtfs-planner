@@ -220,7 +220,7 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesTest do
     end
   end
 
-  describe "cap_warnings/1" do
+  describe "cap_warnings/2" do
     test "returns short lists untouched" do
       warnings = [
         %{code: "missing_times_not_estimated", detail: "d", file: "f", entity_type: "trip"}
@@ -250,6 +250,14 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesTest do
       assert summary.file == "stop_times.txt"
       assert summary.entity_type == "trip"
       assert summary.detail =~ "51"
+    end
+
+    test "leaves no room at a limit of zero" do
+      warnings = [
+        %{code: "missing_times_not_estimated", detail: "d", file: "f", entity_type: "trip"}
+      ]
+
+      assert MissingTimes.cap_warnings(warnings, 0) == []
     end
   end
 

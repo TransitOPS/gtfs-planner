@@ -188,8 +188,9 @@ defmodule GtfsPlanner.Gtfs.Export do
   `estimate: :distance | :even` fills missing stop times per trip (spec
   23-stop-time-interpolation R8–R9) in every `stop_times.txt` the build writes,
   before the R3 sequence mapper; the main zip carries one
-  `missing_times_not_estimated` warning per unfilled trip (capped at 100),
-  while the flex zip's fixed rows are estimated silently. Any other estimate
+  `missing_times_not_estimated` warning per unfilled trip, last and uncapped
+  (the export worker fits them into its 100-entry limit), while the flex zip's
+  fixed rows are estimated silently. Any other estimate
   value (including the default nil) writes stored rows unchanged.
 
   ## Returns
@@ -418,9 +419,9 @@ defmodule GtfsPlanner.Gtfs.Export do
 
   # Builds the main zip inside its read snapshot. The operations path keeps the
   # public files untouched and adds the TODS files beside them. An estimating
-  # build fills missing stop times and carries one capped
-  # `missing_times_not_estimated` warning per unfilled trip ahead of the movement
-  # and TODS omission notices.
+  # build fills missing stop times and carries one uncapped
+  # `missing_times_not_estimated` warning per unfilled trip after the movement
+  # and TODS omission notices; the worker fits them into its warning limit.
   defp build_main(
          temp_dir,
          organization_id,
@@ -459,10 +460,9 @@ defmodule GtfsPlanner.Gtfs.Export do
           export_movement_files(temp_dir, movements)
 
       warnings =
-        MissingTimes.cap_warnings(missing_warnings) ++
-          movement_warnings(movements) ++
+        movement_warnings(movements) ++
           run_warnings(movements) ++
-          tods_omission_warnings(garages, vehicles)
+          tods_omission_warnings(garages, vehicles) ++ missing_warnings
 
       {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id), warnings}
     end
@@ -488,8 +488,7 @@ defmodule GtfsPlanner.Gtfs.Export do
              mapper,
              %{appended_rows: %{}, estimate: estimate, coords: coords}
            ) do
-      {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id),
-       MissingTimes.cap_warnings(missing_warnings)}
+      {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id), missing_warnings}
     end
   end
 
