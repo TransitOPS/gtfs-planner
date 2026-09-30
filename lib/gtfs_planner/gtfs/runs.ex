@@ -22,7 +22,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
 
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.BlockingSetting
-  alias GtfsPlanner.Gtfs.Runs.{Day, Numbering, Plan}
+  alias GtfsPlanner.Gtfs.Runs.{Cutter, Day, Numbering, Plan}
   alias GtfsPlanner.Gtfs.TripRun
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
@@ -641,6 +641,69 @@ defmodule GtfsPlanner.Gtfs.Runs do
         {count, _} = Repo.delete_all(from(row in TripRun, where: row.id in ^ids))
         count
     end
+  end
+
+  @doc """
+  Suggests runs for a day type and returns a plan, writing nothing.
+
+  The plan is what a planner is shown before deciding, and it carries three
+  things they cannot compute themselves: the moves the suggestion would make, the
+  figures the day would have afterwards, and the fingerprint the apply will
+  re-check (rule 12).
+
+  **It takes no lock and writes no row** — not a `trip_runs` row, not a crew
+  column, not a settings row. A suggestion is a read that happens to run the
+  cutter, and the gate for it is that the table is byte-for-byte what it was
+  before. That is also why it composes `load_runs/3` rather than re-reading:
+  the plan's `before` figures, its fingerprint and the assignments it diffs
+  against are then the same values the page already showed, by construction
+  rather than by agreement between two implementations.
+
+  The proposed assignments are the current ones **merged with** the cutter's
+  output. `Cutter.run/5` returns only the assignments it made, so handing those
+  to `Plan.build/1` as the whole proposal would read every existing run as a
+  move to no run — a plan that unsets the day.
+
+  `after` is the figures the day *would* have, computed by deriving the proposed
+  assignments through the same path `load_runs/3` uses, orphan notice included.
+  Skipping the notice would make `after` disagree with what an apply actually
+  produces on a day that has orphans, and AC-18 asks for the figures after, not
+  for the figures the derivation alone gives.
+  """
+  @spec suggest_runs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil, Cutter.scope()) ::
+          {:ok, Plan.t()}
+          | {:error, :not_found | {:unknown_day_type, [Blocking.DayTypes.day_type()]}}
+  def suggest_runs(organization_id, gtfs_version_id, day_type_key, scope) do
+    case load_runs(organization_id, gtfs_version_id, day_type_key) do
+      {:ok, runs_day} -> {:ok, suggest_plan(runs_day, scope)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp suggest_plan(runs_day, scope) do
+    %{day: day, crew: crew, assignments: current, derived: derived} = runs_day
+    blocks = block_inputs(day)
+
+    cut = Cutter.run(scope, blocks, current, day.context, crew)
+    proposed = Map.merge(current, cut.assignments)
+
+    preview =
+      blocks
+      |> Day.derive(proposed, day.context, crew)
+      |> report_orphans(runs_day.orphans.count)
+
+    # `after:` is a key, never a variable: `after` is a reserved word in Elixir,
+    # and `Plan.build/1` binds it as `after_stats` for the same reason.
+    Plan.build(%{
+      day_type_key: day.day_type.key,
+      scope: scope,
+      current: current,
+      proposed: proposed,
+      before: derived.stats,
+      after: preview.stats,
+      preview: preview,
+      fingerprint: runs_day.fingerprint
+    })
   end
 
   @doc """
