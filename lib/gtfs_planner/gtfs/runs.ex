@@ -446,6 +446,121 @@ defmodule GtfsPlanner.Gtfs.Runs do
   end
 
   @doc """
+  Renames a run on one day type and returns an undo.
+
+  Every row carrying `old_id` becomes a row carrying `new_id`, and nothing else
+  moves. The returned `undo` is the reversed moves, so undoing a rename is
+  `apply_moves/4` on it — the same optimistic per-trip rule (INV-12) that any
+  other write obeys, which is what stops an undo from reverting somebody else's
+  edit made in between.
+
+  The new ID is checked before the transaction with `TripRun.change_run_id/1`,
+  which is the same format `TripRun.changeset/2` checks a row against. Whether
+  the ID is **already used in this day type** is a fact about the rows, so it is
+  checked inside, under the same lock order as step 13: the version's
+  input-write lock, then the blocking lock, then the reads, then the update.
+
+  Existence is checked before uniqueness, so renaming a run that is not there
+  answers `:unknown_run` even when the new ID is also taken — there is nothing
+  to rename, and "this run does not exist" is the more useful answer.
+  """
+  @spec rename_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t(), String.t()) ::
+          {:ok, %{undo: [Plan.move()]}}
+          | {:error, :not_found | :unknown_run | Ecto.Changeset.t()}
+  def rename_run(organization_id, gtfs_version_id, day_type_key, old_id, new_id) do
+    case TripRun.change_run_id(%{run_id: new_id}) do
+      changeset when not changeset.valid? ->
+        # Before the transaction: a malformed ID is not a race, and refusing it
+        # without taking a lock keeps a typo from blocking another writer.
+        {:error, changeset}
+
+      changeset ->
+        Repo.transaction(fn ->
+          Versions.lock_for_input_write!(organization_id, gtfs_version_id)
+          :ok = Blocking.lock_blocking!(gtfs_version_id)
+
+          rename_locked(organization_id, gtfs_version_id, day_type_key, old_id, changeset)
+        end)
+    end
+  end
+
+  defp rename_locked(organization_id, gtfs_version_id, day_type_key, old_id, changeset) do
+    case run_rows(organization_id, gtfs_version_id, day_type_key, old_id) do
+      [] ->
+        Repo.rollback(:unknown_run)
+
+      _old_rows ->
+        case check_available(changeset, old_id, organization_id, gtfs_version_id, day_type_key) do
+          {:ok, valid} -> do_rename(organization_id, gtfs_version_id, day_type_key, old_id, valid)
+          {:error, invalid} -> Repo.rollback(invalid)
+        end
+    end
+  end
+
+  # The ID is free unless the day type already has rows under it. A run renamed
+  # to its own ID is excluded: it is not a *different* run using that ID, and
+  # refusing it with "already used in this day type" would be a confusing answer
+  # to a rename that changes nothing.
+  defp check_available(changeset, old_id, organization_id, gtfs_version_id, day_type_key) do
+    requested = Ecto.Changeset.get_change(changeset, :run_id)
+
+    taken? =
+      organization_id
+      |> run_ids_for(gtfs_version_id, day_type_key)
+      |> Enum.any?(&(&1 == requested and &1 != old_id))
+
+    if taken? do
+      {:error, Ecto.Changeset.add_error(changeset, :run_id, "is already used in this day type")}
+    else
+      {:ok, changeset}
+    end
+  end
+
+  defp do_rename(organization_id, gtfs_version_id, day_type_key, old_id, changeset) do
+    new_id = Ecto.Changeset.get_change(changeset, :run_id)
+
+    from(row in TripRun,
+      where:
+        row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id and
+          row.day_type_key == ^day_type_key and row.run_id == ^old_id
+    )
+    |> Repo.update_all(set: [run_id: new_id, updated_at: DateTime.utc_now()])
+
+    # The undo is read back rather than derived from `old_rows`, so it is exactly
+    # the set of moves the update actually produced — which matters if the
+    # rename was a no-op. A bare map, not `{:ok, map}`: the transaction
+    # supplies the `{:ok, _}`.
+    %{undo: rename_undo(organization_id, gtfs_version_id, day_type_key, new_id, old_id)}
+  end
+
+  defp rename_undo(organization_id, gtfs_version_id, day_type_key, new_id, old_id) do
+    from(row in TripRun,
+      where:
+        row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id and
+          row.day_type_key == ^day_type_key and row.run_id == ^new_id,
+      select: row.trip_id,
+      order_by: [asc: row.trip_id]
+    )
+    |> Repo.all()
+    # The map is built here rather than in the query's `select`: a literal in a
+    # select is read as a field reference, so `from: new_id` would ask for a
+    # column called `new_id`.
+    |> Enum.map(&%{trip_id: &1, from: new_id, to: old_id})
+  end
+
+  defp run_rows(organization_id, gtfs_version_id, day_type_key, run_id) do
+    Repo.all(
+      from(row in TripRun,
+        where:
+          row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id and
+            row.day_type_key == ^day_type_key and row.run_id == ^run_id,
+        select: row.trip_id,
+        order_by: [asc: row.trip_id]
+      )
+    )
+  end
+
+  @doc """
   Returns the crew rules for an organization's GTFS version.
 
   A version with no stored row returns the researched defaults; the read never
