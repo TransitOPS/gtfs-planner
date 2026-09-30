@@ -29,6 +29,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   alias GtfsPlannerWeb.CoreComponents
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
+  alias GtfsPlannerWeb.Components.RouteIdentity
 
   @doc """
   Renders the page head: the H1, the subtitle and any head actions.
@@ -267,8 +268,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   @doc """
-  Renders the plan card. From step 22 this holds the plan itself; until then it
-  holds the state panel, so the page has a card of the right shape in both.
+  Renders the plan card. From step 22 this holds the count strip's drawer and
+  from this step the duty chart; before either it holds the state panel, so the
+  page has a card of the right shape throughout.
   """
   attr :version_id, :any, default: nil
   slot :inner_block
@@ -667,4 +669,345 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   defp pad(minutes) when minutes < 10, do: "0" <> Integer.to_string(minutes)
   defp pad(minutes), do: Integer.to_string(minutes)
+
+  # ── The duty chart ─────────────────────────────────────────────────────────
+
+  @tick_secs 7200
+  @axis_label_max_percent 92.0
+  @min_track_span_secs 60
+
+  @doc """
+  Renders the duty chart: one 44 px row per run, its seven fact columns and its
+  track of piece bars against the service-day axis.
+
+  The structure is `BlocksComponents.timeline/1`'s, deliberately: a fixed-layout
+  table, a `colgroup` of named widths, a sticky header row above sticky fact
+  columns, a percentage-positioned track and a two-hourly axis. The two charts
+  are siblings under the Operations bar and a reader scrolling one has already
+  learned the other's behaviour, so a second set of rules for what is the same
+  idea would be a cost with no benefit.
+
+  The differences are the day's, not the idea's: **runs** are the row's identity
+  rather than blocks, there are **seven** fact columns to Blocks' six, the rows
+  are **44 px** rather than 36 because a run is a person and a block is not, and
+  the row carries a **track of pieces** rather than a block's sequence of trips
+  and gaps.
+
+  The Status cell carries this run's finding COUNT and not its status text: the
+  icon-plus-words wording belongs to step 24, and a cell with nothing in it is
+  the one thing a table row must never be. A count is honest in the meantime and
+  cannot be contradicted by the words that replace it.
+
+  `aria-sort` is on every header whether or not it is the sorted one, so the
+  sort state never appears or disappears between renders — the same rule
+  `CoreComponents.count_strip/1` follows for `aria-pressed`.
+  """
+  attr :run_rows, :any, required: true
+  attr :axis, :map, default: nil
+  attr :routes, :map, required: true
+  attr :sort, :atom, required: true
+  attr :dir, :atom, required: true
+  attr :scale, :atom, required: true
+
+  def timeline(assigns) do
+    assigns =
+      assigns
+      |> assign(:columns, sort_columns())
+      |> assign(:ticks, axis_ticks(assigns.axis))
+      |> assign(:track_style, track_style(assigns.axis))
+
+    ~H"""
+    <div id="runs-timeline-scroll">
+      <table
+        id="runs-timeline"
+        data-scale={@scale}
+        aria-label="Runs by service-day time"
+      >
+        <colgroup>
+          <col class="runs-col-run" />
+          <col class="runs-col-type" />
+          <col class="runs-col-on" />
+          <col class="runs-col-off" />
+          <col class="runs-col-spread" />
+          <col class="runs-col-paid" />
+          <col class="runs-col-status" />
+          <col />
+        </colgroup>
+        <thead>
+          <tr>
+            <th
+              :for={column <- @columns}
+              scope="col"
+              aria-sort={aria_sort(@sort, @dir, column.key)}
+              class={["runs-meta", "runs-meta-#{column.key}"]}
+            >
+              <button
+                type="button"
+                phx-click="sort"
+                phx-value-key={column.key}
+                class="runs-sort"
+              >
+                {column.label}
+                <span :if={Atom.to_string(@sort) == column.key} aria-hidden="true">
+                  {sort_arrow(@dir)}
+                </span>
+              </button>
+            </th>
+            <th scope="col" class="runs-axis">
+              <span class="runs-axis-inner">
+                <span :for={tick <- @ticks} class="runs-axis-tick" style={tick.style}>
+                  {tick.label}
+                </span>
+              </span>
+            </th>
+          </tr>
+        </thead>
+        <tbody id="runs-timeline-body" phx-update="stream">
+          <.run_row
+            :for={{dom_id, %{run: run}} <- @run_rows}
+            dom={dom_id}
+            run={run}
+            axis={@axis}
+            routes={@routes}
+            track_style={@track_style}
+          />
+        </tbody>
+      </table>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders one 44 px run row: the sticky Run, Type, Sign-on, Sign-off, Spread,
+  Paid and Status cells and the track of the run's piece bars.
+
+  Sign-on and Sign-off are `BlocksComponents.clock/1`, so a run that signs off
+  after midnight reads `01:30 +1d` rather than a bare `01:30` that would look
+  like it had signed on before it started. Spread and Paid are hours and
+  minutes, matching how the summary drawer prints the same two figures — a
+  chart that formatted them differently from the drawer would make the two
+  disagree about the same number.
+
+  The track holds the run's **pieces** and nothing else at this step: the
+  report, travel, break and sign-off marks between them, and the chart key that
+  explains them, are step 24's. The piece bars are already positioned by the
+  day's own axis, so a run that signs on at 05:00 and signs off at 14:00 puts
+  its bars where the axis says they belong.
+  """
+  attr :dom, :string, required: true
+  attr :run, :map, required: true
+  attr :axis, :map, default: nil
+  attr :routes, :map, required: true
+  attr :track_style, :string, default: nil
+
+  def run_row(assigns) do
+    ~H"""
+    <tr id={@dom} data-run={@run.run_id} data-type={@run.work.type} class="runs-row">
+      <td class={["runs-meta", "runs-meta-id"]}>
+        <button
+          type="button"
+          phx-click="open_run"
+          phx-value-run={@run.run_id}
+          class="runs-run-button"
+          title={"Run " <> @run.run_id}
+        >
+          {@run.run_id}
+        </button>
+      </td>
+      <td class={["runs-meta", "runs-meta-type"]} data-role="run-type">
+        {type_label(@run.work.type)}
+      </td>
+      <td class={["runs-meta", "runs-meta-on"]} data-role="run-sign-on">
+        {BlocksComponents.clock(@run.work.sign_on_secs)}
+      </td>
+      <td class={["runs-meta", "runs-meta-off"]} data-role="run-sign-off">
+        {BlocksComponents.clock(@run.work.sign_off_secs)}
+      </td>
+      <td class={["runs-meta", "runs-meta-spread"]} data-role="run-spread">
+        {hm(@run.work.spread_secs)}
+      </td>
+      <td class={["runs-meta", "runs-meta-paid"]} data-role="run-paid">
+        {hm(@run.work.paid_secs)}
+      </td>
+      <td class={["runs-meta", "runs-meta-status"]}>
+        <span data-role="run-status" class="inline-flex items-center gap-1">
+          {status_count(@run.findings)}
+        </span>
+      </td>
+      <td class="runs-track" style={@track_style}>
+        <span class="runs-lane">
+          <.piece_bar
+            :for={piece <- @run.pieces}
+            run={@run}
+            piece={piece}
+            index={index_of(@run.pieces, piece)}
+            axis={@axis}
+            route={Map.get(@routes, piece.route_id) || %{}}
+          />
+        </span>
+      </td>
+    </tr>
+    """
+  end
+
+  @doc """
+  Renders one piece as a button positioned by the day's axis.
+
+  The label is `B <block>` — block first, because a reader comparing a piece
+  against the Blocks page is looking for the block, and the run number is
+  already in the row's first column one cell away. The prototype falls back to
+  the bare block number and then to no label at all when the bar is too narrow;
+  that measuring needs a browser, so the full label is rendered here and the
+  CSS clips it with `overflow: hidden`, which is the same outcome without the
+  layout thrash. Step 24's marks can revisit it with a render in hand.
+
+  The route colour is a **bottom rule** rather than the fill, so two pieces of
+  different routes on one run are told apart at a glance while the fill stays
+  the one colour the design system owns.
+  """
+  attr :run, :map, required: true
+  attr :piece, :map, required: true
+  attr :index, :integer, required: true
+  attr :axis, :map, default: nil
+  attr :route, :map, default: nil
+
+  def piece_bar(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :style,
+        join_style([piece_geometry(assigns.piece, assigns.axis), route_rule(assigns.route)])
+      )
+
+    ~H"""
+    <button
+      type="button"
+      data-role="piece"
+      data-piece={@index}
+      data-block={@piece.block_id}
+      phx-click="open_run"
+      phx-value-run={@run.run_id}
+      style={@style}
+      class="runs-piece"
+      title={piece_title(@run, @piece, @index)}
+    >
+      <span class="runs-piece-label">B {@piece.block_id}</span>
+    </button>
+    """
+  end
+
+  defp piece_title(run, piece, index) do
+    "Run #{run.run_id}, piece #{index}: block #{piece.block_id}, " <>
+      "#{BlocksComponents.clock(piece.start_secs)} to #{BlocksComponents.clock(piece.end_secs)}"
+  end
+
+  # A piece's position and width as percentages of the same span the axis uses,
+  # so the two align at any width and at either scale. Two decimals, matching
+  # `BlocksComponents`, so a test can read the geometry out of the style.
+  defp piece_geometry(piece, axis) do
+    {start, span} = axis_geometry(axis)
+
+    "left: #{percent(piece.start_secs - start, span)}%; " <>
+      "width: #{percent(piece.end_secs - piece.start_secs, span)}%"
+  end
+
+  # The route's own colour as a bottom rule on the bar. The fill stays the one
+  # colour the design system owns, so two pieces of different routes on one run
+  # are told apart without two pieces of the same route looking like different
+  # kinds of work.
+  #
+  # A route with no colour, or no route at all, gets NO rule rather than a
+  # fallback one. A rule that is always drawn in the system's own grey is
+  # indistinguishable from a route colour that happens to be grey, so a
+  # fabricated default would be a claim about the route that is not true; the
+  # piece's label and title still name the block, and step 24's marks are where
+  # the route is made explicit.
+  defp route_rule(nil), do: nil
+
+  defp route_rule(%{} = route) do
+    case RouteIdentity.normalize_hex(Map.get(route, :route_color)) do
+      {:ok, hex} -> "box-shadow: inset 0 -4px 0 ##{hex};"
+      :error -> nil
+    end
+  end
+
+  defp sort_columns do
+    [
+      %{key: "id", label: "Run"},
+      %{key: "type", label: "Type"},
+      %{key: "sign_on", label: "Sign-on"},
+      %{key: "sign_off", label: "Sign-off"},
+      %{key: "spread", label: "Spread"},
+      %{key: "paid", label: "Paid"},
+      %{key: "status", label: "Status"}
+    ]
+  end
+
+  defp aria_sort(sort, dir, key) do
+    cond do
+      Atom.to_string(sort) != key -> "none"
+      dir == :asc -> "ascending"
+      true -> "descending"
+    end
+  end
+
+  defp sort_arrow(:asc), do: "↑"
+  defp sort_arrow(_dir), do: "↓"
+
+  defp type_label(:one_piece), do: "One piece"
+  defp type_label(:straight), do: "Straight"
+  defp type_label(:split), do: "Split"
+
+  # A run with no findings says "No problems" in words; one with findings says how
+  # many, because which one it is is step 24's status text. Saying nothing at
+  # all in a Status cell is the one thing a table row must never do.
+  defp status_count([]), do: "No problems"
+
+  defp status_count(findings) do
+    count = length(findings)
+    "#{count} #{if count == 1, do: "problem", else: "problems"}"
+  end
+
+  defp axis_ticks(nil), do: []
+
+  defp axis_ticks(axis) do
+    {start, span} = axis_geometry(axis)
+    count = max(div(span + @tick_secs - 1, @tick_secs), 1)
+
+    0..(count - 1)
+    |> Enum.map(&{&1, &1 * @tick_secs * 100 / span})
+    |> Enum.reject(fn {_index, left} -> left > @axis_label_max_percent end)
+    |> Enum.map(fn {index, left} ->
+      %{
+        style: "left: #{percent_value(left)}%",
+        label: BlocksComponents.clock(start + index * @tick_secs)
+      }
+    end)
+  end
+
+  # One faint rule every two hours, as a repeating gradient, so the track and the
+  # axis share a single spacing rule and cannot drift apart.
+  defp track_style(nil), do: nil
+
+  defp track_style(axis) do
+    {_start, span} = axis_geometry(axis)
+    "--runs-grid: #{percent(@tick_secs, span)}%"
+  end
+
+  defp axis_geometry(%{start_secs: start, end_secs: end_secs}) do
+    {start, max(end_secs - start, @min_track_span_secs)}
+  end
+
+  defp axis_geometry(_axis), do: {0, @min_track_span_secs}
+
+  defp percent(value, span), do: percent_value(value * 100 / span)
+  defp percent_value(value), do: :erlang.float_to_binary(value * 1.0, decimals: 2)
+
+  defp join_style(styles) do
+    styles |> Enum.reject(&is_nil/1) |> Enum.join("; ")
+  end
+
+  defp index_of(pieces, piece) do
+    Enum.find_index(pieces, &(&1 == piece)) + 1
+  end
 end

@@ -721,6 +721,268 @@ body {
   outline-offset: 2px;
 }
 
+/* ── The Runs duty chart ─────────────────────────────────────────────────────
+   The same table idea as the Blocks timeline, with the day's own numbers: seven
+   fact columns to Blocks' six, and 44px rows because a run is a person. The
+   widths are the prototype's (72 · 84 · 76 · 84 · 72 · 64 · 176 = 628px) so a
+   reader who has seen the reference finds the same column under the same finger
+   width. A coloured left rule keeps that side square, so nothing here rounds. */
+#runs-page {
+  --runs-meta-id: 72px;
+  --runs-meta-type: 84px;
+  --runs-meta-on: 76px;
+  --runs-meta-off: 84px;
+  --runs-meta-spread: 72px;
+  --runs-meta-paid: 64px;
+  --runs-meta-status: 176px;
+  --runs-meta-width: calc(
+    var(--runs-meta-id) + var(--runs-meta-type) + var(--runs-meta-on) +
+      var(--runs-meta-off) + var(--runs-meta-spread) + var(--runs-meta-paid) +
+      var(--runs-meta-status)
+  );
+  --runs-meta-offset-1: var(--runs-meta-id);
+  --runs-meta-offset-2: calc(var(--runs-meta-offset-1) + var(--runs-meta-type));
+  --runs-meta-offset-3: calc(var(--runs-meta-offset-2) + var(--runs-meta-on));
+  --runs-meta-offset-4: calc(var(--runs-meta-offset-3) + var(--runs-meta-off));
+  --runs-meta-offset-5: calc(var(--runs-meta-offset-4) + var(--runs-meta-spread));
+  --runs-meta-offset-6: calc(var(--runs-meta-offset-5) + var(--runs-meta-paid));
+  --runs-track-min: 520px;
+  --runs-timeline-max-height: max(440px, calc(100vh - 430px));
+}
+
+#runs-timeline-scroll {
+  overflow: auto;
+  max-height: var(--runs-timeline-max-height);
+}
+
+#runs-timeline {
+  width: 100%;
+  min-width: calc(var(--runs-meta-width) + var(--runs-track-min));
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+/* Zoom doubles the TRACK, not the fact columns: the numbers are already there
+   and doubling them would just make the page wider without showing more of the
+   day. This is the same arithmetic the Blocks chart uses, with the runs widths. */
+#runs-timeline[data-scale="zoom"] {
+  width: calc(200% - var(--runs-meta-width));
+  min-width: calc(var(--runs-meta-width) + 2 * var(--runs-track-min));
+}
+
+#runs-timeline .runs-col-run { width: var(--runs-meta-id); }
+#runs-timeline .runs-col-type { width: var(--runs-meta-type); }
+#runs-timeline .runs-col-on { width: var(--runs-meta-on); }
+#runs-timeline .runs-col-off { width: var(--runs-meta-off); }
+#runs-timeline .runs-col-spread { width: var(--runs-meta-spread); }
+#runs-timeline .runs-col-paid { width: var(--runs-meta-paid); }
+#runs-timeline .runs-col-status { width: var(--runs-meta-status); }
+
+/* Sticky header row, above the sticky fact columns. */
+#runs-timeline thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: 44px;
+  padding: 0 10px;
+  background: var(--color-canvas);
+  border-bottom: 1px solid var(--color-subtle);
+  font-weight: 600;
+  color: var(--color-muted);
+  text-align: left;
+}
+
+/* The sorted column is the one the reader chose, so it is the one header that
+   stops being quiet. `aria-sort` names it for assistive tech; this names it for
+   everyone else. */
+#runs-timeline thead th[aria-sort="ascending"],
+#runs-timeline thead th[aria-sort="descending"] {
+  color: var(--color-strong);
+}
+
+/* Sticky fact columns: each takes the row's own background so the track never
+   shows through a column that has scrolled over it. */
+#runs-timeline .runs-meta {
+  position: sticky;
+  z-index: 2;
+  background: inherit;
+}
+
+#runs-timeline .runs-meta-id { left: 0; }
+#runs-timeline .runs-meta-type { left: var(--runs-meta-offset-1); }
+#runs-timeline .runs-meta-on { left: var(--runs-meta-offset-2); }
+#runs-timeline .runs-meta-off { left: var(--runs-meta-offset-3); }
+#runs-timeline .runs-meta-spread { left: var(--runs-meta-offset-4); }
+#runs-timeline .runs-meta-paid { left: var(--runs-meta-offset-5); }
+/* The last fact column takes the width from the right, so widening any earlier
+   column moves the boundary and this one still ends at the track. */
+#runs-timeline .runs-meta-status {
+  left: calc(var(--runs-meta-width) - var(--runs-meta-status));
+  box-shadow: 1px 0 0 var(--color-subtle);
+}
+
+#runs-timeline thead th.runs-meta {
+  z-index: 5;
+  background: var(--color-canvas);
+}
+
+#runs-timeline tbody tr {
+  height: 44px;
+  background: var(--color-base-100);
+}
+
+#runs-timeline tbody tr:hover {
+  background: var(--color-base-200);
+}
+
+#runs-timeline tbody td {
+  padding: 0 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--color-base-300);
+}
+
+#runs-timeline tbody tr:last-child td { border-bottom: 0; }
+
+/* Times and durations are compared column-wise, so they are right-aligned and
+   tabular: a digit that changes width would make a column of figures jitter as
+   the reader sorts it. */
+#runs-timeline .runs-meta-on,
+#runs-timeline .runs-meta-off,
+#runs-timeline .runs-meta-spread,
+#runs-timeline .runs-meta-paid {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+#runs-timeline thead th:is(.runs-meta-on, .runs-meta-off, .runs-meta-spread, .runs-meta-paid) .runs-sort {
+  justify-content: flex-end;
+  width: 100%;
+}
+
+#runs-timeline .runs-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#runs-timeline .runs-sort:hover { color: var(--color-strong); }
+
+/* The run number is the row's primary identifier, so it is a link-looking
+   button the reader can open. 44×44 is the minimum target, so the negative
+   margin pulls it back to the cell's own height without adding a gap. */
+#runs-timeline .runs-run-button {
+  display: inline-flex;
+  align-items: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin-bottom: -1px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-action);
+  font-weight: 700;
+  font-size: 13px;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+#runs-timeline .runs-run-button:hover { color: var(--color-action-hover); }
+
+/* The axis: one tick every two hours, positioned by percentage of the same span
+   the pieces use, so the two align at any width and at either scale. The cell is
+   part of the sticky header row, and a sticky cell is a positioned ancestor, so
+   the absolute ticks anchor to it and stay over the rows as they scroll. */
+#runs-timeline .runs-axis { padding: 0; }
+
+#runs-timeline .runs-axis-inner {
+  display: block;
+  position: relative;
+  height: 44px;
+}
+
+#runs-timeline .runs-axis-tick {
+  position: absolute;
+  top: 13px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+#runs-timeline .runs-track {
+  position: relative;
+  /* The track is its own stacking context, so a bar can never paint over the
+     sticky fact columns or the sticky header when the track scrolls under them
+     (Zoom in, and rows scrolling behind the header). */
+  z-index: 0;
+  padding: 0;
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0,
+    transparent calc(var(--runs-grid, 25%) - 1px),
+    var(--color-base-300) calc(var(--runs-grid, 25%) - 1px),
+    var(--color-base-300) var(--runs-grid, 25%)
+  );
+}
+
+/* Clips a piece that runs past the end of the track, and keeps a narrow piece
+   from painting its label over its neighbour. */
+#runs-timeline .runs-lane {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* A piece is the neutral DS navy with the route's own colour as a bottom rule
+   (set inline from the route), so two routes on one run are told apart at a
+   glance. 28px is the design system's bar height, and it is the one target here
+   allowed below 44px. */
+#runs-timeline .runs-piece {
+  position: absolute;
+  top: 8px;
+  height: 28px;
+  min-width: 6px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 4px;
+  padding: 0 4px;
+  background: var(--color-navy-800);
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+#runs-timeline .runs-piece:hover { filter: brightness(1.35); }
+
+/* A focused piece must clear the sticky header, or the ring is drawn under it
+   and the reader cannot see which piece they are on. */
+#runs-timeline .runs-piece:focus-visible {
+  z-index: 6;
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
 #station-sub-nav {
   overflow: visible;
 }
