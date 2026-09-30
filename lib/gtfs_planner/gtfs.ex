@@ -5927,6 +5927,22 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Deletes one day type's orphaned assignments and returns how many were deleted.
+
+  The rows removed are exactly the ones `load_runs/3` reported as
+  `orphans.count`: a row whose trip is no longer a sequence trip of this day
+  type, and a row under a day type key that no longer exists. Another
+  organization's rows are never touched, and a day type with nothing to clean
+  answers `{:ok, 0}`.
+  """
+  @spec remove_run_orphans(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, non_neg_integer()}
+          | {:error, :not_found | {:unknown_day_type, list()}}
+  def remove_run_orphans(organization_id, gtfs_version_id, day_type_key) do
+    Runs.remove_orphans(organization_id, gtfs_version_id, day_type_key)
+  end
+
+  @doc """
   Returns the current block errors and warnings involving the given trips.
 
   Natural trip IDs name the trips; for each one that runs in a block, every day
