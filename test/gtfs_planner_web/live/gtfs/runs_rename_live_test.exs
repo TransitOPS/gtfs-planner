@@ -230,6 +230,23 @@ defmodule GtfsPlannerWeb.Gtfs.RunsRenameLiveTest do
     end
   end
 
+  describe "a revoked editor role" do
+    test "refuses the next write and leaves the rows alone", ctx do
+      w = world(ctx)
+      view = open(ctx, w, "run=1001")
+      trips = trip_ids(w, "1001")
+
+      membership = Accounts.get_user_org_membership(ctx.user.id, w.organization.id)
+      {:ok, _membership} = Accounts.update_user_org_membership(membership, %{roles: []})
+
+      submit(view, "2005")
+
+      assert trip_ids(w, "1001") == trips
+      assert trip_ids(w, "2005") == []
+      assert has_element?(view, "#runs-toast", "You no longer have editor access")
+    end
+  end
+
   describe "a refused rename" do
     test "a duplicate ID is refused under the field, and the entry is kept", ctx do
       w = two_run_world(ctx)

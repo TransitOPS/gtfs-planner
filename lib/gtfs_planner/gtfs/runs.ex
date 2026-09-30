@@ -535,13 +535,21 @@ defmodule GtfsPlanner.Gtfs.Runs do
 
       changeset ->
         Repo.transaction(fn ->
-          Versions.lock_for_input_write!(organization_id, gtfs_version_id)
+          organization_id
+          |> Versions.lock_for_input_write!(gtfs_version_id)
+          |> refuse_unpublished!()
+
           :ok = Blocking.lock_blocking!(gtfs_version_id)
 
           rename_locked(organization_id, gtfs_version_id, day_type_key, old_id, changeset)
         end)
     end
   end
+
+  # The other writers refuse an unpublished version through
+  # `Blocking.load_day/3`; a rename reads no day, so it checks the locked row.
+  defp refuse_unpublished!(%{publication_status: @published_status}), do: :ok
+  defp refuse_unpublished!(_version), do: Repo.rollback(:not_found)
 
   defp rename_locked(organization_id, gtfs_version_id, day_type_key, old_id, changeset) do
     case run_rows(organization_id, gtfs_version_id, day_type_key, old_id) do

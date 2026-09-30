@@ -44,7 +44,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # and they say why: a disabled control with no reason is a dead end.
   @preview_locked_message "Apply or discard the suggestion first."
 
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
+  alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.RunsComponents
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -53,6 +56,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # says so in the reader's terms and names what to do, because the alternative —
   # silently doing nothing — reads as a broken button.
   @crew_not_found "That version is no longer published, so these rules cannot be saved."
+
+  # The events that write. Mount checks the editor role once; these re-read the
+  # membership before each write, so a role revoked while the page is open
+  # refuses the next write rather than trusting the mount-time snapshot.
+  @write_events ~w(create_run undo apply_suggestion confirm_rebuild save_crew remove_orphans
+                   rename_run move_piece split_piece)
 
   @impl true
   def mount(_params, _session, socket) do
@@ -113,7 +122,32 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:next_run_id, "1")
      |> assign(:run_axis, nil)
      |> assign(:run_routes, %{})
-     |> stream(:run_rows, [], dom_id: &run_dom_id/1)}
+     |> assign(:run_pieces, [])
+     |> stream(:run_rows, [], dom_id: &run_dom_id/1)
+     |> attach_hook(:editor_access, :handle_event, &require_editor/3)}
+  end
+
+  defp require_editor(event, _params, socket) when event in @write_events do
+    if editor_access?(socket) do
+      {:cont, socket}
+    else
+      {:halt,
+       put_toast(socket, "You no longer have editor access to this organization.", :refused)}
+    end
+  end
+
+  defp require_editor(_event, _params, socket), do: {:cont, socket}
+
+  defp editor_access?(socket) do
+    with %{id: user_id} <- socket.assigns[:current_user],
+         %{id: organization_id} <- socket.assigns[:current_organization],
+         %UserOrgMembership{} = membership <-
+           Accounts.get_user_org_membership(user_id, organization_id),
+         true <- is_nil(membership.deactivated_at) do
+      EnsureRole.has_role?(membership.roles, :pathways_studio_editor)
+    else
+      _other -> false
+    end
   end
 
   @impl true
@@ -1216,13 +1250,26 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     # The list is zero-based, and `Enum.at(pieces, 1)` is the second piece, so
     # the 1 is taken off here and nowhere else. With it left on, "Move piece 1"
     # moves piece 2's vehicle work and the page says it moved the right one.
-    case Enum.at(socket.assigns.run_pieces, String.to_integer(index) - 1) do
-      nil -> :no_piece
-      piece -> {:ok, piece}
+    with position when is_integer(position) and position >= 1 <- position(index),
+         %{} = piece <- Enum.at(socket.assigns.run_pieces, position - 1) do
+      {:ok, piece}
+    else
+      _other -> :no_piece
     end
   end
 
-  # The gap's POSITION in the piece, one-based for the reader as with the piece
+  # A one-based position from a form value. Zero and negatives are refused here
+  # because `Enum.at/2` reads a negative index from the end of the list.
+  defp position(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {position, ""} -> position
+      _other -> nil
+    end
+  end
+
+  defp position(_value), do: nil
+
+  # The gap's position in the piece, one-based for the reader as with the piece
   # itself. Out of range is refused, not clamped: clamping gap 9 to the last gap
   # would split at a different point from the one named.
   # A split needs both choices. `:ok <- false` would fall through the `with`
@@ -1236,13 +1283,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   defp chosen?(_value), do: true
 
   defp split_position(socket, piece, gap) do
-    at = String.to_integer(gap) - 1
-    gap_entry = Enum.at(piece.gaps, at)
-
-    cond do
-      is_nil(gap_entry) -> :bad_gap
-      not relief_window?(socket, piece, gap_entry) -> :no_relief
-      true -> {:ok, at}
+    with position when is_integer(position) and position >= 1 <- position(gap),
+         %{} = gap_entry <- Enum.at(piece.gaps, position - 1) do
+      if relief_window?(socket, piece, gap_entry),
+        do: {:ok, position - 1},
+        else: :no_relief
+    else
+      _other -> :bad_gap
     end
   end
 
@@ -1429,6 +1476,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   defp put_undo(socket, %{moves: moves} = undo) when is_list(moves),
     do: assign(socket, :undo, undo)
 
+  # An undo reverses moves made on the day type that was loaded when it was
+  # armed. Loading a different day type drops it, so Undo cannot replay those
+  # moves under the new day type's key.
+  defp keep_undo_for(socket, key) do
+    if socket.assigns.loaded_day_key == {:key, key}, do: socket, else: put_undo(socket, nil)
+  end
+
   # The segment the button names, found in the day's own uncovered list.
   #
   # Compared as strings on purpose: `phx-value` arrives as a string and a segment
@@ -1520,6 +1574,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         |> assign(:runs_day, runs_day)
         |> assign(:day, runs_day.day.day_type.key)
         |> assign(:day_types, runs_day.day.day_types)
+        |> keep_undo_for(runs_day.day.day_type.key)
         |> assign(:loaded_day_key, {:key, runs_day.day.day_type.key})
         |> assign(:load_state, day_state(runs_day))
         |> stream_run_rows()
