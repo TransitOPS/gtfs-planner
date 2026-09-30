@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.PatternComparison.Alignment do
   @moduledoc """
-  Pure stop-visit alignment for the pattern comparison read (`R1`-`R4`).
+  Pure stop-visit alignment for the pattern comparison read (`R1`-`R5`).
 
   - `R1` Rows are visits. Every visit of each pattern appears exactly once, in that pattern's
     order; repeated stops are never collapsed by stop id.
@@ -15,6 +15,12 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Alignment do
   - `R4` Opposite direction. `opposite?/2` is true when aligning A with reversed B shares more
     rows than aligning A with B, and that is at least 60% of `min(length(a), length(b))`, rounded
     up. Callers reverse B only when the URL asks for it; this module only reports the flag.
+  - `R5` Running times. An anchor is a `:same` row whose timing rows on both sides carry an
+    arrival and a departure offset. A segment runs from one anchor to the next; its time per side
+    is the arrival offset at the end anchor minus the departure offset at the start anchor, so
+    time stopped in between counts and a wait at either anchor does not. A `:same` row missing a
+    time on either side is untimed and is not an anchor. Waits at an anchor that is neither the
+    first nor the last visit of either pattern are reported when they differ.
 
   Alignment costs O(n*m) over three integer matrices (match, A-only row, B-only row). The assumed
   ceiling is 200 x 200 visits; beyond that the upgrade path is banded alignment. The module is
@@ -32,6 +38,24 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Alignment do
           b_pos: pos_integer() | nil,
           stop_id: String.t(),
           moved_to: non_neg_integer() | nil
+        }
+
+  @type timing_row :: %{
+          position: pos_integer(),
+          arrival_offset: integer() | nil,
+          departure_offset: integer() | nil,
+          timepoint: integer() | nil,
+          pickup_type: integer() | nil,
+          drop_off_type: integer() | nil
+        }
+
+  @type segment :: %{
+          from: non_neg_integer(),
+          to: non_neg_integer(),
+          a_secs: integer() | nil,
+          b_secs: integer() | nil,
+          diff: integer() | nil,
+          same_stops?: boolean()
         }
 
   @doc """
@@ -61,6 +85,34 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Alignment do
     threshold = div(3 * min(length(a), length(b)) + 4, 5)
 
     reversed_matches > forward_matches and reversed_matches >= threshold
+  end
+
+  @doc """
+  Computes running-time segments, waits and untimed shared stops for aligned `rows` (`R5`).
+
+  An anchor is a `:same` row whose timing rows on both sides carry an arrival and a departure
+  offset. A segment runs from one anchor to the next: its `a_secs`/`b_secs` are the arrival offset
+  at the end anchor minus the departure offset at the start anchor, so time stopped in between
+  counts and a wait at either anchor does not. A `:same` row missing a time on either side is
+  collected in `untimed` and is not an anchor.
+
+  `from`/`to`, the entries of `untimed` and the keys of `waits` are zero-based indexes into `rows`.
+  `waits` holds `{a_wait, b_wait}` for anchors that are neither the first nor the last visit of
+  either pattern and whose waits differ. Nil timing rows on either side return empty results. The
+  timing rows are indexed by the rows' `a_pos`/`b_pos`; a missing timing row reads as untimed
+  rather than raising.
+  """
+  @spec segments([row()], [timing_row()] | nil, [timing_row()] | nil) :: %{
+          segments: [segment()],
+          untimed: MapSet.t(non_neg_integer()),
+          waits: %{non_neg_integer() => {integer(), integer()}}
+        }
+  def segments(rows, rows_a, rows_b) when is_list(rows) do
+    if is_nil(rows_a) or is_nil(rows_b) do
+      %{segments: [], untimed: MapSet.new(), waits: %{}}
+    else
+      build_segments(rows, List.to_tuple(rows_a), List.to_tuple(rows_b))
+    end
   end
 
   defp same_count(rows), do: Enum.count(rows, &(&1.type == :same))
@@ -246,4 +298,90 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Alignment do
   end
 
   defp max_of_three(a, b, c), do: max(max(a, b), c)
+
+  defp build_segments(rows, rows_a, rows_b) do
+    {last_a, last_b} = {last_visit(rows, :a_pos), last_visit(rows, :b_pos)}
+
+    {anchors, untimed} =
+      rows
+      |> Enum.with_index()
+      |> Enum.reduce({[], MapSet.new()}, fn {row, index}, {anchors, untimed} ->
+        case anchor(row, rows_a, rows_b) do
+          {:ok, a_row, b_row} -> {[{index, row, a_row, b_row} | anchors], untimed}
+          :untimed -> {anchors, MapSet.put(untimed, index)}
+          :skip -> {anchors, untimed}
+        end
+      end)
+
+    anchors = Enum.reverse(anchors)
+
+    %{
+      segments: segments_between(anchors),
+      untimed: untimed,
+      waits: waits_at(anchors, last_a, last_b)
+    }
+  end
+
+  # Only a :same row with a full arrival/departure pair on both sides is an anchor; a shared row
+  # without one is untimed (R5), and non-shared rows never anchor a segment.
+  defp anchor(%{type: :same} = row, rows_a, rows_b) do
+    with a_row when not is_nil(a_row) <- at(rows_a, row.a_pos),
+         b_row when not is_nil(b_row) <- at(rows_b, row.b_pos),
+         true <- timed?(a_row) and timed?(b_row) do
+      {:ok, a_row, b_row}
+    else
+      _ -> :untimed
+    end
+  end
+
+  defp anchor(_row, _rows_a, _rows_b), do: :skip
+
+  defp segments_between(anchors) do
+    anchors
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.map(fn [{from, _from_row, from_a, from_b}, {to, _to_row, to_a, to_b}] ->
+      a_secs = to_a.arrival_offset - from_a.departure_offset
+      b_secs = to_b.arrival_offset - from_b.departure_offset
+
+      %{
+        from: from,
+        to: to,
+        a_secs: a_secs,
+        b_secs: b_secs,
+        diff: b_secs - a_secs,
+        same_stops?: to == from + 1
+      }
+    end)
+  end
+
+  defp waits_at(anchors, last_a, last_b) do
+    Enum.reduce(anchors, %{}, fn {index, row, a_row, b_row}, waits ->
+      a_wait = a_row.departure_offset - a_row.arrival_offset
+      b_wait = b_row.departure_offset - b_row.arrival_offset
+
+      if terminal?(row, last_a, last_b) or a_wait == b_wait do
+        waits
+      else
+        Map.put(waits, index, {a_wait, b_wait})
+      end
+    end)
+  end
+
+  defp terminal?(row, last_a, last_b) do
+    row.a_pos in [1, last_a] or row.b_pos in [1, last_b]
+  end
+
+  defp timed?(row), do: not is_nil(row.arrival_offset) and not is_nil(row.departure_offset)
+
+  defp last_visit(rows, key) do
+    rows
+    |> Enum.map(&Map.get(&1, key))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max(fn -> 0 end)
+  end
+
+  defp at(rows, pos) when is_integer(pos) and pos >= 1 and pos <= tuple_size(rows),
+    do: elem(rows, pos - 1)
+
+  defp at(_rows, _pos), do: nil
 end
