@@ -133,6 +133,10 @@ config :gtfs_planner, :boundaries_req_plug, {Req.Test, GtfsPlanner.Boundaries.Ti
 # tests can stub upstream routing responses.
 config :gtfs_planner, :street_routing_req_plug, {Req.Test, GtfsPlanner.StreetRouting.Geoapify}
 
+# Route Geoapify autocomplete requests through Req.Test in ordinary ExUnit runs.
+config :gtfs_planner,
+       :geocoding_req_options, plug: {Req.Test, GtfsPlanner.Geocoding.Geoapify}, retry_delay: 0
+
 # Route Req HTTP calls in the map tiles controller through Req.Test so
 # tests can stub upstream tile responses.
 config :gtfs_planner, :map_tiles_req_plug, {Req.Test, GtfsPlannerWeb.MapTilesController}
