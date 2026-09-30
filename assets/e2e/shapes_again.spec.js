@@ -215,6 +215,145 @@ test.describe("left-out list", () => {
   }
 });
 
+// ── link offer (step 21) ────────────────────────────────────────────────────
+//
+// A pattern made by hand is offered the left-out trips whose stop order is
+// exactly its own, and the review that precedes a link is captured beside the
+// prototype's `?state=link-offer` and `?state=link-review`. Nothing is linked:
+// the 24 trips are the grouping review's own fixture, and spending them here
+// would leave that review with nothing to apply.
+//
+// This block runs before `grouping review` because it needs those 24 trips to
+// still be left out, and it leaves them that way. The suite shares one seeded
+// database with `workers: 1`, so the order is the file's order.
+//
+// ────────────────────────────────────────────────────────────────────────────
+
+test.describe("link offer", () => {
+  test("offers the matching left-out trips and reviews them before linking", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    const createUrl = `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns/new?task=stops`;
+
+    // The same 13 stops the 18-trip group serves, taken through the editor's own
+    // stop picker, so the offer is reached the way an operator reaches it.
+    await page.goto(createUrl);
+    await waitForLiveView(page);
+
+    for (let index = 1; index <= 13; index += 1) {
+      const stopId = `BROWSER_SHAPES_STOP_${index}`;
+      await page.fill("#stop_search_stop_id_text_input", stopId);
+      await page
+        .locator(`#pattern-stop-option-${stopId}`)
+        .waitFor({ state: "visible", timeout: 15000 });
+      await page.locator(`#pattern-stop-option-${stopId}`).click();
+      await expect(page.locator("#pattern-stops-total")).toContainText(
+        `${index} ${index === 1 ? "stop" : "stops"}`,
+      );
+    }
+
+    // The Details tab, not a fresh load: a load would remount the LiveView and
+    // the staged stops with it.
+    await page.locator("#pattern-task-details").click();
+    await expect(page.locator("#pattern-details-form")).toBeVisible();
+
+    await page.fill("#pattern-details-name", "US 101 Coast Highway");
+    await page.locator("#pattern-details-submit").click();
+
+    // The create navigates to the new pattern with the link marker, and the
+    // offer is what that remount renders.
+    await page.waitForURL(/\/patterns\/[^/]+\?task=timings&link=/, {
+      timeout: 30000,
+    });
+    await waitForLiveView(page);
+
+    const productionUrl = page.url();
+
+    const offer = page.locator("#link-offer");
+    await expect(offer).toBeVisible();
+    await expect(offer).toContainText("18 trips");
+    await expect(offer).toContainText("13 stops");
+    await expect(page.locator("#link-open")).toHaveText("Link 18 trips");
+    await expect(page.locator("#link-dismiss")).toHaveText("Not now");
+
+    await capture(page, "link-offer-production-desktop");
+
+    const offerReference = await captureReference(
+      page,
+      "?state=link-offer",
+      "link-offer-reference-desktop",
+    );
+
+    testInfo.annotations.push({
+      type: "reference-captured",
+      description: offerReference
+        ? "link-offer-reference-desktop.png"
+        : "prototype absent from this checkout",
+    });
+
+    // `captureReference` left the browser on the prototype, which carries its own
+    // `#link-open`, so the production page is returned to before anything is
+    // pressed on it.
+    await page.goto(
+      page.url().startsWith("file://") ? productionUrl : page.url(),
+    );
+
+    // The review is what the offer opens, and it is where the write is decided.
+    await page.locator("#link-open").click();
+
+    const review = page.locator("#link-review");
+    await expect(review).toBeVisible();
+    await expect(review).toContainText(
+      "Link 18 trips to US 101 Coast Highway?",
+    );
+    await expect(review).toContainText("Trips linked");
+    await expect(review).toContainText("New timings");
+    await expect(review).toContainText("New problems");
+    await expect(review).toContainText("They keep their own times");
+    // Focus lands on the answer that writes nothing.
+    await expect(page.locator("#link-review-cancel")).toBeFocused();
+    await expect(page.locator("#link-review-confirm")).toHaveText(
+      "Link 18 trips",
+    );
+
+    await capture(page, "link-review-production-desktop");
+
+    // Cancelling writes nothing and closes the review, leaving the offer where
+    // it was rather than spending it. This is the last thing pressed on the
+    // production page, so the reference capture below can leave the browser on
+    // the prototype without anything after it to return from.
+    await page.locator("#link-review-cancel").click();
+    await expect(page.locator("#link-review")).toBeHidden();
+    await expect(page.locator("#link-offer")).toBeVisible();
+    await expect(page.locator("#pattern-title")).toHaveText(
+      "US 101 Coast Highway",
+    );
+
+    const reviewReference = await captureReference(
+      page,
+      "?state=link-review",
+      "link-review-reference-desktop",
+    );
+
+    testInfo.annotations.push({
+      type: "reference-captured",
+      description: reviewReference
+        ? "link-review-reference-desktop.png"
+        : "prototype absent from this checkout",
+    });
+
+    expect(problems).toEqual([]);
+  });
+});
+
 // ── grouping review ─────────────────────────────────────────────────────────
 
 // `BROWSER_SHAPES` seeds exactly what the review is built for: a saved 13-stop

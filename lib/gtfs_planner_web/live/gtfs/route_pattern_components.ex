@@ -2230,6 +2230,221 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   end
 
   @doc """
+  Renders the offer to link left-out trips to a hand-made pattern.
+
+  Shown once a pattern was just created, on the pattern editor and on the
+  Patterns list, when the left-out trips serve the pattern's stops in the same
+  order. The link offer writes nothing on its own; `link_confirm` is the only
+  event that does.
+  """
+  attr :offer, :map, required: true, doc: "one `link_offer/1` entry"
+  attr :done, :map, default: nil, doc: "the summary of trips already linked by a confirm"
+  attr :pending, :boolean, default: false
+
+  def link_offer(assigns) do
+    ~H"""
+    <%= if @offer != nil do %>
+      <.message
+        id="link-offer"
+        kind="info"
+        title={"Created #{@offer.pattern_name}"}
+      >
+        <p>
+          <strong class="font-[650] text-strong">
+            {trip_noun(@offer.trip_count, "trip", "trips")}
+          </strong>
+          that aren’t in a pattern serve these same {stop_noun(@offer.stop_count)} in the same
+          order. {service_sentence(@offer)} Link them so they use this pattern.
+        </p>
+        <:action>
+          <.button
+            id="link-open"
+            type="button"
+            variant="primary"
+            class="min-h-11"
+            phx-click="link_open"
+            disabled={@pending}
+          >
+            Link {trip_noun(@offer.trip_count, "trip", "trips")}
+          </.button>
+          <.button
+            id="link-dismiss"
+            type="button"
+            variant="quiet"
+            class="min-h-11"
+            phx-click="link_dismiss"
+            disabled={@pending}
+          >
+            Not now
+          </.button>
+        </:action>
+      </.message>
+    <% else %>
+      <.link_done done={@done} />
+    <% end %>
+    """
+  end
+
+  @doc """
+  Renders what a confirmed link did, so the operator sees the result next to the
+  offer it replaced.
+  """
+  attr :done, :map, required: true
+
+  def link_done(assigns) do
+    ~H"""
+    <.message
+      id="link-done"
+      kind="success"
+      title={"Linked #{trip_noun(@done.trips_linked, "trip", "trips")} to #{@done.pattern_name}"}
+    >
+      {link_done_body(@done)}
+    </.message>
+    """
+  end
+
+  defp link_done_body(%{timings_created: 0}) do
+    "They’re Direction 0 now and kept their own times. The pattern has no map line yet, so they still show their imported line."
+  end
+
+  defp link_done_body(%{timings_created: timings}) do
+    "They’re Direction 0 now and kept their own times as #{timings} new #{plural(timings, "timing", "timings")}. The pattern has no map line yet, so they still show their imported line."
+  end
+
+  # The prototype names the services the trips run on; the preview's rule 6
+  # already named each group's timings, so the offer names the services.
+  defp service_sentence(%{services: [{service_id, _count}]}) when is_binary(service_id) do
+    "They’re #{service_id} trips with no direction."
+  end
+
+  defp service_sentence(%{services: []}), do: "They have no direction."
+
+  defp service_sentence(%{services: services}) do
+    "They’re #{Enum.map_join(services, " and ", fn {service_id, _count} -> service_id end)} trips with no direction."
+  end
+
+  # The offer names one pattern, so its plural forms are per-occurrence
+  # ("1 trip") rather than a bare count.
+  # The offer names its own counts ("18 trips"), so this reads as a count and
+  # its noun rather than as a noun alone.
+  defp trip_noun(1, one, _many), do: "1 #{one}"
+  defp trip_noun(count, _one, many), do: "#{count} #{many}"
+
+  # The offer names its own stops ("13 stops") for the same reason.
+  defp stop_noun(1), do: "1 stop"
+  defp stop_noun(count), do: "#{count} stops"
+
+  defp plural(1, one, _many), do: one
+  defp plural(_count, _one, many), do: many
+
+  @doc """
+  Renders the review that precedes a link, listing the trips it covers with the
+  direction it writes and the timings their times become.
+
+  Focus lands on Cancel: linking writes to the route's exported trips, so the
+  safe answer is the one the dialog opens on.
+  """
+  attr :offer, :map, default: nil
+  attr :pending, :boolean, default: false
+  attr :error, :string, default: nil
+
+  def link_review_dialog(assigns) do
+    ~H"""
+    <.confirm_dialog
+      :if={@offer != nil}
+      id="link-review"
+      open={@offer != nil}
+      title={"Link #{trip_noun(@offer.trip_count, "trip", "trips")} to #{@offer.pattern_name}?"}
+      size="xl"
+      chrome="planner"
+      confirm_variant="primary"
+      confirm_label={"Link #{trip_noun(@offer.trip_count, "trip", "trips")}"}
+      pending_label="Linking…"
+      cancel_label="Keep trips separate"
+      on_confirm="link_confirm"
+      on_cancel="link_cancel"
+      described_by="link-review-body"
+      pending={@pending}
+    >
+      <div class="grid gap-4">
+        <p class="text-default">
+          They serve the pattern’s {stop_noun(@offer.stop_count)} in the same order, with no
+          direction. Linking puts them in this pattern.
+        </p>
+
+        <div class="grid grid-cols-3 gap-3">
+          <.link_review_cell label="Trips linked" value={@offer.trip_count} />
+          <.link_review_cell label="New timings" value={length(@offer.timing_names)} />
+          <.link_review_cell label="New problems" value={0} />
+        </div>
+
+        <div class="max-h-[220px] overflow-auto rounded-card border border-subtle">
+          <table id="link-review-trips" class="w-full border-collapse text-left text-[13px]">
+            <thead class="sticky top-0 bg-canvas">
+              <tr>
+                <th scope="col" class="px-3 py-2 font-[650]">Leaves</th>
+                <th scope="col" class="px-3 py-2 font-[650]">Trips</th>
+                <th scope="col" class="px-3 py-2 font-[650]">Direction</th>
+                <th scope="col" class="px-3 py-2 font-[650]">Running times</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr :for={service <- @offer.services} class="border-t border-subtle">
+                <td class="px-3 py-2 font-mono text-[12px] text-muted">{hd(@offer.stop_names)}</td>
+                <td class="px-3 py-2 tabular-nums">{elem(service, 1)}</td>
+                <td class="px-3 py-2">
+                  <span class="text-muted">None</span>
+                  <.icon name="hero-arrow-right" class="inline size-3.5 align-[-2px]" />
+                  {@offer.direction_id}
+                </td>
+                <td class="px-3 py-2">{Enum.join(@offer.timing_names, ", ")}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 class="text-sm font-bold text-strong">What changes</h3>
+        <ul class="grid gap-2 text-default">
+          <li class="flex gap-2">
+            <.icon name="hero-arrow-right" class="mt-0.5 size-4 shrink-0 text-muted" />
+            <span>
+              <strong class="font-[650] text-strong">
+                Direction {@offer.direction_id} is written to the trips
+              </strong>, the pattern’s direction. It’s exported, and apps list them under it.
+            </span>
+          </li>
+          <li class="flex gap-2">
+            <.icon name="hero-arrow-right" class="mt-0.5 size-4 shrink-0 text-muted" />
+            <span>
+              <strong class="font-[650] text-strong">They keep their own times.</strong>
+              Their times are what the agency published, so they become new timings named after
+              their service. Times at 3 timepoints; stops with no scheduled time export estimated.
+            </span>
+          </li>
+        </ul>
+        <p>Stops, headsigns and service days don’t change.</p>
+
+        <p :if={@error} id="link-review-error" class="text-error-fg">{@error}</p>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :value, :any, required: true
+
+  defp link_review_cell(assigns) do
+    ~H"""
+    <div class="rounded-card bg-canvas px-4 py-3">
+      <p class="text-[13px] text-muted">{@label}</p>
+      <p class="font-display text-[26px] font-semibold leading-tight tabular-nums text-strong">
+        {@value}
+      </p>
+    </div>
+    """
+  end
+
+  @doc """
   Renders the editor's connectivity state while the browser is offline.
 
   The wrapper is what the editor hook shows and hides on connection changes; the

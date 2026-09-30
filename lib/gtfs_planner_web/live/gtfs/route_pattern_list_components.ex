@@ -20,6 +20,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentEvents
+  alias GtfsPlannerWeb.Gtfs.RoutePatternComponents
 
   @doc """
   Turns the loaded pattern summaries into the items of the `:patterns` stream: a
@@ -72,6 +73,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   attr :grouped_summary, :map,
     default: nil,
     doc: "the derivation summary returned by a grouping review that was applied"
+
+  attr :link_offer, :map, default: nil, doc: "the offer to link left-out trips, when one matches"
+  attr :link_done, :map, default: nil, doc: "the summary of trips a confirmed link joined"
+  attr :link_pending, :boolean, default: false
 
   def page(%{load_state: :loading} = assigns) do
     ~H"""
@@ -208,6 +213,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
           <.build_summary_message :if={@build_summary} summary={@build_summary} />
 
           <.grouped_message :if={@grouped_summary} summary={@grouped_summary} />
+
+          <div
+            :if={@editable? and (@link_offer != nil or @link_done != nil)}
+            id="pattern-link-offer"
+          >
+            <RoutePatternComponents.link_offer
+              offer={@link_offer}
+              done={@link_done}
+              pending={@link_pending}
+            />
+          </div>
 
           <.message
             :if={@stale?}
