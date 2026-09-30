@@ -1213,6 +1213,173 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
 
   defp insert_departure(_insert), do: nil
 
+  # --- Convert frequency service: the change review dialog --------------------
+
+  @doc """
+  Renders the Convert to scheduled trips dialog.
+
+  The reference's `#convert-review` in the delete dialog's chrome: the context
+  line, three metric cells (the trips created, the frequency service the delete
+  removes and the transfer records that go with it), the departures table the
+  review's inserts fill (each new trip's allocated ID and first departure), the
+  service-day card naming the trip and windows the conversion replaces, and the
+  footer's irreversible sentence with "Keep frequency service" and one primary
+  that repeats the count. The review is the dialog's only behavioral input: a
+  refusal disables the primary and raises the error banner, a stale review turns
+  the primary into Refresh preview (FH-33), and the primary's label and the title
+  count the inserts. Focus starts on Keep frequency service, the safer action.
+  """
+  attr :change, :map, required: true
+  attr :convert, :map, required: true
+
+  def convert_dialog(assigns) do
+    change = assigns.change
+    change_set = reviewed_change_set(change)
+    refusal = review_refusal(change, nil)
+    count = length(change_set.inserts)
+    stale? = change.stale? == true
+
+    assigns =
+      assign(assigns,
+        count: count,
+        title: "Convert to #{scheduled_trips(count)}?",
+        refusal: refusal,
+        departures: Enum.map(change_set.inserts, &convert_departure/1),
+        removed: length(change_set.deletes),
+        transfers: transfer_count(change_set),
+        stale?: stale?,
+        confirm_id: if(stale?, do: "convert-refresh", else: "convert-apply"),
+        confirm_label: if(stale?, do: "Refresh preview", else: "Convert to #{trip_count(count)}"),
+        pending_label: if(stale?, do: "Refreshing…", else: "Converting…"),
+        on_confirm: if(stale?, do: "refresh_change", else: "apply_change"),
+        confirm_disabled: not stale? and (refusal != nil or count == 0)
+      )
+
+    ~H"""
+    <.confirm_dialog
+      id="convert-review"
+      chrome="planner"
+      size="xl"
+      open
+      title={@title}
+      confirm_id={@confirm_id}
+      confirm_label={@confirm_label}
+      cancel_id="convert-keep"
+      cancel_label="Keep frequency service"
+      pending_label={@pending_label}
+      on_confirm={@on_confirm}
+      on_cancel="cancel_change"
+      confirm_disabled={@confirm_disabled}
+      return_focus_id={@convert.return_focus_id}
+      described_by="convert-review-body"
+      data-initial-focus-id="convert-keep"
+    >
+      <p id="convert-context" class="text-[13px] text-muted">{@convert.context}</p>
+
+      <div class="mt-4 grid gap-4">
+        <div class="grid grid-cols-3 gap-px overflow-hidden rounded-card border border-subtle bg-subtle">
+          <div
+            :for={{label, value} <- convert_metrics(@count, @removed, @transfers)}
+            class="bg-white px-4 py-3"
+          >
+            <p class="text-[13px] text-muted">{label}</p>
+            <p class="mt-0.5 font-display text-[26px] font-semibold leading-none tabular-nums text-strong">
+              {value}
+            </p>
+          </div>
+        </div>
+
+        <.message
+          :if={@refusal}
+          id="convert-refusal"
+          kind="error"
+          role="alert"
+          title={@refusal.title}
+        >
+          <%= if @refusal.body do %>
+            {@refusal.body}
+          <% end %>
+        </.message>
+
+        <.message
+          :if={@stale?}
+          id="convert-stale"
+          kind="warning"
+          role="alert"
+          title="These trips changed after this preview. Nothing was written."
+        >
+          Refresh the preview to see their current times, then apply again.
+        </.message>
+
+        <div>
+          <p class="text-[13px] font-[650] text-default">{@convert.departures_label}</p>
+          <div class="mt-2 max-h-[300px] overflow-auto rounded-control border border-subtle">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="text-left text-[13px] text-default">
+                  <th class="border-b border-subtle bg-canvas px-3 py-2 font-[650]">Trip</th>
+                  <th class="border-b border-subtle bg-canvas px-3 py-2 text-right font-[650]">
+                    Departs
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={departure <- @departures} class="border-t border-subtle">
+                  <td class="px-3 py-2 font-mono text-[12px] text-muted">{departure.trip_id}</td>
+                  <td class="px-3 py-2 text-right font-[650] tabular-nums text-strong">
+                    {departure.clock}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <section class="rounded-card border border-subtle px-4 py-3">
+          <h4 class="text-sm font-bold text-strong">{@convert.service_name}</h4>
+          <p class="mt-1 text-sm text-default">
+            Trip <span class="font-mono text-[13px]">{@convert.trip_id}</span>
+            and its windows are replaced. The new trips start without a block and appear in the
+            Blocks pool. Riders then see every departure time.
+          </p>
+        </section>
+      </div>
+
+      <:status>
+        <p id="convert-status" class="mr-auto max-w-[240px] text-[13px] text-muted">
+          This can't be undone. Nothing changes until you convert.
+        </p>
+      </:status>
+    </.confirm_dialog>
+    """
+  end
+
+  defp scheduled_trips(1), do: "1 scheduled trip"
+  defp scheduled_trips(count), do: "#{count} scheduled trips"
+
+  # One departures-table row: the new trip's allocated ID and its first
+  # departure, both from the review's insert.
+  defp convert_departure(insert) do
+    %{trip_id: insert.attrs.trip_id, clock: insert_departure(insert)}
+  end
+
+  defp convert_metrics(created, removed, transfers) do
+    [
+      {"Trips created", created},
+      {"Frequency service removed", removed},
+      {"Transfer records removed", transfers}
+    ]
+  end
+
+  # The transfer count the engine's delete reports; a conversion with no transfer
+  # note (or no review at all) removes none.
+  defp transfer_count(change_set) do
+    Enum.find_value(change_set.consequences, 0, fn
+      {:note, {:transfers_removed, count}} -> count
+      _consequence -> nil
+    end)
+  end
+
   # --- frequency windows editor -----------------------------------------------
 
   @doc """
