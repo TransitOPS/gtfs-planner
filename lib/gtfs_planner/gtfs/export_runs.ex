@@ -378,16 +378,18 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   end
 
   defp insert_pending_run(organization_id, version_id, actor, export_type) do
-    attrs = %{
-      organization_id: organization_id,
-      gtfs_version_id: version_id,
-      actor_id: actor.id,
-      actor_email: actor.email,
-      export_type: export_type,
-      state: :pending,
-      phase: :preflight,
-      include_flex: include_flex_for(organization_id, export_type)
-    }
+    attrs =
+      %{
+        organization_id: organization_id,
+        gtfs_version_id: version_id,
+        actor_id: actor.id,
+        actor_email: actor.email,
+        export_type: export_type,
+        state: :pending,
+        phase: :preflight,
+        include_flex: include_flex_for(organization_id, export_type)
+      }
+      |> Map.merge(estimate_for(organization_id, export_type))
 
     case Repo.insert(Run.system_changeset(%Run{}, attrs)) do
       {:ok, run} -> {{:ok, run}, [run.id]}
@@ -448,17 +450,19 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   defp retry_locked_run(_run), do: {{:error, :invalid_transition}, []}
 
   defp insert_retry_run(run) do
-    attrs = %{
-      organization_id: run.organization_id,
-      gtfs_version_id: run.gtfs_version_id,
-      actor_id: run.actor_id,
-      actor_email: run.actor_email,
-      version_name: run.version_name,
-      export_type: run.export_type,
-      state: :pending,
-      phase: :preflight,
-      include_flex: include_flex_for(run.organization_id, run.export_type)
-    }
+    attrs =
+      %{
+        organization_id: run.organization_id,
+        gtfs_version_id: run.gtfs_version_id,
+        actor_id: run.actor_id,
+        actor_email: run.actor_email,
+        version_name: run.version_name,
+        export_type: run.export_type,
+        state: :pending,
+        phase: :preflight,
+        include_flex: include_flex_for(run.organization_id, run.export_type)
+      }
+      |> Map.merge(estimate_for(run.organization_id, run.export_type))
 
     case Repo.insert(Run.system_changeset(%Run{}, attrs)) do
       {:ok, retry_run} -> {{:ok, retry_run}, [retry_run.id]}
@@ -755,6 +759,24 @@ defmodule GtfsPlanner.Gtfs.ExportRuns do
   # run that already exists. A pathways run never carries flex (AC-15).
   defp include_flex_for(organization_id, export_type) do
     export_type in [:full, :operations] and ExportDefaults.get(organization_id).include_flex
+  end
+
+  # The missing-time estimate a new run builds with, recorded at creation beside
+  # `include_flex`, so a later defaults change cannot alter a run that already
+  # exists. A pathways run never carries estimates (no `stop_times.txt`), and the
+  # method is nil whenever the run does not estimate.
+  defp estimate_for(organization_id, export_type) do
+    if export_type in [:full, :operations] do
+      defaults = ExportDefaults.get(organization_id)
+
+      if defaults.estimate_missing_times do
+        %{estimate_missing_times: true, estimate_method: defaults.estimate_method}
+      else
+        %{estimate_missing_times: false, estimate_method: nil}
+      end
+    else
+      %{estimate_missing_times: false, estimate_method: nil}
+    end
   end
 
   defp artifact_storage_module do

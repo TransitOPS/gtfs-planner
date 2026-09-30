@@ -39,6 +39,8 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
 
       assert defaults.include_flex == true
       assert defaults.realtime_source == :unsure
+      assert defaults.estimate_missing_times == true
+      assert defaults.estimate_method == :distance
       assert defaults.organization_id == organization.id
       refute Repo.get_by(ExportDefault, organization_id: organization.id)
     end
@@ -69,6 +71,60 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
                ),
                :count
              ) == 1
+    end
+
+    test "persists the estimate settings and keeps include_flex and realtime_source" do
+      organization = organization_fixture()
+
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, %{
+                 estimate_missing_times: false,
+                 estimate_method: :even
+               })
+
+      stored = Repo.get_by!(ExportDefault, organization_id: organization.id)
+      assert stored.estimate_missing_times == false
+      assert stored.estimate_method == :even
+      assert stored.include_flex == true
+      assert stored.realtime_source == :unsure
+    end
+
+    test "an update submitting only include_flex keeps the saved estimate settings" do
+      organization = organization_fixture()
+
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, %{
+                 estimate_missing_times: false,
+                 estimate_method: :even
+               })
+
+      assert {:ok, updated} = ExportDefaults.update(organization.id, %{include_flex: false})
+
+      assert updated.include_flex == false
+      assert updated.estimate_missing_times == false
+      assert updated.estimate_method == :even
+    end
+
+    test "an unknown estimate method is an invalid changeset and writes nothing" do
+      organization = organization_fixture()
+
+      assert {:error, changeset} =
+               ExportDefaults.update(organization.id, %{estimate_method: "bogus"})
+
+      refute changeset.valid?
+      assert %{estimate_method: ["is invalid"]} = errors_on(changeset)
+      refute Repo.get_by(ExportDefault, organization_id: organization.id)
+    end
+
+    test "a raw insert with an unknown estimate method violates the check constraint" do
+      organization = organization_fixture()
+
+      assert_raise Postgrex.Error, ~r/estimate_method/, fn ->
+        Repo.query!(
+          "INSERT INTO export_defaults (id, organization_id, estimate_method, inserted_at, updated_at) VALUES ($1, $2, 'bogus', NOW(), NOW())",
+          [Ecto.UUID.dump!(Ecto.UUID.generate()), Ecto.UUID.dump!(organization.id)]
+        )
+      end
     end
 
     test "an unknown realtime source is an invalid changeset and writes nothing" do
@@ -163,10 +219,68 @@ defmodule GtfsPlanner.Gtfs.ExportDefaultsTest do
       assert retried.include_flex == false
     end
 
+    test "a full run records the estimate defaults at creation and keeps them when defaults change" do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, %{
+                 estimate_missing_times: true,
+                 estimate_method: :even
+               })
+
+      assert {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+      assert run.estimate_missing_times == true
+      assert run.estimate_method == :even
+
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, %{
+                 estimate_missing_times: false,
+                 estimate_method: :distance
+               })
+
+      stored = Repo.get!(Run, run.id)
+      assert stored.estimate_missing_times == true
+      assert stored.estimate_method == :even
+    end
+
+    test "a run created with estimation off records false and nil" do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+
+      assert {:ok, _} =
+               ExportDefaults.update(organization.id, %{
+                 estimate_missing_times: false,
+                 estimate_method: :even
+               })
+
+      assert {:ok, run} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+      assert run.estimate_missing_times == false
+      assert run.estimate_method == nil
+    end
+
+    test "a pathways run records estimation off even when the defaults estimate" do
+      organization = organization_fixture()
+      version = gtfs_version_fixture(organization.id)
+
+      assert ExportDefaults.get(organization.id).estimate_missing_times == true
+
+      assert {:ok, pathways} =
+               ExportRuns.create_pending(organization.id, version.id, @actor, :pathways)
+
+      assert pathways.estimate_missing_times == false
+      assert pathways.estimate_method == nil
+    end
+
     test "public params cannot change the recorded switch" do
       changeset = Run.changeset(%Run{include_flex: false}, %{include_flex: true})
 
       assert changeset.changes == %{}
+
+      sneaky =
+        Run.changeset(%Run{}, %{estimate_missing_times: true, estimate_method: :even})
+
+      assert sneaky.changes == %{}
     end
   end
 end

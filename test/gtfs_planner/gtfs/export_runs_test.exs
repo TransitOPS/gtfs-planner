@@ -206,6 +206,21 @@ defmodule GtfsPlanner.Gtfs.ExportRunsTest do
              ExportRuns.renew_lease(organization.id, retry.id, second_generation, second_token)
   end
 
+  test "a new full run snapshots the estimate defaults and a pathways run records estimation off" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+
+    assert {:ok, full} = ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+    assert full.estimate_missing_times == true
+    assert full.estimate_method == :distance
+
+    assert {:ok, pathways} =
+             ExportRuns.create_pending(organization.id, version.id, @actor, :pathways)
+
+    assert pathways.estimate_missing_times == false
+    assert pathways.estimate_method == nil
+  end
+
   test "normalizes corrupt ready artifacts after failing the durable row" do
     organization = organization_fixture()
     version = gtfs_version_fixture(organization.id)

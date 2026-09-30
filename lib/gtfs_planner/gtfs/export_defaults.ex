@@ -28,7 +28,15 @@ defmodule GtfsPlanner.Gtfs.ExportDefaults do
     |> get()
     |> ExportDefault.changeset(attrs)
     |> Repo.insert(
-      on_conflict: {:replace, [:include_flex, :realtime_source, :updated_at]},
+      on_conflict:
+        {:replace,
+         [
+           :include_flex,
+           :realtime_source,
+           :estimate_missing_times,
+           :estimate_method,
+           :updated_at
+         ]},
       conflict_target: :organization_id,
       returning: true
     )
