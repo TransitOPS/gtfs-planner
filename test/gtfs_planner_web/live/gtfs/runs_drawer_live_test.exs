@@ -193,6 +193,17 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
       assert has_element?(view, "#run-drawer")
     end
 
+    test "opening a run puts it in the URL, so the view can be linked", ctx do
+      w = world(ctx)
+      [run_id | _] = run_ids(w)
+
+      view = open(ctx, w, "")
+
+      view |> element("#runs-run-#{run_id}") |> render_click()
+
+      assert_patch(view, "/gtfs/#{w.version.id}/runs?day=#{w.day_type_key}&run=#{run_id}")
+    end
+
     test "an unknown run opens nothing rather than an empty drawer", ctx do
       w = world(ctx)
       view = open(ctx, w, "run=9999")
