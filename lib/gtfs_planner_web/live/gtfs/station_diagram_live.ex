@@ -153,6 +153,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
      |> assign(:level_shared, false)
      |> assign(:level_id_manually_edited, false)
      |> assign(:pathway_error, nil)
+     |> assign(:pathway_outcome, nil)
      |> assign(:pathway_in_use, nil)
      |> assign(:child_stop_error, nil)
      |> assign(:child_stop_outcome, nil)
@@ -1276,6 +1277,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           pathway_form_dirty={@pathway_form_dirty}
           has_scale={scale_configured?(@active_stop_level)}
           pathway_error={@pathway_error}
+          pathway_outcome={@pathway_outcome}
           pathway_in_use={@pathway_in_use}
           history_open_for={@history_open_for}
           history_entries={@history_entries}
@@ -2559,14 +2561,19 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     if socket.assigns.mode == :add or socket.assigns.measurement_enabled do
       {:noreply, socket}
     else
-      pathway = Gtfs.get_pathway_with_stops!(id)
-      journal_context = journal_form_context(socket, params["journal_entry_id"])
+      case Stations.get_pathway(socket.assigns.audit_ctx, id) do
+        {:ok, pathway} ->
+          journal_context = journal_form_context(socket, params["journal_entry_id"])
 
-      {:noreply,
-       socket
-       |> close_journal_panel()
-       |> open_pathway_drawer(pathway)
-       |> assign(:journal_form_context, journal_context)}
+          {:noreply,
+           socket
+           |> close_journal_panel()
+           |> open_pathway_drawer(pathway)
+           |> assign(:journal_form_context, journal_context)}
+
+        {:error, :not_found} ->
+          {:noreply, assign(socket, :pathway_error, "Pathway not found.")}
+      end
     end
   end
 
@@ -2609,8 +2616,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
         if pair_count >= 2 do
           {:noreply, assign(socket, :pathway_error, "This stop pair already has two pathways")}
         else
-          organization_id = socket.assigns.current_organization.id
-          gtfs_version_id = socket.assigns.current_gtfs_version.id
           pathway_id = "pw_#{:crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)}"
 
           attrs =
@@ -2619,23 +2624,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               from_stop_id: from_stop.stop_id,
               to_stop_id: to_stop.stop_id,
               pathway_mode: 1,
-              is_bidirectional: true,
-              organization_id: organization_id,
-              gtfs_version_id: gtfs_version_id
+              is_bidirectional: true
             }
             |> maybe_put_auto_pathway_length(socket, from_stop, to_stop)
 
-          case Gtfs.create_pathway(attrs) do
+          case Stations.create_pathway(socket.assigns.audit_ctx, attrs) do
             {:ok, pathway} ->
-              Gtfs.record_change(
-                socket.assigns.audit_ctx,
-                :pathway,
-                pathway,
-                "created",
-                attrs
-              )
-
-              loaded_pathway = Gtfs.get_pathway_with_stops!(pathway.id)
+              {:ok, loaded_pathway} = Stations.get_pathway(socket.assigns.audit_ctx, pathway.id)
               refreshed_socket = refresh_lists(socket)
 
               pathway_pair =
@@ -2651,8 +2646,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                |> assign(:pathway_form, to_form(pathway_form_params(loaded_pathway)))
                |> clear_pathway_refusals()}
 
-            {:error, _changeset} ->
-              {:noreply, assign(socket, :pathway_error, "Failed to create pathway")}
+            {:error, reason} ->
+              {:noreply, assign_pathway_outcome(socket, reason)}
           end
         end
     end
@@ -2735,6 +2730,36 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   @impl true
+  def handle_event("reload_pathway", _params, socket) do
+    params = socket.assigns.pathway_form.params || %{}
+    socket = refresh_lists(socket)
+
+    case socket.assigns.editing_pathway do
+      %Pathway{id: id} ->
+        case Stations.get_pathway(socket.assigns.audit_ctx, id) do
+          {:ok, pathway} ->
+            pathway_pair = pair_siblings_for(pathway, socket.assigns.pathways_list)
+
+            {:noreply,
+             socket
+             |> assign(:editing_pathway, pathway)
+             |> assign(:editing_pathway_pair, pathway_pair)
+             |> assign(
+               :pathway_form,
+               to_form(Map.put(params, "lock_version", pathway.lock_version))
+             )
+             |> assign(:pathway_outcome, nil)}
+
+          {:error, :not_found} ->
+            {:noreply, assign_pathway_outcome(socket, :not_found)}
+        end
+
+      _ ->
+        {:noreply, assign_pathway_outcome(socket, :not_found)}
+    end
+  end
+
+  @impl true
   def handle_event("pathway_form_changed", params, socket) do
     form_params =
       case Map.get(params, "pathway") do
@@ -2745,7 +2770,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     {:noreply,
      socket
      |> assign(:pathway_form, to_form(one_way_when_exit_gate(form_params)))
-     |> clear_pathway_refusals()
+     |> assign(pathway_error: nil, pathway_in_use: nil)
      |> assign(:pathway_form_dirty, true)}
   end
 
@@ -3525,7 +3550,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
             {:noreply,
              socket
              |> assign(:pathway_form, to_form(updated_params))
-             |> clear_pathway_refusals()}
+             |> assign(pathway_error: nil, pathway_in_use: nil)}
 
           _ ->
             {:noreply,
@@ -3554,106 +3579,43 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       reversed_signposted_as: params["reversed_signposted_as"]
     }
 
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    station = socket.assigns.station
-
-    pathway = editing_pathway
-
-    cond do
-      is_nil(pathway) ->
-        {:noreply,
-         socket
-         |> assign(:pathway_error, "Pathway not found.")
-         |> assign(:pathway_form, to_form(params))}
-
-      pathway.organization_id != organization_id or pathway.gtfs_version_id != gtfs_version_id ->
-        {:noreply,
-         socket
-         |> assign(:pathway_error, "Unauthorized pathway access.")
-         |> assign(:pathway_form, to_form(params))}
-
-      is_nil(pathway.from_stop) or is_nil(pathway.to_stop) ->
-        {:noreply,
-         socket
-         |> assign(:pathway_error, "Pathway is not fully associated with stops.")
-         |> assign(:pathway_form, to_form(params))}
-
-      not stop_belongs_to_station?(
-        pathway.from_stop,
-        station.stop_id,
-        socket.assigns.platform_stop_ids
-      ) or
-          not stop_belongs_to_station?(
-            pathway.to_stop,
-            station.stop_id,
-            socket.assigns.platform_stop_ids
-          ) ->
-        {:noreply,
-         socket
-         |> assign(:pathway_error, "Unauthorized pathway access.")
-         |> assign(:pathway_form, to_form(params))}
-
-      true ->
-        case Gtfs.update_pathway(pathway, attrs) do
+    case editing_pathway do
+      %Pathway{} = pathway ->
+        case Stations.update_pathway(
+               socket.assigns.audit_ctx,
+               pathway.id,
+               attrs,
+               parse_int(params["lock_version"])
+             ) do
           {:ok, updated_pathway} ->
-            maybe_record_change(
-              socket.assigns.audit_ctx,
-              :pathway,
-              pathway,
-              updated_pathway,
-              attrs
-            )
-
             {:noreply,
              socket
              |> apply_pathway_save_refresh(pathway, updated_pathway)
              |> close_pathway_drawer_after_save()
              |> maybe_refresh_history_entries("pathway", updated_pathway.id)}
 
-          {:error, changeset} ->
+          {:error, %Ecto.Changeset{} = changeset} ->
             {:noreply, assign(socket, :pathway_form, to_form(changeset))}
+
+          {:error, reason} ->
+            {:noreply,
+             socket
+             |> assign(:pathway_form, to_form(params))
+             |> assign_pathway_outcome(reason)}
         end
+
+      _ ->
+        {:noreply,
+         socket
+         |> assign(:pathway_form, to_form(params))
+         |> assign_pathway_outcome(:not_found)}
     end
   end
 
   @impl true
-  def handle_event("flip_pathway", %{"id" => id}, socket) do
-    pathway =
-      try do
-        Gtfs.get_pathway_with_stops!(id)
-      rescue
-        Ecto.NoResultsError -> nil
-        Ecto.Query.CastError -> nil
-      end
-
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    station = socket.assigns.station
-
-    cond do
-      is_nil(pathway) ->
-        {:noreply, assign(socket, :pathway_error, "Pathway not found.")}
-
-      pathway.organization_id != organization_id or pathway.gtfs_version_id != gtfs_version_id ->
-        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
-
-      is_nil(pathway.from_stop) or is_nil(pathway.to_stop) ->
-        {:noreply, assign(socket, :pathway_error, "Pathway is not fully associated with stops.")}
-
-      not stop_belongs_to_station?(
-        pathway.from_stop,
-        station.stop_id,
-        socket.assigns.platform_stop_ids
-      ) or
-          not stop_belongs_to_station?(
-            pathway.to_stop,
-            station.stop_id,
-            socket.assigns.platform_stop_ids
-          ) ->
-        {:noreply, assign(socket, :pathway_error, "Unauthorized pathway access.")}
-
-      true ->
+  def handle_event("flip_pathway", %{"id" => id, "lock_version" => revision}, socket) do
+    case socket.assigns.editing_pathway do
+      %Pathway{id: ^id} = pathway ->
         # Read current form values so pending edits are preserved through the flip.
         form = socket.assigns.pathway_form
         form_signposted = form[:signposted_as] && form[:signposted_as].value
@@ -3676,18 +3638,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           min_width: parse_optional_decimal(form[:min_width] && form[:min_width].value)
         }
 
-        case Gtfs.update_pathway(pathway, flip_attrs) do
+        case Stations.update_pathway(
+               socket.assigns.audit_ctx,
+               id,
+               flip_attrs,
+               parse_int(revision)
+             ) do
           {:ok, updated_pathway} ->
-            maybe_record_change(
-              socket.assigns.audit_ctx,
-              :pathway,
-              pathway,
-              updated_pathway,
-              flip_attrs
-            )
-
             refreshed_socket = refresh_lists(socket)
-            reloaded = Gtfs.get_pathway_with_stops!(updated_pathway.id)
+            {:ok, reloaded} = Stations.get_pathway(socket.assigns.audit_ctx, updated_pathway.id)
 
             pathway_pair =
               pair_siblings_for(
@@ -3714,7 +3673,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
              |> clear_pathway_refusals()
              |> maybe_refresh_history_entries("pathway", reloaded.id)}
 
-          {:error, changeset} ->
+          {:error, %Ecto.Changeset{} = changeset} ->
             detail =
               changeset
               |> Ecto.Changeset.traverse_errors(fn {msg, _opts} -> msg end)
@@ -3728,7 +3687,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                 else: "Failed to flip: #{detail}"
 
             {:noreply, assign(socket, :pathway_error, message)}
+
+          {:error, reason} ->
+            {:noreply, assign_pathway_outcome(socket, reason)}
         end
+
+      _ ->
+        {:noreply, assign(socket, :pathway_error, "Pathway not found.")}
     end
   end
 
@@ -4508,7 +4473,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
     case refreshed_socket.assigns.editing_pathway do
       %{id: id} when id == pathway.id ->
-        reloaded = Gtfs.get_pathway_with_stops!(pathway.id)
+        {:ok, reloaded} = Stations.get_pathway(refreshed_socket.assigns.audit_ctx, pathway.id)
 
         pathway_pair =
           pair_siblings_for(
@@ -6195,10 +6160,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp apply_pathway_save_refresh(socket, _old_pathway, updated_pathway) do
     active_level = socket.assigns.active_level
 
-    reloaded =
-      updated_pathway.id
-      |> Gtfs.get_pathway_with_stops!()
-      |> merge_active_level_flags(active_level)
+    {:ok, loaded_pathway} = Stations.get_pathway(socket.assigns.audit_ctx, updated_pathway.id)
+    reloaded = merge_active_level_flags(loaded_pathway, active_level)
 
     badges_before = socket.assigns.cross_level_badges_by_stop
 
@@ -6689,6 +6652,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp pathway_form_params(pathway) do
     %{
       "pathway_id" => pathway.pathway_id,
+      "lock_version" => pathway.lock_version,
       "pathway_mode" => to_string(pathway.pathway_mode),
       "is_bidirectional" => pathway.is_bidirectional,
       "traversal_time" => pathway.traversal_time,
@@ -7006,9 +6970,6 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp create_pathway_between_stops(socket, from_stop_id, to_stop_id) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-
     with {:ok, from_stop} <- fetch_intent_stop(socket, from_stop_id),
          {:ok, to_stop} <- fetch_intent_stop(socket, to_stop_id),
          pair_key = normalize_pair_key(from_stop.stop_id, to_stop.stop_id),
@@ -7022,23 +6983,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
           from_stop_id: from_stop.stop_id,
           to_stop_id: to_stop.stop_id,
           pathway_mode: 1,
-          is_bidirectional: true,
-          organization_id: organization_id,
-          gtfs_version_id: gtfs_version_id
+          is_bidirectional: true
         }
         |> maybe_put_auto_pathway_length(socket, from_stop, to_stop)
 
-      case Gtfs.create_pathway(attrs) do
+      case Stations.create_pathway(socket.assigns.audit_ctx, attrs) do
         {:ok, pathway} ->
-          Gtfs.record_change(
-            socket.assigns.audit_ctx,
-            :pathway,
-            pathway,
-            "created",
-            attrs
-          )
-
-          loaded_pathway = Gtfs.get_pathway_with_stops!(pathway.id)
+          {:ok, loaded_pathway} = Stations.get_pathway(socket.assigns.audit_ctx, pathway.id)
           refreshed_socket = refresh_lists(socket)
 
           pathway_pair =
@@ -7062,7 +7013,9 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            )
            |> clear_pathway_refusals()}
 
-        {:error, _changeset} ->
+        {:error, reason} ->
+          outcome = pathway_outcome(reason)
+
           {:noreply,
            socket
            |> assign(:show_pathway_drawer, false)
@@ -7071,7 +7024,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
            |> assign(:pathway_form_dirty, false)
            |> assign(:editing_pathway, nil)
            |> assign(:active_point_id, nil)
-           |> assign(:pathway_error, "Failed to create pathway")}
+           |> assign(:pathway_error, outcome.message)}
       end
     else
       true ->
@@ -7479,11 +7432,59 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
     |> clear_pathway_refusals()
   end
 
-  # AC-12: the closure-backed refusal clears with the plain failure message, so
-  # no stale explanation outlives the pathway it described. Callers reset it
-  # whenever the drawer, the edited pathway or the form changes.
+  # Clear prior pathway messages when the drawer or edited pathway changes.
+  # A revision conflict remains visible while the user edits their draft.
   defp clear_pathway_refusals(socket) do
-    assign(socket, pathway_error: nil, pathway_in_use: nil)
+    assign(socket, pathway_error: nil, pathway_outcome: nil, pathway_in_use: nil)
+  end
+
+  defp assign_pathway_outcome(socket, reason),
+    do: assign(socket, :pathway_outcome, pathway_outcome(reason))
+
+  defp pathway_outcome(reason) do
+    case reason do
+      {:stale, _revision} ->
+        %{
+          kind: "warning",
+          message: "This pathway changed since you opened it. Your edits are still here.",
+          reload?: true
+        }
+
+      :forbidden ->
+        %{
+          kind: "error",
+          message: "You no longer have edit access to this organization.",
+          reload?: false
+        }
+
+      :not_found ->
+        %{kind: "warning", message: "This pathway no longer exists.", reload?: true}
+
+      :pathway_in_use ->
+        %{
+          kind: "warning",
+          message: "Can't delete this pathway: a closure plan uses it.",
+          reload?: false
+        }
+
+      {:in_use, counts} ->
+        uses =
+          counts
+          |> Enum.filter(fn {_key, count} -> count > 0 end)
+          |> Enum.map_join(", ", fn {key, count} -> "#{count} #{key}" end)
+
+        %{kind: "warning", message: "Can't delete this pathway: #{uses}.", reload?: false}
+
+      :busy ->
+        %{
+          kind: "warning",
+          message: "The station is being changed by another action. Try again.",
+          reload?: false
+        }
+
+      _ ->
+        %{kind: "error", message: "The pathway could not be saved. Try again.", reload?: false}
+    end
   end
 
   defp restream_mode_dependent_layers(socket) do
@@ -7619,8 +7620,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       {:ok, pathway} ->
         delete_pathway_and_refresh(socket, pathway)
 
-      {:error, message} ->
-        {:noreply, socket |> assign(:pathway_error, message) |> assign(:pathway_in_use, nil)}
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> assign(:pathway_error, "Pathway not found.")
+         |> assign(:pathway_in_use, nil)}
     end
   end
 
@@ -7709,42 +7713,27 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   defp refusal_label(pathway), do: pathway.pathway_id
 
   defp pathway_for_deletion(socket, pathway_id) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-    station = socket.assigns.station
-    pathway = Enum.find(socket.assigns.pathways_list, &(&1.id == pathway_id))
-
-    cond do
-      is_nil(pathway) or pathway.organization_id != organization_id or
-          pathway.gtfs_version_id != gtfs_version_id ->
-        {:error, "Unauthorized pathway access."}
-
-      is_nil(pathway.from_stop) or is_nil(pathway.to_stop) ->
-        {:error, "Pathway is not fully associated with stops."}
-
-      not stop_belongs_to_station?(
-        pathway.from_stop,
-        station.stop_id,
-        socket.assigns.platform_stop_ids
-      ) or
-          not stop_belongs_to_station?(
-            pathway.to_stop,
-            station.stop_id,
-            socket.assigns.platform_stop_ids
-          ) ->
-        {:error, "Unauthorized pathway access."}
-
-      true ->
+    case socket.assigns.editing_pathway do
+      %Pathway{id: ^pathway_id} = pathway ->
         {:ok, pathway}
+
+      _ ->
+        case Enum.find(socket.assigns.pathways_list, &(&1.id == pathway_id)) do
+          %Pathway{} = pathway -> {:ok, pathway}
+          nil -> {:error, :not_found}
+        end
     end
   end
 
   defp delete_pathway_and_refresh(socket, pathway) do
     socket = cancel_and_reset_drawer_journal(socket)
 
-    case Gtfs.delete_pathway(pathway) do
+    case Stations.delete_pathway(
+           socket.assigns.audit_ctx,
+           pathway.id,
+           pathway.lock_version
+         ) do
       {:ok, _deleted_pathway} ->
-        Gtfs.record_change(socket.assigns.audit_ctx, :pathway, pathway, "deleted", %{})
         refreshed_socket = refresh_lists(socket)
 
         remaining_siblings =
@@ -7760,16 +7749,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
       {:error, :pathway_in_use} ->
         {:noreply, assign(socket, :pathway_in_use, pathway_in_use_refusal(socket, [pathway]))}
 
-      {:error, _changeset} ->
+      {:error, reason} ->
         {:noreply,
          socket
-         |> assign(:pathway_error, "Failed to delete pathway")
+         |> assign_pathway_outcome(reason)
          |> assign(:pathway_in_use, nil)}
     end
   end
 
   defp update_pathway_drawer(refreshed_socket, [remaining_pathway]) do
-    refreshed_pathway = Gtfs.get_pathway_with_stops!(remaining_pathway.id)
+    {:ok, refreshed_pathway} =
+      Stations.get_pathway(refreshed_socket.assigns.audit_ctx, remaining_pathway.id)
 
     refreshed_socket
     |> cancel_and_reset_drawer_journal()
@@ -7922,32 +7912,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
   end
 
   defp confirmation_pathway(socket, id) do
-    organization_id = socket.assigns.current_organization.id
-    gtfs_version_id = socket.assigns.current_gtfs_version.id
-
-    with {:ok, uuid} <- Ecto.UUID.cast(id),
-         %Pathway{} = pathway <- Gtfs.get_pathway(uuid),
-         true <- pathway.organization_id == organization_id,
-         true <- pathway.gtfs_version_id == gtfs_version_id,
-         loaded_pathway <- Gtfs.get_pathway_with_stops!(uuid),
-         false <- is_nil(loaded_pathway.from_stop),
-         false <- is_nil(loaded_pathway.to_stop),
-         true <-
-           stop_belongs_to_station?(
-             loaded_pathway.from_stop,
-             socket.assigns.station.stop_id,
-             socket.assigns.platform_stop_ids
-           ),
-         true <-
-           stop_belongs_to_station?(
-             loaded_pathway.to_stop,
-             socket.assigns.station.stop_id,
-             socket.assigns.platform_stop_ids
-           ) do
-      {:ok, loaded_pathway}
-    else
-      _ -> {:error, :out_of_scope}
-    end
+    Stations.get_pathway(socket.assigns.audit_ctx, id)
   end
 
   defp confirmation_level(socket, id) do

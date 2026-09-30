@@ -5573,6 +5573,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :pathway_form_dirty, :boolean, default: false
   attr :has_scale, :boolean, default: false
   attr :pathway_error, :string, default: nil
+  attr :pathway_outcome, :any, default: nil
   attr :pathway_in_use, :any, default: nil
   attr :history_open_for, :any, default: nil
   attr :history_entries, :list, default: []
@@ -5721,6 +5722,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           editing_pathway={@editing_pathway}
           has_scale={@has_scale}
           pathway_error={@pathway_error}
+          pathway_outcome={@pathway_outcome}
           pathway_in_use={@pathway_in_use}
         />
       </div>
@@ -5940,6 +5942,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           class="min-h-11"
           phx-click="flip_pathway"
           phx-value-id={@editing_pathway.id}
+          phx-value-lock-version={@editing_pathway.lock_version}
         >
           Flip direction
         </.button>
@@ -6159,6 +6162,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :editing_pathway, :any
   attr :has_scale, :boolean, default: false
   attr :pathway_error, :string, default: nil
+  attr :pathway_outcome, :any, default: nil
   attr :pathway_in_use, :any, default: nil
 
   defp pathway_form(assigns) do
@@ -6194,6 +6198,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       <.drawer_scroll>
         <%!-- ID is hidden as it's auto-managed or readonly --%>
         <.input field={@pathway_form[:pathway_id]} type="hidden" />
+        <.input field={@pathway_form[:lock_version]} type="hidden" />
+        <.message
+          :if={@pathway_outcome}
+          id="pathway-outcome"
+          kind={@pathway_outcome.kind}
+          title={@pathway_outcome.message}
+          tabindex="-1"
+          phx-mounted={JS.focus()}
+          class="break-words"
+        >
+          <:action :if={@pathway_outcome.reload?}>
+            <.button
+              id="pathway-reload"
+              type="button"
+              variant="secondary"
+              phx-click="reload_pathway"
+              class="min-h-11"
+            >
+              Reload station
+            </.button>
+          </:action>
+        </.message>
         <.deletion_refusal
           :if={@pathway_in_use}
           id="pathway-in-use-error"
@@ -6324,7 +6350,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         >
           Cancel
         </.button>
-        <.button id="pathway-submit" type="submit" class="min-h-11">Save changes</.button>
+        <.button
+          id="pathway-submit"
+          type="submit"
+          class="min-h-11"
+          disabled={@pathway_outcome && @pathway_outcome.kind == "error"}
+        >
+          Save changes
+        </.button>
       </.drawer_footer>
     </.form>
     """

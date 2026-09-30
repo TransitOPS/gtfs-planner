@@ -6990,7 +6990,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#pathways-table-error", "Pathway not found.")
     end
 
-    test "flip pathway for pathway outside station shows unauthorized error without crashing", %{
+    test "flip pathway for pathway outside station shows not found without crashing", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -7041,7 +7041,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       render_hook(view, "flip_pathway", %{"id" => unauthorized_pathway.id})
 
-      assert has_element?(view, "#pathways-table-error", "Unauthorized pathway access.")
+      assert has_element?(view, "#pathways-table-error", "Pathway not found.")
     end
   end
 
