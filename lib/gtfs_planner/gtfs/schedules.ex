@@ -56,6 +56,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatterns.Materializer
   alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.Schedules.ServiceMix
   alias GtfsPlanner.Gtfs.Schedules.Summary
   alias GtfsPlanner.Gtfs.Schedules.Timetable
   alias GtfsPlanner.Gtfs.Schedules.TripChanges
@@ -142,6 +143,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           | :trip_id_conflict
           | :negative_time
           | :invalid_chronology
+          | {:mixed_service, map()}
           | :busy
 
   @type update_attrs :: %{
@@ -278,6 +280,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   written in the same transaction with one shared `operation_id`, so an audit
   failure rolls back every row this call created. A unique-index violation on
   `trip_id` rolls back `:trip_id_conflict` rather than renaming the ID.
+
+  A create that would add the pattern's first listed trips to a service date that
+  already carries its frequency service is refused with
+  `{:error, {:mixed_service, details}}` and writes nothing (R9, AC-20), while a
+  pattern and date that already mix stay creatable.
   """
   @spec create_trips(String.t(), create_attrs(), AuditContext.t()) ::
           {:ok, %{trips: [Trip.t()]}} | {:error, Ecto.Changeset.t() | create_error()}
@@ -3497,6 +3504,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     :ok = Calendars.lock_service_for_reference!(organization_id, version_id, service_id)
     route = RoutePatterns.lock_published_route!(audit_context, route_id)
     pattern = RoutePatterns.lock_pattern!(route, pattern_id)
+    :ok = check_service_mix!(organization_id, version_id, route, pattern, service_id)
     shape_attrs = Alignments.trip_shape_attrs(pattern)
     timing = locked_timing!(pattern, timed_pattern_id)
 
@@ -3539,6 +3547,41 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     audit_created_trips!(trips, starts, materialized, timing, audit_context)
 
     %{trips: trips}
+  end
+
+  # R9 (INV-5): the new trips are all listed and share the requested service, and
+  # the rule is set-based per service, so one `after` entry stands for the whole
+  # batch. The pattern lock is held, so no writer following the rule-table lock
+  # order can add a trip or a window to this pattern until this transaction ends.
+  defp check_service_mix!(organization_id, version_id, route, pattern, service_id) do
+    before_trips = pattern_trip_kinds(organization_id, version_id, route, pattern)
+    after_trips = before_trips ++ [%{service_id: service_id, frequency?: false}]
+    service_dates = DayTypes.service_dates(load_calendars!(organization_id, version_id))
+
+    case ServiceMix.check(before_trips, after_trips, service_dates) do
+      :ok -> :ok
+      {:error, {:mixed_service, details}} -> Repo.rollback({:mixed_service, details})
+    end
+  end
+
+  # Every trip already on the pattern, with the frequency flag the rule reads.
+  # Trips whose stored pattern is gone (unlinked) are on no pattern and are not
+  # part of the mix check, the same way `load_change_state/3` reads them.
+  defp pattern_trip_kinds(organization_id, version_id, route, pattern) do
+    trips =
+      from(t in Trip,
+        where:
+          t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+            t.route_id == ^route.route_id and t.route_pattern_id == ^pattern.route_pattern_id,
+        order_by: [asc: t.id]
+      )
+      |> Repo.all()
+
+    frequencies = load_frequencies(organization_id, version_id, trips)
+
+    Enum.map(trips, fn trip ->
+      %{service_id: trip.service_id, frequency?: Map.get(frequencies, trip.trip_id, []) != []}
+    end)
   end
 
   defp materialized_stop_times(starts, occurrences, timing_rows) do

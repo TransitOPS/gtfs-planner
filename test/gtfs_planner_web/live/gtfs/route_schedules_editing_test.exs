@@ -1212,6 +1212,20 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
                "The trips couldn't be deleted. Nothing was removed. Try again."
     end
 
+    test "the mixing refusal names the service day the add drawer wrote to (R9, AC-20)" do
+      assert ScheduleComponents.error_message(
+               {:mixed_service, %{service_ids: ["WKD"], date_count: 2}}
+             ) ==
+               "WKD already runs frequency service on this pattern. " <>
+                 "Listed trips can't run on the same days. Convert it to scheduled trips first."
+
+      assert ScheduleComponents.error_message(
+               {:mixed_service, %{service_ids: ["SAT", "WKD"], date_count: 3}}
+             ) ==
+               "SAT, WKD already run frequency service on this pattern. " <>
+                 "Listed trips can't run on the same days. Convert the frequency service to scheduled trips first."
+    end
+
     test "the disconnected state disables Add and Save until reconnected", context do
       scope = editing_scope(context)
       {:ok, view, _html} = live(context.conn, schedules_path(scope))

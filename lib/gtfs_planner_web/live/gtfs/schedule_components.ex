@@ -1415,11 +1415,11 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
       "?" <> URI.encode_query(%{"day" => drawer.block_day_key, "trip" => drawer.trip_id})
   end
 
-  # Fixed UI copy for every error atom a schedule mutation can return (CR-6).
-  # Raw atoms never reach the screen: an unknown atom falls back to the save
+  # Fixed UI copy for every error a schedule mutation can return (CR-6).
+  # Raw errors never reach the screen: an unknown reason falls back to the save
   # failure sentence.
   @doc "Returns the fixed sentence a schedule mutation error shows."
-  @spec error_message(atom() | nil) :: String.t()
+  @spec error_message(atom() | {:mixed_service, map()} | nil) :: String.t()
   def error_message(:stale) do
     "This trip changed since you opened it. Reload it to see the current values."
   end
@@ -1472,6 +1472,19 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   def error_message(:too_many_trips) do
     "Too many trips. Add 200 or fewer at a time by increasing the interval or shortening the time range."
+  end
+
+  # The refused services are the calendar IDs whose dates would become mixed (R9).
+  # `error_message/1` reads no payload, so it names those IDs rather than the
+  # calendars' display names.
+  def error_message({:mixed_service, %{service_ids: [service_id]}}) do
+    "#{service_id} already runs frequency service on this pattern. " <>
+      "Listed trips can't run on the same days. Convert it to scheduled trips first."
+  end
+
+  def error_message({:mixed_service, %{service_ids: service_ids}}) do
+    "#{Enum.join(service_ids, ", ")} already run frequency service on this pattern. " <>
+      "Listed trips can't run on the same days. Convert the frequency service to scheduled trips first."
   end
 
   def error_message(_other), do: save_failure_copy()
