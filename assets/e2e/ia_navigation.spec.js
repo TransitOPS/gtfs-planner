@@ -262,16 +262,17 @@ for (const { width, height, label } of VIEWPORTS) {
         await expect(
           page.locator("#operations-sub-nav a[aria-current='page']"),
         ).toHaveText(title);
-        // Runs is a built page, so it must not render the placeholder. Rosters
-        // still does, and the loop checks each title's own expectation rather
-        // than assuming they agree.
-        if (title === "Runs") {
-          await expect(page.locator("#runs-page")).toBeAttached();
-          await expect(page.locator("#coming-soon")).toHaveCount(0);
-        } else {
+        // Rosters is the one Operations placeholder left; Runs and Blocks are
+        // built pages and must not render it.
+        if (title === "Rosters") {
           await expect(page.locator("#coming-soon-status")).toHaveText(
             /Coming soon/,
           );
+        } else {
+          await expect(page.locator("#coming-soon")).toHaveCount(0);
+        }
+        if (title === "Runs") {
+          await expect(page.locator("#runs-page")).toBeAttached();
         }
         await expectNoPageOverflow(page);
       }

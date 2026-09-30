@@ -238,14 +238,18 @@ test.describe("Runs duty chart roving row", () => {
     expect(await page.locator(`${row(SPLIT_RUN)} .runs-piece`).first().evaluate((el) => el.tagName)).toBe("BUTTON");
 
     await page.locator(bar(SPLIT_RUN, 1)).focus();
-    // Enter does not crash the channel and does not move focus.
+    // Enter clicks the bar, and a bar's click opens its run's drawer.
     await page.keyboard.press("Enter");
-    expect(await focusedPiece(page)).toBe("1");
+    await expect(page.locator('#run-drawer-overlay[data-open="true"]')).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`run=${SPLIT_RUN}`));
   });
 
   // a LiveView patch (sort) keeps tabindex 0 on each row's first bar.
   test("sorting re-renders the rows and every row keeps one tab stop", async ({ page }) => {
-    await page.locator(bar(SPLIT_RUN, 2)).focus();
+    // The hook re-points the tab stop only when a key moves focus, so the
+    // reader walks to the second piece rather than being placed on it.
+    await page.locator(bar(SPLIT_RUN, 1)).focus();
+    await page.keyboard.press("ArrowRight");
     expect(await tabStopsIn(page, SPLIT_RUN)).toEqual(["-1", "0"]);
 
     await page.locator("#runs-timeline th button[phx-value-key=paid]").click();

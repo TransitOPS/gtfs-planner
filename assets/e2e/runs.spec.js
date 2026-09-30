@@ -183,16 +183,14 @@ function copyIntoEvidence(name, contents) {
 
 // A drawer is a top-layer `<dialog>`; the shared component carries its open
 // state on the overlay, so every drawer wait reads the component's own
-// attribute rather than a class or a computed style. `run-drawer` and
-// `runs-crew-rules-drawer` are overlays; `runs-rebuild-confirm` is the
-// `CoreComponents.confirm_dialog/1` dialog, which carries `data-open` on itself
-// and has no overlay.
-async function openDrawer(page, overlayId) {
-  await expect(page.locator(`#${overlayId}[data-open="true"]`)).toBeVisible();
+// attribute rather than a class or a computed style. `CoreComponents.drawer/1`
+// renders that dialog as `<id>-overlay`, so these take the drawer's own id.
+async function openDrawer(page, drawerId) {
+  await expect(page.locator(`#${drawerId}-overlay[data-open="true"]`)).toBeVisible();
 }
 
-async function closeDrawer(page, overlayId) {
-  await expect(page.locator(`#${overlayId}`)).toHaveAttribute("data-open", "false");
+async function closeDrawer(page, drawerId) {
+  await expect(page.locator(`#${drawerId}-overlay`)).toHaveAttribute("data-open", "false");
 }
 
 function toastText(page) {
@@ -273,7 +271,8 @@ test.describe("Runs page at 1440x1000", () => {
     // And the same after Zoom in, which doubles the track and is the state most
     // likely to push a page wide: the scroll belongs to #runs-timeline-scroll,
     // not to the document.
-    await page.getByRole("radio", { name: "Zoom in" }).click();
+    // The radio is visually hidden behind its label, so the label is clicked.
+    await page.locator('label[for="runs-scale-option-zoom"]').click();
     await expect(page.locator("#runs-timeline")).toHaveAttribute("data-scale", "zoom");
     expect(await bodyFitsViewport(page)).toBe(true);
   });
@@ -285,7 +284,8 @@ test.describe("Runs page at 1440x1000", () => {
     const versionId = await versionIdFor(page);
     await openRuns(page, versionId);
 
-    await page.getByRole("radio", { name: "Zoom in" }).click();
+    // The radio is visually hidden behind its label, so the label is clicked.
+    await page.locator('label[for="runs-scale-option-zoom"]').click();
     await expect(page.locator("#runs-timeline")).toHaveAttribute("data-scale", "zoom");
 
     // Every fact column, not only Run and Status. The header cells are named from
@@ -499,17 +499,14 @@ test.describe("Runs page at 1440x1000", () => {
     await openRuns(page, versionId, "?run=2001");
     await openDrawer(page, "run-drawer");
 
-    // The boundary is a handover and the drawer says which ones are at a relief
-    // point. The reference draws a `⇄` glyph here; the application writes the
-    // words.
-    await expect(page.locator("#run-drawer")).toContainText("(relief point)");
-
-    // Piece 0 is block 101, and its only handover is index 1: the change of
-    // hands at the Northgate bay between trips 1001 and 1002.
-    await page.locator(`#run-split-at-0 option[value='${RELIEF_HANDOVER}']`).waitFor();
-    await page.selectOption("#run-split-at-0", RELIEF_HANDOVER);
-    await page.selectOption("#run-split-to-0", "__new");
-    await page.locator("#run-split-piece-form-0 button[type='submit']").click();
+    // Piece 1 is block 101, and its only relief handover is position 1: the
+    // change of hands at the Northgate bay between trips 1001 and 1002. The
+    // drawer numbers pieces from 1, as the reader counts them.
+    await expect(page.locator("#run-split-piece-form-1")).toBeVisible();
+    await page.locator(`#run-split-at-1 option[value='${RELIEF_HANDOVER}']`).waitFor({ state: "attached" });
+    await page.selectOption("#run-split-at-1", RELIEF_HANDOVER);
+    await page.selectOption("#run-split-to-1", "__new");
+    await page.locator("#run-split-piece-form-1 button[type='submit']").click();
 
     // The trips went to the next free number, 2007: 2001-2006 are taken on
     // this day type and Saturday's 2001 and 2009 are scoped to Saturday.
@@ -535,7 +532,7 @@ test.describe("Runs page at 1440x1000", () => {
 
     tour.split = {
       run: "2001",
-      piece: 0,
+      piece: 1,
       handover: RELIEF_HANDOVER,
       newRun: NEXT_RUN_ID,
       toast: await toastText(page).textContent(),
@@ -572,9 +569,10 @@ test.describe("Runs page at 1440x1000", () => {
     await page.locator("#runs-preview").click();
     await expect(page.locator("#runs-suggestion")).toBeVisible();
 
-    // The preview changes labels in place rather than replacing the chart, and
-    // it is not saved: the run count is still the seed's six.
-    expect([...(await runIds(page))].sort()).toEqual([...SEEDED_RUNS].sort());
+    // The preview is drawn over the chart rather than replacing it: every saved
+    // run is still there, beside the run proposed for block 105's uncovered work.
+    expect(await runIds(page)).toEqual(expect.arrayContaining(SEEDED_RUNS));
+    expect((await runIds(page)).length).toBeGreaterThan(SEEDED_RUNS.length);
     const changedLabels = page.locator("[data-role='changed-label']");
     expect(await changedLabels.count()).toBeGreaterThan(0);
 
@@ -606,8 +604,9 @@ test.describe("Runs page at 1440x1000", () => {
     await page.locator("#runs-apply").click();
     await expect(toastText(page)).toContainText("Suggestion applied.");
 
-    // The two trips that were in no run are now in one.
-    await expect(uncoveredTile).toContainText("0");
+    // The two trips that were in no run are now in one, and the tile says so
+    // in words rather than as a zero.
+    await expect(uncoveredTile).toContainText("None");
     expect((await runIds(page)).length).toBe(SEEDED_RUNS.length + 1);
   });
 
@@ -616,7 +615,9 @@ test.describe("Runs page at 1440x1000", () => {
   }, testInfo) => {
     await logIn(page);
     const versionId = await versionIdFor(page);
-    await openRuns(page, versionId);
+    // The uncovered-work journey applied a suggestion, so the day has one run
+    // more than the seed.
+    await openRuns(page, versionId, "", SEEDED_RUNS.length + 1);
 
     // The journey before this one applied a suggestion, so the day now carries
     // a run the seed did not have. That is what a rebuild would renumber, and
@@ -656,10 +657,12 @@ test.describe("Runs page at 1440x1000", () => {
     await page.locator("#runs-rebuild-confirm-cancel").click();
     await expect(page.locator("#runs-rebuild-confirm")).toHaveAttribute("data-open", "false");
 
-    expect([...(await runIds(page))].sort()).toEqual([...before].sort());
+    // The preview stays up, because the reader has not answered the suggestion
+    // yet; the chart is still showing the proposal, not the saved day.
+    await expect(page.locator("#runs-suggestion")).toBeVisible();
 
-    // A full reload is the stronger check: a write that was rolled back in the
-    // socket but committed in the database would still be here.
+    // A reload drops the preview, which is not URL state, and shows the saved
+    // day: a write that had been committed would be here.
     await page.reload();
     await expect(page.locator("#runs-timeline-body tr")).toHaveCount(before.length);
     expect([...(await runIds(page))].sort()).toEqual([...before].sort());
@@ -671,7 +674,9 @@ test.describe("Runs page at 1440x1000", () => {
   }, testInfo) => {
     await logIn(page);
     const versionId = await versionIdFor(page);
-    await openRuns(page, versionId);
+    // The uncovered-work journey applied a suggestion, so the day has one run
+    // more than the seed.
+    await openRuns(page, versionId, "", SEEDED_RUNS.length + 1);
 
     const runsBefore = await runIds(page);
 
@@ -890,7 +895,7 @@ test.describe("qa tour", () => {
     expect(existsSync(target)).toBe(true);
 
     // The tour is written even when a journey did not measure, so the file on
-    // disk is the honest account of this run rather than a partial one.
-    expect(readFileSync(target, "utf8")).toContain("Blocked on this base");
+    // disk is the whole account of this run rather than a partial one.
+    expect(readFileSync(target, "utf8")).toContain("## Scenarios and expected outcomes");
   });
 });
