@@ -6349,6 +6349,35 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Deletes exactly the listed in-seat records through
+  `GtfsPlanner.Gtfs.InSeatTransfers.remove_records/2`.
+
+  `pairs` is the caller's exact target list of `{id, updated_at}` rows — the ones the
+  trip drawer, the day type or the version listed for removal — and the organization,
+  version and actor come from the audit context alone, so a foreign tenant or version
+  is never written (R5).
+
+  The listed rows are loaded `FOR UPDATE`, scoped to that organization, version and
+  types 4–5, and each stored `updated_at` is compared with the timestamp the editor
+  saw (R7, INV-4). An empty list or a malformed pair is `{:error, :invalid_input}`
+  before a transaction opens; a missing, type 0–3 or other-version id is
+  `{:error, :not_found}` and any stale member is `{:error, :stale}`, both deleting
+  nothing. Otherwise every listed row is deleted, each with its own `"deleted"`
+  change log sharing one `operation_id`, and the call answers `{:ok, count}`
+  (INV-5). Removal never evaluates R1 and never validates references, so a damaged
+  imported row stays removable.
+  """
+  @spec remove_in_seat_records(
+          [{Ecto.UUID.t(), DateTime.t() | String.t()}],
+          AuditContext.t()
+        ) ::
+          {:ok, pos_integer()}
+          | {:error, :invalid_input | :not_found | :stale | :busy | {:audit_failed, term()}}
+  def remove_in_seat_records(pairs, %AuditContext{} = audit) do
+    InSeatTransfers.remove_records(pairs, audit)
+  end
+
+  @doc """
   Returns every Block rules setting for an organization's GTFS version.
 
   A version with no stored setting returns the defaults (5 minutes minimum layover,
