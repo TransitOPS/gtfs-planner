@@ -179,7 +179,8 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   @doc """
   Renders the toolbar above the timetables: which stops the tables show, which
-  pattern they cover, and how many trips are in view.
+  pattern they cover, the custom-times filter, the keyboard shortcut sheet's
+  button, and how many trips are in view.
   """
   attr :pattern_form, :any, required: true
   attr :patterns, :list, required: true
@@ -240,6 +241,19 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
       >
         <.icon :if={@custom_filter?} name="hero-check-circle" class="size-4 text-action" />
         Custom times <span class="tabular-nums font-normal text-muted">{@custom_count}</span>
+      </button>
+
+      <button
+        id="keyboard-shortcuts-button"
+        type="button"
+        phx-click="toggle_shortcuts"
+        phx-value-source="button"
+        class={[
+          "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-control px-3 text-sm font-[650] text-strong hover:bg-canvas",
+          focus_inset()
+        ]}
+      >
+        <.icon name="hero-key" class="size-4" />Keyboard shortcuts
       </button>
 
       <p id="schedules-view-counts" role="status" class="ml-auto text-sm text-muted">

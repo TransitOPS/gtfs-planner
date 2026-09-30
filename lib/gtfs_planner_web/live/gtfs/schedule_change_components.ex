@@ -1380,6 +1380,131 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
     end)
   end
 
+  # --- keyboard shortcut sheet ------------------------------------------------
+
+  @doc """
+  Renders the keyboard shortcut sheet.
+
+  The reference's `#shortcut-sheet` in the delete dialog's chrome: the scope
+  note, then the reference's four groups — Move around, Change times, Trips and
+  Copy and undo — as `<kbd>` rows. The grid's `?` key and the filter bar's
+  Keyboard shortcuts button both toggle it through `toggle_shortcuts`. The sheet
+  is informational, so it carries one action, Close: the modal chrome traps
+  focus, Escape closes it through the dismiss button, and the opener takes focus
+  back when it closes (`return_focus_id` when the button opened it, otherwise
+  the dialog's own restore to the grid cell the key was pressed on).
+  """
+  attr :open, :boolean, required: true
+  attr :return_focus_id, :string, default: nil
+
+  def shortcut_sheet(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="shortcut-sheet"
+      chrome="planner"
+      size="2xl"
+      open={@open}
+      title="Keyboard shortcuts"
+      confirm_label="Close"
+      pending_label="Closing…"
+      on_confirm="toggle_shortcuts"
+      cancel_id="shortcuts-close"
+      cancel_label="Close"
+      on_cancel="toggle_shortcuts"
+      single_action
+      return_focus_id={@return_focus_id}
+    >
+      <p class="text-[13px] leading-snug text-muted">
+        These work while the cursor is in the timetable. Typing in a field, a drawer or a menu works as usual. On Windows, use Ctrl for ⌘.
+      </p>
+      <div class="mt-4 grid gap-x-8 gap-y-5 sm:grid-cols-2">
+        <section :for={{heading, rows} <- shortcut_groups()}>
+          <h3 class="text-[13px] font-[650] text-default">{heading}</h3>
+          <dl class="mt-2 grid gap-2">
+            <div
+              :for={{combos, label} <- rows}
+              class="grid grid-cols-[150px_minmax(0,1fr)] items-center gap-3 text-sm"
+            >
+              <.shortcut_keys combos={combos} />
+              <dd class="text-default">{label}</dd>
+            </div>
+          </dl>
+        </section>
+      </div>
+    </.confirm_dialog>
+    """
+  end
+
+  # The sheet's key caps (the reference's `keys` helper): a chord like ⌘Z or ⇧↓
+  # is one cap, a named key keeps its own cap joined by "+", and the ways to
+  # press the same shortcut are joined by "or".
+  attr :combos, :list, required: true, doc: "one or more key combinations"
+
+  defp shortcut_keys(assigns) do
+    ~H"""
+    <dt class="flex flex-wrap items-center gap-1 whitespace-nowrap">
+      <%= for {combo, index} <- Enum.with_index(@combos) do %>
+        <span :if={index > 0} class="px-0.5 text-muted">or</span>
+        <%= if chord?(combo) do %>
+          <kbd>{Enum.join(combo)}</kbd>
+        <% else %>
+          <%= for {key, key_index} <- Enum.with_index(combo) do %>
+            <span :if={key_index > 0} class="px-0.5 text-muted">+</span>
+            <kbd>{key}</kbd>
+          <% end %>
+        <% end %>
+      <% end %>
+    </dt>
+    """
+  end
+
+  # A chord is caps that read as one key press (⌘Z, ⇧↓, F2); a longer named key
+  # (Enter, Page Up, Arrow keys) keeps its own cap and reads with a "+".
+  defp chord?(keys), do: Enum.all?(keys, &(String.length(&1) <= 2))
+
+  # The reference's groups and rows, in its order. Each row is `{combos, label}`;
+  # a combo is the key list of one way to press the shortcut.
+  defp shortcut_groups do
+    [
+      {"Move around",
+       [
+         {[["Arrow keys"]], "Move the cursor"},
+         {[["Home"], ["End"]], "First or last column"},
+         {[["⌘", "↑"], ["⌘", "↓"]], "First or last trip"},
+         {[["Page Up"], ["Page Down"]], "10 trips up or down"},
+         {[["Tab"]], "Leave the timetable"}
+       ]},
+      {"Change times",
+       [
+         {[["0–9"]], "Start typing; it replaces the time"},
+         {[["Enter"], ["F2"]], "Edit the time"},
+         {[["+3"], ["−2"]], "Type to move a time by minutes"},
+         {[["Enter"]], "Save; later stops move"},
+         {[["Alt", "Enter"]], "Save; only this stop"},
+         {[["⌘", "Enter"]], "Save; the whole trip moves"},
+         {[["Esc"]], "Cancel typing"},
+         {[["Delete"]], "Clear a stop between timepoints"}
+       ]},
+      {"Trips",
+       [
+         {[["Space"]], "Select or clear the trip"},
+         {[["⇧", "↑"], ["⇧", "↓"]], "Extend the selection"},
+         {[["⌘", "A"]], "Select every trip in view"},
+         {[["]"], ["["]], "Shift 1 min later or earlier"},
+         {[["}"], ["{"]], "Shift 5 min later or earlier"},
+         {[["Esc"]], "Clear the selection"}
+       ]},
+      {"Copy and undo",
+       [
+         {[["⌘", "C"]], "Copy the selected trips"},
+         {[["⌘", "V"]], "Paste copied trips"},
+         {[["⌘", "Z"]], "Undo the last change"},
+         {[["⌘", "S"]], "Nothing to save: changes save as you go"},
+         {[["?"]], "Show these shortcuts"}
+       ]}
+    ]
+  end
+
   # --- frequency windows editor -----------------------------------------------
 
   @doc """
