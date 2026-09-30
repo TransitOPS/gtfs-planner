@@ -687,7 +687,7 @@ test.describe("Route schedules contracts", () => {
     await page.locator("#schedules-add-trips").click();
     await expect(page.locator("#trip-drawer-form")).toBeAttached();
     await expect(page.locator("#trip-pattern")).toBeVisible();
-    await expect(page.locator("#trip-preview")).toBeAttached();
+    await expect(page.locator("#add-result-card")).toBeAttached();
     await expect(page.locator("#trip-drawer-save")).toHaveText("Add 1 trip");
   });
 

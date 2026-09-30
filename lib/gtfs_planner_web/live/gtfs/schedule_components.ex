@@ -23,6 +23,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.Schedules
+  alias GtfsPlannerWeb.Gtfs.ScheduleChangeComponents
 
   # The problems notice names three problems and counts the rest, so a block with
   # many overlaps does not turn the timetable into a wall of sentences.
@@ -954,12 +955,16 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   Fields run in the order they change: the departure (and its repeat) first, the
   result card that shows what saving will create, then where the trips run. The
-  Add drawer previews the exact departures `Gtfs.series_starts/3` will create and
-  the primary label counts them. The Edit drawer keeps a custom trip's stop times
-  unless a timing is chosen, disables the departure for frequency service with a
-  visible reason, and hides the optional accessibility fields and the stable trip
-  ID behind a disclosure. Every field error carries its own stable id and
-  `aria-invalid`, so the `FormErrorFocus` hook lands on the first invalid field.
+  Add drawer leads with "How the trips run": Scheduled trips keeps that order,
+  and Every N minutes replaces the departure and its repeat with the frequency
+  windows editor, the riders-see choice and the frequency result card. The Add
+  drawer previews the exact departures `Gtfs.series_starts/3` will create and the
+  primary label counts them (or adds one frequency service). The Edit drawer keeps
+  a custom trip's stop times unless a timing is chosen, disables the departure for
+  frequency service with a visible reason, and hides the optional accessibility
+  fields and the stable trip ID behind a disclosure. Every field error carries its
+  own stable id and `aria-invalid`, so the `FormErrorFocus` hook lands on the
+  first invalid field.
   """
   attr :drawer, :any, required: true
   attr :patterns, :list, required: true
@@ -968,15 +973,25 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   attr :patterns_path, :string, required: true
   attr :version_name, :string, required: true
 
+  attr :sections, :list,
+    default: [],
+    doc: "the page's loaded sections, so the drawer can name the departing stop"
+
   def trip_drawer(assigns) do
+    pattern = drawer_pattern(assigns.drawer, assigns.patterns)
+
     assigns =
       assigns
       |> assign(:title, drawer_title(assigns.drawer))
-      |> assign(:pattern, drawer_pattern(assigns.drawer, assigns.patterns))
+      |> assign(:pattern, pattern)
       |> assign(:custom?, assigns.drawer != nil and assigns.drawer.custom?)
       |> assign(:frequency?, assigns.drawer != nil and assigns.drawer.frequency?)
       |> assign(:stops_differ?, assigns.drawer != nil and assigns.drawer.stops_differ?)
       |> assign(:values, assigns.drawer && assigns.drawer.values)
+      |> assign(:run_as, drawer_run_as(assigns.drawer))
+      |> assign(:frequency_add?, frequency_add?(assigns.drawer))
+      |> assign(:refusal, drawer_refusal(assigns.drawer))
+      |> assign(:stop_name, drawer_stop_name(assigns.sections, pattern))
 
     ~H"""
     <.drawer
@@ -1027,7 +1042,13 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
             You can still change the service days and trip details.
           </.message>
 
-          <div class="grid gap-1">
+          <ScheduleChangeComponents.run_as_choice
+            :if={@drawer.mode == :add}
+            run_as={@run_as}
+            refusal={@refusal}
+          />
+
+          <div :if={not @frequency_add?} class="grid gap-1">
             <.input
               id="trip-start"
               name="drawer[start_time]"
@@ -1045,7 +1066,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
             />
           </div>
 
-          <div :if={@drawer.mode == :add} class="grid gap-3">
+          <div :if={@drawer.mode == :add and not @frequency_add?} class="grid gap-3">
             <.input
               id="trip-repeat"
               name="drawer[repeat]"
@@ -1079,6 +1100,17 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
                 class="w-full input input-lg tabular-nums"
               />
             </div>
+          </div>
+
+          <div :if={@frequency_add?} class="grid gap-5">
+            <ScheduleChangeComponents.windows_editor
+              windows={@values["windows"]}
+              stop_name={@stop_name}
+            />
+            <ScheduleChangeComponents.riders_see
+              windows={@values["windows"]}
+              exact_times={@values["exact_times"]}
+            />
           </div>
 
           <.drawer_preview drawer={@drawer} />
@@ -1248,6 +1280,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
             :if={can_submit?(@drawer, @pattern)}
             id="trip-drawer-save"
             type="submit"
+            disabled={submit_disabled?(@drawer)}
             class="min-h-11"
             phx-disable-with="Saving…"
             phx-disconnected={unavailable_offline()}
@@ -1319,17 +1352,21 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   end
 
   # The result card: what saving will create, with the departure and the time the
-  # trip ends in the display face so the range reads first.
+  # trip ends in the display face so the range reads first. The Add drawer's card
+  # is the reference's `#add-result-card`; the Edit and Duplicate drawers keep the
+  # id the page has always used for this card.
   defp drawer_preview(assigns) do
+    assigns = assign(assigns, :card_id, drawer_card_id(assigns.drawer))
+
     ~H"""
     <div
-      id="trip-preview"
+      id={@card_id}
       aria-live="polite"
       class="rounded-card border border-subtle bg-canvas p-4 text-sm"
     >
       <p
         :if={@drawer.preview.error}
-        id="trip-preview-error"
+        id={"#{@card_id}-error"}
         class="flex items-start gap-1.5 font-semibold text-error-fg"
       >
         <.icon name="hero-exclamation-circle" class="mt-0.5 size-4 shrink-0" />
@@ -1362,6 +1399,29 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   defp preview_total(%{preview: preview}),
     do: "#{preview.total_minutes} minutes from first to last stop."
+
+  defp drawer_card_id(%{mode: :add}), do: "add-result-card"
+  defp drawer_card_id(_drawer), do: "trip-preview"
+
+  defp drawer_run_as(%{values: values}) when is_map(values), do: values["run_as"] || "scheduled"
+  defp drawer_run_as(_drawer), do: "scheduled"
+
+  defp frequency_add?(%{mode: :add} = drawer), do: drawer_run_as(drawer) == "frequency"
+  defp frequency_add?(_drawer), do: false
+
+  defp drawer_refusal(%{errors: errors}) when is_map(errors), do: Map.get(errors, :run_as)
+  defp drawer_refusal(_drawer), do: nil
+
+  # The first stop the drawer's pattern departs from, read from that pattern's own
+  # section; a pattern with no trips yet has no stop column to name.
+  defp drawer_stop_name(sections, %{route_pattern_id: pattern_id}) do
+    case Enum.find(sections, &(&1.pattern.route_pattern_id == pattern_id)) do
+      %{columns: [%{stop_name: name} | _rest]} -> name
+      _missing -> nil
+    end
+  end
+
+  defp drawer_stop_name(_sections, _pattern), do: nil
 
   defp block_value(%{trip: %{block_id: block_id}}) when is_binary(block_id),
     do: "Block #{block_id}"
@@ -1484,6 +1544,25 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   @spec save_failure_copy() :: String.t()
   def save_failure_copy,
     do: "Trips couldn't be saved. Your entries are still here. Try saving again."
+
+  @doc """
+  Returns the Add trips drawer's result-card line while a frequency window does not
+  read or overlaps (R8). The window row carries the specific message; the card
+  points at it, the way the reference's card does.
+  """
+  @spec frequency_preview_error() :: String.t()
+  def frequency_preview_error, do: "Fix the highlighted window to see a preview."
+
+  @doc """
+  Returns the sentence the Add trips drawer's "How the trips run" choice shows when
+  adding frequency service would mix a service day (R9, AC-20). The caller names the
+  service day the way the page labels it.
+  """
+  @spec mixed_service_choice_message(String.t()) :: String.t()
+  def mixed_service_choice_message(service_label) do
+    "#{service_label} already has listed trips on this pattern. Frequency service can't " <>
+      "run on the same days. Add scheduled trips instead, or choose another service day."
+  end
 
   @doc """
   Returns the sentence a failed delete shows in the confirmation. A reason with its
@@ -1632,6 +1711,15 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   defp can_submit?(%{mode: :add}, pattern), do: pattern.timings != []
   defp can_submit?(%{mode: :edit}, _pattern), do: true
   defp can_submit?(_drawer, pattern), do: pattern != nil and pattern.timings != []
+
+  # Adding frequency service keeps the drawer's one primary in place but out of
+  # reach while the windows do not read or the service day was refused (R8,
+  # FH-35); every other drawer leaves the primary available and refuses the save
+  # itself, keeping the typed value.
+  defp submit_disabled?(drawer) do
+    frequency_add?(drawer) and
+      (drawer_refusal(drawer) != nil or not is_nil(drawer.preview.error))
+  end
 
   defp error_list(%{errors: errors}, field) do
     case Map.get(errors, field) do
