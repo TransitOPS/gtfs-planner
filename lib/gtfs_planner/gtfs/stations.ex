@@ -19,6 +19,8 @@ defmodule GtfsPlanner.Gtfs.Stations do
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
+  @companion_pathway_fields ~w(traversal_time stair_count min_width signposted_as reversed_signposted_as field_notes field_completed_at)a
+
   @doc "Returns a child stop only when it belongs to the selected station."
   def get_child_stop(%AuditContext{} = audit, id) do
     with {:ok, id} <- Ecto.UUID.cast(id),
@@ -88,6 +90,37 @@ defmodule GtfsPlanner.Gtfs.Stations do
         validate_pathway_endpoints(changeset, station_scope_ids(audit, station)),
         "updated"
       )
+    end)
+  end
+
+  @doc "Updates only companion-editable pathway fields, allowing an exact endpoint swap."
+  def update_pathway_fields(%AuditContext{} = audit, id, attrs, expected_revision)
+      when is_map(attrs) do
+    run(audit, :share, fn station ->
+      pathway = lock_pathway!(audit, station, id)
+      stale_pathway!(pathway, expected_revision)
+
+      case companion_endpoint_attrs(attrs, pathway) do
+        {:ok, endpoint_attrs} ->
+          field_attrs =
+            Enum.reduce(@companion_pathway_fields, endpoint_attrs, fn field, accepted ->
+              case companion_attr(attrs, field) do
+                {:ok, value} -> Map.put(accepted, field, value)
+                :error -> accepted
+              end
+            end)
+
+          changeset =
+            pathway
+            |> Pathway.editor_changeset(field_attrs)
+            # The editor normalizes exit gates; the companion cannot change this field.
+            |> Ecto.Changeset.delete_change(:is_bidirectional)
+
+          write_pathway(audit, changeset, "updated")
+
+        {:error, :invalid_endpoints} ->
+          Repo.rollback(:invalid_endpoints)
+      end
     end)
   end
 
@@ -403,6 +436,35 @@ defmodule GtfsPlanner.Gtfs.Stations do
         changeset
       end
     end)
+  end
+
+  defp companion_endpoint_attrs(attrs, pathway) do
+    case {companion_attr(attrs, :from_stop_id), companion_attr(attrs, :to_stop_id)} do
+      {:error, :error} ->
+        {:ok, %{}}
+
+      {{:ok, from}, {:ok, to}} ->
+        cond do
+          {from, to} == {pathway.from_stop_id, pathway.to_stop_id} ->
+            {:ok, %{}}
+
+          {from, to} == {pathway.to_stop_id, pathway.from_stop_id} ->
+            {:ok, %{from_stop_id: from, to_stop_id: to}}
+
+          true ->
+            {:error, :invalid_endpoints}
+        end
+
+      _ ->
+        {:error, :invalid_endpoints}
+    end
+  end
+
+  defp companion_attr(attrs, field) do
+    case Map.fetch(attrs, Atom.to_string(field)) do
+      :error -> Map.fetch(attrs, field)
+      found -> found
+    end
   end
 
   defp stale_pathway!(%Pathway{lock_version: current}, expected) when current == expected,
