@@ -9,7 +9,10 @@
  *
  * Mounted on the empty ignored anchor `#compare-workspace-hook`
  * (`phx-hook="PatternCompareWorkspace"`, `phx-update="ignore"`), which owns no
- * content of its own; the hook finds `#compare-workspace` by id and decorates
+ * content of its own. LiveView calls an ignored hook's `updated()` only when its
+ * data attributes change, so the server bumps `data-load` on every comparison
+ * load and changes `data-comparison` when the pair, calendar, timings or
+ * reverse toggle change; the hook finds `#compare-workspace` by id and decorates
  * that server-rendered workspace, so the stop-table stream and every server
  * patch keep working. The server renders every state's markup; the hook only
  * flips attributes and classes:
@@ -92,12 +95,8 @@ function statusLabel(count) {
 
 const PatternCompareWorkspace = {
   mounted() {
-    this._diffIndex = null;
-    this._selectedRow = null;
-    this._selectedRowElement = null;
-    this._diffRows = new Set();
-    this._removedTints = new Map();
-    this._openFolds = new Set();
+    this._resetState();
+    this._comparisonKey = this.el.dataset.comparison || "";
     this._boundRows = new WeakSet();
 
     this._handleClickEvent = (event) => this._handleClick(event);
@@ -116,8 +115,16 @@ const PatternCompareWorkspace = {
   },
 
   // Stream rows and the toolbar are patched by the server; the hook's own
-  // state has to survive a patch and be visible again on the new nodes.
+  // state has to survive a patch and be visible again on the new nodes. A new
+  // pair (or calendar, timing or direction) has different rows and differences,
+  // so the old selection and opened folds are dropped instead.
   updated() {
+    const comparisonKey = this.el.dataset.comparison || "";
+    if (comparisonKey !== this._comparisonKey) {
+      this._comparisonKey = comparisonKey;
+      this._resetState();
+    }
+
     this._bindScope();
     if (this._diffIndex != null && this._diffIndex >= this._diffButtons().length) {
       this._diffIndex = null;
@@ -129,6 +136,15 @@ const PatternCompareWorkspace = {
     this._applyDifferenceHighlight();
     this._reapplyRowSelection();
     this._updateStatus();
+  },
+
+  _resetState() {
+    this._diffIndex = null;
+    this._selectedRow = null;
+    this._selectedRowElement = null;
+    this._diffRows = new Set();
+    this._removedTints = new Map();
+    this._openFolds = new Set();
   },
 
   destroyed() {

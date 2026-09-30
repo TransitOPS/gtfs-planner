@@ -68,6 +68,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
 
   attr :rows, :any, required: true, doc: "the `:compare_rows` stream for the stop table"
 
+  attr :load_count, :integer,
+    default: 0,
+    doc: "bumped on every comparison load so the workspace hook re-applies its state"
+
   attr :slot_paths, :map,
     default: nil,
     doc: "per-side `%{change, open, times}` paths for the slot cards"
@@ -181,6 +185,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
             <.two_pattern_containers
               comparison={@comparison}
               rows={@rows}
+              load_count={@load_count}
               slot_paths={@slot_paths}
               reverse_path={@reverse_path}
               map_payload={@map_payload}
@@ -303,6 +308,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   # table below `lg`.
   attr :comparison, :map, required: true
   attr :rows, :any, required: true
+  attr :load_count, :integer, required: true
   attr :slot_paths, :map, required: true
   attr :reverse_path, :string, default: nil
   attr :map_payload, :map, default: nil
@@ -318,11 +324,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
 
       <%!-- The workspace hook owns an empty, ignored anchor and decorates the
         server-rendered workspace below by id, so the stream and the server's
-        patches keep working (AGENTS.md: ignored hook elements). --%>
+        patches keep working (AGENTS.md: ignored hook elements). LiveView calls
+        an ignored hook's `updated()` only when its data attributes change:
+        `data-load` changes on every load so the hook re-applies its state to the
+        re-rendered rows, and `data-comparison` tells it when the pair itself
+        changed so it drops a selection that belonged to the old pair. --%>
       <div
         id="compare-workspace-hook"
         phx-hook="PatternCompareWorkspace"
         phx-update="ignore"
+        data-load={@load_count}
+        data-comparison={workspace_key(@comparison)}
         hidden
       >
       </div>
@@ -1753,6 +1765,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
     if total > 1 do
       %{n: Enum.count(Enum.take(sequence, position), &(&1 == stop_id)), total: total}
     end
+  end
+
+  # What the workspace's rows and differences depend on: the pair, the calendar,
+  # each side's timing and the reverse toggle.
+  defp workspace_key(comparison) do
+    b = comparison.b
+
+    [
+      comparison.a.pattern.route_pattern_id,
+      b && b.pattern.route_pattern_id,
+      comparison.service_id,
+      comparison.a.timing_id,
+      b && b.timing_id,
+      comparison.alignment && comparison.alignment.reversed?
+    ]
+    |> Enum.map_join("|", &to_string/1)
   end
 
   defp spans(rows), do: %{a: index_span(rows, :a_pos), b: index_span(rows, :b_pos)}

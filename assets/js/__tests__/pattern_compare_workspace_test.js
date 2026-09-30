@@ -207,6 +207,26 @@ describe("difference selection", () => {
     expect(document.getElementById("stops-position").textContent).toBe("1 difference");
     expect(row(3).classList.contains("bg-selection")).toBe(false);
   });
+
+  it("clears the selection when the server loads a different pair", () => {
+    const hook = makeHook();
+    click(document.getElementById("summary-diff-2"));
+    expect(document.getElementById("stops-position").textContent).toBe("Difference 2 of 2");
+
+    // The server's patch restores its own markup and names the new pair.
+    row(3).classList.remove("bg-selection");
+    row(3).classList.add("bg-navy-300/15");
+    document.getElementById("summary-diff-2").setAttribute("aria-pressed", "false");
+    hook.el.dataset.comparison = "FULL|OTHER|WKDY";
+    hook.updated();
+
+    expect(document.getElementById("stops-position").textContent).toBe("2 differences");
+    expect(row(3).classList.contains("bg-selection")).toBe(false);
+    expect(row(3).classList.contains("bg-navy-300/15")).toBe(true);
+
+    click(document.getElementById("stops-next"));
+    expect(document.getElementById("stops-position").textContent).toBe("Difference 1 of 2");
+  });
 });
 
 describe("rows mode and folds", () => {
