@@ -1814,6 +1814,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       params: params,
       review: nil,
       refusal: nil,
+      notice: nil,
       stale?: false,
       applying?: false
     }
@@ -1833,7 +1834,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # without a review; a review the engine refuses keeps its reason for the
   # surface to render.
   defp load_change_review(socket) do
-    change = socket.assigns.change
+    change = %{socket.assigns.change | notice: nil}
 
     case change_command(socket, change) do
       {:ok, command} ->
@@ -2015,7 +2016,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
           |> load_change_review()
           |> restream_change(previous_ids)
         else
-          warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
+          refuse_unauthorized(socket, change)
         end
 
       nil ->
@@ -2209,13 +2210,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # INV-2). A stale result is replaced by the fresh review the engine re-planned
   # under lock and marked, so the surface offers Refresh instead of applying
   # (FH-33); a refused change keeps its review and carries the errors; any other
-  # failure writes nothing and reports through the bar.
+  # failure, a revoked editor role included, writes nothing and is rendered by the
+  # open surface, because the strip, drawer or dialog covers the bar. A busy
+  # write is a notice that leaves the primary enabled, so a repeat click retries.
   defp apply_change(socket) do
     case socket.assigns.change do
       %{review: %{}} = change ->
         cond do
           not editor_access?(socket) ->
-            warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
+            refuse_unauthorized(socket, change)
 
           change.stale? ->
             socket
@@ -2230,6 +2233,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp submit_change(socket, %{review: %{command: command, fingerprint: fingerprint}} = change) do
+    change = %{change | notice: nil}
+
     case Gtfs.apply_trip_change(
            socket.assigns.route_id,
            command,
@@ -2249,11 +2254,20 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       {:error, {:refused, errors}} ->
         assign(socket, :change, %{change | refusal: errors})
 
+      {:error, :busy} ->
+        assign(socket, :change, %{change | notice: ScheduleComponents.error_message(:busy)})
+
       # The open strip, drawer or dialog covers the bar, so the surface itself
       # renders the reason and disables its primary.
       {:error, reason} ->
         assign(socket, :change, %{change | refusal: [{:error, reason}]})
     end
+  end
+
+  # The open surface renders the refusal and disables its primary; the review
+  # stays, so nothing on screen changes but the reason.
+  defp refuse_unauthorized(socket, change) do
+    assign(socket, :change, %{change | notice: nil, refusal: [{:error, :unauthorized}]})
   end
 
   # A successful apply is one write: the page reloads, the changed rows take the
@@ -2398,7 +2412,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
           |> load_change_review()
           |> restream_change(previous_ids)
         else
-          warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
+          refuse_unauthorized(socket, change)
         end
 
       nil ->

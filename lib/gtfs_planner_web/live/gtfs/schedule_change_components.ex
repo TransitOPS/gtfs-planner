@@ -318,6 +318,14 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
         Refresh the preview to see their current times, then apply again.
       </.message>
 
+      <.message
+        :if={@change[:notice]}
+        id="strip-busy"
+        kind="warning"
+        role="alert"
+        title={@change[:notice]}
+      />
+
       <div id="strip-consequences" class="grid gap-1.5 text-sm">
         <p :for={line <- @preview_lines} class="text-default">{line}</p>
         <p :for={line <- @consequence_lines} class="text-default">{line}</p>
@@ -624,6 +632,14 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
           >
             Refresh the preview to see their current times, then apply again.
           </.message>
+
+          <.message
+            :if={@change[:notice]}
+            id="review-busy"
+            kind="warning"
+            role="alert"
+            title={@change[:notice]}
+          />
 
           <div class="grid grid-cols-3 gap-px overflow-hidden rounded-card border border-subtle bg-subtle">
             <div :for={{label, value} <- @metrics} class="bg-white px-4 py-3">
@@ -1171,6 +1187,14 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
           Refresh the preview to see their current times, then apply again.
         </.message>
 
+        <.message
+          :if={@change[:notice]}
+          id={"#{@prefix}-busy"}
+          kind="warning"
+          role="alert"
+          title={@change[:notice]}
+        />
+
         <p
           :if={@result}
           id={"#{@prefix}-result"}
@@ -1321,6 +1345,14 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
         >
           Refresh the preview to see their current times, then apply again.
         </.message>
+
+        <.message
+          :if={@change[:notice]}
+          id="convert-busy"
+          kind="warning"
+          role="alert"
+          title={@change[:notice]}
+        />
 
         <div>
           <p class="text-[13px] font-[650] text-default">{@convert.departures_label}</p>
