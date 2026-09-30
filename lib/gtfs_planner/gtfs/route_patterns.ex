@@ -12,6 +12,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns.Materializer
+  alias GtfsPlanner.Gtfs.RoutePatterns.TimingRules
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Stop
@@ -2487,8 +2488,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       Enum.map(rows, fn row ->
         %{
           route_pattern_stop_id: map_value(row, :route_pattern_stop_id),
-          arrival_offset: map_value(row, :arrival_offset),
-          departure_offset: map_value(row, :departure_offset),
+          arrival_offset: blank_to_nil(map_value(row, :arrival_offset)),
+          departure_offset: blank_to_nil(map_value(row, :departure_offset)),
           timepoint: map_value(row, :timepoint),
           pickup_type: map_value(row, :pickup_type),
           drop_off_type: map_value(row, :drop_off_type),
@@ -2500,7 +2501,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
          true <-
            Enum.map(normalized, & &1.route_pattern_stop_id) == Enum.map(occurrences, & &1.id),
          true <- Enum.all?(normalized, &valid_service_row?/1),
-         :ok <- validate_relative_rows(normalized) do
+         :ok <- validate_rows(normalized) do
       {:ok, normalized}
     else
       false -> {:error, :invalid_input}
@@ -2510,46 +2511,66 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp validate_timing_rows(_pattern, _timing, _rows), do: {:error, :invalid_input}
 
-  defp valid_service_row?(row) do
-    row.timepoint in [nil, 0, 1] and row.pickup_type in [nil, 0, 1, 2, 3] and
-      row.drop_off_type in [nil, 0, 1, 2, 3] and
-      is_integer(row.arrival_offset) and row.arrival_offset in -2_147_483_647..2_147_483_647 and
-      is_integer(row.departure_offset) and row.departure_offset in 0..2_147_483_647
-  end
-
-  defp validate_relative_rows(rows) do
-    rows
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, nil}, fn {row, index}, {:ok, preceding_departure} ->
-      arrival = row.arrival_offset
-      departure = row.departure_offset
-
-      case relative_row_error(arrival, departure, index, preceding_departure) do
-        nil -> {:cont, {:ok, departure}}
-        reason -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, _} -> :ok
-      error -> error
+  # A blank cell is the absence of a time, not a parse failure, so the editor's
+  # empty inputs reach the rows as nil and `TimingRules` decides where a nil pair
+  # is allowed: between the ends, at a stop that is not a timepoint, and only as
+  # a pair. A half pair or an out-of-order row is still refused.
+  defp validate_rows(rows) do
+    case TimingRules.validate(rows) do
+      :ok -> first_departure_is_base(rows)
+      {:error, violations} -> {:error, timing_violation(violations)}
     end
   end
 
-  defp relative_row_error(arrival, departure, index, preceding_departure) do
+  # The offsets are measured from the first departure, so that row is the base
+  # every other row is read against. The rule above does not state it, so it is
+  # checked here rather than dropped.
+  defp first_departure_is_base([first | _]) do
+    if is_integer(first.departure_offset) and first.departure_offset != 0,
+      do: {:error, :first_departure_must_be_zero},
+      else: :ok
+  end
+
+  defp first_departure_is_base([]), do: :ok
+
+  defp timing_violation(violations) do
     cond do
-      not is_integer(arrival) or not is_integer(departure) or departure < arrival ->
-        :invalid_chronology
+      Enum.any?(violations, &match?({_index, :terminal_blank}, &1)) ->
+        :explicit_terminal_values_required
 
-      index > 0 and arrival < preceding_departure ->
-        :invalid_chronology
-
-      index == 0 and departure != 0 ->
-        :first_departure_must_be_zero
+      Enum.any?(violations, &match?({_index, :half_timed}, &1)) ->
+        :invalid_time
 
       true ->
-        nil
+        :invalid_chronology
     end
   end
+
+  # A blank input is the absence of a time. Anything else is left alone so the
+  # shape check below still refuses a string, a float or an out-of-range value.
+  defp blank_to_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      _ -> value
+    end
+  end
+
+  defp blank_to_nil(value), do: value
+
+  defp valid_service_row?(row) do
+    row.timepoint in [nil, 0, 1] and row.pickup_type in [nil, 0, 1, 2, 3] and
+      row.drop_off_type in [nil, 0, 1, 2, 3] and offset_in_range?(row.arrival_offset) and
+      departure_in_range?(row.departure_offset)
+  end
+
+  defp offset_in_range?(nil), do: true
+
+  defp offset_in_range?(offset),
+    do: is_integer(offset) and offset in -2_147_483_647..2_147_483_647
+
+  defp departure_in_range?(nil), do: true
+
+  defp departure_in_range?(offset), do: is_integer(offset) and offset in 0..2_147_483_647
 
   # A submitted vector that matches the stored timing row-for-row is a no-op: it
   # must not write rows, clear a derivation signature or record an audit entry.
