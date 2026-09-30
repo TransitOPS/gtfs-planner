@@ -123,6 +123,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePathwayCommandsTest do
     view = mount_diagram(scope)
     open_pathway(view, scope.pathway)
 
+    assert has_element?(
+             view,
+             "button[phx-click='flip_pathway'][phx-value-revision='#{scope.pathway.lock_version}']"
+           )
+
     assert {:ok, _current} =
              Stations.update_pathway(scope.audit, scope.pathway.id, %{traversal_time: 52}, 1)
 
@@ -205,6 +210,22 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLivePathwayCommandsTest do
     assert has_element?(view, "#pathway-submit[disabled]")
     assert Repo.get!(Pathway, scope.pathway.id).traversal_time == 45
     assert pathway_logs(scope) == []
+  end
+
+  test "a deleted pathway keeps the open draft and reports the missing row", scope do
+    view = mount_diagram(scope)
+    open_pathway(view, scope.pathway)
+
+    assert {:ok, _deleted} =
+             Stations.delete_pathway(scope.audit, scope.pathway.id, scope.pathway.lock_version)
+
+    view |> form("#pathway-form", %{"traversal_time" => "67"}) |> render_submit()
+
+    assert has_element?(view, "#pathway-drawer-overlay[data-open='true']")
+    assert has_element?(view, "#pathway-outcome", "This pathway no longer exists.")
+    assert has_element?(view, "#pathway-form input[name='traversal_time'][value='67']")
+    assert has_element?(view, "#pathway-reload")
+    refute Repo.get(Pathway, scope.pathway.id)
   end
 
   defp mount_diagram(scope) do

@@ -330,6 +330,12 @@ defmodule GtfsPlanner.Gtfs.Stations do
     end)
   end
 
+  @doc "Applies a fingerprinted alignment review through the existing serializable station transaction."
+  def apply_reviewed_alignment(%AuditContext{} = audit, stop_level_id, attrs, image_w, image_h)
+      when is_map(attrs) do
+    Gtfs.save_and_apply_stop_level_alignment(stop_level_id, attrs, image_w, image_h, audit)
+  end
+
   @doc "Applies the saved alignment to child stops and records each changed stop."
   def apply_alignment_to_child_stops(
         %AuditContext{} = audit,

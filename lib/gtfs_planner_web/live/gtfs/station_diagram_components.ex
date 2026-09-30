@@ -5514,6 +5514,8 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   attr :open, :boolean, required: true
   attr :ruler_form, :any, required: true
+  attr :ruler_outcome, :any, default: nil
+  attr :stop_level_revision, :integer, default: nil
 
   def ruler_drawer(assigns) do
     ~H"""
@@ -5534,9 +5536,32 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         class="flex min-h-0 flex-1 flex-col"
       >
         <.drawer_scroll>
+          <input type="hidden" name="ruler[lock_version]" value={@stop_level_revision} />
+          <.message
+            :if={@ruler_outcome}
+            id="ruler-outcome"
+            kind={@ruler_outcome.kind}
+            title={@ruler_outcome.message}
+            tabindex="-1"
+            phx-mounted={JS.focus()}
+            class="break-words"
+          >
+            <:action :if={@ruler_outcome.reload?}>
+              <.button
+                id="ruler-reload"
+                type="button"
+                variant="secondary"
+                phx-click="reload_ruler"
+                class="min-h-11"
+              >
+                Reload station
+              </.button>
+            </:action>
+          </.message>
           <.input
             field={@ruler_form[:distance_meters]}
             type="number"
+            disabled={@ruler_outcome && @ruler_outcome.disabled?}
             label="Distance between the two points (meters)"
             step="0.01"
             min="0.01"
@@ -5554,7 +5579,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           >
             Cancel
           </.button>
-          <.button id="ruler-submit" type="submit" class="min-h-11">Save scale</.button>
+          <.button
+            id="ruler-submit"
+            type="submit"
+            class="min-h-11"
+            disabled={@ruler_outcome && @ruler_outcome.disabled?}
+          >
+            Save scale
+          </.button>
         </.drawer_footer>
       </.form>
     </.drawer>
@@ -5942,7 +5974,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           class="min-h-11"
           phx-click="flip_pathway"
           phx-value-id={@editing_pathway.id}
-          phx-value-lock-version={@editing_pathway.lock_version}
+          phx-value-revision={@editing_pathway.lock_version}
         >
           Flip direction
         </.button>
@@ -6384,6 +6416,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :level_mode, :atom, default: :existing
   attr :editing_level_uuid, :string, default: nil
   attr :level_shared, :boolean, default: false
+  attr :level_outcome, :any, default: nil
   attr :history_open_for, :any, default: nil
   attr :history_entries, :list, default: []
   attr :history_state, :atom, default: :idle
@@ -6440,6 +6473,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           level_mode={@level_mode}
           editing_level_uuid={@editing_level_uuid}
           level_shared={@level_shared}
+          level_outcome={@level_outcome}
         />
       </div>
 
@@ -6474,6 +6508,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :level_mode, :atom, default: :existing
   attr :editing_level_uuid, :string, default: nil
   attr :level_shared, :boolean, default: false
+  attr :level_outcome, :any, default: nil
 
   defp level_form(assigns) do
     ~H"""
@@ -6516,6 +6551,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       class="flex min-h-0 flex-1 flex-col"
     >
       <.drawer_scroll>
+        <.input :if={@show_level_modal == :edit} field={@level_form[:lock_version]} type="hidden" />
+        <.message
+          :if={@level_outcome}
+          id="level-outcome"
+          kind={@level_outcome.kind}
+          title={@level_outcome.message}
+          tabindex="-1"
+          phx-mounted={JS.focus()}
+          class="break-words"
+        >
+          <:action :if={@level_outcome.reload?}>
+            <.button
+              id="level-reload"
+              type="button"
+              variant="secondary"
+              phx-click="reload_level"
+              class="min-h-11"
+            >
+              Reload station
+            </.button>
+          </:action>
+        </.message>
         <.message
           :if={@show_level_modal == :edit && @level_shared}
           kind="info"
@@ -6538,6 +6595,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <.input
               field={@level_form[:existing_level_id]}
               type="select"
+              disabled={@level_outcome && @level_outcome.disabled?}
               label="Level"
               options={
                 Enum.map(
@@ -6553,6 +6611,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <.input
             field={@level_form[:level_name]}
             type="text"
+            disabled={@level_outcome && @level_outcome.disabled?}
             label="Name (optional)"
             placeholder="e.g., Ground floor"
             phx-change="level_name_changed"
@@ -6562,6 +6621,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           <.input
             field={@level_form[:level_index]}
             type="number"
+            disabled={@level_outcome && @level_outcome.disabled?}
             label="Floor number"
             step="1"
             required
@@ -6572,6 +6632,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             <.input
               field={@level_form[:level_id]}
               type="text"
+              disabled={@level_outcome && @level_outcome.disabled?}
               label="Level ID"
               placeholder="e.g., STATION_GROUND_FLOOR"
               phx-blur="level_id_changed"
@@ -6597,6 +6658,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             phx-value-action="remove_level_from_station"
             phx-value-id={@editing_level_uuid}
             phx-value-origin="remove-level-from-station-button"
+            disabled={@level_outcome && @level_outcome.disabled?}
           >
             Remove level
           </.button>
@@ -6613,7 +6675,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         >
           Cancel
         </.button>
-        <.button id="level-submit" type="submit" class="min-h-11">
+        <.button
+          id="level-submit"
+          type="submit"
+          class="min-h-11"
+          disabled={@level_outcome && @level_outcome.disabled?}
+        >
           {if @show_level_modal == :add, do: "Add level", else: "Save changes"}
         </.button>
       </.drawer_footer>

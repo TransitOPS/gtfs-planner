@@ -12,9 +12,9 @@ async function openPathway(page) {
   await expect(page.locator("#pathway-drawer-overlay")).toHaveAttribute("data-open", "true");
 }
 
-test("a concurrent pathway edit keeps the second editor's travel time", async ({ browser }) => {
-  const firstContext = await browser.newContext();
-  const secondContext = await browser.newContext();
+test("a concurrent pathway edit keeps the second editor's travel time", async ({ browser, baseURL }) => {
+  const firstContext = await browser.newContext({ baseURL });
+  const secondContext = await browser.newContext({ baseURL });
   const first = await firstContext.newPage();
   const second = await secondContext.newPage();
 
