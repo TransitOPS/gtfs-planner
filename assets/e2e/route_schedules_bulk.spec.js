@@ -181,7 +181,7 @@ for (const viewport of VIEWPORTS) {
 
       // The imported listed/frequency mix on the mutation route.
       await page.goto(schedulesPath(versionId, MUTATE_ROUTE));
-      await expect(page.locator("#mixed-service-warning")).toBeVisible();
+      await expect(page.locator('[id$="-mixed-service-warning"]')).toBeVisible();
       await capture(page, `step-043-mixed-warning-${viewport.label}`);
 
       // The Convert review on the frequency route: the stored window's six
@@ -431,12 +431,12 @@ test.describe("Schedules bulk journeys", () => {
     await page.goto(schedulesPath(versionId, MUTATE_ROUTE));
     await expect(page.locator("#trip-SM_T1-start")).toHaveText("06:00");
 
-    const warning = page.locator("#mixed-service-warning");
+    const warning = page.locator('[id$="-mixed-service-warning"]');
     await expect(warning).toBeVisible();
     await expect(warning).toContainText(
       "This pattern runs listed trips and frequency service on the same days.",
     );
     await expect(warning).toContainText("Convert the frequency service to scheduled trips.");
-    await expect(page.locator("#mixed-convert")).toBeVisible();
+    await expect(page.locator('[id$="-mixed-convert"]')).toBeVisible();
   });
 });

@@ -2127,7 +2127,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
       <.message
         :if={@mixed?}
-        id="mixed-service-warning"
+        id={"section-#{@section_id}-mixed-service-warning"}
         kind="warning"
         class="rounded-none border-y border-warning-line px-5"
         title="This pattern runs listed trips and frequency service on the same days."
@@ -2135,7 +2135,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
         Trip planners may show only one kind. Convert the frequency service to scheduled trips.
         <:action>
           <.button
-            id="mixed-convert"
+            id={"section-#{@section_id}-mixed-convert"}
             type="button"
             variant="secondary"
             class="min-h-11"

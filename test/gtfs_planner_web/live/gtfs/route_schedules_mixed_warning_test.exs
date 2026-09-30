@@ -43,10 +43,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesMixedWarningTest do
 
       {:ok, view, _html} = live(conn, schedules_path(scope))
 
-      assert has_element?(view, "#mixed-service-warning[role='alert']", @title)
-      assert has_element?(view, "#mixed-service-warning", @body)
-      assert has_element?(view, "#mixed-convert[phx-value-kind='convert']", "Convert…")
-      assert has_element?(view, "#mixed-convert[phx-value-trip='#{frequency.id}']")
+      assert has_element?(view, warning(scope) <> "[role='alert']", @title)
+      assert has_element?(view, warning(scope), @body)
+      assert has_element?(view, convert(scope) <> "[phx-value-kind='convert']", "Convert…")
+      assert has_element?(view, convert(scope) <> "[phx-value-trip='#{frequency.id}']")
     end
 
     test "Convert opens the review for the section's first frequency row", %{
@@ -61,8 +61,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesMixedWarningTest do
 
       # The early row is first in the section, so its six departures, not the later
       # row's three, are the ones the dialog reviews.
-      assert has_element?(view, "#mixed-convert[phx-value-trip='#{early.id}']")
-      view |> element("#mixed-convert") |> render_click()
+      assert has_element?(view, convert(scope) <> "[phx-value-trip='#{early.id}']")
+      view |> element(convert(scope)) |> render_click()
 
       assert has_element?(view, "#convert-review[data-open='true']")
       assert has_element?(view, "#convert-review-title", "Convert to 6 scheduled trips?")
@@ -76,14 +76,36 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesMixedWarningTest do
       linked_trip!(scope, "07:00:00", %{trip_id: "MW_LISTED"})
       {:ok, view, _html} = live(conn, schedules_path(scope))
 
-      view |> element("#mixed-convert") |> render_click()
+      view |> element(convert(scope)) |> render_click()
       view |> element("#convert-keep") |> render_click()
 
       refute has_element?(view, "#convert-review")
-      assert has_element?(view, "#mixed-service-warning")
+      assert has_element?(view, warning(scope))
       assert trip_row(frequency).id == frequency.id
       assert rows(frequency) == [{"06:00:00", "07:00:00", 600, 0}]
       assert assigns(view).undo_stack == []
+    end
+
+    test "two mixed sections each show their own band", %{conn: conn, scope: scope} do
+      stored_frequency!(scope)
+      linked_trip!(scope, "07:00:00", %{trip_id: "MW_LISTED"})
+
+      other =
+        GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(
+          scope.organization.id,
+          scope.version.id,
+          %{route_id: @route_id, route_pattern_id: "MW-OTHER", stops: @stops}
+        )
+
+      other_scope = %{scope | bundle: other}
+      frequency_trip!(other_scope, [@early_window], %{trip_id: "MW_FREQ_OTHER"})
+      linked_trip!(other_scope, "07:00:00", %{trip_id: "MW_LISTED_OTHER"})
+
+      {:ok, view, _html} = live(conn, schedules_path(scope))
+
+      assert has_element?(view, warning(scope), @title)
+      assert has_element?(view, warning(other_scope), @title)
+      assert has_element?(view, convert(other_scope), "Convert…")
     end
 
     test "a listed-only section shows no band", %{conn: conn, scope: scope} do
@@ -91,8 +113,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesMixedWarningTest do
 
       {:ok, view, _html} = live(conn, schedules_path(scope))
 
-      refute has_element?(view, "#mixed-service-warning")
-      refute has_element?(view, "#mixed-convert")
+      refute has_element?(view, warning(scope))
+      refute has_element?(view, convert(scope))
     end
 
     test "a frequency-only section shows no band", %{conn: conn, scope: scope} do
@@ -100,8 +122,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesMixedWarningTest do
 
       {:ok, view, _html} = live(conn, schedules_path(scope))
 
-      refute has_element?(view, "#mixed-service-warning")
-      refute has_element?(view, "#mixed-convert")
+      refute has_element?(view, warning(scope))
+      refute has_element?(view, convert(scope))
     end
   end
 
@@ -114,7 +136,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesMixedWarningTest do
       listed = linked_trip!(scope, "07:00:00", %{trip_id: "MW_LISTED"})
 
       {:ok, view, _html} = live(conn, schedules_path(scope))
-      assert has_element?(view, "#mixed-service-warning")
+      assert has_element?(view, warning(scope))
 
       render_hook(grid(view), "cell_commit", cell(listed, 2, "07:07", "later"))
       assert_reply(view, %{ok: true})
@@ -126,7 +148,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesMixedWarningTest do
              ]
 
       assert rows(frequency) == [{"06:00:00", "07:00:00", 600, 0}]
-      assert has_element?(view, "#mixed-service-warning")
+      assert has_element?(view, warning(scope))
       assert assigns(view).outcome.text =~ "07:07"
     end
   end
@@ -161,6 +183,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesMixedWarningTest do
   end
 
   defp grid(view), do: element(view, "#schedules-grid")
+
+  # Each pattern section renders its own band, so the ids carry the section's id.
+  defp warning(scope),
+    do: "#section-#{scope.bundle.pattern.route_pattern_id}-mixed-service-warning"
+
+  defp convert(scope), do: "#section-#{scope.bundle.pattern.route_pattern_id}-mixed-convert"
 
   defp cell(trip, position, text, mode) do
     %{"trip" => trip.id, "position" => position, "text" => text, "mode" => mode}
