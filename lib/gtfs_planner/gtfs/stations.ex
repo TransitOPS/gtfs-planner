@@ -4,7 +4,7 @@ defmodule GtfsPlanner.Gtfs.Stations do
   import Ecto.Query
 
   alias GtfsPlanner.Authorization
-  alias GtfsPlanner.Gtfs.{Audit, AuditContext, Level, Stop}
+  alias GtfsPlanner.Gtfs.{Audit, AuditContext, Level, Stop, StopReferences}
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
@@ -54,18 +54,25 @@ defmodule GtfsPlanner.Gtfs.Stations do
   @doc "Updates a child stop when its expected revision is current."
   def update_child_stop(%AuditContext{} = audit, id, attrs, expected_revision)
       when is_map(attrs) do
-    run(audit, :share, fn station ->
+    rename? = Map.has_key?(attrs, :stop_id) or Map.has_key?(attrs, "stop_id")
+
+    run(audit, if(rename?, do: :exclusive, else: :share), fn station ->
       stop = lock_child!(audit, station, id)
       stale!(stop, expected_revision)
 
-      if Map.has_key?(attrs, :stop_id) or Map.has_key?(attrs, "stop_id") do
-        Repo.rollback(:rename_requires_exclusive)
-      end
+      changeset =
+        if rename?,
+          do: Stop.create_changeset(stop, attrs, audit),
+          else: Stop.editor_changeset(stop, attrs)
 
-      changeset = Stop.editor_changeset(stop, attrs)
       ensure_station_parent!(audit, station, changeset)
       ensure_scoped_level!(audit, changeset)
-      write_stop(audit, changeset, "updated")
+
+      if rename? do
+        rename_child_stop(audit, stop, changeset)
+      else
+        write_stop(audit, changeset, "updated")
+      end
     end)
   end
 
@@ -100,10 +107,18 @@ defmodule GtfsPlanner.Gtfs.Stations do
     )
   end
 
-  defp run(%AuditContext{} = audit, :share, action) do
+  defp run(%AuditContext{} = audit, lock_mode, action) do
     Repo.transaction(fn ->
       Authorization.lock_editor!(audit)
-      version = Versions.lock_for_input_write!(audit.organization_id, audit.gtfs_version_id)
+
+      version =
+        case lock_mode do
+          :share ->
+            Versions.lock_for_input_write!(audit.organization_id, audit.gtfs_version_id)
+
+          :exclusive ->
+            Versions.lock_for_exclusive_write!(audit.organization_id, audit.gtfs_version_id)
+        end
 
       if version.publication_status != "published" or is_nil(version.published_at) do
         Repo.rollback(:not_found)
@@ -203,6 +218,51 @@ defmodule GtfsPlanner.Gtfs.Stations do
              )
            ) do
         Repo.rollback(:not_found)
+      end
+    end
+  end
+
+  defp rename_child_stop(audit, stop, changeset) do
+    if not changeset.valid?, do: Repo.rollback(changeset)
+
+    new_id = Ecto.Changeset.get_field(changeset, :stop_id)
+
+    if new_id == stop.stop_id do
+      write_stop(audit, changeset, "updated")
+    else
+      if Repo.exists?(
+           from(s in Stop,
+             where:
+               s.organization_id == ^audit.organization_id and
+                 s.gtfs_version_id == ^audit.gtfs_version_id and s.stop_id == ^new_id
+           )
+         ) do
+        Repo.rollback(Ecto.Changeset.add_error(changeset, :stop_id, "has already been taken"))
+      end
+
+      counts =
+        StopReferences.rename!(audit.organization_id, audit.gtfs_version_id, %{
+          stop.stop_id => new_id
+        })
+
+      editor_changes = Map.delete(changeset.changes, :stop_id)
+      renamed = Repo.get!(Stop, stop.id)
+
+      updated =
+        if editor_changes == %{} do
+          renamed
+        else
+          renamed
+          |> Ecto.Changeset.change(editor_changes)
+          |> Repo.update!()
+        end
+
+      audit_changes =
+        Map.merge(editor_changes, %{stop_id: [stop.stop_id, new_id], references: counts})
+
+      case Audit.record_change_in_transaction(audit, :stop, stop, "updated", audit_changes) do
+        {:ok, _log} -> updated
+        {:error, reason} -> Repo.rollback(reason)
       end
     end
   end

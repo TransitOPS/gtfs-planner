@@ -406,6 +406,13 @@ defmodule GtfsPlanner.Gtfs.Audit do
   defp entity_external_id_for(:route_pattern_build, nil, attrs),
     do: Map.get(attrs, :route_id) || Map.get(attrs, "route_id")
 
+  defp changed_fields_attrs("updated", entity_type, attrs)
+       when entity_type in [:stop, "stop"] do
+    entity_type
+    |> audited_attrs_for(attrs)
+    |> Map.merge(Map.take(attrs, [:stop_id, :references]))
+  end
+
   defp changed_fields_attrs("updated", entity_type, attrs),
     do: audited_attrs_for(entity_type, attrs)
 
@@ -572,13 +579,29 @@ defmodule GtfsPlanner.Gtfs.Audit do
        when entity_type in [:route_pattern, "route_pattern", :timed_pattern, "timed_pattern"] and
               not is_nil(snapshot) do
     snapshot
-    |> field_diffs(attrs)
+    |> updated_field_diffs(attrs)
     |> put_shared_operation(attrs)
+  end
+
+  defp build_changed_fields(entity_type, "updated", snapshot, attrs)
+       when entity_type in [:stop, "stop"] and not is_nil(snapshot) do
+    {metadata, fields} = Map.split(attrs, [:stop_id, :references])
+    changed = updated_field_diffs(snapshot, fields)
+
+    case metadata do
+      %{stop_id: [old_id, new_id], references: counts} ->
+        changed
+        |> Map.put("stop_id", [old_id, new_id])
+        |> Map.put("references", stringify_map_keys(counts))
+
+      _ ->
+        changed
+    end
   end
 
   defp build_changed_fields(_entity_type, action, snapshot, attrs)
        when action == "updated" and not is_nil(snapshot) do
-    field_diffs(snapshot, attrs)
+    updated_field_diffs(snapshot, attrs)
   end
 
   defp build_changed_fields(entity_type, "created", snapshot, attrs)
@@ -608,7 +631,7 @@ defmodule GtfsPlanner.Gtfs.Audit do
 
   defp build_changed_fields(_entity_type, _action, _snapshot, _attrs), do: nil
 
-  defp field_diffs(snapshot, attrs) do
+  defp updated_field_diffs(snapshot, attrs) do
     snapshot_str_keys = stringify_map_keys(snapshot)
 
     attrs

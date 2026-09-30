@@ -131,7 +131,7 @@ defmodule GtfsPlanner.Gtfs.Stations.ChildStopsTest do
     assert Stations.list_child_stops(audit) == []
   end
 
-  test "stale updates, forbidden renames, and cross-station parents write no history", %{
+  test "stale updates and cross-station parents write no history", %{
     audit: audit,
     organization: organization,
     version: version,
@@ -164,9 +164,6 @@ defmodule GtfsPlanner.Gtfs.Stations.ChildStopsTest do
 
     assert {:error, {:stale, 2}} =
              Stations.update_child_stop(audit, child.id, %{stop_name: "Stale"}, 1)
-
-    assert {:error, :rename_requires_exclusive} =
-             Stations.update_child_stop(audit, child.id, %{"stop_id" => "RENAMED"}, 2)
 
     assert {:error, :not_found} =
              Stations.update_child_stop(audit, child.id, %{parent_station: "OTHER"}, 2)
