@@ -3074,7 +3074,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   # The form posts every row input, so a row that is present in the params takes
-  # its posted values and a row that is absent keeps the staged one.
+  # its posted values and a row that is absent keeps the staged one. The
+  # timepoint checkbox posts a hidden "0" when unchecked, so a missing key keeps
+  # the staged flag.
   defp merge_row_params(row, params) do
     case Map.get(params, Integer.to_string(row.position)) do
       nil ->
@@ -3088,10 +3090,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
             pickup: Map.get(values, "pickup", row.pickup),
             drop_off: Map.get(values, "drop_off", row.drop_off),
             stop_headsign: Map.get(values, "headsign", row.stop_headsign),
-            timepoint: Map.get(values, "timepoint") == "1"
+            timepoint: Map.get(values, "timepoint", timepoint_param(row.timepoint)) == "1"
         }
     end
   end
+
+  defp timepoint_param(true), do: "1"
+  defp timepoint_param(_), do: "0"
 
   defp with_preview(row, preview) do
     Map.merge(row, %{
