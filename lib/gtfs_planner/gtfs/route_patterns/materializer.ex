@@ -39,6 +39,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
   position and its other row values move with the stop; the rows whose times change come
   back in `estimates` flagged `resequenced: true`, because the running time between the
   stops that are now adjacent is only the old slot spacing.
+
+  A row whose two offsets are nil is a blank stop. An inserted stop beside a blank
+  neighbour has no running time to divide, so it is left blank too and reported as no
+  estimate; the resulting rows are then decided by `TimingRules.validate/1`, so a blank
+  that lands on the first or last stop is the review's
+  `{:error, :explicit_terminal_values_required}` and every other violation keeps its
+  existing reason.
   """
   def review_stops(old_occurrences, new_occurrences, timing_rows, added_values)
       when is_list(old_occurrences) and is_list(new_occurrences) and is_list(timing_rows) and
@@ -167,24 +174,42 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
       |> resequence(old, new, timing_id)
 
     retained = Enum.filter(new, &(not is_nil(field(&1, :id))))
-    first_row = row_for(new |> hd(), old_rows, supplied)
 
-    with true <- not is_nil(first_row),
-         {:ok, first_departure} <- integer_field(first_row, :departure_offset),
-         {:ok, {raw_rows, estimates}} <- build_raw_rows(new, old_rows, supplied),
-         {:ok, normalized} <- normalize_rows(raw_rows, first_departure),
-         :ok <- validate_relative_chronology(normalized) do
-      if length(retained) != MapSet.size(MapSet.new(Enum.map(retained, &field(&1, :id)))) do
-        {:error, :invalid_input}
-      else
-        {:ok,
-         %{start_shift: first_departure, rows: normalized, estimates: resequenced ++ estimates}}
-      end
-    else
-      false -> {:error, :explicit_terminal_values_required}
-      {:error, _} = error -> error
+    with {:ok, reviewed} <- review_rows(new, old_rows, supplied),
+         :ok <- distinct_retained(retained) do
+      {:ok, %{reviewed | estimates: resequenced ++ reviewed.estimates}}
     end
   end
+
+  defp review_rows(new, old_rows, supplied) do
+    with {:ok, {raw_rows, estimates}} <- build_raw_rows(new, old_rows, supplied),
+         base = base_offset(raw_rows),
+         {:ok, rows} <- normalize_rows(raw_rows, base),
+         :ok <- validate_rows(rows) do
+      {:ok, %{start_shift: base, rows: rows, estimates: estimates}}
+    end
+  end
+
+  defp distinct_retained(retained) do
+    if length(retained) == MapSet.size(MapSet.new(Enum.map(retained, &field(&1, :id)))) do
+      :ok
+    else
+      {:error, :invalid_input}
+    end
+  end
+
+  # Every row is rebased around the first stop's departure, so that departure is
+  # also the shift a linked trip's start moves by. A first row with no departure
+  # is a blank end, which the timing rule refuses below, so the base it needs in
+  # order to reach that refusal is not the value it reports.
+  defp base_offset([first | _]) do
+    case field(first, :departure_offset) do
+      value when is_integer(value) -> value
+      _ -> 0
+    end
+  end
+
+  defp base_offset([]), do: 0
 
   # Times stay with positions: the retained stops' rows in their old order are
   # chronological time slots, and each slot goes to the retained stop now at that
@@ -259,7 +284,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
 
     with {:ok, row} <- estimated_or_supplied(previous, following, added, run) do
       estimate =
-        if run && is_nil(added) do
+        if run && is_nil(added) && is_integer(row.arrival_offset) do
           %{
             key: field(Enum.at(new, index), :key),
             arrival_offset: row.arrival_offset,
@@ -275,15 +300,22 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
     end
   end
 
-  defp estimated_or_supplied(previous, following, nil, {j, k}) do
-    previous_departure = integer!(field(previous.row, :departure_offset))
-    following_arrival = integer!(field(following.row, :arrival_offset))
-    time = previous_departure + div(j * (following_arrival - previous_departure), k + 1)
-    {:ok, default_new_row(time, time)}
+  # A blank anchor carries no time to interpolate from, so an inserted stop beside
+  # one is left blank and reported as no estimate. A blank inserted at either end
+  # is the same absence; the timing rule is what decides that it is not allowed.
+  defp estimated_or_supplied(%{row: previous}, %{row: following}, nil, {j, k}) do
+    if timed_row?(previous) and timed_row?(following) do
+      previous_departure = field(previous, :departure_offset)
+      following_arrival = field(following, :arrival_offset)
+      time = previous_departure + div(j * (following_arrival - previous_departure), k + 1)
+      {:ok, default_new_row(time, time)}
+    else
+      {:ok, default_new_row(nil, nil)}
+    end
   end
 
   defp estimated_or_supplied(_previous, _following, nil, nil),
-    do: {:error, :explicit_terminal_values_required}
+    do: {:ok, default_new_row(nil, nil)}
 
   defp estimated_or_supplied(_previous, _following, added, _run) when is_map(added) do
     with {:ok, arrival} <- input_offset(added, :arrival_offset, :arrival_time),
@@ -329,24 +361,24 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
       end
   end
 
-  defp row_for(occurrence, rows, supplied) do
-    if field(occurrence, :id),
-      do: Map.get(rows, field(occurrence, :id)),
-      else: supplied_value(supplied, occurrence)
+  defp timed_row?(row) do
+    is_integer(field(row, :arrival_offset)) and is_integer(field(row, :departure_offset))
   end
 
   defp timing_parts(%{rows: rows} = timing, _index), do: {Map.get(timing, :timing_id), rows}
   defp timing_parts(rows, _index) when is_list(rows), do: {nil, rows}
   defp timing_parts(_, _index), do: {nil, []}
 
+  # A blank stays blank through the rebase: absence is not zero, so nothing is
+  # subtracted from it and no time appears where the stop had none.
   defp normalize_rows(rows, base) do
     Enum.reduce_while(rows, {:ok, []}, fn row, {:ok, acc} ->
-      with {:ok, arrival} <- integer_field(row, :arrival_offset),
-           {:ok, departure} <- integer_field(row, :departure_offset) do
+      with {:ok, arrival} <- rebased(field(row, :arrival_offset), base),
+           {:ok, departure} <- rebased(field(row, :departure_offset), base) do
         {:cont,
          {:ok,
           [
-            %{row_attrs(row) | arrival_offset: arrival - base, departure_offset: departure - base}
+            %{row_attrs(row) | arrival_offset: arrival, departure_offset: departure}
             | acc
           ]}}
       else
@@ -359,24 +391,33 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
     end
   end
 
-  defp validate_relative_chronology(rows) do
-    rows
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, nil}, fn {row, index}, {:ok, preceding} ->
-      arrival = row.arrival_offset
-      departure = row.departure_offset
-      validate_relative_row(index, arrival, departure, preceding)
-    end)
-    |> case do
-      {:ok, _} -> :ok
-      error -> error
+  defp rebased(nil, _base), do: {:ok, nil}
+  defp rebased(value, base) when is_integer(value), do: {:ok, value - base}
+  defp rebased(_value, _base), do: {:error, :invalid_time}
+
+  # Timing validity has one owner, so a blank end, a blank timepoint, a half pair
+  # and a backwards timed row are all decided here rather than in a second
+  # chronology check of the rebased rows. A blank end is the one the review
+  # already reports as :explicit_terminal_values_required, because the editor
+  # asks the user to enter that stop's times and review again.
+  defp validate_rows(rows) do
+    case TimingRules.validate(rows) do
+      :ok -> :ok
+      {:error, violations} -> {:error, review_violation(violations)}
     end
   end
 
-  defp validate_relative_row(index, arrival, departure, preceding) do
-    if departure >= arrival and (index == 0 or arrival >= preceding),
-      do: {:cont, {:ok, departure}},
-      else: {:halt, {:error, :invalid_chronology}}
+  defp review_violation(violations) do
+    cond do
+      Enum.any?(violations, &match?({_index, :terminal_blank}, &1)) ->
+        :explicit_terminal_values_required
+
+      Enum.any?(violations, &match?({_index, :half_timed}, &1)) ->
+        :invalid_time
+
+      true ->
+        :invalid_chronology
+    end
   end
 
   defp validate_occurrences(old, new) do
@@ -452,16 +493,6 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
       ])
 
   defp row_attrs(_), do: %{}
-
-  defp integer_field(map, key) do
-    case field(map, key) do
-      value when is_integer(value) -> {:ok, value}
-      _ -> {:error, :invalid_time}
-    end
-  end
-
-  defp integer!(value) when is_integer(value), do: value
-  defp integer!(map), do: Map.fetch!(map, :departure_offset)
 
   defp field(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
   defp field(_, _), do: nil
