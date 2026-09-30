@@ -29,13 +29,19 @@ defmodule GtfsPlanner.Gtfs.PatternComparisonTest do
     route = route_fixture(organization.id, version.id)
     other_route = route_fixture(organization.id, version.id)
 
-    stop_fixture(organization.id, version.id, %{
-      stop_id: "s1",
-      stop_name: "One",
-      stop_code: "S1C",
-      stop_lat: Decimal.new("44.0"),
-      stop_lon: Decimal.new("-124.0")
-    })
+    stop =
+      stop_fixture(organization.id, version.id, %{
+        stop_id: "s1",
+        stop_name: "One",
+        stop_lat: Decimal.new("44.0"),
+        stop_lon: Decimal.new("-124.0")
+      })
+
+    # `stop_code` is an importer-only field that no changeset casts, so the
+    # fixture cannot set it; the comparison read still has to project it.
+    stop
+    |> change(stop_code: "S1C")
+    |> Repo.update!()
 
     Enum.each(~w(s2 s3 s4 s5 s6 x y z), fn stop_id ->
       stop_fixture(organization.id, version.id, %{

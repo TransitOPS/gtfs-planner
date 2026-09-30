@@ -160,7 +160,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.MapPickerTest do
         foreign_organization,
         foreign_version,
         foreign_route,
-        %{id: "foreign", name: "Foreign"},
+        %{id: "foreign", name: "Foreign", direction_id: 0, sort_order: 0},
         [{"s1", 0, 0, 1}]
       )
 
@@ -172,7 +172,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.MapPickerTest do
         organization,
         other_version,
         other_version_route,
-        %{id: "elsewhere", name: "Elsewhere"},
+        %{id: "elsewhere", name: "Elsewhere", direction_id: 0, sort_order: 0},
         [{"s1", 0, 0, 1}]
       )
 
@@ -180,9 +180,13 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.MapPickerTest do
     staging_route = route_fixture(organization.id, staging.id, %{route_id: "R1"})
 
     _staging_pattern =
-      schedule_pattern(organization, staging, staging_route, %{id: "staged", name: "Staged"}, [
-        {"s1", 0, 0, 1}
-      ])
+      schedule_pattern(
+        organization,
+        staging,
+        staging_route,
+        %{id: "staged", name: "Staged", direction_id: 0, sort_order: 0},
+        [{"s1", 0, 0, 1}]
+      )
 
     %{
       scope: %{organization_id: organization.id, gtfs_version_id: version.id},
