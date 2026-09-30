@@ -227,6 +227,23 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Resolves the entry pair for a compare visit without `a` (`R8`) through the
+  configured catalog read adapter.
+
+  A is the route's pattern with the most trips on its busiest calendar and B the
+  next in A's direction (`nil` with one pattern); a route without patterns gives
+  `a: nil, b: nil`. A route outside the organization and version, or on an
+  unpublished version, is `{:error, :not_found}`; a lost database connection is
+  `{:error, :unavailable}`.
+  """
+  @spec load_pattern_defaults(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, %{a: String.t() | nil, b: String.t() | nil}}
+          | {:error, :not_found | :unavailable}
+  def load_pattern_defaults(organization_id, gtfs_version_id, route_id) do
+    catalog_read_adapter().load_pattern_defaults(organization_id, gtfs_version_id, route_id)
+  end
+
+  @doc """
   Returns one route direction's stop-by-pattern overview (AC-21) through the
   configured catalog read adapter.
 

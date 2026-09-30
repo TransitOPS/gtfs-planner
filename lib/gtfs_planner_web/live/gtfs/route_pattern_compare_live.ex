@@ -41,7 +41,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
   use GtfsPlannerWeb, :live_view
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.PatternComparison
   alias GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
@@ -257,17 +256,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
     end
   end
 
-  # A visit without `a` opens `R8`'s entry pair. The defaults read has no facade
-  # callback (the facade carries the four comparison reads), so it goes to
-  # `PatternComparison.defaults/3` directly; the patch then loads the comparison
-  # through `Gtfs.load_pattern_comparison/3` like every other visit.
+  # A visit without `a` opens `R8`'s entry pair; the patch then loads the
+  # comparison through `Gtfs.load_pattern_comparison/3` like every other visit.
   defp load_defaults(socket) do
     scope = scope(socket)
 
-    case PatternComparison.defaults(scope, socket.assigns.route_id, []) do
+    case Gtfs.load_pattern_defaults(
+           scope.organization_id,
+           scope.gtfs_version_id,
+           socket.assigns.route_id
+         ) do
       {:ok, %{a: a, b: b}} when is_binary(a) ->
         {:noreply,
          push_patch(socket, to: compare_path(socket, %{"a" => a, "b" => b}), replace: true)}
+
+      {:error, :unavailable} ->
+        {:noreply, unavailable(socket)}
 
       # A route without patterns has nothing to compare; its Patterns tab owns
       # the first-use state.
@@ -307,12 +311,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
         not_found(socket)
 
       {:error, :unavailable} ->
-        {:noreply,
-         socket
-         |> assign(:comparison, nil)
-         |> assign(:picker, nil)
-         |> assign(:load_state, :unavailable)}
+        {:noreply, unavailable(socket)}
     end
+  end
+
+  defp unavailable(socket) do
+    socket
+    |> assign(:comparison, nil)
+    |> assign(:picker, nil)
+    |> assign(:load_state, :unavailable)
   end
 
   # The map read is separate from the comparison read (`CL-13`, `AC-22`): it runs

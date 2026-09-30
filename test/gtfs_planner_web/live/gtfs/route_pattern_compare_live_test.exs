@@ -367,5 +367,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLiveTest do
       refute has_element?(view, "#compare-unavailable")
       assert has_element?(view, "#compare-calendar", "Weekday (A 2 · B 1 trips)")
     end
+
+    test "a lost connection while resolving the entry pair shows the unavailable state",
+         %{conn: conn, version: version} = context do
+      substitute_read_adapter(%{})
+      %{route: route} = comparison_route(context)
+
+      stub(CatalogReadAdapterMock, :load_pattern_defaults, fn _org, _ver, _route_id ->
+        {:error, :unavailable}
+      end)
+
+      {:ok, view, _html} = live(conn, compare_path(version, route))
+
+      assert has_element?(view, "#compare-unavailable", "The comparison didn’t load")
+    end
   end
 end

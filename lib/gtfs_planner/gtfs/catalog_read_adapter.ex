@@ -27,7 +27,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   mocking `Repo` or Postgrex.
 
   The pattern comparison reads carry the same classification: the comparison,
-  overview and map reads are `{:error, :not_found}` for a route, pattern or
+  entry defaults, overview and map reads are `{:error, :not_found}` for a route, pattern or
   timing outside the organization, the version and a published route, the
   picker read answers with the version's own entries, and only a lost database
   connection becomes `{:error, :unavailable}`.
@@ -107,6 +107,9 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
               {:ok, map()} | {:error, :not_found | :unavailable}
   @callback load_pattern_comparison(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
               {:ok, map()} | {:error, :not_found | :unavailable}
+  @callback load_pattern_defaults(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+              {:ok, %{a: String.t() | nil, b: String.t() | nil}}
+              | {:error, :not_found | :unavailable}
   @callback load_pattern_overview(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) ::
               {:ok, PatternComparison.overview()} | {:error, :not_found | :unavailable}
   @callback load_pattern_compare_map(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t() | nil) ::

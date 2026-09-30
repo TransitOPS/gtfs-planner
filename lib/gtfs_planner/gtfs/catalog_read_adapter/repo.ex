@@ -16,7 +16,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   does not erase the others. Calendar list and detail reads delegate to
   `GtfsPlanner.Gtfs.Calendars` and unwrap only its outer transaction tuple while
   preserving the domain's own `{:error, :not_found}`. The pattern comparison,
-  overview and map reads delegate to `GtfsPlanner.Gtfs.PatternComparison` and
+  entry defaults, overview and map reads delegate to `GtfsPlanner.Gtfs.PatternComparison` and
   unwrap its tuple the same way, while its picker read answers with the version's
   entries. A blocking day read delegates to
   `GtfsPlanner.Gtfs.Blocking` and unwraps its transaction tuple the same way, as do the
@@ -131,6 +131,21 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
            PatternComparison.compare(pattern_scope(organization_id, gtfs_version_id), params)
          end) do
       {:ok, {:ok, comparison}} -> {:ok, comparison}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def load_pattern_defaults(organization_id, gtfs_version_id, route_id) do
+    case run(fn ->
+           PatternComparison.defaults(
+             pattern_scope(organization_id, gtfs_version_id),
+             route_id,
+             []
+           )
+         end) do
+      {:ok, {:ok, defaults}} -> {:ok, defaults}
       {:ok, {:error, reason}} -> {:error, reason}
       {:error, :unavailable} = error -> error
     end
