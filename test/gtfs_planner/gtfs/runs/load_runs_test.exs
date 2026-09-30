@@ -26,7 +26,9 @@ defmodule GtfsPlanner.Gtfs.Runs.LoadRunsTest do
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Runs
 
+  import GtfsPlanner.BlockingFixtures
   import GtfsPlanner.RunsFixtures
+  import GtfsPlanner.VersionsFixtures
 
   require Ecto.Query
 
@@ -347,6 +349,177 @@ defmodule GtfsPlanner.Gtfs.Runs.LoadRunsTest do
                Gtfs.load_runs(theirs.organization.id, theirs.version.id, theirs.day_type_key)
 
       refute mine.fingerprint == other.fingerprint
+    end
+  end
+
+  # EV-12's file also holds step 19's cases. Both are runs reads against the
+  # same fixture, and a separate file for a four-case count would only split the
+  # same setup in two.
+  describe "count_runs_for_trips/3" do
+    setup do
+      world = runs_version_fixture()
+
+      calendar_service_fixture(world.organization.id, world.version.id, %{
+        service_id: "SAT",
+        name: "Saturday",
+        monday: 0,
+        tuesday: 0,
+        wednesday: 0,
+        thursday: 0,
+        friday: 0,
+        saturday: 1,
+        sunday: 0
+      })
+
+      saturday_key = GtfsPlanner.Gtfs.Blocking.DayTypes.key(["SAT"])
+
+      saturday_trip =
+        blocked_trip_fixture(
+          world.organization.id,
+          world.version.id,
+          world.route.route_id,
+          %{trip_id: "saturday_trip", service_id: "SAT", block_id: "101"}
+        )
+
+      %{world: world, saturday_key: saturday_key, saturday_trip: saturday_trip}
+    end
+
+    test "two trips of one run count 1", %{world: world} do
+      assign_block_101(world)
+
+      # Block 101 has four trips; all four are on run 1001, and a run is counted
+      # once however many of its trips the caller names.
+      trip_ids = Enum.map(world.blocks["101"], & &1.id)
+
+      assert Gtfs.count_runs_for_trips(world.organization.id, world.version.id, trip_ids) == 1
+    end
+
+    test "a single trip counts its one run", %{world: world} do
+      assign_block_101(world)
+      [first | _] = world.blocks["101"]
+
+      assert Gtfs.count_runs_for_trips(world.organization.id, world.version.id, [first.id]) ==
+               1
+    end
+
+    test "the same run ID on Weekday and on Saturday counts 2", %{
+      world: world,
+      saturday_key: saturday_key,
+      saturday_trip: saturday_trip
+    } do
+      assign_block_101(world)
+
+      # Run "1001" on both day types. A run is scoped to its day type, so these
+      # are two runs that share an ID, not one run counted twice.
+      trip_run_fixture(world.organization.id, world.version.id, %{
+        trip: saturday_trip,
+        day_type_key: saturday_key,
+        run_id: "1001"
+      })
+
+      [first | _] = world.blocks["101"]
+
+      assert Gtfs.count_runs_for_trips(
+               world.organization.id,
+               world.version.id,
+               [first.id, saturday_trip.id]
+             ) == 2
+
+      # And each of them alone is one, which is what makes the 2 above a count
+      # of two runs rather than a count of two rows.
+      assert Gtfs.count_runs_for_trips(world.organization.id, world.version.id, [first.id]) ==
+               1
+
+      assert Gtfs.count_runs_for_trips(world.organization.id, world.version.id, [
+               saturday_trip.id
+             ]) == 1
+    end
+
+    test "two runs on one day type count 2", %{world: world} do
+      assign_block_101(world)
+
+      # One trip of block 101 moves to a second run on the same day type.
+      [first | _rest] = world.blocks["101"]
+
+      Ecto.Query.from(r in GtfsPlanner.Gtfs.TripRun, where: r.trip_id == ^first.id)
+      |> Repo.update_all(set: [run_id: "1002"])
+
+      trip_ids = Enum.map(world.blocks["101"], & &1.id)
+
+      assert Gtfs.count_runs_for_trips(world.organization.id, world.version.id, trip_ids) == 2
+    end
+
+    test "an empty list counts 0", %{world: world} do
+      assign_block_101(world)
+
+      assert Gtfs.count_runs_for_trips(world.organization.id, world.version.id, []) == 0
+    end
+
+    test "a trip held by no run counts 0", %{world: world} do
+      assign_block_101(world)
+
+      # Block 102 is the fixture's unassigned block.
+      [unassigned | _] = world.blocks["102"]
+
+      assert Gtfs.count_runs_for_trips(world.organization.id, world.version.id, [
+               unassigned.id
+             ]) == 0
+    end
+
+    test "a trip no run holds at all counts 0", %{world: world} do
+      # A well-formed UUID that names no trip, so the 0 is the empty answer
+      # rather than a cast error.
+      assert Gtfs.count_runs_for_trips(world.organization.id, world.version.id, [
+               Ecto.UUID.generate()
+             ]) == 0
+    end
+
+    test "another organization's rows count 0", %{world: world} do
+      assign_block_101(world)
+      theirs = runs_version_fixture()
+      assign_block_101(theirs)
+
+      trip_ids = Enum.map(world.blocks["101"], & &1.id)
+
+      # Both worlds carry the same GTFS trip names, so this is scoping and not a
+      # missing trip. The UUIDs are necessarily different - they are separate
+      # Trip rows - so the names are what makes the point and the UUIDs are
+      # what the function is given.
+      assert Enum.map(theirs.blocks["101"], & &1.trip_id) ==
+               Enum.map(world.blocks["101"], & &1.trip_id)
+
+      refute Enum.map(theirs.blocks["101"], & &1.id) == trip_ids
+      assert Gtfs.count_runs_for_trips(world.organization.id, world.version.id, trip_ids) == 1
+      assert Gtfs.count_runs_for_trips(theirs.organization.id, world.version.id, trip_ids) == 0
+    end
+
+    test "another version's rows count 0", %{world: world} do
+      assign_block_101(world)
+      other = gtfs_version_fixture(world.organization.id)
+      trip_ids = Enum.map(world.blocks["101"], & &1.id)
+
+      assert Gtfs.count_runs_for_trips(world.organization.id, other.id, trip_ids) == 0
+    end
+
+    test "an orphan row is still counted, because it is still a run", %{world: world} do
+      assign_block_101(world)
+
+      [orphan | _] = world.blocks["101"]
+      move_trip_to_service(orphan, "SAT")
+
+      # The trip left the weekday day type, so `load_runs/3` no longer reports
+      # this assignment in `current`. The row is still in the table, and the
+      # Blocks preview's question is about the table; excluding it here would
+      # make this figure disagree with what `remove_orphans/3` would delete.
+      {:ok, runs_day} =
+        Gtfs.load_runs(world.organization.id, world.version.id, world.day_type_key)
+
+      refute Map.has_key?(runs_day.assignments, orphan.id)
+      assert runs_day.orphans.count >= 1
+
+      assert Gtfs.count_runs_for_trips(world.organization.id, world.version.id, [
+               orphan.id
+             ]) == 1
     end
   end
 end
