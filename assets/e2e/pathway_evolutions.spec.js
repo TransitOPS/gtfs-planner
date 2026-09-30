@@ -2607,12 +2607,13 @@ test.describe("guards", () => {
     await page.goto(calendarPath(versionId, "CAL_DAILY"));
     await waitForLiveView(page);
 
-    // The seeded calendar serves every trip the version's schedule fixtures and
-    // the calendar fixture route assign to CAL_DAILY (9 + 8 + 6 + 3 = 26, on four
-    // routes) and already carries two closures on the station's lift and stair
-    // pathways, so the page has a card for each kind of reference.
+    // The seeded calendar serves every trip the version's schedule fixtures, the
+    // calendar fixture route and the advanced trip editing journeys assign to
+    // CAL_DAILY (9 + 8 + 6 + 3 + 12 + 1 + 500 = 539, on seven routes) and already
+    // carries two closures on the station's lift and stair pathways, so the page
+    // has a card for each kind of reference.
     await expect(page.locator("#calendar-trips")).toContainText(
-      "26 trips on 4 routes",
+      "539 trips on 7 routes",
     );
     await expect(
       page.locator("#calendar-usage-route-CAL_ROUTE"),
@@ -2651,7 +2652,7 @@ test.describe("guards", () => {
       "Trips and closures use this calendar, so it can’t be deleted",
     );
     await expect(blocked).not.toContainText("This calendar is used by trips");
-    await expect(blocked).toContainText("26 trips on");
+    await expect(blocked).toContainText("539 trips on");
     await expect(page.locator("#calendar-delete-closures")).toContainText(
       "2 scheduled closures use this calendar",
     );
