@@ -762,14 +762,21 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
 
   defp refusal_copy({:mixed_service, _details}, to) do
     %{
+      mixed?: true,
       title: "#{to} already runs frequency service on this pattern.",
       body:
         "Listed trips can't run on the same days. Convert the frequency service to scheduled trips first."
     }
   end
 
+  defp refusal_copy(:too_many_trips, _to), do: %{title: too_many_trips_copy(), body: nil}
+
   defp refusal_copy(reason, _to),
     do: %{title: ScheduleComponents.error_message(reason), body: nil}
+
+  # A bulk change names at most 500 trips; the Add drawer's interval advice does
+  # not apply to a selection.
+  defp too_many_trips_copy, do: "Select 500 or fewer trips at a time."
 
   # The reference's three cells: what is written, what the skip choice leaves
   # alone (or the blocks a move leaves) and the block problems the action adds.
@@ -949,8 +956,12 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
   defp review_apply_label(:copy), do: "Copying…"
   defp review_apply_label(:move), do: "Moving…"
 
-  defp review_status(kind, refusal, _version_name) when is_map(refusal) do
+  defp review_status(kind, %{mixed?: true}, _version_name) do
     "Nothing can be #{refusal_verb(kind)} while that frequency service runs on these days."
+  end
+
+  defp review_status(kind, refusal, _version_name) when is_map(refusal) do
+    "Nothing can be #{refusal_verb(kind)} until that is fixed."
   end
 
   defp review_status(kind, nil, version_name) do
@@ -2010,10 +2021,14 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
 
   # The primary counts what it will change: the command's trips for a shift, and
   # the eligible trips the review planned for a timing change.
-  defp primary_label(%{kind: :shift, ids: ids}, _count), do: "Shift #{trip_count(length(ids))}"
+  defp primary_label(%{kind: :shift}, count), do: "Shift #{trip_count(count)}"
   defp primary_label(%{kind: :timing}, count), do: "Change timing for #{trip_count(count)}"
 
-  defp strip_count(%{kind: :shift, ids: ids}), do: length(ids)
+  # A reviewed shift counts the trips it would change: a position shift leaves
+  # frequency trips out, so they are not counted. A refused review still names
+  # every selected trip it refused.
+  defp strip_count(%{kind: :shift, ids: ids, review: %{counts: %{excluded: excluded}}}),
+    do: length(ids) - excluded
 
   defp strip_count(%{kind: :timing, review: %{counts: %{changed: count}}}), do: count
 
@@ -2250,6 +2265,12 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
   defp strip_error(:no_eligible_trips) do
     "None of the selected trips can use this timing. Their stops differ from the pattern."
   end
+
+  defp strip_error(:multiple_patterns) do
+    "The selected trips use more than one pattern. Timings belong to a pattern, so select trips on one pattern."
+  end
+
+  defp strip_error(:too_many_trips), do: too_many_trips_copy()
 
   defp strip_error(reason), do: ScheduleComponents.error_message(reason)
 
