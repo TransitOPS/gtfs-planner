@@ -55,9 +55,32 @@ defmodule GtfsPlannerWeb.Gtfs.OperationsComponents do
   """
   @spec in_use_message(String.t(), GtfsPlanner.Operations.in_use_counts()) :: String.t()
   def in_use_message(name, counts) do
+    case in_use_summary(counts) do
+      nil -> "#{name} is in use. Change the references first."
+      summary -> "#{name} is used by #{summary}. Change those first."
+    end
+  end
+
+  @doc """
+  Joins the non-zero reference counts as “3 vehicles, 12 blocks and 2 routes”,
+  or returns `nil` when nothing references the entity.
+
+  The editing drawers read this to say what a delete would have to move, from
+  the same counts the delete itself is refused with.
+
+  ## Examples
+
+      iex> in_use_summary(%{vehicles: 1, blocks: 0, routes: 2})
+      "1 vehicle and 2 routes"
+
+      iex> in_use_summary(%{vehicles: 0, blocks: 0, routes: 0})
+      nil
+  """
+  @spec in_use_summary(GtfsPlanner.Operations.in_use_counts()) :: String.t() | nil
+  def in_use_summary(counts) do
     case in_use_parts(counts) do
-      [] -> "#{name} is in use. Change the references first."
-      parts -> "#{name} is used by #{join_parts(parts)}. Change those first."
+      [] -> nil
+      parts -> join_parts(parts)
     end
   end
 

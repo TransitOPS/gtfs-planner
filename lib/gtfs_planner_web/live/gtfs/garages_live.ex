@@ -37,7 +37,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.OperationsComponents,
-    only: [in_use_message: 2, tods_import_drawer: 1, tods_review_current?: 2]
+    only: [in_use_message: 2, in_use_summary: 1, tods_import_drawer: 1, tods_review_current?: 2]
 
   import GtfsPlannerWeb.PlannerComponents,
     only: [
@@ -82,6 +82,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
      |> assign(:garage_notice, nil)
      |> assign(:garage_drawer_open, false)
      |> assign(:garage_entity, nil)
+     |> assign(:garage_counts, nil)
      |> assign(:garage_form, garage_form(%Garage{}, %{}))
      |> assign(:garage_drawer_title, "Create garage")
      |> assign(:garage_drawer_return_focus_id, nil)
@@ -309,7 +310,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
           Operations.garage_in_use_counts(socket.assigns.current_organization.id, garage.id)
 
         if Operations.in_use?(counts) do
-          {:noreply, assign(socket, :garage_in_use, %{garage: garage, counts: counts})}
+          {:noreply, show_garage_in_use(socket, garage, counts)}
         else
           {:noreply, assign(socket, :garage_delete_target, garage)}
         end
@@ -353,7 +354,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
         {:noreply,
          socket
          |> assign(:garage_delete_target, nil)
-         |> assign(:garage_in_use, %{garage: garage, counts: counts})}
+         |> show_garage_in_use(garage, counts)}
 
       {:error, :not_found} ->
         {:noreply, socket |> assign(:garage_delete_target, nil) |> refresh_garages()}
@@ -479,6 +480,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
           open={@garage_drawer_open}
           title={@garage_drawer_title}
           entity={@garage_entity}
+          counts={@garage_counts}
           form={@garage_form}
           return_focus_id={@garage_drawer_return_focus_id}
           address_unavailable?={@address_unavailable?}
@@ -643,6 +645,7 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   attr :open, :boolean, required: true
   attr :title, :string, required: true
   attr :entity, :any, default: nil
+  attr :counts, :map, default: nil
   attr :form, :any, required: true
   attr :return_focus_id, :string, default: nil
   attr :address_unavailable?, :boolean, default: false
@@ -697,10 +700,8 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
             >
               <.icon name="hero-truck" class="mt-0.5 size-5 shrink-0 text-muted" />
               <span class="min-w-0">
-                <strong class="font-[650] text-strong">
-                  {vehicles_use_title(@entity.vehicle_count)}
-                </strong>
-                {vehicles_use_body(@entity.vehicle_count)}
+                <strong class="font-[650] text-strong">{use_title(@counts)}</strong>
+                {use_body(@counts)}
               </span>
             </p>
 
@@ -893,6 +894,10 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
   defp open_edit_garage(socket, garage, opener_id) do
     socket
     |> assign(:garage_entity, garage)
+    |> assign(
+      :garage_counts,
+      Operations.garage_in_use_counts(socket.assigns.current_organization.id, garage.id)
+    )
     |> assign(:garage_form, garage_form(garage, %{}))
     |> assign(:garage_drawer_title, "Edit garage")
     # Generation is always off for a saved garage.
@@ -1139,14 +1144,25 @@ defmodule GtfsPlannerWeb.Gtfs.GaragesLive do
     "Exports and imports use it to recognize this garage. It can't match a stop ID."
   end
 
-  defp vehicles_use_title(0), do: "No vehicles use this garage,"
-  defp vehicles_use_title(1), do: "1 vehicle uses this garage."
-  defp vehicles_use_title(count), do: "#{count} vehicles use this garage."
-
-  defp vehicles_use_body(0), do: "so you can delete it without moving anything."
-
-  defp vehicles_use_body(count) do
-    "To delete it, first move #{if count == 1, do: "that vehicle", else: "them"} to another garage in Fleet."
+  # The drawer states the same references the delete is refused on, read when
+  # the drawer opens and again when a delete is refused.
+  defp use_title(counts) do
+    case in_use_summary(counts) do
+      nil -> "Nothing uses this garage,"
+      summary -> "Used by #{summary}."
+    end
   end
 
+  defp use_body(counts) do
+    if Operations.in_use?(counts),
+      do: "To delete it, first change those.",
+      else: "so you can delete it without moving anything."
+  end
+
+  # The refusal's counts are current; the counts the drawer opened with may not be.
+  defp show_garage_in_use(socket, garage, counts) do
+    socket
+    |> assign(:garage_counts, counts)
+    |> assign(:garage_in_use, %{garage: garage, counts: counts})
+  end
 end

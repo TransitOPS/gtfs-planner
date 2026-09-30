@@ -60,7 +60,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.Gtfs.OperationsComponents,
-    only: [in_use_message: 2, tods_import_drawer: 1, tods_review_current?: 2]
+    only: [in_use_message: 2, in_use_summary: 1, tods_import_drawer: 1, tods_review_current?: 2]
 
   import GtfsPlannerWeb.PlannerComponents,
     only: [
@@ -116,6 +116,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
      |> assign(:vehicle_types_empty?, true)
      |> assign(:type_drawer_open, false)
      |> assign(:type_entity, nil)
+     |> assign(:type_counts, nil)
      |> assign(:type_form, vehicle_type_form(%VehicleType{}, %{}))
      |> assign(:type_drawer_title, "Add vehicle type")
      |> assign(:type_drawer_return_focus_id, nil)
@@ -336,7 +337,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
           )
 
         if Operations.in_use?(counts) do
-          {:noreply, assign(socket, :type_in_use, %{vehicle_type: vehicle_type, counts: counts})}
+          {:noreply, show_type_in_use(socket, vehicle_type, counts)}
         else
           {:noreply, assign(socket, :type_delete_target, vehicle_type)}
         end
@@ -940,6 +941,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
           open={@type_drawer_open}
           title={@type_drawer_title}
           entity={@type_entity}
+          counts={@type_counts}
           form={@type_form}
           return_focus_id={@type_drawer_return_focus_id}
         />
@@ -1367,7 +1369,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
         {:noreply,
          socket
          |> assign(:type_delete_target, nil)
-         |> assign(:type_in_use, %{vehicle_type: vehicle_type, counts: counts})}
+         |> show_type_in_use(vehicle_type, counts)}
 
       {:error, :not_found} ->
         {:noreply, socket |> assign(:type_delete_target, nil) |> load_fleet()}
@@ -1377,6 +1379,7 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   attr :open, :boolean, required: true
   attr :title, :string, required: true
   attr :entity, :any, default: nil
+  attr :counts, :map, default: nil
   attr :form, :any, required: true
   attr :return_focus_id, :string, default: nil
 
@@ -1451,12 +1454,12 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
             <.message
               :if={@entity}
               id="vehicle-type-assigned-vehicles"
-              kind={if @entity.vehicle_count > 0, do: "warning", else: "info"}
-              title={vehicles_use_this_type(@entity.vehicle_count)}
+              kind={if Operations.in_use?(@counts), do: "warning", else: "info"}
+              title={type_use_title(@counts)}
             >
-              {if @entity.vehicle_count > 0,
-                do: "To delete it, set a different type on those vehicles first.",
-                else: "You can delete it without changing any vehicles."}
+              {if Operations.in_use?(@counts),
+                do: "To delete it, first change those.",
+                else: "You can delete it without changing anything."}
             </.message>
           </.drawer_scroll>
 
@@ -2300,6 +2303,13 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   defp open_edit_vehicle_type(socket, vehicle_type, opener_id) do
     socket
     |> assign(:type_entity, vehicle_type)
+    |> assign(
+      :type_counts,
+      Operations.vehicle_type_in_use_counts(
+        socket.assigns.current_organization.id,
+        vehicle_type.id
+      )
+    )
     |> assign(:type_form, vehicle_type_form(vehicle_type, %{}))
     |> assign(:type_drawer_title, "Edit vehicle type")
     |> assign(:type_drawer_return_focus_id, opener_id)
@@ -2431,10 +2441,21 @@ defmodule GtfsPlannerWeb.Gtfs.FleetLive do
   defp needs_assignment_title(1), do: "1 vehicle needs a garage or type"
   defp needs_assignment_title(count), do: "#{count} vehicles need a garage or type"
 
-  defp vehicles_use_text(1), do: "1 vehicle uses"
-  defp vehicles_use_text(count), do: "#{count} vehicles use"
+  # The drawer states the same references the delete is refused on, read when
+  # the drawer opens and again when a delete is refused.
+  defp type_use_title(counts) do
+    case in_use_summary(counts) do
+      nil -> "Nothing uses this type"
+      summary -> "Used by #{summary}"
+    end
+  end
 
-  defp vehicles_use_this_type(count), do: "#{vehicles_use_text(count)} this type"
+  # The refusal's counts are current; the counts the drawer opened with may not be.
+  defp show_type_in_use(socket, vehicle_type, counts) do
+    socket
+    |> assign(:type_counts, counts)
+    |> assign(:type_in_use, %{vehicle_type: vehicle_type, counts: counts})
+  end
 
   defp vehicle_drawer_scope(nil), do: "Shared across all service versions"
 
