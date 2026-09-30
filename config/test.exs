@@ -133,6 +133,11 @@ config :gtfs_planner, :boundaries_req_plug, {Req.Test, GtfsPlanner.Boundaries.Ti
 # tests can stub upstream routing responses.
 config :gtfs_planner, :street_routing_req_plug, {Req.Test, GtfsPlanner.StreetRouting.Geoapify}
 
+# Route Req HTTP calls in the geocoding adapter through Req.Test so tests can
+# stub upstream reverse-geocoding responses. Browser journeys click a map in a
+# real browser, where no such plug exists, and use `BrowserGeocoding` instead.
+config :gtfs_planner, :geocoding_req_plug, {Req.Test, GtfsPlanner.Geocoding.Geoapify}
+
 # Route Req HTTP calls in the map tiles controller through Req.Test so
 # tests can stub upstream tile responses.
 config :gtfs_planner, :map_tiles_req_plug, {Req.Test, GtfsPlannerWeb.MapTilesController}
