@@ -1612,6 +1612,14 @@ defmodule GtfsPlanner.Gtfs do
   def apply_review(pattern_id, operation, fingerprint, %AuditContext{} = audit_context),
     do: RoutePatterns.apply_review(pattern_id, operation, fingerprint, audit_context)
 
+  @doc "Resets the selected in-scope trips to their current effective defaults, fenced per trip."
+  def reset_trip_headsigns(pattern_id, scope, selections, %AuditContext{} = audit_context),
+    do: RoutePatterns.reset_trip_headsigns(pattern_id, scope, selections, audit_context)
+
+  @doc "Reverses a headsign save or reset under the recorded default and per-trip fences."
+  def undo_headsign_update(pattern_id, undo, %AuditContext{} = audit_context),
+    do: RoutePatterns.undo_headsign_update(pattern_id, undo, audit_context)
+
   @doc """
   Returns the scoped headsign usage read model for a pattern or one of its
   timings: the effective default, follower and differing counts, shielded
