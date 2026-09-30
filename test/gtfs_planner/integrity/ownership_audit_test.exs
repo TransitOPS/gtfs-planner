@@ -7,7 +7,18 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
 
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.OperationsFixtures
   import GtfsPlanner.VersionsFixtures
+
+  @organization_parents [
+    {"block_attributes", "garage_id", "garages"},
+    {"block_attributes", "vehicle_type_id", "vehicle_types"},
+    {"route_operating_settings", "garage_id", "garages"},
+    {"route_operating_settings", "required_vehicle_type_id", "vehicle_types"},
+    {"blocking_settings", "default_garage_id", "garages"},
+    {"vehicles", "garage_id", "garages"},
+    {"vehicles", "vehicle_type_id", "vehicle_types"}
+  ]
 
   test "version-owner catalog matches the database ownership columns" do
     %{rows: rows} =
@@ -106,6 +117,45 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
     assert stop_level.id in relationship.samples
   end
 
+  test "all organization-only parent links report foreign assets and ignore nulls" do
+    org = organization_fixture()
+    version = gtfs_version_fixture(org.id)
+    foreign_org = organization_fixture()
+    foreign_garage = garage_fixture(foreign_org.id)
+    foreign_type = vehicle_type_fixture(foreign_org.id)
+
+    for {table, column, parent} <- @organization_parents do
+      Repo.query!("ALTER TABLE #{table} DROP CONSTRAINT #{table}_#{column}_owner_fkey")
+      parent_id = if parent == "garages", do: foreign_garage.id, else: foreign_type.id
+      foreign_id = insert_asset_link!(table, column, org.id, version.id, parent_id)
+      insert_asset_link!(table, column, org.id, version.id, nil)
+
+      relationship =
+        OwnershipAudit.run().relationships
+        |> Enum.find(&(&1.name == "#{table}.#{column}→#{parent}"))
+
+      assert relationship.kind == :organization_containment
+      assert relationship.anomalies == 1
+      assert relationship.samples == [foreign_id]
+    end
+  end
+
+  test "a missing non-null asset parent is also an ownership anomaly" do
+    org = organization_fixture()
+    version = gtfs_version_fixture(org.id)
+    Repo.query!("ALTER TABLE vehicles DROP CONSTRAINT vehicles_garage_id_owner_fkey")
+    Repo.query!("ALTER TABLE vehicles DROP CONSTRAINT vehicles_garage_id_fkey")
+
+    id = insert_asset_link!("vehicles", "garage_id", org.id, version.id, Ecto.UUID.generate())
+
+    relationship =
+      OwnershipAudit.run().relationships
+      |> Enum.find(&(&1.name == "vehicles.garage_id→garages"))
+
+    assert relationship.anomalies == 1
+    assert relationship.samples == [id]
+  end
+
   test "cleaned import receipts keep deleted target identity; failed receipts are reported" do
     org = organization_fixture()
     now = DateTime.utc_now()
@@ -161,7 +211,10 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
     version = gtfs_version_fixture(org.id)
     route_fixture(org.id, version.id)
 
-    tables = OwnershipAudit.version_owner_tables() ++ ["gtfs_import_runs"]
+    tables =
+      OwnershipAudit.version_owner_tables() ++
+        ["gtfs_import_runs", "garages", "vehicle_types", "vehicles"]
+
     before = Map.new(tables, &{&1, fingerprint(&1)})
 
     assert %{total: 0} = OwnershipAudit.run(sample_limit: 0)
@@ -179,5 +232,55 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
       """)
 
     {count, checksum}
+  end
+
+  defp insert_asset_link!(table, column, org_id, version_id, parent_id) do
+    id = Ecto.UUID.generate()
+    base = [Ecto.UUID.dump!(id), Ecto.UUID.dump!(org_id)]
+    asset = if parent_id, do: Ecto.UUID.dump!(parent_id), else: nil
+
+    case table do
+      "block_attributes" ->
+        Repo.query!(
+          """
+          INSERT INTO block_attributes
+            (id, organization_id, gtfs_version_id, service_id, block_id, #{column}, inserted_at, updated_at)
+          VALUES ($1, $2, $3, 'SERVICE', $4, $5, now(), now())
+          """,
+          base ++ [Ecto.UUID.dump!(version_id), "BLOCK_#{id}", asset]
+        )
+
+      "route_operating_settings" ->
+        Repo.query!(
+          """
+          INSERT INTO route_operating_settings
+            (id, organization_id, gtfs_version_id, route_id, #{column}, inserted_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, now(), now())
+          """,
+          base ++ [Ecto.UUID.dump!(version_id), "ROUTE_#{id}", asset]
+        )
+
+      "blocking_settings" ->
+        Repo.query!(
+          """
+          INSERT INTO blocking_settings
+            (id, organization_id, gtfs_version_id, #{column}, inserted_at, updated_at)
+          VALUES ($1, $2, $3, $4, now(), now())
+          """,
+          base ++ [Ecto.UUID.dump!(version_id), asset]
+        )
+
+      "vehicles" ->
+        Repo.query!(
+          """
+          INSERT INTO vehicles
+            (id, organization_id, vehicle_id, #{column}, inserted_at, updated_at)
+          VALUES ($1, $2, $3, $4, now(), now())
+          """,
+          base ++ ["VEHICLE_#{id}", asset]
+        )
+    end
+
+    id
   end
 end

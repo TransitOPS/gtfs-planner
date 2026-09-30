@@ -10,13 +10,13 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
   alias GtfsPlanner.Repo
 
   @version_owner_tables ~w(
-    agencies alignment_segments areas attributions blocking_settings booking_rules
+    agencies alignment_segments areas attributions block_attributes blocking_settings booking_rules
     calendar_attributes calendar_dates calendars change_logs fare_attributes
     fare_leg_join_rules fare_leg_rules fare_media fare_products fare_rules
-    fare_transfer_rules fare_zones feed_info flex_areas flex_services frequencies
+    deadhead_times fare_transfer_rules fare_zones feed_info flex_areas flex_services frequencies
     gtfs_change_runs gtfs_export_runs gtfs_validation_runs journal_entries levels
-    locations networks pathway_evolutions pathways rider_categories route_networks
-    route_pattern_stops route_patterns routes shapes station_editing_statuses
+    locations networks pathway_evolutions pathways relief_points rider_categories route_networks
+    route_operating_settings route_pattern_stops route_patterns routes shapes station_editing_statuses
     stop_areas stop_levels stop_times stops timed_patterns timeframes transfers
     translations trips walkability_tests
   )
@@ -34,6 +34,20 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
     {"journal_entries.station_id→stops", "journal_entries", "station_id", "stops"},
     {"station_editing_statuses.station_id→stops", "station_editing_statuses", "station_id",
      "stops"}
+  ]
+
+  @organization_containment [
+    {"block_attributes.garage_id→garages", "block_attributes", "garage_id", "garages"},
+    {"block_attributes.vehicle_type_id→vehicle_types", "block_attributes", "vehicle_type_id",
+     "vehicle_types"},
+    {"route_operating_settings.garage_id→garages", "route_operating_settings", "garage_id",
+     "garages"},
+    {"route_operating_settings.required_vehicle_type_id→vehicle_types",
+     "route_operating_settings", "required_vehicle_type_id", "vehicle_types"},
+    {"blocking_settings.default_garage_id→garages", "blocking_settings", "default_garage_id",
+     "garages"},
+    {"vehicles.garage_id→garages", "vehicles", "garage_id", "garages"},
+    {"vehicles.vehicle_type_id→vehicle_types", "vehicles", "vehicle_type_id", "vehicle_types"}
   ]
 
   @doc "Lists the tables whose rows must belong to their named GTFS version."
@@ -60,6 +74,7 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
         relationships =
           Enum.map(@version_owner_tables, &version_owner(&1, repo, sample_limit)) ++
             Enum.map(@containment, &containment(&1, repo, sample_limit)) ++
+            Enum.map(@organization_containment, &organization_containment(&1, repo, sample_limit)) ++
             [import_receipts(repo, sample_limit)]
 
         %{relationships: relationships, total: Enum.sum(Enum.map(relationships, & &1.anomalies))}
@@ -98,6 +113,18 @@ defmodule GtfsPlanner.Integrity.OwnershipAudit do
     """
 
     relationship(name, child, :containment, query, repo, sample_limit)
+  end
+
+  defp organization_containment({name, child, fk, parent}, repo, sample_limit) do
+    query = """
+    SELECT t.id
+    FROM #{child} AS t
+    LEFT JOIN #{parent} AS p ON p.id = t.#{fk}
+    WHERE t.#{fk} IS NOT NULL
+      AND (p.id IS NULL OR t.organization_id IS DISTINCT FROM p.organization_id)
+    """
+
+    relationship(name, child, :organization_containment, query, repo, sample_limit)
   end
 
   defp import_receipts(repo, sample_limit) do

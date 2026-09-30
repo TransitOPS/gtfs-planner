@@ -11,9 +11,11 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
 
   alias GtfsPlanner.Gtfs.{
     AlignmentSegment,
+    DeadheadTime,
     FareLegJoinRule,
     FlexService,
     Pathway,
+    ReliefPoint,
     RoutePatternStop,
     Stop,
     StopArea,
@@ -40,6 +42,9 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     {:route_pattern_stops, RoutePatternStop, :stop_id, :scalar},
     {:alignment_segments_from, AlignmentSegment, :from_stop_id, :scalar},
     {:alignment_segments_to, AlignmentSegment, :to_stop_id, :scalar},
+    {:relief_points, ReliefPoint, :stop_id, :scalar},
+    {:deadhead_times_from, DeadheadTime, :from_ref, {:prefixed, "stop:"}},
+    {:deadhead_times_to, DeadheadTime, :to_ref, {:prefixed, "stop:"}},
     {:flex_first, FlexService, :first_stop_id, :scalar},
     {:flex_last, FlexService, :last_stop_id, :scalar},
     {:flex_hubs, FlexService, :hub_stop_ids, :array}
@@ -134,6 +139,11 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
     )
   end
 
+  defp where_match(query, field, {:prefixed, prefix}, ids) do
+    encoded = Enum.map(ids, &(prefix <> &1))
+    from(row in query, where: field(row, ^field) in ^encoded)
+  end
+
   defp where_match(query, field, _kind, ids) do
     from(row in query, where: field(row, ^field) in ^ids)
   end
@@ -155,6 +165,11 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
             ]
           )
           |> Repo.update_all([])
+
+        {:prefixed, prefix} ->
+          query
+          |> where([row], field(row, ^field) == ^(prefix <> old_id))
+          |> Repo.update_all(set: [{field, prefix <> new_id}, {:updated_at, now}])
 
         _ ->
           query

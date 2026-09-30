@@ -11,7 +11,9 @@ defmodule GtfsPlanner.Gtfs.Stations.NamingTest do
     AlignmentSegment,
     AuditContext,
     ChangeLog,
+    DeadheadTime,
     FlexService,
+    ReliefPoint,
     Stations,
     Stop,
     StopTime
@@ -80,10 +82,19 @@ defmodule GtfsPlanner.Gtfs.Stations.NamingTest do
         hub_stop_ids: ["S1", "S2"]
       })
 
+    relief = insert(ReliefPoint, scope, %{stop_id: "S1"})
+
+    deadhead =
+      insert(DeadheadTime, scope, %{
+        from_ref: "stop:S1",
+        to_ref: "stop:S2",
+        minutes: 8
+      })
+
     assert {:ok, preview} = Stations.preview_station_naming(scope.audit, :structured, nil)
     assert preview.renamed_stops_count == 2
     assert preview.updated_pathways_count == 2
-    assert preview.updated_references_count == 7
+    assert preview.updated_references_count == 10
     assert byte_size(preview.fingerprint) == 32
 
     assert {:ok, applied} =
@@ -103,6 +114,13 @@ defmodule GtfsPlanner.Gtfs.Stations.NamingTest do
     assert Repo.get!(AlignmentSegment, alignment.id).from_stop_id == mapping["S1"]
     assert Repo.get!(AlignmentSegment, alignment.id).to_stop_id == mapping["S2"]
     assert Repo.get!(FlexService, flex.id).hub_stop_ids == [mapping["S1"], mapping["S2"]]
+    assert Repo.get!(ReliefPoint, relief.id).stop_id == mapping["S1"]
+
+    assert %{from_ref: from_ref, to_ref: to_ref, minutes: 8} =
+             Repo.get!(DeadheadTime, deadhead.id)
+
+    assert from_ref == "stop:#{mapping["S1"]}"
+    assert to_ref == "stop:#{mapping["S2"]}"
 
     assert [first_log, second_log] = logs(scope)
     assert Enum.all?([first_log, second_log], &(&1.action == "updated"))
@@ -171,6 +189,8 @@ defmodule GtfsPlanner.Gtfs.Stations.NamingTest do
 
   test "a change log failure rolls back every renamed ID and reference", scope do
     stop_time = insert(StopTime, scope, %{trip_id: "T", stop_id: "S1", stop_sequence: 1})
+    relief = insert(ReliefPoint, scope, %{stop_id: "S1"})
+    deadhead = insert(DeadheadTime, scope, %{from_ref: "stop:S1", to_ref: "stop:S2", minutes: 8})
     assert {:ok, preview} = Stations.preview_station_naming(scope.audit, :structured, nil)
 
     Repo.query!(
@@ -183,6 +203,8 @@ defmodule GtfsPlanner.Gtfs.Stations.NamingTest do
     assert Repo.get!(Stop, scope.first.id).stop_id == "S1"
     assert Repo.get!(Stop, scope.second.id).stop_id == "S2"
     assert Repo.get!(StopTime, stop_time.id).stop_id == "S1"
+    assert Repo.get!(ReliefPoint, relief.id).stop_id == "S1"
+    assert %{from_ref: "stop:S1", to_ref: "stop:S2"} = Repo.get!(DeadheadTime, deadhead.id)
     assert logs(scope) == []
   end
 

@@ -11,10 +11,12 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteTest do
     AlignmentSegment,
     AuditContext,
     ChangeLog,
+    DeadheadTime,
     FareLegJoinRule,
     FlexService,
     Level,
     Pathway,
+    ReliefPoint,
     Stations,
     Stop,
     StopArea,
@@ -42,7 +44,10 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteTest do
     :stop_areas,
     :translations,
     :walkability_tests,
-    :parent_stations
+    :parent_stations,
+    :relief_points,
+    :deadhead_times_from,
+    :deadhead_times_to
   ]
 
   setup do
@@ -98,6 +103,25 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteTest do
 
     assert Repo.get!(Stop, scope.child.id)
     assert Repo.get!(Stop, nested.id)
+  end
+
+  test "one deadhead pair counts each stop endpoint and leaves the row untouched", scope do
+    row =
+      insert(DeadheadTime, scope, %{
+        from_ref: "stop:S1",
+        to_ref: "stop:S1",
+        minutes: 11
+      })
+
+    assert {:error, {:in_use, %{deadhead_times_from: 1, deadhead_times_to: 1}}} =
+             Stations.delete_child_stop(scope.audit, scope.child.id, scope.child.lock_version)
+
+    assert Repo.get!(Stop, scope.child.id)
+
+    assert %{from_ref: "stop:S1", to_ref: "stop:S1", minutes: 11} =
+             Repo.get!(DeadheadTime, row.id)
+
+    assert all_logs(scope) == []
   end
 
   test "unreferenced deletion removes both pathways and stop levels with three logs", scope do
@@ -363,6 +387,15 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteTest do
             address_lat: Decimal.new("42.3601"),
             address_lon: Decimal.new("-71.0589")
           }
+
+        :relief_points ->
+          %{stop_id: stop_id}
+
+        :deadhead_times_from ->
+          %{from_ref: "stop:#{stop_id}", to_ref: "garage:#{Ecto.UUID.generate()}", minutes: 7}
+
+        :deadhead_times_to ->
+          %{from_ref: "garage:#{Ecto.UUID.generate()}", to_ref: "stop:#{stop_id}", minutes: 8}
       end
 
     schema =
@@ -375,6 +408,8 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteTest do
         :stop_areas -> StopArea
         :translations -> Translation
         :walkability_tests -> WalkabilityTest
+        :relief_points -> ReliefPoint
+        key when key in [:deadhead_times_from, :deadhead_times_to] -> DeadheadTime
       end
 
     insert(schema, scope, attrs)

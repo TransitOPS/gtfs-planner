@@ -11,11 +11,13 @@ defmodule GtfsPlanner.Gtfs.Stations.RenameTest do
     Alignments,
     Audit,
     AuditContext,
+    DeadheadTime,
     Export,
     FareLegJoinRule,
     FlexService,
     Import,
     Pathway,
+    ReliefPoint,
     Shape,
     Stations,
     Stop,
@@ -130,12 +132,7 @@ defmodule GtfsPlanner.Gtfs.Stations.RenameTest do
   end
 
   test "a log insertion failure rolls the cascade back", scope do
-    row =
-      insert(StopTime, scope.organization.id, scope.version.id, %{
-        trip_id: "T",
-        stop_id: "S1",
-        stop_sequence: 1
-      })
+    rows = insert_references(scope.organization.id, scope.version.id, "S1")
 
     Repo.query!(
       "ALTER TABLE change_logs ADD CONSTRAINT reject_stop_rename_logs CHECK (entity_type <> 'stop') NOT VALID"
@@ -150,7 +147,43 @@ defmodule GtfsPlanner.Gtfs.Stations.RenameTest do
              )
 
     assert Repo.get!(Stop, scope.child.id).stop_id == "S1"
-    assert Repo.get!(StopTime, row.id).stop_id == "S1"
+    assert_reference_values(rows, "S1")
+    assert logs(scope) == []
+  end
+
+  test "an invalid pre-existing deadhead target pair rolls the whole rename back", scope do
+    garage_ref = "garage:#{Ecto.UUID.generate()}"
+    relief = insert(ReliefPoint, scope.organization.id, scope.version.id, %{stop_id: "S1"})
+
+    source =
+      insert(DeadheadTime, scope.organization.id, scope.version.id, %{
+        from_ref: "stop:S1",
+        to_ref: garage_ref,
+        minutes: 9
+      })
+
+    target =
+      insert(DeadheadTime, scope.organization.id, scope.version.id, %{
+        from_ref: "stop:S2",
+        to_ref: garage_ref,
+        minutes: 10
+      })
+
+    error =
+      assert_raise Postgrex.Error, fn ->
+        Stations.update_child_stop(
+          scope.audit,
+          scope.child.id,
+          %{"stop_id" => "S2"},
+          scope.child.lock_version
+        )
+      end
+
+    assert error.postgres.code == :unique_violation
+    assert Repo.get!(Stop, scope.child.id).stop_id == "S1"
+    assert Repo.get!(ReliefPoint, relief.id).stop_id == "S1"
+    assert %{from_ref: "stop:S1", minutes: 9} = Repo.get!(DeadheadTime, source.id)
+    assert %{from_ref: "stop:S2", minutes: 10} = Repo.get!(DeadheadTime, target.id)
     assert logs(scope) == []
   end
 
@@ -353,6 +386,19 @@ defmodule GtfsPlanner.Gtfs.Stations.RenameTest do
         insert(AlignmentSegment, org_id, version_id, %{from_stop_id: stop_id, to_stop_id: "X"}),
       alignment_segments_to:
         insert(AlignmentSegment, org_id, version_id, %{from_stop_id: "X", to_stop_id: stop_id}),
+      relief_points: insert(ReliefPoint, org_id, version_id, %{stop_id: stop_id}),
+      deadhead_times_from:
+        insert(DeadheadTime, org_id, version_id, %{
+          from_ref: "stop:#{stop_id}",
+          to_ref: "garage:#{Ecto.UUID.generate()}",
+          minutes: 9
+        }),
+      deadhead_times_to:
+        insert(DeadheadTime, org_id, version_id, %{
+          from_ref: "garage:#{Ecto.UUID.generate()}",
+          to_ref: "stop:#{stop_id}",
+          minutes: 10
+        }),
       flex_first:
         insert(FlexService, org_id, version_id, %{
           key: "first",
@@ -389,6 +435,7 @@ defmodule GtfsPlanner.Gtfs.Stations.RenameTest do
 
       case kind do
         :array -> assert value == [expected, "X"]
+        {:prefixed, "stop:"} -> assert value == "stop:#{expected}"
         _ -> assert value == expected
       end
     end

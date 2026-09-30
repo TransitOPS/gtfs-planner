@@ -16,6 +16,7 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
 
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
+  import GtfsPlanner.OperationsFixtures
   import GtfsPlanner.VersionsFixtures
 
   @containment [
@@ -28,6 +29,16 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     {"flex_areas", "flex_service_id", "flex_services"},
     {"journal_entries", "station_id", "stops"},
     {"station_editing_statuses", "station_id", "stops"}
+  ]
+
+  @organization_parents [
+    {"block_attributes", "garage_id", "garages"},
+    {"block_attributes", "vehicle_type_id", "vehicle_types"},
+    {"route_operating_settings", "garage_id", "garages"},
+    {"route_operating_settings", "required_vehicle_type_id", "vehicle_types"},
+    {"blocking_settings", "default_garage_id", "garages"},
+    {"vehicles", "garage_id", "garages"},
+    {"vehicles", "vehicle_type_id", "vehicle_types"}
   ]
 
   @actor %{id: Ecto.UUID.generate(), email: "operator@example.com"}
@@ -73,6 +84,13 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
       assert definition =~ "REFERENCES #{parent}(id, organization_id, gtfs_version_id)"
     end
 
+    for {child, foreign_key, parent} <- @organization_parents do
+      name = "#{child}_#{foreign_key}_owner_fkey"
+      assert {^child, ^parent, definition, "a"} = Map.fetch!(constraints, name)
+      assert definition =~ "FOREIGN KEY (#{foreign_key}, organization_id)"
+      assert definition =~ "REFERENCES #{parent}(id, organization_id)"
+    end
+
     refute Enum.any?(constraints, fn {_name, {child, parent, _definition, _delete_rule}} ->
              child == "gtfs_import_runs" and parent == "gtfs_versions"
            end)
@@ -81,9 +99,64 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
             "FOREIGN KEY (station_id) REFERENCES stops(id) ON DELETE CASCADE", "c"} =
              Map.fetch!(constraints, "journal_entries_station_id_fkey")
 
+    assert {"blocking_settings", "garages", definition, "n"} =
+             Map.fetch!(constraints, "blocking_settings_default_garage_id_fkey")
+
+    assert definition =~ "ON DELETE SET NULL"
+
+    for {child, column, parent} <- @organization_parents do
+      assert {^child, ^parent, _definition, action} =
+               Map.fetch!(constraints, "#{child}_#{column}_fkey")
+
+      assert action == if(child == "blocking_settings", do: "n", else: "a")
+    end
+
     for table <- ~w(route_patterns timed_patterns route_pattern_stops flex_services) do
       assert unique_scoped_index?(table)
     end
+
+    for table <- ~w(garages vehicle_types) do
+      assert unique_organization_index?(table)
+    end
+  end
+
+  test "every organization-only asset link rejects a foreign parent and accepts nil" do
+    org = organization_fixture()
+    version = gtfs_version_fixture(org.id)
+    other = organization_fixture()
+    foreign_garage = garage_fixture(other.id)
+    foreign_type = vehicle_type_fixture(other.id)
+
+    for {child, column, parent} <- @organization_parents do
+      parent_id = if parent == "garages", do: foreign_garage.id, else: foreign_type.id
+
+      error =
+        assert_raise Postgrex.Error, fn ->
+          Repo.transaction(fn ->
+            insert_asset_link!(child, column, org.id, version.id, parent_id)
+          end)
+        end
+
+      assert error.postgres.code == :foreign_key_violation
+      assert error.postgres.constraint == "#{child}_#{column}_owner_fkey"
+      assert is_binary(insert_asset_link!(child, column, org.id, version.id, nil))
+    end
+  end
+
+  test "deleting a default garage still clears its nullable setting" do
+    org = organization_fixture()
+    version = gtfs_version_fixture(org.id)
+    garage = garage_fixture(org.id)
+
+    id =
+      insert_asset_link!("blocking_settings", "default_garage_id", org.id, version.id, garage.id)
+
+    Repo.query!("DELETE FROM garages WHERE id = $1", [Ecto.UUID.dump!(garage.id)])
+
+    assert %{rows: [[nil]]} =
+             Repo.query!("SELECT default_garage_id FROM blocking_settings WHERE id = $1", [
+               Ecto.UUID.dump!(id)
+             ])
   end
 
   test "new writes reject a version from another organization" do
@@ -200,6 +273,9 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     org = organization_fixture()
     version = gtfs_version_fixture(org.id)
     route = route_fixture(org.id, version.id)
+    garage = garage_fixture(org.id)
+    vehicle_type = vehicle_type_fixture(org.id)
+    upstream_ids = insert_upstream_rows!(org.id, version.id, garage.id, vehicle_type.id)
     now = DateTime.utc_now()
     trip_id = Ecto.UUID.generate()
     log_id = Ecto.UUID.generate()
@@ -237,6 +313,11 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     assert is_nil(Repo.get(GtfsVersion, version.id))
     assert is_nil(Repo.get(Route, route.id))
     assert is_nil(Repo.get(Trip, trip_id))
+
+    for {table, id} <- upstream_ids do
+      assert %{rows: [[0]]} =
+               Repo.query!("SELECT count(*) FROM #{table} WHERE id = $1", [Ecto.UUID.dump!(id)])
+    end
 
     assert %{rows: [[0]]} =
              Repo.query!("SELECT count(*) FROM change_logs WHERE id = $1", [
@@ -346,6 +427,10 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     files = Enum.map(feed, fn {filename, content} -> %{filename: filename, content: content} end)
     assert {:ok, result} = Import.import_files(org.id, version.id, files)
 
+    garage = garage_fixture(org.id)
+    vehicle_type = vehicle_type_fixture(org.id)
+    upstream_ids = insert_upstream_rows!(org.id, version.id, garage.id, vehicle_type.id)
+
     assert result.counts
            |> Map.drop([:patterns_created, :timings_created, :trips_linked, :trips_custom])
            |> Enum.all?(fn {_name, count} -> count > 0 end)
@@ -364,6 +449,14 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
 
     assert {:ok, nil} = Recovery.discard_claimed(run, claimed_version, cleanup_token)
     assert is_nil(Repo.get(GtfsVersion, version.id))
+
+    for {table, id} <- upstream_ids do
+      assert %{rows: [[0]]} =
+               Repo.query!("SELECT count(*) FROM #{table} WHERE id = $1", [Ecto.UUID.dump!(id)])
+    end
+
+    assert Repo.get!(GtfsPlanner.Operations.Garage, garage.id)
+    assert Repo.get!(GtfsPlanner.Operations.VehicleType, vehicle_type.id)
 
     receipt = Repo.get!(Run, run.id)
     assert receipt.state == "cleaned"
@@ -405,5 +498,126 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
     Enum.any?(rows, fn [definition] ->
       String.ends_with?(definition, "(id, organization_id, gtfs_version_id)")
     end)
+  end
+
+  defp unique_organization_index?(table) do
+    name = "#{table}_id_organization_id_owner_index"
+
+    %{rows: [[definition]]} =
+      Repo.query!(
+        """
+        SELECT pg_get_indexdef(i.indexrelid)
+        FROM pg_index AS i
+        JOIN pg_class AS idx ON idx.oid = i.indexrelid
+        JOIN pg_namespace AS ns ON ns.oid = idx.relnamespace
+        WHERE ns.nspname = 'public' AND idx.relname = $1 AND i.indisunique
+        """,
+        [name]
+      )
+
+    String.ends_with?(definition, "(id, organization_id)")
+  end
+
+  defp insert_upstream_rows!(org_id, version_id, garage_id, vehicle_type_id) do
+    block_id = Ecto.UUID.generate()
+    route_id = Ecto.UUID.generate()
+    deadhead_id = Ecto.UUID.generate()
+    relief_id = Ecto.UUID.generate()
+
+    Repo.query!(
+      """
+      INSERT INTO block_attributes
+        (id, organization_id, gtfs_version_id, service_id, block_id, garage_id,
+         vehicle_type_id, inserted_at, updated_at)
+      VALUES ($1, $2, $3, 'SERVICE', $4, $5, $6, now(), now())
+      """,
+      Enum.map([block_id, org_id, version_id], &Ecto.UUID.dump!/1) ++
+        ["BLOCK_#{block_id}", Ecto.UUID.dump!(garage_id), Ecto.UUID.dump!(vehicle_type_id)]
+    )
+
+    Repo.query!(
+      """
+      INSERT INTO route_operating_settings
+        (id, organization_id, gtfs_version_id, route_id, garage_id,
+         required_vehicle_type_id, inserted_at, updated_at)
+      VALUES ($1, $2, $3, 'ROUTE', $4, $5, now(), now())
+      """,
+      Enum.map([route_id, org_id, version_id, garage_id, vehicle_type_id], &Ecto.UUID.dump!/1)
+    )
+
+    Repo.query!(
+      """
+      INSERT INTO deadhead_times
+        (id, organization_id, gtfs_version_id, from_ref, to_ref, minutes, inserted_at, updated_at)
+      VALUES ($1, $2, $3, 'stop:START', 'stop:END', 12, now(), now())
+      """,
+      Enum.map([deadhead_id, org_id, version_id], &Ecto.UUID.dump!/1)
+    )
+
+    Repo.query!(
+      """
+      INSERT INTO relief_points
+        (id, organization_id, gtfs_version_id, stop_id, inserted_at, updated_at)
+      VALUES ($1, $2, $3, 'STOP', now(), now())
+      """,
+      Enum.map([relief_id, org_id, version_id], &Ecto.UUID.dump!/1)
+    )
+
+    [
+      {"block_attributes", block_id},
+      {"route_operating_settings", route_id},
+      {"deadhead_times", deadhead_id},
+      {"relief_points", relief_id}
+    ]
+  end
+
+  defp insert_asset_link!(child, column, org_id, version_id, parent_id) do
+    id = Ecto.UUID.generate()
+    ids = [Ecto.UUID.dump!(id), Ecto.UUID.dump!(org_id), Ecto.UUID.dump!(version_id)]
+    parent = if parent_id, do: Ecto.UUID.dump!(parent_id), else: nil
+
+    case child do
+      "block_attributes" ->
+        Repo.query!(
+          """
+          INSERT INTO block_attributes
+            (id, organization_id, gtfs_version_id, service_id, block_id, #{column}, inserted_at, updated_at)
+          VALUES ($1, $2, $3, 'SERVICE', $4, $5, now(), now())
+          """,
+          ids ++ ["BLOCK_#{id}", parent]
+        )
+
+      "route_operating_settings" ->
+        Repo.query!(
+          """
+          INSERT INTO route_operating_settings
+            (id, organization_id, gtfs_version_id, route_id, #{column}, inserted_at, updated_at)
+          VALUES ($1, $2, $3, $4, $5, now(), now())
+          """,
+          ids ++ ["ROUTE_#{id}", parent]
+        )
+
+      "blocking_settings" ->
+        Repo.query!(
+          """
+          INSERT INTO blocking_settings
+            (id, organization_id, gtfs_version_id, #{column}, inserted_at, updated_at)
+          VALUES ($1, $2, $3, $4, now(), now())
+          """,
+          ids ++ [parent]
+        )
+
+      "vehicles" ->
+        Repo.query!(
+          """
+          INSERT INTO vehicles
+            (id, organization_id, vehicle_id, #{column}, inserted_at, updated_at)
+          VALUES ($1, $2, $3, $4, now(), now())
+          """,
+          Enum.take(ids, 2) ++ ["VEHICLE_#{id}", parent]
+        )
+    end
+
+    id
   end
 end

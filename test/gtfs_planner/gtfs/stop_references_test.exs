@@ -7,10 +7,11 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
 
   alias GtfsPlanner.Gtfs.{
     AlignmentSegment,
+    DeadheadTime,
     FareLegJoinRule,
     FlexService,
     Pathway,
-    RoutePatternStop,
+    ReliefPoint,
     Stop,
     StopArea,
     StopReferences,
@@ -20,6 +21,7 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
   }
 
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Gtfs.Blocking.DeadheadTimes
   alias GtfsPlanner.Validations.WalkabilityTest
   alias GtfsPlanner.Versions
 
@@ -38,6 +40,9 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
                        {"route_pattern_stops", "stop_id"},
                        {"alignment_segments", "from_stop_id"},
                        {"alignment_segments", "to_stop_id"},
+                       {"relief_points", "stop_id"},
+                       {"deadhead_times", "from_ref"},
+                       {"deadhead_times", "to_ref"},
                        {"flex_services", "first_stop_id"},
                        {"flex_services", "last_stop_id"},
                        {"flex_services", "hub_stop_ids"}
@@ -70,9 +75,24 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
     assert columns ==
              @reference_columns
              |> MapSet.delete({"translations", "record_id"})
+             |> MapSet.delete({"deadhead_times", "from_ref"})
+             |> MapSet.delete({"deadhead_times", "to_ref"})
              |> MapSet.put({"stops", "stop_id"})
              |> MapSet.put({"change_logs", "station_stop_id"})
              |> MapSet.put({"stop_levels", "stop_id"})
+
+    # Tagged references are intentionally classified outside the stop_id wildcard.
+    assert %{rows: [["from_ref", "character varying"], ["to_ref", "character varying"]]} =
+             Repo.query!("""
+             SELECT column_name, data_type FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = 'deadhead_times'
+               AND column_name IN ('from_ref', 'to_ref')
+             ORDER BY column_name
+             """)
+
+    assert DeadheadTimes.encode_ref({:stop, "A:B"}) == "stop:A:B"
+    assert DeadheadTimes.decode_ref("stop:A:B") == {:ok, {:stop, "A:B"}}
+    assert DeadheadTimes.decode_ref("stop:") == :error
 
     catalog_columns =
       StopReferences.catalog()
@@ -167,7 +187,32 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
         hub_stop_ids: []
       })
 
-    assert {:ok, %{stop_times: 2, flex_hubs: 1, total: 3}} =
+    first_relief = insert(ReliefPoint, organization.id, version.id, %{stop_id: "A"})
+    second_relief = insert(ReliefPoint, organization.id, version.id, %{stop_id: "B"})
+
+    first_deadhead =
+      insert(DeadheadTime, organization.id, version.id, %{
+        from_ref: "stop:A",
+        to_ref: "stop:B",
+        minutes: 12
+      })
+
+    second_deadhead =
+      insert(DeadheadTime, organization.id, version.id, %{
+        from_ref: "stop:B",
+        to_ref: "stop:A",
+        minutes: 17
+      })
+
+    assert {:ok,
+            %{
+              stop_times: 2,
+              flex_hubs: 1,
+              relief_points: 2,
+              deadhead_times_from: 2,
+              deadhead_times_to: 2,
+              total: 9
+            }} =
              Repo.transaction(fn ->
                Versions.lock_for_exclusive_write!(organization.id, version.id)
                StopReferences.rename!(organization.id, version.id, %{"A" => "B", "B" => "A"})
@@ -179,6 +224,14 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
     assert Repo.get!(StopTime, b_time.id).stop_id == "A"
     assert Repo.get!(FlexService, hubs.id).hub_stop_ids == ["B", "A"]
     assert Repo.get!(FlexService, empty_hubs.id).hub_stop_ids == []
+    assert Repo.get!(ReliefPoint, first_relief.id).stop_id == "B"
+    assert Repo.get!(ReliefPoint, second_relief.id).stop_id == "A"
+
+    assert %{from_ref: "stop:B", to_ref: "stop:A", minutes: 12} =
+             Repo.get!(DeadheadTime, first_deadhead.id)
+
+    assert %{from_ref: "stop:A", to_ref: "stop:B", minutes: 17} =
+             Repo.get!(DeadheadTime, second_deadhead.id)
   end
 
   test "an exclusive lock returns the scoped version and rejects another organization" do
@@ -197,6 +250,54 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
              Repo.transaction(fn ->
                Versions.lock_for_exclusive_write!(other_organization.id, version.id)
              end)
+  end
+
+  test "tagged refs keep colons exact and leave garage, unknown and empty tags alone" do
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop = stop_fixture(organization.id, version.id, stop_id: "S:1")
+    garage_ref = "garage:#{Ecto.UUID.generate()}"
+
+    tagged =
+      insert(DeadheadTime, organization.id, version.id, %{
+        from_ref: "stop:S:1",
+        to_ref: "stop:S:1",
+        minutes: 13
+      })
+
+    garage =
+      insert(DeadheadTime, organization.id, version.id, %{
+        from_ref: garage_ref,
+        to_ref: "stop:",
+        minutes: 14
+      })
+
+    unknown =
+      insert(DeadheadTime, organization.id, version.id, %{
+        from_ref: "unknown:S:1",
+        to_ref: "stop:S:10",
+        minutes: 15
+      })
+
+    assert %{deadhead_times_from: 1, deadhead_times_to: 1, total: 2} =
+             StopReferences.count(organization.id, version.id, ["S:1"])
+
+    assert {:ok, %{total: 2}} =
+             Repo.transaction(fn ->
+               Versions.lock_for_exclusive_write!(organization.id, version.id)
+               StopReferences.rename!(organization.id, version.id, %{"S:1" => "S:2"})
+             end)
+
+    assert Repo.get!(Stop, stop.id).stop_id == "S:2"
+
+    assert %{from_ref: "stop:S:2", to_ref: "stop:S:2", minutes: 13} =
+             Repo.get!(DeadheadTime, tagged.id)
+
+    assert %{from_ref: ^garage_ref, to_ref: "stop:", minutes: 14} =
+             Repo.get!(DeadheadTime, garage.id)
+
+    assert %{from_ref: "unknown:S:1", to_ref: "stop:S:10", minutes: 15} =
+             Repo.get!(DeadheadTime, unknown.id)
   end
 
   defp insert_references(organization_id, version_id, stop_id) do
@@ -287,6 +388,19 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
           from_stop_id: "X",
           to_stop_id: stop_id
         }),
+      relief_points: insert(ReliefPoint, organization_id, version_id, %{stop_id: stop_id}),
+      deadhead_times_from:
+        insert(DeadheadTime, organization_id, version_id, %{
+          from_ref: "stop:#{stop_id}",
+          to_ref: "garage:#{Ecto.UUID.generate()}",
+          minutes: 9
+        }),
+      deadhead_times_to:
+        insert(DeadheadTime, organization_id, version_id, %{
+          from_ref: "garage:#{Ecto.UUID.generate()}",
+          to_ref: "stop:#{stop_id}",
+          minutes: 10
+        }),
       flex_first:
         insert(FlexService, organization_id, version_id, %{
           key: "first",
@@ -324,6 +438,7 @@ defmodule GtfsPlanner.Gtfs.StopReferencesTest do
 
       case kind do
         :array -> assert value == [expected, "X"]
+        {:prefixed, "stop:"} -> assert value == "stop:#{expected}"
         _ -> assert value == expected
       end
     end
