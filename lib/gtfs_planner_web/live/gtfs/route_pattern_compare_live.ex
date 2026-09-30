@@ -133,6 +133,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
           @comparison &&
             slot_paths(@comparison, @current_gtfs_version.id, @route_id, @requested)
         }
+        reverse_path={reverse_path(@comparison, @current_gtfs_version.id, @route_id, @requested)}
       />
     </Layouts.app>
     """
@@ -259,6 +260,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
       "/gtfs/#{version_id}/routes/#{side.route.route_id}/patterns/#{side.pattern.route_pattern_id}"
 
     %{change: change_path, open: base <> "?task=stops", times: base <> "?task=timings"}
+  end
+
+  # The relation callout's toggle target (AC-4): the same URL with `reverse`
+  # set or dropped. It exists once a pair is loaded, so the callout and its
+  # toggle speak for the same state; `nil` keeps the callout away while B is
+  # absent or unavailable.
+  defp reverse_path(comparison, version_id, route_id, requested) do
+    case comparison && comparison.alignment do
+      %{reversed?: reversed?} ->
+        compare_path(version_id, route_id, requested, %{
+          "reverse" => if(reversed?, do: nil, else: "1")
+        })
+
+      _ ->
+        nil
+    end
   end
 
   defp patterns_path(version_id, route_id) do
