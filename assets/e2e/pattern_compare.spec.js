@@ -5,11 +5,11 @@ import { resolve } from "node:path";
 /**
  * Pattern comparison journey (spec 19, step 11 and later visual steps).
  *
- * Step 11 owns this file's shared helpers only: the comparison LiveView does
- * not exist yet, so there are no tests here. Step 23 adds the describe blocks
- * over BROWSER_COMPARE's seeded patterns (FULL, DEV, SHORT, LOOP, MOVED,
- * BACK) and the cross-route BROWSER-CMP-OTHER, capturing screenshots into
- * PATTERN_COMPARE_CAPTURE_DIR.
+ * Step 11 owns this file's shared helpers (login, version, tile stub, capture).
+ * Step 12 adds the `capture: shell` block for the page's own states; later
+ * visual steps add their own blocks, and step 23 adds the journey over
+ * BROWSER_COMPARE's seeded patterns (FULL, DEV, SHORT, LOOP, MOVED, BACK) and
+ * the cross-route BROWSER-CMP-OTHER.
  */
 
 const EDITOR_USER = {
@@ -76,3 +76,55 @@ async function stubTiles(page) {
     await route.fulfill({ contentType: "image/png", body: BLANK_PNG });
   });
 }
+
+// ── Shell captures (step 12) ─────────────────────────────────────────────────
+//
+// The compare page's own states: the title row with the view switch and the
+// calendar, the loading skeleton and the phone layout. The skeleton is the
+// page's disconnected render, so that capture holds the LiveView socket open
+// and reads the static HTML.
+
+const COMPARE_ROUTE = "BROWSER_COMPARE";
+
+function compareUrl(versionId, query = "") {
+  return `/gtfs/${versionId}/routes/${COMPARE_ROUTE}/patterns/compare${query}`;
+}
+
+test.describe("compare shell (step 12)", () => {
+  test("capture: shell", async ({ page, context }) => {
+    test.setTimeout(120_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    for (const [name, width, height] of [
+      ["shell-1440", 1440, 900],
+      ["shell-390", 390, 844],
+    ]) {
+      await page.setViewportSize({ width, height });
+      await page.goto(compareUrl(versionId));
+      await page.waitForSelector("#compare-calendar");
+      await capture(page, name);
+    }
+
+    for (const [name, width, height] of [
+      ["shell-loading-1440", 1440, 900],
+      ["shell-loading-390", 390, 844],
+    ]) {
+      const loading = await context.newPage();
+
+      await loading.route("**/live/websocket**", () => new Promise(() => {}));
+      await stubTiles(loading);
+      await loading.setViewportSize({ width, height });
+      await loading.goto(compareUrl(versionId));
+      await loading.waitForSelector("#compare-loading");
+      await capture(loading, name);
+      await loading.close();
+    }
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+});

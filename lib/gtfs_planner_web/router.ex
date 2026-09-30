@@ -146,6 +146,11 @@ defmodule GtfsPlannerWeb.Router do
       live "/routes/:route_id", Gtfs.RouteDetailLive, :details
       live "/routes/:route_id/patterns", Gtfs.RoutePatternLive, :index
       live "/routes/:route_id/patterns/new", Gtfs.RoutePatternLive, :new
+
+      # Compare patterns carries its whole selection in query params (`R11`), so
+      # it must be declared before the pattern show route, which would otherwise
+      # capture "compare" as a pattern ID.
+      live "/routes/:route_id/patterns/compare", Gtfs.RoutePatternCompareLive, :compare
       live "/routes/:route_id/patterns/:route_pattern_id", Gtfs.RoutePatternLive, :show
       live "/routes/:route_id/schedules", Gtfs.RouteSchedulesLive, :index
       live "/routes/:route_id/schedules/paste", Gtfs.TimetablePasteLive, :new
