@@ -40,7 +40,7 @@ defmodule GtfsPlannerWeb.Components.DiagramPaletteTest do
     declarations = DiagramPalette.css_custom_properties()
 
     assert declarations == DiagramPalette.css_custom_properties()
-    assert declarations =~ "--diagram-active-stop: #1A2654"
+    assert declarations =~ "--diagram-active-stop: #0B63E5"
     assert declarations =~ "--diagram-label-halo: #FFFFFF"
     assert declarations =~ "--diagram-degraded: #6B7280"
     assert declarations =~ "--diagram-journal-open: #B45309"
@@ -57,5 +57,15 @@ defmodule GtfsPlannerWeb.Components.DiagramPaletteTest do
     halo_color = DiagramPalette.roles().label_halo.color
     journal_color = DiagramPalette.roles().journal_open.color
     assert DiagramPalette.contrast_ratio(halo_color, journal_color) >= 4.5
+  end
+
+  test "points and pathways share one blue that stays visible on white and on black plans" do
+    blue = DiagramPalette.roles().active_stop.color
+
+    assert blue == "#0B63E5"
+    assert DiagramPalette.roles().pathway_forward.color == blue
+
+    assert DiagramPalette.contrast_ratio("#FFFFFF", blue) >= 4.5
+    assert DiagramPalette.contrast_ratio("#000000", blue) >= 3.0
   end
 end

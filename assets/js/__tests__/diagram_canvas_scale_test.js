@@ -164,17 +164,33 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
             </g>
             <line id="path-hit" data-pathway-hit="true" data-base-stroke="14"></line>
             <line id="path-tooltip-hit" data-pathway-tooltip-hit="true" data-base-stroke="6"></line>
+            <line id="path-casing" data-pathway-casing="true" data-base-stroke="4.5"></line>
             <line id="path-line" data-pathway-line="true" data-base-stroke="2.5"></line>
+            <line
+              id="path-casing-paired"
+              data-pathway-casing="true"
+              data-base-stroke="5.5"
+            ></line>
             <line
               id="path-line-paired"
               data-pathway-line="true"
-              data-base-stroke="4.5"
+              data-base-stroke="3.5"
             ></line>
             <line
               id="path-dashed"
               data-pathway-line="true"
               data-base-stroke="2.5"
               data-base-dash="6,3"
+            ></line>
+            <line
+              id="casing-arrow-trim"
+              x1="10"
+              y1="10"
+              x2="20"
+              y2="10"
+              data-pathway-casing="true"
+              data-pathway-end-trim="10"
+              data-base-stroke="4.5"
             ></line>
             <line
               id="path-arrow-trim"
@@ -208,6 +224,12 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               x2="30"
               y2="70"
               data-pathway-arrow-guide="true"
+            ></line>
+            <line
+              id="gate-rail-casing"
+              data-pathway-casing="true"
+              data-rail-base-offset="3.5"
+              data-base-stroke="4.5"
             ></line>
             <line
               id="gate-rail"
@@ -508,12 +530,39 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     it.each([
       ["100%", 1],
       ["250%", 2.5],
-    ])("draws pathway lines 2.5px, and 4.5px when paired, at %s zoom", (_name, zoom) => {
+    ])("draws pathway lines 2.5px, and 3.5px when paired, at %s zoom", (_name, zoom) => {
       const { pxPerUnit } = render({ zoom });
 
       expect(attr("#path-line", "stroke-width") * pxPerUnit).toBeCloseTo(2.5, 6);
       expect(attr("#path-dashed", "stroke-width") * pxPerUnit).toBeCloseTo(2.5, 6);
-      expect(attr("#path-line-paired", "stroke-width") * pxPerUnit).toBeCloseTo(4.5, 6);
+      expect(attr("#path-line-paired", "stroke-width") * pxPerUnit).toBeCloseTo(3.5, 6);
+    });
+
+    it.each([
+      ["100%", 1],
+      ["250%", 2.5],
+    ])("draws the white casing 1px wider than its line on each side at %s zoom", (_name, zoom) => {
+      const { pxPerUnit } = render({ zoom });
+      const casing = attr("#path-casing", "stroke-width") * pxPerUnit;
+      const line = attr("#path-line", "stroke-width") * pxPerUnit;
+
+      expect(casing).toBeCloseTo(4.5, 6);
+      expect(casing - line).toBeCloseTo(2, 6);
+      expect(attr("#path-casing-paired", "stroke-width") * pxPerUnit).toBeCloseTo(5.5, 6);
+    });
+
+    it("ends a casing 10px short of each stop, like its line", () => {
+      const { pxPerUnit } = render({ zoom: 2 });
+
+      expect((attr("#casing-arrow-trim", "x1") - 10) * pxPerUnit).toBeCloseTo(10, 6);
+      expect((20 - attr("#casing-arrow-trim", "x2")) * pxPerUnit).toBeCloseTo(10, 6);
+    });
+
+    it("offsets a rail casing 3.5px from the pathway line, with its rail", () => {
+      const { pxPerUnit } = render({ zoom: 2 });
+
+      expect((attr("#gate-rail-casing", "y1") - 70) * pxPerUnit).toBeCloseTo(3.5, 6);
+      expect(attr("#gate-rail-casing", "y1")).toBeCloseTo(attr("#gate-rail", "y1"), 9);
     });
 
     it("scales dashes with the pathway line", () => {

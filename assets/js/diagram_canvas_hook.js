@@ -1879,7 +1879,7 @@ const DiagramCanvasHook = {
         return;
       }
 
-      pathwayGroup.querySelectorAll("[data-pathway-rail][data-rail-base-offset]").forEach((rail) => {
+      pathwayGroup.querySelectorAll("[data-rail-base-offset]").forEach((rail) => {
         const baseOffset = parseFloat(rail.getAttribute("data-rail-base-offset"));
 
         if (!Number.isFinite(baseOffset)) {

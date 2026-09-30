@@ -11,8 +11,8 @@ defmodule GtfsPlannerWeb.Components.DiagramPalette do
   @roles %{
     active_stop: %{
       css_variable: "--diagram-active-stop",
-      color: "#1A2654",
-      cue: "filled circle and active label"
+      color: "#0B63E5",
+      cue: "filled circle with white ring and active label"
     },
     fallback_stop: %{
       css_variable: "--diagram-fallback-stop",
@@ -26,8 +26,8 @@ defmodule GtfsPlannerWeb.Components.DiagramPalette do
     },
     pathway_forward: %{
       css_variable: "--diagram-pathway-forward",
-      color: "#1E6868",
-      cue: "solid line with forward arrow"
+      color: "#0B63E5",
+      cue: "solid line with white casing and forward arrow"
     },
     pathway_inactive: %{
       css_variable: "--diagram-pathway-inactive",

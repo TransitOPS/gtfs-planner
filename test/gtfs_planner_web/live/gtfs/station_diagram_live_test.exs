@@ -5311,6 +5311,38 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(view, "#pathways-#{mode_6.id} [data-pathway-arrow-guide]")
       assert has_element?(view, "#pathways-#{mode_7.id} [data-pathway-rail]")
       assert has_element?(view, "#pathways-#{mode_7.id} [data-pathway-arrow-guide]")
+
+      # Every line-like part carries a white casing wider than the line by 1px a side,
+      # and the casing carries the geometry attributes the hook lays out.
+      assert has_element?(
+               view,
+               "#pathways-#{mode_1.id} [data-pathway-casing][data-base-stroke='4.5']"
+             )
+
+      assert has_element?(view, "#pathways-#{mode_2.id} [data-pathway-casing][data-glyph-mid-x]")
+      assert has_element?(view, "#pathways-#{mode_3.id} [data-pathway-casing][data-glyph-mid-x]")
+      assert has_element?(view, "#pathways-#{mode_4.id} [data-pathway-casing][data-glyph-mid-x]")
+
+      assert has_element?(
+               view,
+               "#pathways-#{mode_5.id} [data-pathway-casing][data-pathway-end-trim-end='12']"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-#{mode_6.id} [data-pathway-casing][data-rail-base-offset='3.5']"
+             )
+
+      assert has_element?(
+               view,
+               "#pathways-#{mode_7.id} [data-pathway-casing][data-rail-base-offset='2.5']"
+             )
+
+      # Casings never take the pathway's role attributes, so the palette rules that
+      # color lines and rails do not repaint them.
+      refute has_element?(view, "[data-pathway-casing][data-pathway-line]")
+      refute has_element?(view, "[data-pathway-casing][data-pathway-rail]")
+      refute has_element?(view, "[data-pathway-casing][marker-end]")
     end
 
     test "left-to-right pathways render forward and reverse arrows with non-flipped mapping", %{
@@ -7447,17 +7479,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#pathways-#{paired_1.id} [data-pathway-line][data-base-stroke='4.5']"
+               "#pathways-#{paired_1.id} [data-pathway-line][data-base-stroke='3.5']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{paired_2.id} [data-pathway-line][data-base-stroke='4.5']"
+               "#pathways-#{paired_2.id} [data-pathway-line][data-base-stroke='3.5']"
              )
 
       refute has_element?(
                view,
-               "#pathways-#{single.id} [data-pathway-line][data-base-stroke='4.5']"
+               "#pathways-#{single.id} [data-pathway-line][data-base-stroke='3.5']"
              )
     end
 

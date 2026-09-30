@@ -35,6 +35,11 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   @stop_label_box_stroke 1
   @stop_label_max_line_chars 18
   @stop_label_max_lines 3
+  # White outline on each side of a pathway line, in screen pixels.
+  @pathway_casing_px 1
+  # A paired pathway is drawn 1.4x wider than a single one; more than that makes the
+  # cased line heavier than the marker it joins.
+  @paired_stroke_mult 1.4
 
   # ============================================================================
   # Editing Presence Control
@@ -2580,13 +2585,15 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           markerHeight="1.5"
           orient="auto-start-reverse"
           markerUnits="userSpaceOnUse"
+          overflow="visible"
         >
           <path
             d="M 0 0 L 6 3 L 0 6 z"
             fill="#FF00FF"
-            stroke="#FF00FF"
-            stroke-width="0.35"
+            stroke="#FFFFFF"
+            stroke-width="1.5"
             stroke-linejoin="round"
+            paint-order="stroke"
           />
         </marker>
       </defs>
@@ -2762,7 +2769,10 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:x2, line_x2)
       |> assign(:y2, line_y2)
       |> assign(:one_way?, one_way?)
-      |> assign(:stroke_mult, if(Map.get(assigns.pathway, :is_paired), do: 1.8, else: 1.0))
+      |> assign(
+        :stroke_mult,
+        if(Map.get(assigns.pathway, :is_paired), do: @paired_stroke_mult, else: 1.0)
+      )
       |> assign(:opacity, "1")
       |> assign(:forward_label_text, forward_label_text)
       |> assign(:reverse_label_text, reverse_label_text)
@@ -2913,6 +2923,52 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
     """
   end
 
+  # Each pathway line is drawn over a wider white line so it separates from dark
+  # linework in the operator's image, the way roads are cased on maps. The hook
+  # sizes it in screen pixels from `data-base-stroke`, like the line it under-draws,
+  # and positions it with the same trim, glyph and rail attributes.
+  attr :x1, :float, required: true
+  attr :y1, :float, required: true
+  attr :x2, :float, required: true
+  attr :y2, :float, required: true
+  attr :stroke, :float, required: true
+  attr :cap, :string, default: "butt"
+  attr :end_trim, :string, default: nil
+  attr :trim_start, :string, default: nil
+  attr :trim_end, :string, default: nil
+  attr :rail_offset, :string, default: nil
+  attr :glyph, :map, default: nil
+
+  defp pathway_casing(assigns) do
+    assigns = assign(assigns, :casing_stroke, assigns.stroke + 2 * @pathway_casing_px)
+
+    ~H"""
+    <line
+      x1={@x1}
+      y1={@y1}
+      x2={@x2}
+      y2={@y2}
+      stroke="#FFFFFF"
+      stroke-width="0.5"
+      stroke-linecap={@cap}
+      data-pathway-casing="true"
+      data-base-stroke={@casing_stroke}
+      data-pathway-end-trim={@end_trim}
+      data-pathway-end-trim-start={@trim_start}
+      data-pathway-end-trim-end={@trim_end}
+      data-rail-base-offset={@rail_offset}
+      data-glyph-mid-x={@glyph && @glyph.mid_x}
+      data-glyph-mid-y={@glyph && @glyph.mid_y}
+      data-glyph-dir-x={@glyph && @glyph.dir_x}
+      data-glyph-dir-y={@glyph && @glyph.dir_y}
+      data-glyph-along={@glyph && @glyph.along}
+      data-glyph-half-along={@glyph && @glyph.half_along}
+      data-glyph-half-perp={@glyph && @glyph.half_perp}
+      class="pointer-events-none"
+    />
+    """
+  end
+
   attr :x1, :float, required: true
   attr :y1, :float, required: true
   attr :x2, :float, required: true
@@ -2923,6 +2979,14 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   defp pathway_walkway(assigns) do
     ~H"""
+    <.pathway_casing
+      x1={@x1}
+      y1={@y1}
+      x2={@x2}
+      y2={@y2}
+      stroke={2.5 * @stroke_mult}
+      end_trim="10"
+    />
     <line
       x1={@x1}
       y1={@y1}
@@ -2963,6 +3027,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       )
 
     ~H"""
+    <.pathway_casing
+      x1={@x1}
+      y1={@y1}
+      x2={@x2}
+      y2={@y2}
+      stroke={2.5 * @stroke_mult}
+      end_trim="10"
+    />
+    <.pathway_casing
+      :for={tick <- @ticks}
+      x1={tick.mid_x}
+      y1={tick.mid_y}
+      x2={tick.mid_x}
+      y2={tick.mid_y}
+      stroke={2 * @stroke_mult}
+      cap="round"
+      glyph={tick}
+    />
     <line
       x1={@x1}
       y1={@y1}
@@ -3023,6 +3105,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       )
 
     ~H"""
+    <.pathway_casing
+      x1={@x1}
+      y1={@y1}
+      x2={@x2}
+      y2={@y2}
+      stroke={2.5 * @stroke_mult}
+      end_trim="10"
+    />
+    <.pathway_casing
+      :for={segment <- @cross_segments}
+      x1={segment.mid_x}
+      y1={segment.mid_y}
+      x2={segment.mid_x}
+      y2={segment.mid_y}
+      stroke={2 * @stroke_mult}
+      cap="round"
+      glyph={segment}
+    />
     <line
       x1={@x1}
       y1={@y1}
@@ -3083,6 +3183,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       )
 
     ~H"""
+    <.pathway_casing
+      x1={@x1}
+      y1={@y1}
+      x2={@x2}
+      y2={@y2}
+      stroke={2.5 * @stroke_mult}
+      end_trim="10"
+    />
+    <.pathway_casing
+      :for={tick <- @ticks}
+      x1={tick.mid_x}
+      y1={tick.mid_y}
+      x2={tick.mid_x}
+      y2={tick.mid_y}
+      stroke={2 * @stroke_mult}
+      cap="round"
+      glyph={tick}
+    />
     <line
       x1={@x1}
       y1={@y1}
@@ -3142,6 +3260,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:mid_y, mid_y)
 
     ~H"""
+    <.pathway_casing
+      x1={@x1}
+      y1={@y1}
+      x2={@mid_x}
+      y2={@mid_y}
+      stroke={2 * @stroke_mult}
+      trim_start="10"
+      trim_end="12"
+    />
+    <.pathway_casing
+      x1={@mid_x}
+      y1={@mid_y}
+      x2={@x2}
+      y2={@y2}
+      stroke={2 * @stroke_mult}
+      trim_start="12"
+      trim_end="10"
+    />
     <line
       x1={@x1}
       y1={@y1}
@@ -3233,6 +3369,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:rail_b_y2, rail_b_y2)
 
     ~H"""
+    <.pathway_casing
+      x1={@rail_a_x1}
+      y1={@rail_a_y1}
+      x2={@rail_a_x2}
+      y2={@rail_a_y2}
+      stroke={2.5 * @stroke_mult}
+      cap="round"
+      rail_offset="3.5"
+    />
+    <.pathway_casing
+      x1={@rail_b_x1}
+      y1={@rail_b_y1}
+      x2={@rail_b_x2}
+      y2={@rail_b_y2}
+      stroke={2.5 * @stroke_mult}
+      cap="round"
+      rail_offset="-3.5"
+    />
     <line
       x1={@rail_a_x1}
       y1={@rail_a_y1}
@@ -3314,6 +3468,24 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       |> assign(:rail_b_y2, rail_b_y2)
 
     ~H"""
+    <.pathway_casing
+      x1={@rail_a_x1}
+      y1={@rail_a_y1}
+      x2={@rail_a_x2}
+      y2={@rail_a_y2}
+      stroke={2.5 * @stroke_mult}
+      cap="round"
+      rail_offset="2.5"
+    />
+    <.pathway_casing
+      x1={@rail_b_x1}
+      y1={@rail_b_y1}
+      x2={@rail_b_x2}
+      y2={@rail_b_y2}
+      stroke={2.5 * @stroke_mult}
+      cap="round"
+      rail_offset="-2.5"
+    />
     <line
       x1={@rail_a_x1}
       y1={@rail_a_y1}

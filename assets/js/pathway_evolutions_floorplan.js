@@ -192,7 +192,7 @@ function lineMarkup(pathway, geo, state, markerStops, boxes, unitPx) {
     ? "evo-fp-line stroke-action"
     : closed
       ? "evo-fp-line stroke-error-line"
-      : `evo-fp-line ${PATHWAY_INK} group-hover:stroke-(--diagram-active-stop)`;
+      : `evo-fp-line ${PATHWAY_INK} group-hover:stroke-action`;
   const mainWidth = state.selected ? 5.5 : 3;
   const dash = closed ? ' stroke-dasharray="7 5"' : "";
   const midX = (from.x + to.x) / 2;
@@ -219,7 +219,7 @@ function markerMarkup(pathway, geo, state) {
   const { x, y } = geo.at;
   const bodyClass = state.selected
     ? "evo-fp-marker-body fill-action stroke-action"
-    : `evo-fp-marker-body ${HALO_FILL} ${PATHWAY_INK} group-hover:stroke-(--diagram-active-stop)`;
+    : `evo-fp-marker-body ${HALO_FILL} ${PATHWAY_INK} group-hover:stroke-action`;
   const iconClass = state.selected
     ? `evo-fp-marker-icon fill-none ${HALO_STROKE}`
     : `evo-fp-marker-icon fill-none ${POINT_STROKE}`;
