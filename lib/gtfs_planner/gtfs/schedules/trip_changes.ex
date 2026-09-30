@@ -21,6 +21,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePatterns.Materializer
   alias GtfsPlanner.Gtfs.Schedules.FrequencyWindows
+  alias GtfsPlanner.Gtfs.Schedules.TripChanges.Shift
 
   @max_trips 500
   @max_delta_secs 24 * 3_600
@@ -305,11 +306,14 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
   @doc """
   Dispatches a validated command to its pure planner.
 
-  This step adds no planner clauses, so every command is `{:error, :invalid_command}`
-  until the planner step for its tag adds a `plan/2` clause above the fallback
-  (steps 9 and 12–18).
+  `:shift` is planned by `TripChanges.Shift`; every command without a planner clause is
+  `{:error, :invalid_command}` until its planner step adds a clause above the fallback
+  (steps 12–18).
   """
   @spec plan(command(), state()) :: {:ok, change_set()} | {:error, term()}
+  def plan({:shift, _trip_ids, _delta, _from_position} = command, state),
+    do: Shift.plan(command, state)
+
   def plan(_command, _state), do: {:error, :invalid_command}
 
   @doc """
