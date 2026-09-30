@@ -90,6 +90,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
+    cleared_selection? = clearing_selection?(socket, params)
+
     socket =
       socket
       |> assign(:route_id, params["route_id"])
@@ -99,12 +101,32 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       |> assign(:delete_dialog, nil)
       |> assign(:block_notice, nil)
       |> clear_vehicle_change()
+      |> report_cleared_selection(cleared_selection?)
 
     if connected?(socket) do
       {:noreply, load_schedule(socket, params)}
     else
       {:noreply, assign(socket, :load_state, :loading)}
     end
+  end
+
+  # The selection is page state, so a parameter change clears it. Only a change
+  # to a filter the user can see is worth explaining: the first render, a
+  # canonicalizing replace patch and a dispatch that carries the same filters
+  # report nothing, and a patch with nothing selected never says it cleared one.
+  defp clearing_selection?(socket, params) do
+    MapSet.size(socket.assigns.selected_ids) > 0 and
+      Map.take(params, @filter_keys) != Map.take(socket.assigns.requested, @filter_keys)
+  end
+
+  defp report_cleared_selection(socket, false), do: socket
+
+  defp report_cleared_selection(socket, true) do
+    assign(socket, :outcome, %{
+      tone: :info,
+      text: "Selection cleared because the filter changed.",
+      undo?: false
+    })
   end
 
   @impl true
@@ -153,14 +175,18 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   @impl true
-  def handle_event("clear_selection", _params, socket) do
-    socket =
-      socket
-      |> assign(:selected_ids, MapSet.new())
-      |> assign(:selected_count, 0)
+  def handle_event("select_range", %{"from" => from, "to" => to}, socket) do
+    {:noreply, select_range(socket, from, to)}
+  end
 
-    {:noreply,
-     Enum.reduce(socket.assigns.sections_list, socket, &stream_insert(&2, :sections, &1))}
+  def handle_event("select_range", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("select_all", _params, socket), do: {:noreply, select_all(socket)}
+
+  @impl true
+  def handle_event("clear_selection", _params, socket) do
+    {:noreply, apply_selection(socket, MapSet.new())}
   end
 
   @impl true
@@ -623,6 +649,54 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     |> assign(:selected_count, MapSet.size(selected))
     |> stream_insert(:sections, section)
   end
+
+  # A range or a select-all replaces the whole selection, so every section whose
+  # rows changed re-streams and the ones that did not stay on screen untouched.
+  defp apply_selection(socket, selected) do
+    changed = MapSet.symmetric_difference(socket.assigns.selected_ids, selected)
+
+    socket
+    |> assign(:selected_ids, selected)
+    |> assign(:selected_count, MapSet.size(selected))
+    |> restream_changed_sections(changed)
+  end
+
+  defp restream_changed_sections(socket, changed) do
+    Enum.reduce(socket.assigns.sections_list, socket, fn section, socket ->
+      if Enum.any?(section.rows, &MapSet.member?(changed, &1.id)) do
+        stream_insert(socket, :sections, section)
+      else
+        socket
+      end
+    end)
+  end
+
+  # Shift+Up/Down walks the rows the page shows in document order, so the range
+  # between two of them is inclusive and both ends must resolve against the
+  # loaded sections: a row the current filters hid, a forged UUID or a malformed
+  # payload is a no-op, and nothing outside the visible rows can be selected.
+  defp select_range(socket, from, to) do
+    case rows_between(socket, from, to) do
+      nil -> socket
+      ids -> apply_selection(socket, MapSet.new(ids))
+    end
+  end
+
+  defp rows_between(socket, from, to) do
+    rows = all_rows(socket)
+    indexes = Map.new(Enum.with_index(rows), fn {row, index} -> {row.id, index} end)
+
+    with first when is_integer(first) <- Map.get(indexes, from),
+         last when is_integer(last) <- Map.get(indexes, to) do
+      rows
+      |> Enum.slice(min(first, last)..max(first, last))
+      |> Enum.map(& &1.id)
+    else
+      _missing -> nil
+    end
+  end
+
+  defp select_all(socket), do: apply_selection(socket, MapSet.new(all_rows(socket), & &1.id))
 
   # The vehicle "N → M" marker: the count before the mutation is kept in
   # `vehicle_change_from` and compared with the count the reload returns.
