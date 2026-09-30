@@ -43,6 +43,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   are the planning-input drawers the gap drawer links to. They are page
   drawers rather than a stack entry, so the link that opens one clears the stack:
   one open panel over the page, and a link that reopens the same drawer.
+
+  `view=connections` is the Blocks work queue read as connections: the day's
+  groups of consecutive trip pairs, what each connection's type 4/5 records
+  decided (R13) and where it needs review. Its `group`, `setting`, `cq` and
+  `gpage` parameters are that view's own state and are emitted only when they
+  are non-default, so `/blocks` stays a quiet URL. Every one of them is derived
+  on each render from the same server-only `:connections_all` the timeline's
+  setting chips and the connection drawer read, so no surface can describe one
+  connection differently from another.
   """
 
   use GtfsPlannerWeb, :live_view
@@ -280,6 +289,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # per-gap lookup has the same keys it has on a loaded day.
   @empty_connections %{connections: [], groups: []}
 
+  # The Connections view pages its groups 50 at a time, so a busy agency's page
+  # is readable without paging, and one chip is built per active filter.
+  @connections_page_size 50
+
+  # The four values the view's Show filter carries. `review` keeps every
+  # connection needing review whatever its setting, which is why it is one of the
+  # four and not a fifth setting.
+  @connection_settings %{
+    "none" => "Not stated",
+    "stay" => "Riders stay on board",
+    "reboard" => "Riders must re-board",
+    "review" => "Needs review"
+  }
+
   # The Plan summary's chart counts the same 15-minute bins as the day load's own
   # `bins`, so the width is one constant rather than two that could drift.
   @bin_secs 900
@@ -408,7 +431,39 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     patch(socket, %{view: :list})
   end
 
+  def handle_event("set_view", %{"view" => "connections"}, socket) do
+    patch(socket, %{view: :connections})
+  end
+
   def handle_event("set_view", _params, socket), do: {:noreply, socket}
+
+  # The Connections view's own filters. They narrow the derived groups rather
+  # than the page's trips, so each one is read from the URL and applied by
+  # `Blocking.Connections` alone. The route filter is the page's existing `route`
+  # parameter, which is also what the block list narrows by.
+  #
+  # A filter change drops the selected group and returns to page 1: the group the
+  # reader had open is one the new filters may not carry, and a page number left
+  # behind would page an empty list.
+  def handle_event("filter_connections", params, socket) do
+    patch(socket, %{
+      setting: connection_setting(params["setting"]),
+      cq: blank_to_nil(params["cq"]),
+      route: blank_to_nil(params["route"]),
+      group: nil,
+      gpage: 1
+    })
+  end
+
+  def handle_event("open_group", %{"group" => group}, socket) do
+    patch(socket, %{group: blank_to_nil(group)})
+  end
+
+  def handle_event("open_group", _params, socket), do: {:noreply, socket}
+
+  def handle_event("close_group", _params, socket) do
+    patch(socket, %{group: nil})
+  end
 
   def handle_event("set_scale", %{"scale" => "day"}, socket) do
     patch(socket, %{scale: :day})
@@ -1374,7 +1429,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       version_id: to_string(version.id),
       day: blank_to_nil(params["day"]),
       panel: if(params["panel"] == "pool", do: :pool, else: :blocks),
-      view: if(params["view"] == "list", do: :list, else: :timeline),
+      view: view(params["view"]),
       route: blank_to_nil(params["route"]),
       status: if(params["status"] == "problems", do: :problems, else: :all),
       sort: sort(params["sort"]),
@@ -1382,6 +1437,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       scale: if(params["scale"] == "zoom", do: :zoom, else: :day),
       page: page_number(params["page"]),
       pool_page: page_number(params["pool_page"]),
+      # The Connections view's own state. The page is a group page rather than a
+      # block page, the group is a token rather than a row id, and the search is
+      # `cq` rather than the timeline's own find, so the two views can each be
+      # linked with the page in the state it was left in.
+      setting: connection_setting(params["setting"]),
+      cq: blank_to_nil(params["cq"]),
+      group: blank_to_nil(params["group"]),
+      gpage: page_number(params["gpage"]),
       trip: blank_to_nil(params["trip"]),
       gap: blank_to_nil(params["gap"]),
       block: blank_to_nil(params["block"]),
@@ -1393,6 +1456,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp sort(value) when is_map_key(@sort_keys, value), do: Map.fetch!(@sort_keys, value)
 
   defp sort(_value), do: :block
+
+  # The three views of the blocks work queue: the timeline's bars, the List
+  # view's tables, and the Connections view's grouped list.
+  defp view("list"), do: :list
+  defp view("connections"), do: :connections
+  defp view(_value), do: :timeline
+
+  # The Show filter's four values, and `nil` for "All connections" and for
+  # anything a crafted URL carries, so an unknown value widens the list rather
+  # than emptying it.
+  defp connection_setting(value) when is_map_key(@connection_settings, value), do: value
+
+  defp connection_setting(_value), do: nil
 
   defp toggled_dir(%{sort: sort, dir: :asc}, sort), do: :desc
   defp toggled_dir(_state, _sort), do: :asc
@@ -1434,6 +1510,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       {"day", state.day},
       {"panel", optional(state.panel == :pool, "pool")},
       {"view", optional(state.view == :list, "list")},
+      {"view", optional(state.view == :connections, "connections")},
       {"route", state.route},
       {"status", optional(state.status == :problems, "problems")},
       {"sort", optional(state.sort != :block, Atom.to_string(state.sort))},
@@ -1441,6 +1518,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       {"scale", optional(state.scale == :zoom, "zoom")},
       {"page", page_param(state.page)},
       {"pool_page", page_param(state.pool_page)},
+      {"setting", state.setting},
+      {"cq", state.cq},
+      {"group", state.group},
+      {"gpage", page_param(state.gpage)},
       {"trip", state.trip},
       {"gap", state.gap},
       {"block", state.block},
@@ -1637,6 +1718,64 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # the same render, so both pages would render.
   defp assign_page_rows_if_loaded(%{assigns: %{day: nil}} = socket), do: socket
   defp assign_page_rows_if_loaded(socket), do: assign_page_rows(socket)
+
+  # The Connections view's own derived state, recomputed for the URL on every
+  # render rather than stored. It reads the same server-only `:connections_all`
+  # the timeline's setting chips and the connection drawer read, so the list, the
+  # group panel and the drawer can never describe one connection differently, and
+  # `Blocking.Connections` alone decides what a filter keeps and in what order
+  # (CR-1, CR-4).
+  #
+  # `groups` is the page of filtered groups, `page`/`pages` the pager's own
+  # numbers, `count` how many connections survived the filters and `total` how
+  # many the day holds, `places` the places those groups are decided at, and
+  # `group` the selected group found by token. A token the filtered list does not
+  # carry — a stale link, a group the filter dropped, a crafted value — selects
+  # nothing, so the list renders rather than an empty group panel.
+  defp connections_view(%{day: nil}), do: nil
+
+  defp connections_view(assigns) do
+    %{state: state, connections_all: %{connections: connections, groups: groups}} = assigns
+    filter = connections_filter(state)
+    filtered = Connections.filter(groups, filter)
+    paged = Connections.page(filtered, state.gpage, @connections_page_size)
+
+    %{
+      filter: filter,
+      groups: paged.groups,
+      page: paged.page,
+      pages: paged.pages,
+      count: Enum.sum(Enum.map(filtered, &length(&1.connections))),
+      total: length(connections),
+      places: Connections.places(filtered),
+      group: Enum.find(filtered, &(&1.token == state.group)),
+      chips: connections_chips(filter)
+    }
+  end
+
+  # The filters the view applies, in the shape `Blocking.Connections.filter/2`
+  # reads. An absent filter is `nil` rather than a blank string, which is what
+  # keeps the URL quiet and the filter wide.
+  defp connections_filter(state) do
+    %{setting: state.setting, route: state.route, q: state.cq}
+  end
+
+  # One chip per active filter, in the order the Show, Route and Find controls
+  # read. Each carries the value that would clear it, so the panel's remove
+  # control has one source for both.
+  defp connections_chips(filter) do
+    [
+      connection_chip(:setting, filter.setting, Map.get(@connection_settings, filter.setting)),
+      connection_chip(:route, filter.route, "Route #{filter.route}"),
+      connection_chip(:q, filter.q, filter.q)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp connection_chip(_kind, nil, _label), do: nil
+
+  defp connection_chip(kind, value, label),
+    do: %{kind: kind, value: value, label: label}
 
   # --- the cross-page selection --------------------------------------
 
@@ -4471,6 +4610,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
     {merge_options, merge_total} = merge_destinations(assigns)
     bulk = bulk_summary(assigns)
+    connections = connections_view(assigns)
 
     block_rules_form = block_rules_form(assigns)
     driving_rows = driving_times_rows(assigns)
@@ -4493,6 +4633,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       |> assign(:merge_total, merge_total)
       |> assign(:bulk, bulk)
       |> assign(:selection_dates, selection_dates(assigns))
+      |> assign(:connections, connections)
       |> assign(:primary, primary_owner(assigns, bulk))
       |> assign(:subtitle, @subtitle)
 
@@ -4668,6 +4809,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 max_piece_minutes={@max_piece_minutes}
                 routes={@routes}
                 connection_settings={@connection_settings}
+                connections={@connections}
                 selected_ids={@selection}
                 selected_block_ids={@block_selection}
                 page_block_ids={@timeline_block_ids}

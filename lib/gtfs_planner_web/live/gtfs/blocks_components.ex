@@ -5218,6 +5218,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   surface. The colocated hook pushes `set_view` once when
   the URL carries no view; it never patches a URL that already does.
 
+  The view control's third option, Connections, reads the same day as its groups
+  of connections rather than as blocks: it carries no trip rows, no block page
+  and no timeline scale, so those three and the unassigned pool's own pager are
+  hidden in it and the Connections pager reads the group page instead. The tab
+  and the view control stay where they are, so leaving the view is one click.
+
   The page keeps one primary action. `primary` names who holds it: the header's
   Review action, the selection bar's Assign, or, on a day with no blocks, this
   panel's “Choose trips for a block”.
@@ -5239,6 +5245,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :connection_settings, :any,
     default: %{},
     doc: "the day's connections by id, each `%{setting, review?}`"
+
+  attr :connections, :any,
+    default: nil,
+    doc:
+      "the Connections view's derived state: the page of filtered groups, the pager, the counts, the places, the selected group and the filter chips"
 
   attr :selected_ids, :any, required: true
   attr :selected_block_ids, :any, required: true, doc: "the block IDs the reader has selected"
@@ -5293,7 +5304,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             name="view"
             legend="Plan view"
             legend_class="sr-only"
-            options={[{"Timeline", "timeline"}, {"List", "list"}]}
+            options={[{"Timeline", "timeline"}, {"List", "list"}, {"Connections", "connections"}]}
             value={Atom.to_string(@state.view)}
             event="set_view"
             appearance={:joined}
@@ -5357,6 +5368,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         aria-labelledby={"panel-" <> Atom.to_string(@state.panel)}
       >
         <%= cond do %>
+          <% @state.view == :connections -> %>
+            <%!-- The Connections view is the blocks work queue read as connections:
+            the same day, the same derived groups and no trip rows of its own. The
+            group list, its filters and its pager are step 21's; this step owns the
+            URL state, the derived assigns and the summary they add up to. --%>
+            <div id="connections-panel" class="px-4 py-3">
+              <p id="connections-summary" class="text-[13px] text-muted">
+                {connections_summary(@connections)}
+              </p>
+            </div>
           <% @state.panel == :pool -> %>
             <p
               :if={@counts.blocks == 0}
@@ -5446,14 +5467,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       </div>
 
       <.untimed_list
-        :if={@state.panel == :blocks}
+        :if={@state.panel == :blocks and @state.view != :connections}
         trips={@untimed_trips}
         routes={@routes}
         version_id={@state.version_id}
       />
 
       <div
-        :if={@state.panel == :blocks and @visible_count > 0}
+        :if={@state.panel == :blocks and @state.view != :connections and @visible_count > 0}
         id="blocks-pager"
         class="border-t border-subtle px-4"
       >
@@ -5468,7 +5489,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       </div>
 
       <div
-        :if={@state.panel == :pool and @pool_visible_count > 0}
+        :if={@state.panel == :pool and @state.view != :connections and @pool_visible_count > 0}
         id="blocks-pool-pager"
         class="border-t border-subtle px-4"
       >
@@ -5674,6 +5695,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp show_chart_key?(state, counts, filtered?, visible_count) do
     state.panel == :blocks and state.view == :timeline and counts.blocks > 0 and
       not (filtered? and visible_count == 0)
+  end
+
+  # The Connections view's own count line, read from the derived assigns rather
+  # than from a query: how many of the day's connections the filters kept, how
+  # many the day holds, and how many places they are decided at. The two plural
+  # nouns follow their own counts, so a day of one connection reads as one.
+  defp connections_summary(nil), do: ""
+
+  defp connections_summary(connections) do
+    "#{connections.count} of #{count_label(connections.total, "connection", "connections")} " <>
+      "at #{count_label(length(connections.places), "place", "places")}"
   end
 
   defp filtered_empty_text(%{status: :problems, route: route}) when not is_nil(route),
