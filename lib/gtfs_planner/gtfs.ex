@@ -1684,6 +1684,15 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Removes one route pattern's label owner, leaving the pattern in place.
+
+  A pattern with no label is refused with `:not_labelled` and a pattern outside
+  the audit context's published route with `:not_found`.
+  """
+  def remove_route_pattern_label(route_id, pattern_id, %AuditContext{} = audit_context),
+    do: RoutePatterns.remove_label(route_id, pattern_id, audit_context)
+
+  @doc """
   Builds or retries derived route patterns for one published route as an
   authorized editor.
 

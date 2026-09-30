@@ -1300,6 +1300,51 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   def undo_headsign_update(_, _, _), do: {:error, :invalid_input}
 
+  @doc """
+  Removes one pattern's label owner, leaving the pattern itself in place.
+
+  A label ID is never edited: the only transition a labelled pattern has is
+  losing its owner, so this clears `label_pattern_id` and nothing else. The
+  pattern and its route are locked the same way a reviewed apply locks them, and
+  the write is serializable, so two concurrent removals cannot both observe the
+  same owner. A pattern with no label is refused with `:not_labelled` rather
+  than audited as a no-op, and a pattern outside the audit context's published
+  route rolls back with `:not_found`.
+
+  The owner itself is never touched: it stays a first-class pattern, and it may
+  still be referenced by other children.
+  """
+  @spec remove_label(String.t(), Ecto.UUID.t(), AuditContext.t()) ::
+          {:ok, RoutePattern.t()} | {:error, :not_found | :not_labelled}
+  def remove_label(route_id, pattern_id, %AuditContext{} = audit_context)
+      when is_binary(route_id) do
+    run_serializable_write(fn ->
+      route = lock_published_route!(audit_context, route_id)
+      pattern = lock_pattern!(route, pattern_id)
+
+      if is_nil(pattern.label_pattern_id) do
+        Repo.rollback(:not_labelled)
+      else
+        # The column is not cast, so the clear is written directly. The
+        # constraint still holds the pair: the pattern keeps its own row and
+        # loses only the pointer.
+        {1, nil} =
+          Repo.update_all(
+            from(existing in RoutePattern, where: existing.id == ^pattern.id),
+            set: [label_pattern_id: nil, updated_at: DateTime.utc_now()]
+          )
+
+        updated = load_pattern_for_audit!(pattern.id)
+
+        audit!(audit_context, :route_pattern, updated, "updated", %{
+          before: %{label_pattern_id: pattern.label_pattern_id},
+          after: %{label_pattern_id: nil}
+        })
+
+        updated
+      end
+    end)
+  end
   @doc false
   def audit_snapshot(%RoutePattern{} = pattern), do: pattern_snapshot(pattern)
 
@@ -1462,15 +1507,23 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp apply_lifecycle_operation!(route, pattern, :delete, audit_context) do
-    if pattern_used?(route, pattern) do
-      Repo.rollback(:pattern_in_use)
-    else
-      snapshot = pattern_snapshot(load_pattern_for_audit!(pattern.id))
-      audit!(audit_context, :route_pattern, pattern, "deleted", %{before: snapshot})
-      _children = delete_pattern_children!([pattern.id])
-      Alignments.delete_owned_shape!(pattern)
-      Repo.delete!(pattern)
-      %{pattern: nil, trips_updated: 0}
+    cond do
+      # A label owner is still a live label: deleting it would leave its children
+      # pointing at a row that no longer exists, so the children are unlabelled
+      # before it can go.
+      pattern_labelled?(pattern) ->
+        Repo.rollback(:label_in_use)
+
+      pattern_used?(route, pattern) ->
+        Repo.rollback(:pattern_in_use)
+
+      true ->
+        snapshot = pattern_snapshot(load_pattern_for_audit!(pattern.id))
+        audit!(audit_context, :route_pattern, pattern, "deleted", %{before: snapshot})
+        _children = delete_pattern_children!([pattern.id])
+        Alignments.delete_owned_shape!(pattern)
+        Repo.delete!(pattern)
+        %{pattern: nil, trips_updated: 0}
     end
   end
 
@@ -3450,6 +3503,19 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       )
 
     Repo.exists?(query)
+  end
+
+  # A pattern that still names a label owner cannot be deleted: the reference
+  # restricts the deletion and the child would be left without a label at all.
+  defp pattern_labelled?(pattern) do
+    Repo.exists?(
+      from(child in RoutePattern,
+        where:
+          child.organization_id == ^pattern.organization_id and
+            child.gtfs_version_id == ^pattern.gtfs_version_id and
+            child.label_pattern_id == ^pattern.id
+      )
+    )
   end
 
   defp count_timing_trips(pattern, timing_id) do
