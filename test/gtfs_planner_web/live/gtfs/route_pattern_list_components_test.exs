@@ -24,7 +24,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponentsTest do
           route_pattern_name: "Pattern #{id}",
           route_pattern_time_desc: "All service days",
           route_pattern_typicality: 1,
-          direction_id: direction_id
+          direction_id: direction_id,
+          headsign: "Lincoln City"
         },
         Map.get(overrides, :pattern, %{})
       )
@@ -33,8 +34,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponentsTest do
       id: id,
       pattern: pattern,
       stop_count: 12,
-      trip_count: 4,
+      trip_count: Map.get(overrides, :trip_count, 4),
       timing_count: 2,
+      headsign_differ_count: Map.get(overrides, :headsign_differ_count, 0),
+      headsign_typo_count: Map.get(overrides, :headsign_typo_count, 0),
       alignment: Map.get(overrides, :alignment, %{missing: 0, blocked: 0, export: :current})
     }
   end
@@ -282,6 +285,74 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponentsTest do
       html = render_page(%{build_summary: %{created: 0, linked: 6, custom: 0}})
 
       assert text(html, "#patterns-build-summary") =~ "Added 6 trips to your patterns"
+    end
+  end
+
+  describe "page/1 headsign column" do
+    test "the Headsign header follows Pattern" do
+      html = render_page()
+
+      assert text(html, "#patterns-table thead") =~ "Pattern Headsign Use on this route"
+    end
+
+    test "a used pattern reads its default and the differ count with the typo warning" do
+      html =
+        render_page(%{
+          patterns:
+            rows([
+              summary("HS-TYPO", 0, %{headsign_differ_count: 2, headsign_typo_count: 1})
+            ]),
+          pattern_count: 1
+        })
+
+      assert text(html, "#pattern-headsign-HS-TYPO") =~ "Lincoln City"
+      assert text(html, "#pattern-headsign-HS-TYPO") =~ "2 trips differ · 1 likely typo"
+      assert present?(html, "#pattern-headsign-HS-TYPO .hero-exclamation-triangle")
+      assert present?(html, "#pattern-headsign-HS-TYPO .text-warning-fg")
+    end
+
+    test "every trip following the default says so without a warning" do
+      html =
+        render_page(%{
+          patterns:
+            rows([
+              summary("HS-ALL", 0, %{trip_count: 8}),
+              summary("HS-DIFFER", 0, %{headsign_differ_count: 3})
+            ]),
+          pattern_count: 2
+        })
+
+      assert text(html, "#pattern-headsign-HS-ALL") =~ "Lincoln City"
+      assert text(html, "#pattern-headsign-HS-ALL") =~ "All 8 trips"
+      refute present?(html, "#pattern-headsign-HS-ALL .hero-exclamation-triangle")
+
+      assert text(html, "#pattern-headsign-HS-DIFFER") =~ "3 trips differ"
+      refute present?(html, "#pattern-headsign-HS-DIFFER .hero-exclamation-triangle")
+      refute present?(html, "#pattern-headsign-HS-DIFFER .text-warning-fg")
+    end
+
+    test "a pattern without a headsign says so in italic type" do
+      html =
+        render_page(%{
+          patterns:
+            rows([
+              summary("HS-NONE", 0, %{pattern: %{headsign: nil}})
+            ]),
+          pattern_count: 1
+        })
+
+      assert text(html, "#pattern-headsign-HS-NONE .italic") == "No headsign"
+      refute text(html, "#pattern-headsign-HS-NONE") =~ "Lincoln City"
+    end
+
+    test "a pattern with no trips shows only its default" do
+      html =
+        render_page(%{
+          patterns: rows([Map.put(summary("HS-EMPTY", 0), :trip_count, 0)])
+        })
+
+      assert text(html, "#pattern-headsign-HS-EMPTY") =~ "Lincoln City"
+      refute text(html, "#pattern-headsign-HS-EMPTY") =~ "All"
     end
   end
 
