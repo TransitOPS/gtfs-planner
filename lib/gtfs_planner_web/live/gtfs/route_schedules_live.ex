@@ -253,10 +253,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   @impl true
   def handle_event("cell_clear", %{"trip" => trip_id, "position" => position}, socket) do
-    {:noreply, clear_cell(socket, trip_id, position)}
+    {:reply, %{}, clear_cell(socket, trip_id, position)}
   end
 
-  def handle_event("cell_clear", _params, socket), do: {:noreply, socket}
+  def handle_event("cell_clear", _params, socket), do: {:reply, %{}, socket}
 
   @impl true
   def handle_event("nudge", %{} = params, socket) do
@@ -772,11 +772,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
+  # The loaded sections carry an empty grid, so a re-streamed section takes the
+  # current one: a selection change keeps the review's amber preview, the changed
+  # tint and a refused cell's error.
   defp reselect(socket, section, selected) do
     socket
     |> assign(:selected_ids, selected)
     |> assign(:selected_count, MapSet.size(selected))
-    |> stream_insert(:sections, section)
+    |> stream_insert(:sections, Map.put(section, :grid, current_grid(socket)))
   end
 
   # A range or a select-all replaces the whole selection, so every section whose
@@ -791,9 +794,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp restream_changed_sections(socket, changed) do
+    grid = current_grid(socket)
+
     Enum.reduce(socket.assigns.sections_list, socket, fn section, socket ->
       if Enum.any?(section.rows, &MapSet.member?(changed, &1.id)) do
-        stream_insert(socket, :sections, section)
+        stream_insert(socket, :sections, Map.put(section, :grid, grid))
       else
         socket
       end
@@ -954,21 +959,28 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
-  # Delete/Backspace clears one stop time; the hook sends no reply callback, so a
-  # refusal reaches the page only through the re-streamed error state.
+  # Delete/Backspace clears one stop time. The empty reply only ends the cell's
+  # pending state; a refusal reaches the page through the re-streamed error state
+  # and a cell the page cannot resolve through the grid bar. A cell with no stored
+  # time (blank or estimated) has nothing to clear, so nothing is written.
   defp clear_cell(socket, trip_id, position) do
     with true <- editor_access?(socket),
          {:ok, context} <- cell_context(socket, trip_id, position) do
-      command = edit_stop_command(socket, context, :clear, :later)
-      fence = {:expected, %{context.row.id => context.row.updated_at}}
-
-      case Gtfs.apply_trip_change(socket.assigns.route_id, command, fence, audit_context(socket)) do
-        {:ok, result} -> committed_cell(socket, context, :clear, nil, result)
-        {:error, {:refused, errors}} -> cell_error(socket, context, refusal_message(errors))
-        {:error, reason} -> cell_error(socket, context, ScheduleComponents.error_message(reason))
-      end
+      if is_nil(context.current), do: socket, else: write_clear(socket, context)
     else
-      _unauthorized_or_unknown -> socket
+      false -> warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
+      :error -> warning_outcome(socket, ScheduleComponents.error_message(:not_found))
+    end
+  end
+
+  defp write_clear(socket, context) do
+    command = edit_stop_command(socket, context, :clear, :later)
+    fence = {:expected, %{context.row.id => context.row.updated_at}}
+
+    case Gtfs.apply_trip_change(socket.assigns.route_id, command, fence, audit_context(socket)) do
+      {:ok, result} -> committed_cell(socket, context, :clear, nil, result)
+      {:error, {:refused, errors}} -> cell_error(socket, context, refusal_message(errors))
+      {:error, reason} -> cell_error(socket, context, ScheduleComponents.error_message(reason))
     end
   end
 
@@ -1017,17 +1029,20 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   # removed as well as added), the changed row's tint and the one cell a refusal
   # points at. Everything else keeps the empty grid the reload put on it.
   defp stream_grid_state(socket, touched_ids \\ MapSet.new()) do
-    grid = %{
-      preview: preview_map(socket.assigns.change),
-      just_changed: socket.assigns.just_changed,
-      cell_error: socket.assigns.cell_error
-    }
-
+    grid = current_grid(socket)
     socket = assign(socket, :grid_revision, socket.assigns.grid_revision + 1)
 
     socket.assigns.sections_list
     |> Enum.filter(&grid_section?(&1, grid, touched_ids))
     |> Enum.reduce(socket, &stream_insert(&2, :sections, Map.put(&1, :grid, grid)))
+  end
+
+  defp current_grid(socket) do
+    %{
+      preview: preview_map(socket.assigns.change),
+      just_changed: socket.assigns.just_changed,
+      cell_error: socket.assigns.cell_error
+    }
   end
 
   defp grid_section?(section, grid, touched_ids) do
@@ -1108,6 +1123,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp cell_secs(%{missing?: true}), do: nil
+  # An estimate is a blank stored time shown in italics; it is never read as stored.
+  defp cell_secs(%{estimated?: true}), do: nil
 
   # The cell's text is the page's display clock (seconds only when nonzero), so
   # it reads back through the page's one grammar, not the storage clock parser.
@@ -1210,7 +1227,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp later_stops(row, position) do
-    count = Enum.count(row.cells, fn {key, cell} -> key > position and not cell.missing? end)
+    count = Enum.count(row.cells, fn {key, cell} -> key > position and cell_secs(cell) != nil end)
     "#{count} later #{if count == 1, do: "stop", else: "stops"}"
   end
 

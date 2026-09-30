@@ -2251,6 +2251,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
               <tr
                 id={"trip-#{row.trip_id}"}
                 data-sel={to_string(MapSet.member?(@selected_ids, row.id))}
+                data-frequency={row.frequency?}
                 class={["group", MapSet.member?(@grid.just_changed, row.id) && "is-changed"]}
               >
                 <td class={[td_class(), "z-10", selection_cell_class()]}>
@@ -2272,13 +2273,14 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
                   id={@first_position && "cell-#{row.trip_id}-#{@first_position}"}
                   data-trip={row.id}
                   data-pos={@first_position}
+                  data-readonly={row.stops_differ?}
                   tabindex="-1"
-                  title={preview_title(preview, @first_position, row.start_cell.text)}
+                  title={preview_title(preview, @first_position, row.start_cell)}
                   class={[
                     td_class(),
                     "z-10 py-2",
                     departs_cell_class(),
-                    preview_class(preview, @first_position),
+                    preview_class(preview, @first_position, row.start_cell),
                     error_class(cell_error, @first_position)
                   ]}
                 >
@@ -2312,14 +2314,15 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
                   id={"cell-#{row.trip_id}-#{column.position}"}
                   data-trip={row.id}
                   data-pos={column.position}
+                  data-estimated={Map.get(row_cell(row, column), :estimated?, false)}
                   tabindex="-1"
-                  title={preview_title(preview, column.position, row_cell(row, column).text)}
+                  title={preview_title(preview, column.position, row_cell(row, column))}
                   class={[
                     td_class(),
                     "whitespace-nowrap text-right text-sm tabular-nums",
                     row.frequency? && "italic text-muted",
                     not row.frequency? && "text-default",
-                    preview_class(preview, column.position),
+                    preview_class(preview, column.position, row_cell(row, column)),
                     error_class(cell_error, column.position)
                   ]}
                 >
@@ -2555,14 +2558,24 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   defp cell_error_for(_grid, _row), do: nil
 
   # A reviewed preview replaces the stored cell; a nil preview value is a cleared
-  # cell. The position comes from the occurrence, so the Departs cell and its stop
-  # column share one cell.
+  # cell. A stop with no stored time that stays blank is not a change, so it keeps
+  # its stored rendering (an estimate stays an estimate). The position comes from
+  # the occurrence, so the Departs cell and its stop column share one cell.
   defp shown_cell(position, stored, preview) do
+    if previewed?(preview, position, stored),
+      do: preview_cell(Map.fetch!(preview, position)),
+      else: stored
+  end
+
+  defp previewed?(preview, position, stored) do
     case Map.fetch(preview, position) do
-      {:ok, seconds} -> preview_cell(seconds)
-      :error -> stored
+      {:ok, nil} -> not blank_cell?(stored)
+      {:ok, _seconds} -> true
+      :error -> false
     end
   end
+
+  defp blank_cell?(cell), do: cell.missing? or Map.get(cell, :estimated?, false)
 
   defp preview_cell(nil) do
     %{text: "—", marker: nil, title: nil, missing?: true}
@@ -2586,12 +2599,14 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
     if days >= 1, do: "+#{days}"
   end
 
-  defp preview_title(preview, position, stored_text) do
-    if Map.has_key?(preview, position), do: "Was #{stored_text}"
+  # The title names the stored value; an estimate was never stored, so it reads "—".
+  defp preview_title(preview, position, stored) do
+    if previewed?(preview, position, stored),
+      do: "Was #{if Map.get(stored, :estimated?, false), do: "—", else: stored.text}"
   end
 
-  defp preview_class(preview, position) do
-    if Map.has_key?(preview, position), do: "is-preview"
+  defp preview_class(preview, position, stored) do
+    if previewed?(preview, position, stored), do: "is-preview"
   end
 
   defp error_class(%{position: error_position}, position) when error_position == position,

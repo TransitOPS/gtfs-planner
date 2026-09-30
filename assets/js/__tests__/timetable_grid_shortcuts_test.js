@@ -18,7 +18,7 @@ function cell(trip, id, pos, text) {
 
 function row(trip, id, { frequency = false } = {}) {
   return `
-    <tr id="trip-${id}">
+    <tr id="trip-${id}"${frequency ? " data-frequency" : ""}>
       ${cell(trip, id, 1, "07:15")}
       ${cell(trip, id, 2, "07:26")}
       ${cell(trip, id, 3, "07:33")}
@@ -234,6 +234,22 @@ describe("TimetableGrid shortcuts", () => {
 
     expect(names(hook)).toEqual(["toggle_trip", "select_range"]);
     expect(params(hook, 1)).toEqual({ from: "trip-a1", to: "trip-a2" });
+  });
+
+  it("Shift+ArrowDown starts from the cursor row once the anchor row is filtered away", () => {
+    const { hook } = grid();
+    keydown(cursor("cell-A1-2"), " ");
+
+    // A filter re-renders the section without the anchor trip.
+    hook.beforeUpdate();
+    document.querySelector("#section-a-table tbody").innerHTML =
+      row("trip-a2", "A2") + row("trip-a3", "A3");
+    hook.updated();
+
+    keydown(cursor("cell-A2-2"), "ArrowDown", { shiftKey: true });
+
+    expect(names(hook)).toEqual(["toggle_trip", "select_range"]);
+    expect(params(hook, 1)).toEqual({ from: "trip-a2", to: "trip-a3" });
   });
 
   it("Cmd/Ctrl+A selects every visible row, Cmd/Ctrl+C copies and Cmd/Ctrl+Z undoes", () => {

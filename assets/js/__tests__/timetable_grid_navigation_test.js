@@ -221,6 +221,26 @@ describe("TimetableGrid navigation", () => {
     expect(restored.classList.contains("is-cursor")).toBe(true);
   });
 
+  it("updated() after a grid push leaves focus on a control the user moved to outside the grid", () => {
+    const { hook } = grid();
+    hook.pushEvent = () => {};
+    const cell = focus("cell-A2-2");
+
+    // A push from the grid records that the grid held focus; the reply patches
+    // nothing, then the user moves to a filter outside the grid.
+    hook._pushEvent("cell_preview", {});
+    const outside = document.getElementById("outside-tab");
+    outside.focus();
+
+    hook.beforeUpdate();
+    document.getElementById("sections-a").innerHTML = section("A", ROWS_A);
+    hook.updated();
+
+    expect(cell.isConnected).toBe(false);
+    expect(document.activeElement).toBe(outside);
+    expect(document.getElementById("cell-A2-2").classList.contains("is-cursor")).toBe(true);
+  });
+
   it("updated() falls back to the same row index when the remembered trip is gone", () => {
     const { hook } = grid();
     focus("cell-A3-2");

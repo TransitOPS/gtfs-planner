@@ -238,6 +238,90 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesCellEditTest do
     end
   end
 
+  describe "an estimated cell" do
+    # Oak Avenue has no stored time, so Schedules shows the export estimate in
+    # italics; the stored value is still blank.
+    @blank_oak [
+      {"CELL_START", "07:15:00", "07:15:00"},
+      {@library, "07:25:00", "07:25:00"},
+      {"CELL_OAK", nil, nil},
+      {"CELL_END", "07:52:00", "07:52:00"}
+    ]
+
+    test "previews and saves a typed time as filling the blank", %{conn: conn, scope: scope} do
+      trip = custom_trip!(scope, @blank_oak, %{trip_id: @trip_id})
+      {:ok, view, _html} = live(conn, schedules_path(scope, %{"stops" => "all"}))
+
+      assert has_element?(view, "#cell-#{@trip_id}-3[data-estimated]")
+
+      render_hook(grid(view), "cell_preview", %{
+        "trip" => trip.id,
+        "position" => 3,
+        "text" => "7:40"
+      })
+
+      assert_reply(view, %{ok: true, reading: "07:40", note: nil, effect: nil})
+
+      render_hook(grid(view), "cell_commit", cell(trip, 3, "7:40", "later"))
+      assert_reply(view, %{ok: true})
+
+      assert stop_time_clocks(trip) == [
+               {"07:15:00", "07:15:00", nil, nil},
+               {"07:25:00", "07:25:00", nil, nil},
+               {"07:40:00", "07:40:00", nil, nil},
+               {"07:52:00", "07:52:00", nil, nil}
+             ]
+
+      assert assigns(view).outcome.text == "Oak Avenue on the 07:15 trip is now 07:40."
+    end
+
+    test "Delete writes nothing and adds no undo entry", %{conn: conn, scope: scope} do
+      trip = custom_trip!(scope, @blank_oak, %{trip_id: @trip_id})
+      {:ok, view, _html} = live(conn, schedules_path(scope, %{"stops" => "all"}))
+      before = stop_time_clocks(trip)
+      updated_at = trip_row(trip).updated_at
+
+      render_hook(grid(view), "cell_clear", %{"trip" => trip.id, "position" => 3})
+      assert_reply(view, %{})
+
+      assert stop_time_clocks(trip) == before
+      assert trip_row(trip).updated_at == updated_at
+      assert assigns(view).undo_stack == []
+      assert assigns(view).outcome == nil
+    end
+  end
+
+  describe "a trip whose stops differ from the pattern" do
+    test "renders a read-only Departs cell and a clear there says the cell is unavailable", %{
+      conn: conn,
+      scope: scope
+    } do
+      trip =
+        custom_trip!(
+          scope,
+          [{"CELL_START", "07:15:00", "07:15:00"}, {"CELL_END", "07:52:00", "07:52:00"}],
+          %{trip_id: @trip_id}
+        )
+
+      {:ok, view, _html} = live(conn, schedules_path(scope))
+      before = stop_time_clocks(trip)
+
+      assert has_element?(view, "#trip-#{@trip_id}-stops-differ")
+      assert has_element?(view, "#cell-#{@trip_id}-1[data-readonly]")
+
+      render_hook(grid(view), "cell_clear", %{"trip" => trip.id, "position" => 1})
+      assert_reply(view, %{})
+
+      assert assigns(view).outcome == %{
+               tone: :warning,
+               text: ScheduleComponents.error_message(:not_found),
+               undo?: false
+             }
+
+      assert stop_time_clocks(trip) == before
+    end
+  end
+
   describe "the editor authority" do
     test "a revoked editor role writes nothing", %{conn: conn, scope: scope} do
       trip = linked_trip!(scope, "07:15:00", %{trip_id: @trip_id})
