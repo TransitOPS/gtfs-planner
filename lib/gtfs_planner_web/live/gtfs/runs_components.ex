@@ -1060,6 +1060,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   attr :open?, :boolean, default: false
   attr :on_close, :string, default: "close_drawer"
   attr :return_focus_id, :string, default: "runs-page"
+  attr :rename_form, :any, required: true
+  # A list, not a form field's errors: see the `errors=` attribute below.
+  attr :rename_errors, :list, default: []
 
   def run_drawer(assigns) do
     ~H"""
@@ -1168,6 +1171,38 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       <p id="run-drawer-rule" data-role="run-rule" class="mt-2 text-[13px] text-base-content/70">
         {crew_rule_sentence(@crew)}
       </p>
+
+      <h3 class="mt-5 text-base font-bold">Rename this run</h3>
+      <.form for={@rename_form} id="run-rename-form" novalidate phx-submit="rename_run" class="mt-2">
+        <p class="text-sm text-base-content/70">
+          Every trip on this run moves to the new ID. Nothing else changes.
+        </p>
+        <p :if={@rename_errors != []} data-role="rename-error-summary" class="sr-only">
+          This run could not be renamed.
+        </p>
+        <div class="mt-3 grid gap-3 sm:grid-cols-[minmax(0,14rem)_auto] sm:items-start">
+          <div>
+            <%!-- `errors` is passed EXPLICITLY because `CoreComponents.input/1`
+                  reads its own `@errors` attribute and never looks at
+                  `field.errors`. A form that carries a changeset and forgets
+                  this attribute renders a field with an error in it that no
+                  reader can see: `aria-invalid` stays "false", the error node
+                  is absent, and the submit appears to do nothing at all. --%>
+            <.input
+              field={@rename_form[:run_id]}
+              id="run-name"
+              type="text"
+              label="New run ID"
+              help="One to eight letters, digits or hyphens."
+              value={@rename_form[:run_id].value || @run.run_id}
+              errors={@rename_errors}
+            />
+          </div>
+          <.button type="submit" phx-disable-with="Renaming…" class="min-h-11">
+            Rename run
+          </.button>
+        </div>
+      </.form>
     </.drawer>
     """
   end

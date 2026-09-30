@@ -79,6 +79,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:run, nil)
      |> assign(:toast, nil)
      |> assign(:undo, nil)
+     |> assign(:rename_form, to_form(%{"run_id" => ""}, as: :run))
+     |> assign(:rename_errors, [])
      |> assign(:run_axis, nil)
      |> assign(:run_routes, %{})
      |> stream(:run_rows, [], dom_id: &run_dom_id/1)}
@@ -140,7 +142,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         socket |> assign(:run, nil) |> assign(:drawer, nil)
 
       {run_id, _run} ->
-        assign(socket, :drawer, {:run, run_id})
+        socket
+        |> assign(:drawer, {:run, run_id})
+        |> reset_rename_form()
     end
   end
 
@@ -357,7 +361,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         {:noreply,
          socket
          |> assign(:drawer, {:run, run.run_id})
-         |> assign(:run, run.run_id)}
+         |> assign(:run, run.run_id)
+         |> reset_rename_form()}
     end
   end
 
@@ -366,6 +371,78 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # the next patch to rebuild the path would reopen it — step 26's rule about the
   # path being a record of the reader's whole state, applied to a control that
   # removes one of its entries.
+  # Rename a run, from the drawer, through the SAME undo surface every other
+  # write uses.
+  #
+  # `rename_run/5` hands back its own undo in the move shape, so the toast and the
+  # Undo button need no new code here — step 28 built that surface once and this
+  # is the first caller that is not a move. A caller that cannot reach Undo is a
+  # caller with a different undo, and two undos is one too many.
+  #
+  # **The entry is kept on a refusal.** A rejected rename leaves the form showing
+  # what the reader typed, with the reason under the field, because the reader's
+  # next move is to fix the ID and re-submit — and a form that clears itself
+  # makes them retype it from memory. Nothing is written on any refusal path.
+  def handle_event("rename_run", %{"run" => %{"run_id" => new_id}}, socket) do
+    %{day: day, current_organization: organization, current_gtfs_version: version} =
+      socket.assigns
+
+    case Gtfs.rename_run(organization.id, version.id, day, socket.assigns.run, new_id) do
+      {:ok, %{undo: moves}} ->
+        # `push_patch/2` returns a SOCKET, not `{:noreply, socket}` - the same
+        # return-shape mistake step 28 recorded, reached again through a new
+        # event. It fails the whole LiveView with an ArgumentError that dumps the
+        # entire socket, user struct and all, before a single assertion runs.
+        {:noreply,
+         socket
+         |> put_undo(%{moves: moves, trips: undo_trip_count(moves)})
+         |> put_toast("Renamed to #{new_id}.", :done)
+         # The form is NOT reset here. `push_patch/2` below re-enters
+         # `handle_params/2`, which reaches `sync_run_drawer/1` and resets the
+         # form on the way past. A mutation that deleted this line was caught by
+         # NO test, because the patch does the same work - a no-op line, and
+         # keeping it would mean believing the reader's next rename is protected
+         # by a line that does nothing.
+         # The drawer's run is addressed by the URL, so a rename has to move the
+         # URL too: left at the old ID, the next patch would re-open a run that no
+         # longer exists and the drawer would close under the reader.
+         |> load_day()
+         |> push_patch(to: runs_path(socket, socket.assigns.day, %{run: new_id}))}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        # **The entry is kept, and the message is the domain's.**
+        #
+        # `rename_run/5` returns a SCHEMALESS changeset — `cast({%{}, ...})` — so
+        # `to_form/1` refuses it ("data is not backed by a struct") and a
+        # namespaced form over it traverses to an EMPTY error list even though
+        # `Ecto.Changeset.traverse_errors/2` finds the message. So the form is
+        # built from a plain map carrying what the reader typed, and the
+        # traversed messages are handed to `CoreComponents.input/1` as its
+        # `errors` attribute — which is what that component reads anyway.
+        #
+        # `as: :run` is required, not decorative: without it `to_form/1` cannot
+        # generate a name for the input and raises "cannot generate name for
+        # changeset", which takes the LiveView down on the FIRST refused rename.
+        # The error path is the one that breaks, and the happy path looks fine.
+        {:noreply,
+         socket
+         |> assign(:rename_form, to_form(%{"run_id" => new_id}, as: :run))
+         |> assign(:rename_errors, rename_error_list(changeset))}
+
+      {:error, :unknown_run} ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast("That run is no longer here. Close the drawer and open it again.", :refused)}
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast("That day is no longer available. Reload to see the latest runs.", :refused)}
+    end
+  end
+
   def handle_event("close_drawer", _params, socket) do
     {:noreply,
      socket
@@ -885,6 +962,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         day_type_key={@day}
         crew={@runs_day.crew}
         stop_names={@run_stop_names}
+        rename_form={@rename_form}
+        rename_errors={@rename_errors}
         return_focus_id={"runs-run-#{@run}"}
       />
 
@@ -920,6 +999,38 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   end
 
   defp selected_run(_runs_day, _drawer), do: nil
+
+  # An empty rename form, for a run that has just been opened.
+  #
+  # Every way a drawer opens resets it, and the two ways are separate code: the
+  # `open_run` click and the `?run=` URL. Only testing the click left the URL
+  # branch unchecked, and a mutation that removed its reset survived every other
+  # test in this gate.
+  defp reset_rename_form(socket) do
+    socket
+    |> assign(:rename_form, to_form(%{"run_id" => ""}, as: :run))
+    |> assign(:rename_errors, [])
+  end
+
+  # The domain's own message, taken out of Ecto's `{message, opts}` error tuple.
+  #
+  # `traverse_errors/2` returns a MAP of field to messages, and this form has one
+  # field, so the map is flattened. Handing the map itself to
+  # `CoreComponents.error/1` renders `{:run_id, ["is already used in this day
+  # type"]}` as text — and raises, because a tuple is not `Phoenix.HTML.Safe`.
+  #
+  # The `opts` are dropped rather than interpreted. A branch that appended
+  # `opts[:count]` survived every test in this gate, because no changeset the
+  # rename path raises carries more than one error, and no reader has ever seen
+  # the difference. Code that only a mutation can reach is still speculative, and
+  # rewriting the domain's count here would put a second wording of its own
+  # error in the page. If the domain starts counting, it starts saying so.
+  defp rename_error_list(changeset) do
+    changeset
+    |> Ecto.Changeset.traverse_errors(fn {message, _opts} -> message end)
+    |> Map.values()
+    |> List.flatten()
+  end
 
   # The run a button names, or nil. Same reason as `selected_run/2`.
   defp find_run(nil, _run_id), do: nil
