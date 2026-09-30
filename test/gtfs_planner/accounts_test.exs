@@ -764,7 +764,7 @@ defmodule GtfsPlanner.AccountsTest do
     end
   end
 
-  describe "invite_member/4" do
+  describe "invite_member/5" do
     @login_url "http://localhost:4000/users/log_in"
 
     setup do
@@ -778,11 +778,16 @@ defmodule GtfsPlanner.AccountsTest do
         end
       end)
 
-      %{organization: organization_fixture()}
+      organization = organization_fixture()
+      actor = user_fixture()
+      organization_membership_fixture(actor, organization, ["pathways_studio_admin"])
+
+      %{organization: organization, actor: actor}
     end
 
     test "commits user, membership, and usable token, then sends exactly one invite", %{
-      organization: organization
+      organization: organization,
+      actor: actor
     } do
       email = unique_user_email()
 
@@ -791,7 +796,8 @@ defmodule GtfsPlanner.AccountsTest do
                  String.upcase(email),
                  organization.id,
                  ["pathways_studio_admin"],
-                 &invite_url/1
+                 &invite_url/1,
+                 actor: actor
                )
 
       assert user.email == email
@@ -809,7 +815,10 @@ defmodule GtfsPlanner.AccountsTest do
       assert_no_email_sent()
     end
 
-    test "delivers a token that resolves back to the invited user", %{organization: organization} do
+    test "delivers a token that resolves back to the invited user", %{
+      organization: organization,
+      actor: actor
+    } do
       email = unique_user_email()
 
       token =
@@ -818,7 +827,8 @@ defmodule GtfsPlanner.AccountsTest do
             email,
             organization.id,
             ["pathways_studio_editor"],
-            &invite_url/1
+            &invite_url/1,
+            actor: actor
           )
 
           {:ok, :sent}
@@ -828,7 +838,8 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "reuses an existing user instead of creating a second account", %{
-      organization: organization
+      organization: organization,
+      actor: actor
     } do
       existing = user_fixture()
 
@@ -838,6 +849,7 @@ defmodule GtfsPlanner.AccountsTest do
                  organization.id,
                  ["pathways_studio_editor"],
                  &invite_url/1,
+                 actor: actor,
                  login_url: @login_url
                )
 
@@ -846,7 +858,7 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "adds an account that has a password without an invite token and sends only a notice",
-         %{organization: organization} do
+         %{organization: organization, actor: actor} do
       existing = user_fixture()
 
       assert {:ok, :added, %User{id: id}} =
@@ -855,6 +867,7 @@ defmodule GtfsPlanner.AccountsTest do
                  organization.id,
                  ["pathways_studio_admin"],
                  &invite_url/1,
+                 actor: actor,
                  login_url: @login_url
                )
 
@@ -879,7 +892,8 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "issues an invite token and the invite email to an account that has no password yet", %{
-      organization: organization
+      organization: organization,
+      actor: actor
     } do
       {:ok, pending} = Accounts.invite_user(unique_user_email(), nil)
 
@@ -889,6 +903,7 @@ defmodule GtfsPlanner.AccountsTest do
                  organization.id,
                  ["pathways_studio_editor"],
                  &invite_url/1,
+                 actor: actor,
                  login_url: @login_url
                )
 
@@ -903,7 +918,8 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "keeps the membership when the notice to an account with a password cannot be sent", %{
-      organization: organization
+      organization: organization,
+      actor: actor
     } do
       Application.put_env(:gtfs_planner, GtfsPlanner.Mailer,
         adapter: GtfsPlanner.MailerFailureAdapter
@@ -917,6 +933,7 @@ defmodule GtfsPlanner.AccountsTest do
                  organization.id,
                  ["pathways_studio_editor"],
                  &invite_url/1,
+                 actor: actor,
                  login_url: @login_url
                )
 
@@ -928,13 +945,16 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "returns an insert-action changeset and commits nothing for invalid input", %{
-      organization: organization
+      organization: organization,
+      actor: actor
     } do
       users_before = Repo.aggregate(User, :count)
       memberships_before = Repo.aggregate(UserOrgMembership, :count)
 
       assert {:error, changeset} =
-               Accounts.invite_member("not-an-email", organization.id, [], &invite_url/1)
+               Accounts.invite_member("not-an-email", organization.id, [], &invite_url/1,
+                 actor: actor
+               )
 
       assert changeset.action == :insert
       assert errors_on(changeset).email == ["must have the @ sign and no spaces"]
@@ -946,7 +966,8 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "rejects the system administrator role before touching the database", %{
-      organization: organization
+      organization: organization,
+      actor: actor
     } do
       users_before = Repo.aggregate(User, :count)
 
@@ -955,7 +976,8 @@ defmodule GtfsPlanner.AccountsTest do
                  unique_user_email(),
                  organization.id,
                  ["administrator"],
-                 &invite_url/1
+                 &invite_url/1,
+                 actor: actor
                )
 
       assert errors_on(changeset).roles == ["contains an invalid role"]
@@ -964,7 +986,8 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "rolls back the whole command when the membership already exists", %{
-      organization: organization
+      organization: organization,
+      actor: actor
     } do
       email = unique_user_email()
 
@@ -973,7 +996,8 @@ defmodule GtfsPlanner.AccountsTest do
                  email,
                  organization.id,
                  ["pathways_studio_editor"],
-                 &invite_url/1
+                 &invite_url/1,
+                 actor: actor
                )
 
       assert_email_sent(to: [{"", email}])
@@ -986,7 +1010,8 @@ defmodule GtfsPlanner.AccountsTest do
                  email,
                  organization.id,
                  ["pathways_studio_admin"],
-                 &invite_url/1
+                 &invite_url/1,
+                 actor: actor
                )
 
       assert changeset.action == :insert
@@ -1007,7 +1032,8 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "adds a second membership and token for a user who belongs to another organization", %{
-      organization: organization
+      organization: organization,
+      actor: actor
     } do
       other_organization = organization_fixture()
       email = unique_user_email()
@@ -1017,7 +1043,8 @@ defmodule GtfsPlanner.AccountsTest do
                  email,
                  other_organization.id,
                  ["pathways_studio_editor"],
-                 &invite_url/1
+                 &invite_url/1,
+                 actor: actor
                )
 
       assert {:ok, %User{id: reused_id}} =
@@ -1025,7 +1052,8 @@ defmodule GtfsPlanner.AccountsTest do
                  email,
                  organization.id,
                  ["pathways_studio_admin"],
-                 &invite_url/1
+                 &invite_url/1,
+                 actor: actor
                )
 
       assert reused_id == user.id
@@ -1036,7 +1064,7 @@ defmodule GtfsPlanner.AccountsTest do
       assert length(invite_tokens(user)) == 2
     end
 
-    test "rolls back the new user when the organization does not exist" do
+    test "rolls back the new user when the organization does not exist", %{actor: actor} do
       users_before = Repo.aggregate(User, :count)
       tokens_before = Repo.aggregate(UserToken, :count)
       memberships_before = Repo.aggregate(UserOrgMembership, :count)
@@ -1046,7 +1074,8 @@ defmodule GtfsPlanner.AccountsTest do
                  unique_user_email(),
                  Ecto.UUID.generate(),
                  ["pathways_studio_editor"],
-                 &invite_url/1
+                 &invite_url/1,
+                 actor: actor
                )
 
       assert changeset.action == :insert
@@ -1057,7 +1086,8 @@ defmodule GtfsPlanner.AccountsTest do
     end
 
     test "keeps membership and token committed when delivery fails after commit", %{
-      organization: organization
+      organization: organization,
+      actor: actor
     } do
       Application.put_env(:gtfs_planner, GtfsPlanner.Mailer,
         adapter: GtfsPlanner.MailerFailureAdapter
@@ -1070,7 +1100,8 @@ defmodule GtfsPlanner.AccountsTest do
                  email,
                  organization.id,
                  ["pathways_studio_editor"],
-                 &invite_url/1
+                 &invite_url/1,
+                 actor: actor
                )
 
       assert reason == :simulated_delivery_failure

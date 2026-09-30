@@ -354,6 +354,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
         organization.id,
         Map.get(params, "roles", []),
         &url(~p"/users/accept_invite/#{&1}"),
+        actor: socket.assigns.current_user,
         login_url: url(~p"/users/log_in")
       )
 
@@ -405,6 +406,20 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
            user.id
          )
          |> push_patch(to: ~p"/admin/organizations/#{organization.id}")}
+
+      {:error, :forbidden} ->
+        {:noreply,
+         socket
+         |> put_feedback(
+           "error",
+           "Your administrator access has changed.",
+           "Nothing was changed. Ask a current organization administrator to send the invitation.",
+           nil
+         )
+         |> push_event("focus_form_error", %{
+           form_id: "invite-form",
+           fallback_id: "invite-service-error"
+         })}
 
       {:error, changeset} ->
         {:noreply,

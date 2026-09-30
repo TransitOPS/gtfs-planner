@@ -62,25 +62,42 @@ defmodule GtfsPlanner.Authorization do
   """
   @spec lock_member_admin!(User.t(), Ecto.UUID.t()) :: :system | UserOrgMembership.t()
   def lock_member_admin!(%User{id: actor_id}, organization_id) do
+    case lock_member_admin(%User{id: actor_id}, organization_id) do
+      {:ok, permission} -> permission
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  def lock_member_admin!(_, _), do: Repo.rollback(:forbidden)
+
+  @doc """
+  Locks the organization and returns the actor's current member-admin permission.
+
+  Call only inside a transaction. Returns `{:error, reason}` without rolling
+  back so the result can be composed inside `Ecto.Multi.run/3`.
+  """
+  @spec lock_member_admin(User.t(), Ecto.UUID.t()) ::
+          {:ok, :system | UserOrgMembership.t()} | {:error, :not_found | :forbidden}
+  def lock_member_admin(%User{id: actor_id}, organization_id) do
     with {:ok, organization_id} <- Ecto.UUID.cast(organization_id),
          %Organization{} <-
            Repo.one(from o in Organization, where: o.id == ^organization_id, lock: "FOR UPDATE") do
       if system_administrator?(actor_id) do
-        :system
+        {:ok, :system}
       else
         membership = locked_membership(actor_id, organization_id)
         user = Repo.get(User, actor_id)
 
         if usable_admin?(membership, user),
-          do: membership,
-          else: Repo.rollback(:forbidden)
+          do: {:ok, membership},
+          else: {:error, :forbidden}
       end
     else
-      _ -> Repo.rollback(:not_found)
+      _ -> {:error, :not_found}
     end
   end
 
-  def lock_member_admin!(_, _), do: Repo.rollback(:forbidden)
+  def lock_member_admin(_, _), do: {:error, :forbidden}
 
   @doc "Returns whether a membership belongs to an active admin with a password."
   @spec usable_admin?(UserOrgMembership.t() | nil, User.t() | nil) :: boolean()

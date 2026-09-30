@@ -4,6 +4,7 @@ defmodule GtfsPlanner.Accounts do
   """
 
   import Ecto.Query, warn: false
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Repo
 
   alias GtfsPlanner.Accounts.{
@@ -554,6 +555,7 @@ defmodule GtfsPlanner.Accounts do
   @type invite_member_result ::
           {:ok, User.t()}
           | {:ok, :added, User.t()}
+          | {:error, :forbidden}
           | {:error, Ecto.Changeset.t()}
           | {:partial, :delivery_failed, User.t(), term()}
           | {:partial, :notification_failed, User.t(), term()}
@@ -562,10 +564,11 @@ defmodule GtfsPlanner.Accounts do
   Invites a member to an organization as one atomic database command.
 
   Validates the submission through `GtfsPlanner.Accounts.InviteForm`, then
-  creates or reuses the user, inserts the organization membership, and inserts
-  the invite token inside a single `Ecto.Multi`. Any failed database operation
-  rolls back every database change from the command and returns an
-  insert-action `InviteForm` changeset.
+  locks and authorizes the actor before creating or reusing the user, inserting
+  the organization membership, and inserting the invite token inside a single
+  `Ecto.Multi`. An unauthorized actor returns `{:error, :forbidden}` without
+  creating invite records. Any other failed database operation rolls back the
+  command and returns an insert-action `InviteForm` changeset.
 
   The invitation email is delivered only after the transaction commits. A
   delivery failure leaves the committed user, membership, and usable invite
@@ -582,13 +585,13 @@ defmodule GtfsPlanner.Accounts do
 
   ## Examples
 
-      iex> invite_member("member@example.com", org_id, ["pathways_studio_editor"], &url(~p"/users/accept_invite/#{&1}"), login_url: url(~p"/users/log_in"))
+      iex> invite_member("member@example.com", org_id, ["pathways_studio_editor"], &url(~p"/users/accept_invite/#{&1}"), actor: admin, login_url: url(~p"/users/log_in"))
       {:ok, %User{}}
 
-      iex> invite_member("existing@example.com", org_id, ["pathways_studio_editor"], &url(~p"/users/accept_invite/#{&1}"), login_url: url(~p"/users/log_in"))
+      iex> invite_member("existing@example.com", org_id, ["pathways_studio_editor"], &url(~p"/users/accept_invite/#{&1}"), actor: admin, login_url: url(~p"/users/log_in"))
       {:ok, :added, %User{}}
 
-      iex> invite_member("nope", org_id, [], &url(~p"/users/accept_invite/#{&1}"))
+      iex> invite_member("nope", org_id, [], &url(~p"/users/accept_invite/#{&1}"), actor: admin)
       {:error, %Ecto.Changeset{}}
 
   """
@@ -597,15 +600,17 @@ defmodule GtfsPlanner.Accounts do
           Ecto.UUID.t(),
           [String.t()],
           (String.t() -> String.t()),
+          actor: User.t(),
           login_url: String.t()
         ) :: invite_member_result()
   def invite_member(email, organization_id, roles, invite_url_fun, opts \\ [])
       when is_function(invite_url_fun, 1) do
+    actor = Keyword.fetch!(opts, :actor)
     changeset = InviteForm.changeset(%{"email" => email, "roles" => roles})
 
     if changeset.valid? do
       changeset
-      |> invite_member_multi(organization_id)
+      |> invite_member_multi(organization_id, actor)
       |> Repo.transaction()
       |> resolve_invite_member(changeset, invite_url_fun, organization_id, opts)
     else
@@ -613,11 +618,14 @@ defmodule GtfsPlanner.Accounts do
     end
   end
 
-  defp invite_member_multi(changeset, organization_id) do
+  defp invite_member_multi(changeset, organization_id, actor) do
     email = Ecto.Changeset.get_field(changeset, :email)
     roles = Ecto.Changeset.get_field(changeset, :roles)
 
     Ecto.Multi.new()
+    |> Ecto.Multi.run(:authorize, fn _repo, _changes ->
+      Authorization.lock_member_admin(actor, organization_id)
+    end)
     |> Ecto.Multi.run(:user, fn repo, _changes -> fetch_or_insert_invitee(repo, email) end)
     |> Ecto.Multi.insert(:membership, fn %{user: user} ->
       UserOrgMembership.changeset(%UserOrgMembership{}, %{
@@ -667,6 +675,15 @@ defmodule GtfsPlanner.Accounts do
        ) do
     deliver_committed_invite(user, token, invite_url_fun)
   end
+
+  defp resolve_invite_member(
+         {:error, :authorize, :forbidden, _changes},
+         _changeset,
+         _invite_url_fun,
+         _organization_id,
+         _opts
+       ),
+       do: {:error, :forbidden}
 
   defp resolve_invite_member(
          {:error, operation, reason, _changes},
