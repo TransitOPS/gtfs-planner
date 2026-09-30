@@ -1820,17 +1820,19 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
 
     names =
       ids
-      |> Enum.map(fn id ->
-        Enum.find_value(patterns, fn pattern ->
-          if pattern_id(pattern) == id, do: pattern_name(pattern)
-        end)
-      end)
+      |> Enum.map(&find_pattern_name(&1, patterns))
       |> Enum.reject(&is_nil/1)
 
     case names do
       [] -> "the pasted patterns"
       names -> Enum.join(names, " and ")
     end
+  end
+
+  defp find_pattern_name(id, patterns) do
+    Enum.find_value(patterns, fn pattern ->
+      if pattern_id(pattern) == id, do: pattern_name(pattern)
+    end)
   end
 
   defp pattern_id(%{id: id}), do: id
@@ -1872,9 +1874,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     ids = timings |> Enum.map(&timing_id/1) |> Enum.reject(&is_nil/1)
     wanted = Map.get(input, :template_timing_id) || Map.get(input, "template_timing_id")
 
-    cond do
-      is_binary(wanted) and wanted in ids -> wanted
-      true -> most_used_timing(timings) || ""
+    if is_binary(wanted) and wanted in ids do
+      wanted
+    else
+      most_used_timing(timings) || ""
     end
   end
 
@@ -2169,33 +2172,45 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
         %{tone: "draft", label: "Not used", reason: "No times in this column.", confirm?: false}
 
       %{target: {:occurrence, _id, :arrival}} = col when is_map(col) ->
-        if paired?(columns, col) do
-          %{tone: "pass", label: "Arrival", reason: nil, confirm?: false}
-        else
-          occurrence_badge(col)
-        end
+        arrival_badge(columns, col)
 
       %{target: {:occurrence, _id, :departure}} = col when is_map(col) ->
-        if paired?(columns, col) do
-          %{
-            tone: "pass",
-            label: "Departure",
-            reason: "Pairs with column #{column_letter(col.col - 1)}.",
-            confirm?: false
-          }
-        else
-          occurrence_badge(col)
-        end
+        departure_badge(columns, col)
 
       %{target: target} when target in [:trip_short_name, :block_id, :trip_headsign] ->
-        if column.status == :chosen do
-          %{tone: "pass", label: "Chosen", reason: nil, confirm?: false}
-        else
-          %{tone: "pass", label: "Exact", reason: "By column name.", confirm?: false}
-        end
+        field_badge(column)
 
       _column ->
         %{tone: "draft", label: "Unknown", reason: nil, confirm?: false}
+    end
+  end
+
+  defp arrival_badge(columns, col) do
+    if paired?(columns, col) do
+      %{tone: "pass", label: "Arrival", reason: nil, confirm?: false}
+    else
+      occurrence_badge(col)
+    end
+  end
+
+  defp departure_badge(columns, col) do
+    if paired?(columns, col) do
+      %{
+        tone: "pass",
+        label: "Departure",
+        reason: "Pairs with column #{column_letter(col.col - 1)}.",
+        confirm?: false
+      }
+    else
+      occurrence_badge(col)
+    end
+  end
+
+  defp field_badge(column) do
+    if column.status == :chosen do
+      %{tone: "pass", label: "Chosen", reason: nil, confirm?: false}
+    else
+      %{tone: "pass", label: "Exact", reason: "By column name.", confirm?: false}
     end
   end
 
@@ -2972,6 +2987,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     issue = if is_map(row), do: Map.get(row, :issue, Map.get(row, "issue")), else: nil
     candidates = List.wrap(Map.get(change, :candidates, Map.get(change, "candidates", [])))
 
+    issue_hint(issue) || candidate_hint(candidates)
+  end
+
+  defp issue_hint(issue) do
     cond do
       match?({:pattern, _}, issue) -> "choose a pattern"
       issue == :no_pattern -> "no pattern fits"
@@ -2979,8 +2998,15 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
       match?({:backwards, _, _}, issue) -> "fix a time"
       match?({:twelve_hour, _}, issue) -> "confirm the start time"
       issue == :empty -> "add times"
-      Enum.any?(candidates, &is_map/1) -> "choose the trip it replaces"
-      true -> "choose a pattern"
+      true -> nil
+    end
+  end
+
+  defp candidate_hint(candidates) do
+    if Enum.any?(candidates, &is_map/1) do
+      "choose the trip it replaces"
+    else
+      "choose a pattern"
     end
   end
 

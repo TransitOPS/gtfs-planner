@@ -64,25 +64,27 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ClipboardParser do
   defp tab_outside_quotes?(<<?\n, rest::binary>>, _state),
     do: tab_outside_quotes?(rest, :field_start)
 
-  defp tab_outside_quotes?(<<?\,, rest::binary>>, state) when state != :quoted,
-    do: tab_outside_quotes?(rest, :field_start)
+  defp tab_outside_quotes?(<<comma, rest::binary>>, state)
+       when comma == ?\, and state != :quoted,
+       do: tab_outside_quotes?(rest, :field_start)
 
   defp tab_outside_quotes?(<<_byte, rest::binary>>, state), do: tab_outside_quotes?(rest, state)
 
   # Single pass over the clipboard text. `field` and `fields` accumulate the
   # current cell and the reversed cells of the current record; `records`
   # accumulates reversed non-empty records; `count` counts non-empty records
-  # seen so far; `quote_line` is the line the current quoted cell opened on.
+  # seen so far; `pos` is `{line, quote_line}` where `quote_line` is the line
+  # the current quoted cell opened on.
   defp scan(text, delimiter) do
     delim = if delimiter == :tab, do: ?\t, else: ?,
-    scan(text, delim, :field_start, [], [], [], 1, 0, 0)
+    scan(text, delim, :field_start, [], [], [], {1, 0}, 0)
   end
 
-  defp scan(<<>>, _delim, :quoted, _field, _fields, _records, _line, quote_line, _count) do
+  defp scan(<<>>, _delim, :quoted, _field, _fields, _records, {_line, quote_line}, _count) do
     {:error, {:unclosed_quote, quote_line}}
   end
 
-  defp scan(<<>>, _delim, _state, field, fields, records, _line, _quote_line, count) do
+  defp scan(<<>>, _delim, _state, field, fields, records, _pos, count) do
     case add_record(records, fields, field, count) do
       {:cont, records, _count} -> {:ok, Enum.reverse(records)}
       {:error, _error} = error -> error
@@ -96,11 +98,10 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ClipboardParser do
          field,
          fields,
          records,
-         line,
-         quote_line,
+         pos,
          count
        ) do
-    scan(rest, delim, :quoted, ["\"" | field], fields, records, line, quote_line, count)
+    scan(rest, delim, :quoted, ["\"" | field], fields, records, pos, count)
   end
 
   defp scan(
@@ -110,11 +111,10 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ClipboardParser do
          field,
          fields,
          records,
-         line,
-         _quote_line,
+         {line, _quote_line},
          count
        ) do
-    scan(rest, delim, :quoted, field, fields, records, line, line, count)
+    scan(rest, delim, :quoted, field, fields, records, {line, line}, count)
   end
 
   defp scan(
@@ -124,11 +124,10 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ClipboardParser do
          field,
          fields,
          records,
-         line,
-         _quote_line,
+         {line, _quote_line},
          count
        ) do
-    scan(rest, delim, :after_quote, field, fields, records, line, 0, count)
+    scan(rest, delim, :after_quote, field, fields, records, {line, 0}, count)
   end
 
   defp scan(
@@ -138,11 +137,10 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ClipboardParser do
          field,
          fields,
          records,
-         line,
-         quote_line,
+         {line, quote_line},
          count
        ) do
-    scan(rest, delim, :quoted, ["\n" | field], fields, records, line + 1, quote_line, count)
+    scan(rest, delim, :quoted, ["\n" | field], fields, records, {line + 1, quote_line}, count)
   end
 
   defp scan(
@@ -152,31 +150,39 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ClipboardParser do
          field,
          fields,
          records,
-         line,
-         _quote_line,
+         {line, _quote_line},
          count
        )
        when state != :quoted do
     case push_field(fields, field) do
-      {:cont, fields} -> scan(rest, delim, :field_start, [], fields, records, line, 0, count)
+      {:cont, fields} -> scan(rest, delim, :field_start, [], fields, records, {line, 0}, count)
       {:error, _error} = error -> error
     end
   end
 
-  defp scan(<<?\n, rest::binary>>, delim, state, field, fields, records, line, _quote_line, count)
+  defp scan(
+         <<?\n, rest::binary>>,
+         delim,
+         state,
+         field,
+         fields,
+         records,
+         {line, _quote_line},
+         count
+       )
        when state != :quoted do
     case add_record(records, fields, field, count) do
       {:cont, records, count} ->
-        scan(rest, delim, :field_start, [], [], records, line + 1, 0, count)
+        scan(rest, delim, :field_start, [], [], records, {line + 1, 0}, count)
 
       {:error, _error} = error ->
         error
     end
   end
 
-  defp scan(<<byte, rest::binary>>, delim, state, field, fields, records, line, quote_line, count) do
+  defp scan(<<byte, rest::binary>>, delim, state, field, fields, records, pos, count) do
     state = if state == :field_start, do: :unquoted, else: state
-    scan(rest, delim, state, [<<byte>> | field], fields, records, line, quote_line, count)
+    scan(rest, delim, state, [<<byte>> | field], fields, records, pos, count)
   end
 
   defp push_field(fields, field) do
@@ -191,23 +197,24 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ClipboardParser do
 
   defp add_record(records, fields, field, count) do
     case push_field(fields, field) do
-      {:cont, fields} ->
-        record = Enum.reverse(fields)
+      {:cont, fields} -> keep_record(records, Enum.reverse(fields), count)
+      {:error, _error} = error -> error
+    end
+  end
 
-        if Enum.any?(record, &(String.trim(&1) != "")) do
-          count = count + 1
+  defp keep_record(records, record, count) do
+    if Enum.any?(record, &(String.trim(&1) != "")) do
+      keep_numbered_record(records, record, count + 1)
+    else
+      {:cont, records, count}
+    end
+  end
 
-          if count > @max_records do
-            {:error, {:too_many_rows, count}}
-          else
-            {:cont, [record | records], count}
-          end
-        else
-          {:cont, records, count}
-        end
-
-      {:error, _error} = error ->
-        error
+  defp keep_numbered_record(records, record, count) do
+    if count > @max_records do
+      {:error, {:too_many_rows, count}}
+    else
+      {:cont, [record | records], count}
     end
   end
 

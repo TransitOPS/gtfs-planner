@@ -234,23 +234,23 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
 
   # Every column key with at least one pasted occurrence across the changes.
   defp pasted_column_keys(enriched) do
-    enriched
-    |> Enum.flat_map(fn en ->
-      if is_nil(en.pairs) do
-        []
-      else
-        en.occurrences
-        |> Enum.with_index()
-        |> Enum.flat_map(fn {occurrence, q} ->
-          if MapSet.member?(en.pasted, fetch(occurrence, :position)) do
-            [column_key(en.keys, en.occurrences, q)]
-          else
-            []
-          end
-        end)
-      end
-    end)
-    |> MapSet.new()
+    enriched |> Enum.flat_map(&pasted_keys/1) |> MapSet.new()
+  end
+
+  defp pasted_keys(en) do
+    if is_nil(en.pairs) do
+      []
+    else
+      en.occurrences |> Enum.with_index() |> Enum.flat_map(&pasted_key(en, &1))
+    end
+  end
+
+  defp pasted_key(en, {occurrence, q}) do
+    if MapSet.member?(en.pasted, fetch(occurrence, :position)) do
+      [column_key(en.keys, en.occurrences, q)]
+    else
+      []
+    end
   end
 
   defp column_key(keys, occurrences, q) do
@@ -262,24 +262,24 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
 
   # Extra stops of rows on another pattern, in first-appearance order.
   defp collect_extras(enriched) do
-    enriched
-    |> Enum.flat_map(fn en ->
-      if is_nil(en.pairs) do
-        []
-      else
-        en.occurrences
-        |> Enum.with_index()
-        |> Enum.flat_map(fn {occurrence, q} ->
-          if is_nil(Enum.at(en.keys, q)) do
-            stop_id = fetch(occurrence, :stop_id)
-            [{stop_id, stop_name(en.scope, stop_id), {:extra, stop_id}}]
-          else
-            []
-          end
-        end)
-      end
-    end)
-    |> Enum.uniq_by(&elem(&1, 0))
+    enriched |> Enum.flat_map(&extra_stops/1) |> Enum.uniq_by(&elem(&1, 0))
+  end
+
+  defp extra_stops(en) do
+    if is_nil(en.pairs) do
+      []
+    else
+      en.occurrences |> Enum.with_index() |> Enum.flat_map(&extra_stop(en, &1))
+    end
+  end
+
+  defp extra_stop(en, {occurrence, q}) do
+    if is_nil(Enum.at(en.keys, q)) do
+      stop_id = fetch(occurrence, :stop_id)
+      [{stop_id, stop_name(en.scope, stop_id), {:extra, stop_id}}]
+    else
+      []
+    end
   end
 
   # --- Change enrichment ---
@@ -382,17 +382,25 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
 
     cond do
       is_map(row) and is_list(fetch(row, :timing_rows)) and is_integer(start) ->
-        pairs = absolute_pairs(fetch(row, :timing_rows), start)
-        {pairs, old_pairs_for(scope, pattern_id, change, trip, occurrences)}
+        row_pairs(scope, pattern_id, change, row, trip, occurrences, start)
 
       fetch(change, :op) == :remove and is_map(trip) and is_integer(start) ->
-        case scoped_timing_rows(scope, pattern_id, trip, occurrences) do
-          nil -> {nil, nil}
-          old_rows -> {absolute_pairs(old_rows, start), nil}
-        end
+        removal_pairs(scope, pattern_id, trip, occurrences, start)
 
       true ->
         {nil, nil}
+    end
+  end
+
+  defp row_pairs(scope, pattern_id, change, row, trip, occurrences, start) do
+    pairs = absolute_pairs(fetch(row, :timing_rows), start)
+    {pairs, old_pairs_for(scope, pattern_id, change, trip, occurrences)}
+  end
+
+  defp removal_pairs(scope, pattern_id, trip, occurrences, start) do
+    case scoped_timing_rows(scope, pattern_id, trip, occurrences) do
+      nil -> {nil, nil}
+      old_rows -> {absolute_pairs(old_rows, start), nil}
     end
   end
 
@@ -430,43 +438,52 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
     if is_nil(timing_id) or is_nil(pattern_id) or occurrences == [] do
       nil
     else
-      with pattern when is_map(pattern) <- find_pattern(scope, pattern_id),
-           timing when is_map(timing) <-
-             Enum.find(List.wrap(fetch(pattern, :timings)), &(fetch(&1, :id) == timing_id)),
-           rows when is_list(rows) and rows != [] <- fetch(timing, :rows) do
-        if length(rows) == length(occurrences), do: rows, else: nil
-      else
-        _missing -> nil
-      end
+      matching_timing_rows(scope, pattern_id, timing_id, occurrences)
+    end
+  end
+
+  defp matching_timing_rows(scope, pattern_id, timing_id, occurrences) do
+    with pattern when is_map(pattern) <- find_pattern(scope, pattern_id),
+         timing when is_map(timing) <-
+           Enum.find(List.wrap(fetch(pattern, :timings)), &(fetch(&1, :id) == timing_id)),
+         rows when is_list(rows) and rows != [] <- fetch(timing, :rows) do
+      if length(rows) == length(occurrences), do: rows, else: nil
+    else
+      _missing -> nil
     end
   end
 
   defp change_timing(change, pattern_id, scope) do
     case fetch(change, :timing) do
       {:existing, id} when not is_nil(pattern_id) ->
-        case find_pattern(scope, pattern_id) do
-          nil ->
-            nil
-
-          pattern ->
-            case Enum.find(List.wrap(fetch(pattern, :timings)), &(fetch(&1, :id) == id)) do
-              nil ->
-                nil
-
-              timing ->
-                %{
-                  ref: "#{pattern_id}|#{fetch(timing, :name)}",
-                  name: fetch(timing, :name) || "Timing",
-                  new?: false
-                }
-            end
-        end
+        existing_timing(scope, pattern_id, id)
 
       {:new, name} when is_binary(name) and not is_nil(pattern_id) ->
         %{ref: "#{pattern_id}|#{name}", name: name, new?: true}
 
       _timing ->
         nil
+    end
+  end
+
+  defp existing_timing(scope, pattern_id, id) do
+    case find_pattern(scope, pattern_id) do
+      nil -> nil
+      pattern -> find_timing_note(pattern_id, pattern, id)
+    end
+  end
+
+  defp find_timing_note(pattern_id, pattern, id) do
+    case Enum.find(List.wrap(fetch(pattern, :timings)), &(fetch(&1, :id) == id)) do
+      nil ->
+        nil
+
+      timing ->
+        %{
+          ref: "#{pattern_id}|#{fetch(timing, :name)}",
+          name: fetch(timing, :name) || "Timing",
+          new?: false
+        }
     end
   end
 
@@ -568,33 +585,21 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
 
   defp removal_timing(%{op: :remove, scope: scope, trip: trip} = en) when is_map(trip) do
     case trip_pattern_id(scope, trip) do
-      nil ->
-        en.timing
-
-      pattern_id ->
-        timing_id = fetch(trip, :timed_pattern_id) || fetch(trip, :timing_id)
-
-        case find_pattern(scope, pattern_id) do
-          nil ->
-            en.timing
-
-          pattern ->
-            case Enum.find(List.wrap(fetch(pattern, :timings)), &(fetch(&1, :id) == timing_id)) do
-              nil ->
-                en.timing
-
-              timing ->
-                %{
-                  ref: "#{pattern_id}|#{fetch(timing, :name)}",
-                  name: fetch(timing, :name) || "Timing",
-                  new?: false
-                }
-            end
-        end
+      nil -> en.timing
+      pattern_id -> removal_pattern_timing(en, scope, pattern_id, trip)
     end
   end
 
   defp removal_timing(en), do: en.timing
+
+  defp removal_pattern_timing(en, scope, pattern_id, trip) do
+    timing_id = fetch(trip, :timed_pattern_id) || fetch(trip, :timing_id)
+
+    case find_pattern(scope, pattern_id) do
+      nil -> en.timing
+      pattern -> find_timing_note(pattern_id, pattern, timing_id) || en.timing
+    end
+  end
 
   defp cell_for(en, column) do
     base = %{
@@ -783,7 +788,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
   defp warning_note(_change, _warning), do: note("Needs a check before applying.", true)
 
   defp diff_sentence([]), do: "nothing"
-  defp diff_sentence(diffs), do: diffs |> Enum.map(&diff_label/1) |> Enum.join(" and ")
+  defp diff_sentence(diffs), do: Enum.map_join(diffs, " and ", &diff_label/1)
 
   defp diff_label(:times), do: "times"
   defp diff_label(:trip_short_name), do: "trip number"
@@ -824,16 +829,24 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
     if is_nil(row_num) do
       nil
     else
-      decision = Map.get(input_decisions(input), row_num, %{})
-
-      case en.op do
-        :needs_decision -> needs_decision_info(change, scope, review, row_num, decision)
-        :duplicate -> %{kind: :duplicate, row: row_num}
-        :skipped -> %{kind: :skipped, row: row_num, empty?: skipped_empty?(change)}
-        :add -> if keep_chosen?(decision), do: %{kind: :kept, row: row_num}, else: nil
-        _op -> nil
-      end
+      open_row_decision(en, change, review, scope, input, row_num)
     end
+  end
+
+  defp open_row_decision(en, change, review, scope, input, row_num) do
+    decision = Map.get(input_decisions(input), row_num, %{})
+
+    case en.op do
+      :needs_decision -> needs_decision_info(change, scope, review, row_num, decision)
+      :duplicate -> %{kind: :duplicate, row: row_num}
+      :skipped -> %{kind: :skipped, row: row_num, empty?: skipped_empty?(change)}
+      :add -> kept_decision(row_num, decision)
+      _op -> nil
+    end
+  end
+
+  defp kept_decision(row_num, decision) do
+    if keep_chosen?(decision), do: %{kind: :kept, row: row_num}, else: nil
   end
 
   defp needs_decision_info(change, scope, review, row_num, decision) do

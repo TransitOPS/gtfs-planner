@@ -38,22 +38,19 @@ defmodule GtfsPlanner.Gtfs.Import do
       end
   """
 
-  alias GtfsPlanner.{Repo, Gtfs}
-
-  alias GtfsPlanner.Gtfs.Import.{
-    BatchProcessor,
-    CsvParser,
-    Failure,
-    ParseError,
-    Result,
-    RowParser
-  }
-
+  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Extensions
+  alias GtfsPlanner.Gtfs.Import.BatchProcessor
+  alias GtfsPlanner.Gtfs.Import.CsvParser
+  alias GtfsPlanner.Gtfs.Import.Failure
+  alias GtfsPlanner.Gtfs.Import.ParseError
+  alias GtfsPlanner.Gtfs.Import.Result
+  alias GtfsPlanner.Gtfs.Import.RowParser
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Gtfs.PathwayEvolutions
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
+  alias GtfsPlanner.Repo
 
   import Ecto.Query, only: [from: 2]
 

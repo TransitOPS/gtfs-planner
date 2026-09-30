@@ -100,11 +100,11 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1, route_label: 1]
 
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.TimetablePaste
-  alias GtfsPlanner.Accounts
-  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.TimetablePasteComponents
@@ -1014,20 +1014,21 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
     Enum.reduce(columns, current, fn column, acc ->
       case Map.fetch(submitted, Integer.to_string(column.col)) do
-        :error ->
-          acc
-
-        {:ok, raw} ->
-          value = raw |> to_string_safe() |> String.trim()
-          effective = TimetablePasteComponents.column_value(column)
-
-          if value == "" or value == effective do
-            Map.delete(acc, column.col)
-          else
-            Map.put(acc, column.col, value)
-          end
+        :error -> acc
+        {:ok, raw} -> diff_override_value(acc, column, raw)
       end
     end)
+  end
+
+  defp diff_override_value(acc, column, raw) do
+    value = raw |> to_string_safe() |> String.trim()
+    effective = TimetablePasteComponents.column_value(column)
+
+    if value == "" or value == effective do
+      Map.delete(acc, column.col)
+    else
+      Map.put(acc, column.col, value)
+    end
   end
 
   # Recovery has no review to diff against, so the re-sent selects are
@@ -1078,44 +1079,40 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   end
 
   defp overlay_pattern_choices(decisions, submitted) when is_map(submitted) do
-    Enum.reduce(submitted, decisions, fn {row, raw}, acc ->
-      case to_decision_row(row) do
-        nil ->
-          acc
-
-        row_num ->
-          value = raw |> to_string_safe() |> String.trim()
-
-          if value == "" do
-            acc |> Map.update(row_num, %{}, &Map.delete(&1, "pattern_id")) |> prune_decisions()
-          else
-            Map.update(acc, row_num, %{"pattern_id" => value}, &Map.put(&1, "pattern_id", value))
-          end
-      end
-    end)
+    Enum.reduce(submitted, decisions, &overlay_pattern_choice/2)
   end
 
   defp overlay_pattern_choices(decisions, _submitted), do: decisions
 
+  defp overlay_pattern_choice({row, raw}, acc) do
+    case to_decision_row(row) do
+      nil -> acc
+      row_num -> put_row_choice(acc, row_num, "pattern_id", raw)
+    end
+  end
+
+  defp put_row_choice(acc, row_num, key, raw) do
+    value = raw |> to_string_safe() |> String.trim()
+
+    if value == "" do
+      acc |> Map.update(row_num, %{}, &Map.delete(&1, key)) |> prune_decisions()
+    else
+      Map.update(acc, row_num, %{key => value}, &Map.put(&1, key, value))
+    end
+  end
+
   defp overlay_pair_choices(decisions, submitted) when is_map(submitted) do
-    Enum.reduce(submitted, decisions, fn {row, raw}, acc ->
-      case to_decision_row(row) do
-        nil ->
-          acc
-
-        row_num ->
-          value = raw |> to_string_safe() |> String.trim()
-
-          if value == "" do
-            acc |> Map.update(row_num, %{}, &Map.delete(&1, "pair")) |> prune_decisions()
-          else
-            Map.update(acc, row_num, %{"pair" => value}, &Map.put(&1, "pair", value))
-          end
-      end
-    end)
+    Enum.reduce(submitted, decisions, &overlay_pair_choice/2)
   end
 
   defp overlay_pair_choices(decisions, _submitted), do: decisions
+
+  defp overlay_pair_choice({row, raw}, acc) do
+    case to_decision_row(row) do
+      nil -> acc
+      row_num -> put_row_choice(acc, row_num, "pair", raw)
+    end
+  end
 
   defp overlay_cell_corrections(decisions, _socket, _input, submitted, _recovery?)
        when not is_map(submitted),
@@ -1125,15 +1122,19 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     review = if recovery?, do: nil, else: socket.assigns[:review]
 
     Enum.reduce(submitted, decisions, fn {row, cols}, acc ->
-      with row_num when not is_nil(row_num) <- to_decision_row(row),
-           cols when is_map(cols) <- cols do
-        Map.update(acc, row_num, overlay_cells(%{}, cols, review, input, row_num), fn current ->
-          overlay_cells(current, cols, review, input, row_num)
-        end)
-      else
-        _skip -> acc
-      end
+      overlay_row_cells(acc, row, cols, review, input)
     end)
+  end
+
+  defp overlay_row_cells(acc, row, cols, review, input) do
+    with row_num when not is_nil(row_num) <- to_decision_row(row),
+         cols when is_map(cols) <- cols do
+      Map.update(acc, row_num, overlay_cells(%{}, cols, review, input, row_num), fn current ->
+        overlay_cells(current, cols, review, input, row_num)
+      end)
+    else
+      _skip -> acc
+    end
   end
 
   defp overlay_cells(current, cols, review, input, row_num) when is_map(current) do
@@ -1141,25 +1142,28 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
     updated =
       Enum.reduce(cols, cells, fn {col, raw}, acc ->
-        case to_decision_col(col) do
-          nil ->
-            acc
-
-          col_num ->
-            value = to_string_safe(raw)
-
-            if review_differs?(review, input, row_num, col_num, value) do
-              Map.put(acc, col_num, value)
-            else
-              Map.delete(acc, col_num)
-            end
-        end
+        overlay_cell_value(acc, col, raw, review, input, row_num)
       end)
 
     if map_size(updated) == 0 do
       Map.delete(current, "cells")
     else
       Map.put(current, "cells", updated)
+    end
+  end
+
+  defp overlay_cell_value(acc, col, raw, review, input, row_num) do
+    case to_decision_col(col) do
+      nil -> acc
+      col_num -> put_cell_value(acc, col_num, to_string_safe(raw), review, input, row_num)
+    end
+  end
+
+  defp put_cell_value(acc, col_num, value, review, input, row_num) do
+    if review_differs?(review, input, row_num, col_num, value) do
+      Map.put(acc, col_num, value)
+    else
+      Map.delete(acc, col_num)
     end
   end
 
@@ -1967,10 +1971,15 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
       template_timing_id: nil,
       stops_view: :pasted,
       filter: "all",
-      stamp: "",
+      stamp: paste_stamp(),
       block_rows: []
     }
   end
+
+  # New timings are named `Pasted <Mon D> · A` (R10/AC-12): the stamp is
+  # today's date in the codebase's `%b %-d` display convention. The
+  # fingerprint excludes the stamp, so dating a paste never stales it.
+  defp paste_stamp, do: Calendar.strftime(Date.utc_today(), "%b %-d")
 
   defp input_text(socket) do
     case socket.assigns[:input] do

@@ -769,8 +769,9 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
          row,
          candidates,
          decisions,
-         {resolutions, paired, withheld, discards}
+         acc
        ) do
+    {_resolutions, paired, _withheld, _discards} = acc
     row_num = if(is_integer(key), do: key, else: nil)
     full = Enum.map(candidates, fn {wrapper, _i} -> wrapper.trip end)
     available = Enum.reject(candidates, fn {_wrapper, i} -> MapSet.member?(paired, i) end)
@@ -778,46 +779,72 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
 
     case available do
       [] ->
-        {Map.put(resolutions, key, {:added}), paired, withheld,
-         discard_pair(discards, row_num, raw, full)}
+        add_unpaired_row(key, row_num, raw, full, acc)
 
       [{wrapper, i}] ->
-        if pair_names?(wrapper.trip, raw) or is_nil(raw) or neither_choice?(raw) do
-          {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld,
-           discards}
-        else
-          {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld,
-           discard_pair(discards, row_num, raw, full)}
-        end
+        pair_single_row(key, row_num, raw, full, wrapper, i, acc)
 
       _many ->
-        case unique_number_match(row, available) do
-          {wrapper, i} ->
-            {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld,
-             discard_pair_on_number(discards, row_num, raw, wrapper.trip, full)}
-
-          nil ->
-            case replace_pair_choice(decisions, key, available) do
-              {:pair, {wrapper, i}} ->
-                {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld,
-                 discards}
-
-              :neither ->
-                {Map.put(resolutions, key, {:added}), paired, withheld, discards}
-
-              :none ->
-                trips = Enum.map(available, fn {wrapper, _i} -> wrapper.trip end)
-
-                withheld2 =
-                  Enum.reduce(available, withheld, fn {_wrapper, i}, acc ->
-                    MapSet.put(acc, i)
-                  end)
-
-                {Map.put(resolutions, key, {:undecided, trips}), paired, withheld2,
-                 discard_pair(discards, row_num, raw, full)}
-            end
-        end
+        pair_many_rows(key, row, row_num, raw, full, available, decisions, acc)
     end
+  end
+
+  defp add_unpaired_row(key, row_num, raw, full, {resolutions, paired, withheld, discards}) do
+    {Map.put(resolutions, key, {:added}), paired, withheld,
+     discard_pair(discards, row_num, raw, full)}
+  end
+
+  defp pair_single_row(key, row_num, raw, full, wrapper, i, acc) do
+    {resolutions, paired, withheld, discards} = acc
+
+    if pair_names?(wrapper.trip, raw) or is_nil(raw) or neither_choice?(raw) do
+      {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld, discards}
+    else
+      {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld,
+       discard_pair(discards, row_num, raw, full)}
+    end
+  end
+
+  defp pair_many_rows(key, row, row_num, raw, full, available, decisions, acc) do
+    case unique_number_match(row, available) do
+      {wrapper, i} -> pair_number_match(key, row_num, raw, full, wrapper, i, acc)
+      nil -> apply_pair_decision(key, row_num, raw, full, available, decisions, acc)
+    end
+  end
+
+  defp pair_number_match(key, row_num, raw, full, wrapper, i, acc) do
+    {resolutions, paired, withheld, discards} = acc
+
+    {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld,
+     discard_pair_on_number(discards, row_num, raw, wrapper.trip, full)}
+  end
+
+  defp apply_pair_decision(key, row_num, raw, full, available, decisions, acc) do
+    {resolutions, paired, withheld, discards} = acc
+
+    case replace_pair_choice(decisions, key, available) do
+      {:pair, {wrapper, i}} ->
+        {Map.put(resolutions, key, {:paired, wrapper}), MapSet.put(paired, i), withheld, discards}
+
+      :neither ->
+        {Map.put(resolutions, key, {:added}), paired, withheld, discards}
+
+      :none ->
+        withhold_available(key, row_num, raw, full, available, acc)
+    end
+  end
+
+  defp withhold_available(key, row_num, raw, full, available, acc) do
+    {resolutions, paired, withheld, discards} = acc
+    trips = Enum.map(available, fn {wrapper, _i} -> wrapper.trip end)
+
+    withheld2 =
+      Enum.reduce(available, withheld, fn {_wrapper, i}, acc ->
+        MapSet.put(acc, i)
+      end)
+
+    {Map.put(resolutions, key, {:undecided, trips}), paired, withheld2,
+     discard_pair(discards, row_num, raw, full)}
   end
 
   # The R11 trip-number rule: the row pairs untouched only when exactly
@@ -827,16 +854,17 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
           {map(), non_neg_integer()} | nil
   defp unique_number_match(row, available) do
     case present_number(get(row, :trip_short_name, "trip_short_name")) do
-      nil ->
-        nil
+      nil -> nil
+      number -> single_number_match(available, number)
+    end
+  end
 
-      number ->
-        case Enum.filter(available, fn {wrapper, _i} ->
-               present_number(get(wrapper.trip, :trip_short_name, "trip_short_name")) == number
-             end) do
-          [single] -> single
-          _ -> nil
-        end
+  defp single_number_match(available, number) do
+    case Enum.filter(available, fn {wrapper, _i} ->
+           present_number(get(wrapper.trip, :trip_short_name, "trip_short_name")) == number
+         end) do
+      [single] -> single
+      _ -> nil
     end
   end
 
@@ -863,12 +891,18 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
         :neither
 
       true ->
-        case Enum.find(available, fn {wrapper, _i} ->
-               trip_identity_match?(wrapper.trip, raw)
-             end) do
-          nil -> :none
-          match -> {:pair, match}
-        end
+        find_identity_pair(available, raw)
+    end
+  end
+
+  @spec find_identity_pair([{map(), non_neg_integer()}], term()) ::
+          {:pair, {map(), non_neg_integer()}} | :none
+  defp find_identity_pair(available, raw) do
+    case Enum.find(available, fn {wrapper, _i} ->
+           trip_identity_match?(wrapper.trip, raw)
+         end) do
+      nil -> :none
+      match -> {:pair, match}
     end
   end
 
@@ -969,19 +1003,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
 
     cond do
       status == :ready or status == "ready" ->
-        case Map.get(resolutions, key) do
-          {:paired, wrapper} ->
-            {{:change, row, wrapper.trip}, {[], custom_trip?(wrapper.trip)}}
-
-          {:added} ->
-            {{:add, row, nil}, {[], false}}
-
-          {:undecided, trips} ->
-            {{:needs_decision, row, nil}, {trips, false}}
-
-          nil ->
-            {{:needs_decision, row, nil}, {[], false}}
-        end
+        resolve_ready_entry(row, key, resolutions)
 
       status == :decision or status == "decision" ->
         {{:needs_decision, row, nil}, {[], false}}
@@ -994,6 +1016,22 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   defp replace_entry(row, _key, _resolutions) do
     row_map = if(is_map(row), do: row, else: %{})
     {{:skipped, row_map, nil}, {[], false}}
+  end
+
+  defp resolve_ready_entry(row, key, resolutions) do
+    case Map.get(resolutions, key) do
+      {:paired, wrapper} ->
+        {{:change, row, wrapper.trip}, {[], custom_trip?(wrapper.trip)}}
+
+      {:added} ->
+        {{:add, row, nil}, {[], false}}
+
+      {:undecided, trips} ->
+        {{:needs_decision, row, nil}, {trips, false}}
+
+      nil ->
+        {{:needs_decision, row, nil}, {[], false}}
+    end
   end
 
   # Attaches the candidate trips to undecided changes (step 9 validates
@@ -1505,32 +1543,36 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
       |> Map.delete(nil)
 
     {misfit, discards} =
-      Enum.reduce(decisions, {MapSet.new(), []}, fn {num, decision}, {misfit, discards} ->
-        case decision_pattern(decision) do
-          nil ->
-            {misfit, discards}
-
-          choice ->
-            case Map.get(row_by_num, num) do
-              nil ->
-                {misfit,
-                 [%{row: num, kind: :pattern, value: choice, reason: :unknown_row} | discards]}
-
-              row ->
-                if Map.has_key?(by_pattern, choice) do
-                  validate_pattern_choice(misfit, discards, num, row, choice)
-                else
-                  {misfit,
-                   [
-                     %{row: num, kind: :pattern, value: choice, reason: :unknown_pattern}
-                     | discards
-                   ]}
-                end
-            end
-        end
+      Enum.reduce(decisions, {MapSet.new(), []}, fn {num, decision}, acc ->
+        validate_pattern_decision(acc, num, decision, row_by_num, by_pattern)
       end)
 
     {misfit, Enum.reverse(discards)}
+  end
+
+  defp validate_pattern_decision({misfit, discards}, num, decision, row_by_num, by_pattern) do
+    case decision_pattern(decision) do
+      nil -> {misfit, discards}
+      choice -> validate_pattern_row(misfit, discards, num, choice, row_by_num, by_pattern)
+    end
+  end
+
+  defp validate_pattern_row(misfit, discards, num, choice, row_by_num, by_pattern) do
+    case Map.get(row_by_num, num) do
+      nil ->
+        {misfit, [%{row: num, kind: :pattern, value: choice, reason: :unknown_row} | discards]}
+
+      row ->
+        check_pattern_known(misfit, discards, num, row, choice, by_pattern)
+    end
+  end
+
+  defp check_pattern_known(misfit, discards, num, row, choice, by_pattern) do
+    if Map.has_key?(by_pattern, choice) do
+      validate_pattern_choice(misfit, discards, num, row, choice)
+    else
+      {misfit, [%{row: num, kind: :pattern, value: choice, reason: :unknown_pattern} | discards]}
+    end
   end
 
   @spec decision_pattern(term()) :: term()
@@ -1590,12 +1632,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
     known = known_rows(rows)
 
     Enum.reduce(decisions, [], fn {num, decision}, acc ->
-      if truthy?(Map.get(decision, :keep)) do
-        reason = if MapSet.member?(known, num), do: :not_a_duplicate, else: :unknown_row
-        [%{row: num, kind: :keep, value: Map.get(decision, :keep), reason: reason} | acc]
-      else
-        acc
-      end
+      keep_replace_discard(acc, num, decision, known)
     end)
   end
 
@@ -1604,27 +1641,48 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
     duplicates = duplicate_identities(rows, by_pattern, trips)
 
     Enum.reduce(decisions, [], fn {num, decision}, acc ->
-      if truthy?(Map.get(decision, :keep)) do
-        cond do
-          not MapSet.member?(known, num) ->
-            [
-              %{row: num, kind: :keep, value: Map.get(decision, :keep), reason: :unknown_row}
-              | acc
-            ]
-
-          MapSet.member?(duplicates, num) ->
-            acc
-
-          true ->
-            [
-              %{row: num, kind: :keep, value: Map.get(decision, :keep), reason: :not_a_duplicate}
-              | acc
-            ]
-        end
-      else
-        acc
-      end
+      keep_add_discard(acc, num, decision, known, duplicates)
     end)
+  end
+
+  defp keep_replace_discard(acc, num, decision, known) do
+    if truthy?(Map.get(decision, :keep)) do
+      keep_replace_reason(acc, num, decision, known)
+    else
+      acc
+    end
+  end
+
+  defp keep_replace_reason(acc, num, decision, known) do
+    reason = if MapSet.member?(known, num), do: :not_a_duplicate, else: :unknown_row
+    [%{row: num, kind: :keep, value: Map.get(decision, :keep), reason: reason} | acc]
+  end
+
+  defp keep_add_discard(acc, num, decision, known, duplicates) do
+    if truthy?(Map.get(decision, :keep)) do
+      classify_keep_discard(acc, num, decision, known, duplicates)
+    else
+      acc
+    end
+  end
+
+  defp classify_keep_discard(acc, num, decision, known, duplicates) do
+    cond do
+      not MapSet.member?(known, num) ->
+        [
+          %{row: num, kind: :keep, value: Map.get(decision, :keep), reason: :unknown_row}
+          | acc
+        ]
+
+      MapSet.member?(duplicates, num) ->
+        acc
+
+      true ->
+        [
+          %{row: num, kind: :keep, value: Map.get(decision, :keep), reason: :not_a_duplicate}
+          | acc
+        ]
+    end
   end
 
   # Row numbers the input actually carries (decision targets resolve
@@ -1644,27 +1702,34 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   @spec duplicate_identities([term()], map(), [map()]) :: MapSet.t()
   defp duplicate_identities(rows, by_pattern, trips) do
     {duplicates, _accepted} =
-      Enum.reduce(rows, {MapSet.new(), MapSet.new()}, fn row, {duplicates, accepted} ->
+      Enum.reduce(rows, {MapSet.new(), MapSet.new()}, fn row, acc ->
         row_map = if(is_map(row), do: row, else: %{})
-
-        if ready_complete?(row_map) do
-          pattern_id = get(row_map, :pattern_id, "pattern_id")
-          start_secs = get(row_map, :start_secs, "start_secs")
-          identity = {pattern_id, start_secs}
-
-          if not is_nil(find_trip(by_pattern, trips, pattern_id, start_secs)) or
-               MapSet.member?(accepted, identity) do
-            num = to_row_num(get(row_map, :row, "row"))
-            {if(is_nil(num), do: duplicates, else: MapSet.put(duplicates, num)), accepted}
-          else
-            {duplicates, MapSet.put(accepted, identity)}
-          end
-        else
-          {duplicates, accepted}
-        end
+        check_duplicate_identity(acc, row_map, by_pattern, trips)
       end)
 
     duplicates
+  end
+
+  defp check_duplicate_identity(acc, row_map, by_pattern, trips) do
+    if ready_complete?(row_map) do
+      track_row_identity(acc, row_map, by_pattern, trips)
+    else
+      acc
+    end
+  end
+
+  defp track_row_identity({duplicates, accepted}, row_map, by_pattern, trips) do
+    pattern_id = get(row_map, :pattern_id, "pattern_id")
+    start_secs = get(row_map, :start_secs, "start_secs")
+    identity = {pattern_id, start_secs}
+
+    if not is_nil(find_trip(by_pattern, trips, pattern_id, start_secs)) or
+         MapSet.member?(accepted, identity) do
+      num = to_row_num(get(row_map, :row, "row"))
+      {if(is_nil(num), do: duplicates, else: MapSet.put(duplicates, num)), accepted}
+    else
+      {duplicates, MapSet.put(accepted, identity)}
+    end
   end
 
   @spec ready_complete?(map()) :: boolean()
@@ -1908,20 +1973,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
     rows = get(row, :timing_rows, "timing_rows")
 
     if is_integer(start_secs) and is_list(rows) and rows != [] do
-      last = List.last(rows)
-
-      offset =
-        case get(last, :arrival_offset, "arrival_offset") do
-          offset when is_integer(offset) ->
-            offset
-
-          _arrival ->
-            case get(last, :departure_offset, "departure_offset") do
-              offset when is_integer(offset) -> offset
-              _departure -> 0
-            end
-        end
-
+      offset = row_end_offset(List.last(rows))
       %{start_secs: start_secs, end_secs: start_secs + offset}
     else
       nil
@@ -1929,6 +1981,20 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
   end
 
   defp row_span(_row), do: nil
+
+  defp row_end_offset(last) do
+    case get(last, :arrival_offset, "arrival_offset") do
+      offset when is_integer(offset) -> offset
+      _arrival -> row_departure_offset(last)
+    end
+  end
+
+  defp row_departure_offset(last) do
+    case get(last, :departure_offset, "departure_offset") do
+      offset when is_integer(offset) -> offset
+      _departure -> 0
+    end
+  end
 
   @spec raw_scope_trips(map()) :: [map()]
   defp raw_scope_trips(scope_map) do
@@ -1968,62 +2034,62 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.Plan do
     if planned == [] do
       changes
     else
-      by_block = Enum.group_by(planned, fn {_idx, block_id, _row} -> block_id end)
+      mark_block_overlaps(changes, planned, existing)
+    end
+  end
 
-      overlapping =
-        Enum.reduce(by_block, MapSet.new(), fn {block_id, entries}, acc ->
-          overlap_planned_ids(entries, block_id, existing, changes, acc)
-        end)
+  defp mark_block_overlaps(changes, planned, existing) do
+    by_block = Enum.group_by(planned, fn {_idx, block_id, _row} -> block_id end)
 
-      changes
-      |> Enum.with_index()
-      |> Enum.map(fn {change, idx} ->
-        if MapSet.member?(overlapping, idx) and change.op in [:add, :change] and
-             :block_overlap not in change.warnings do
-          %{change | warnings: change.warnings ++ [:block_overlap]}
-        else
-          change
-        end
+    overlapping =
+      Enum.reduce(by_block, MapSet.new(), fn {block_id, entries}, acc ->
+        overlap_planned_ids(entries, block_id, existing, changes, acc)
       end)
+
+    changes
+    |> Enum.with_index()
+    |> Enum.map(&mark_block_overlap(&1, overlapping))
+  end
+
+  defp mark_block_overlap({change, idx}, overlapping) do
+    if MapSet.member?(overlapping, idx) and change.op in [:add, :change] and
+         :block_overlap not in change.warnings do
+      %{change | warnings: change.warnings ++ [:block_overlap]}
+    else
+      change
     end
   end
 
   @spec normalize_block_rows(term(), term()) :: [map()]
   defp normalize_block_rows(block_rows, service_id) when is_list(block_rows) do
-    block_rows
-    |> Enum.filter(&is_map/1)
-    |> Enum.filter(fn row ->
-      is_map_key(row, :plottable?) and is_map_key(row, :frequency?) and
+    Enum.filter(block_rows, fn row ->
+      is_map(row) and is_map_key(row, :plottable?) and is_map_key(row, :frequency?) and
         is_map_key(row, :first_arrival) and is_map_key(row, :last_departure) and
-        is_map_key(row, :id)
-    end)
-    |> Enum.filter(fn row ->
-      if is_binary(service_id) do
-        get(row, :service_id, "service_id") == service_id
-      else
-        true
-      end
+        is_map_key(row, :id) and block_service?(row, service_id)
     end)
   end
 
   defp normalize_block_rows(_block_rows, _service_id), do: []
 
+  defp block_service?(_row, service_id) when not is_binary(service_id), do: true
+  defp block_service?(row, service_id), do: get(row, :service_id, "service_id") == service_id
+
   @spec planned_block_entries([change()], term()) :: [
           {non_neg_integer(), String.t(), map()}
         ]
   defp planned_block_entries(changes, service_id) do
-    changes
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {change, idx} ->
-      if change.op in [:add, :change] and present?(change.block_id) and is_map(change.row) do
-        case planned_trip_row(change, idx, service_id) do
-          nil -> []
-          planned -> [{idx, change.block_id, planned}]
-        end
-      else
-        []
+    changes |> Enum.with_index() |> Enum.flat_map(&planned_block_entry(&1, service_id))
+  end
+
+  defp planned_block_entry({change, idx}, service_id) do
+    if change.op in [:add, :change] and present?(change.block_id) and is_map(change.row) do
+      case planned_trip_row(change, idx, service_id) do
+        nil -> []
+        planned -> [{idx, change.block_id, planned}]
       end
-    end)
+    else
+      []
+    end
   end
 
   @spec planned_trip_row(change(), non_neg_integer(), term()) :: map() | nil

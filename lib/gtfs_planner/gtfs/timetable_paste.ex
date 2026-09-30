@@ -143,10 +143,10 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste do
   defp do_review(scope, input) do
     with {:ok, grid, orientation} <- parse_oriented(input.text, input.layout, scope),
          :ok <- check_limits(grid, input.header?),
-         data = data_rows(grid, input.header?),
-         :ok <- check_times(data),
-         columns = match_columns(grid, data, scope, input),
-         issues = ColumnMatcher.issues(columns) do
+         {:ok, data} <- checked_data_rows(grid, input) do
+      columns = match_columns(grid, data, scope, input)
+      issues = ColumnMatcher.issues(columns)
+
       if issues == [] do
         rows =
           RowResolver.resolve(data, columns, scope, input.decisions, input.template_timing_id)
@@ -176,6 +176,16 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste do
     end
   end
 
+  @spec checked_data_rows([[String.t()]], map()) :: {:ok, [[String.t()]]} | {:error, :no_times}
+  defp checked_data_rows(grid, input) do
+    data = data_rows(grid, input.header?)
+
+    case check_times(data) do
+      :ok -> {:ok, data}
+      {:error, _reason} = error -> error
+    end
+  end
+
   @spec parse_oriented(String.t(), atom(), map()) ::
           {:ok, [[String.t()]], :trips_in_rows | :stops_in_rows} | {:error, parse_error()}
   defp parse_oriented(text, :trips_in_rows, _scope) do
@@ -194,16 +204,21 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste do
 
   defp parse_oriented(text, _layout, scope) do
     with {:ok, %{grid: grid}} <- ClipboardParser.parse(text, transpose: false) do
-      case ColumnMatcher.orient(grid, Map.get(scope, :stops, %{})) do
-        :trips_in_rows ->
-          {:ok, grid, :trips_in_rows}
+      orient_grid(text, grid, scope)
+    end
+  end
 
-        :stops_in_rows ->
-          case ClipboardParser.parse(text, transpose: true) do
-            {:ok, %{grid: transposed}} -> {:ok, transposed, :stops_in_rows}
-            {:error, _reason} = error -> error
-          end
-      end
+  defp orient_grid(text, grid, scope) do
+    case ColumnMatcher.orient(grid, Map.get(scope, :stops, %{})) do
+      :trips_in_rows -> {:ok, grid, :trips_in_rows}
+      :stops_in_rows -> transpose_grid(text)
+    end
+  end
+
+  defp transpose_grid(text) do
+    case ClipboardParser.parse(text, transpose: true) do
+      {:ok, %{grid: transposed}} -> {:ok, transposed, :stops_in_rows}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -557,19 +572,25 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste do
 
   @spec normalize_scope(term()) :: map()
   defp normalize_scope(scope) when is_map(scope) do
-    Enum.reduce(@scope_keys, scope, fn {atom, string}, acc ->
-      if Map.has_key?(acc, atom) do
-        acc
-      else
-        case Map.fetch(acc, string) do
-          {:ok, value} -> Map.put(acc, atom, value)
-          :error -> acc
-        end
-      end
-    end)
+    Enum.reduce(@scope_keys, scope, &normalize_scope_key/2)
   end
 
   defp normalize_scope(_scope), do: %{}
+
+  defp normalize_scope_key({atom, string}, acc) do
+    if Map.has_key?(acc, atom) do
+      acc
+    else
+      copy_scope_key(acc, atom, string)
+    end
+  end
+
+  defp copy_scope_key(acc, atom, string) do
+    case Map.fetch(acc, string) do
+      {:ok, value} -> Map.put(acc, atom, value)
+      :error -> acc
+    end
+  end
 
   @spec normalize_input(term()) :: map()
   defp normalize_input(input) when is_map(input) do

@@ -166,11 +166,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.TimeToken do
   end
 
   defp to_token(hour_text, hour, minutes, seconds, nil) do
-    kind =
-      cond do
-        leading_zero?(hour_text) or hour == 0 or hour >= 13 -> :h24
-        true -> :ambiguous
-      end
+    kind = if leading_zero?(hour_text) or hour == 0 or hour >= 13, do: :h24, else: :ambiguous
 
     {:time, hour * 3_600 + minutes * 60 + seconds, kind}
   end

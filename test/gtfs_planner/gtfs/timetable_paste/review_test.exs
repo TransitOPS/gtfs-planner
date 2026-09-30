@@ -402,9 +402,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePasteTest do
   defp stop_line(_stop_index, _stop_count, _trip_count), do: "7:01"
 
   defp full_line(trip_count, shift) do
-    1..trip_count
-    |> Enum.map(fn trip -> format_cell(7 * 3600 + trip * 60 + shift) end)
-    |> Enum.join("\t")
+    Enum.map_join(1..trip_count, "\t", fn trip -> format_cell(7 * 3600 + trip * 60 + shift) end)
   end
 
   defp format_cell(secs) do

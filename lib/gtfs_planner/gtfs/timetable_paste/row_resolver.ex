@@ -471,25 +471,35 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.RowResolver do
         {:cell, col, raw}
 
       nil ->
-        tokens = Enum.map(entries, & &1.token)
+        resolve_row_times(entries, decision)
+    end
+  end
 
-        case TimeToken.resolve_row(tokens, decision.shift) do
-          {:error, {:time_goes_backwards, index}} ->
-            failed = Enum.at(entries, index, %{col: -1, raw: ""})
-            {:backwards, failed.col, failed.raw}
+  @spec resolve_row_times([stop_entry()], map()) :: outcome()
+  defp resolve_row_times(entries, decision) do
+    tokens = Enum.map(entries, & &1.token)
 
-          {:ok, resolved} ->
-            with_cells =
-              entries
-              |> Enum.zip(resolved)
-              |> Enum.map(fn {entry, cell} -> Map.put(entry, :cell, cell) end)
+    case TimeToken.resolve_row(tokens, decision.shift) do
+      {:error, {:time_goes_backwards, index}} ->
+        failed = Enum.at(entries, index, %{col: -1, raw: ""})
+        {:backwards, failed.col, failed.raw}
 
-            if Enum.any?(with_cells, &time_cell?/1) do
-              {:times, with_cells, decision.shift}
-            else
-              :empty
-            end
-        end
+      {:ok, resolved} ->
+        attach_resolved_cells(entries, resolved, decision.shift)
+    end
+  end
+
+  @spec attach_resolved_cells([stop_entry()], [map()], 0 | 43_200 | 86_400) :: outcome()
+  defp attach_resolved_cells(entries, resolved, shift) do
+    with_cells =
+      entries
+      |> Enum.zip(resolved)
+      |> Enum.map(fn {entry, cell} -> Map.put(entry, :cell, cell) end)
+
+    if Enum.any?(with_cells, &time_cell?/1) do
+      {:times, with_cells, shift}
+    else
+      :empty
     end
   end
 

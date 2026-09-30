@@ -54,11 +54,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Schedules.Summary
   alias GtfsPlanner.Gtfs.Schedules.Timetable
-  alias GtfsPlanner.Gtfs.TimetablePaste
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
+  alias GtfsPlanner.Gtfs.TimetablePaste
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
@@ -728,9 +728,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       end
 
     if review.fingerprint != fingerprint, do: Repo.rollback(:stale_plan)
-    if is_nil(review.plan), do: Repo.rollback(:blocking_issues)
-    if not is_nil(review.plan.refusal), do: Repo.rollback(:refused)
-    if review.plan.counts.needs_decision > 0, do: Repo.rollback(:blocking_issues)
+    verify_paste_plan!(review)
 
     operation_id = Ecto.UUID.generate()
 
@@ -772,6 +770,15 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       vehicles_after: review.plan.vehicles.after,
       trip_ids: paste_result_trip_ids(review.plan, changed_ids, added_ids)
     }
+  end
+
+  # The rebuilt review must carry a writable plan: no column issues, no
+  # refusal and no open decisions (AC-19). Anything else rolls back without
+  # writing, like the stale fingerprint above.
+  defp verify_paste_plan!(review) do
+    if is_nil(review.plan), do: Repo.rollback(:blocking_issues)
+    if not is_nil(review.plan.refusal), do: Repo.rollback(:refused)
+    if review.plan.counts.needs_decision > 0, do: Repo.rollback(:blocking_issues)
   end
 
   # scope_params carries the prepared calendar and direction; at apply time both
@@ -1269,28 +1276,24 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   # arrive in plan order, so walk the plan and drain each queue in turn.
   defp paste_result_trip_ids(plan, changed_ids, added_ids) do
     {ids, _, _} =
-      Enum.reduce(paste_changes(plan), {[], changed_ids, added_ids}, fn change,
-                                                                        {acc, changes, adds} ->
-        case attr(change, :op) do
-          op when op in [:change, "change"] ->
-            case changes do
-              [id | rest] -> {[id | acc], rest, adds}
-              [] -> {acc, [], adds}
-            end
-
-          op when op in [:add, "add"] ->
-            case adds do
-              [id | rest] -> {[id | acc], changes, rest}
-              [] -> {acc, changes, []}
-            end
-
-          _op ->
-            {acc, changes, adds}
-        end
-      end)
+      Enum.reduce(paste_changes(plan), {[], changed_ids, added_ids}, &collect_result_trip_id/2)
 
     Enum.reverse(ids)
   end
+
+  defp collect_result_trip_id(change, {acc, changes, adds}) do
+    case attr(change, :op) do
+      op when op in [:change, "change"] -> take_change_id(acc, changes, adds)
+      op when op in [:add, "add"] -> take_added_id(acc, changes, adds)
+      _op -> {acc, changes, adds}
+    end
+  end
+
+  defp take_change_id(acc, [id | rest], adds), do: {[id | acc], rest, adds}
+  defp take_change_id(acc, [], adds), do: {acc, [], adds}
+
+  defp take_added_id(acc, changes, [id | rest]), do: {[id | acc], changes, rest}
+  defp take_added_id(acc, changes, []), do: {acc, changes, []}
 
   defp paste_changes(plan), do: attr(plan, :changes) || []
 
