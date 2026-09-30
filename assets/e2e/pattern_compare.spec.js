@@ -300,3 +300,59 @@ test.describe("compare stop table (step 16)", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 });
+
+// ── Picker captures (step 18) ───────────────────────────────────────────────
+//
+// The pattern picker drawer over the seeded cross-route pair: the open list
+// (ranked by stops in common, grouped this route by direction then Other
+// routes, the other side disabled and the current row marked) and the
+// filtered-empty state, at both viewports. The search filters in memory, so
+// the browser types into #picker-q. The drawer's initial focus, the Clear
+// search refocus and its return focus to Change B are client-side behaviour
+// the ExUnit gate cannot observe, so they are asserted here.
+
+test.describe("compare picker (step 18)", () => {
+  test("capture: picker", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    const pickerUrl = compareUrl(versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-SHORT&picker=b");
+
+    for (const [width, height] of [
+      [1440, 900],
+      [390, 844],
+    ]) {
+      await page.setViewportSize({ width, height });
+      await page.goto(pickerUrl);
+      await page.waitForSelector("#picker-list section");
+      await expect(page.locator("#picker-q")).toBeFocused();
+      await capture(page, `picker-open-${width}`);
+
+      await page.fill("#picker-q", "Seal Rock");
+      await page.waitForSelector("#picker-empty");
+      await capture(page, `picker-empty-${width}`);
+    }
+
+    // Clear search empties the field and returns focus to it; the drawer's
+    // Close button returns focus to the Change B button that opened it.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(pickerUrl);
+    await page.waitForSelector("#picker-list section");
+    await page.fill("#picker-q", "Seal Rock");
+    await page.waitForSelector("#picker-empty");
+    await page.click("#picker-clear");
+    await expect(page.locator("#picker-q")).toBeFocused();
+    await expect(page.locator("#picker-empty")).toHaveCount(0);
+
+    await page.click("#compare-picker-close");
+    await expect(page.locator("#compare-picker")).toHaveCount(0);
+    await expect(page.locator("#slot-b-change")).toBeFocused();
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+});

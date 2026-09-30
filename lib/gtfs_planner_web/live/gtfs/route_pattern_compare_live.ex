@@ -19,6 +19,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
   published route returns to the Patterns tab with the `Pattern not found` flash.
   Access uses the same editor guard as the pattern pages. The page writes nothing
   (`INV-2`).
+
+  The pattern picker (`AC-20`) is the `picker` param. It opens with
+  `Gtfs.load_pattern_picker/3` loaded once per open; `picker_search` filters that
+  list in memory, `choose_pattern` patches the chosen side and drops its pinned
+  timing, and `close_picker` patches the param away.
   """
   use GtfsPlannerWeb, :live_view
 
@@ -41,6 +46,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
      |> assign(:requested, %{})
      |> assign(:view, :two)
      |> assign(:comparison, nil)
+     |> assign(:picker, nil)
      |> assign(:load_state, :loading)
      |> stream(:compare_rows, [], dom_id: & &1.dom_id)}
   end
@@ -83,6 +89,31 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
   # when it is on another route the whole page navigates to that route's compare
   # URL, because the route is part of the path. A timing the URL pinned follows
   # its pattern across the swap; an unpinned default stays unpinned.
+  @impl true
+  def handle_event("picker_search", %{"query" => query}, socket) do
+    case socket.assigns.picker do
+      %{side: _side} = picker -> {:noreply, assign(socket, :picker, %{picker | query: query})}
+      _closed -> {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("choose_pattern", %{"pattern" => pattern_id} = params, socket) do
+    case socket.assigns.picker do
+      %{side: side} -> {:noreply, push_choice(socket, side, pattern_id, params["route"])}
+      _closed -> {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("close_picker", _params, socket) do
+    if socket.assigns.picker do
+      {:noreply, push_patch(socket, to: compare_path(socket, %{"picker" => nil}))}
+    else
+      {:noreply, socket}
+    end
+  end
+
   @impl true
   def handle_event("swap", _params, socket) do
     case socket.assigns.comparison && socket.assigns.comparison.b do
@@ -138,6 +169,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
             slot_paths(@comparison, @current_gtfs_version.id, @route_id, @requested)
         }
         reverse_path={reverse_path(@comparison, @current_gtfs_version.id, @route_id, @requested)}
+        picker={@picker}
       />
     </Layouts.app>
     """
@@ -184,13 +216,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
 
     case Gtfs.load_pattern_comparison(scope.organization_id, scope.gtfs_version_id, read_params) do
       {:ok, comparison} ->
-        {:noreply,
-         socket
-         |> assign(:comparison, comparison)
-         |> assign(:load_state, :ready)
-         |> stream(:compare_rows, RoutePatternCompareComponents.stop_table_items(comparison),
-           reset: true
-         )}
+        socket =
+          socket
+          |> assign(:comparison, comparison)
+          |> assign(:load_state, :ready)
+          |> stream(:compare_rows, RoutePatternCompareComponents.stop_table_items(comparison),
+            reset: true
+          )
+
+        {:noreply, load_picker(socket, params, comparison)}
 
       {:error, :not_found} ->
         not_found(socket)
@@ -199,9 +233,70 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
         {:noreply,
          socket
          |> assign(:comparison, nil)
+         |> assign(:picker, nil)
          |> assign(:load_state, :unavailable)}
     end
   end
+
+  # The picker read loads once per open (`AC-20`): the URL's `picker` side picks
+  # the other side for the stops-in-common ranking and the loaded calendar for
+  # the trip counts. A patch that keeps the same side and a search that only
+  # changes the query stay in memory. A lost connection keeps the drawer with
+  # `entries: nil`, which the component renders as its own error state.
+  defp load_picker(socket, %{"picker" => side} = _params, comparison)
+       when side in ["a", "b"] do
+    case socket.assigns.picker do
+      %{side: ^side} -> socket
+      _closed -> load_picker_entries(socket, side, comparison)
+    end
+  end
+
+  defp load_picker(socket, _params, _comparison), do: assign(socket, :picker, nil)
+
+  defp load_picker_entries(socket, side, comparison) do
+    scope = scope(socket)
+
+    case Gtfs.load_pattern_picker(scope.organization_id, scope.gtfs_version_id,
+           other: picker_other(comparison, side),
+           service: comparison.service_id
+         ) do
+      {:ok, entries} ->
+        assign(socket, :picker, %{side: side, entries: entries, query: ""})
+
+      {:error, :unavailable} ->
+        assign(socket, :picker, %{side: side, entries: nil, query: ""})
+    end
+  end
+
+  defp picker_other(comparison, "a"),
+    do: comparison.b && comparison.b.pattern.route_pattern_id
+
+  defp picker_other(comparison, "b"), do: comparison.a.pattern.route_pattern_id
+
+  # Choosing patches `a` or `b` and drops that side's pinned timing, so the new
+  # pattern resolves its own default; the `picker` param goes away. A's route is
+  # the URL's route, so an A on another route navigates there the way swap does
+  # (`AC-16`), while a B on another route stays on this route.
+  defp push_choice(socket, side, pattern_id, route_id) do
+    overrides = %{side => pattern_id, "picker" => nil, timing_param(side) => nil}
+
+    if side == "a" and is_binary(route_id) and route_id != socket.assigns.route_id do
+      push_navigate(socket,
+        to:
+          compare_path(
+            socket.assigns.current_gtfs_version.id,
+            route_id,
+            socket.assigns.requested,
+            overrides
+          )
+      )
+    else
+      push_patch(socket, to: compare_path(socket, overrides))
+    end
+  end
+
+  defp timing_param("a"), do: "ta"
+  defp timing_param("b"), do: "tb"
 
   defp scope(socket) do
     %{
