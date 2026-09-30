@@ -2508,11 +2508,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
 
   @doc """
   Renders step 28, the apply outcome notices above the review: stale,
-  busy, failed, unknown, reconnected and permission, plus the always
+  busy, mixed service, failed, unknown, reconnected and permission, plus the always
   present (hidden) offline notice the apply bar's socket pair toggles.
   """
   attr :notice, :atom, default: nil, doc: "the current apply outcome, if any"
   attr :failed_reference, :string, default: nil, doc: "the failed notice's reference id"
+  attr :refusal_message, :string, default: nil, doc: "the mixed-service refusal sentence"
   attr :scope, :map, required: true, doc: "the loaded paste scope"
   attr :review, :map, default: nil, doc: "the pure paste review, for the unknown count"
   attr :version_id, :any, required: true, doc: "the current GTFS version id"
@@ -2576,6 +2577,17 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
             Apply again
           </.button>
         </:action>
+      </.message>
+      <.message
+        :if={@notice == :mixed_service}
+        id="paste-notice-mixed-service"
+        kind="error"
+        role="alert"
+        tabindex="-1"
+        title="Nothing was applied."
+        class="outline-none"
+      >
+        {@refusal_message} Your paste, columns and decisions stay.
       </.message>
       <.message
         :if={@notice == :failed}

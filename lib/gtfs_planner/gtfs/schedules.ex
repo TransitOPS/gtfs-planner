@@ -167,6 +167,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           | :timed_pattern_required
           | :trip_stop_times_mismatch
           | :busy
+          | ServiceMix.error()
 
   @type duplicate_attrs :: %{
           start_time: String.t(),
@@ -308,6 +309,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   exception: it takes the version's blocking advisory lock and clears the block in
   the same update when the trip would join another vehicle's work on its new dates
   (R9, D2), so one audit entry records the calendar and the block change together.
+  A calendar change that would newly mix listed trips and frequency service on the
+  trip's pattern is `{:mixed_service, details}` with nothing written (R9, INV-5).
   `direction_id` and `route_pattern_id` are never editable, and `trip_id` never
   changes.
 
@@ -1772,6 +1775,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           | :refused
           | :not_found
           | :busy
+          | ServiceMix.error()
           | Ecto.Changeset.t()
 
   @doc """
@@ -1884,7 +1888,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   trip edit or a new transfer naming a removed trip — rolls back `:stale_plan`
   with nothing written. A `plan.refusal` rolls back `:refused`; any
   `:needs_decision` change (or a review with column issues and no plan) rolls
-  back `:blocking_issues`.
+  back `:blocking_issues`. Adds that would newly mix listed trips and frequency
+  service on a pattern roll back `{:mixed_service, details}` (R9).
 
   Writes share one `operation_id`. Removals go through `remove_locked_trips!/3`
   with one `'deleted'` audit per removed trip; pending timings are created via
@@ -1963,6 +1968,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
     if review.fingerprint != fingerprint, do: Repo.rollback(:stale_plan)
     verify_paste_plan!(review)
+    check_paste_service_mix!(organization_id, version_id, route, review.plan, service_id)
 
     operation_id = Ecto.UUID.generate()
 
@@ -2013,6 +2019,39 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     if is_nil(review.plan), do: Repo.rollback(:blocking_issues)
     if not is_nil(review.plan.refusal), do: Repo.rollback(:refused)
     if review.plan.counts.needs_decision > 0, do: Repo.rollback(:blocking_issues)
+  end
+
+  # R9 (INV-5): every add is a listed trip on the paste's calendar. Each pattern
+  # receiving adds is checked with the plan's removals gone and the adds present,
+  # under the direction's pattern locks. A :change keeps its trip's calendar,
+  # pattern and frequency rows, so it cannot create a mix.
+  defp check_paste_service_mix!(organization_id, version_id, route, plan, service_id) do
+    removed =
+      plan
+      |> paste_changes()
+      |> Enum.filter(&(attr(&1, :op) == :remove))
+      |> MapSet.new(&attr(attr(&1, :trip), :id))
+
+    pattern_ids =
+      plan |> paste_adds() |> Enum.map(&attr(attr(&1, :row), :pattern_id)) |> Enum.uniq()
+
+    service_dates =
+      if pattern_ids != [],
+        do: DayTypes.service_dates(load_calendars!(organization_id, version_id))
+
+    Enum.each(pattern_ids, fn pattern_id ->
+      pattern = lock_paste_pattern!(route, pattern_id)
+      before_trips = pattern_trip_kinds(organization_id, version_id, route, pattern)
+
+      after_trips =
+        Enum.reject(before_trips, &MapSet.member?(removed, &1.id)) ++
+          [%{service_id: service_id, frequency?: false}]
+
+      case ServiceMix.check(before_trips, after_trips, service_dates) do
+        :ok -> :ok
+        {:error, {:mixed_service, details}} -> Repo.rollback({:mixed_service, details})
+      end
+    end)
   end
 
   # scope_params carries the prepared calendar and direction; at apply time both
@@ -3606,6 +3645,24 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     end
   end
 
+  # R9 (INV-5) for one trip's calendar change: the pattern's trips before, and the
+  # same trips with this one on its new service after, under the held pattern lock.
+  defp check_moved_service_mix!(organization_id, version_id, route, pattern, trip, service_id) do
+    before_trips = pattern_trip_kinds(organization_id, version_id, route, pattern)
+
+    after_trips =
+      Enum.map(before_trips, fn kind ->
+        if kind.id == trip.id, do: %{kind | service_id: service_id}, else: kind
+      end)
+
+    service_dates = DayTypes.service_dates(load_calendars!(organization_id, version_id))
+
+    case ServiceMix.check(before_trips, after_trips, service_dates) do
+      :ok -> :ok
+      {:error, {:mixed_service, details}} -> Repo.rollback({:mixed_service, details})
+    end
+  end
+
   # Every trip already on the pattern, with the frequency flag the rule reads.
   # Trips whose stored pattern is gone (unlinked) are on no pattern and are not
   # part of the mix check, the same way `load_change_state/3` reads them.
@@ -3622,7 +3679,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     frequencies = load_frequencies(organization_id, version_id, trips)
 
     Enum.map(trips, fn trip ->
-      %{service_id: trip.service_id, frequency?: Map.get(frequencies, trip.trip_id, []) != []}
+      %{
+        id: trip.id,
+        service_id: trip.service_id,
+        frequency?: Map.get(frequencies, trip.trip_id, []) != []
+      }
     end)
   end
 
@@ -3900,6 +3961,17 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
     if effective_service != target_service,
       do: Calendars.lock_service_for_reference!(organization_id, version_id, effective_service)
+
+    if pattern && effective_service != trip.service_id,
+      do:
+        check_moved_service_mix!(
+          organization_id,
+          version_id,
+          route,
+          pattern,
+          trip,
+          effective_service
+        )
 
     edit_trip!(pattern, trip, attrs, requested_start, audit)
   end

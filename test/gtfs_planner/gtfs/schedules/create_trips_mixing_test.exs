@@ -133,6 +133,48 @@ defmodule GtfsPlanner.Gtfs.Schedules.CreateTripsMixingTest do
     end
   end
 
+  describe "R9 in update_trip" do
+    test "moving a frequency trip onto listed trips' dates is refused with nothing written" do
+      scope = editing_scope!("12")
+      %{weekday: weekday, saturday: saturday} = weekday_and_saturday!(scope)
+      _listed = linked_trip!(scope, "06:00:00", %{service_id: weekday})
+      frequency = frequency_trip!(scope, [window()], service_id: saturday)
+      frequency_before = trip_row(frequency)
+
+      assert {:error, {:mixed_service, details}} =
+               Gtfs.update_trip(
+                 "12",
+                 frequency.id,
+                 %{service_id: weekday},
+                 frequency_before.updated_at,
+                 scope.audit
+               )
+
+      assert details == %{service_ids: [weekday], date_count: 261}
+      assert trip_row(frequency) == frequency_before
+      assert version_logs(scope) == []
+    end
+
+    test "moving a frequency trip to a service day sharing no listed dates is saved" do
+      scope = editing_scope!("12")
+      %{weekday: weekday, saturday: saturday} = weekday_and_saturday!(scope)
+      _listed = linked_trip!(scope, "06:00:00", %{service_id: saturday})
+      frequency = frequency_trip!(scope, [window()], service_id: scope.service)
+
+      assert {:ok, updated} =
+               Gtfs.update_trip(
+                 "12",
+                 frequency.id,
+                 %{service_id: weekday},
+                 trip_row(frequency).updated_at,
+                 scope.audit
+               )
+
+      assert updated.service_id == weekday
+      assert trip_row(frequency).service_id == weekday
+    end
+  end
+
   # -- Fixtures and readbacks -------------------------------------------------
 
   defp window do
