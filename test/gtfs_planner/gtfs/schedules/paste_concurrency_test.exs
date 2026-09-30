@@ -1330,63 +1330,66 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteConcurrencyTest do
     unboxed(fn ->
       organization_id = scope.organization.id
       version_id = scope.version.id
+      trip_ids = live_trip_ids(organization_id, version_id)
 
-      trip_ids =
-        MapSet.new(
-          Repo.all(
-            from(t in Trip,
-              where: t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id,
-              select: t.trip_id
-            )
-          )
+      assert stop_time_orphans(organization_id, version_id, trip_ids) == []
+      assert tripless_trips(scope, organization_id, version_id) == []
+      assert dangling_transfers(organization_id, version_id, trip_ids) == []
+    end)
+  end
+
+  defp live_trip_ids(organization_id, version_id) do
+    MapSet.new(
+      Repo.all(
+        from(t in Trip,
+          where: t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id,
+          select: t.trip_id
         )
+      )
+    )
+  end
 
-      orphans =
-        Repo.all(
-          from(st in StopTime,
-            where: st.organization_id == ^organization_id and st.gtfs_version_id == ^version_id,
-            select: st.trip_id
-          )
+  defp stop_time_orphans(organization_id, version_id, trip_ids) do
+    Repo.all(
+      from(st in StopTime,
+        where: st.organization_id == ^organization_id and st.gtfs_version_id == ^version_id,
+        select: st.trip_id
+      )
+    )
+    |> Enum.reject(&MapSet.member?(trip_ids, &1))
+    |> Enum.uniq()
+  end
+
+  defp tripless_trips(scope, organization_id, version_id) do
+    Repo.all(
+      from(t in Trip,
+        where:
+          t.organization_id == ^organization_id and
+            t.gtfs_version_id == ^version_id and t.route_id == ^scope.route_id,
+        select: t.trip_id
+      )
+    )
+    |> Enum.reject(fn trip_id ->
+      Repo.exists?(
+        from(st in StopTime,
+          where:
+            st.organization_id == ^organization_id and
+              st.gtfs_version_id == ^version_id and st.trip_id == ^trip_id
         )
-        |> Enum.reject(&MapSet.member?(trip_ids, &1))
-        |> Enum.uniq()
+      )
+    end)
+  end
 
-      assert orphans == []
-
-      tripless =
-        Repo.all(
-          from(t in Trip,
-            where:
-              t.organization_id == ^organization_id and
-                t.gtfs_version_id == ^version_id and t.route_id == ^scope.route_id,
-            select: t.trip_id
-          )
-        )
-        |> Enum.reject(fn trip_id ->
-          Repo.exists?(
-            from(st in StopTime,
-              where:
-                st.organization_id == ^organization_id and
-                  st.gtfs_version_id == ^version_id and st.trip_id == ^trip_id
-            )
-          )
-        end)
-
-      assert tripless == []
-
-      dangling =
-        Repo.all(
-          from(tr in Transfer,
-            where: tr.organization_id == ^organization_id and tr.gtfs_version_id == ^version_id,
-            select: {tr.from_trip_id, tr.to_trip_id}
-          )
-        )
-        |> Enum.filter(fn {from_id, to_id} ->
-          (is_binary(from_id) and not MapSet.member?(trip_ids, from_id)) or
-            (is_binary(to_id) and not MapSet.member?(trip_ids, to_id))
-        end)
-
-      assert dangling == []
+  defp dangling_transfers(organization_id, version_id, trip_ids) do
+    Repo.all(
+      from(tr in Transfer,
+        where: tr.organization_id == ^organization_id and tr.gtfs_version_id == ^version_id,
+        select: {tr.from_trip_id, tr.to_trip_id}
+      )
+    )
+    |> Enum.filter(fn {from_id, to_id} ->
+      (is_binary(from_id) and not MapSet.member?(trip_ids, from_id)) or
+        (is_binary(to_id) and not MapSet.member?(trip_ids, to_id))
     end)
   end
 

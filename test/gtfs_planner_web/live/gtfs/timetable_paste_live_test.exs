@@ -2085,6 +2085,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
     # decisions.
     setup :editor_scope
 
+    alias GtfsPlanner.Gtfs.TimedPattern
     alias GtfsPlanner.Gtfs.Trip
     alias GtfsPlanner.Repo
 
@@ -2329,6 +2330,42 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       {:ok, _schedules, html} = follow_redirect(redirect, conn)
       assert html =~ "Added 2 trips"
       assert html =~ "Vehicles needed"
+    end
+
+    test "a new timing created through the page carries today's date stamp",
+         %{conn: conn, organization: organization, version: version} = context do
+      setup = apply_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = apply_open(view, version, setup.route, setup)
+
+      # The 08:37 middle no longer matches Standard's five-minute dwell,
+      # so the plan mints a new timing through the production input path
+      # (no test-supplied stamp).
+      text = apply_headers() <> "\n08:30\t08:37\t08:40"
+      apply_read(view, text)
+      assert has_element?(view, "#paste-apply", "Apply 1 change")
+
+      path = apply_redirect_path(version, setup.route, setup)
+      redirect = render_click(view, "paste_apply")
+      assert {:error, {:live_redirect, %{to: ^path}}} = redirect
+
+      stamp = Calendar.strftime(Date.utc_today(), "%b %-d")
+      expected = "Pasted #{stamp} · A"
+      assert expected =~ ~r/^Pasted [A-Z][a-z]{2} \d{1,2} · A$/
+
+      {:ok, _schedules, html} = follow_redirect(redirect, conn)
+      assert html =~ "Created timing: #{expected}."
+
+      import Ecto.Query, only: [from: 2]
+
+      assert Repo.one!(
+               from(t in TimedPattern,
+                 where:
+                   t.organization_id == ^organization.id and
+                     t.gtfs_version_id == ^version.id and t.name == ^expected
+               )
+             ) != nil
     end
 
     test "a demoted user sees the permission notice and nothing is written",

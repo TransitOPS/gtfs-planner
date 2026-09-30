@@ -147,8 +147,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ColumnMatcher do
     |> String.replace("&", " and ")
     |> String.replace(~r/[^\p{L}\p{N}\s]+/u, " ")
     |> String.split()
-    |> Enum.map(&Map.get(@abbreviations, &1, &1))
-    |> Enum.join(" ")
+    |> Enum.map_join(" ", &Map.get(@abbreviations, &1, &1))
   end
 
   @doc false
@@ -201,12 +200,14 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ColumnMatcher do
   @spec match_stop_code([{String.t(), stop_entry()}], String.t()) ::
           {:stop, String.t(), :stop_code, :exact} | :none
   defp match_stop_code(ordered, normalized) do
-    Enum.find_value(ordered, :none, fn {stop_id, stop} ->
-      case Map.get(stop, :stop_code) do
-        nil -> nil
-        code -> if normalize(code) == normalized, do: {:stop, stop_id, :stop_code, :exact}
-      end
-    end)
+    Enum.find_value(ordered, :none, &match_stop_code_entry(&1, normalized))
+  end
+
+  defp match_stop_code_entry({stop_id, stop}, normalized) do
+    case Map.get(stop, :stop_code) do
+      nil -> nil
+      code -> if normalize(code) == normalized, do: {:stop, stop_id, :stop_code, :exact}
+    end
   end
 
   @spec match_stop_id([{String.t(), stop_entry()}], String.t()) ::
@@ -483,25 +484,23 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ColumnMatcher do
 
   @spec time_bearing_cols([[String.t()]]) :: MapSet.t()
   defp time_bearing_cols(data_rows) do
-    Enum.reduce(data_rows, MapSet.new(), fn
-      row, acc when is_list(row) ->
-        row
-        |> Enum.with_index()
-        |> Enum.reduce(acc, fn
-          {cell, index}, set when is_binary(cell) ->
-            case TimeToken.classify(cell) do
-              {:time, _, _} -> MapSet.put(set, index)
-              _other -> set
-            end
-
-          {_cell, _index}, set ->
-            set
-        end)
-
-      _row, acc ->
-        acc
-    end)
+    Enum.reduce(data_rows, MapSet.new(), &collect_bearing_row/2)
   end
+
+  defp collect_bearing_row(row, acc) when is_list(row) do
+    row |> Enum.with_index() |> Enum.reduce(acc, &collect_bearing_cell/2)
+  end
+
+  defp collect_bearing_row(_row, acc), do: acc
+
+  defp collect_bearing_cell({cell, index}, set) when is_binary(cell) do
+    case TimeToken.classify(cell) do
+      {:time, _, _} -> MapSet.put(set, index)
+      _other -> set
+    end
+  end
+
+  defp collect_bearing_cell({_cell, _index}, set), do: set
 
   @spec auto_column(
           non_neg_integer(),
@@ -551,22 +550,25 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ColumnMatcher do
     wanted = side || @default_side
     candidates = Enum.filter(state.occurrences, &(&1.stop_id == stop_id))
 
-    cond do
-      pair_open?(state, col, stop_id) ->
-        occurrence = Map.fetch!(state.by_id, state.previous_occurrence)
-        {{occurrence, :departure}, track(state, col, occurrence, :departure)}
+    if pair_open?(state, col, stop_id) do
+      occurrence = Map.fetch!(state.by_id, state.previous_occurrence)
+      {{occurrence, :departure}, track(state, col, occurrence, :departure)}
+    else
+      take_after_previous(state, col, wanted, candidates)
+    end
+  end
 
-      true ->
-        case Enum.find(candidates, &after_previous?(&1, state.previous_position)) do
-          nil ->
-            case List.first(candidates) do
-              nil -> {nil, state}
-              fallback -> {{fallback, wanted}, track(state, col, fallback, wanted)}
-            end
+  defp take_after_previous(state, col, wanted, candidates) do
+    case Enum.find(candidates, &after_previous?(&1, state.previous_position)) do
+      nil -> take_first_candidate(state, col, wanted, candidates)
+      next -> {{next, wanted}, track(state, col, next, wanted)}
+    end
+  end
 
-          next ->
-            {{next, wanted}, track(state, col, next, wanted)}
-        end
+  defp take_first_candidate(state, col, wanted, candidates) do
+    case List.first(candidates) do
+      nil -> {nil, state}
+      fallback -> {{fallback, wanted}, track(state, col, fallback, wanted)}
     end
   end
 

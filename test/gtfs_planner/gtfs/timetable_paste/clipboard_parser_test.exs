@@ -31,7 +31,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ClipboardParserTest do
 
   describe "quoted cells" do
     test "doubled quotes decode to one literal quote" do
-      assert ClipboardParser.parse("\"a\"\"b\",c") ==
+      assert ClipboardParser.parse(~s("a""b",c)) ==
                {:ok, %{grid: [["a\"b", "c"]], delimiter: :comma}}
     end
 
@@ -45,13 +45,13 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.ClipboardParserTest do
     end
 
     test "quoted delimiters stay inside the cell" do
-      assert ClipboardParser.parse("\"x,y\",\"2\t3\"") ==
+      assert ClipboardParser.parse(~s("x,y","2\t3")) ==
                {:ok, %{grid: [["x,y", "2\t3"]], delimiter: :comma}}
     end
 
     test "an unclosed quote is reported on the line it started" do
       assert ClipboardParser.parse("a,b\n\"open") == {:error, {:unclosed_quote, 2}}
-      assert ClipboardParser.parse("a\nb,\n\"start\nmore") == {:error, {:unclosed_quote, 3}}
+      assert ClipboardParser.parse(~s(a\nb,\n"start\nmore)) == {:error, {:unclosed_quote, 3}}
     end
   end
 
