@@ -264,4 +264,61 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   def move_band(metres, true) when metres > @far_metres, do: :far
   def move_band(metres, true) when metres > @correction_metres, do: :review
   def move_band(_metres, _served), do: :correction
+
+  @doc """
+  Thins a polyline to the points that carry its shape, by Douglas-Peucker.
+
+  A shape point exists because the road turned. Points within `tolerance_m` of
+  the straight line between the points that survive are noise at street zoom
+  and are dropped; the ones that carry a real deviation are kept. The distance
+  is metres, measured the same way as every other judgement here, so the
+  tolerance an editor can see on the map is the tolerance this applies.
+
+  The first and last point are always kept. A line that lost either would be
+  drawn short, and a shape's endpoints are frequently the only place a route
+  turns — dropping the last one shortens the drawn route to the previous street.
+  A line of fewer than three points is already minimal and is returned as it is.
+  """
+  @spec simplify([point()], float()) :: [point()]
+  def simplify([], _tolerance_m), do: []
+
+  def simplify([only], _tolerance_m), do: [only]
+
+  def simplify([first, second], _tolerance_m), do: [first, second]
+
+  def simplify([first | _rest] = line, tolerance_m) do
+    last = List.last(line)
+    inner = Enum.drop(line, 1) |> Enum.drop(-1)
+
+    # Douglas-Peucker: if nothing between the endpoints strays further from the
+    # chord than the tolerance, they are the whole line. Otherwise keep the
+    # point that strays furthest and recurse on each side of it, taking the
+    # *slice* of the line between the two bounding points so no point is ever
+    # measured against a chord it is not between.
+    apex = Enum.max_by(inner, &deviation(&1, first, last), fn -> nil end)
+
+    cond do
+      is_nil(apex) ->
+        [first, last]
+
+      deviation(apex, first, last) <= tolerance_m ->
+        [first, last]
+
+      true ->
+        # The apex is the one point that must survive both halves and sits in
+        # neither slice, so it is stitched between them. Neither slice contains
+        # it and neither slice's endpoints are dropped, so the line's first and
+        # last point come through untouched.
+        index = Enum.find_index(line, &(&1 == apex))
+        {before, [_apex | after_apex]} = Enum.split(line, index)
+
+        simplify(before, tolerance_m) ++ [apex] ++ simplify(after_apex, tolerance_m)
+    end
+  end
+
+  # How far a point sits from the straight line between the line's two
+  # endpoints, in metres. `offset_m/2` is exactly that measurement on a
+  # two-point line, so this is the same geometry every other function here
+  # uses rather than a second projection of the same question.
+  defp deviation(point, first, last), do: offset_m(point, [first, last]) |> elem(0)
 end
