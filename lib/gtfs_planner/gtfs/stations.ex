@@ -9,6 +9,7 @@ defmodule GtfsPlanner.Gtfs.Stations do
   alias GtfsPlanner.Gtfs.{
     Audit,
     AuditContext,
+    ChangeLog,
     Level,
     Pathway,
     PathwayEvolution,
@@ -421,6 +422,69 @@ defmodule GtfsPlanner.Gtfs.Stations do
     end)
   end
 
+  @doc "Restores a station entity from a scoped change log at the previewed revision."
+  def rollback_entity(%AuditContext{} = audit, log_id, expected_revision) do
+    with {:ok, log_id} <- Ecto.UUID.cast(log_id) do
+      # Any historical stop ID may need restoration after a later rename, so
+      # select the exclusive version lock before entering the transaction.
+      preview_log = Audit.get_change_log(audit.organization_id, audit.gtfs_version_id, log_id)
+      lock_mode = if rollback_may_rename_stop?(preview_log), do: :exclusive, else: :share
+
+      run(audit, lock_mode, fn station ->
+        log =
+          Audit.get_change_log(audit.organization_id, audit.gtfs_version_id, log_id) ||
+            Repo.rollback(:not_found)
+
+        if lock_mode == :share and rollback_may_rename_stop?(log),
+          do: Repo.rollback(:not_found)
+
+        target_result = rollback_target_snapshot(log)
+
+        # The historical station match is sufficient to return a stored-log
+        # error even when a deleted entity no longer has a row to lock.
+        if log.station_stop_id == station.stop_id do
+          case target_result do
+            {:error, reason} when reason != :audit_only_entity -> Repo.rollback(reason)
+            _ -> :ok
+          end
+        end
+
+        entity = lock_rollback_entity!(audit, station, log)
+
+        with {:ok, target} <- target_result do
+          stale_rollback!(entity, expected_revision)
+          changeset = rollback_changeset(audit, station, entity, target)
+
+          if not changeset.valid?, do: Repo.rollback(changeset)
+          if changeset.changes == %{}, do: Repo.rollback(:already_matches_current)
+
+          {updated, counts} = apply_rollback!(audit, entity, changeset)
+
+          attrs =
+            changeset.changes
+            |> Map.delete(:stop_id)
+            |> Map.put(:rolled_back_to_log_id, log.id)
+            |> rollback_rename_metadata(entity, updated, counts)
+
+          case Audit.record_change_in_transaction(
+                 audit,
+                 rollback_entity_type!(log.entity_type),
+                 entity,
+                 "rolled_back",
+                 attrs
+               ) do
+            {:ok, _log} -> updated
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
   @doc "Moves a child stop on the station diagram when its revision is current."
   def move_child_stop(%AuditContext{} = audit, id, %{x: x, y: y} = coordinate, expected_revision)
       when is_number(x) and is_number(y) do
@@ -581,6 +645,240 @@ defmodule GtfsPlanner.Gtfs.Stations do
         do: {:error, :pathway_in_use},
         else: reraise(error, __STACKTRACE__)
   end
+
+  defp rollback_may_rename_stop?(%ChangeLog{entity_type: "stop"} = log) do
+    case rollback_target_snapshot(log) do
+      {:ok, target} -> Map.has_key?(target, "stop_id")
+      _ -> false
+    end
+  end
+
+  defp rollback_may_rename_stop?(_), do: false
+
+  @doc "Returns reversible values captured by a station change log."
+  def rollback_target_snapshot(%ChangeLog{entity_type: type})
+      when type not in ["stop", "pathway", "level"],
+      do: {:error, :audit_only_entity}
+
+  def rollback_target_snapshot(%ChangeLog{action: action})
+      when action in ["created", "deleted"],
+      do: {:error, :cannot_rollback_create_or_delete}
+
+  def rollback_target_snapshot(%ChangeLog{snapshot: nil}),
+    do: {:error, :missing_rollback_snapshot}
+
+  def rollback_target_snapshot(%ChangeLog{
+        entity_type: type,
+        action: action,
+        snapshot: snapshot,
+        changed_fields: changed_fields
+      })
+      when action in ["updated", "rolled_back"] do
+    snapshot = stringify_rollback_keys(snapshot)
+    changed_fields = stringify_rollback_keys(changed_fields || %{})
+
+    snapshot =
+      Enum.reduce(changed_fields, snapshot, fn {field, change}, acc ->
+        case rollback_prior_value(change) do
+          {:ok, old_value} -> Map.put_new(acc, field, old_value)
+          :missing -> acc
+        end
+      end)
+
+    target = Map.take(snapshot, Audit.reversible_fields_for(type))
+
+    target =
+      if type == "stop" and Map.has_key?(snapshot, "stop_id"),
+        do: Map.put(target, "stop_id", snapshot["stop_id"]),
+        else: target
+
+    {:ok, target}
+  end
+
+  def rollback_target_snapshot(_), do: {:error, :cannot_rollback_create_or_delete}
+
+  defp stringify_rollback_keys(map),
+    do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
+
+  defp rollback_prior_value(value) when is_map(value) do
+    value = stringify_rollback_keys(value)
+    if Map.has_key?(value, "from"), do: {:ok, value["from"]}, else: :missing
+  end
+
+  defp rollback_prior_value([old, _new]), do: {:ok, old}
+  defp rollback_prior_value(_), do: :missing
+
+  defp lock_rollback_entity!(audit, station, %ChangeLog{entity_type: "stop", entity_id: id} = log) do
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         %Stop{} = stop <-
+           from(s in Stop,
+             where:
+               s.id == ^id and s.organization_id == ^audit.organization_id and
+                 s.gtfs_version_id == ^audit.gtfs_version_id,
+             lock: "FOR UPDATE"
+           )
+           |> Repo.one() do
+      ensure_rollback_station!(audit, station, log, stop)
+      stop
+    else
+      _ -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp lock_rollback_entity!(
+         audit,
+         station,
+         %ChangeLog{entity_type: "pathway", entity_id: id} = log
+       ) do
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         %Pathway{} = pathway <-
+           from(p in Pathway,
+             where:
+               p.id == ^id and p.organization_id == ^audit.organization_id and
+                 p.gtfs_version_id == ^audit.gtfs_version_id,
+             lock: "FOR UPDATE"
+           )
+           |> Repo.one() do
+      ensure_rollback_station!(audit, station, log, pathway)
+      pathway
+    else
+      _ -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp lock_rollback_entity!(
+         audit,
+         station,
+         %ChangeLog{entity_type: "level", entity_id: id} = log
+       ) do
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         %Level{} = level <-
+           from(l in Level,
+             where:
+               l.id == ^id and l.organization_id == ^audit.organization_id and
+                 l.gtfs_version_id == ^audit.gtfs_version_id,
+             lock: "FOR UPDATE"
+           )
+           |> Repo.one() do
+      ensure_rollback_station!(audit, station, log, level)
+      level
+    else
+      _ -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp lock_rollback_entity!(
+         audit,
+         station,
+         %ChangeLog{
+           entity_type: "stop_level",
+           entity_id: id
+         } = log
+       ) do
+    current_member? =
+      case Ecto.UUID.cast(id) do
+        {:ok, id} ->
+          Repo.exists?(
+            from(sl in StopLevel,
+              where:
+                sl.id == ^id and sl.organization_id == ^audit.organization_id and
+                  sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id
+            )
+          )
+
+        _ ->
+          false
+      end
+
+    if log.station_stop_id == station.stop_id or current_member?,
+      do: Repo.rollback(:audit_only_entity),
+      else: Repo.rollback(:not_found)
+  end
+
+  defp lock_rollback_entity!(_audit, station, %ChangeLog{} = log) do
+    if log.station_stop_id == station.stop_id,
+      do: Repo.rollback(:audit_only_entity),
+      else: Repo.rollback(:not_found)
+  end
+
+  defp ensure_rollback_station!(_audit, station, log, _entity)
+       when log.station_stop_id == station.stop_id,
+       do: :ok
+
+  defp ensure_rollback_station!(audit, station, _log, %Stop{} = stop) do
+    unless stop.stop_id in station_scope_ids(audit, station), do: Repo.rollback(:not_found)
+  end
+
+  defp ensure_rollback_station!(audit, station, _log, %Pathway{} = pathway) do
+    ids = station_scope_ids(audit, station)
+
+    unless pathway.from_stop_id in ids or pathway.to_stop_id in ids,
+      do: Repo.rollback(:not_found)
+  end
+
+  defp ensure_rollback_station!(audit, station, _log, %Level{} = level) do
+    unless Repo.exists?(
+             from(sl in StopLevel,
+               where:
+                 sl.level_id == ^level.id and sl.organization_id == ^audit.organization_id and
+                   sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id
+             )
+           ),
+           do: Repo.rollback(:not_found)
+  end
+
+  defp stale_rollback!(%{lock_version: current}, expected) when current == expected, do: :ok
+  defp stale_rollback!(%{lock_version: current}, _expected), do: Repo.rollback({:stale, current})
+
+  defp rollback_changeset(audit, station, %Stop{} = stop, target) do
+    changeset =
+      if Map.has_key?(target, "stop_id"),
+        do: Stop.create_changeset(stop, target, audit),
+        else: Stop.editor_changeset(stop, target)
+
+    if stop.id == station.id do
+      if Ecto.Changeset.get_field(changeset, :location_type) != 1,
+        do: Repo.rollback(:not_found)
+    else
+      ensure_station_parent!(audit, station, changeset)
+    end
+
+    ensure_scoped_level!(audit, changeset)
+    changeset
+  end
+
+  defp rollback_changeset(_audit, _station, %Pathway{} = pathway, target),
+    do: Pathway.editor_changeset(pathway, target)
+
+  defp rollback_changeset(_audit, _station, %Level{} = level, target),
+    do: Level.editor_changeset(level, target)
+
+  defp apply_rollback!(audit, %Stop{} = stop, changeset) do
+    if Ecto.Changeset.get_field(changeset, :stop_id) != stop.stop_id do
+      apply_stop_rename!(audit, stop, changeset)
+    else
+      {update_rollback!(changeset), nil}
+    end
+  end
+
+  defp apply_rollback!(_audit, _entity, changeset), do: {update_rollback!(changeset), nil}
+
+  defp update_rollback!(changeset) do
+    case Repo.update(changeset) do
+      {:ok, updated} -> updated
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp rollback_rename_metadata(attrs, %Stop{} = before, %Stop{} = restored, counts)
+       when not is_nil(counts),
+       do: Map.merge(attrs, %{stop_id: [before.stop_id, restored.stop_id], references: counts})
+
+  defp rollback_rename_metadata(attrs, _before, _after, _counts), do: attrs
+
+  defp rollback_entity_type!("stop"), do: :stop
+  defp rollback_entity_type!("pathway"), do: :pathway
+  defp rollback_entity_type!("level"), do: :level
 
   defp station(%AuditContext{} = audit) do
     if is_binary(audit.station_stop_id) and audit.station_stop_id != "" and
@@ -1152,32 +1450,8 @@ defmodule GtfsPlanner.Gtfs.Stations do
     if new_id == stop.stop_id do
       write_stop(audit, changeset, "updated")
     else
-      if Repo.exists?(
-           from(s in Stop,
-             where:
-               s.organization_id == ^audit.organization_id and
-                 s.gtfs_version_id == ^audit.gtfs_version_id and s.stop_id == ^new_id
-           )
-         ) do
-        Repo.rollback(Ecto.Changeset.add_error(changeset, :stop_id, "has already been taken"))
-      end
-
-      counts =
-        StopReferences.rename!(audit.organization_id, audit.gtfs_version_id, %{
-          stop.stop_id => new_id
-        })
-
+      {updated, counts} = apply_stop_rename!(audit, stop, changeset)
       editor_changes = Map.delete(changeset.changes, :stop_id)
-      renamed = Repo.get!(Stop, stop.id)
-
-      updated =
-        if editor_changes == %{} do
-          renamed
-        else
-          renamed
-          |> Ecto.Changeset.change(editor_changes)
-          |> Repo.update!()
-        end
 
       audit_changes =
         Map.merge(editor_changes, %{stop_id: [stop.stop_id, new_id], references: counts})
@@ -1187,6 +1461,39 @@ defmodule GtfsPlanner.Gtfs.Stations do
         {:error, reason} -> Repo.rollback(reason)
       end
     end
+  end
+
+  defp apply_stop_rename!(audit, stop, changeset) do
+    new_id = Ecto.Changeset.get_field(changeset, :stop_id)
+
+    if Repo.exists?(
+         from(s in Stop,
+           where:
+             s.organization_id == ^audit.organization_id and
+               s.gtfs_version_id == ^audit.gtfs_version_id and s.stop_id == ^new_id
+         )
+       ) do
+      Repo.rollback(Ecto.Changeset.add_error(changeset, :stop_id, "has already been taken"))
+    end
+
+    counts =
+      StopReferences.rename!(audit.organization_id, audit.gtfs_version_id, %{
+        stop.stop_id => new_id
+      })
+
+    editor_changes = Map.delete(changeset.changes, :stop_id)
+    renamed = Repo.get!(Stop, stop.id)
+
+    updated =
+      if editor_changes == %{} do
+        renamed
+      else
+        renamed
+        |> Ecto.Changeset.change(editor_changes)
+        |> Repo.update!()
+      end
+
+    {updated, counts}
   end
 
   defp write_stop(audit, changeset, action) do

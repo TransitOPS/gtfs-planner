@@ -68,6 +68,8 @@ defmodule GtfsPlanner.Gtfs.Audit do
       snapshot: snapshot,
       changed_fields: changed_fields,
       action: action,
+      rolled_back_to_log_id:
+        if(action == "rolled_back", do: Map.get(attrs, :rolled_back_to_log_id)),
       organization_id: ctx.organization_id,
       gtfs_version_id: ctx.gtfs_version_id
     })
@@ -624,7 +626,7 @@ defmodule GtfsPlanner.Gtfs.Audit do
 
   defp build_changed_fields(entity_type, "updated", snapshot, attrs)
        when entity_type in [:stop, "stop"] and not is_nil(snapshot) do
-    {metadata, fields} = Map.split(attrs, [:stop_id, :references])
+    {metadata, fields} = Map.split(attrs, [:stop_id, :references, :rolled_back_to_log_id])
     changed = updated_field_diffs(snapshot, fields)
 
     case metadata do
@@ -637,6 +639,14 @@ defmodule GtfsPlanner.Gtfs.Audit do
         changed
     end
   end
+
+  defp build_changed_fields(entity_type, "rolled_back", snapshot, attrs)
+       when entity_type in [:stop, "stop"] and not is_nil(snapshot),
+       do: build_changed_fields(entity_type, "updated", snapshot, attrs)
+
+  defp build_changed_fields(_entity_type, "rolled_back", snapshot, attrs)
+       when not is_nil(snapshot),
+       do: updated_field_diffs(snapshot, Map.delete(attrs, :rolled_back_to_log_id))
 
   defp build_changed_fields(entity_type, "updated", snapshot, attrs)
        when entity_type in [:level, "level"] and not is_nil(snapshot) do
