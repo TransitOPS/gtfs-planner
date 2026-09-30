@@ -1148,9 +1148,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
 
       {:ok, view, _html} = live(conn, pattern_path(version, route, pattern, "?task=timings"))
 
-      # A browser omits an unticked checkbox from the posted row.
+      # An unticked checkbox posts the hidden "0" that precedes it.
       render_change(view, "validate_timing_row", %{
-        "timing" => %{"2" => %{"arrival" => "04:00", "departure" => "05:00"}},
+        "timing" => %{
+          "2" => %{"arrival" => "04:00", "departure" => "05:00", "timepoint" => "0"}
+        },
         "_target" => ["timing", "2", "timepoint"]
       })
 
@@ -1159,6 +1161,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       render_click(view, "save_timing")
 
       assert timepoints(timing_row) == [1, 0, 1]
+    end
+
+    test "a posted row without a timepoint key keeps its marked timepoint",
+         %{conn: conn, organization: organization, version: version} do
+      %{route: route, pattern: pattern, timing: timing_row} =
+        three_stop_pattern(organization, version, "TPT5")
+
+      set_timepoints(timing_row, [1, 1, 1])
+
+      {:ok, view, _html} = live(conn, pattern_path(version, route, pattern, "?task=timings"))
+
+      render_change(view, "validate_timing_row", %{
+        "timing" => %{"2" => %{"arrival" => "04:00", "departure" => "05:00"}},
+        "_target" => ["timing", "2", "arrival"]
+      })
+
+      assert has_element?(view, "#timing-timepoint-2[checked]")
     end
   end
 

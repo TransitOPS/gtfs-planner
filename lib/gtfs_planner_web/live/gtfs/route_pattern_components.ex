@@ -1105,6 +1105,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           class="flex min-h-11 cursor-pointer items-center gap-2 text-sm"
           for={"timing-timepoint-#{@row.position}"}
         >
+          <input type="hidden" name={"timing[#{@row.position}][timepoint]"} value="0" />
           <input
             id={"timing-timepoint-#{@row.position}"}
             name={"timing[#{@row.position}][timepoint]"}
