@@ -352,15 +352,25 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
+  # An explicit `from` always splits followers — including `from: nil`, so a
+  # nil default's blank trips form the change-mode follows group the update
+  # box counts (AC-5's "give N trips with no headsign this headsign"). Without
+  # the opt, differing keeps its usage-line meaning: trips that miss the
+  # scope's effective default.
   defp usage_counts_and_groups(trips, default, opts) do
     total = length(trips)
-    from_value = Headsigns.normalize(Keyword.get(opts, :from))
 
-    {followers, differing} =
-      if from_value do
-        Enum.split_with(trips, &Headsigns.follows?(&1.headsign, from_value))
-      else
-        {[], Enum.reject(trips, &Headsigns.follows?(&1.headsign, default))}
+    {followers, differing, follows_value} =
+      case Keyword.fetch(opts, :from) do
+        {:ok, from} ->
+          from_value = Headsigns.normalize(from)
+
+          Enum.split_with(trips, &Headsigns.follows?(&1.headsign, from_value))
+          |> then(fn {followers, differing} -> {followers, differing, from_value} end)
+
+        :error ->
+          differing = Enum.reject(trips, &Headsigns.follows?(&1.headsign, default))
+          {[], differing, nil}
       end
 
     groups = value_groups(differing, default)
@@ -371,7 +381,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
           groups
 
         followers ->
-          [%{value: from_value, kind: :follows, likely_typo: false, trips: followers} | groups]
+          [%{value: follows_value, kind: :follows, likely_typo: false, trips: followers} | groups]
       end
 
     %{total: total, same: total - length(differing), differ: length(differing), groups: groups}
