@@ -40,7 +40,9 @@ defmodule GtfsPlannerWeb.Plugs.CORS do
 
   defp localhost_origin?(origin) do
     uri = URI.parse(origin)
-    uri.host in ["localhost", "127.0.0.1"] and uri.scheme in ["http", "https"]
+
+    Application.get_env(:gtfs_planner, :api_cors_allow_localhost, false) and
+      uri.host in ["localhost", "127.0.0.1"] and uri.scheme in ["http", "https"]
   end
 
   defp handle_preflight(%{method: "OPTIONS"} = conn) do
