@@ -4856,6 +4856,12 @@ body:has(#home-page) {
   scroll-padding-bottom: 78px;
 }
 
+/* The page itself scrolls the rows vertically, so the document needs the same
+   padding for a cursor moved down the grid to stop above the bar. */
+html:has(#schedules-grid) {
+  scroll-padding-bottom: 78px;
+}
+
 /* ── Schedules timetable grid: the in-cell time editor ──
    The LiveView renders `#cell-editor` once inside `#schedules-grid` and outside
    the streamed sections; the grid hook positions it over the cursor cell and
