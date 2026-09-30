@@ -5988,6 +5988,30 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Returns every day type of a published version's straight and split counts and
+  the straight share.
+
+  Every day type is listed, including one with no runs, which answers straight
+  0, split 0 and a share of `nil`. An unpublished or foreign version is
+  `{:error, :not_found}`.
+  """
+  @spec run_day_type_shares(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok,
+           [
+             %{
+               day_type_key: String.t(),
+               label: String.t(),
+               straight: non_neg_integer(),
+               split: non_neg_integer(),
+               share: 0..100 | nil
+             }
+           ]}
+          | {:error, :not_found}
+  def run_day_type_shares(organization_id, gtfs_version_id) do
+    Runs.day_type_shares(organization_id, gtfs_version_id)
+  end
+
+  @doc """
   Returns the current block errors and warnings involving the given trips.
 
   Natural trip IDs name the trips; for each one that runs in a block, every day
