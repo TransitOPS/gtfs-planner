@@ -444,7 +444,7 @@ test.describe("Schedules editing journeys", () => {
     await page.locator("#trip-start").fill("25:9");
     await page.locator("#trip-drawer-save").click();
     await expect(page.locator("#trip-start-error")).toContainText(
-      "Enter a departure as HH:MM, for example 06:00 or 25:10.",
+      "Enter a time such as 6:05, 605, 6:05p or 25:10.",
     );
     await expect(page.locator("#trip-start")).toBeFocused();
     await capture(page, "step-007-add-error-1440x1000");

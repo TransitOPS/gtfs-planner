@@ -33,6 +33,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Schedules.Summary
+  alias GtfsPlanner.Gtfs.Schedules.TimeEntry
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.ScheduleComponents
@@ -1462,7 +1463,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   # --- parsing helpers -------------------------------------------------------
 
-  # The drawer takes HH:MM (or H:MM); the context takes HH:MM:SS.
+  # The drawer reads the page's one R2 grammar; the context takes HH:MM:SS.
   defp parse_start_clock(value) do
     case parse_clock_value(value) do
       {:ok, secs} -> {:ok, secs, seconds_to_clock(secs)}
@@ -1477,17 +1478,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
-  defp parse_clock_value(value) when is_binary(value) do
-    value = String.trim(value)
-    normalized = if Regex.match?(~r/\A\d{1,3}:[0-5]\d\z/, value), do: value <> ":00", else: value
-
-    case GtfsTime.parse(normalized) do
-      {:ok, secs} -> {:ok, secs}
+  # A drawer has no cell time, so a relative reading has no `current:` and is
+  # refused here like every other form outside R2.
+  defp parse_clock_value(value) do
+    case TimeEntry.parse(value, []) do
+      {:ok, %{secs: secs}} -> {:ok, secs}
       {:error, reason} -> {:error, reason}
     end
   end
-
-  defp parse_clock_value(_value), do: {:error, :invalid_time}
 
   defp parse_every(value) do
     if whole_number?(value) and String.to_integer(String.trim(value)) >= 1 do
