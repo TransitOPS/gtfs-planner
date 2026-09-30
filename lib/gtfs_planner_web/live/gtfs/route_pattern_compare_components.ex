@@ -29,6 +29,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   sense with content, so both show once a read has succeeded (the prototype hides
   them while loading and after a failure); the title stays, and the state below it
   says what is happening.
+
+  The pattern picker (`AC-20`) is its own planner drawer (`<.drawer>`). Its list
+  is the `Gtfs.load_pattern_picker/3` read loaded once per open, grouped this
+  route by direction and then "Other routes"; the ranking by stops in common,
+  then trips, comes from the read. The search filters that list in memory and the
+  rows carry the choice as a server event.
   """
   use GtfsPlannerWeb, :html
 
@@ -65,6 +71,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   attr :reverse_path, :string,
     default: nil,
     doc: "the compare URL with the `reverse` param toggled; nil without a loaded pair"
+
+  attr :picker, :map,
+    default: nil,
+    doc: "the open picker's `%{side, entries, query}`; nil when the drawer is closed"
 
   def page(assigns) do
     ~H"""
@@ -145,6 +155,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
             />
         <% end %>
       </section>
+
+      <.picker :if={@picker} picker={@picker} comparison={@comparison} version={@version} />
     </div>
     """
   end
@@ -2012,6 +2024,304 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
     </article>
     """
   end
+
+  # The pattern picker (`AC-20`): the planner drawer that chooses A or B. Its
+  # list is `Gtfs.load_pattern_picker/3`, loaded once per open; the search
+  # `phx-change` filters that list in memory (the read already ranked it by
+  # stops in common, then trips) and the grouping here is this route's
+  # directions, then "Other routes". The other side's row is disabled and says
+  # why, the current row is marked, and the row's own route badge shows when the
+  # pattern is on another route. Choosing posts a server event so the LiveView
+  # patches the URL; `return_focus_id` is the Change button that opened the
+  # drawer, so closing returns focus there.
+  attr :picker, :map, required: true, doc: "the open picker's `%{side, entries, query}`"
+  attr :comparison, :map, required: true
+  attr :version, :map, required: true, doc: "the current GTFS version, named in the footer"
+
+  def picker(assigns) do
+    assigns =
+      assigns
+      |> assign(:side, assigns.picker.side)
+      |> assign(:letter, String.upcase(assigns.picker.side))
+      |> assign(:other_letter, picker_other_letter(assigns.picker.side))
+      |> assign(:other_side, picker_other_side(assigns.picker.side, assigns.comparison))
+      |> assign(:search_form, to_form(%{"query" => assigns.picker.query}))
+      |> assign(
+        :groups,
+        picker_groups(assigns.picker.entries, assigns.picker, assigns.comparison)
+      )
+
+    ~H"""
+    <.drawer
+      id="compare-picker"
+      chrome="planner"
+      open
+      title={"Choose pattern " <> @letter}
+      initial_focus_id="picker-q"
+      return_focus_id={"slot-" <> @side <> "-change"}
+      on_close="close_picker"
+      class="max-w-[min(100vw,680px)]"
+    >
+      <:lede>
+        <%= if @other_side do %>
+          To compare with <.series_chip letter={@other_letter} /> {pattern_name(@other_side)}.
+          Patterns that share more of its stops come first.
+        <% else %>
+          Any pattern in this version.
+        <% end %>
+      </:lede>
+
+      <div class="border-b border-subtle px-5 py-4 sm:px-6">
+        <.form for={@search_form} id="picker-search-form" phx-submit="picker_search">
+          <label for="picker-q" class="text-sm font-[650] text-strong">Find a pattern</label>
+          <div class="relative mt-1.5">
+            <.icon
+              name="hero-magnifying-glass"
+              class="pointer-events-none absolute left-3 top-3.5 size-4 text-muted"
+            />
+            <input
+              id="picker-q"
+              type="search"
+              name="query"
+              value={@picker.query}
+              phx-change="picker_search"
+              phx-debounce="300"
+              autocomplete="off"
+              aria-describedby="picker-q-hint"
+              class="h-11 w-full rounded-control border border-control bg-white pl-9 pr-3 text-sm text-strong placeholder:text-muted"
+            />
+          </div>
+          <p id="picker-q-hint" class="mt-1 text-[13px] text-muted">
+            Search by pattern name, route or a stop it serves.
+          </p>
+        </.form>
+      </div>
+
+      <div id="picker-list" class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        <div :if={is_nil(@groups)} id="picker-read-error" class="px-4 py-10 text-center">
+          <p class="text-sm font-bold text-strong">The patterns didn’t load</p>
+          <p class="mt-1 text-sm text-default">Nothing has changed. Close and try again.</p>
+        </div>
+
+        <div :if={@groups == []} id="picker-empty" class="px-4 py-10 text-center">
+          <p class="text-sm font-bold text-strong">No patterns match “{@picker.query}”</p>
+          <p class="mt-1 text-sm text-default">
+            Check the spelling, or search by a stop the pattern serves.
+          </p>
+          <button
+            type="button"
+            id="picker-clear"
+            phx-click={JS.push("picker_search", value: %{query: ""}) |> JS.focus(to: "#picker-q")}
+            class="mt-3 inline-flex min-h-11 items-center rounded-control border border-control bg-white px-4 text-sm font-[650] text-strong hover:bg-canvas"
+          >
+            Clear search
+          </button>
+        </div>
+
+        <section :for={{title, rows} <- @groups || []} class="py-1">
+          <h3 class="px-3 pb-1 pt-2 font-sans text-[13px] font-[650] text-muted">{title}</h3>
+          <ul>
+            <li :for={row <- rows}>
+              <button
+                type="button"
+                id={"picker-pattern-" <> row.route_pattern_id}
+                disabled={row.picker_disabled?}
+                aria-current={row.picker_current? && "true"}
+                phx-click="choose_pattern"
+                phx-value-pattern={row.route_pattern_id}
+                phx-value-route={row.route_id}
+                class="flex min-h-[60px] w-full items-center gap-3 rounded-control px-3 py-2 text-left hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-60 aria-[current=true]:bg-selection"
+              >
+                <RouteIdentity.route_badge
+                  :if={row.picker_other_route?}
+                  route={%{route_short_name: row.route_short_name, route_id: row.route_id}}
+                />
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-sm font-[650] text-strong">{row.picker_name}</span>
+                  <span class="block text-[13px] text-muted">{row.picker_meta}</span>
+                </span>
+                <span
+                  :if={row.picker_pill}
+                  class={["shrink-0 text-right text-[13px]", row.picker_pill.class]}
+                >
+                  {row.picker_pill.label}
+                </span>
+              </button>
+            </li>
+          </ul>
+        </section>
+      </div>
+
+      <footer class="border-t border-subtle px-5 py-4 sm:px-6">
+        <p class="text-[13px] text-muted">
+          Patterns from {@version.name} only. To compare another version, switch versions first.
+        </p>
+        <.button
+          id="picker-keep"
+          type="button"
+          variant="secondary"
+          phx-click="close_picker"
+          class="mt-3 min-h-11"
+        >
+          Keep current pattern
+        </.button>
+      </footer>
+    </.drawer>
+    """
+  end
+
+  # The picker's list: this route's patterns grouped by direction, then "Other
+  # routes" (`AC-20`). Within a group the read's own order holds, because it is
+  # already ranked by stops in common, then trips. A failed read (`nil` entries)
+  # has no groups, which the component renders as its error state.
+  defp picker_groups(nil, _picker, _comparison), do: nil
+
+  defp picker_groups(entries, picker, comparison) do
+    query = picker.query
+    visible = Enum.filter(entries, &picker_match?(&1, query))
+    home = comparison.route.route_id
+    home_entries = Enum.filter(visible, &(&1.route_id == home))
+
+    directions =
+      home_entries
+      |> Enum.map(& &1.direction_id)
+      |> Enum.uniq()
+      |> Enum.sort_by(fn direction -> {not is_nil(direction), direction || 0} end)
+
+    direction_groups =
+      Enum.map(directions, fn direction ->
+        group = Enum.filter(home_entries, &(&1.direction_id == direction))
+        {direction_heading(comparison, direction), picker_rows(group, picker, comparison)}
+      end)
+
+    others = Enum.filter(visible, &(&1.route_id != home))
+
+    direction_groups ++
+      if(others == [], do: [], else: [{"Other routes", picker_rows(others, picker, comparison)}])
+  end
+
+  defp picker_rows(entries, picker, comparison) do
+    other = picker_other_side_id(picker.side, comparison)
+    current = picker_current_id(picker.side, comparison)
+
+    Enum.map(entries, fn entry ->
+      Map.merge(entry, %{
+        picker_name: picker_name(entry),
+        picker_meta: picker_meta(entry, comparison, picker.query),
+        picker_pill: picker_pill(entry, other, current, picker.side),
+        picker_disabled?: entry.route_pattern_id == other,
+        picker_current?: entry.route_pattern_id == current,
+        picker_other_route?: entry.route_id != comparison.route.route_id
+      })
+    end)
+  end
+
+  # "Route 1 Coast Highway · Toward Lincoln City" from the home route's names;
+  # a route with no names falls back to its ID.
+  defp direction_heading(comparison, direction) do
+    route = comparison.route
+
+    names =
+      [route.route_short_name, route.route_long_name]
+      |> Enum.reject(&blank?/1)
+      |> Enum.join(" ")
+
+    "Route #{if(names == "", do: route.route_id, else: names)} · #{RoutePattern.direction_label(direction)}"
+  end
+
+  defp picker_match?(entry, query) do
+    needle = picker_needle(query)
+
+    needle == "" or
+      Enum.any?(picker_search_fields(entry), fn field ->
+        is_binary(field) and String.contains?(String.downcase(field), needle)
+      end)
+  end
+
+  # Pattern name, route name and ID, and every served stop name (`AC-20`).
+  defp picker_search_fields(entry) do
+    [entry.name, entry.route_long_name, entry.route_short_name, entry.route_id] ++
+      Enum.map(entry.stop_ids, &entry.stop_names[&1])
+  end
+
+  # The row's meta line: direction, stop count and the trips on the chosen
+  # calendar, then "stops at <stop>" when the query hit a served stop name and
+  # not the pattern's own name (the prototype's `stopsHit`).
+  defp picker_meta(entry, comparison, query) do
+    line =
+      [
+        RoutePattern.direction_label(entry.direction_id),
+        plural(length(entry.stop_ids), "stop"),
+        picker_trips(entry, calendar_name(comparison))
+      ]
+      |> Enum.join(" · ")
+
+    case picker_stop_hit(entry, query) do
+      nil -> line
+      stop_name -> line <> " · stops at " <> stop_name
+    end
+  end
+
+  defp picker_trips(%{trips: 0}, calendar_name), do: "not used on " <> calendar_name
+
+  defp picker_trips(%{trips: trips}, calendar_name),
+    do: plural(trips, "trip") <> " on " <> calendar_name
+
+  defp picker_stop_hit(entry, query) do
+    needle = picker_needle(query)
+
+    if needle == "" or String.contains?(String.downcase(picker_name(entry)), needle) do
+      nil
+    else
+      entry.stop_ids
+      |> Enum.map(&entry.stop_names[&1])
+      |> Enum.find(&(is_binary(&1) and String.contains?(String.downcase(&1), needle)))
+    end
+  end
+
+  # The right-hand pill: the other side's row says which side it is and is
+  # disabled; the current row is marked; every other row carries the read's
+  # stops in common with the other side (nothing while no other side is chosen).
+  defp picker_pill(entry, other, current, side) do
+    cond do
+      entry.route_pattern_id == other ->
+        %{label: "This is " <> picker_other_letter(side), class: "font-[650] text-strong"}
+
+      entry.route_pattern_id == current ->
+        %{label: "Current", class: "font-[650] text-strong"}
+
+      is_binary(other) and entry.shared == 0 ->
+        %{label: "No stops in common", class: "text-muted"}
+
+      is_binary(other) ->
+        %{label: plural(entry.shared, "stop") <> " in common", class: "text-default"}
+
+      true ->
+        nil
+    end
+  end
+
+  defp picker_name(entry) do
+    if blank?(entry.name), do: entry.route_pattern_id, else: entry.name
+  end
+
+  defp picker_needle(query), do: query |> to_string() |> String.trim() |> String.downcase()
+
+  defp picker_other_letter("a"), do: "B"
+  defp picker_other_letter("b"), do: "A"
+
+  defp picker_other_side("a", comparison), do: comparison.b
+  defp picker_other_side("b", comparison), do: comparison.a
+
+  defp picker_other_side_id("a", comparison),
+    do: comparison.b && comparison.b.pattern.route_pattern_id
+
+  defp picker_other_side_id("b", comparison), do: comparison.a.pattern.route_pattern_id
+
+  defp picker_current_id("a", comparison), do: comparison.a.pattern.route_pattern_id
+
+  defp picker_current_id("b", comparison),
+    do: comparison.b && comparison.b.pattern.route_pattern_id
 
   attr :letter, :string, required: true, values: ["A", "B"]
 
