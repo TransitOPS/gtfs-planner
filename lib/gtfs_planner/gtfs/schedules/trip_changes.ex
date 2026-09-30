@@ -407,6 +407,32 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
   def relink(_new_rows, _occurrences, _timings), do: :custom
 
   @doc """
+  Whether `timing_rows` materialized at the first departure of `rows` reproduces
+  every row's arrival and departure clock.
+
+  Unlike `relink/3` it ignores the other row values, because timetable paste
+  links trips whose stored flags differ from their timing's by design; only a
+  timing edit can change the clocks.
+  """
+  @spec timing_clocks_match?([map()], [map()], [map()]) :: boolean()
+  def timing_clocks_match?(rows, occurrences, timing_rows)
+      when is_list(rows) and is_list(occurrences) and is_list(timing_rows) do
+    with departure when is_integer(departure) <- first_departure(rows),
+         {:ok, materialized} <- Materializer.materialize(departure, occurrences, timing_rows) do
+      clock_pairs(materialized) == clock_pairs(rows)
+    else
+      _no_match -> false
+    end
+  end
+
+  defp clock_pairs(rows) do
+    Enum.map(
+      rows,
+      &{clock_secs(value(&1, :arrival_time)), clock_secs(value(&1, :departure_time))}
+    )
+  end
+
+  @doc """
   Allocates one unique `trip_id` per departure start.
 
   Trip IDs are unique within the organization and version, so the version's

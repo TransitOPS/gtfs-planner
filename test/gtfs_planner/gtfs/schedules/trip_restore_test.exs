@@ -305,6 +305,36 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripRestoreTest do
                {"07:12:00", "07:12:00", 1, nil}
              ]
     end
+
+    test "a paste-linked trip whose flags differ from its timing is linked back",
+         %{scope: scope} do
+      # Timetable paste links a trip whose rows carry timepoint 1 / pickup 0 to
+      # a timing whose rows leave both blank; only the clocks agree.
+      trip = linked_trip!(scope, "07:00:00")
+      original = scope.bundle.timing
+
+      from(st in StopTime,
+        where: st.trip_id == ^trip.trip_id and st.gtfs_version_id == ^trip.gtfs_version_id
+      )
+      |> Repo.update_all(set: [timepoint: 1, pickup_type: 0])
+
+      from(s in TimedPatternStop, where: s.timed_pattern_id == ^original.id)
+      |> Repo.update_all(set: [timepoint: nil, pickup_type: nil])
+
+      slow = extra_timing!(scope.bundle, [{0, 0, 1}, {360, 390, 1}, {840, 840, 1}], "Slow")
+      applied = apply_set_timing!(scope, trip, slow)
+
+      assert {:ok, restored} = Gtfs.restore_trips("12", applied.restore, scope.audit)
+
+      assert restored.restored_trip_ids == [trip.id]
+      assert trip_row(trip).timed_pattern_id == original.id
+
+      assert stop_time_clocks(trip) == [
+               {"07:00:00", "07:00:00", 1, 0},
+               {"07:05:00", "07:05:30", 1, 0},
+               {"07:12:00", "07:12:00", 1, 0}
+             ]
+    end
   end
 
   describe "the restore logs" do
