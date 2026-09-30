@@ -47,7 +47,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_access}
 
-  @filter_keys ~w(service_id direction pattern stops)
+  @filter_keys ~w(service_id direction pattern stops custom)
   @drawer_fields ~w(pattern_id timed_pattern_id service_id start_time repeat every until
     run_as windows exact_times trip_headsign trip_short_name wheelchair_accessible
     bikes_allowed)
@@ -84,6 +84,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
      |> assign(:sections_list, [])
      |> assign(:sections_empty?, true)
      |> assign(:rows_in_view, 0)
+     |> assign(:custom_filter?, false)
+     |> assign(:custom_count, 0)
      |> assign(:can_add?, false)
      |> assign(:add_reason, nil)
      |> assign(:any_trips?, false)
@@ -162,7 +164,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
         {:noreply, socket}
 
       filters ->
-        {:noreply, push_patch(socket, to: schedule_path(socket, merged_filters(filters, params)))}
+        merged =
+          merged_filters(filters, params, socket.assigns.custom_filter?)
+
+        {:noreply, push_patch(socket, to: schedule_path(socket, merged))}
     end
   end
 
@@ -668,12 +673,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp put_payload(socket, payload) do
-    sections = display_sections(payload)
+    custom? = custom_filter?(socket.assigns.requested)
+    sections = display_sections(payload, custom?)
 
     socket
     |> assign(:route, payload.route)
     |> assign(:payload, payload)
     |> assign(:filters, payload.filters)
+    |> assign(:custom_filter?, custom?)
+    |> assign(:custom_count, Enum.sum(Enum.map(payload.sections, & &1.custom_trip_count)))
     |> assign(:load_state, :ready)
     |> assign(:sections_list, sections)
     |> assign(:sections_empty?, sections == [])
@@ -704,20 +712,28 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   # The timepoints timing lines come from the read; the All stops view recomputes
   # the same segments over the wider column set from the pattern's timing rows.
-  defp display_sections(payload) do
+  # AC-22's Custom times filter is a page-level view over the rows the read
+  # already scoped: it hides every row whose times do not come from a timing and
+  # drops a section whose rows are all hidden, so an empty result is the
+  # filtered-empty state instead of a page of empty cards.
+  defp display_sections(payload, custom?) do
     timing_rows = timing_rows_by_id(payload.patterns)
     columns_key = if payload.filters.stops == :all, do: :all_columns, else: :columns
 
-    Enum.map(payload.sections, fn section ->
+    payload.sections
+    |> Enum.map(fn section ->
       columns = Map.fetch!(section, columns_key)
+      rows = if custom?, do: Enum.filter(section.rows, & &1.custom?), else: section.rows
 
       Map.merge(section, %{
+        rows: rows,
         stops: payload.filters.stops,
         columns: columns,
         timing_lines: timing_lines_for(section.timing_lines, columns, timing_rows),
         grid: %{preview: %{}, just_changed: MapSet.new(), cell_error: nil}
       })
     end)
+    |> Enum.reject(&(custom? and &1.rows == []))
   end
 
   defp timing_rows_by_id(patterns) do
@@ -740,7 +756,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp push_canonical(socket, filters, params) do
-    canonical = canonical_filters(filters)
+    canonical = canonical_filters(filters, custom_filter?(params))
 
     if Map.take(params, @filter_keys) == canonical do
       socket
@@ -4193,26 +4209,42 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   # A filter change carries the loaded view forward and overrides only the field
   # the control posted; canonicalization in the next `handle_params` still falls
-  # back to a default for a value that does not exist in the new scope.
-  defp merged_filters(filters, params) do
+  # back to a default for a value that does not exist in the new scope. The
+  # Custom times chip posts `custom=1`/`custom=0`, and a control that does not
+  # post the field carries the current view's filter forward.
+  defp merged_filters(filters, params, custom?) do
     %{}
     |> put_param("service_id", params["service_id"] || filters.service_id, nil)
     |> put_param("direction", params["direction"] || direction_param(filters.direction_id), "0")
     |> put_param("pattern", params["pattern"] || pattern_param(filters.pattern), "all")
     |> put_param("stops", params["stops"] || stops_param(filters.stops), "timepoints")
+    |> put_custom_param(merged_custom(params["custom"], custom?))
   end
+
+  defp merged_custom("1", _current?), do: true
+  defp merged_custom("0", _current?), do: false
+  defp merged_custom(_absent, current?), do: current?
 
   defp canonical_filters_for_params(nil, params), do: Map.take(params, @filter_keys)
 
-  defp canonical_filters_for_params(filters, _params), do: canonical_filters(filters)
+  defp canonical_filters_for_params(filters, params),
+    do: canonical_filters(filters, custom_filter?(params))
 
-  defp canonical_filters(filters) do
+  defp canonical_filters(filters, custom?) do
     %{}
     |> put_param("service_id", filters.service_id, nil)
     |> put_param("direction", direction_param(filters.direction_id), "0")
     |> put_param("pattern", pattern_param(filters.pattern), "all")
     |> put_param("stops", stops_param(filters.stops), "timepoints")
+    |> put_custom_param(custom?)
   end
+
+  # The canonical URL states the filter only when it is on, so `?custom=0` and
+  # any other spelling of "off" is replaced with the plain view's URL.
+  defp put_custom_param(query, true), do: Map.put(query, "custom", "1")
+  defp put_custom_param(query, false), do: query
+
+  defp custom_filter?(params), do: params["custom"] == "1"
 
   defp put_param(query, _key, nil, _default), do: query
   defp put_param(query, _key, value, value), do: query
@@ -4433,15 +4465,23 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                   />
                 <% @sections_empty? -> %>
                   <ScheduleComponents.filter_bar
-                    :if={@filters.pattern != :all}
+                    :if={@filters.pattern != :all or @custom_filter?}
                     pattern_form={@pattern_form}
                     patterns={@payload.patterns}
                     filters={@filters}
                     row_count={@rows_in_view}
+                    custom_count={@custom_count}
+                    custom_filter?={@custom_filter?}
+                    calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
+                    direction_label={direction_label(@payload)}
+                  />
+                  <ScheduleComponents.custom_empty
+                    :if={@custom_filter?}
                     calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
                     direction_label={direction_label(@payload)}
                   />
                   <ScheduleComponents.no_trips
+                    :if={not @custom_filter?}
                     route={@payload.route}
                     calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
                     direction_label={direction_label(@payload)}
@@ -4464,6 +4504,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                     patterns={@payload.patterns}
                     filters={@filters}
                     row_count={@rows_in_view}
+                    custom_count={@custom_count}
+                    custom_filter?={@custom_filter?}
                     calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
                     direction_label={direction_label(@payload)}
                   />
