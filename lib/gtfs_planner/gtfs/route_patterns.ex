@@ -228,6 +228,34 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
+  @doc """
+  Returns one pattern of the organization and version when its route is published.
+
+  `route_pattern_id` is unique per organization and version, so this is the
+  route-free lookup pattern B uses. A pattern outside the scope, or one whose
+  route is missing from the version or sits on an unpublished version, is
+  `{:error, :not_found}` so foreign and unpublished patterns can never leak.
+  """
+  @spec get_scoped_pattern(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, RoutePattern.t()} | {:error, :not_found}
+  def get_scoped_pattern(organization_id, version_id, route_pattern_id) do
+    query =
+      from(pattern in RoutePattern,
+        where:
+          pattern.organization_id == ^organization_id and
+            pattern.gtfs_version_id == ^version_id and
+            pattern.route_pattern_id == ^route_pattern_id
+      )
+
+    with %RoutePattern{} = pattern <- Repo.one(query),
+         {:ok, _route} <- published_route(organization_id, version_id, pattern.route_id) do
+      {:ok, pattern}
+    else
+      nil -> {:error, :not_found}
+      {:error, _} = error -> error
+    end
+  end
+
   defp scoped_pattern_by_natural_id(org_id, version_id, route_id, route_pattern_id) do
     Repo.one(
       from(pattern in RoutePattern,
@@ -265,10 +293,31 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     )
   end
 
-  # Only the selected timing's rows are read, and each row is bounded to its
-  # occurrence position and offset values; no full stop-time vector list is
-  # retained for any other timing.
-  defp selected_timing_rows(pattern_id, timing_id, stops) do
+  @doc """
+  Reads one timing's rows for a pattern, ordered by occurrence position.
+
+  Rows carry the occurrence identity, position and stop ID, the relative
+  arrival/departure offsets (nil when the timing has no scheduled time there),
+  timepoint, pickup/drop-off values and the stop headsign. Each row is joined
+  to its occurrence and filtered on that occurrence's pattern, so a timing that
+  belongs to another pattern returns `[]` instead of leaking its rows. `:stop`
+  is not attached; callers that need the stop struct attach it from the stops
+  they loaded.
+  """
+  @spec timing_rows(Ecto.UUID.t(), Ecto.UUID.t()) :: [
+          %{
+            route_pattern_stop_id: Ecto.UUID.t(),
+            position: pos_integer(),
+            stop_id: String.t(),
+            arrival_offset: integer() | nil,
+            departure_offset: integer() | nil,
+            timepoint: integer() | nil,
+            pickup_type: integer() | nil,
+            drop_off_type: integer() | nil,
+            stop_headsign: String.t() | nil
+          }
+        ]
+  def timing_rows(pattern_id, timing_id) do
     from(row in TimedPatternStop,
       join: occurrence in RoutePatternStop,
       on: occurrence.id == row.route_pattern_stop_id,
@@ -287,6 +336,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       }
     )
     |> Repo.all()
+  end
+
+  # Only the selected timing's rows are read, and each row is bounded to its
+  # occurrence position and offset values; no full stop-time vector list is
+  # retained for any other timing. The editor's rows keep the attached stop
+  # struct; the comparison read calls `timing_rows/2` without it.
+  defp selected_timing_rows(pattern_id, timing_id, stops) do
+    pattern_id
+    |> timing_rows(timing_id)
     |> Enum.map(&Map.put(&1, :stop, Map.get(stops, &1.stop_id)))
   end
 
