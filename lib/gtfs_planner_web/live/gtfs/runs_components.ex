@@ -1024,6 +1024,301 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   @doc """
+  Renders the `Runs · N | Uncovered work · N` tabs.
+
+  The counts are in the labels because the second tab's whole purpose is to say
+  how much work is outside any run: a tab called "Uncovered work" with nothing
+  after it makes the reader open it to find out, and a count they can see is one
+  fewer click for the answer.
+
+  `role="tablist"` with `aria-selected` on the pressed tab, and the selected tab
+  is also the one carrying `aria-current`, so the state is not carried by colour
+  alone. An amber dot on the uncovered tab when it is non-zero is the same
+  information without the words, for a reader scanning the strip.
+  """
+  attr :panel, :atom, required: true, values: [:runs, :uncovered]
+  attr :run_count, :integer, required: true
+  attr :uncovered_trips, :integer, required: true
+  attr :uncovered_segments, :integer, required: true
+
+  def tabs(assigns) do
+    ~H"""
+    <div role="tablist" aria-label="Runs sections" class="flex flex-wrap items-center gap-1">
+      <button
+        :for={{key, atom, label, count} <- tab_items(@run_count, @uncovered_trips)}
+        type="button"
+        role="tab"
+        id={"runs-tab-#{key}"}
+        phx-click="set_panel"
+        phx-value-panel={key}
+        aria-selected={to_string(@panel == atom)}
+        aria-current={@panel == atom && "page"}
+        data-role="panel-tab"
+        data-panel={key}
+        data-count={count}
+        class={[
+          "min-h-11 rounded-r-control px-3 text-sm font-semibold",
+          @panel == atom && "bg-secondary/15 text-primary",
+          @panel != atom && "text-base-content/70 hover:bg-base-200"
+        ]}
+      >
+        {label}
+        <span
+          :if={key == "uncovered" and @uncovered_segments > 0}
+          data-role="uncovered-dot"
+          aria-hidden="true"
+        >
+          ●
+        </span>
+      </button>
+    </div>
+    """
+  end
+
+  # `key` and `atom` are carried together on purpose. The `phx-value-panel` and
+  # the `id` are strings because the DOM is; `@panel` is an atom because it came
+  # out of the URL through `panel_value/1`. Comparing one to the other is the
+  # `:day != "day"` trap step 26 recorded, and it is SILENT here: `aria-selected`
+  # reads "false" on both tabs and the pressed tab is styled as unpressed, with
+  # no error anywhere. The dot and the count still work, so the tab looks
+  # plausible and the one thing the tablist exists to say is missing.
+  defp tab_items(run_count, uncovered_trips) do
+    [
+      {"runs", :runs, "Runs · #{run_count}", run_count},
+      {"uncovered", :uncovered, "Uncovered work · #{uncovered_trips}", uncovered_trips}
+    ]
+  end
+
+  @doc """
+  Renders the amber callout that says work is outside every run.
+
+  It sits UNDER the count strip rather than above the page, because it is a
+  reading of the numbers the reader is already looking at: the count strip says
+  how many trips are uncovered, and this says what that costs in vehicle hours
+  and offers the way through. Above the page it would be a banner about
+  something the reader had not been introduced to.
+
+  **It never blocks.** The Runs tab is the default panel, the callout names its
+  own action, and a reader who ignores it is looking at a working page. Nothing
+  on this page requires acting on it.
+
+  The count is TRIPS, not segments: "4 trips are not in a run" is the number the
+  count strip's own tile shows, so the two agree. A segment count would read as
+  a different measurement of the same thing.
+  """
+  attr :segments, :list, required: true
+  attr :duration_secs, :integer, required: true
+
+  def uncovered_callout(assigns) do
+    ~H"""
+    <div :if={@segments != []} id="runs-uncovered-callout" class="mt-3">
+      <.callout kind="warning" title={"#{uncovered_trip_count(@segments)} trips are not in a run."}>
+        {duration(@duration_secs)} of vehicle work has no operator.
+        <div class="mt-2">
+          <button
+            type="button"
+            phx-click="set_panel"
+            phx-value-panel="uncovered"
+            data-role="review-uncovered"
+            class="min-h-11 rounded-control border border-base-content/20 px-3 text-sm font-semibold hover:bg-base-200"
+          >
+            Review uncovered work
+          </button>
+        </div>
+      </.callout>
+    </div>
+    """
+  end
+
+  defp uncovered_trip_count(segments) do
+    Enum.reduce(segments, 0, &(length(&1.trips) + &2))
+  end
+
+  @doc """
+  Renders the uncovered work table: the vehicle work on the chart that no run
+  covers, one row per block segment.
+
+  The point of the panel is the question "what is left?", and the columns answer
+  it in the order a reader asks it: which block, how much work, when, between
+  which places, and — the one the table exists for — **when the next operator
+  could take it over**. A change of operator is only possible at a relief window,
+  so a segment whose next window has already passed while another is an hour away
+  is a different piece of work from one with a window in five minutes, and a
+  table that showed only the times would make them look the same.
+
+  Rows are ordered by block and then by start, the order the prototype uses, so
+  two segments of one block read as a sequence rather than as two rows. A segment
+  with no window left in its own span says so in words — "No relief point" —
+  rather than leaving the cell empty, because an empty cell reads as a rendering
+  fault and this is a real and consequential absence.
+
+  The Create run button is present and **inert**: step 28 gives it its handler.
+  It carries the segment's identity in `phx-value-*` so that step is a wiring
+  change and not a markup change.
+  """
+  attr :segments, :list, required: true
+  attr :windows, :map, required: true
+  attr :routes, :map, default: %{}
+  attr :stop_names, :map, default: %{}
+
+  def uncovered(assigns) do
+    ~H"""
+    <div id="runs-uncovered">
+      <div :if={@segments == []} id="runs-uncovered-empty" class="px-5 py-10 text-center">
+        <p class="font-semibold">Every blocked trip is in a run.</p>
+        <p class="mt-1 text-sm text-base-content/70">
+          Trips that lose their run, or new blocks, appear here.
+        </p>
+      </div>
+
+      <div :if={@segments != []} id="runs-uncovered-scroll" class="overflow-auto">
+        <table id="runs-uncovered-table" class="w-full border-separate border-spacing-0 text-sm">
+          <caption class="sr-only">Vehicle work with no operator, by block</caption>
+          <thead>
+            <tr>
+              <th scope="col" class="runs-uncovered-th">Block</th>
+              <th scope="col" class="runs-uncovered-th text-right">Trips</th>
+              <th scope="col" class="runs-uncovered-th">Time</th>
+              <th scope="col" class="runs-uncovered-th">From &rarr; to</th>
+              <th scope="col" class="runs-uncovered-th">Next relief window</th>
+              <th scope="col" class="runs-uncovered-th"><span class="sr-only">Action</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              :for={{segment, index} <- Enum.with_index(ordered_segments(@segments), 0)}
+              id={"uncovered-#{index}"}
+              data-role="uncovered-row"
+              data-block={segment.block_id}
+              data-start={segment.start_secs}
+              data-end={segment.end_secs}
+              data-trips={length(segment.trips)}
+              class="runs-uncovered-row"
+            >
+              <th scope="row" class="runs-uncovered-td" data-role="uncovered-block">
+                <span class="inline-flex items-center gap-2">
+                  <span class="font-semibold">Block {segment.block_id}</span>
+                  <span
+                    :if={route_color(@routes, segment.route_id)}
+                    data-role="uncovered-route"
+                    data-route={segment.route_id}
+                    class="inline-flex h-6 min-w-8 items-center justify-center rounded-badge px-1.5 text-[13px] font-bold text-white"
+                    style={"background: #{route_color(@routes, segment.route_id)}"}
+                  >
+                    {segment.route_id}
+                  </span>
+                </span>
+              </th>
+              <td class="runs-uncovered-td text-right tabular-nums" data-role="uncovered-trips">
+                {length(segment.trips)}
+              </td>
+              <td class="runs-uncovered-td tabular-nums" data-role="uncovered-time">
+                {BlocksComponents.clock(segment.start_secs)}&ndash;{BlocksComponents.clock(
+                  segment.end_secs
+                )}
+                <div class="text-[13px] text-base-content/70">
+                  {duration(segment.end_secs - segment.start_secs)} on the vehicle
+                </div>
+              </td>
+              <td class="runs-uncovered-td" data-role="uncovered-places">
+                {place_name(@stop_names, segment.start_stop)} &rarr; {place_name(
+                  @stop_names,
+                  segment.end_stop
+                )}
+              </td>
+              <td class="runs-uncovered-td" data-role="uncovered-relief">
+                <.next_relief segment={segment} windows={@windows} stop_names={@stop_names} />
+              </td>
+              <td class="runs-uncovered-td text-right">
+                <button
+                  type="button"
+                  phx-click="create_run"
+                  phx-value-block={segment.block_id}
+                  phx-value-start={segment.start_secs}
+                  phx-value-end={segment.end_secs}
+                  phx-value-index={index}
+                  data-role="create-run"
+                  data-block={segment.block_id}
+                  title={"Create a run for block #{segment.block_id}, #{BlocksComponents.clock(segment.start_secs)}-#{BlocksComponents.clock(segment.end_secs)}"}
+                  class="min-h-11 rounded-control border border-base-content/20 px-3 text-sm font-semibold hover:bg-base-200"
+                >
+                  Create run
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    """
+  end
+
+  # The next window a change of operator could happen in, or nothing.
+  #
+  # A window counts only if it is INSIDE this segment's own span: a relief point
+  # before the work started or after it ended is not somewhere an operator can
+  # pick this work up, and quoting one would be a number that cannot be acted on.
+  #
+  # Both figures are resolved ONCE here. The obvious inline alternative reads
+  # `@windows` in the markup, and `@windows` is the whole `%{block_id => list}`
+  # map — so `Enum.count` walks the MAP and hands the predicate a `{key, value}`
+  # tuple, which fails on `&1.start_secs` and crashes the panel. Resolving the
+  # block's own list into an assign is also the only way the "and N more" line
+  # and the "Next relief" line cannot disagree about what they counted.
+  attr :segment, :map, required: true
+  attr :windows, :map, required: true
+  attr :stop_names, :map, required: true
+
+  defp next_relief(assigns) do
+    block_windows = Map.get(assigns.windows, assigns.segment.block_id, [])
+
+    in_span =
+      Enum.filter(
+        block_windows,
+        &(&1.start_secs >= assigns.segment.start_secs and
+            &1.start_secs <= assigns.segment.end_secs)
+      )
+
+    assigns =
+      assigns
+      |> assign(:next, Enum.min_by(in_span, & &1.start_secs, fn -> nil end))
+      |> assign(:extra, max(length(in_span) - 1, 0))
+
+    ~H"""
+    <%= if @next do %>
+      <span data-role="relief-window">
+        Next relief {BlocksComponents.clock(@next.start_secs)} at {place_name(@stop_names, %{
+          stop_id: @next.stop_id
+        })}
+        <div :if={@extra > 0} class="text-[13px] text-base-content/70">and {@extra} more</div>
+      </span>
+    <% else %>
+      <span data-role="no-relief" class="text-base-content/70">No relief point</span>
+    <% end %>
+    """
+  end
+
+  # A segment's own places, in the version's own words. A stop the day does not
+  # name falls back to its id rather than to a dash: the place is real even when
+  # the page cannot spell it, and a dash would read as an absence.
+  defp place_name(_stop_names, nil), do: "Unknown stop"
+  defp place_name(stop_names, %{stop_id: stop_id}), do: Map.get(stop_names, stop_id) || stop_id
+
+  defp route_color(routes, route_id) do
+    case Map.get(routes, route_id) do
+      %{color: color} when is_binary(color) and color != "" -> color
+      _other -> nil
+    end
+  end
+
+  # By block, then by start. Block is a number, so it is compared as one: a
+  # string compare puts 109 before 11 and a reader would see their blocks out of
+  # order with nothing to suggest why.
+  defp ordered_segments(segments) do
+    Enum.sort_by(segments, &{String.to_integer(&1.block_id), &1.start_secs})
+  end
+
+  @doc """
   Renders one run's seven fact cells: Run, Type, Sign-on, Sign-off, Spread, Paid
   and Status.
 
