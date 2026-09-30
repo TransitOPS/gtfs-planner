@@ -3048,7 +3048,10 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         position: occurrence.position,
         arrival_offset: row.arrival_offset,
         departure_offset: row.departure_offset,
-        timepoint: row.timepoint
+        timepoint: row.timepoint,
+        pickup_type: row.pickup_type,
+        drop_off_type: row.drop_off_type,
+        stop_headsign: row.stop_headsign
       }
     )
     |> Repo.all()
