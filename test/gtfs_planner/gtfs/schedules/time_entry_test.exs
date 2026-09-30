@@ -77,6 +77,14 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimeEntryTest do
       assert TimeEntry.parse("1a") == reading(1 * 3_600, "01:00")
     end
 
+    test "reads dotted a.m. and p.m. markers in any case" do
+      assert TimeEntry.parse("6:05 p.m.") == reading(18 * 3_600 + 5 * 60, "18:05")
+      assert TimeEntry.parse("6:05 P.M.") == reading(18 * 3_600 + 5 * 60, "18:05")
+      assert TimeEntry.parse("6:05p.m.") == reading(18 * 3_600 + 5 * 60, "18:05")
+      assert TimeEntry.parse("6:05 a.m.") == reading(6 * 3_600 + 5 * 60, "06:05")
+      assert TimeEntry.parse("12:05 a.m.") == reading(5 * 60, "00:05")
+    end
+
     test "trims surrounding whitespace" do
       assert TimeEntry.parse("  7:05  ") == reading(7 * 3_600 + 5 * 60, "07:05")
     end
@@ -124,6 +132,25 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimeEntryTest do
     end
   end
 
+  describe "parse/2 hour-0 readings" do
+    test "reads hour 0 onto the next service day, never 12 hours later" do
+      previous = 11 * 3_600 + 50 * 60
+
+      assert TimeEntry.parse("0:30", previous: previous) ==
+               reading(24 * 3_600 + 30 * 60, "24:30", :next_day)
+
+      assert TimeEntry.parse("030", previous: previous) ==
+               reading(24 * 3_600 + 30 * 60, "24:30", :next_day)
+
+      assert TimeEntry.parse("00:30", previous: previous) ==
+               reading(24 * 3_600 + 30 * 60, "24:30", :next_day)
+    end
+
+    test "keeps hour 0 literal when it is not before the previous stop" do
+      assert TimeEntry.parse("0:30", previous: 0) == reading(30 * 60, "00:30")
+    end
+  end
+
   describe "parse/2 relative forms" do
     test "adds whole minutes to the cell's current time" do
       assert TimeEntry.parse("+3", current: 7 * 3_600 + 26 * 60) ==
@@ -150,6 +177,26 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimeEntryTest do
     end
   end
 
+  describe "read_clock/2" do
+    test "reads each clock literal with its kind" do
+      assert TimeEntry.read_clock("06:05") == {:ok, 6 * 3_600 + 5 * 60, :h24}
+      assert TimeEntry.read_clock("0:30") == {:ok, 30 * 60, :h24}
+      assert TimeEntry.read_clock("605") == {:ok, 6 * 3_600 + 5 * 60, :ambiguous}
+      assert TimeEntry.read_clock("6:05 p.m.") == {:ok, 18 * 3_600 + 5 * 60, :h12}
+      assert TimeEntry.read_clock("6p") == {:ok, 18 * 3_600, :h12}
+    end
+
+    test "refuses hour-only forms when asked and relative forms always" do
+      assert TimeEntry.read_clock("6", hour_only: false) == :error
+      assert TimeEntry.read_clock("6p", hour_only: false) == :error
+
+      assert TimeEntry.read_clock("605", hour_only: false) ==
+               {:ok, 6 * 3_600 + 5 * 60, :ambiguous}
+
+      assert TimeEntry.read_clock("+3") == :error
+    end
+  end
+
   describe "parse/2 invalid forms" do
     test "refuses minutes and seconds at or above 60" do
       assert TimeEntry.parse("7:75") == {:error, :invalid_time}
@@ -162,6 +209,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimeEntryTest do
       assert TimeEntry.parse("13p") == {:error, :invalid_time}
       assert TimeEntry.parse("0:30p") == {:error, :invalid_time}
       assert TimeEntry.parse("13:05pm") == {:error, :invalid_time}
+      assert TimeEntry.parse("0:30 a.m.") == {:error, :invalid_time}
+      assert TimeEntry.parse("13:05 p.m.") == {:error, :invalid_time}
     end
 
     test "refuses empty, whitespace and malformed text" do

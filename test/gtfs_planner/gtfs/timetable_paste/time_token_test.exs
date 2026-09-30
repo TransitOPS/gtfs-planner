@@ -62,6 +62,17 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.TimeTokenTest do
       assert TimeToken.classify("6:05:30 pm") == {:time, evening + 30, :h12}
     end
 
+    test "dotted meridiem markers read as h12" do
+      assert TimeToken.classify("6:05 p.m.") == {:time, 18 * 3_600 + 5 * 60, :h12}
+      assert TimeToken.classify("6:05 A.M.") == {:time, 6 * 3_600 + 5 * 60, :h12}
+    end
+
+    test "hour 0, a leading zero, and three digits keep their kinds" do
+      assert TimeToken.classify("0:30") == {:time, 30 * 60, :h24}
+      assert TimeToken.classify("06:05") == {:time, 6 * 3_600 + 5 * 60, :h24}
+      assert TimeToken.classify("605") == {:time, 6 * 3_600 + 5 * 60, :ambiguous}
+    end
+
     test "seconds are kept with their kind" do
       assert TimeToken.classify("6:05:30") == {:time, 6 * 3_600 + 5 * 60 + 30, :ambiguous}
     end
@@ -90,6 +101,12 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.TimeTokenTest do
   end
 
   describe "classify/1 — unrecognized" do
+    test "hour-only and relative forms are unrecognized in paste" do
+      for text <- ["6", "18", "6p", "6 pm", "6 p.m.", "+3", "-10"] do
+        assert TimeToken.classify(text) == {:error, :unrecognized}, "for #{inspect(text)}"
+      end
+    end
+
     test "6:6 is unrecognized" do
       assert TimeToken.classify("6:6") == {:error, :unrecognized}
     end

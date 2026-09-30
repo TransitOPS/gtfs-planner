@@ -2,10 +2,15 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.TimeToken do
   @moduledoc """
   Classifies pasted timetable clock cells and resolves rows to GTFS seconds.
 
-  `classify/1` reads one trimmed cell: explicit 24-hour readings (`18:05`,
-  `25:10`, zero-padded hours such as `06:05`, hours of 13 and above), 12-hour
-  readings with an `a`/`am`/`p`/`pm` marker, anything else clock-shaped as
-  `:ambiguous`, the not-served markers as `:not_served`, and anything else as
+  `classify/1` reads one trimmed cell. Clock literals use the application's
+  one time grammar, owned by `GtfsPlanner.Gtfs.Schedules.TimeEntry`
+  (`TimeEntry.read_clock/2`), with the same kinds: `:h24` for a zero-padded
+  hour, hour 0, or an hour of 13 and above; `:h12` for an `a`/`am`/`p`/`pm`
+  marker (dotted forms such as `p.m.` included); `:ambiguous` otherwise. Paste
+  is stricter than the Schedules grid: an hour on its own (`6`, `18`, `6p`) and
+  a relative form (`+3`) are `{:error, :unrecognized}`, because a stray number
+  in a pasted timetable is more likely a route or footnote number than a time.
+  The not-served markers are `:not_served`, and anything else is
   `{:error, :unrecognized}`. Seconds are plain GTFS clock arithmetic, so every
   classified reading round-trips through `GtfsPlanner.Gtfs.GtfsTime.format/1`.
 
@@ -23,7 +28,9 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.TimeToken do
   needs a decision before it is applied.
   """
 
-  @type kind :: :h24 | :h12 | :ambiguous
+  alias GtfsPlanner.Gtfs.Schedules.TimeEntry
+
+  @type kind :: TimeEntry.clock_kind()
 
   @type token ::
           {:time, non_neg_integer(), kind()} | :not_served | {:error, :unrecognized}
@@ -37,10 +44,6 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.TimeToken do
   # em dash (U+2014), ellipsis (U+2026), pipe, x, n/a. Compared case-insensitively.
   @not_served ["-", "–", "—", "…", "|", "x", "n/a"]
 
-  @meridiem_suffix ~r/\A(.*?)\s*([AaPp])\.?\s*([Mm])?\.?\s*\z/
-  @colon_clock ~r/\A(\d{1,2}):(\d{2})(?::(\d{2}))?\z/
-  @bare_clock ~r/\A(\d{3,4})\z/
-
   @spec classify(String.t()) :: token()
   def classify(cell) when is_binary(cell) do
     trimmed = String.trim(cell)
@@ -48,7 +51,7 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.TimeToken do
     cond do
       trimmed == "" -> :not_served
       String.downcase(trimmed) in @not_served -> :not_served
-      true -> parse_clock(trimmed)
+      true -> read_clock(trimmed)
     end
   end
 
@@ -107,79 +110,10 @@ defmodule GtfsPlanner.Gtfs.TimetablePaste.TimeToken do
     end
   end
 
-  defp parse_clock(text) do
-    case Regex.run(@meridiem_suffix, text) do
-      [_, body, letter | _] when body != "" ->
-        meridiem = if String.downcase(letter) == "p", do: :pm, else: :am
-        parse_body(body, meridiem)
-
-      _ ->
-        parse_body(text, nil)
+  defp read_clock(text) do
+    case TimeEntry.read_clock(text, hour_only: false) do
+      {:ok, secs, kind} -> {:time, secs, kind}
+      :error -> {:error, :unrecognized}
     end
   end
-
-  defp parse_body(body, meridiem) do
-    case split_clock(body) do
-      {:ok, hour_text, hour, minutes, seconds} ->
-        to_token(hour_text, hour, minutes, seconds, meridiem)
-
-      :error ->
-        {:error, :unrecognized}
-    end
-  end
-
-  defp split_clock(body) do
-    case Regex.run(@colon_clock, body) do
-      [_, hour_text, minute_text] ->
-        combine(hour_text, minute_text, "0")
-
-      [_, hour_text, minute_text, ""] ->
-        combine(hour_text, minute_text, "0")
-
-      [_, hour_text, minute_text, nil] ->
-        combine(hour_text, minute_text, "0")
-
-      [_, hour_text, minute_text, second_text] ->
-        combine(hour_text, minute_text, second_text)
-
-      nil ->
-        case Regex.run(@bare_clock, body) do
-          [_, digits] ->
-            {hour_text, minute_text} = String.split_at(digits, byte_size(digits) - 2)
-            combine(hour_text, minute_text, "0")
-
-          nil ->
-            :error
-        end
-    end
-  end
-
-  defp combine(hour_text, minute_text, second_text) do
-    with {hour, ""} <- Integer.parse(hour_text),
-         {minutes, ""} <- Integer.parse(minute_text),
-         {seconds, ""} <- Integer.parse(second_text),
-         true <- minutes < 60 and seconds < 60 do
-      {:ok, hour_text, hour, minutes, seconds}
-    else
-      _ -> :error
-    end
-  end
-
-  defp to_token(hour_text, hour, minutes, seconds, nil) do
-    kind = if leading_zero?(hour_text) or hour == 0 or hour >= 13, do: :h24, else: :ambiguous
-
-    {:time, hour * 3_600 + minutes * 60 + seconds, kind}
-  end
-
-  defp to_token(_hour_text, hour, minutes, seconds, meridiem) when hour in 1..12 do
-    base = rem(hour, 12)
-    base = if meridiem == :pm, do: base + 12, else: base
-    {:time, base * 3_600 + minutes * 60 + seconds, :h12}
-  end
-
-  defp to_token(_hour_text, _hour, _minutes, _seconds, _meridiem),
-    do: {:error, :unrecognized}
-
-  defp leading_zero?(hour_text),
-    do: byte_size(hour_text) > 1 and String.starts_with?(hour_text, "0")
 end
