@@ -795,7 +795,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   foreign or unpublished version is `{:error, :not_found}`.
   """
   @spec list_deadhead_pairs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
-          {:ok, [deadhead_pair()]} | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]}}
+          {:ok, [deadhead_pair()]}
+          | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]}}
   def list_deadhead_pairs(organization_id, gtfs_version_id, day_type_key) do
     case Repo.transaction(fn ->
            day = read_day(organization_id, gtfs_version_id, day_type_key)
