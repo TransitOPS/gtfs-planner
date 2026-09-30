@@ -28,6 +28,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimingFill
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.RouteIdentity
@@ -120,6 +121,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:timing_edits, %{})
      |> assign(:timing_headsign_edits, %{})
      |> assign(:timing_headsign, "")
+     |> assign(:timing_headsign_open?, false)
      |> assign(:preview_time, @default_preview)
      |> assign(:timing_error, nil)
      |> assign(:timing_blank_note, nil)
@@ -438,9 +440,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   # Change mode reuses the staged usage (already split on the stored default)
   # and the staged selection, exactly like the prototype's pending proposal;
-  # an unchecked box opens the drawer with nothing preselected. Exceptions
-  # mode renders the loading skeleton first and loads its own usage without a
-  # from split, so the followers group cannot leak into it.
+  # an unchecked box opens the drawer with nothing preselected. It works for
+  # both staging scopes: the usage assign holds the Details pattern scope or
+  # the Running-times timing scope, whichever staged the box. Exceptions mode
+  # renders the loading skeleton first and loads its own usage — the pattern's
+  # or one timing's, named by the opener — without a from split, so the
+  # followers group cannot leak into it.
   @impl true
   def handle_event("open_headsign_review", %{"mode" => "change"}, socket) do
     case socket.assigns do
@@ -449,10 +454,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
          assign(socket, :headsign_review, %{
            mode: :change,
            state: :ready,
+           scope: usage.scope,
+           opener_id: headsign_change_opener_id(socket),
            usage: usage,
            selected: if(update?, do: ids, else: MapSet.new()),
            open_groups: [],
-           change: %{from: usage.default, to: draft_headsign(socket)},
+           change: %{from: usage.default, to: staged_headsign_to(socket)},
            reviewed: nil,
            undo: nil,
            done: nil
@@ -463,12 +470,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
-  def handle_event(
-        "open_headsign_review",
-        %{"mode" => "exceptions", "scope" => "pattern"},
-        socket
-      ) do
-    {:noreply, load_headsign_review(socket)}
+  @impl true
+  def handle_event("open_headsign_review", %{"mode" => "exceptions"} = params, socket) do
+    case review_scope(Map.get(params, "scope", "pattern")) do
+      {:ok, scope} -> {:noreply, load_headsign_review(socket, scope)}
+      :error -> {:noreply, socket}
+    end
   end
 
   def handle_event("open_headsign_review", _params, socket), do: {:noreply, socket}
@@ -1036,6 +1043,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     else
       {:noreply,
        socket
+       |> assign(:timing_headsign_open?, false)
        |> load_screen(timing_id)
        |> put_timing_rows()
        |> clear_fill()
@@ -1044,6 +1052,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   def handle_event("select_timing", _params, socket), do: {:noreply, socket}
+
+  # The disclosure's open state is a local assign, so unrelated patches keep
+  # the body visible exactly as the editor left it.
+  @impl true
+  def handle_event("toggle_timing_headsign_disclosure", _params, socket) do
+    {:noreply, assign(socket, :timing_headsign_open?, not socket.assigns.timing_headsign_open?)}
+  end
 
   # The timing editor posts one form; `_target` names the control the operator
   # changed, so only that field is marked as edited and every other staged value
@@ -1099,20 +1114,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   def handle_event("apply_timing_review", _params, socket) do
     case socket.assigns.review do
       %{kind: :timing} = review ->
-        socket = assign(socket, :applying?, true)
-
-        case Gtfs.apply_review(
-               pattern_uuid(socket),
-               review.operation,
-               review.fingerprint,
-               audit_context(socket)
-             ) do
-          {:ok, %{trips_updated: updated}} ->
-            {:noreply, saved(socket, affected_message(updated), timing_scope(review.operation))}
-
-          {:error, reason} ->
-            {:noreply, timing_review_failure(socket, review, reason)}
-        end
+        socket
+        |> assign(:applying?, true)
+        |> apply_timing(review.operation, review.fingerprint, review.impact)
 
       _ ->
         {:noreply, socket}
@@ -1121,8 +1125,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   @impl true
   def handle_event("refresh_timing_review", _params, socket) do
-    case socket.assigns.review do
-      %{kind: :timing, operation: {:timing, _timing_id, attrs}} ->
+    case timing_review_attrs(socket.assigns.review) do
+      nil ->
+        {:noreply, socket}
+
+      attrs ->
         # Refresh the loaded source but keep the submitted rows, so a stale
         # review is re-run against the current values and counts instead of
         # silently reusing an old fingerprint.
@@ -1131,17 +1138,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         |> assign(:applying?, false)
         |> assign(:error_message, nil)
         |> review_timing(attrs, true)
-
-      _ ->
-        {:noreply, socket}
     end
   end
 
   @impl true
   def handle_event("retry_timing_review", _params, socket) do
-    case socket.assigns.review do
-      %{kind: :timing, operation: {:timing, _timing_id, attrs}} -> review_timing(socket, attrs)
-      _ -> {:noreply, socket}
+    case timing_review_attrs(socket.assigns.review) do
+      nil -> {:noreply, socket}
+      attrs -> review_timing(socket, attrs)
     end
   end
 
@@ -1156,6 +1160,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      socket
      |> assign(:timing_edits, %{})
      |> assign(:timing_headsign_edits, %{})
+     |> assign(:headsign_selection, nil)
      |> assign(:error_message, nil)
      |> assign(:timing_blank_note, nil)
      |> clear_fill()
@@ -1710,6 +1715,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       assigns
       |> assign(:save_bar, save_bar_spec(assigns))
       |> assign(:headsign_view, headsign_view(assigns))
+      |> assign(:timing_headsign_view, timing_headsign_view(assigns))
       |> assign(:headsign_result, headsign_result_view(assigns))
 
     ~H"""
@@ -1891,7 +1897,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                           id="headsign-result-review"
                           phx-click="open_headsign_review"
                           phx-value-mode="exceptions"
-                          phx-value-scope="pattern"
+                          phx-value-scope={@headsign_result.review_scope}
                           class="btn btn-outline min-h-11"
                         >
                           Review {@headsign_result.differ_trips}
@@ -1998,6 +2004,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                         timing_options={@timing_options}
                         preview_time={@preview_time}
                         timing_headsign={@timing_headsign}
+                        headsign_summary={@timing_headsign_view.summary}
+                        headsign_open?={@timing_headsign_open?}
+                        headsign_usage={@timing_headsign_view.usage}
+                        headsign_changed?={@timing_headsign_view.changed?}
+                        headsign_box={@timing_headsign_view.box}
+                        headsign_warnings={@timing_headsign_view.warnings}
                         timing_error={@timing_error}
                         timing_blank_note={@timing_blank_note}
                         blank_count={@blank_count}
@@ -2109,7 +2121,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
           state={@headsign_review.state}
           done={@headsign_review.done}
           change={@headsign_review.change}
-          scope_label={@pattern && @pattern.route_pattern_name}
+          scope_label={drawer_scope_label(assigns)}
+          return_focus_id={@headsign_review.opener_id}
           version_label={@current_gtfs_version.name}
         />
       </div>
@@ -2145,10 +2158,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   # The Details task's usage line and inline update box read the pattern
-  # scope's usage; other tasks never render it, so the read waits for the tab.
-  # `from` splits the scope's followers out, so the box knows which trips the
-  # new value reaches; a reload after a save or undo also resets a selection
-  # staged against a different stored default.
+  # scope's usage; the Running-times disclosure reads the selected timing's
+  # scope the same way. `from` splits the scope's followers out, so the box
+  # knows which trips the new value reaches; a reload after a save or undo also
+  # resets a selection staged against a different stored default.
   defp load_headsign_usage(
          %{assigns: %{task: :details, pattern: %RoutePattern{} = pattern}} = socket
        ) do
@@ -2168,15 +2181,42 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> reset_headsign_selection()
   end
 
+  defp load_headsign_usage(
+         %{
+           assigns: %{
+             task: :timings,
+             pattern: %RoutePattern{} = pattern,
+             selected_timing: %TimedPattern{} = timing
+           }
+         } = socket
+       ) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    usage =
+      case Gtfs.headsign_usage(organization_id, version_id, pattern.id, {:timing, timing.id},
+             from: Headsigns.effective_default(timing.headsign, pattern.headsign)
+           ) do
+        {:ok, usage} -> usage
+        {:error, _not_found} -> nil
+      end
+
+    socket
+    |> assign(:headsign_usage, usage)
+    |> reset_headsign_selection()
+  end
+
   # Other tasks never render the usage line, so only the read is dropped; the
   # staged selection survives a tab switch and is re-checked against the
-  # stored default when the Details task loads again.
+  # stored default when the Details or Running-times task loads again.
   defp load_headsign_usage(socket), do: assign(socket, :headsign_usage, nil)
 
-  # A selection staged against another stored default is stale; the current
-  # one is rebuilt from the fresh followers on the next dirty draft.
-  defp reset_headsign_selection(%{assigns: %{headsign_usage: %{}}} = socket) do
-    key = {:pattern, socket.assigns.headsign_usage.default}
+  # A selection staged against another scope or stored default is stale; the
+  # current one is rebuilt from the fresh followers on the next dirty draft.
+  defp reset_headsign_selection(
+         %{assigns: %{headsign_usage: %{scope: scope, default: default}}} = socket
+       ) do
+    key = {scope, default}
     selection = socket.assigns.headsign_selection
 
     if is_map(selection) and selection.key == key do
@@ -2348,6 +2388,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:review, nil)
     |> assign(:applying?, false)
     |> clear_fill()
+    |> assign(:headsign_selection, nil)
     |> put_timing_rows()
   end
 
@@ -2389,6 +2430,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:timing_headsign_edits, %{})
     |> assign(:timing_rows, [])
     |> assign(:timing_headsign, timing_headsign(socket))
+    |> assign(:timing_headsign_open?, false)
     |> assign(:preview_time, @default_preview)
     |> assign(:timing_error, nil)
     |> assign(:timing_blank_note, nil)
@@ -2432,12 +2474,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
-  defp timing_headsign(socket) do
-    case socket.assigns.selected_timing do
-      %{headsign: headsign} when is_binary(headsign) -> headsign
-      _ -> ""
-    end
-  end
+  defp timing_headsign(socket), do: stored_timing_headsign(socket.assigns)
+
+  defp stored_timing_headsign(%{selected_timing: %{headsign: headsign}}) when is_binary(headsign),
+    do: headsign
+
+  defp stored_timing_headsign(_assigns), do: ""
 
   # A creation load never discards staged input: the page keeps whatever the
   # editor has already entered until the pattern is created.
@@ -2546,7 +2588,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         {:noreply,
          socket
          |> saved(message, :details)
-         |> assign(:headsign_undo, headsign_undo_state(undo))}
+         |> assign(:headsign_undo, headsign_undo_state(undo, :pattern))}
 
       {:error, reason} ->
         {:noreply,
@@ -2556,13 +2598,33 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
-  # --- details headsign wiring ------------------------------------------------
+  # --- headsign selection staging -------------------------------------------------------------
 
-  # The inline update box's staged selection, keyed by the stored default like
-  # the prototype's staged proposal: created from the usage read the first
-  # time a draft becomes dirty, preserved while the key is unchanged (the
-  # editor's toggle and review edits survive typing), and rebuilt when a
-  # reload brings a different default (after a save or undo).
+  # The inline update box's staged selection, keyed by the scope and stored
+  # default like the prototype's staged proposal: created from the usage read
+  # the first time a draft becomes dirty, preserved while the key is unchanged
+  # (the editor's toggle and review edits survive typing), and rebuilt when a
+  # reload brings a different default (after a save or undo). The Details task
+  # stages the pattern scope; the Running-times field stages its timing's
+  # scope into the same staged shape.
+  defp sync_headsign_selection(%{assigns: %{task: :timings}} = socket) do
+    case socket.assigns do
+      %{headsign_usage: %{} = usage} ->
+        # Only a staged edit can be dirty: the prototype's timingDraft rule.
+        # An unstaged field shows the stored value and never opens the box.
+        draft = staged_timing_headsign(socket)
+
+        if draft != nil and headsign_dirty?(usage, draft) do
+          sync_dirty_headsign_selection(socket, usage)
+        else
+          socket
+        end
+
+      _ ->
+        socket
+    end
+  end
+
   defp sync_headsign_selection(%{assigns: %{headsign_usage: %{} = usage}} = socket) do
     if headsign_dirty?(usage, socket.assigns.details_params["headsign"]) do
       sync_dirty_headsign_selection(socket, usage)
@@ -2574,7 +2636,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp sync_headsign_selection(socket), do: socket
 
   defp sync_dirty_headsign_selection(socket, usage) do
-    key = {:pattern, usage.default}
+    key = {usage.scope, usage.default}
     selection = socket.assigns.headsign_selection
 
     if is_map(selection) and selection.key == key do
@@ -2582,12 +2644,38 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     else
       assign(socket, :headsign_selection, %{
         key: key,
-        update?:
-          headsign_update_default(usage.default, socket.assigns.details_params["headsign"]),
+        update?: headsign_update_default(usage.default, staged_headsign_value(socket)),
         ids: MapSet.new(follower_ids(usage))
       })
     end
   end
+
+  # The Running-times field's staged draft, or nil before any edit — the
+  # box only appears once the editor types. Accepts a socket or a render
+  # assigns map.
+  defp staged_timing_headsign(%{assigns: assigns}), do: staged_timing_headsign(assigns)
+
+  defp staged_timing_headsign(assigns),
+    do: Map.get(assigns.timing_headsign_edits, assigns.selected_timing_id)
+
+  # The staged draft value whose emptiness decides the box's default: the
+  # Details field's value, or for a timing draft the effective default the
+  # blank falls back to (the pattern's headsign).
+  defp staged_headsign_value(%{assigns: %{task: :timings}} = socket),
+    do: timing_draft_to(socket.assigns)
+
+  defp staged_headsign_value(socket), do: socket.assigns.details_params["headsign"]
+
+  # The effective default a timing draft would save: the edited value when
+  # present, else the pattern's headsign.
+  defp timing_draft_to(%{pattern: %RoutePattern{} = pattern} = assigns) do
+    Headsigns.effective_default(
+      Headsigns.normalize(staged_timing_headsign(assigns)),
+      pattern.headsign
+    )
+  end
+
+  defp timing_draft_to(assigns), do: Headsigns.normalize(staged_timing_headsign(assigns))
 
   # The box appears when the draft stops following the stored default, by the
   # shared rule — a padded edit of the same value shows no box.
@@ -2595,8 +2683,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     not Headsigns.follows?(draft, usage.default)
   end
 
-  # Checked by default; unchecked only when the edit clears a present default
-  # (clearing from blank stays checked — it still gives trips a headsign).
+  # Checked by default; unchecked only when the edit would leave the scope
+  # with no default at all — a timing blank falls back to the pattern's
+  # headsign, so it stays checked (clearing from blank stays checked too — it
+  # still gives trips a headsign).
   defp headsign_update_default(from, draft) do
     not (is_nil(Headsigns.normalize(draft)) and not is_nil(from))
   end
@@ -2629,6 +2719,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
+  # The drawer's context line names the scope: the pattern, or the timing
+  # whose usage the editor opened (the prototype's “{name} timing”).
+  defp drawer_scope_label(%{headsign_review: %{scope: {:timing, timing_id}}, timings: timings}) do
+    case Enum.find(timings, &(&1.timing.id == timing_id)) do
+      %{timing: %TimedPattern{name: name}} -> "#{name} timing"
+      _ -> "timing"
+    end
+  end
+
+  defp drawer_scope_label(%{pattern: %RoutePattern{} = pattern}), do: pattern.route_pattern_name
+  defp drawer_scope_label(_assigns), do: nil
+
   # The undo the visible UI offers: the review drawer's stored reset while it
   # is open, else the last save's banner offer.
   defp active_headsign_undo(socket) do
@@ -2652,12 +2754,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   defp drop_headsign_undo(socket, _source), do: socket
 
   # The exceptions drawer's own usage read: nothing is preselected, so the
-  # read runs without a from split and the followers group cannot leak in.
-  defp load_headsign_review(socket) do
+  # read runs without a from split and the followers group cannot leak in. The
+  # scope is the opener's — the pattern, or the timing whose disclosure opened it.
+  defp load_headsign_review(socket, scope) do
     socket
     |> assign(:headsign_review, %{
       mode: :exceptions,
       state: :loading,
+      scope: scope,
+      opener_id: review_opener_id(scope),
       usage: nil,
       selected: MapSet.new(),
       open_groups: [],
@@ -2669,22 +2774,28 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> start_headsign_review_usage()
   end
 
+  # Focus returns inside the timing disclosure when the drawer was opened from
+  # its usage line; the component default covers the Details openers.
+  defp review_opener_id({:timing, _timing_id}), do: "timing-headsign-usage-review"
+  defp review_opener_id(_scope), do: nil
+
   # The read runs as an async task so the skeleton renders first, like the
   # alignment loads on this LiveView.
   defp start_headsign_review_usage(socket) do
     organization_id = socket.assigns.current_organization.id
     version_id = socket.assigns.current_gtfs_version.id
     pattern_id = socket.assigns.pattern.id
+    scope = socket.assigns.headsign_review.scope
 
     start_async(socket, :headsign_review_usage, fn ->
-      Gtfs.headsign_usage(organization_id, version_id, pattern_id, :pattern, [])
+      Gtfs.headsign_usage(organization_id, version_id, pattern_id, scope, [])
     end)
   end
 
   defp reset_headsign_trips(socket, selections, review) do
     case Gtfs.reset_trip_headsigns(
            pattern_uuid(socket),
-           :pattern,
+           review.scope,
            selections,
            audit_context(socket)
          ) do
@@ -2835,7 +2946,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> Map.new(fn trip -> {trip.id, Headsigns.normalize(trip.headsign)} end)
   end
 
-  # The headsign field's companions, derived once per render: the usage line
+  # The Details field's companions, derived once per render: the usage line
   # while the field matches the stored default, and the wording warnings plus
   # the update box while it is edited.
   defp headsign_view(%{headsign_usage: %{} = usage} = assigns) do
@@ -2853,7 +2964,55 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   defp headsign_view(_assigns), do: %{usage: nil, changed?: false, box: nil, warnings: nil}
 
+  # The Running-times disclosure's companions, derived once per render: the
+  # timing scope's usage line while the field matches the stored effective
+  # default, and the warnings plus update box while it is edited. The box's
+  # target is the next effective default: the edited value, or the pattern's
+  # headsign when the edit clears the timing's own. The closed summary names
+  # the shown value and where it comes from, whatever the draft state.
+  defp timing_headsign_view(%{headsign_usage: %{} = usage} = assigns) do
+    draft = staged_timing_headsign(assigns)
+    summary = timing_headsign_summary(assigns)
+
+    if draft != nil and headsign_dirty?(usage, draft) do
+      %{
+        usage: usage,
+        summary: summary,
+        changed?: true,
+        box: headsign_box(usage, assigns, timing_draft_to(assigns)),
+        warnings: headsign_warnings_for(assigns, draft)
+      }
+    else
+      %{usage: usage, summary: summary, changed?: false, box: nil, warnings: nil}
+    end
+  end
+
+  defp timing_headsign_view(assigns),
+    do: %{
+      usage: nil,
+      summary: timing_headsign_summary(assigns),
+      changed?: false,
+      box: nil,
+      warnings: nil
+    }
+
+  # The closed disclosure's summary: the timing's own headsign when it sets
+  # one, else the pattern's, with the source word the prototype shows.
+  defp timing_headsign_summary(%{selected_timing: %TimedPattern{} = timing} = assigns) do
+    own = Headsigns.normalize(timing.headsign)
+    pattern_value = Headsigns.normalize(assigns.pattern && assigns.pattern.headsign)
+
+    %{value: own || pattern_value, own?: not is_nil(own), pattern_value: pattern_value}
+  end
+
+  defp timing_headsign_summary(_assigns),
+    do: %{value: nil, own?: false, pattern_value: nil}
+
   defp headsign_box(usage, assigns) do
+    headsign_box(usage, assigns, Headsigns.normalize(assigns.details_params["headsign"]))
+  end
+
+  defp headsign_box(usage, assigns, to) do
     followers = follower_trips(usage)
     follower_id_set = MapSet.new(followers, & &1.id)
     selection = assigns.headsign_selection
@@ -2868,7 +3027,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
     %{
       from: usage.default,
-      to: Headsigns.normalize(assigns.details_params["headsign"]),
+      to: to,
       followers: length(followers),
       selected_follow: selected_follow,
       extra: extra,
@@ -2885,12 +3044,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
-  # Wording warnings for the draft, with the route's name facts and the one
-  # sibling pattern whose headsign matches except for case. The Headsigns
-  # module owns every comparison; `Headsigns.difference/3` re-labels the
-  # case-equal sibling so the warning can name it.
+  # Wording warnings for the Details draft, with the route's name facts and
+  # the one sibling pattern whose headsign matches except for case. The
+  # Headsigns module owns every comparison; `Headsigns.difference/3` re-labels
+  # the case-equal sibling so the warning can name it.
   defp headsign_warnings(assigns) do
-    draft = assigns.details_params["headsign"]
+    headsign_warnings_for(assigns, assigns.details_params["headsign"])
+  end
+
+  defp headsign_warnings_for(assigns, draft) do
     siblings = Enum.reject(assigns.headsign_siblings, &(&1.id == pattern_id(assigns.pattern)))
 
     sibling =
@@ -2928,10 +3090,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   # The AC-10 success banner: what the save changed and the two actions —
   # Undo headsign change and, while trips still differ, Review M trips. It is
-  # bound to `headsign_undo`, so a remount drops it with the undo offer.
-  defp headsign_result_view(%{headsign_undo: %{undo: undo}} = assigns) when is_map(undo) do
+  # bound to `headsign_undo`, so a remount drops it with the undo offer. The
+  # review action names the saved scope, so it reopens the drawer that scope.
+  defp headsign_result_view(%{headsign_undo: %{undo: undo, scope: scope}} = assigns)
+       when is_map(undo) do
     trips = undo.trips
-    differ = usage_differ(assigns.headsign_usage)
+    differ = usage_differ_for_scope(assigns)
 
     %{
       title:
@@ -2946,24 +3110,40 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       differ: differ,
       differ_text:
         "#{differ} #{trip_noun(differ)} #{if(differ == 1, do: "shows", else: "show")} a different headsign.",
-      differ_trips: "#{differ} #{trip_noun(differ)}"
+      differ_trips: "#{differ} #{trip_noun(differ)}",
+      review_scope: review_scope_value(scope)
     }
   end
 
   defp headsign_result_view(_assigns), do: nil
 
-  defp usage_differ(%{differ: differ}), do: differ
-  defp usage_differ(_usage), do: 0
+  # The differ line counts the saved scope's fresh usage, which the reload
+  # after the save loaded; another task's usage describes another scope and
+  # counts nothing here.
+  # The differ line counts the saved scope's fresh usage, which the reload
+  # after the save loaded; another task's usage describes another scope and
+  # counts nothing here.
+  defp usage_differ_for_scope(%{
+         headsign_undo: %{scope: scope},
+         headsign_usage: %{scope: scope} = usage
+       }),
+       do: usage.differ
+
+  defp usage_differ_for_scope(_assigns), do: 0
+
+  defp review_scope_value(:pattern), do: "pattern"
+  defp review_scope_value({:timing, timing_id}), do: to_string(timing_id)
 
   defp headsign_undo_to(%{default: %{to: to}}) when is_binary(to), do: to
   defp headsign_undo_to(%{default: %{to: nil}}), do: nil
   defp headsign_undo_to(%{trips: [%{to: to} | _]}), do: to
   defp headsign_undo_to(_undo), do: nil
 
-  defp headsign_undo_state(nil), do: nil
-  defp headsign_undo_state(undo), do: %{undo: undo}
+  defp headsign_undo_state(nil, _scope), do: nil
+  defp headsign_undo_state(undo, scope), do: %{undo: undo, scope: scope}
 
-  # The undo confirmation: the restored default and each trip's restored value.
+  # The undo confirmation: the restored default (named by its owning scope —
+  # pattern or timing) and each trip's restored value.
   defp undo_saved_message(undo, applied) do
     parts =
       [default_part(undo), trips_part(applied)]
@@ -2974,6 +3154,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       parts -> "Headsign change undone. " <> Enum.join(parts, " ")
     end
   end
+
+  defp default_part(%{default: %{scope: {:timing, _timing_id}, from: from}}),
+    do: "The timing’s headsign is #{default_word(from)} again."
 
   defp default_part(%{default: %{from: from}}),
     do: "The pattern’s headsign is #{default_word(from)} again."
@@ -3903,6 +4086,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
             Map.put(socket.assigns.timing_headsign_edits, timing_id, value)
           )
           |> assign(:timing_headsign, value)
+          |> sync_headsign_selection()
 
         {:noreply, assign_dirty(socket)}
 
@@ -4090,28 +4274,40 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     occurrences = socket.assigns.occurrences
     stored = Enum.map(rows, & &1.stored)
 
-    attrs = %{
-      rows:
-        parsed
-        |> Enum.with_index()
-        |> Enum.map(fn {%{row: row, arrival_offset: arrival, departure_offset: departure}, index} ->
-          occurrence = Enum.at(occurrences, index)
-          stored_row = Enum.at(stored, index)
+    # A headsign-only save sends no rows: the write re-materializes nothing
+    # and the review's trips_affected stays 0 (CR-3), so no dialog opens.
+    attrs =
+      if timing_rows_edited?(socket) do
+        %{
+          rows:
+            parsed
+            |> Enum.with_index()
+            |> Enum.map(fn {%{row: row, arrival_offset: arrival, departure_offset: departure},
+                            index} ->
+              occurrence = Enum.at(occurrences, index)
+              stored_row = Enum.at(stored, index)
 
-          %{
-            route_pattern_stop_id: occurrence && occurrence.id,
-            arrival_offset: arrival,
-            departure_offset: departure,
-            timepoint: touched_value(row, :timepoint, stored_row),
-            pickup_type: touched_value(row, :pickup, stored_row),
-            drop_off_type: touched_value(row, :drop_off, stored_row),
-            stop_headsign: touched_value(row, :headsign, stored_row)
-          }
-        end)
-        |> fill_unset_timepoints()
-    }
+              %{
+                route_pattern_stop_id: occurrence && occurrence.id,
+                arrival_offset: arrival,
+                departure_offset: departure,
+                timepoint: touched_value(row, :timepoint, stored_row),
+                pickup_type: touched_value(row, :pickup, stored_row),
+                drop_off_type: touched_value(row, :drop_off, stored_row),
+                stop_headsign: touched_value(row, :headsign, stored_row)
+              }
+            end)
+            |> fill_unset_timepoints()
+        }
+      else
+        %{}
+      end
 
     changed_headsign(socket, attrs)
+  end
+
+  defp timing_rows_edited?(socket) do
+    Map.has_key?(socket.assigns.timing_edits, socket.assigns.selected_timing_id)
   end
 
   # GTFS reads an empty timepoint as exact, but the editor shows an unset row as
@@ -4150,7 +4346,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   defp review_timing(socket, attrs, confirm? \\ false) do
-    operation = {:timing, socket.assigns.selected_timing.id, attrs}
+    operation = timing_operation(socket, attrs)
 
     case Gtfs.review(
            pattern_uuid(socket),
@@ -4192,10 +4388,33 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end
   end
 
+  # The staged update-box selection rides the timing save in the 4-tuple form
+  # and is re-validated scope-side; an unchecked box or an empty selection
+  # keeps the 3-tuple, which writes nothing beyond the submitted attrs.
+  defp timing_operation(socket, attrs) do
+    selection = socket.assigns.headsign_selection
+    timing_id = socket.assigns.selected_timing.id
+
+    if Map.has_key?(attrs, :headsign) and is_map(selection) and selection.update? and
+         MapSet.size(selection.ids) > 0 do
+      {:timing, timing_id, attrs, %{headsign_trip_ids: MapSet.to_list(selection.ids)}}
+    else
+      {:timing, timing_id, attrs}
+    end
+  end
+
   defp apply_timing(socket, operation, fingerprint, _impact) do
     case Gtfs.apply_review(pattern_uuid(socket), operation, fingerprint, audit_context(socket)) do
-      {:ok, %{trips_updated: updated}} ->
-        {:noreply, saved(socket, affected_message(updated), timing_scope(operation))}
+      {:ok, %{trips_updated: updated, headsign_undo: undo}} ->
+        # trips_updated counts the row re-materialization (the timing's whole
+        # trip set when rows are present); the headsign writes are a subset of
+        # it, and max is the distinct count the status line names.
+        message = affected_message(max(updated, (undo && length(undo.trips)) || 0))
+
+        {:noreply,
+         socket
+         |> saved(message, timing_scope(operation))
+         |> assign(:headsign_undo, headsign_undo_state(undo, timing_scope(operation)))}
 
       {:error, reason} ->
         {:noreply,
@@ -4238,7 +4457,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     })
   end
 
+  # The timing review's submitted attrs, from either operation form (the
+  # 4-tuple carries the headsign selection the dialog confirm replays).
+  defp timing_review_attrs(%{kind: :timing, operation: {:timing, _timing_id, attrs, _selection}}),
+    do: attrs
+
+  defp timing_review_attrs(%{kind: :timing, operation: {:timing, _timing_id, attrs}}), do: attrs
+  defp timing_review_attrs(_review), do: nil
+
   # A timing save only clears the draft it saved; adding a timing clears none.
+  defp timing_scope({:timing, timing_id, _attrs, _selection}), do: {:timing, timing_id}
   defp timing_scope({:timing, timing_id, _attrs}), do: {:timing, timing_id}
   defp timing_scope(_operation), do: :timing_add
 
@@ -4538,15 +4766,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   defp bar_for(:timings, false, dirty, busy?, assigns) do
     selected_edited? = selected_timing_edited?(assigns)
+    headsign_only? = timing_headsign_only_edited?(assigns)
 
     other =
       if dirty.timings and not selected_edited?,
         do: "Another timing has unsaved edits. Choose it to save them."
 
+    status =
+      if headsign_only? do
+        bar_status(assigns, selected_edited?, headsign_save_status(assigns), other)
+      else
+        bar_status(assigns, selected_edited?, "You have unsaved running-time edits.", other)
+      end
+
     %{
       primary: %{
         id: "timing-save",
-        label: "Save running times",
+        label: if(headsign_only?, do: "Save headsign", else: "Save running times"),
         click: "save_timing",
         commit: true,
         disabled?: busy? or not selected_edited?
@@ -4559,7 +4795,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
             click: "discard_timing_drafts"
           }
         ),
-      status: bar_status(assigns, selected_edited?, "You have unsaved running-time edits.", other)
+      status: status
     }
   end
 
@@ -4639,6 +4875,40 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     id != nil and
       (Map.has_key?(assigns.timing_edits, id) or Map.has_key?(assigns.timing_headsign_edits, id))
   end
+
+  # The disclosure's headsign is the selected timing's only staged change, so
+  # the bar names the narrower save like the Details task does.
+  defp timing_headsign_only_edited?(assigns) do
+    id = assigns.selected_timing_id
+
+    id != nil and Map.has_key?(assigns.timing_headsign_edits, id) and
+      not Map.has_key?(assigns.timing_edits, id)
+  end
+
+  # The usage line's phx-value scope: "pattern", or a timing uuid that is cast
+  # before any query touches it; the usage read then validates it against the
+  # loaded pattern and organization scope.
+  defp review_scope("pattern"), do: {:ok, :pattern}
+
+  defp review_scope(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, timing_id} -> {:ok, {:timing, timing_id}}
+      :error -> :error
+    end
+  end
+
+  # The change drawer's preview target: the Details draft's new value, or for
+  # a timing draft the effective default the blank falls back to.
+  defp staged_headsign_to(%{assigns: %{task: :timings}} = socket),
+    do: timing_draft_to(socket.assigns)
+
+  defp staged_headsign_to(socket), do: draft_headsign(socket)
+
+  # Focus returns to the box's review link inside whichever disclosure staged it.
+  defp headsign_change_opener_id(%{assigns: %{task: :timings}}),
+    do: "timing-headsign-update-review"
+
+  defp headsign_change_opener_id(_socket), do: nil
 
   # The status line: a rejected action's error stays in view where the person
   # acted; an unsaved task says so; a saved outcome shows until the next edit.

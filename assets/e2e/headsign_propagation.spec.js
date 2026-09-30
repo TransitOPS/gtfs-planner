@@ -280,3 +280,63 @@ test("exceptions drawer fixes a typo", async ({ page }) => {
   await expect(drawer).toHaveCount(0);
   await expect(page.locator("#headsign-update-review")).toBeFocused();
 });
+
+// The timing disclosure journey (BROWSER-HS4): the closed summary names the
+// pattern's value with the differ count and Change, opening shows the field
+// with the timing's usage line, and editing stages the update box against the
+// timing's effective default. Nothing is saved — the ExUnit suite owns the
+// timing save semantics on the same wiring.
+test("timing headsign disclosure", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openPattern(page, versionId, "BROWSER_HEADSIGNS", "BROWSER-HS4", "timings");
+
+  const disclosure = page.locator("#timing-headsign-disclosure");
+  const summary = page.locator("#timing-headsign-summary");
+  await expect(summary).toContainText("Headsign:");
+  await expect(summary).toContainText("Lincoln City");
+  await expect(summary).toContainText("from the pattern");
+  await expect(summary).toContainText("Change");
+  await expect(summary).toContainText("2 of 5 trips differ");
+  await expect(disclosure).not.toHaveAttribute("open");
+
+  await capture(page, "times-hs4-closed-1440");
+
+  await summary.click();
+  await expect(disclosure).toHaveAttribute("open");
+  await expect(page.locator("#timing-headsign")).toHaveValue("");
+  await expect(page.locator("#timing-headsign-form")).toContainText("Headsign for Weekday base");
+  await expect(page.locator("#timing-headsign-help")).toContainText(
+    "Leave blank to use the pattern’s headsign, Lincoln City",
+  );
+
+  const usage = page.locator("#timing-headsign-usage");
+  await expect(usage).toContainText("Used by 5 trips");
+  await expect(usage).toContainText("2 show a different headsign");
+  await expect(usage).toContainText("1 likely typo");
+  await expect(page.locator("#timing-headsign-usage-review")).toContainText("Review 2 trips");
+
+  await capture(page, "times-hs4-open-1440");
+
+  // Editing stages the update box against the timing's effective default and
+  // names the narrower save in the bar.
+  await page.fill("#timing-headsign", "Lincoln City via Taft High");
+  const box = page.locator("#timing-headsign-update-box");
+  await expect(box).toContainText("Also update 3 trips that show Lincoln City");
+  await expect(page.locator("#timing-headsign-update-toggle")).toBeChecked();
+  await expect(page.locator("#timing-save")).toHaveText("Save headsign");
+  await expect(page.locator("#pattern-save-status")).toContainText("Saving updates 3 trips");
+
+  await capture(page, "times-hs4-box-1440");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(disclosure).toHaveAttribute("open");
+  await expect(box).toBeVisible();
+  await capture(page, "times-hs4-open-390");
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  // Returning the field to the stored value brings the usage line back; the
+  // staged edit itself survives as a padded save, as with the row cells.
+  await page.fill("#timing-headsign", "Lincoln City");
+  await expect(usage).toBeVisible();
+  await expect(box).toHaveCount(0);
+});

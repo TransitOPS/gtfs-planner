@@ -714,12 +714,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   @doc """
   Renders the Running times task: the timing summaries, the elapsed arrival and
   departure inputs with their sample-trip clock times, the per-stop timepoint and
-  boarding disclosures, and the timing headsign default.
+  boarding disclosures, and the timing headsign disclosure.
 
   Editing stays on elapsed time from the first departure, which is what the
   feed stores. A cell the person changed turns amber and an invalid cell takes a
   2px error border with its message under the row. The save button lives in the
   page's save bar.
+
+  The timing headsign renders as a disclosure in the toolbar area: the closed
+  summary names the shown value and where it comes from, and the opened body
+  holds the field with the timing's usage line, or the wording warnings and the
+  inline update box while the field is edited. `headsign_summary` carries the
+  prepared `%{value:, own?:, pattern_value:}` the LiveView derives from the
+  loaded timing and pattern; `headsign_usage`, `headsign_box` and
+  `headsign_warnings` are the prepared headsign surfaces, nil when they do not
+  apply. Copy, hierarchy and states follow the headsign propagation prototype.
   """
   attr :timings, :any, required: true
   attr :selected_timing, :any, required: true
@@ -728,6 +737,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   attr :timing_options, :list, required: true
   attr :preview_time, :string, required: true
   attr :timing_headsign, :string, required: true
+
+  attr :headsign_summary, :map,
+    default: %{value: nil, own?: false, pattern_value: nil},
+    doc:
+      "the disclosure summary: shown value, whether the timing sets its own, and the pattern's value"
+
+  attr :headsign_open?, :boolean, default: false
+  attr :headsign_usage, :map, default: nil
+  attr :headsign_changed?, :boolean, default: false
+  attr :headsign_box, :map, default: nil
+  attr :headsign_warnings, :map, default: nil
   attr :timing_error, :string, default: nil
   attr :custom_trip_count, :integer, required: true
   attr :dirty?, :boolean, required: true
@@ -866,6 +886,76 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         </p>
       </div>
 
+      <details
+        :if={@selected_timing}
+        id="timing-headsign-disclosure"
+        open={@headsign_open? or @headsign_changed?}
+        class="group border-t border-subtle px-4 py-1 sm:px-5"
+      >
+        <summary
+          id="timing-headsign-summary"
+          phx-click="toggle_timing_headsign_disclosure"
+          class="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-2 text-sm [&::-webkit-details-marker]:hidden"
+        >
+          <.icon
+            name="hero-chevron-right"
+            class="size-4 text-muted transition-transform group-open:rotate-90"
+          />
+          <span class="font-[650] text-default">Headsign:</span>
+          <RoutePatternHeadsignComponents.headsign_value value={@headsign_summary.value} />
+          <span class="text-muted">
+            · {if(@headsign_summary.own?, do: "this timing’s own", else: "from the pattern")}
+          </span>
+          <span class="ml-1 font-[650] text-action group-open:hidden">Change</span>
+          <span
+            :if={@headsign_usage && @headsign_usage.differ > 0}
+            class="ml-auto text-[13px] text-muted group-open:hidden"
+          >
+            {@headsign_usage.differ} of {@headsign_usage.total} trips differ
+          </span>
+        </summary>
+        <div class="max-w-[640px] pb-4 pl-6">
+          <form id="timing-headsign-form" phx-change="validate_timing_row">
+            <.input
+              id="timing-headsign"
+              name="timing_headsign"
+              value={@timing_headsign}
+              type="text"
+              label={"Headsign for " <> @selected_timing.name <> " (optional)"}
+              help={timing_headsign_help(@headsign_summary.pattern_value)}
+            />
+          </form>
+          <%= cond do %>
+            <% @headsign_changed? and @headsign_warnings -> %>
+              <RoutePatternHeadsignComponents.wording_warnings
+                id="timing-headsign-warnings"
+                warnings={@headsign_warnings.warnings}
+                value={@headsign_warnings.value}
+                sibling={@headsign_warnings.sibling}
+                route={@headsign_warnings.route}
+              />
+              <RoutePatternHeadsignComponents.update_box
+                id="timing-headsign-update"
+                from={@headsign_box.from}
+                to={@headsign_box.to}
+                followers={@headsign_box.followers}
+                selected_follow={@headsign_box.selected_follow}
+                extra={@headsign_box.extra}
+                others={@headsign_box.others}
+                shielded={@headsign_box.shielded}
+                update?={@headsign_box.update?}
+              />
+            <% @headsign_usage -> %>
+              <RoutePatternHeadsignComponents.usage_line
+                id="timing-headsign-usage"
+                usage={@headsign_usage}
+                scope_label="timing"
+              />
+            <% true -> %>
+          <% end %>
+        </div>
+      </details>
+
       <div
         :if={@timing_blank_note != nil or (@fill == nil and (@blank_count || 0) > 0)}
         id="timing-blank-note"
@@ -983,34 +1073,36 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
               </tbody>
             </table>
 
-            <div class="grid gap-4 border-t border-subtle p-4 md:grid-cols-2">
-              <div class="grid content-start gap-2">
-                <.input
-                  id="timing-headsign"
-                  name="timing_headsign"
-                  value={@timing_headsign}
-                  type="text"
-                  label="Headsign for new trips (optional)"
-                  help="The destination shown on the bus for trips you add later. Existing trips keep their own headsigns."
-                />
-              </div>
-              <div class="text-[13px] text-muted">
-                <p class="font-[650] text-default">About timepoints and boarding</p>
-                <p id="timing-help-timepoint" class="mt-1">
-                  A timepoint is a stop with a published time. Buses wait there if they’re early.
-                  Unchecked stops show estimated times.
-                </p>
-                <p id="timing-help" class="mt-1">
-                  Pickup and drop-off options: Regular, Not available, Phone the agency, or Arrange
-                  with the driver.
-                </p>
-              </div>
+            <div class="border-t border-subtle p-4 text-[13px] text-muted">
+              <p class="font-[650] text-default">About timepoints and boarding</p>
+              <p id="timing-help-timepoint" class="mt-1">
+                A timepoint is a stop with a published time. Buses wait there if they’re early.
+                Unchecked stops show estimated times.
+              </p>
+              <p id="timing-help" class="mt-1">
+                Pickup and drop-off options: Regular, Not available, Phone the agency, or Arrange
+                with the driver.
+              </p>
             </div>
           </form>
         </div>
       </div>
     </section>
     """
+  end
+
+  # The disclosure field's help names the pattern headsign the blank falls back
+  # to, per the prototype's copy.
+  defp timing_headsign_help(pattern_value)
+       when is_binary(pattern_value) and pattern_value != "" do
+    "Leave blank to use the pattern’s headsign, #{pattern_value}. Set one only when every trip on " <>
+      "this timing shows a different destination, such as a school timing signed “Lincoln City " <>
+      "via Taft High”."
+  end
+
+  defp timing_headsign_help(_pattern_value) do
+    "Leave blank to use the pattern’s headsign. Set one only when every trip on this timing shows " <>
+      "a different destination, such as a school timing signed “Lincoln City via Taft High”."
   end
 
   attr :row, :map, required: true
