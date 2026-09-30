@@ -577,6 +577,70 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimetableTest do
     end
   end
 
+  describe "build/5 headsign display" do
+    test "shows nothing for a trip that follows the pattern headsign after trimming" do
+      occurrences = [occurrence(1, "A")]
+
+      trips = [
+        trip_fields("T-follows", %{
+          trip_headsign: " Downtown",
+          stop_times: stop_times(["A"], ["10:00:00"])
+        })
+      ]
+
+      [row] = Timetable.build(@pattern, occurrences, @stops, [], trips).rows
+
+      assert row.headsign == nil
+    end
+
+    test "marks a blank trip headsign as :blank_with_default when the pattern has one" do
+      occurrences = [occurrence(1, "A")]
+
+      trips = [
+        trip_fields("T-blank", %{
+          trip_headsign: " ",
+          stop_times: stop_times(["A"], ["10:00:00"])
+        })
+      ]
+
+      [row] = Timetable.build(@pattern, occurrences, @stops, [], trips).rows
+
+      assert row.headsign == :blank_with_default
+    end
+
+    test "marks a case-only difference as {:differs, value, :case_or_spacing}" do
+      occurrences = [occurrence(1, "A")]
+
+      trips = [
+        trip_fields("T-differs", %{
+          trip_headsign: "downtown",
+          stop_times: stop_times(["A"], ["10:00:00"])
+        })
+      ]
+
+      [row] = Timetable.build(@pattern, occurrences, @stops, [], trips).rows
+
+      assert row.headsign == {:differs, "downtown", :case_or_spacing}
+    end
+
+    test "falls back to the pattern headsign when the trip's timing headsign is blank" do
+      occurrences = [occurrence(1, "A")]
+      timings = [%{id: "t1", name: "Standard", headsign: "", rows: [timing_row(1, 0, 0, 1)]}]
+
+      trips = [
+        trip_fields("T-timing-blank", %{
+          timed_pattern_id: "t1",
+          trip_headsign: "Downtown",
+          stop_times: stop_times(["A"], ["10:00:00"])
+        })
+      ]
+
+      [row] = Timetable.build(@pattern, occurrences, @stops, timings, trips).rows
+
+      assert row.headsign == nil
+    end
+  end
+
   defp occurrence(position, stop_id) do
     %{id: "occ-#{position}", position: position, stop_id: stop_id}
   end

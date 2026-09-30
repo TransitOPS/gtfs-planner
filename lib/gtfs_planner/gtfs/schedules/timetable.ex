@@ -40,6 +40,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
 
   alias GtfsPlanner.Gtfs.Export.MissingTimes
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.Schedules.Summary
 
   @seconds_per_day 86_400
@@ -508,14 +509,31 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
     "#{display_hour}:#{pad(minutes)} #{meridiem}"
   end
 
+  # Domain rule 2: the row headsign is decided only through `Headsigns` (CR-1).
+  # A trip that follows its effective default (its timing's headsign, else the
+  # pattern's) shows nothing; a blank trip headsign on a non-blank default is
+  # `:blank_with_default`; anything else is `{:differs, value, kind}`.
   defp display_headsign(trip, timing, pattern) do
     headsign = Map.get(trip, :trip_headsign)
-    reference = (timing && Map.get(timing, :headsign)) || Map.get(pattern, :headsign)
+
+    default =
+      Headsigns.effective_default(
+        timing && Map.get(timing, :headsign),
+        Map.get(pattern, :headsign)
+      )
+
+    value = Headsigns.normalize(headsign)
 
     cond do
-      headsign in [nil, ""] -> nil
-      headsign == reference -> nil
-      true -> headsign
+      Headsigns.follows?(headsign, default) ->
+        nil
+
+      is_nil(value) ->
+        :blank_with_default
+
+      true ->
+        %{kind: kind} = Headsigns.difference(value, default, nil)
+        {:differs, value, kind}
     end
   end
 
