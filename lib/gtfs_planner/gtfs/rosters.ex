@@ -738,6 +738,79 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   end
 
   @doc """
+  Every line one operator holds, across all versions of the organization.
+
+  This is what the delete-operator confirmation names before a hard delete, and
+  it reads the organization's own versions rather than the version currently
+  open, because an operator may hold a line in each of them. One operator
+  holding one line per version means at most one row per version here.
+
+  Organization scope is on the line query and again on the joined version, so a
+  version row of another organization cannot bring a line in with its name. An
+  operator id that is malformed, missing, unused or of another organization
+  holds nothing and answers `[]` — the same answer, and no separate branch the
+  caller has to handle.
+  """
+  @spec operator_holdings(Ecto.UUID.t(), term()) ::
+          [
+            %{
+              gtfs_version_id: Ecto.UUID.t(),
+              version_name: String.t(),
+              line_number: pos_integer()
+            }
+          ]
+  def operator_holdings(organization_id, operator_id) do
+    case Ecto.UUID.cast(operator_id) do
+      {:ok, cast_id} ->
+        Repo.all(
+          from(l in RosterLine,
+            join: v in assoc(l, :gtfs_version),
+            where:
+              l.organization_id == ^organization_id and l.operator_id == ^cast_id and
+                v.organization_id == ^organization_id,
+            select: %{
+              gtfs_version_id: l.gtfs_version_id,
+              version_name: v.name,
+              line_number: l.line_number
+            },
+            order_by: [asc: v.name, asc: l.line_number]
+          )
+        )
+
+      :error ->
+        []
+    end
+  end
+
+  @doc """
+  How much of one day type the roster has taken: the lines working it and the
+  slots on them.
+
+  Both numbers are read from stored rows, not derived from the runs, so they
+  answer what a planner has actually recorded — which is what the runs rebuild
+  confirmation has to warn about. `lines` counts distinct lines and `slots`
+  counts `roster_line_days` rows, so a line working the day type on five
+  weekdays counts as one line and five slots. A day type nothing is rostered
+  against answers `%{lines: 0, slots: 0}`, and a version with no lines answers
+  the same without a special case.
+  """
+  @spec count_slots_for_day_type(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          %{lines: non_neg_integer(), slots: non_neg_integer()}
+  def count_slots_for_day_type(organization_id, gtfs_version_id, day_type_key) do
+    Repo.one(
+      from(d in RosterLineDay,
+        where:
+          d.organization_id == ^organization_id and d.gtfs_version_id == ^gtfs_version_id and
+            d.day_type_key == ^day_type_key,
+        select: %{
+          lines: count(d.roster_line_id, :distinct),
+          slots: count(d.id)
+        }
+      )
+    )
+  end
+
+  @doc """
   Loads one organization's whole roster for a published version.
 
   This is the page's read and it is read-only. It reuses the export's own

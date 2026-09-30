@@ -5795,6 +5795,40 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Every line an operator holds, across all versions of the organization.
+
+  The delete-operator confirmation names these lines with the version they are
+  in, because one operator may hold a line in each of the organization's
+  versions and a hard delete empties all of them. An operator id that is
+  malformed, missing, unused or of another organization answers `[]`.
+  """
+  @spec roster_operator_holdings(Ecto.UUID.t(), term()) ::
+          [
+            %{
+              gtfs_version_id: Ecto.UUID.t(),
+              version_name: String.t(),
+              line_number: pos_integer()
+            }
+          ]
+  def roster_operator_holdings(organization_id, operator_id) do
+    Rosters.operator_holdings(organization_id, operator_id)
+  end
+
+  @doc """
+  How much of a day type the roster has taken: `%{lines:, slots:}`.
+
+  Read from stored roster rows, not from the derived runs, so the runs rebuild
+  confirmation names the lines and slots a rebuild would change. Organization and
+  version scope the count; a day type nothing is rostered against answers
+  `%{lines: 0, slots: 0}`.
+  """
+  @spec count_roster_slots_for_day_type(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          %{lines: non_neg_integer(), slots: non_neg_integer()}
+  def count_roster_slots_for_day_type(organization_id, gtfs_version_id, day_type_key) do
+    Rosters.count_slots_for_day_type(organization_id, gtfs_version_id, day_type_key)
+  end
+
+  @doc """
   Returns one entry per route of a version, with its stored home garage and
   required vehicle type (`nil` when the planner has set neither).
 
