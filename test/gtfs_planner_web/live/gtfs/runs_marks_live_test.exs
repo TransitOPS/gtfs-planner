@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsMarksLiveTest do
   @moduledoc """
-  EV-22: the run marks, the chart key and the status text.
+  The run marks, the chart key and the status text.
 
   The surface under test is a chart, so the assertions are about the marks a
   reader can see and the words beside them, not about arithmetic: every number
@@ -9,9 +9,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMarksLiveTest do
   itself.
 
   Where a case cannot be built from `RunsFixtures`, the component is rendered
-  directly with a synthetic run. That is a real render of the real branch, and
-  the gap it leaves — no fixture produces these conditions — is recorded in
-  step 24's learning rather than papered over.
+  directly with a synthetic run. That is a real render of the real branch, and the
+  gap it leaves — no fixture produces these conditions — is stated here rather
+  than papered over.
   """
   use GtfsPlannerWeb.ConnCase, async: true
 
@@ -26,9 +26,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMarksLiveTest do
   @moduletag :ev_22
   @moduletag timeout: 120_000
 
-  # Only the user is built here. `runs_version_fixture/1` creates its OWN
-  # organization, so the membership goes on THAT one — the step 21 learning's
-  # standing trap.
+  # Only the user is built here. `runs_version_fixture/1` creates its own
+  # organization, so the membership goes on that one, not on a separate
+  # organization fixture.
   setup do
     %{user: user_fixture()}
   end
@@ -413,10 +413,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMarksLiveTest do
       world = split_world(ctx)
       view = open_runs(ctx, world)
 
-      # Every status cell carries readable text. This is the obligation INV-11
-      # names and it is cheap to prove here and impossible to prove visually:
-      # each cell is rendered on its own, so a blank cell on one row cannot hide
-      # behind a worded cell on the next.
+      # Every status cell carries readable text. It is cheap to prove here and
+      # impossible to prove visually: each cell is rendered on its own, so a blank
+      # cell on one row cannot hide behind a worded cell on the next.
       for run_id <- ["1001", "1002"] do
         status = status_html(view, run_id)
         assert status =~ ~s(data-role="run-status-label")
@@ -488,11 +487,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMarksLiveTest do
   end
 
   describe "marks the fixtures cannot build" do
-    # `runs_version_fixture/1` cannot produce a positive break, a change away
-    # from a relief point, or a `not_at_relief` finding: its two blocks overlap,
-    # and every cut it can make lands on a marked stop. These render the
-    # component directly with a synthetic run, which exercises the same branch
-    # the real page takes. The gap is recorded in step 24's learning.
+    # `runs_version_fixture/1` cannot produce a positive break, a change away from
+    # a relief point, or a `not_at_relief` finding: its two blocks overlap, and
+    # every cut it can make lands on a marked stop. These render the component
+    # directly with a synthetic run, which exercises the same branch the real page
+    # takes.
 
     defp render_marks(segments, pieces \\ []) do
       run = %{run_id: "9999", pieces: pieces, work: synthetic_work(segments), findings: []}

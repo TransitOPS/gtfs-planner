@@ -1,21 +1,21 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsSetupStatesLiveTest do
   @moduledoc """
-  EV-33: the first-use panel, the relief-setup callout, and the one-primary rule.
+  The first-use panel, the relief-setup callout, and the one-primary rule.
 
   The primary rule is the claim that needs the most care, because it is easy to
   satisfy and easy to fake. Two things make it real here:
 
-  - the count is taken by CLASS, the class the `button` component gives
+  - the count is taken by class, the class the `button` component gives
     `variant="primary"`, so it counts what a reader sees rather than what a
     component intends;
   - it is counted over the page's own action regions — the head's actions and the
     plan card — not the whole document. A closed drawer stays in the DOM with its
     controls, so a whole-document count would report primaries belonging to
-    dialogs nobody is looking at. The Crew rules drawer's Save is the one that bit
-    step 34.
+    dialogs nobody is looking at. The Crew rules drawer's Save is the one that
+    would be miscounted.
 
-  The four cases are the four states AC-31 names: problems to review, first use,
-  no blocks, and a clean loaded day with nothing left to fix.
+  The four cases are the four page states: problems to review, first use, no
+  blocks, and a clean loaded day with nothing left to fix.
   """
   use GtfsPlannerWeb.ConnCase, async: true
 
@@ -61,12 +61,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSetupStatesLiveTest do
   # The page's primary actions, by ID.
   #
   # The two regions are the head's actions and the plan card, which is where every
-  # state panel lives. Both are OUTSIDE the drawers, so a closed drawer's controls
-  # cannot be counted here — which is the point: AC-31's rule is about what the
-  # reader can act on, and a button inside a `<dialog>` marked `data-open="false"`
-  # is not one.
+  # state panel lives. Both are outside the drawers, so a closed drawer's controls
+  # cannot be counted here — which is the point: the one-primary rule is about
+  # what the reader can act on, and a button inside a `<dialog>` marked
+  # `data-open="false"` is not one.
   #
-  # IDs rather than a count, so a failure says WHICH action is the extra one.
+  # IDs rather than a count, so a failure says which action is the extra one.
   @action_regions "#runs-head-actions .btn-primary, #runs-plan .btn-primary"
 
   defp primary_actions(view) do
@@ -249,8 +249,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSetupStatesLiveTest do
       w = clean_world(ctx)
       view = open(ctx, w)
 
-      # The card's case. Nothing to fix and nothing unfinished, so promoting
-      # anything would be asking the reader to prefer one action arbitrarily.
+      # Nothing to fix and nothing unfinished, so promoting anything would be
+      # asking the reader to prefer one action arbitrarily.
       assert primary_actions(view) == []
       assert attribute(view, "#runs-suggest", "data-primary") == "false"
       assert attribute(view, "#runs-review-problems", "data-primary") == "false"
@@ -267,7 +267,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSetupStatesLiveTest do
   end
 
   describe "the first-use panel" do
-    test "it reads the card's sentence", ctx do
+    test "it explains what Suggest runs does", ctx do
       w = first_use_world(ctx)
       view = open(ctx, w)
 

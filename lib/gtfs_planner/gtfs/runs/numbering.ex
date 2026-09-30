@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.Runs.Numbering do
   @moduledoc """
-  How runs are numbered (domain rule 11).
+  How runs are numbered.
 
   Pure: it reads its arguments, calls no repository, clock, file or network, and
   writes nothing. It decides numbers; it does not check them against a stored
@@ -25,7 +25,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Numbering do
 
   A rebuild then numbers from `prefix + 1` upward in sign-on order, so the runs
   it produces are `prefix + 1, prefix + 2, …` and never continue from the
-  highest. That is the distinction FH-13 names, and it is the reason both
+  highest. That distinction is the reason both
   functions exist rather than one parameterised on which end to take.
 
   ## What counts as numeric

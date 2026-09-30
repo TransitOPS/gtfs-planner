@@ -1,14 +1,13 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsMovePieceLiveTest do
   @moduledoc """
-  EV-29: Move a piece to another run from the drawer.
+  Move a piece to another run from the drawer.
 
-  The card's independence field is "rows re-read", and here it is the whole
-  point rather than a formality. A move writes rows for ONE piece's trips, so a
-  test that reads back "some run has this trip" proves almost nothing — the move
-  could be moving the wrong piece's trips, or both pieces', and still look
-  right. Every case here reads back the exact trip sets on both sides of the
-  move, because the set that did NOT move is as much of the result as the set
-  that did.
+  Rows are re-read, and here that is the whole point rather than a formality. A
+  move writes rows for one piece's trips, so a test that reads back "some run has
+  this trip" proves almost nothing — the move could be moving the wrong piece's
+  trips, or both pieces', and still look right. Every case here reads back the
+  exact trip sets on both sides of the move, because the set that did not move is
+  as much of the result as the set that did.
   """
   use GtfsPlannerWeb.ConnCase, async: true
 
@@ -364,8 +363,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMovePieceLiveTest do
       submit_piece(view, 1, "1002")
       view |> element("#runs-undo") |> render_click()
 
-      # Re-read from the database: the toast saying "Undone." is step 28's
-      # claim, not this step's.
+      # Re-read from the database: the toast saying "Undone." is the create-run
+      # tests' subject, not this one's.
       assert trip_ids(w, "1001") == source_before
       assert trip_ids(w, "1002") == target_before
       assert piece_trips -- source_before == []

@@ -3,8 +3,8 @@ defmodule GtfsPlanner.Gtfs.Runs.Day do
   Composes one day's runs, findings and figures from its blocks and its trip
   assignments.
 
-  This is **the** derivation of a day's runs (INV-11). The page, the plan, the
-  export and spec 09's rosters all read this result; none of them walks blocks,
+  This is **the** derivation of a day's runs. The page, the plan and the
+  export all read this result; none of them walks blocks,
   groups pieces or recomputes a figure. A second route to the same numbers would
   be a second answer to the question the page is asking, and the two would drift
   the first time either changed.

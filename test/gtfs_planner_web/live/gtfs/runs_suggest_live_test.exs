@@ -1,16 +1,15 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsSuggestLiveTest do
   @moduledoc """
-  EV-34: the Suggest runs drawer and the inline suggestion preview.
+  The Suggest runs drawer and the inline suggestion preview.
 
-  The claim this step makes is narrow and worth stating exactly, because a
-  preview that looks right but wrote a row would satisfy most of the assertions
-  below: **a suggestion is drawn, never saved.** So every case here is paired
-  with a count of the saved rows taken either straight from the database or
-  through the page's own "before" figure, and the counts must not move. The
-  independent check — that `trip_runs` is untouched — is what makes the
-  rendering assertions mean something.
+  The claim is narrow and worth stating exactly, because a preview that looks
+  right but wrote a row would satisfy most of the assertions below: a suggestion
+  is drawn, never saved. So every case here is paired with a count of the saved
+  rows taken either straight from the database or through the page's own "before"
+  figure, and the counts must not move. The independent check — that `trip_runs`
+  is untouched — is what makes the rendering assertions mean something.
 
-  The four figures in the panel are read from the PLAN, so the test recomputes
+  The four figures in the panel are read from the plan, so the test recomputes
   them from `Gtfs.suggest_runs/4` and compares both directions. A panel that
   rendered one correct number and three invented ones would pass a weaker test.
   """
@@ -264,7 +263,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSuggestLiveTest do
       open_suggest(view)
 
       # The fixture day has runs, so the uncovered scope has nothing to offer and
-      # the card says so rather than promising an empty preview.
+      # the drawer says so rather than promising an empty preview.
       refute has_element?(view, "#runs-scope-uncovered[disabled]")
 
       assert text(view, "#runs-suggest-drawer") =~

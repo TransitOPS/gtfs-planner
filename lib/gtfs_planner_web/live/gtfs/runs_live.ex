@@ -3,10 +3,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   The Runs page: one day type's runs, and the states the page can be in before
   it has any.
 
-  This step builds the shell only — the head, the day-type scope bar and the
-  load states. Later steps fill the plan card. The read is `Gtfs.load_runs/3`
-  from step 12, called through the catalog read adapter like every other page
-  read, so a stubbed adapter is enough to drive the failure state.
+  The read is `Gtfs.load_runs/3`, called through the catalog read adapter like
+  every other page read, so a stubbed adapter is enough to drive the failure
+  state.
 
   ## Why the load is not in `mount/3`
 
@@ -23,8 +22,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   `?day=` is read in `handle_params/3` and nowhere else. There is no separate
   "selected day type" assign that a second code path could set, so the address
   bar and the page can never disagree — which matters more here than usual,
-  because a run is scoped to its day type and `Runs.count_runs_for_trips/3` from
-  step 19 counts `(day_type_key, run_id)` pairs. A page that showed one day type
+  because a run is scoped to its day type and `Runs.count_runs_for_trips/3`
+  counts `(day_type_key, run_id)` pairs. A page that showed one day type
   while the URL named another would report counts for a day it is not showing.
 
   ## `:unavailable` keeps what is on screen
@@ -71,10 +70,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      # The summary drawer is closed and has never loaded its shares, so the
      # drawer cannot appear on a page whose day type has not loaded.
      |> assign(:drawer, nil)
-     # A suggestion is PREVIEW state, not page state: it is not in the URL
-     # (step 35's rule that drawers are not URL state carries over to the
-     # preview, which is drawn on the page rather than in a drawer), and it is
-     # lost on reload because nothing wrote it.
+     # A suggestion is preview state, not page state: it is not in the URL
+     # (drawers are not URL state, and neither is the preview, which is drawn
+     # on the page rather than in a drawer), and it is lost on reload because
+     # nothing wrote it.
      |> assign(:plan, nil)
      |> assign(:suggest_open, false)
      |> assign(:suggest_scope, :uncovered_only)
@@ -92,9 +91,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:dir, :asc)
      |> assign(:scale, :day)
      |> assign(:view, :timeline)
-     # The toast and its undo are EVENT state, not URL state, so they start here
+     # The toast and its undo are event state, not URL state, so they start here
      # rather than in `handle_params/3` beside `?day=` and `?panel=`. Starting them
-     # empty is also what makes `toast/1` render NOTHING on first paint: a
+     # empty is also what makes `toast/1` render nothing on first paint: a
      # `role="status"` region present with no text announces nothing and still
      # occupies the fixed box at the foot of the viewport.
      |> assign(:run, nil)
@@ -123,13 +122,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     sort = sort_key(params["sort"])
     dir = sort_dir(params["dir"])
 
-    # A sort is a re-order of rows that are ALREADY loaded, so it must not
+    # A sort is a re-order of rows that are already loaded, so it must not
     # re-read the day: `ensure_day_loaded/1` would see its own guard and return
     # the socket untouched, and the rows would keep the order they had. So the
     # re-stream is asked for explicitly, here, where the change is known.
     resort? = socket.assigns.sort != sort or socket.assigns.dir != dir
     view = view_value(params["view"])
-    # A VIEW change moves the same stream into a different `phx-update="stream"`
+    # A view change moves the same stream into a different `phx-update="stream"`
     # container — `#runs-timeline-body` and `#runs-list-body` are different
     # elements — so the rows have to be re-put, for the same reason a sort
     # re-streams. Without this, switching to the list and back renders an empty
@@ -160,7 +159,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # without its drawer: a colleague opening the link sees the chart and not the
   # run, and the address bar says `run=1001` while the screen disagrees.
   #
-  # It runs AFTER `ensure_day_loaded/1` because it looks the run up in the loaded
+  # It runs after `ensure_day_loaded/1` because it looks the run up in the loaded
   # day — before the load, no run is findable and every drawer would be closed.
   # A `run` naming nothing is dropped rather than left in the path: a parameter
   # the page cannot honour is a parameter the next patch would carry forward.
@@ -283,7 +282,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # Create a run from one uncovered segment.
   #
   # **The segment is re-read from the loaded day, not taken from the button.**
-  # The button names a block and a span; those three values FIND the segment in
+  # The button names a block and a span; those three values find the segment in
   # `@runs_day.derived.uncovered`, and the moves are built from the trips that
   # segment actually has. Passing the button's own trip list would let a stale or
   # tampered `phx-value` write runs over trips nobody clicked — and the optimistic
@@ -291,10 +290,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # unassigned, and a trip the page never showed is exactly the kind that is.
   #
   # Every move is `from: nil, to: :new`, and `apply_run_moves/4` resolves every
-  # `:new` in one call to the SAME run: an operator covering three trips means one
+  # `:new` in one call to the same run: an operator covering three trips means one
   # run over them, not three runs of one trip each.
-  # NOT a separate clause above this one. `handle_event("create_run", _params, _)`
-  # matches EVERY create_run, so a refusal clause written that way swallows the
+  # Not a separate clause above this one. `handle_event("create_run", _params, _)`
+  # matches every create_run, so a refusal clause written that way swallows the
   # real handler whenever the page is not locked: the click is accepted, nothing
   # happens, and no toast appears. The lock is a guard on the one clause instead.
   def handle_event("create_run", params, socket) do
@@ -314,10 +313,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
          |> put_toast("There is nothing to undo.", :refused)}
 
       %{moves: moves} ->
-        # The undo assign is CLEARED whatever the write did.
+        # The undo assign is cleared whatever the write did.
         # `apply_run_moves/4` hands back the moves it just made, so a success that
         # re-armed the button would make Undo repeatable — and a second press
-        # would apply the same reversal again, which is a re-APPLY wearing the
+        # would apply the same reversal again, which is a re-apply wearing the
         # name of an undo. There is no stack: one edit, one Undo, then nothing
         # left to undo.
         {:noreply,
@@ -336,9 +335,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   end
 
   # Every strip tile opens the same drawer, and the pressed tile is the one the
-  # reader pressed. The prototype sends each tile its own `data-act`; only the
-  # summary drawer exists at this step, so all six open it — but the tile that
-  # was clicked stays `aria-pressed`, because a control that shows nothing
+  # reader pressed. All six open the summary drawer, but the tile that was
+  # clicked stays `aria-pressed`, because a control that shows nothing
   # pressed after the press is a control the reader cannot tell apart from one
   # that did nothing.
   #
@@ -346,11 +344,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # button can still dispatch, so the handler rejects an unknown key rather than
   # trusting it — a key this component does not own would mark a tile pressed
   # that does not exist.
-  # Step 36 adds the drawer and the preview. The PREVIEW is the whole step: it
-  # renders `plan.preview` in place of the saved derivation and writes nothing.
-  # `apply_suggestion` is deliberately NOT handled here — step 37 wires it to
-  # `Gtfs.apply_run_plan/3` — so the panel's Apply button exists for the layout
-  # this step specifies and does nothing until then.
+  # The Suggest runs drawer and the preview. A preview renders `plan.preview` in
+  # place of the saved derivation and writes nothing; `apply_suggestion` below
+  # is the only event that writes it, through `Gtfs.apply_run_plan/3`.
   def handle_event("open_suggest", _params, socket) do
     if previewing?(socket.assigns) do
       {:noreply, socket}
@@ -417,7 +413,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   def handle_event("suggest_again", _params, socket) do
     case socket.assigns do
       %{plan: plan} ->
-        # Start from the SAVED runs, not from the stale preview: the preview is
+        # Start from the saved runs, not from the stale preview: the preview is
         # dropped rather than re-suggested, because keeping it would show figures
         # that cannot be applied beside a Suggest again just offered.
         preview_with(socket, plan.day_type_key, plan.scope)
@@ -428,7 +424,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   end
 
   def handle_event("discard_suggestion", _params, socket) do
-    # Discard is SAFE BY CONSTRUCTION: nothing was written, so restoring the
+    # Discard is safe by construction: nothing was written, so restoring the
     # saved rows is dropping the plan and streaming them again. There is no
     # undo to run and nothing to check.
     {:noreply,
@@ -456,9 +452,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   # The Crew rules drawer: a draft, its per-field errors, and the save.
   #
-  # The draft lives in `@crew_entries` and is NEVER rebuilt from the stored crew
-  # once the drawer has opened, because the two things AC-30 asks of a failed
-  # save are "keeps entries" and "focuses the first error" — both of which are
+  # The draft lives in `@crew_entries` and is never rebuilt from the stored crew
+  # once the drawer has opened, because the two things a failed save must do
+  # are "keep entries" and "focus the first error" — both of which are
   # false the moment a refusal re-reads the stored values.
   def handle_event("open_crew", _params, socket) do
     {:noreply,
@@ -476,11 +472,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # `phx-change` on the whole form, so one event carries every field and the rule
   # sentence is recomputed from all five at once. `phx-debounce="blur"` means this
   # arrives when a field loses focus rather than on every keystroke, which is the
-  # "validate on blur" the form guide asks for (AC-30).
+  # "validate on blur" the form guide asks for.
   def handle_event("validate_crew", params, socket) do
     entries = crew_entries(params, socket.assigns.crew_entries)
 
-    # ONLY the field that was touched is re-checked. Re-validating all five on one
+    # Only the field that was touched is re-checked. Re-validating all five on one
     # blur would put an error on a field the reader has not reached yet, and
     # would clear an error they are still typing towards the end of.
     touched = crew_touched(params, socket.assigns.crew_entries)
@@ -497,7 +493,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     errors = crew_validate(entries)
 
     if errors != %{} do
-      # Keep every entry and mark the fields. Focus is NOT named here: the
+      # Keep every entry and mark the fields. Focus is not named here: the
       # `focus_form_error` hook lands on the first control the form marks
       # `aria-invalid`, and a payload naming one field would be a second place
       # the order of the form is written down.
@@ -517,14 +513,14 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   # The problems drawer, and the orphan removal inside it.
   #
-  # The drawer is NOT URL state. Every other panel on this page is, because each
-  # of them is a different LENS on the same day; the problems drawer is a reading
+  # The drawer is not URL state. Every other panel on this page is, because each
+  # of them is a different lens on the same day; the problems drawer is a reading
   # of what the other three already show, and adding `?problems=` would give the
   # page a fourth address for a thing the reader can reach from the count strip
   # in one click.
   def handle_event("open_problems", _params, socket) do
     # Opening the problems drawer closes the run drawer: two drawers at once
-    # would stack, and the problems list is the way to REACH a run rather than
+    # would stack, and the problems list is the way to reach a run rather than
     # a place to read one.
     {:noreply, assign(socket, :problems_open, true)}
   end
@@ -535,7 +531,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   # Remove run assignments whose trips are no longer in this day type.
   #
-  # These rows are already unusable: `Runs.load_runs/3` EXCLUDES them from every
+  # These rows are already unusable: `Runs.load_runs/3` excludes them from every
   # run it derives, so they are on no chart, in no pay table and in no export.
   # They are what is left after a service group is removed. The drawer says how
   # many it will delete before the reader presses, and the count is the domain's
@@ -545,7 +541,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       socket.assigns
 
     case Gtfs.remove_run_orphans(organization.id, version.id, day) do
-      # A COUNT, not `:ok`: the drawer says how many rows it deleted, and the
+      # A count, not `:ok`: the drawer says how many rows it deleted, and the
       # domain counts the rows it actually removed rather than the rows it
       # believed were there.
       {:ok, removed} when is_integer(removed) ->
@@ -572,17 +568,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
-  # Closing PATCHES, because the drawer is addressed by a parameter. Assigning
+  # Closing patches, because the drawer is addressed by a parameter. Assigning
   # alone would close the panel while the address bar still said `?run=1001`, and
-  # the next patch to rebuild the path would reopen it — step 26's rule about the
-  # path being a record of the reader's whole state, applied to a control that
-  # removes one of its entries.
-  # Rename a run, from the drawer, through the SAME undo surface every other
+  # the next patch to rebuild the path would reopen it — the path is a record of
+  # the reader's whole state, and this control removes one of its entries.
+  # Rename a run, from the drawer, through the same undo surface every other
   # write uses.
   #
   # `rename_run/5` hands back its own undo in the move shape, so the toast and the
-  # Undo button need no new code here — step 28 built that surface once and this
-  # is the first caller that is not a move. A caller that cannot reach Undo is a
+  # Undo button need no new code here — the surface is built once, and a rename
+  # uses it like every move does. A caller that cannot reach Undo is a
   # caller with a different undo, and two undos is one too many.
   #
   # **The entry is kept on a refusal.** A rejected rename leaves the form showing
@@ -595,18 +590,17 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
     case Gtfs.rename_run(organization.id, version.id, day, socket.assigns.run, new_id) do
       {:ok, %{undo: moves}} ->
-        # `push_patch/2` returns a SOCKET, not `{:noreply, socket}` - the same
-        # return-shape mistake step 28 recorded, reached again through a new
-        # event. It fails the whole LiveView with an ArgumentError that dumps the
+        # `push_patch/2` returns a socket, not `{:noreply, socket}`. Returning it
+        # bare fails the whole LiveView with an ArgumentError that dumps the
         # entire socket, user struct and all, before a single assertion runs.
         {:noreply,
          socket
          |> put_undo(%{moves: moves, trips: undo_trip_count(moves)})
          |> put_toast("Renamed to #{new_id}.", :done)
-         # The form is NOT reset here. `push_patch/2` below re-enters
+         # The form is not reset here. `push_patch/2` below re-enters
          # `handle_params/2`, which reaches `sync_run_drawer/1` and resets the
          # form on the way past. A mutation that deleted this line was caught by
-         # NO test, because the patch does the same work - a no-op line, and
+         # No test, because the patch does the same work - a no-op line, and
          # keeping it would mean believing the reader's next rename is protected
          # by a line that does nothing.
          # The drawer's run is addressed by the URL, so a rename has to move the
@@ -618,9 +612,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       {:error, %Ecto.Changeset{} = changeset} ->
         # **The entry is kept, and the message is the domain's.**
         #
-        # `rename_run/5` returns a SCHEMALESS changeset — `cast({%{}, ...})` — so
+        # `rename_run/5` returns a schemaless changeset — `cast({%{}, ...})` — so
         # `to_form/1` refuses it ("data is not backed by a struct") and a
-        # namespaced form over it traverses to an EMPTY error list even though
+        # namespaced form over it traverses to an empty error list even though
         # `Ecto.Changeset.traverse_errors/2` finds the message. So the form is
         # built from a plain map carrying what the reader typed, and the
         # traversed messages are handed to `CoreComponents.input/1` as its
@@ -628,7 +622,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         #
         # `as: :run` is required, not decorative: without it `to_form/1` cannot
         # generate a name for the input and raises "cannot generate name for
-        # changeset", which takes the LiveView down on the FIRST refused rename.
+        # changeset", which takes the LiveView down on the first refused rename.
         # The error path is the one that breaks, and the happy path looks fine.
         {:noreply,
          socket
@@ -649,16 +643,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
-  # Move ONE piece to another run, from the drawer.
+  # Move one piece to another run, from the drawer.
   #
-  # The piece is named by its POSITION in the drawer's own list, and the trips
+  # The piece is named by its position in the drawer's own list, and the trips
   # come from that piece on the server. A form that posted `trip_id`s would let a
   # reader — or anything posting the form — move trips that are not in the piece
   # they are looking at, and the "From" in the page would be a claim rather than
   # the truth.
   #
   # `from:` is the run the drawer is showing, so a piece whose `from` has changed
-  # underneath the page makes the write STALE and the shared optimistic check
+  # underneath the page makes the write stale and the shared optimistic check
   # refuses it. That is the whole protection: there is no separate "is this still
   # the right piece" test, because the moves themselves carry it.
   def handle_event("move_piece", %{"piece" => index, "move" => %{"to" => to}}, socket) do
@@ -692,9 +686,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   # Split a piece at a relief handover, from the drawer.
   #
-  # The trips that move are the ones AFTER the chosen gap — the gap is a
+  # The trips that move are the ones after the chosen gap — the gap is a
   # handover point, so the operator changes there and everything from the next
-  # trip onward belongs to the other run. The gap is named by its POSITION in
+  # trip onward belongs to the other run. The gap is named by its position in
   # the piece's own gap list, and the trips come from the drawer's own piece
   # list: a form that posted trip_ids could move work the reader is not looking
   # at, and one that posted a block-level gap index would be slicing the wrong
@@ -766,11 +760,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> push_patch(to: runs_path(socket, socket.assigns.day, %{run: ""}))}
   end
 
-  # The Run button and the piece buttons. The run drawer is step 29, so pressing
-  # one must not silently do nothing — the buttons carry `aria-disabled` from
-  # the day they stop being inert, and this clause is where step 29 replaces
-  # them. It is LAST among the `handle_event` clauses on purpose: a catch-all
-  # placed earlier would shadow the drawer events above it.
+  # Any other event is ignored. This clause is last among the `handle_event`
+  # clauses on purpose: a catch-all placed earlier would shadow the drawer
+  # events above it.
   def handle_event(_event, _params, socket), do: {:noreply, socket}
 
   # One preview path for Preview and Suggest again, so the two cannot differ in
@@ -800,10 +792,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
-  # A REBUILD asks first; uncovering work does not.
+  # A rebuild asks first; uncovering work does not.
   #
   # The test is not "is it reversible" — both are, by Undo — but whether the
-  # reader can SEE what changed. An uncovered preview adds runs and leaves the
+  # reader can see what changed. An uncovered preview adds runs and leaves the
   # existing ones alone, so the diff is exactly the rows the panel already marks
   # as new. A rebuild renumbers runs that may have been tuned by hand, and a
   # rename the reader made is invisible in that diff.
@@ -841,7 +833,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
          |> stream_run_rows()}
 
       {:error, :stale_plan} ->
-        # The suggestion is now UNAPPLICABLE, not merely unapplied. Apply is
+        # The suggestion is now unapplicable, not merely unapplied. Apply is
         # disabled rather than left to fail again, and the plan stays on screen so
         # the reader can see what they were about to write.
         {:noreply, assign(socket, :apply_state, :stale)}
@@ -865,7 +857,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   defp apply_failure_detail(_reason),
     do: "Your saved runs are unchanged. Try again, or discard the suggestion."
 
-  # A pending apply is IGNORED, not queued and not re-run. The button is disabled
+  # A pending apply is ignored, not queued and not re-run. The button is disabled
   # while one is in flight, so this guard only catches what a disabled button
   # cannot: a second event arriving before the reply is rendered.
 
@@ -893,13 +885,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
-  # Undo the last move set, through the SAME call with the moves reversed.
+  # Undo the last move set, through the same call with the moves reversed.
   #
   # It is the same function and the same optimistic check by design: undo is not a
   # privileged path that trusts the page, it is an ordinary move set that happens
   # to run backwards. So a colleague who moved one of those trips in the meantime
-  # refuses the undo rather than reverting their work — which is the card's third
-  # case, and is why the refusal names what changed.
+  # refuses the undo rather than reverting their work, and the refusal names what
+  # changed.
 
   defp open_run_unchecked(run_id, socket) do
     # A run is addressed by a URL parameter rather than by a number this page
@@ -941,13 +933,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
          |> load_day()}
 
       # The version went unpublished between the drawer opening and the save.
-      # The domain refuses the write, so the drawer says why and KEEPS the
+      # The domain refuses the write, so the drawer says why and keeps the
       # entries: the reader typed them and nothing about the version's state
       # makes them worth retyping.
       #
       # Assigning the entries back is the whole of that promise. Without it the
       # form re-renders from `@crew_entries`, which still holds the values from
-      # the last CHANGE event — so an entry typed and submitted in one go, with
+      # the last change event — so an entry typed and submitted in one go, with
       # no blur in between, would silently revert to the stored value.
       {:error, :not_found} ->
         {:noreply,
@@ -973,9 +965,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   # The five crew rules, as the form posts them.
   #
-  # ONLY these five are read from the payload, so a crafted event cannot name an
-  # organization or a version: those come from the socket, never from `params`
-  # (CR-4). `max_piece_minutes` is absent on purpose — it belongs to the BLOCK
+  # Only these five are read from the payload, so a crafted event cannot name an
+  # organization or a version: those come from the socket, never from `params`.
+  # `max_piece_minutes` is absent on purpose — it belongs to the Block
   # rules, and accepting it here would let a posted value write a column this
   # drawer shows as read-only.
   @crew_keys [
@@ -987,7 +979,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   ]
 
   # The form is named `:crew`, so its fields post under `params["crew"]`. Both
-  # callers pass the WHOLE payload rather than the inner map, so the nesting is
+  # callers pass the whole payload rather than the inner map, so the nesting is
   # unwrapped in one place: reading `params["report_pull_out_minutes"]` here
   # would find nothing, and every entry would look blank.
   defp crew_values(params) do
@@ -1010,7 +1002,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # A form posts every field on every change, so "the event named a field" is not
   # in the payload. The draft's own change is: a value that differs from the one
   # held is a field the reader has just touched.
-  # The stored rules as the form holds them: STRINGS.
+  # The stored rules as the form holds them: strings.
   #
   # Every later comparison — "did this field change", "is this entry the same as
   # what the last event carried" — is between form values, and an integer from
@@ -1029,7 +1021,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end)
   end
 
-  # The ranges the DOMAIN enforces, spelled the way the domain spells them, so a
+  # The ranges the domain enforces, spelled the way the domain spells them, so a
   # message shown before a save and a message from the changeset are one voice.
   defp crew_ranges do
     %{
@@ -1098,7 +1090,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end)
   end
 
-  # The STORED rules for the version.
+  # The stored rules for the version.
   #
   # This reads the settings row rather than `@runs_day.crew`, because a drawer can
   # be opened before any day is loaded and because the stored row is what a save
@@ -1114,8 +1106,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     Gtfs.get_crew_settings(organization.id, version.id)
   end
 
-  # The timer the reference's JS ran. It carries the toast's token so a timer set
-  # for an EARLIER toast cannot dismiss a LATER one: without the token, a reader
+  # The toast's dismiss timer. It carries the toast's token so a timer set for
+  # an earlier toast cannot dismiss a later one: without the token, a reader
   # who edits twice quickly watches the second confirmation vanish on the first
   # one's schedule.
   @impl true
@@ -1129,9 +1121,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   def handle_info(_message, socket), do: {:noreply, socket}
 
-  # One write, one toast, one undo — the shape steps 30, 31, 32 and 37 reuse.
+  # One write, one toast, one undo — the shape every write on the page reuses.
   #
-  # BOTH messages are parameters, and the success one is a function of the new
+  # Both messages are parameters, and the success one is a function of the new
   # run id. They have to be: undo is this same function with the moves reversed,
   # and a shared success string had it announcing "New run created." after an
   # undo that had created nothing and deleted something. A caller that does not
@@ -1151,7 +1143,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # Everything the drawer's move forms need, recomputed from the day's runs and
   # the run being drawn.
   #
-  # The CURRENT run is left out of the move targets: moving a piece to the run it
+  # The current run is left out of the move targets: moving a piece to the run it
   # is already on is not a move, the domain allows it as a no-op, and offering it
   # would put a choice in the list that cannot mean anything.
   defp sync_run_context(socket) do
@@ -1171,10 +1163,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   # The relief windows of every block the drawn run touches, by block ID.
   #
-  # These live on the BLOCK, not on the piece: `Pieces.derive/2` takes the
+  # These live on the block, not on the piece: `Pieces.derive/2` takes the
   # block's windows as input and carries only the derived `gaps` out, so a piece
-  # cannot answer "where could this split" on its own. The card's rule — only
-  # gaps that HAVE a window, and the FIRST window of a gap is the handover — is
+  # cannot answer "where could this split" on its own. The rule — only gaps that
+  # have a window, and the first window of a gap is the handover — is
   # the handover rule `Runs.Pieces` already documents, read here rather than
   # re-derived.
   defp piece_windows(day, current) do
@@ -1205,7 +1197,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
-  # The day's runs, minus the one being drawn, in sign-on order. The LABELS are
+  # The day's runs, minus the one being drawn, in sign-on order. The labels are
   # built by the component, which already owns the wording for a run's type —
   # a second spelling of "one piece" in the move select would be a move form that
   # called a run by a different name than the rest of the page does.
@@ -1217,25 +1209,23 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   # The drawer's piece, by the position the fieldset named. Out of range is
   # refused rather than clamped: piece 9 of a 2-piece run is a page that no
-  # longer matches the database, and guessing piece 2 would move the WRONG
+  # longer matches the database, and guessing piece 2 would move the wrong
   # vehicle work.
   defp piece_at(socket, index) do
     # The fieldset says "Piece 1", "Piece 2" — one-based, as a reader counts.
-    # The list is zero-based, and `Enum.at(pieces, 1)` is the SECOND piece, so
+    # The list is zero-based, and `Enum.at(pieces, 1)` is the second piece, so
     # the 1 is taken off here and nowhere else. With it left on, "Move piece 1"
     # moves piece 2's vehicle work and the page says it moved the right one.
     case Enum.at(socket.assigns.run_pieces, String.to_integer(index) - 1) do
       nil -> :no_piece
       piece -> {:ok, piece}
     end
-  rescue
-    ArgumentError -> :no_piece
   end
 
   # The gap's POSITION in the piece, one-based for the reader as with the piece
   # itself. Out of range is refused, not clamped: clamping gap 9 to the last gap
   # would split at a different point from the one named.
-  # A split needs BOTH choices. `:ok <- false` would fall through the `with`
+  # A split needs both choices. `:ok <- false` would fall through the `with`
   # uncaught — `false` is not `:ok` and not one of the refusals — and take the
   # whole LiveView down on an ordinary unchosen select.
   defp both_chosen?(gap, to) do
@@ -1254,17 +1244,15 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       not relief_window?(socket, piece, gap_entry) -> :no_relief
       true -> {:ok, at}
     end
-  rescue
-    ArgumentError -> :bad_gap
   end
 
   # Whether the block has a relief window at this gap.
   #
-  # This is not belt and braces. The select only ever OFFERS gaps that have a
+  # This is not belt and braces. The select only ever offers gaps that have a
   # window, so a form posting an unoffered gap is a page that no longer matches
   # the data — and without this check the split simply happens at a gap where no
   # operator can change over, which is the one thing the control exists to
-  # prevent. The SERVER decides, not the select.
+  # prevent. The server decides, not the select.
   defp relief_window?(socket, piece, gap) do
     windows = Map.get(socket.assigns.piece_windows, piece.block_id, [])
     Enum.any?(windows, &(&1.gap_index == gap.index))
@@ -1293,9 +1281,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # where they went. The count is the thing a reader wants confirmed after a
   # split, and it comes from the piece and the gap rather than from prose.
   #
-  # A split into a run that ALREADY existed returns `new_run_id: nil`, and the
-  # text then names the run the reader chose rather than going blank — the same
-  # rule step 30 and 31 settled on.
+  # A split into a run that already existed returns `new_run_id: nil`, and the
+  # text then names the run the reader chose rather than going blank, as a move
+  # does.
   defp split_text(piece, at, destination) do
     later_count = piece.trips |> Enum.drop(at + 1) |> length()
 
@@ -1305,7 +1293,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   end
 
   # Which run the trips ended up on. A split into a run that already existed
-  # returns `new_run_id: nil`, and the run the READER chose is the one to name.
+  # returns `new_run_id: nil`, and the run the reader chose is the one to name.
   defp target_id(new_run_id, :new), do: new_run_id
   defp target_id(_new_run_id, destination), do: destination
 
@@ -1314,10 +1302,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     "#{trips} from block #{block_id} moved to run #{target}."
   end
 
-  # The drawer follows the PIECE. A piece moved into a run of its own leaves the
+  # The drawer follows the piece. A piece moved into a run of its own leaves the
   # reader looking at a different run from the one they chose from, and a drawer
   # left on the source would show them a run that no longer holds what they just
-  # moved. The number of a new run is only known AFTER the write, so this takes
+  # moved. The number of a new run is only known after the write, so this takes
   # the value `apply_run_moves/4` returned; for an existing run that value is
   # nil and the destination the reader chose is the one to follow.
   defp follow_run(socket, new_run_id, destination) do
@@ -1328,11 +1316,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     |> push_patch(to: runs_path(socket, socket.assigns.day, %{run: target}))
   end
 
-  # `after_success` runs ONLY on a success, and is handed the socket and the
+  # `after_success` runs only on a success, and is handed the socket and the
   # `new_run_id` the write returned. It exists so a caller that has something
-  # more to do after a write — step 31 moving the drawer to the piece's new run —
+  # more to do after a write — moving the drawer to the piece's new run —
   # does not have to learn the return shape a second time, and so no caller can
-  # put that work on a REFUSAL, where the write never happened. A refusal must
+  # put that work on a refusal, where the write never happened. A refusal must
   # leave the reader on what they were looking at.
   defp apply_moves(socket, moves, success, refusal, after_success \\ fn socket, _id -> socket end)
 
@@ -1341,17 +1329,17 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     %{day: day, current_organization: organization, current_gtfs_version: version} =
       socket.assigns
 
-    # An EMPTY move set is refused here, once, for every caller.
+    # An empty move set is refused here, once, for every caller.
     #
     # `apply_run_moves/4` answers `[]` with `{:ok, changed_trips: 0}` — a
-    # SUCCESS for a write that changed nothing. Left unguarded, a caller with
+    # Success for a write that changed nothing. Left unguarded, a caller with
     # nothing to move (a segment or a piece that carries no trips) would show
     # "Piece moved to run 1002." and arm an Undo over zero moves, and the reader
     # would believe vehicle work had changed places when none had.
     #
     # No fixture in this package reaches it, so unlike the guards around it this
     # one is defence in depth rather than proof. It stays because the false
-    # success is a property of the SHARED helper, and every caller — create a
+    # success is a property of the shared helper, and every caller — create a
     # run, move a piece, undo — would otherwise inherit it.
     case moves do
       [] ->
@@ -1405,9 +1393,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
-  # This step's own success text. A write that made no run of its own — a move, a
-  # split, a rename — has no number to quote, so it does not invent one, and
-  # steps 30, 31 and 32 pass their own `success` in place of this.
+  # The create's own success text. A write that made no run of its own — a move,
+  # a split, a rename — has no number to quote, so it does not invent one, and
+  # those writes pass their own `success` in place of this.
   defp created_text(id), do: "Run #{id} created."
 
   defp undo_trip_count(undo_moves) do
@@ -1416,9 +1404,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   # The toast, and the timer that takes it away.
   #
-  # **10 s with an Undo and 4 s without**, the reference's own timing: an Undo the
+  # **10 s with an Undo and 4 s without**: an Undo the
   # reader cannot reach in time is not an Undo, and a confirmation with nothing to
-  # take back has earned less of their attention. The Undo is assigned BEFORE the
+  # take back has earned less of their attention. The Undo is assigned before the
   # toast, because the timeout reads it to choose.
   defp put_toast(socket, text, kind \\ :done)
 
@@ -1443,7 +1431,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   # The segment the button names, found in the day's own uncovered list.
   #
-  # Compared as STRINGS on purpose: `phx-value` arrives as a string and a segment
+  # Compared as strings on purpose: `phx-value` arrives as a string and a segment
   # carries integers, so a straight `==` would find nothing and every Create run
   # would report the block as no longer uncovered.
   defp find_uncovered(nil, _params), do: nil
@@ -1463,7 +1451,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   defp toggle_dir(:asc), do: :desc
   defp toggle_dir(_dir), do: :asc
 
-  # The share of every day type is a WHOLE-VERSION read — `Runs.day_type_shares/2`
+  # The share of every day type is a whole-version read — `Runs.day_type_shares/2`
   # exports movements, reads the crew rules and derives each day type — so it is
   # far more work than the day's own read and none of it is needed to draw the
   # strip. Loading it in the LiveView process would block the page on every
@@ -1543,7 +1531,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         |> assign(:drawer, nil)
 
       {:error, {:unknown_day_type, []}} ->
-        # An EMPTY list is the version saying it has no day types at all, which
+        # An empty list is the version saying it has no day types at all, which
         # is a missing calendar rather than a day the reader mistyped. The two
         # are the same error shape from the read and different states here,
         # because the reader is sent to a different page for each.
@@ -1581,13 +1569,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # sign-on second are ordered by name, so clicking a header twice returns the
   # same order both times. Without the tiebreak, a re-sort that does not change
   # the key would shuffle rows that the reader has learned the positions of.
-  # What the page is SHOWING: the saved day, or — while a suggestion is
+  # What the page is showing: the saved day, or — while a suggestion is
   # previewed — the same day with `derived` replaced by the plan's own preview.
   #
   # It is a `runs_day`-shaped map rather than a second field at every call site,
-  # so the chart, the list, the count strip and the tabs all read ONE source and
+  # so the chart, the list, the count strip and the tabs all read one source and
   # cannot disagree about which runs are on screen. `day`, `crew` and `context`
-  # are unchanged: a preview changes the CUTTING, not the day it cuts.
+  # are unchanged: a preview changes the cutting, not the day it cuts.
   # The runs this suggestion would add or change, as a MapSet. Read from the
   # plan's own `changed_run_ids` and `new_run_ids` — the domain's account of
   # which runs a plan touches — rather than by diffing the two derivations here,
@@ -1615,7 +1603,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     if uncovered_trip_count(shown(assigns)) > 0, do: :uncovered_only, else: :replace_all
   end
 
-  # The radio VALUES are the card's strings; the scope ATOMS are
+  # The radio values are the form's strings; the scope atoms are
   # `Runs.Cutter`'s. The cast lives here rather than in the domain because the
   # domain already guarantees the two atoms it accepts, and nothing else
   # produces a scope from user input.
@@ -1639,9 +1627,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   # The relief stops the cutter would split at, as `{stop_id, name}` pairs for
   # the drawer's rules list. Read from the day's blocks rather than from the
-  # version-wide setting list, because the drawer is about THIS day.
+  # version-wide setting list, because the drawer is about this day.
   # The relief stop IDs this day's blocks actually offer, read from the blocks'
-  # own WINDOWS.
+  # own windows.
   #
   # IDs and not names, deliberately. A window carries `stop_id` and nothing
   # else, and the nearest name source is the day's trips, which name only their
@@ -1671,16 +1659,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
-  # The count of travel legs the CUTTER had to guess at.
+  # The count of travel legs the cutter had to guess at.
   #
-  # It is 0 here, and that is a FACT rather than a stub. The prototype's "3
-  # travel times are estimated" is its own browser heuristic guessing between
-  # stops. The Elixir cutter does not guess: `Blocking.Relief` builds no window
-  # for a drive it cannot compute, so a day with unknown drives simply offers
-  # fewer relief points and the checks say so. There is therefore no domain
-  # source of "estimated" legs to count, and the note is rendered only if a
-  # count is ever supplied — today that is never. Recorded in the step-36
-  # learning as prototype drift rather than faked with a count.
+  # It is 0 here, and that is a fact rather than a stub. The cutter does not
+  # guess: `Blocking.Relief` builds no window for a drive it cannot compute, so a
+  # day with unknown drives simply offers fewer relief points and the checks say
+  # so. There is therefore no domain source of "estimated" legs to count, and the
+  # note is rendered only if a count is ever supplied — today that is never.
   defp estimated_travel(_assigns), do: 0
 
   defp suggest_error({:unknown_day_type, _}),
@@ -1710,9 +1695,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     |> stream(:run_rows, runs, reset: true, dom_id: &run_dom_id/1)
   end
 
-  # `stream/4` would otherwise prefix every row with the STREAM's name, giving
+  # `stream/4` would otherwise prefix every row with the stream's name, giving
   # `run_rows-run-1001`. The row is a run, and a run id is already a legal DOM
-  # id, so the row keeps the name the prototype and the piece titles use.
+  # id, so the row keeps the name the piece titles use.
   defp run_dom_id(%{id: id}), do: id
 
   # `Enum.sort_by/3`'s comparator is a two-argument function, so the direction
@@ -1720,7 +1705,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   defp sorter_comparator(:asc), do: &<=/2
   defp sorter_comparator(_dir), do: &>=/2
 
-  # The status order is the severity of the run's WORST finding, so sorting by
+  # The status order is the severity of the run's worst finding, so sorting by
   # Status brings the run that needs attention to the top rather than ordering
   # by a count and hiding a single error behind four notices.
   defp sort_value(run, :id), do: run.run_id
@@ -1778,7 +1763,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # resets it. A patch that rebuilt the path from scratch would silently send a
   # reader who had picked a day type back to the version's default day.
   #
-  # A value equal to its default is left OUT rather than written, so the URL a
+  # A value equal to its default is left out rather than written, so the URL a
   # reader copies for the default view is the short one and the address bar does
   # not fill with `sort=sign_on&dir=asc`.
   #
@@ -1821,25 +1806,25 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   @impl true
   def render(assigns) do
-    # The page's one primary, decided ONCE per render and passed down.
+    # The page's one primary, decided once per render and passed down.
     #
     # It cannot be written inline as `primary_owner(assigns)` at the call sites.
-    # Inside a `<:actions>` or `<:counts>` slot the name `assigns` is the SLOT's
+    # Inside a `<:actions>` or `<:counts>` slot the name `assigns` is the slot's
     # assigns — the page head's, which carry no `runs_day` — so a call there sees
     # a map with no `runs_day` in it, matches no clause and hands the primary to
-    # nobody. Computing it here, in the function body, is also why it is NOT bound
+    # nobody. Computing it here, in the function body, is also why it is not bound
     # with `<% primary = ... %>` inside the sigil: a binding there did not reach
     # the slots, and the symptom was the same silent `:none`.
     #
     # One decision for the whole page is the point. Two components each deciding
     # for themselves is how a day ends up with two primaries.
     #
-    # It is an ASSIGN rather than a plain variable. A bare Elixir variable read
+    # It is an assign rather than a plain variable. A bare Elixir variable read
     # inside `~H` compiles with a warning and disables change tracking for the
     # part of the tree that reads it; and it cannot be reached from a slot at
     # all, because a slot only sees assigns. Binding it before the first slot is
     # also why it is not written as `primary_owner(assigns)` at the call sites:
-    # inside a slot that `assigns` is the SLOT's map, which carries no
+    # inside a slot that `assigns` is the slot's map, which carries no
     # `runs_day`, so the call would match no clause and hand the primary to
     # nobody.
     assigns = assign(assigns, :primary, primary_owner(assigns))
@@ -2029,7 +2014,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         day_type_key={@day || ""}
       />
 
-      <%!-- The drawer describes a DAY, and a closed `<.drawer>` still renders
+      <%!-- The drawer describes a day, and a closed `<.drawer>` still renders
             its body. Before the day loads there is no crew, no relief point and
             no next number to name, so the drawer does not exist yet rather than
             existing with blanks in it. The button that opens it is already
@@ -2111,8 +2096,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   # The run the drawer is showing, or nil.
   #
-  # Re-found from the LOADED DAY on every render rather than held in an assign,
-  # because the day is re-read after every write (step 28) and a drawer holding a
+  # Re-found from the loaded day on every render rather than held in an assign,
+  # because the day is re-read after every write and a drawer holding a
   # run struct would then be describing a version of the run that no longer
   # exists. One lookup over a list this size, on a render that already redraws the
   # chart.
@@ -2136,7 +2121,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   # The domain's own message, taken out of Ecto's `{message, opts}` error tuple.
   #
-  # `traverse_errors/2` returns a MAP of field to messages, and this form has one
+  # `traverse_errors/2` returns a map of field to messages, and this form has one
   # field, so the map is flattened. Handing the map itself to
   # `CoreComponents.error/1` renders `{:run_id, ["is already used in this day
   # type"]}` as text — and raises, because a tuple is not `Phoenix.HTML.Safe`.
@@ -2161,7 +2146,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     Enum.find(runs, &(&1.run_id == run_id))
   end
 
-  # The drawer's subtitle is the LOADED day type's own label rather than its key,
+  # The drawer's subtitle is the loaded day type's own label rather than its key,
   # which is a base64 hash a reader cannot check against anything — and rather
   # than every day type the version has, which would name days the drawer says
   # nothing about.
@@ -2186,14 +2171,14 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
-  # `:loaded` and `:unavailable` have no panel: the plan step fills the first
-  # and `unavailable_callout/0` presents the second. Rendering a plan card
+  # `:loaded` and `:unavailable` have no panel: the chart fills the first and
+  # `unavailable_callout/0` presents the second. Rendering a plan card
   # around nothing in either state would put an empty bordered box on the page,
   # which reads as a failure to load.
   defp panel_state?(state) when state in [:loading, :no_dates, :empty, :unknown], do: true
   defp panel_state?(_state), do: false
 
-  # WHO owns the page's one primary, decided once per render (AC-31).
+  # Who owns the page's one primary, decided once per render.
   #
   # Four things on this page could each argue for it — the Review problems
   # action, Suggest runs, the no-blocks link and the first-use action — and each
@@ -2209,7 +2194,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   #   3. first use — blocks and no runs is an unfinished setup, and suggesting is
   #      the way out of it.
   #
-  # A loaded day with no problems has NO primary: there is nothing to fix and
+  # A loaded day with no problems has no primary: there is nothing to fix and
   # nothing unfinished, so promoting anything would be asking the reader to
   # prefer one action arbitrarily. Suggest runs stays secondary and says what it
   # does.
@@ -2227,7 +2212,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # checked before the run count rather than after.
   # Operator changes are not set up, so blocks are only cut at their ends. Read
   # from the loaded day's own `relief_ready?`, which the domain computes from the
-  # marked relief points AND the piece limit: a limit with no relief point splits
+  # marked relief points and the piece limit: a limit with no relief point splits
   # nothing, and a relief point with no limit splits at every window.
   defp relief_setup_needed?(assigns) do
     case assigns do
@@ -2241,7 +2226,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   end
 
   defp first_use?(assigns) do
-    # Read the SHOWN day, not the saved one. A preview of a first-use day has
+    # Read the shown day, not the saved one. A preview of a first-use day has
     # runs in it, so reading the saved day would keep the first-use panel on
     # screen over the suggestion's own runs.
     day = if previewing?(assigns), do: shown(assigns), else: Map.get(assigns, :runs_day)
@@ -2257,7 +2242,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   defp problems_count(assigns) do
     case assigns do
-      # `uncovered` is INSIDE `derived`, beside `findings`. Written as a sibling
+      # `uncovered` is inside `derived`, beside `findings`. Written as a sibling
       # of `derived` the pattern still compiles and simply never matches, which
       # is how this page came to believe a day with two findings had none.
       %{runs_day: %{derived: %{findings: findings, uncovered: uncovered}}} ->
@@ -2271,15 +2256,15 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # The crew rules for the loaded day, or nil.
   #
   # The chart's block renders in the `:unavailable` state as well as `:loaded`,
-  # because a failed RELOAD keeps the runs already on screen. A failed FIRST
+  # because a failed reload keeps the runs already on screen. A failed first
   # load has no `runs_day` at all, so this is a map check and not a truthiness
-  # check — the same nil trap step 21 recorded on the count strip, reached here
-  # through a different door. A nil crew makes the footnote's paid-break limit
+  # check — the same nil trap as the count strip's, reached here through a
+  # different door. A nil crew makes the footnote's paid-break limit
   # read as an em dash, which is the right thing to say about a limit nobody set.
   # Every stop the day's trips name, as `%{stop_id => name}`.
   #
   # A relief window carries a `stop_id` and a time, and a reader needs the stop's
-  # NAME to plan a change: "09:12 at BAY_B" is a stop code, and "09:12 at Bay B"
+  # Name to plan a change: "09:12 at BAY_B" is a stop code, and "09:12 at Bay B"
   # is a place. The name is already on the trips the day loaded, so this is a
   # projection of data the page is holding rather than a second read, and the
   # routes map beside it is built the same way.
@@ -2288,8 +2273,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # whether or not the page can spell its stop.
   # The day's uncovered segments, or an empty list when there is no day. Every
   # read of them is guarded the same way, because the tools row renders in the
-  # `:unavailable` state too and a failed FIRST load has no day at all - step 25's
-  # nil trap, and this step adds three more doors onto the same room.
+  # `:unavailable` state too and a failed first load has no day at all.
   defp uncovered_segments(nil), do: []
   defp uncovered_segments(%{derived: %{uncovered: uncovered}}), do: uncovered
 

@@ -1,20 +1,20 @@
 defmodule GtfsPlanner.Gtfs.Runs.CrewSettingsTest do
   @moduledoc """
-  Merge evidence (EV-2) for CL-1: the crew rules read their researched defaults
-  without writing a row, validate every range, save under the version and blocking
-  locks, and leave the Block rules and the piece limit exactly as spec 07 stored
-  them — in both directions — so FH-1 stays rejected.
+  The crew rules read their researched defaults without writing a row, validate
+  every range, save under the version and blocking locks, and leave the Block
+  rules and the piece limit exactly as the Blocks page stored them, in both
+  directions.
 
-  Every case goes through the `Gtfs` facade, which is the path the Runs page calls,
-  and the two column-ownership cases round-trip through spec 07's own
-  `update_settings/3` and `update_relief_settings/4` rather than writing
+  Every case goes through the `Gtfs` facade, which is the path the Runs page
+  calls, and the two column-ownership cases round-trip through the Blocks page's
+  own `update_settings/3` and `update_relief_settings/4` rather than writing
   `blocking_settings` by hand. The crew columns are only ever reached through
-  `Runs` and `BlockingSetting`, which is the ownership rule the criteria state.
+  `Runs` and `BlockingSetting`, which is the column-ownership rule.
 
   Rows are created inside the SQL Sandbox transaction and rolled back.
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/crew_settings_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/crew_settings_test.exs`.
   """
   use GtfsPlanner.DataCase, async: true
 

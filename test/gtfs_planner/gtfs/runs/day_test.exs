@@ -1,11 +1,11 @@
 defmodule GtfsPlanner.Gtfs.Runs.DayTest do
   @moduledoc """
-  Merge evidence (EV-6) for CL-6: one day's runs, findings and figures, so FH-9
-  stays rejected.
+  One day's runs, findings and figures.
 
   The day here is six blocks over one garage, all hand-built through the real
-  `Blocking.Movements.build/3` and `Blocking.Relief.windows/3` as step 4's tests
-  are, so the pieces and boundaries under test are derived rather than asserted.
+  `Blocking.Movements.build/3` and `Blocking.Relief.windows/3` as
+  `pieces_test.exs` builds its own, so the pieces and boundaries under test are
+  derived rather than asserted.
 
   ## The day, and its figures, by hand
 
@@ -34,15 +34,14 @@ defmodule GtfsPlanner.Gtfs.Runs.DayTest do
   break; P's 45 minutes is not. That difference is most of why the two runs with
   identical pieces have different paid totals.
 
-  `straight_share` is 1 ÷ (1 + 1) = **50**: A is in neither the numerator nor
-  the denominator, because a run with no break had no choice to be straight.
+  `straight_share` is 1 ÷ (1 + 1) = 50: A is in neither the numerator nor the
+  denominator, because a run with no break had no choice to be straight.
   `vehicle_share` is (60 + 120 + 120) ÷ (80 + 185 + 155) = 300 ÷ 420 = 71.4…,
-  which rounds to **71**. The longest spread is P's 200 minutes.
-  `axis` starts at A's sign-on, 05:45, and ends at the uncovered segment's
-  finish, 17:00.
+  which rounds to 71. The longest spread is P's 200 minutes. `axis` starts at A's
+  sign-on, 05:45, and ends at the uncovered segment's finish, 17:00.
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/day_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/day_test.exs`.
   """
   use ExUnit.Case, async: true
 

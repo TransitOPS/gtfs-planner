@@ -1,23 +1,21 @@
 defmodule GtfsPlanner.Gtfs.Blocking.TodsExportRunsTest do
   @moduledoc """
-  Merge evidence (EV-37) for CL-17: the identifiers a run needs to refer back to
-  what the supplement export wrote.
+  The identifiers a run needs to refer back to what the supplement export wrote.
 
   A day type carrying runs needs two things the movement-only export could not
   give it: a `service_id` even when it has no deadhead, and a mapping from each of
   its movements to the trip that movement was written as.
 
-  The module under test is pure (CR-1), so these cases run in the local ExUnit
-  process with no sandbox, fixtures or cleanup. Movements are handed over as the
-  literal `Movements.t()` maps a day load produces — derived and never stored
-  (INV-8).
+  The module under test is pure, so these cases run in the local ExUnit process
+  with no sandbox, fixtures or cleanup. Movements are handed over as the literal
+  `Movements.t()` maps a day load produces — derived and never stored.
 
-  The service IDs are recomputed here from R13's own rule with `:crypto`, as in
-  spec 07's file, rather than read back from the result: a case that read
-  `ids.service_ids` to build its expectation would pass whatever the module
-  returned.
+  The service IDs are recomputed here from the export's naming rule with
+  `:crypto`, as in `tods_export_test.exs`, rather than read back from the result:
+  a case that read `ids.service_ids` to build its expectation would pass whatever
+  the module returned.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/tods_export_runs_test.exs
   test/gtfs_planner/gtfs/blocking/tods_export_test.exs`.
   """
@@ -61,9 +59,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportRunsTest do
     }
   end
 
-  # The gap's own `index` is a parameter here, where spec 07's helper fixes it at
-  # 0: two drives in one block are only distinguishable by their index, and that
-  # is exactly what `{:gap, index}` is built from.
+  # The gap's own `index` is a parameter here, where `tods_export_test.exs`'s
+  # helper fixes it at 0: two drives in one block are only distinguishable by
+  # their index, and that is exactly what `{:gap, index}` is built from.
   defp gap(from_id, to_id, arrival_secs, departure_secs, kind, drive_secs, index) do
     %{
       index: index,
@@ -148,7 +146,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportRunsTest do
     )
   end
 
-  # R13's service ID, recomputed from the rule rather than read from the result.
+  # The day type's service ID, recomputed from the rule rather than read from the
+  # result.
   defp service_id(key, width \\ 6), do: "ops_dt_" <> hex(key, width)
 
   defp hex(key, width),
@@ -212,8 +211,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportRunsTest do
           )
         )
 
-      # Unchanged from spec 07: with no runs there is nothing to refer back to, so
-      # no empty service is minted for it.
+      # Unchanged from the movement-only export: with no runs there is nothing to
+      # refer back to, so no empty service is minted for it.
       assert rows == %{calendar_dates: [], routes: [], trips: [], stop_times: [], omitted: 0}
     end
   end
@@ -404,7 +403,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportRunsTest do
   end
 
   describe "without run_day_types" do
-    test "the output is what spec 07 asserted, plus the ids" do
+    test "the output is the movement-only export's, plus the ids" do
       block = two_gap_block("101")
 
       rows =

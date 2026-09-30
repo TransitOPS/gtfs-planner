@@ -1,16 +1,15 @@
-// Runs browser journey (EV-40, step 43).
+// Runs browser journey.
 //
-// The journey exercises the Runs page end to end in Chromium at 1440x1000
-// against the seeded "Browser Runs Version" in `test/support/browser_seed.exs`
-// — the version that carries the prototype's default runs problems — and
-// captures the states the card names for comparison with
-// `.specs/08-basic-runs/references/runs-prototype.html`.
+// The journey exercises the Runs page end to end in Chromium at 1440x1000 against
+// the seeded "Browser Runs Version" in `test/support/browser_seed.exs` — the
+// version that carries the prototype's default runs problems — and captures the
+// key states for comparison with the Runs design prototype.
 //
 // The seed, read from `test/support/browser_seed.exs` and not from the page:
 //
 //   * two calendars, {WKDY} and {SAT}. Weekday is the default and the only day
 //     type this journey opens. Saturday carries run "2001" as well, which is a
-//     DIFFERENT run from the weekday "2001" — the same ID on two day types is
+//     different run from the weekday "2001" — the same ID on two day types is
 //     two pieces of saved work, and the Saturday one is never opened here;
 //   * six weekday runs, 2001-2006. 2001 works blocks 101 and 104 and is a
 //     :SPLIT (the break between them is 30060 s, past the 30-minute paid-break
@@ -30,22 +29,21 @@
 //     The pull-out report is 0-30, so 200 is out of range.
 //
 // Two places where this journey asserts what the application does rather than
-// what the card's prose says, both because the prose is the reference's and the
-// application deliberately differs:
+// what the design reference shows, because the application deliberately differs:
 //
 //   * the reference draws a `⇄` glyph at a relief handover. The application
 //     writes the words "(relief point)" instead — a glyph beside a number is
-//     not available to a screen reader, and step 32 recorded the same drift;
-//   * the card names `logInAs` and `captureShot` as helpers in
-//     `browser_helpers.js`. Neither exists. The repository's own e2e specs
-//     (`blocks_advanced.spec.js`, spec 07) each define a local `logIn` and a
-//     local `capture` against `testInfo.outputPath`, and this file follows that
-//     pattern rather than inventing a shared helper the other specs do not use.
+//     not available to a screen reader;
+//   * `browser_helpers.js` has no shared log-in or capture helper. The
+//     repository's own e2e specs (`blocks_advanced.spec.js`) each define a local
+//     `logIn` and a local `capture` against `testInfo.outputPath`, and this file
+//     follows that pattern rather than inventing a shared helper the other specs
+//     do not use.
 //
-// The journeys share one reset-and-seeded database, so they are serial and run
-// in the order the card lists them: the measuring journeys read the day the seed
-// made, the split journey undoes its own write, and the two that change the day
-// come after everything that reads it.
+// The journeys share one reset-and-seeded database, so they are serial and run in
+// this order: the measuring journeys read the day the seed made, the split
+// journey undoes its own write, and the two that change the day come after
+// everything that reads it.
 //
 // Captures are written under `testInfo.outputPath` and copied to
 // `.specs/08-basic-runs/evidence/browser/`; the last journey writes
@@ -168,7 +166,7 @@ async function runFacts(page) {
 }
 
 // Saves a capture under the test's own output directory, then copies it into the
-// spec package's browser-evidence folder (the card's capture artifact).
+// spec package's browser-evidence folder when that folder is present.
 async function capture(page, testInfo, name, { fullPage = false } = {}) {
   const outputPath = testInfo.outputPath(`${name}.png`);
   mkdirSync(dirname(outputPath), { recursive: true });
@@ -272,7 +270,7 @@ test.describe("Runs page at 1440x1000", () => {
 
     tour.viewport = { ...measured, fits: true };
 
-    // And the same after Zoom in, which doubles the TRACK and is the state most
+    // And the same after Zoom in, which doubles the track and is the state most
     // likely to push a page wide: the scroll belongs to #runs-timeline-scroll,
     // not to the document.
     await page.getByRole("radio", { name: "Zoom in" }).click();
@@ -290,12 +288,12 @@ test.describe("Runs page at 1440x1000", () => {
     await page.getByRole("radio", { name: "Zoom in" }).click();
     await expect(page.locator("#runs-timeline")).toHaveAttribute("data-scale", "zoom");
 
-    // Every fact column, not only the two the card names. The header cells are
-    // named from the sort keys (`sign_on`, `sign_off`) and the body cells from
-    // `run_facts/1`'s keys (`on`, `off`), and the two sets did not agree — so a
-    // check that only watched Run and Status would have missed the columns that
-    // scrolled their label away. This reads all seven, from the header and from
-    // the first row, and asserts both moved not at all.
+    // Every fact column, not only Run and Status. The header cells are named from
+    // the sort keys (`sign_on`, `sign_off`) and the body cells from `run_facts/1`'s
+    // keys (`on`, `off`), and the two sets did not agree — so a check that only
+    // watched Run and Status would have missed the columns that scrolled their
+    // label away. This reads all seven, from the header and from the first row,
+    // and asserts both moved not at all.
     const before = await page.evaluate(() => {
       const scroller = document.querySelector("#runs-timeline-scroll");
       const row = document.querySelector("#runs-timeline-body tr");
@@ -469,7 +467,7 @@ test.describe("Runs page at 1440x1000", () => {
     expect(pay.pieces).toBe(2);
     expect(pay.paidLineSecs.length).toBeGreaterThan(2);
 
-    // The card's case: the lines sum to the total.
+    // The lines sum to the total.
     const summed = pay.paidLineSecs.reduce((a, b) => a + b, 0);
     expect(summed).toBe(pay.totalSecs);
 
@@ -501,9 +499,9 @@ test.describe("Runs page at 1440x1000", () => {
     await openRuns(page, versionId, "?run=2001");
     await openDrawer(page, "run-drawer");
 
-    // The boundary is a HANDOVER and the drawer says which ones are at a
-    // relief point. The reference draws a `⇄` glyph here; the application
-    // writes the words, and step 32 recorded the same drift.
+    // The boundary is a handover and the drawer says which ones are at a relief
+    // point. The reference draws a `⇄` glyph here; the application writes the
+    // words.
     await expect(page.locator("#run-drawer")).toContainText("(relief point)");
 
     // Piece 0 is block 101, and its only handover is index 1: the change of
@@ -743,7 +741,7 @@ test.describe("reference prototype captures", () => {
       await expect(page.locator("body")).toBeVisible();
 
       // Recorded for the side-by-side capture only: the prototype's own markup
-      // and pixels are not this gate's oracle.
+      // and pixels are not what this journey checks.
       const bodyWidth = await page.evaluate(() => document.body.scrollWidth);
       tour[`reference_${name.replaceAll("-", "_")}`] = {
         state: query,
@@ -771,7 +769,7 @@ test.describe("qa tour", () => {
       tour[key] === undefined ? "(not measured)" : JSON.stringify(tour[key], null, 2);
 
     const markdown = [
-      "# Runs browser QA tour (EV-40, step 43)",
+      "# Runs browser QA tour",
       "",
       "Entrypoint: `/gtfs/<version>/runs` for the published **Browser Runs",
       "Version** seeded by `test/support/browser_seed.exs` — eight weekday blocks",
@@ -805,27 +803,26 @@ test.describe("qa tour", () => {
       "| 8 | Rebuild confirm | Apply asks, and keeping the current runs leaves the day unchanged across a reload |",
       "| 9 | Crew rules range error | 200 in Report before a pull-out shows `Enter a whole number from 0 to 30.` and does not save |",
       "",
-      "## Evidence mapping",
+      "## Captures",
       "",
-      "- EV-40 — scenarios 1-9 above, plus the reference and production captures",
-      "  in `.specs/08-basic-runs/evidence/browser/`.",
-      "- EV-41 — the ExUnit suite and `mix precommit`, run in branch review.",
+      "Scenarios 1-9 above, plus the reference and production captures saved",
+      "beside this file.",
       "",
       "## Automated coverage of the same behaviour",
       "",
       "Each journey's behaviour is also covered headlessly by the ExUnit",
-      "LiveView tests, which are the merge gate; this journey is the visual and",
+      "LiveView tests; this journey is the visual and",
       "measured counterpart.",
       "",
       "| Scenario | ExUnit evidence |",
       "| --- | --- |",
-      "| Measurements and sticky columns | `runs_timeline_live_test.exs` (EV-21), `runs_marks_live_test.exs` (EV-22) |",
-      "| Sort | `runs_list_live_test.exs` (EV-24) |",
-      "| Drawer pay lines | `runs_drawer_live_test.exs` (EV-27) |",
-      "| Split and Undo | `runs_split_piece_live_test.exs` (EV-30) |",
-      "| Uncovered preview and apply | `runs_suggest_live_test.exs` (EV-34), `runs_apply_live_test.exs` (EV-35) |",
-      "| Rebuild confirm | `runs_apply_live_test.exs` (EV-35) |",
-      "| Crew rules range error | `runs_crew_rules_live_test.exs` (EV-32) |",
+      "| Measurements and sticky columns | `runs_timeline_live_test.exs`, `runs_marks_live_test.exs` |",
+      "| Sort | `runs_list_live_test.exs` |",
+      "| Drawer pay lines | `runs_drawer_live_test.exs` |",
+      "| Split and Undo | `runs_split_piece_live_test.exs` |",
+      "| Uncovered preview and apply | `runs_suggest_live_test.exs`, `runs_apply_live_test.exs` |",
+      "| Rebuild confirm | `runs_apply_live_test.exs` |",
+      "| Crew rules range error | `runs_crew_rules_live_test.exs` |",
       "",
       "## Measured on this run",
       "",
@@ -883,18 +880,8 @@ test.describe("qa tour", () => {
       value("crewError"),
       "```",
       "",
-      "## Status",
-      "",
-      "**Blocked on this base.** `bin/test-browser` does not exist here, and the",
-      "card's setup step (`bin/test-browser --keep e2e/ia_navigation.spec.js`) is",
-      "the only sanctioned way to create, migrate and seed a disposable database",
-      "for this lane. `mise run prepare:browser` is not a substitute: it runs",
-      "`mix ecto.reset --force`, which resets a database. So no capture in this",
-      "directory was produced by a run of this spec, and every \"Measured on this",
-      "run\" block above reads `(not measured)`.",
-      "",
-      "The spec itself is complete and is the artifact EV-40 asks for. Running it",
-      "needs only a base with `bin/test-browser`.",
+      "A \"Measured on this run\" block reads `(not measured)` when its journey",
+      "did not run.",
       "",
     ].join("\n");
 

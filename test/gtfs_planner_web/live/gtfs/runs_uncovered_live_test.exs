@@ -1,21 +1,19 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsUncoveredLiveTest do
   @moduledoc """
-  EV-25: the Uncovered work tab.
+  The Uncovered work tab.
 
-  The card's independence field is "seeded segments", and that is the shape of
-  this gate. The panel's whole purpose is answering "what is left?", so the
-  assertions are about the answer being **the day's own** and not a second
+  The segments are seeded. The panel's whole purpose is answering "what is left?",
+  so the assertions are about the answer being the day's own and not a second
   reading of the same numbers: the callout's count is trips, the tab's count is
   trips, the row's count is trips, and the empty state says so in words. Two of
   those three have to agree with each other, and a fourth thing — the count strip
   the callout sits under — has to agree with all of them.
 
-  The second concern is the cell that exists for the panel's sake: the **next
-  relief window**. A change of operator is only possible at a window, so a
-  segment with one in five minutes and a segment with none in its own span are
-  different pieces of work, and a table that showed only clock times would make
-  them identical. The "no window" branch is asserted as its own sentence, not as
-  an absent cell.
+  The second concern is the cell that exists for the panel's sake: the next relief
+  window. A change of operator is only possible at a window, so a segment with one
+  in five minutes and a segment with none in its own span are different pieces of
+  work, and a table that showed only clock times would make them identical. The
+  "no window" branch is asserted as its own sentence, not as an absent cell.
   """
   use GtfsPlannerWeb.ConnCase, async: true
 
@@ -348,9 +346,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsUncoveredLiveTest do
       assert count(view, "[data-role=create-run]") == 2
       assert has_element?(view, "#uncovered-0 [data-role=create-run]", "Create run")
 
-      # Step 28 wires the handler. Until then the button is inert BY THE CARD'S
-      # SEQUENCING, so this gate asserts its identity and does not click it: a
-      # click here would be testing step 28's work.
+      # This asserts the button's identity and does not click it: clicking is
+      # `runs_create_undo_live_test.exs`'s subject.
       block =
         view
         |> doc()
@@ -470,12 +467,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsUncoveredLiveTest do
       w = world(ctx)
       view = open(ctx, w, "sort=spread&dir=desc")
 
-      # The sort is still in force after the panel changes, so a reader who
-      # sorted a table and then went looking at uncovered work does not lose
-      # their order — step 26's bug, reached through a different control.
-      # The WHOLE path, so a patch that dropped the sort or the direction is a
-      # failure rather than a prefix match — step 26's bug, reached through the
-      # new control instead of the old one.
+      # The sort is still in force after the panel changes, so a reader who sorted
+      # a table and then went looking at uncovered work does not lose their order.
+      # The whole path, so a patch that dropped the sort or the direction is a
+      # failure rather than a prefix match.
       view |> element("#runs-tab-uncovered") |> render_click()
 
       assert_patch(
@@ -512,8 +507,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsUncoveredLiveTest do
       view = open(ctx, w, "panel=uncovered")
 
       # A zoom on a table changes nothing, and a control that changes nothing is
-      # one the reader has to work out is broken — step 26's rule, applied to the
-      # second control that only ever drew the chart.
+      # one the reader has to work out is broken, so this panel does not offer it.
       refute has_element?(view, "#runs-scale")
     end
   end

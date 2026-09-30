@@ -92,13 +92,13 @@ defmodule GtfsPlanner.Gtfs.BlockingSetting do
   # here, so it is left to `cast/4` as an "is invalid" field error rather than
   # becoming the default. `empty_values: []` keeps the blank out of `nil`, so a
   # cleared input reads as a mistake the user must fix and not as "unset" — a crew
-  # rule has no unset state, only a range (CR-3).
+  # rule has no unset state, only a range.
   @doc """
   Changeset for the five crew rules.
 
   Only `crew_fields/0` is cast, so `organization_id` and `gtfs_version_id` in
   submitted parameters are ignored; the caller sets those on the struct. Every
-  range from AC-1 is checked here and again by the named database constraint, so a
+  range is checked here and again by the named database constraint, so a
   value that reaches the table outside this changeset still cannot store.
   """
   @spec crew_changeset(t(), map()) :: Ecto.Changeset.t()

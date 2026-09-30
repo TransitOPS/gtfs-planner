@@ -1,24 +1,23 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
   @moduledoc """
-  EV-27: the run drawer.
+  The run drawer.
 
-  The card's independence field is "sum of rendered lines against the Paid
-  cell", and that is the shape of this gate. The drawer's whole claim is that a
-  reader can see where the Paid figure in a run's ROW came from, so the central
-  assertion is **not** that the table says the right total — it is that the
+  The rendered lines are summed against the Paid cell. The drawer's whole claim is
+  that a reader can see where the Paid figure in a run's row came from, so the
+  central assertion is not that the table says the right total — it is that the
   individual lines, parsed back out of the rendered DOM, add up to the total
-  printed in the same table AND to the Paid cell of that run's row in the list.
+  printed in the same table and to the Paid cell of that run's row in the list.
 
   Three numbers that must agree, computed in three different places: the run's
   `work.paid_secs`, the drawer's own Paid row, and the list's cell. A test that
   asserted the drawer against `work.paid_secs` would pass on a table that
   printed a total and no lines at all.
 
-  The **unpaid break** is the other claim worth making hard. A break of several
-  hours that is not paid has two true numbers and one cell, so the length goes in
-  the label and the value cell is EMPTY — and an empty value cell is precisely
-  what a rendering fault looks like, so its emptiness is asserted as a fact about
-  this break rather than left to a count.
+  The unpaid break is the other claim worth making hard. A break of several hours
+  that is not paid has two true numbers and one cell, so the length goes in the
+  label and the value cell is empty — and an empty value cell is precisely what a
+  rendering fault looks like, so its emptiness is asserted as a fact about this
+  break rather than left to a count.
   """
   use GtfsPlannerWeb.ConnCase, async: true
 
@@ -39,11 +38,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
 
   # One run over the head of block 101 and the tail of block 102. The two blocks'
   # first trips are left unassigned, so the run has a gap between its pieces, and
-  # the gap becomes an UNPAID break — which is the case the card's pay table is
-  # really about, because it is the one line with no value.
+  # the gap becomes an unpaid break — which is the case the pay table is really
+  # about, because it is the one line with no value.
   #
-  # This is steps 27 and 28's world unchanged, so a change to the fixture shows up
-  # in all three gates.
+  # This is the same world as the uncovered-work and create-run tests, so a change
+  # to the fixture shows up in all three files.
   defp world(ctx) do
     user = ctx.user
     w = runs_version_fixture()
@@ -68,9 +67,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
     w
   end
 
-  # A SECOND run: the whole of block 101 in one run, which is one piece longer
-  # than the version's piece limit and therefore carries the card's
-  # "Piece too long" finding.
+  # A second run: the whole of block 101 in one run, which is one piece longer
+  # than the version's piece limit and therefore carries the "Piece too long"
+  # finding.
   defp long_piece_world(ctx) do
     user = ctx.user
     w = runs_version_fixture()
@@ -125,10 +124,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
 
   # "7 h 30 min" or "45 min" or "8 h" into seconds.
   #
-  # The parser is the load-bearing half of this gate. Asserting that two strings
-  # are EQUAL would only ever check that the drawer's total and the list's cell
-  # were formatted the same way; adding the lines up is a claim about arithmetic,
-  # and it is the one the card asks for.
+  # The parser is the load-bearing half of these tests. Asserting that two strings
+  # are equal would only ever check that the drawer's total and the list's cell
+  # were formatted the same way; adding the lines up is a claim about arithmetic.
   defp parse_duration(nil), do: nil
 
   defp parse_duration(text) do
@@ -136,9 +134,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
 
     # "8:57" — the COMPACT form. The list's Paid cell prints hours and minutes as
     # a clock, and the drawer prints the same quantity as "8 h 57 min". Two
-    # spellings of one number is a real difference between the two surfaces, not
-    # a rounding: a cell that read "8:57" where the drawer reads "8 h 57 min" is
-    # the same duration, and this gate is about the SUM rather than the spelling.
+    # spellings of one number is a real difference between the two surfaces, not a
+    # rounding: a cell that read "8:57" where the drawer reads "8 h 57 min" is the
+    # same duration, and these tests are about the sum rather than the spelling.
     # The parser accepts both so the comparison is of values.
     case Regex.run(~r/\A(\d+):(\d{2})\z/, text) do
       [_, hours, minutes] ->
@@ -185,9 +183,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
 
       view = open(ctx, w, "view=list")
 
-      # Step 23 shipped this button carrying `aria-disabled` and step 25 recorded
-      # that pressing it must not silently do nothing. This is the step that stops
-      # the caveat, so the button is pressed here rather than inspected.
+      # Pressing the row button must not silently do nothing, so the button is
+      # pressed here rather than inspected.
       assert attribute(view, "#runs-run-#{run_id}", "phx-click") == "open_run"
       refute has_element?(view, "#runs-run-#{run_id}[aria-disabled]")
 
@@ -315,10 +312,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
 
       labels = view |> doc() |> LazyHTML.query("[data-role=pay-label]") |> Enum.map(&trim/1)
 
-      # The card's own words for the first report. The second is a RELIEF report,
-      # not a pull-out: the crew rules give 15 minutes before a pull-out and 5
-      # before a change of operator, and a table that called both "pull-out"
-      # would overstate the second by 10 minutes a day for every split run.
+      # The first report is a pull-out report. The second is a relief report, not
+      # a pull-out: the crew rules give 15 minutes before a pull-out and 5 before
+      # a change of operator, and a table that called both "pull-out" would
+      # overstate the second by 10 minutes a day for every split run.
       assert Enum.any?(labels, &(&1 =~ "Report before piece 1 (pull-out)"))
       assert Enum.any?(labels, &(&1 =~ "Report before piece 2 (relief)"))
 
@@ -362,11 +359,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
       # The real length is on screen — a reader planning a duty needs to know the
       # gap is five and a half hours, not that it is unpaid.
       assert label =~ "5 h 35 min"
-      # And the value cell is EMPTY. This is the assertion that would fail on a
+      # And the value cell is empty. This is the assertion that would fail on a
       # table printing "0 min" (a claim the break did not happen) or the raw
       # length (a claim the run was paid for it). An empty cell is also what a
-      # rendering fault looks like, which is why the label is asserted at the
-      # same time.
+      # rendering fault looks like, which is why the label is asserted at the same
+      # time.
       assert value == ""
       refute value =~ "min"
     end
@@ -394,10 +391,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
       w = world(ctx)
       view = open(ctx, w, "view=list&run=1001")
 
-      # The card's independence field, and the whole reason this gate parses
-      # durations instead of comparing strings: the drawer's lines and the LIST's
-      # cell are rendered by different code from different assigns, and a reader
-      # comparing the two has to find them equal.
+      # The whole reason these tests parse durations instead of comparing strings:
+      # the drawer's lines and the list's cell are rendered by different code from
+      # different assigns, and a reader comparing the two has to find them equal.
       summed =
         view
         |> doc()
@@ -409,8 +405,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
 
       # The two surfaces spell the same number differently — "8:57" in the list,
       # "8 h 57 min" in the drawer — and both are asserted so the difference is a
-      # stated fact of this gate rather than something a reader discovers by
-      # comparing two panels and wondering whether one is rounding.
+      # stated fact rather than something a reader discovers by comparing two
+      # panels and wondering whether one is rounding.
       assert cell =~ ~r/\A\d+:\d{2}\z/
       assert text(view, "[data-role=pay-total]") =~ ~r/\A\d+ h \d+ min\z/
 
@@ -490,11 +486,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
                "#run-drawer-findings [data-role=run-finding][data-code=piece_too_long]"
              )
 
-      # Icon AND words, step 24's rule: a coloured dot alone is a colour a reader
-      # may not be able to name.
+      # Icon and words: a coloured dot alone is a colour a reader may not be able
+      # to name.
       assert text(view, "[data-role=run-finding][data-code=piece_too_long]") =~ "Piece too long"
       # The icon is a heroicon span in this app, not an <svg> element — the same
-      # convention step 24's Status cell uses.
+      # convention the Status cell uses.
       assert has_element?(
                view,
                "[data-role=run-finding][data-code=piece_too_long] span[class*=hero-]"
@@ -534,7 +530,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
 
     test "a clean run renders the no-problems line through the component", ctx do
       # Rendered directly, because this world has no clean run: the finding list
-      # and the no-problems line are two branches of one conditional, and a gate
+      # and the no-problems line are two branches of one conditional, and a test
       # that only ever exercises one of them has not checked the other.
       run = %{
         run_id: "3001",
@@ -568,15 +564,15 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
           },
           stop_names: %{},
           open?: true,
-          # Step 30 added the rename form INSIDE the drawer, so this hand-built
-          # assign set has to carry the form too. Rendering the component
-          # directly is worth the extra fields: it is the only way to reach the
-          # clean-run branch, which no fixture in this file produces.
+          # The rename form lives inside the drawer, so this hand-built assign set
+          # has to carry the form too. Rendering the component directly is worth
+          # the extra fields: it is the only way to reach the clean-run branch,
+          # which no fixture in this file produces.
           rename_form: Phoenix.Component.to_form(%{"run_id" => ""}, as: :run),
           rename_errors: [],
-          # Step 31 added the per-piece move forms inside the drawer, so this
-          # hand-built assign set carries them too. This run has no pieces, so
-          # `move_runs` is empty and no move form is rendered.
+          # The per-piece move forms live inside the drawer, so this hand-built
+          # assign set carries them too. This run has no pieces, so `move_runs` is
+          # empty and no move form is rendered.
           move_form: Phoenix.Component.to_form(%{"to" => ""}, as: :move),
           move_runs: [],
           next_run_id: "1"

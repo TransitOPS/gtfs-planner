@@ -194,8 +194,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
       collect(day_types, blocks_by_day_type, garages_by_id, run_day_types)
 
     # No day type survived, so there is no service and no movement to name: the
-    # result carries no `ids` at all in this case, and keeps the shape spec 07
-    # asserted. Every path that can be referred to runs through `build/3`.
+    # result carries no `ids` at all in this case, and keeps the shape it had
+    # before `ids` was added. Every path that can be referred to runs through `build/3`.
     if days == [] do
       %{calendar_dates: [], routes: [], trips: [], stop_times: [], omitted: omitted}
     else

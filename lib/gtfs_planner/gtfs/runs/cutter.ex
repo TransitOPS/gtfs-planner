@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.Runs.Cutter do
   @moduledoc """
-  Cuts one segment of a block into pieces at relief handovers (domain rule 10).
+  Cuts one segment of a block into pieces at relief handovers.
 
   ## The greedy ceiling, and why it is here on purpose
 
@@ -59,7 +59,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Cutter do
   That lookup is not cosmetic. A piece with a handover `ref` but no matching
   `stop` cannot be measured: the deadhead to and from it comes out as unknown or
   zero, and a run built from such pieces would be charged the wrong travel. The
-  EV-10 sweep caught exactly that, in a run that reported a non-negative break to
+  randomized pairing test caught exactly that, in a run that reported a non-negative break to
   the pairing and a negative one once the day re-derived the same pieces with
   real coordinates. A stop the segment's trips do not mention is left `nil`,
   which `DeadheadTimes.lookup/5` answers as unknown — honest, and visible.
@@ -119,7 +119,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Cutter do
   rebuild starts from `rebuild_prefix/1` of the IDs already in use, because the
   day type already has a scheme; a suggestion on uncovered work starts from
   `highest_numeric/1`, because a hand-made run has to sit above everything
-  already in use (rule 11).
+  already in use.
   """
   @spec run(scope(), [map()], %{Ecto.UUID.t() => String.t()}, map(), map()) :: %{
           assignments: %{Ecto.UUID.t() => String.t()},
@@ -157,11 +157,11 @@ defmodule GtfsPlanner.Gtfs.Runs.Cutter do
   # pull-back's end — and that matters rather than being tidiness: pairing
   # measures the break between segments with `WorkTime.compute/3`, so a segment
   # measured from the raw first departure would understate every piece by its
-  # pull-out and pull-back buffer. The EV-10 sweep found that: pairs the cutter
-  # accepted on raw departure and arrival times came back with negative breaks
-  # once the day re-derived the same pieces with their buffers, which is FH-10
-  # stated exactly. Its ends are the garage when it has one, which drops the
-  # travel legs to and from it the same way step 5's same-place rule does.
+  # pull-out and pull-back buffer. The randomized pairing test found that: pairs
+  # the cutter accepted on raw departure and arrival times came back with
+  # negative breaks once the day re-derived the same pieces with their buffers.
+  # Its ends are the garage when it has one, which drops the travel legs to and
+  # from it the same way `Runs.WorkTime`'s same-place rule does.
   defp block_segment(block) do
     trips = block.trips
     first = hd(trips)

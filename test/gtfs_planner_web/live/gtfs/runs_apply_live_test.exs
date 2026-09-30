@@ -1,19 +1,19 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsApplyLiveTest do
   @moduledoc """
-  EV-35: applying a previewed suggestion.
+  Applying a previewed suggestion.
 
-  Step 36's claim was that a preview is drawn and never saved. This step's claim
-  is the other half — that applying it does exactly what the preview said, once,
-  and that every way it can go wrong leaves the reader's saved runs untouched and
-  a way forward.
+  `runs_suggest_live_test.exs` shows a preview is drawn and never saved. These
+  cases show the other half: that applying it does exactly what the preview said,
+  once, and that every way it can go wrong leaves the reader's saved runs
+  untouched and a way forward.
 
-  So the two things asserted throughout are **what the page says** and **what the
-  database holds**, and they are read from different places: the messages and
-  dialog copy come from the rendered page, and the rows come from `trip_runs`
-  through the schema. An assertion that only checked the toast would pass on a
-  write that never happened.
+  So the two things asserted throughout are what the page says and what the
+  database holds, and they are read from different places: the messages and dialog
+  copy come from the rendered page, and the rows come from `trip_runs` through the
+  schema. An assertion that only checked the toast would pass on a write that
+  never happened.
 
-  The stale case is made by a REAL writer — a crew-rules save — because the
+  The stale case is made by a real writer — a crew-rules save — because the
   domain's staleness is a fingerprint check, and a stubbed fingerprint would be
   testing the stub.
   """

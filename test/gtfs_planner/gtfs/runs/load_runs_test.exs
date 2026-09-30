@@ -1,15 +1,14 @@
 defmodule GtfsPlanner.Gtfs.Runs.LoadRunsTest do
   @moduledoc """
-  Merge evidence (EV-12) for CL-10 and CL-12: the day read returns a composed
-  day scoped to one organization, version and day type, so FH-16 and FH-18 stay
-  rejected.
+  The day read returns a composed day scoped to one organization, version and day
+  type.
 
-  FH-16 is a run shown that does not exist, or a trip shown as covered that is
-  not; FH-18 is one organization's rows reaching another's page. Both are
-  scoping failures, and the gate's own independence field — **two organizations
-  and two day types** — is how they are tested: a foreign version, a Saturday
-  row under the same trip UUIDs, and a row under a key that is not a day type are
-  each built beside the day under test and must be absent from it.
+  The failures are a run shown that does not exist, a trip shown as covered that
+  is not, and one organization's rows reaching another's page. All are scoping
+  failures, and two organizations and two day types are how they are tested: a
+  foreign version, a Saturday row under the same trip UUIDs, and a row under a key
+  that is not a day type are each built beside the day under test and must be
+  absent from it.
 
   Every case goes through the `Gtfs` facade, which resolves the production
   `CatalogReadAdapter.Repo` with no override, so the adapter callback and its
@@ -17,8 +16,8 @@ defmodule GtfsPlanner.Gtfs.Runs.LoadRunsTest do
 
   Rows are created inside the SQL Sandbox transaction and rolled back.
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/load_runs_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/load_runs_test.exs`.
   """
   use GtfsPlanner.DataCase, async: true
 
@@ -319,9 +318,9 @@ defmodule GtfsPlanner.Gtfs.Runs.LoadRunsTest do
       assert {:ok, after_insert} =
                Gtfs.load_runs(world.organization.id, world.version.id, world.day_type_key)
 
-      # This is the whole point of rule 12 in miniature: the plan step 16 hands to
-      # step 18 was built against the earlier fingerprint, and applying it now
-      # must be refused rather than written.
+      # Stale-plan refusal in miniature: a suggested plan was built against the
+      # earlier fingerprint, and applying it now must be refused rather than
+      # written.
       refute before.fingerprint == after_insert.fingerprint
     end
 
@@ -353,9 +352,9 @@ defmodule GtfsPlanner.Gtfs.Runs.LoadRunsTest do
     end
   end
 
-  # EV-12's file also holds step 19's cases. Both are runs reads against the
-  # same fixture, and a separate file for a four-case count would only split the
-  # same setup in two.
+  # This file also holds the `count_runs_for_trips/3` cases. Both are runs reads
+  # against the same fixture, and a separate file for a four-case count would only
+  # split the same setup in two.
   describe "count_runs_for_trips/3" do
     setup do
       world = runs_version_fixture()

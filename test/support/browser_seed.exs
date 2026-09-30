@@ -5695,7 +5695,7 @@ case Accounts.register_first_admin(%{
         "101-104, a 2-trip pool plus frequency trip F30, 2 garages and 2 vehicle types"
     )
 
-    # ── Basic runs browser journey (EV-20, step 20) ──
+    # ── Basic runs browser journey (runs.spec.js, runs_keyboard.spec.js) ──
     #
     # A published "Browser Runs Version" carries the prototype's default runs
     # problems, isolated from every other scenario by its version and by its
@@ -5717,9 +5717,9 @@ case Accounts.register_first_admin(%{
     #   * `max_piece_minutes` 330, the researched operator-change limit, and the
     #     default crew rules (15 min pull-out, 5 min relief, 5 min sign-off,
     #     30 min paid break, 720 min max spread). Both matter: without
-    #     `max_piece_minutes` there is no `:piece_too_long` check at all
-    #     (rule 9), and the 30-minute paid-break maximum is what separates the
-    #     straight run from the split one;
+    #     `max_piece_minutes` there is no `:piece_too_long` check at all, and
+    #     the 30-minute paid-break maximum is what separates the straight run
+    #     from the split one;
     #   * eight weekday blocks, 101-108, and the trip_runs rows below.
     #
     # The five states the page opens on, one per problem the prototype names.
@@ -5964,11 +5964,11 @@ case Accounts.register_first_admin(%{
       })
     end
 
-    # One garage for the whole version, and the default driving-time settings
-    # with the researched 330-minute operator-change limit. `max_piece_minutes`
-    # is what makes 103's over-limit piece a `:piece_too_long` warning; with it
-    # unset there would be no such check at all (rule 9), so the seeded state
-    # depends on this line.
+    # One garage for the whole version, and the default driving-time settings with
+    # the researched 330-minute operator-change limit. `max_piece_minutes` is what
+    # makes 103's over-limit piece a `:piece_too_long` warning; with it unset
+    # there would be no such check at all, so the seeded state depends on this
+    # line.
     runs_garage =
       GtfsPlanner.OperationsFixtures.garage_fixture(org.id, %{
         garage_id: "RNGB",
@@ -6031,7 +6031,7 @@ case Accounts.register_first_admin(%{
 
     # The trip_runs rows. Read back through `Runs.count_runs_for_trips/3` and
     # `Runs.load_runs/3` rather than assumed, so the day type key is the one the
-    # day load itself derives (INV-6) and the counts below are the real answer.
+    # day load itself derives and the counts below are the real answer.
     runs_weekday_key =
       case GtfsPlanner.Gtfs.Blocking.load_day(org.id, runs_version.id, nil) do
         {:ok, day} -> day.day_type.key

@@ -1,8 +1,8 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsSplitPieceLiveTest do
   @moduledoc """
-  EV-30: Split a piece at a relief handover from the drawer.
+  Split a piece at a relief handover from the drawer.
 
-  A split moves the trips AFTER a chosen gap, so the set that stayed and the set
+  A split moves the trips after a chosen gap, so the set that stayed and the set
   that went are both the result. A test that reads back "the new run has some
   trips" would pass if the split at gap 1 moved every trip, or the wrong ones, so
   every case here pins both sides exactly.
@@ -352,8 +352,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSplitPieceLiveTest do
       split_submit(view, 1, "1", "__new")
       view |> element("#runs-undo") |> render_click()
 
-      # Re-read from the database: the toast saying "Undone." is step 28's
-      # claim, not this step's.
+      # Re-read from the database: the toast saying "Undone." is the create-run
+      # tests' subject, not this one's.
       assert trip_ids(w, "2001") == sorted(trips)
       assert trip_ids(w, "2002") == []
       assert all_run_ids(w) == ["2001"]

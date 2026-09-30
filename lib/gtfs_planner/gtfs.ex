@@ -5905,7 +5905,7 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
-  The run number a NEWLY created run would take on this day type.
+  The run number a newly created run would take on this day type.
 
   Delegates to the numbering module rather than letting a page do the
   arithmetic, so the "New run (N)" a reader is shown is the number the write
@@ -6129,8 +6129,7 @@ defmodule GtfsPlanner.Gtfs do
   Every value is range-checked, and the save takes the version's `FOR SHARE` lock
   and then `Blocking.lock_blocking!/1`, so it serializes with every other planning
   input writer. It replaces only the five crew columns of the version's one
-  settings row, so the Block rules and the piece limit keep the values spec 07
-  stored.
+  settings row, so the Block rules and the piece limit keep their stored values.
 
   Returns `{:error, :not_found}` when the version is unpublished or belongs to
   another organization, and `{:error, changeset}` when a value is rejected.

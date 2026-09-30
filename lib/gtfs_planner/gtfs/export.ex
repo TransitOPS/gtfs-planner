@@ -799,8 +799,8 @@ defmodule GtfsPlanner.Gtfs.Export do
 
     # No "file omitted" warning for an empty `run_events.txt`. The four movement
     # supplements warn when they are absent, and it was tempting to match them —
-    # but spec 07's EV-8 asserts a version with movements and no runs produces no
-    # warnings at all, and that export is exactly this one plus a run file. The
+    # but a version with movements and no runs exports with no warnings at all,
+    # and that export is exactly this one plus a run file. The
     # absence of a file a caller knows is optional needs no announcement; the two
     # warnings below are about work that exists and was dropped.
     unpublished =

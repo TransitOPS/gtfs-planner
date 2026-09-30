@@ -1,9 +1,9 @@
 defmodule GtfsPlanner.Gtfs.Runs.TripRunTest do
   @moduledoc """
-  Merge evidence (EV-1) for CL-2: `trip_runs` holds at most one row per
-  organization, version, day type and trip, the database refuses a malformed run
-  ID, a deleted trip takes its assignments with it, and the five crew columns
-  carry their researched defaults and their named ranges — so FH-2 stays rejected.
+  `trip_runs` holds at most one row per organization, version, day type and trip,
+  the database refuses a malformed run ID, a deleted trip takes its assignments
+  with it, and the five crew columns carry their researched defaults and their
+  named ranges.
 
   The rejections are the property under test, so each case writes past the
   changeset where the changeset is not the thing being checked: a raw insert and a
@@ -15,8 +15,8 @@ defmodule GtfsPlanner.Gtfs.Runs.TripRunTest do
   savepoint instead of poisoning the case's transaction, as
   `blocking/settings_test.exs` does.
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/trip_run_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/trip_run_test.exs`.
   """
   use GtfsPlanner.DataCase, async: true
 
@@ -234,7 +234,7 @@ defmodule GtfsPlanner.Gtfs.Runs.TripRunTest do
   end
 
   # A struct with the scoping fields every writer owns, set from its arguments and
-  # never from submitted parameters — the shape step 2's writer builds.
+  # never from submitted parameters — the shape the `Runs` writers build.
   defp scoped_run(organization, version, trip, day_type_key) do
     %TripRun{
       organization_id: organization.id,

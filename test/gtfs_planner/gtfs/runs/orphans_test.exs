@@ -1,11 +1,9 @@
 defmodule GtfsPlanner.Gtfs.Runs.OrphansTest do
   @moduledoc """
-  Merge evidence (EV-15) for CL-12: the cleanup deletes exactly the rows the read
-  counted, so FH-18 stays rejected.
+  The cleanup deletes exactly the rows the read counted.
 
-  FH-18 is a scoping failure, and this gate's independence field — **rows seeded
-  per orphan kind** — is how it is tested. Both kinds are seeded on one version
-  (the card's proof boundary), so a cleanup that handled only one of them is
+  A wrong cleanup is a scoping failure, so rows are seeded per orphan kind. Both
+  kinds are seeded on one version, so a cleanup that handled only one of them is
   visibly half-done, and a cleanup that computed its own set rather than sharing
   the read's is caught by the count agreeing with `load_runs/3`.
 
@@ -18,8 +16,8 @@ defmodule GtfsPlanner.Gtfs.Runs.OrphansTest do
 
   Rows are created inside the SQL Sandbox transaction and rolled back.
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/orphans_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/orphans_test.exs`.
   """
   use GtfsPlanner.DataCase, async: true
 

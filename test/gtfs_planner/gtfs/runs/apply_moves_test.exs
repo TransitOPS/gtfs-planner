@@ -1,27 +1,26 @@
 defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
   @moduledoc """
-  Merge evidence (EV-13) for CL-11 and CL-10: a manual write checks every trip
-  the editor saw, writes every move or none, and undoes by the same rule, so
-  FH-16 and FH-17 stay rejected.
+  A manual write checks every trip the editor saw, writes every move or none, and
+  undoes by the same rule.
 
-  FH-17 is the one this gate is for — a write that clobbers somebody else's
-  change, or an undo that puts back a run that has since moved. Rule 14's answer
-  is per-trip optimism: every move names the run the editor saw, and one trip
-  that has since changed fails the whole call. That is only meaningful if the
-  check is *per trip*, so the tests build a day where most moves are correct and
-  one is not, and assert that the correct ones were not written either.
+  The failure these cases guard against is a write that clobbers somebody else's
+  change, or an undo that puts back a run that has since moved. The answer is
+  per-trip optimism: every move names the run the editor saw, and one trip that
+  has since changed fails the whole call. That is only meaningful if the check is
+  *per trip*, so the tests build a day where most moves are correct and one is
+  not, and assert that the correct ones were not written either.
 
-  The card's independence note — rows re-read after each call — is why the
-  assertions go through `load_runs/3` and a direct row read rather than through
-  the return value. A writer that returned what it was asked for, without
-  writing it, would pass a test that trusted the return.
+  Rows are re-read after each call, which is why the assertions go through
+  `load_runs/3` and a direct row read rather than through the return value. A
+  writer that returned what it was asked for, without writing it, would pass a
+  test that trusted the return.
 
   Every case goes through the `Gtfs` facade, the path the page calls.
 
   Rows are created inside the SQL Sandbox transaction and rolled back.
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/apply_moves_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/apply_moves_test.exs`.
   """
   use GtfsPlanner.DataCase, async: true
 
@@ -291,8 +290,8 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
 
       saturday_key = DayTypes.key(["SAT"])
 
-      # The same run ID on the same trip UUID family, on the other day type.
-      # AC-20 is about exactly this: a Weekday write must not reach it.
+      # The same run ID on the same trip UUID family, on the other day type. A
+      # Weekday write must not reach it.
       trip_run_fixture(world.organization.id, world.version.id, %{
         trip: saturday,
         day_type_key: saturday_key,
@@ -460,7 +459,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyMovesTest do
       {:ok, runs_day} =
         Gtfs.load_runs(world.organization.id, world.version.id, world.day_type_key)
 
-      # Two runs now exist, built by step 12's read from the rows just written.
+      # Two runs now exist, built by `load_runs/3` from the rows just written.
       assert runs_day.derived.stats.runs == 2
       assert Enum.sort(Enum.map(runs_day.derived.runs, & &1.run_id)) == ["1001", "2001"]
     end

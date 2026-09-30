@@ -1,16 +1,15 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsRenameLiveTest do
   @moduledoc """
-  EV-28: Rename a run from the drawer.
+  Rename a run from the drawer.
 
-  The card's independence field is "rows re-read", and that is the shape of this
-  gate: **the rows are read back out of the database, never off the toast.** A
-  toast that says "Renamed to 2005" proves the page wanted to say it, and says
-  nothing about whether a single row moved.
+  The rows are read back out of the database, never off the toast. A toast that
+  says "Renamed to 2005" proves the page wanted to say it, and says nothing about
+  whether a single row moved.
 
-  The third case is the one this step is really about. Step 28 established ONE
-  undo surface, and a rename is the first write that is not a move — so the gate
-  has to show that `rename_run/5`'s own undo reaches that surface unchanged,
-  rather than that a rename happens to be reversible by some other route.
+  The third case matters most. The page has one undo surface, and a rename is a
+  write that is not a move, so the tests have to show that `rename_run/5`'s own
+  undo reaches that surface unchanged, rather than that a rename happens to be
+  reversible by some other route.
   """
   use GtfsPlannerWeb.ConnCase, async: true
 
@@ -28,9 +27,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsRenameLiveTest do
     %{user: user_fixture()}
   end
 
-  # Step 27's world: one run, 1001, over the head of block 101 and the tail of
-  # block 102. Unchanged across four gates so a fixture change shows up in all of
-  # them.
+  # One run, 1001, over the head of block 101 and the tail of block 102. The same
+  # world as the uncovered-work, create-run and drawer tests, so a fixture change
+  # shows up in all of them.
   defp world(ctx) do
     user = ctx.user
     w = runs_version_fixture()
@@ -55,9 +54,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsRenameLiveTest do
     w
   end
 
-  # The same day plus a SECOND run, so there is an ID to collide with. A one-run
-  # world cannot produce a duplicate at all, and the card's second case would then
-  # be asserting against a fixture that makes it impossible.
+  # The same day plus a second run, so there is an ID to collide with. A one-run
+  # world cannot produce a duplicate at all, and the duplicate case would then be
+  # asserting against a fixture that makes it impossible.
   defp two_run_world(ctx) do
     user = ctx.user
     w = runs_version_fixture()
@@ -255,9 +254,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsRenameLiveTest do
 
       submit(view, "1002")
 
-      # The card's rule and the app's form rules agree: a field's problem belongs
-      # at the field. A toast would name the failure while the reader is looking
-      # at an input.
+      # A field's problem belongs at the field. A toast would name the failure
+      # while the reader is looking at an input.
       refute has_element?(view, "#runs-toast")
     end
 
@@ -394,8 +392,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsRenameLiveTest do
 
       view |> element("#runs-undo") |> render_click()
 
-      # Re-read from the database again: the toast saying "Undone." is step 28's
-      # claim, not this step's.
+      # Re-read from the database again: the toast saying "Undone." is the
+      # create-run tests' subject, not this one's.
       assert trip_ids(w, "1001") == trips
       assert trip_ids(w, "2005") == []
       assert all_run_ids(w) == ["1001"]
@@ -408,9 +406,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsRenameLiveTest do
 
       submit(view, "2005")
 
-      # Step 28's one shared Undo: no rename-specific button, no second undo
-      # assign. The count is the trips the rename moved, which is what a reader
-      # wants to know about an Undo that is about to move every trip on a run.
+      # The one shared Undo: no rename-specific button, no second undo assign. The
+      # count is the trips the rename moved, which is what a reader wants to know
+      # about an Undo that is about to move every trip on a run.
       assert attribute(view, "#runs-undo", "data-trips") == to_string(length(trip_ids(w, "2005")))
     end
 

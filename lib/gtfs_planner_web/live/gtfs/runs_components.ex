@@ -1,16 +1,11 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   @moduledoc """
-  The Runs page's shell: the head, the scope bar and the load-state panels.
+  The Runs page's components: the head, the scope bar, the load-state panels,
+  the count strip, the duty chart and its list view, the drawers and the toast.
 
-  Everything here is the page's *frame* rather than its content. A later step
-  adds the plan, the drawers and the editors into the same frame, so this module
-  owns only what the reader sees before there is anything to read: which day
-  type is selected, and what the page says when it has nothing to show.
-
-  The composition follows `.specs/08-basic-runs/references/runs-prototype.html`
-  at `?state=loading`, `no-blocks` and `load-error`: a head of H1 plus subtitle
-  and actions, a scope bar carrying the day-type select beside the date summary,
-  and a card holding either the state panel or — from step 22 — the plan.
+  The page is a head of H1 plus subtitle and actions, a scope bar carrying the
+  day-type select beside the date summary, and a card holding either the state
+  panel or the plan.
 
   The state panels deliberately mirror `BlocksComponents.page_state/1`. The two
   pages are siblings under the Operations bar and reach the same five states
@@ -21,10 +16,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   use GtfsPlannerWeb, :html
 
-  # The page's own `count_strip/1` is the card's name for this surface, and it
-  # *builds* the house strip rather than being it. The import is narrowed rather
-  # than the function renamed, so `CoreComponents.count_strip/1` is reached by a
-  # qualified call and the wrapper keeps the name the spec records.
+  # The page's own `count_strip/1` *builds* the house strip rather than being it.
+  # The import is narrowed rather than the function renamed, so
+  # `CoreComponents.count_strip/1` is reached by a qualified call and the wrapper
+  # keeps the surface's name.
   import GtfsPlannerWeb.CoreComponents, except: [count_strip: 1]
 
   alias GtfsPlannerWeb.Components.RouteIdentity
@@ -150,20 +145,19 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   attr :day_types, :list, default: []
 
   # The four states that have a panel. `:loaded` and `:unavailable` are states
-  # the page can BE in without a panel here, and the reason is worth stating
+  # the page can be in without a panel here, and the reason is worth stating
   # rather than filling in with an empty box:
   #
-  #   * `:unavailable` is presented by `unavailable_callout/0` ABOVE the
+  #   * `:unavailable` is presented by `unavailable_callout/0` above the
   #     content, because a failed reload does not replace the runs the reader is
   #     already looking at. A panel here would be a second, competing surface
   #     for one condition.
-  #   * `:loaded` has nothing to put in a card until the plan exists. Rendering
-  #     an empty bordered card would read as a failure to load, which is the one
-  #     impression this page must never give. The shell therefore renders no
-  #     plan card in that state and the plan step fills the same card in.
+  #   * `:loaded` is presented by the plan card, which holds the chart. An
+  #     empty bordered panel here would read as a failure to load, which is the
+  #     one impression this page must never give.
   #
   # The catch-all is a deliberate guard, not a fallback: it fails loudly naming
-  # the states this function handles, so a later step adding a sixth state is
+  # the states this function handles, so a change adding a sixth state is
   # told what to do rather than getting a bare FunctionClauseError.
   def page_state(%{kind: kind} = assigns)
       when kind not in [:loaded, :unavailable] do
@@ -393,7 +387,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   defp scope_id(:uncovered_only), do: "runs-scope-uncovered"
   defp scope_id(:replace_all), do: "runs-scope-rebuild"
 
-  # The uncovered scope's own sentence, from the DAY's figures rather than from
+  # The uncovered scope's own sentence, from the day's figures rather than from
   # the drawer's state: it names how many trips have no operator and the number
   # new runs start from, and a reader picks a scope by reading those.
   defp uncovered_scope_sentence(0, _next_run_id),
@@ -411,7 +405,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   @doc """
   Renders the inline panel that shows a suggestion over the saved runs.
 
-  The panel is INLINE, above the chart, and not a drawer: the point of a preview
+  The panel is inline, above the chart, and not a drawer: the point of a preview
   is to compare the suggestion against what is on screen, and a drawer would
   cover the thing being compared.
   """
@@ -421,7 +415,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   attr :apply_state, :atom, default: :idle, values: [:idle, :pending, :stale, :failed]
 
   def suggestion_panel(assigns) do
-    # `changed_run_ids` and `new_run_ids` are DISJOINT halves of one question —
+    # `changed_run_ids` and `new_run_ids` are disjoint halves of one question —
     # which runs does this suggestion alter — so the panel counts and lists their
     # union. Counting one half would under-report the number a reader relies on
     # when deciding to apply.
@@ -451,9 +445,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
             Discard
           </.button>
 
-          <%!-- A STALE suggestion cannot be applied at all, so its Apply is
+          <%!-- A stale suggestion cannot be applied at all, so its Apply is
                 disabled and says why in its title rather than failing when
-                pressed. A PENDING one is disabled too, which is what makes a
+                pressed. A pending one is disabled too, which is what makes a
                 second click a no-op rather than a second write. --%>
           <.button
             type="button"
@@ -517,12 +511,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   defp scope_name(:uncovered_only), do: "Uncovered work only"
   defp scope_name(:replace_all), do: "Rebuild this day&rsquo;s runs"
 
-  # The four figures the card names, each BEFORE → after, read from the plan's
+  # The four figures, each before → after, read from the plan's
   # own two stats maps. They are the plan's figures and not a re-derivation, so
   # the panel cannot claim a number the apply would not produce.
   defp suggestion_metrics(plan) do
     before = plan.before
-    # NOT `after = ...`. `after` is a reserved word in Elixir; the domain's own
+    # Not `after = ...`. `after` is a reserved word in Elixir; the domain's own
     # `Plan.build/1` binds the same pair as `after_stats` and `before_stats` for
     # this reason.
     after_stats = plan.after
@@ -689,8 +683,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   attr :id, :string, required: true
   attr :label, :string, required: true
   attr :before, :any, required: true
-  # NOT named `after`: `@after` is the reserved word used as a variable, and a
-  # HEEx expression that reads it fails to compile. `after:` IS fine as a map
+  # Not named `after`: `@after` is the reserved word used as a variable, and a
+  # HEEx expression that reads it fails to compile. `after:` is fine as a map
   # key, which is why the plan's own `%{before:, after:}` pair is untouched.
   attr :after_value, :any, required: true
 
@@ -713,17 +707,15 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   @doc """
-  Renders the FIRST USE panel: the day has blocks, and nothing has been cut yet.
+  Renders the first-use panel: the day has blocks, and nothing has been cut yet.
 
   This is a panel rather than an empty chart because there is nothing to draw.
   A chart with no rows would look like a day whose blocks are all covered, and the
   one thing the reader needs to know here is that nothing has been planned yet.
 
-  The copy is the CARD's rather than the prototype's. The prototype reads "Suggest
-  runs cuts each block at its relief windows and pairs the pieces into runs",
-  which describes the algorithm; the card's "No runs yet. Suggest runs cuts every
-  block into operator work." names the state first and then the effect, which is
-  what a reader who has not used the page yet needs. Recorded as prototype drift.
+  "No runs yet. Suggest runs cuts every block into operator work." names the
+  state first and then the effect, which is what a reader who has not used the
+  page yet needs, rather than describing the algorithm.
   """
   def first_use(assigns) do
     ~H"""
@@ -756,7 +748,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   so a block longer than one operator's shift cannot be split. The callout says
   that and links to the place the setting lives.
 
-  It is a callout and NOT a panel, and that is the whole design of it: it never
+  It is a callout and not a panel, and that is the whole design of it: it never
   blocks an action. A reader whose blocks happen not to need splitting can go on
   planning runs, and a reader who is blocked is told exactly where to go. A panel
   here would be a reader stopped by a setting they may not need.
@@ -790,7 +782,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   Renders the "Suggest runs" head action.
 
   `primary` is passed in rather than derived here, because who owns the page's one
-  primary is a property of the WHOLE state — a problems button, a first-use
+  primary is a property of the whole state — a problems button, a first-use
   action, a no-blocks link and this one cannot each decide for themselves. The
   selection is made once per render in `RunsLive` and handed down, so two
   components can never both believe they are the primary.
@@ -837,9 +829,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   @doc """
-  Renders the plan card. From step 22 this holds the count strip's drawer and
-  from this step the duty chart; before either it holds the state panel, so the
-  page has a card of the right shape throughout.
+  Renders the plan card. It holds the duty chart once the day is loaded and the
+  state panel before that, so the page has a card of the right shape throughout.
   """
   attr :version_id, :any, default: nil
   slot :inner_block
@@ -884,11 +875,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   component carries the focus ring, the `aria-pressed` state and the argument
   checking, so this module supplies only the figures and their words.
 
-  The prototype opens the *summary* drawer from every tile. This does the same,
-  including the Uncovered work tile: the summary drawer's Time section carries
-  that work, so the destination really does answer the question. The prototype
-  switches to the Uncovered work **tab** there, which step 27 owns; until then
-  the drawer is where a reader sees those figures.
+  Every tile opens the *summary* drawer, including the Uncovered work tile: the
+  summary drawer's Time section carries that work, so the destination really
+  does answer the question.
   """
   attr :stats, :map, required: true
   attr :spread_limit_minutes, :integer, required: true
@@ -922,7 +911,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     """
   end
 
-  # One item per tile, in the prototype's order. `count` is the figure the tile
+  # One item per tile, in reading order. `count` is the figure the tile
   # reports, because `CoreComponents.count_strip/1` reads it to decide the
   # figure's tone and to mark a zero unavailable — so for a tile whose value is
   # a formatted string, `:value` carries the string and `:count` stays the
@@ -1210,9 +1199,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     """
   end
 
-  # `hrs(n) = (n / 60).toFixed(1)` in the prototype, and n there is MINUTES. Every
-  # figure reaching this module is in SECONDS, so the conversion is /3600 here —
-  # dividing by 60 alone prints hours as if they were minutes, which reads as
+  # Every figure reaching this module is in seconds, so the conversion is /3600
+  # here — dividing by 60 alone prints hours as if they were minutes, which reads as
   # "1205.0 h" for a day whose paid time is twenty hours.
   defp hours(secs) when is_integer(secs) do
     :erlang.float_to_binary(secs / 3600, decimals: 1)
@@ -1286,10 +1274,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   the row carries a **track of pieces** rather than a block's sequence of trips
   and gaps.
 
-  The Status cell carries this run's finding COUNT and not its status text: the
-  icon-plus-words wording belongs to step 24, and a cell with nothing in it is
-  the one thing a table row must never be. A count is honest in the meantime and
-  cannot be contradicted by the words that replace it.
+  The Status cell is `status_cell/1`: an icon, the lead finding in words, and
+  how many more there are, so a cell is never empty.
 
   `aria-sort` is on every header whether or not it is the sorted one, so the
   sort state never appears or disappears between renders — the same rule
@@ -1455,7 +1441,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     """
   end
 
-  # The footnote quotes the version's OWN paid-break limit rather than the
+  # The footnote quotes the version's own paid-break limit rather than the
   # design default, because a break's hatching already says the same thing and
   # the sentence must not be able to disagree with it. A version with no limit
   # read is shown as an em dash rather than as a number nobody set.
@@ -1474,11 +1460,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   chart that formatted them differently from the drawer would make the two
   disagree about the same number.
 
-  The track holds the run's **pieces** and nothing else at this step: the
-  report, travel, break and sign-off marks between them, and the chart key that
-  explains them, are step 24's. The piece bars are already positioned by the
-  day's own axis, so a run that signs on at 05:00 and signs off at 14:00 puts
-  its bars where the axis says they belong.
+  The track holds the run's **pieces** and the report, travel, break and
+  sign-off marks between them. Everything on it is positioned by the day's own
+  axis, so a run that signs on at 05:00 and signs off at 14:00 puts its bars
+  where the axis says they belong.
   """
   attr :dom, :string, required: true
   attr :run, :map, required: true
@@ -1538,9 +1523,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   The seven fact cells are `run_facts/1`, shared with the timeline, so the two
   views cannot disagree about the same run. The eighth column, Pieces, is the
   list's own and carries what the track draws as position: block, span and where
-  the piece starts and ends. The row's Run cell is a `<th scope="row">`, the way
-  the reference has it, so a screen reader announces the row by its run rather
-  than by seven bare cells.
+  the piece starts and ends. The row's Run cell is a `<th scope="row">`, so a
+  screen reader announces the row by its run rather than by seven bare cells.
   """
   attr :run_rows, :any, required: true
   attr :sort, :atom, required: true
@@ -1590,8 +1574,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     """
   end
 
-  # The timeline's seven columns plus Pieces, in the reference's order: Pieces
-  # sits third, between Type and Sign-on, because a piece is what a run IS and
+  # The timeline's seven columns plus Pieces: Pieces sits third, between Type
+  # and Sign-on, because a piece is what a run is and
   # the clock is only when it happens.
   defp list_columns(_sort) do
     (sort_columns() ++ [%{key: "pieces", label: "Pieces"}])
@@ -1610,12 +1594,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # One piece in the list's own words: block, then the span it occupies, then
   # where it starts and ends.
   #
-  # The card specifies `B <block> <start>–<end>`, which is what this prints. The
-  # reference says `Block <n> · <start>–<end> · <from> → <to>`; the difference is
-  # recorded rather than quietly resolved, because the card is the gate and the
-  # reader gains nothing from the longer spelling in a column this narrow. The
-  # places are not dropped — they are on the piece's `title`, and step 29's drawer
-  # carries them in full.
+  # `B <block> <start>–<end>` rather than `Block <n> · <start>–<end> · <from> →
+  # <to>`, because the reader gains nothing from the longer spelling in a column
+  # this narrow. The places are not dropped — they are on the piece's `title`,
+  # and the run drawer carries them in full.
   defp piece_line(piece) do
     "B #{piece.block_id} #{BlocksComponents.clock(piece.start_secs)}–#{BlocksComponents.clock(piece.end_secs)}"
   end
@@ -1623,8 +1605,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   @doc """
   Renders the page's Review problems action.
 
-  The count is what the drawer LISTS, so the button and the drawer cannot
-  disagree. The button is PRIMARY while anything needs attention and secondary
+  The count is what the drawer lists, so the button and the drawer cannot
+  disagree. The button is primary while anything needs attention and secondary
   once nothing does: a day with no problems is a day whose other actions are
   the ones to reach for.
   """
@@ -1637,7 +1619,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   def review_problems_button(assigns) do
     count = problem_count(group_findings(assigns.findings), assigns.uncovered)
 
-    # `count` is what the LABEL says; `primary` is what the STATE decided. They
+    # `count` is what the label says; `primary` is what the state decided. They
     # are separate because a count is a fact about the day and a primary is a
     # fact about the page, and a day can have problems while the page's one
     # primary belongs to something else.
@@ -1663,7 +1645,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   @doc """
   Renders the Crew rules button for the scope bar.
 
-  The label carries the STORED values, not the values in the open drawer, so
+  The label carries the stored values, not the values in the open drawer, so
   the button is the page's own statement of the rules in force rather than of a
   draft the reader has not saved. A draft is in the drawer and nowhere else.
   """
@@ -1674,7 +1656,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   attr :locked_reason, :string, default: nil
 
   def crew_button(assigns) do
-    # `variant` is set EXPLICITLY rather than left to the default. The default is
+    # `variant` is set explicitly rather than left to the default. The default is
     # `primary`, and the scope bar already gives its one primary to the Review
     # problems action when the day has problems; a default here would put two
     # primary controls on one bar and make neither the obvious next step.
@@ -1698,7 +1680,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   # The button's own sentence. "12 h spread" rather than "720 min spread",
   # because the number a reader checks against their own schedule is hours; the
-  # 720 is still exact in the drawer, which is where a value is EDITED.
+  # 720 is still exact in the drawer, which is where a value is edited.
   defp crew_button_text(crew) do
     "#{crew.report_pull_out_minutes} / #{crew.report_relief_minutes} min report · " <>
       "#{crew.paid_break_max_minutes} min paid break · " <>
@@ -1709,11 +1691,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   Renders the Crew rules drawer: the five editable rules, the read-only piece
   limit, and the paid-time rule in words.
 
-  The drawer is NOT URL state, for the reason the problems drawer is not: every
+  The drawer is not URL state, for the reason the problems drawer is not: every
   restorable parameter on this page is a lens on the same day, and a draft the
   reader has not saved is not a view of anything yet.
 
-  `:entries` is the draft and `:errors` the per-field messages. They are SEPARATE
+  `:entries` is the draft and `:errors` the per-field messages. They are separate
   from the stored `crew` on purpose: a refused save keeps everything the reader
   typed, so a form built from the stored values would silently undo their work.
   """
@@ -1722,10 +1704,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     # `primary`, so a button that omits it still renders `btn-primary` — and the
     # drawer is in the DOM even when closed, so a stray default shows up as a
     # second primary on the page.
-    # The form is built from the DRAFT, not from the stored crew. A refused save
-    # has to keep every entry (AC-30), and a form built from the stored values
+    # The form is built from the draft, not from the stored crew. A refused save
+    # has to keep every entry, and a form built from the stored values
     # would put the old numbers back in the boxes the moment one was rejected.
-    # STRING keys: `to_form/2` warns on an atom-keyed map because maps are
+    # String keys: `to_form/2` warns on an atom-keyed map because maps are
     # treated as parameters, and parameters arrive with string keys. The draft is
     # held with atoms because that is how the domain names the rules, and it is
     # translated exactly here — the one place the two spellings meet.
@@ -1821,8 +1803,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     """
   end
 
-  # The five rules, in the order the prototype lists them, each with the range
-  # the DOMAIN validates. The ranges are read from the same numbers
+  # The five rules, in the order a run spends them, each with the range
+  # the domain validates. The ranges are read from the same numbers
   # `BlockingSetting.crew_changeset/2` checks, so a client-side message and a
   # changeset message cannot disagree about what is acceptable.
   defp crew_fields do
@@ -1851,7 +1833,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   defp crew_max(field), do: Enum.find(crew_fields(), &(elem(&1, 0) == field)) |> elem(3)
   defp crew_help(field), do: Enum.find(crew_fields(), &(elem(&1, 0) == field)) |> elem(4)
 
-  # The rule in words, recomputed from the DRAFT rather than from the stored
+  # The rule in words, recomputed from the draft rather than from the stored
   # crew. A sentence that still named the saved values while the reader edited
   # them would be a second, competing statement of the rules.
   def crew_rule_text(entries) do
@@ -1872,12 +1854,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   Renders the problems drawer: every run's findings, the uncovered work, and
   the orphan notice.
 
-  Findings are grouped by RUN rather than by severity, because a finding is
+  Findings are grouped by run rather than by severity, because a finding is
   only actionable next to the run it belongs to and that run is what the reader
   opens. Within a group the worst severity comes first, so the drawer reads in
   the order the reader has to act.
 
-  The uncovered work is ONE item however many blocks it spans, and it links to
+  The uncovered work is one item however many blocks it spans, and it links to
   the Uncovered tab rather than listing every block here.
   """
   attr :open, :boolean, required: true
@@ -2037,7 +2019,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   **empty**, which is the only cell that can mean "nothing, and here is why".
 
   A break the operator cannot reach is drawn the same way. A negative span is not
-  a duration; it is a finding, and step 24 already has words for it.
+  a duration; it is a finding, and `status_cell/1` already has words for it.
   """
   attr :run, :map, required: true
   attr :day_type_key, :string, required: true
@@ -2186,7 +2168,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
             phx-submit="move_piece"
             action="#run-drawer"
           >
-            <%!-- The piece is named by POSITION, because that is what the
+            <%!-- The piece is named by position, because that is what the
                   fieldset above says. The trips come from the drawer's own piece
                   list, never from a `trip_id` a form could tamper with. --%>
             <input type="hidden" name="piece" value={index} />
@@ -2269,7 +2251,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
         </p>
         <div class="mt-3 grid gap-3 sm:grid-cols-[minmax(0,14rem)_auto] sm:items-start">
           <div>
-            <%!-- `errors` is passed EXPLICITLY because `CoreComponents.input/1`
+            <%!-- `errors` is passed explicitly because `CoreComponents.input/1`
                   reads its own `@errors` attribute and never looks at
                   `field.errors`. A form that carries a changeset and forgets
                   this attribute renders a field with an error in it that no
@@ -2297,7 +2279,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   @doc """
   Renders one run's paid time as its own lines, and the total they add to.
 
-  Every line is one segment of `work.segments`, so the lines ARE the work rather
+  Every line is one segment of `work.segments`, so the lines are the work rather
   than a restatement of it. `data-paid` marks the cells that count toward the
   total, which is what lets a reader — and the gate — add them up without
   re-deriving which kinds are paid.
@@ -2362,7 +2344,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   # One label per kind, and the two that need to know which piece they belong to.
   #
-  # A report is "before piece N", and whether it is a PULL-OUT or a RELIEF comes
+  # A report is "before piece N", and whether it is a pull-out or a relief comes
   # from that piece's own `start_kind` — not from the report segment, which
   # carries no place at all. Reading the two as interchangeable is how a run
   # would claim 15 minutes of report before a change of operator when the crew
@@ -2389,7 +2371,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # The crew rules in words, so a reader can check the arithmetic above it
   # without opening the crew drawer.
   #
-  # Every number is the version's OWN, and a rule nobody set says so rather than
+  # Every number is the version's own, and a rule nobody set says so rather than
   # reading "0 min" — which would be a claim about a limit of zero rather than
   # about no limit.
   defp crew_rule_sentence(crew) do
@@ -2406,26 +2388,26 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # A place, with the kind of boundary it is, because a change of operator at a
   # relief is not the same place-change as a garage move and the reader is being
   # told where a run may be interrupted.
-  # The select's options, "New run (N)" first because that is the prototype's
-  # order, followed by the day's runs. The value `"__new"` is a MARKER, not an
-  # ID: run IDs are one to eight letters, digits or hyphens, so a run could
-  # never be called `__new`, and the marker cannot collide with a real run.
-  # A KEYWORD list of `label: value`, which is what `options_for_select/2` reads.
-  # A list of `{label, value}` tuples renders each pair's whole text as BOTH the
+  # The select's options, "New run (N)" first, followed by the day's runs. The
+  # value `"__new"` is a marker, not an ID: run IDs are one to eight letters,
+  # digits or hyphens, so a run could never be called `__new`, and the marker
+  # cannot collide with a real run.
+  # A keyword list of `label: value`, which is what `options_for_select/2` reads.
+  # A list of `{label, value}` tuples renders each pair's whole text as both the
   # label and the value, so every option posts its own sentence as a run ID and
   # the move fails as an unusable run ID.
-  # A FLAT list of `{label, value}` pairs — the shape `options_for_select/2`
+  # A flat list of `{label, value}` pairs — the shape `options_for_select/2`
   # reads, which renders `value="1002"` for `{"Run 1002 ...", "1002"}`.
   #
   # Nesting each pair in its own list, `[{"Run 1002 ...", "1002"}]`, is the shape
-  # that fails, and it fails LOUDLY on the way past: "expected :key key when
+  # that fails, and it fails loudly on the way past: "expected :key key when
   # building <option> from keyword list". The other failing shape is a keyword
-  # list of string keys, which renders each option's whole label as its VALUE —
+  # list of string keys, which renders each option's whole label as its value —
   # so the list looks right on screen and every option posts its own sentence as
   # a run ID.
-  # The piece's internal gaps that HAVE a relief window, in order.
+  # The piece's internal gaps that have a relief window, in order.
   #
-  # Only the FIRST window of each gap is offered, because that is the handover:
+  # Only the first window of each gap is offered, because that is the handover:
   # `Relief.windows/3` returns a gap's `:origin` window before its `:destination`
   # one and the origin is the earlier of the two instants (the rule `Runs.Pieces`
   # already states). Offering both would offer two instants for one handover,
@@ -2438,17 +2420,17 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   defp split_points(piece, _piece_windows) when length(piece.trips) < 2, do: []
 
   defp split_points(piece, piece_windows) do
-    # `@piece_windows` is a MAP of block ID to that block's windows, so the
+    # `@piece_windows` is a map of block ID to that block's windows, so the
     # piece's own block is selected here. Enumerating the map instead — which
     # yields `{block_id, windows}` tuples — reaches `first_window/2` with tuples
     # where it expects windows, and every piece raises BadMapError.
     windows = Map.get(piece_windows, piece.block_id, [])
 
-    # A piece's `gaps` also carries the gap that forms its own START boundary.
+    # A piece's `gaps` also carries the gap that forms its own start boundary.
     # That one is not a place the piece can be split — the piece already starts
     # there, and splitting at it would move every trip and leave nothing behind.
-    # Only the gaps BETWEEN two of the piece's trips are offered, which is what
-    # "internal" means in the card's wording.
+    # Only the gaps between two of the piece's trips are offered, which is what
+    # "internal" means here.
     piece.gaps
     |> Enum.with_index(1)
     |> Enum.filter(fn {_gap, position} -> position < length(piece.trips) end)
@@ -2578,7 +2560,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # `key` and `atom` are carried together on purpose. The `phx-value-panel` and
   # the `id` are strings because the DOM is; `@panel` is an atom because it came
   # out of the URL through `panel_value/1`. Comparing one to the other is the
-  # `:day != "day"` trap step 26 recorded, and it is SILENT here: `aria-selected`
+  # `:day != "day"` trap, and it is silent here: `aria-selected`
   # reads "false" on both tabs and the pressed tab is styled as unpressed, with
   # no error anywhere. The dot and the count still work, so the tab looks
   # plausible and the one thing the tablist exists to say is missing.
@@ -2592,7 +2574,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   @doc """
   Renders the amber callout that says work is outside every run.
 
-  It sits UNDER the count strip rather than above the page, because it is a
+  It sits under the count strip rather than above the page, because it is a
   reading of the numbers the reader is already looking at: the count strip says
   how many trips are uncovered, and this says what that costs in vehicle hours
   and offers the way through. Above the page it would be a banner about
@@ -2602,7 +2584,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   own action, and a reader who ignores it is looking at a working page. Nothing
   on this page requires acting on it.
 
-  The count is TRIPS, not segments: "4 trips are not in a run" is the number the
+  The count is trips, not segments: "4 trips are not in a run" is the number the
   count strip's own tile shows, so the two agree. A segment count would read as
   a different measurement of the same thing.
   """
@@ -2646,15 +2628,14 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   is a different piece of work from one with a window in five minutes, and a
   table that showed only the times would make them look the same.
 
-  Rows are ordered by block and then by start, the order the prototype uses, so
+  Rows are ordered by block and then by start, so
   two segments of one block read as a sequence rather than as two rows. A segment
   with no window left in its own span says so in words — "No relief point" —
   rather than leaving the cell empty, because an empty cell reads as a rendering
   fault and this is a real and consequential absence.
 
-  The Create run button is present and **inert**: step 28 gives it its handler.
-  It carries the segment's identity in `phx-value-*` so that step is a wiring
-  change and not a markup change.
+  The Create run button carries the segment's identity in `phx-value-*`, and
+  `RunsLive`'s `create_run` event makes the run from exactly that segment.
   """
   attr :segments, :list, required: true
   attr :windows, :map, required: true
@@ -2763,13 +2744,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   # The next window a change of operator could happen in, or nothing.
   #
-  # A window counts only if it is INSIDE this segment's own span: a relief point
+  # A window counts only if it is inside this segment's own span: a relief point
   # before the work started or after it ended is not somewhere an operator can
   # pick this work up, and quoting one would be a number that cannot be acted on.
   #
-  # Both figures are resolved ONCE here. The obvious inline alternative reads
+  # Both figures are resolved once here. The obvious inline alternative reads
   # `@windows` in the markup, and `@windows` is the whole `%{block_id => list}`
-  # map — so `Enum.count` walks the MAP and hands the predicate a `{key, value}`
+  # map — so `Enum.count` walks the map and hands the predicate a `{key, value}`
   # tuple, which fails on `&1.start_secs` and crashes the panel. Resolving the
   # block's own list into an assign is also the only way the "and N more" line
   # and the "Next relief" line cannot disagree about what they counted.
@@ -2831,19 +2812,17 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   write can be taken back.
 
   **This component and its two assigns are the page's one undo surface**, and
-  steps 30, 31, 32 and 37 all use them rather than building their own. A move, a
+  every write on the page uses them rather than building its own. A move, a
   split, a rename and a create all reach the same reader through the same box, so
   "where is the Undo" has one answer and the refusal message reads the same way
   whoever caused it.
 
   `:toast` is `%{text:, kind:, token:}` or nil; `:undo` is `%{moves:, trips:}` or
   nil. **Undo is not shown unless there is something to undo** — a toast that
-  offers Undo with nothing behind it is a control that does nothing, which is the
-  same objection step 26 raised about the scale control on the List and step 27
-  raised about it on this panel.
+  offers Undo with nothing behind it is a control that does nothing.
 
   `data-token` carries the timer token. It is the one piece of internal state the
-  DOM exposes, and it is there so the timer's contract can be TESTED: a stale
+  DOM exposes, and it is there so the timer's contract can be tested: a stale
   timer is unobservable from the outside without it, and a test that cannot
   construct the stale case will not notice its guard being deleted. It renders
   as a string, because the DOM has no integers.
@@ -2856,7 +2835,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   rather than about the row, and a reader who has scrolled to another block can
   still undo the change they made above.
 
-  The dark surface is the reference's, and it is the only place on this page with
+  The dark surface is the only place on this page with
   an inverted treatment: a confirmation is not part of the page's reading order
   and should not look as though it is.
   """
@@ -2923,20 +2902,20 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   and Status.
 
   **There is one implementation of these cells and both views call it.** The
-  card asks for "the same values as the timeline", and a second copy of seven
+  list shows the same values as the timeline, and a second copy of seven
   cells is seven chances to drift - the day a `BlocksComponents.clock/1` is
   swapped for a bare `fmt/1` on one view only, nothing would fail, and the two
   tables would quietly disagree about the same run.
 
-  The list's eighth column, Pieces, is rendered HERE rather than passed in as a
-  slot or appended by the caller. The POSITION is part of the contract — it is
+  The list's eighth column, Pieces, is rendered here rather than passed in as a
+  slot or appended by the caller. The position is part of the contract — it is
   the third column, after Type — and a caller that supplied the cell could put it
   anywhere, which would leave the header naming one column and the cells in
   another. A test that counted columns would not notice; a reader would. So the
   component owns the whole column order for both views, and `list_columns/0`
   names the same order in the header.
 
-  `variant` chooses the CLASSES and nothing else. The timeline's cells are sticky
+  `variant` chooses the classes and nothing else. The timeline's cells are sticky
   and sit at fixed offsets from the left of a scrolling track; the list's are
   ordinary cells in a table that scrolls once. The values, the `data-role` hooks
   and the Run button are identical, which is what lets a test compare the two
@@ -2992,10 +2971,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # The list's Pieces cell: one line per piece, `B <block> <start>–<end>`.
   #
   # One line per piece so a two-piece run is two lines and a reader can count them
-  # without reading. The card specifies this spelling; the reference spells the
-  # block out in full and adds the places, and the difference is recorded rather
-  # than quietly resolved - the card is the gate, the column is narrow, and the
-  # places are on the piece's `title` and in step 29's drawer.
+  # without reading. The block is not spelled out and the places are left off
+  # because the column is narrow; the places are on the piece's `title` and in
+  # the run drawer.
   attr :run, :map, required: true
 
   defp list_pieces(assigns) do
@@ -3016,11 +2994,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   The label is `B <block>` — block first, because a reader comparing a piece
   against the Blocks page is looking for the block, and the run number is
-  already in the row's first column one cell away. The prototype falls back to
-  the bare block number and then to no label at all when the bar is too narrow;
-  that measuring needs a browser, so the full label is rendered here and the
-  CSS clips it with `overflow: hidden`, which is the same outcome without the
-  layout thrash. Step 24's marks can revisit it with a render in hand.
+  already in the row's first column one cell away. Shortening the label to fit
+  a narrow bar would need a browser to measure it, so the full label is rendered
+  here and the CSS clips it with `overflow: hidden`, which is the same outcome
+  without the layout thrash.
 
   The route colour is a **bottom rule** rather than the fill, so two pieces of
   different routes on one run are told apart at a glance while the fill stays
@@ -3091,12 +3068,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # are told apart without two pieces of the same route looking like different
   # kinds of work.
   #
-  # A route with no colour, or no route at all, gets NO rule rather than a
+  # A route with no colour, or no route at all, gets no rule rather than a
   # fallback one. A rule that is always drawn in the system's own grey is
   # indistinguishable from a route colour that happens to be grey, so a
   # fabricated default would be a claim about the route that is not true; the
-  # piece's label and title still name the block, and step 24's marks are where
-  # the route is made explicit.
+  # piece's label and title still name the block.
   defp route_rule(nil), do: nil
 
   defp route_rule(%{} = route) do
@@ -3138,7 +3114,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   `⇄` means the change is where a plan says it may happen: a boundary the
   version marked as a relief point. `!` means it is not — the operator changed
-  away from a relief point, which is rule 6's error and the reason the change is
+  away from a relief point, which is the `:not_at_relief` error and the reason the change is
   a problem at all. Both are on the piece that carries the edge, so the mark
   moves with the bar when the track is zoomed.
   """
@@ -3166,7 +3142,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   @doc """
   Renders one `WorkTime` segment as a mark on the track.
 
-  The DOM `data-kind` is NOT the domain's `kind`, and deliberately: the domain
+  The DOM `data-kind` is not the domain's `kind`, and deliberately: the domain
   has one `:break` where the chart has three, because a break the operator
   cannot take, a break they take unpaid and a break they are paid for are three
   different things to look at and one thing to compute. A negative span is
@@ -3236,7 +3212,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     """
   end
 
-  # The eight marks, in the reference's order: the piece first, because the
+  # The eight marks, the piece first, because the
   # piece is what a row is about and the rest is what happened around it.
   defp chart_key_entries do
     [
@@ -3292,7 +3268,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   # The five codes `Runs.Checks` raises about a run, in its own words. A code
-  # with no entry here is a NEW code, and it falls through to its own name rather
+  # with no entry here is a new code, and it falls through to its own name rather
   # than to a wrong label: a finding nobody thought to word is still a finding,
   # and showing "too_many_pieces" is honest where "Too many pieces" would be a
   # guess.
@@ -3333,7 +3309,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # A run's findings, grouped by run, the worst severity first inside each group
   # and the groups themselves in sign-on order (the caller passes them sorted).
   #
-  # The `:uncovered_work` finding is EXCLUDED. The drawer lists uncovered work
+  # The `:uncovered_work` finding is excluded. The drawer lists uncovered work
   # once, as its own section, and leaving the domain's finding in a run group
   # would show the same problem twice — in a group titled after a run that is
   # not involved in it.
@@ -3342,7 +3318,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
   Public for the same reason `problem_count/2` is: `RunsLive` picks the page's one
   primary from the same numbers the button shows, and it has to count the same
-  things the button counts. Handing `problem_count/2` a FLAT findings list would
+  things the button counts. Handing `problem_count/2` a flat findings list would
   pair each finding map with a `length/1` of itself, which is a count of
   something that is not a list at all.
   """
@@ -3366,16 +3342,15 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   defp severity_rank(:warning), do: 1
   defp severity_rank(_severity), do: 2
 
-  # What the header button counts: one per run finding, plus ONE for the
+  # What the header button counts: one per run finding, plus one for the
   # uncovered work as a whole.
   #
-  # The card writes this as "errors + warnings + 1 when uncovered exists". Read
-  # literally that DOUBLE-COUNTS uncovered, because the domain already reports
-  # it as a `:uncovered_work` warning; the seeded day's "· 3" only comes out right
-  # when that one warning is the item the "+1" stands for. The button therefore
-  # counts what the drawer LISTS.
+  # "Errors + warnings + 1 when uncovered exists" read literally double-counts
+  # uncovered, because the domain already reports it as a `:uncovered_work`
+  # warning; the count only comes out right when that one warning is the item
+  # the "+1" stands for. The button therefore counts what the drawer lists.
   @doc """
-  How many items the header action counts: one per run finding, plus ONE for the
+  How many items the header action counts: one per run finding, plus one for the
   uncovered work as a whole.
 
   Public because `RunsLive` picks the page's one primary from the same number.
@@ -3390,8 +3365,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     total + if(uncovered == [], do: 0, else: 1)
   end
 
-  # The card's own sentence: "N assignments are for trips no longer in this day
-  # type." The COUNT and its noun are rendered just before this, so the tail
+  # The sentence is "N assignments are for trips no longer in this day type." The
+  # count and its noun are rendered just before this, so the tail
   # carries only the verb and its agreement — printing the noun here as well
   # gave "2 assignments assignments are for trips…".
   defp orphan_tail(1), do: "is for a trip no longer in this day type."
@@ -3419,10 +3394,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   defp severity_class(:warning), do: "font-semibold text-warning"
   defp severity_class(_severity), do: "font-semibold text-base-content/70"
 
-  # The worst severity among the findings that name THIS piece, or nil.
+  # The worst severity among the findings that name this piece, or nil.
   #
   # Each code is mapped explicitly, because `detail.piece` means three different
-  # things in `Runs.Checks`: an integer index for `:piece_too_long`, a RUN ID
+  # things in `Runs.Checks`: an integer index for `:piece_too_long`, a run ID
   # string for `:cannot_reach_piece`, and absent for the rest. Reading one of
   # them as another would outline the wrong bar, so a code not listed here
   # outlines nothing and shows in the Status cell instead — the conservative
@@ -3481,7 +3456,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
 
     %{
       kind: kind,
-      # `data-kind` is the CHART's name for the mark and `data-seg` is the
+      # `data-kind` is the chart's name for the mark and `data-seg` is the
       # domain's. They differ for a break, which the chart splits three ways,
       # and they agree for a sign-off, which the chart draws as a report mark.
       # Carrying both means a test can ask "is this a report or a sign-off?"

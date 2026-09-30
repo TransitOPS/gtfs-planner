@@ -1,21 +1,20 @@
 defmodule GtfsPlanner.Gtfs.Runs.PlanTest do
   @moduledoc """
-  Merge evidence (EV-11) for CL-9: the fingerprint covers every input a
-  suggestion depended on, so FH-14 stays rejected.
+  The fingerprint covers every input a suggestion depended on.
 
-  FH-14 says an input edited after the preview falls outside the fingerprint and
-  a stale plan is written. Closing it means showing that **each** input, varied
-  alone, changes the fingerprint — which is the shape of these tests, and the
-  gate's own independence note: one input varied at a time. A fingerprint that
-  covered some of them would pass a test that varied several at once.
+  The failure is an input edited after the preview that falls outside the
+  fingerprint, so a stale plan is written. Ruling it out means showing that each
+  input, varied alone, changes the fingerprint, which is the shape of these tests:
+  one input varied at a time. A fingerprint that covered some of them would pass a
+  test that varied several at once.
 
-  The list is AC-19's: a trip's block or times, the day type's assignments, a
-  crew rule, a Block rules setting, a relief point, a driving time, and a block
-  attribute. Each gets its own test rather than a loop, so a failure names the
-  input that fell out.
+  The inputs are a trip's block or times, the day type's assignments, a crew rule,
+  a Block rules setting, a relief point, a driving time, and a block attribute.
+  Each gets its own test rather than a loop, so a failure names the input that
+  fell out.
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/plan_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/plan_test.exs`.
   """
   use ExUnit.Case, async: true
 

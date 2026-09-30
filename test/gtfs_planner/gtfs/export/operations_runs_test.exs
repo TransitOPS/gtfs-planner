@@ -1,20 +1,19 @@
 defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
   @moduledoc """
-  EV-39, rejecting FH-23, FH-24 and FH-25 for CL-17: the `:operations` ZIP
-  carries `run_events.txt`, every reference it writes resolves, and every public
-  file stays byte-identical to `:full` (AC-34, AC-35).
+  The `:operations` ZIP carries `run_events.txt`, every reference it writes
+  resolves, and every public file stays byte-identical to `:full`.
 
   The cases go through `Export.build_zip/3` and unzip the result, on rows created
   inside the SQL Sandbox transaction and rolled back. Nothing here builds a run
   event, a service or a movement row by hand: "a reference that does not resolve"
-  is precisely what FH-23 and FH-25 call a `trip_id` or a `service_id` a consumer
-  cannot follow, and only the real export can say whether it does.
+  is a `trip_id` or a `service_id` a consumer cannot follow, and only the real
+  export can say whether it does.
 
   The runs are created through the domain's own suggest-and-apply path rather than
   by inserting `trip_runs` rows, so what is exported is a run this application
   would actually have cut.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/export/operations_runs_test.exs`.
   """
   use GtfsPlanner.DataCase, async: false

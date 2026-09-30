@@ -1,13 +1,13 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsProblemsLiveTest do
   @moduledoc """
-  EV-31: the problems drawer, with orphan removal.
+  The problems drawer, with orphan removal.
 
   Two claims are tested here that a rendered drawer can otherwise fake. The
-  button's count must be what the drawer LISTS, so the two are computed from
-  one function and the test compares them rather than asserting a number twice.
-  And the uncovered work is ONE item however many blocks it spans — a drawer
-  that listed it per block would show three items for one problem, and its
-  count would be wrong in the same way.
+  button's count must be what the drawer lists, so the two are computed from one
+  function and the test compares them rather than asserting a number twice. And
+  the uncovered work is one item however many blocks it spans — a drawer that
+  listed it per block would show three items for one problem, and its count would
+  be wrong in the same way.
 
   The orphan case is the only one here that writes. It deletes rows that
   `Runs.load_runs/3` already excludes from every run it derives, so the
@@ -229,12 +229,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsProblemsLiveTest do
       # Scoped to the Review problems BUTTON, not to the page as a string.
       #
       # It used to be a page-wide `refute render(view) =~ "btn-primary"`, which
-      # passed until step 34 added the Crew rules drawer: that drawer keeps one
-      # element in the DOM and toggles `data-open` on it, so its Save button is
-      # present in the HTML whether or not the drawer is open. A CLOSED dialog's
-      # controls are inert and invisible, so they are not the primary action the
-      # reader can see, and counting them made this assertion about markup rather
-      # than about the surface.
+      # passed until the Crew rules drawer arrived: that drawer keeps one element
+      # in the DOM and toggles `data-open` on it, so its Save button is present in
+      # the HTML whether or not the drawer is open. A closed dialog's controls are
+      # inert and invisible, so they are not the primary action the reader can
+      # see, and counting them made this assertion about markup rather than about
+      # the surface.
       refute attribute(view, "#runs-review-problems", "class") =~ "btn-primary"
     end
   end
@@ -303,10 +303,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsProblemsLiveTest do
       view = open(ctx, w)
       show(view)
 
-      # Icon plus WORDS, the rule step 24 settled: a colour alone is not a
-      # severity a reader can act on or a screen reader can read out. Both
-      # halves are asserted, because a "plus" rule only holds while each half is
-      # present — asserting the word alone would still pass with the icon gone.
+      # Icon plus words: a colour alone is not a severity a reader can act on or a
+      # screen reader can read out. Both halves are asserted, because a "plus"
+      # rule only holds while each half is present — asserting the word alone
+      # would still pass with the icon gone.
       assert has_element?(view, "[data-role=problems-finding]", "Warning")
 
       icon =
