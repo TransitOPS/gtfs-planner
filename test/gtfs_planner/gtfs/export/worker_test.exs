@@ -56,6 +56,27 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
     end
   end
 
+  # Builds the real ZIPs and puts 150 per-trip missing-time warnings ahead of
+  # the export's own warnings, as a feed with many unfilled trips would.
+  defmodule ManyMissingTimesExport do
+    def build_zips(organization_id, gtfs_version_id, export_type, opts) do
+      {:ok, zips, warnings} =
+        Export.build_zips(organization_id, gtfs_version_id, export_type, opts)
+
+      missing =
+        Enum.map(1..150, fn index ->
+          %{
+            code: "missing_times_not_estimated",
+            detail: "Trip T#{index} was left blank.",
+            file: "stop_times.txt",
+            entity_type: "trip"
+          }
+        end)
+
+      {:ok, zips, missing ++ warnings}
+    end
+  end
+
   setup do
     root = Path.join(System.tmp_dir!(), "export-worker-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
@@ -218,6 +239,35 @@ defmodule GtfsPlanner.Gtfs.Export.WorkerTest do
     assert Enum.map(operations, & &1["file"]) == @movement_files ++ ["vehicles.txt"]
     assert preflight_warning(0) in preflight
     assert Enum.map(preflight, & &1["code"]) == Enum.map(0..94, &"preflight_#{&1}")
+  end
+
+  test "keeps operations and preflight warnings ahead of 150 missing-time warnings" do
+    with_preflight_module(TwoWarningPreflight)
+    with_export_module(ManyMissingTimesExport)
+    organization = organization_fixture()
+    version = gtfs_version_fixture(organization.id)
+    stop_fixture(organization.id, version.id, stop_id: "STOP1")
+    garage_fixture(organization.id, garage_id: "garage_main")
+    {run, claimed, generation, token} = claim_run(organization, version, :operations)
+
+    assert :ok = Worker.build(claimed, generation, token, ExportRuns.topic(run))
+
+    ready = Repo.get!(Run, run.id)
+
+    assert ready.state == :ready
+    assert length(ready.warnings) == 100
+
+    # Five operations omissions and two preflight warnings lead; the missing-time
+    # warnings take the 93 entries left: 92 trips and one summary of the rest.
+    {leading, missing} = Enum.split(ready.warnings, 7)
+
+    assert Enum.map(Enum.take(leading, 5), & &1["file"]) == @movement_files ++ ["vehicles.txt"]
+    assert Enum.drop(leading, 5) == [preflight_warning(0), preflight_warning(1)]
+    assert Enum.count(missing, &(&1["code"] == "missing_times_not_estimated")) == 92
+
+    summary = List.last(missing)
+    assert summary["code"] == "missing_times_not_estimated_more"
+    assert summary["detail"] =~ "58 more trips"
   end
 
   test "a garage/stop collision fails the run, names garage and stop, and publishes nothing", %{

@@ -83,15 +83,20 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
   end
 
   @doc """
-  Caps missing-times warnings at 100 entries: the first 99 stay actionable
-  and one `missing_times_not_estimated_more` summary names the rest.
+  Caps missing-times warnings at `limit` entries (100 by default): the first
+  `limit - 1` stay actionable and one `missing_times_not_estimated_more`
+  summary names the rest. A limit of zero or less leaves no room.
   """
-  @spec cap_warnings([warning()]) :: [warning()]
-  def cap_warnings(warnings) when is_list(warnings) do
-    if length(warnings) > @max_warnings do
-      remaining = length(warnings) - (@max_warnings - 1)
+  @spec cap_warnings([warning()], integer()) :: [warning()]
+  def cap_warnings(warnings, limit \\ @max_warnings)
 
-      Enum.take(warnings, @max_warnings - 1) ++
+  def cap_warnings(_warnings, limit) when limit <= 0, do: []
+
+  def cap_warnings(warnings, limit) when is_list(warnings) do
+    if length(warnings) > limit do
+      remaining = length(warnings) - (limit - 1)
+
+      Enum.take(warnings, limit - 1) ++
         [
           %{
             code: "missing_times_not_estimated_more",
@@ -105,6 +110,11 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
       warnings
     end
   end
+
+  @doc "Whether `warning` is a per-trip `missing_times_not_estimated` warning."
+  @spec warning?(map()) :: boolean()
+  def warning?(%{code: "missing_times_not_estimated"}), do: true
+  def warning?(_warning), do: false
 
   # The single classifier behind `fill_trip/3` and `summary/2` (criteria
   # "One classifier"): a trip with no blank cell is `:unchanged` without

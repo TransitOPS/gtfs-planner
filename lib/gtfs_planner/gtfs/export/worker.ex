@@ -16,6 +16,7 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
 
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.ArtifactStorage
+  alias GtfsPlanner.Gtfs.Export.MissingTimes
   alias GtfsPlanner.Gtfs.ExportRuns
 
   @max_warnings 100
@@ -114,17 +115,23 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
 
   defp estimate_option(_run), do: nil
 
-  # Export warnings lead the persisted list inside the 100-entry limit.  An
-  # export without warnings keeps the preflight warnings already stored.
+  # Export warnings lead the persisted list inside the 100-entry limit, then
+  # the preflight warnings.  Per-trip missing-time warnings come last and take
+  # only the room left, so a feed with many unfilled trips cannot push out the
+  # other notices; the Export page counts those trips separately.  An export
+  # without warnings keeps the preflight warnings already stored.
   defp persist_export_warnings(_run, _generation, _token, [], _preflight_warnings),
     do: {:ok, nil}
 
   defp persist_export_warnings(run, generation, token, export_warnings, preflight_warnings) do
+    {missing, other} = Enum.split_with(export_warnings, &MissingTimes.warning?/1)
+    leading = Enum.take(other ++ preflight_warnings, @max_warnings)
+
     persist_warnings(
       run,
       generation,
       token,
-      Enum.take(export_warnings ++ preflight_warnings, @max_warnings)
+      leading ++ MissingTimes.cap_warnings(missing, @max_warnings - length(leading))
     )
   end
 
