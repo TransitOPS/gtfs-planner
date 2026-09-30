@@ -25,6 +25,9 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Alignment do
     their bounding anchors and segment, moved pairs (collapsed above three), boarding changes and
     the largest timing changes, plus the count of smaller timing differences. `detail` stays
     data-only; the components render the sentences.
+  - `AC-21` Overview. `overview_rows/1` lays every pattern of one direction out against the
+    reference (busiest) pattern, one row per visit; each later pattern is aligned to the growing
+    master with `align/2` and its own visits are inserted at their aligned place.
 
   Alignment costs O(n*m) over three integer matrices (match, A-only row, B-only row). The assumed
   ceiling is 200 x 200 visits; beyond that the upgrade path is banded alignment. The module is
@@ -163,6 +166,63 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Alignment do
       items: sort_by_first_row(stops ++ moved ++ boarding ++ timing),
       smaller_timing: smaller_timing
     }
+  end
+
+  @doc """
+  Builds the stop-by-pattern overview for one direction (`AC-21`).
+
+  `patterns` is `[{route_pattern_id, stop_ids}]` with the reference (busiest) pattern first. The
+  reference seeds the row order; each later pattern is aligned to the growing master sequence
+  with `align/2` and its own visits are inserted at their aligned place, so a repeated stop keeps
+  one row per visit. `served` maps each pattern id to that pattern's 1-based visit position at the
+  row; `spans` maps each pattern id to the zero-based indexes of its first and last served row.
+  A pattern that serves no stops has no row range and is absent from `spans`.
+  """
+  @spec overview_rows([{String.t(), [String.t()]}]) :: %{
+          rows: [%{stop_id: String.t(), served: %{String.t() => pos_integer()}}],
+          spans: %{String.t() => {non_neg_integer(), non_neg_integer()}}
+        }
+  def overview_rows([]), do: %{rows: [], spans: %{}}
+
+  def overview_rows([{reference_id, reference_stops} | rest]) when is_list(reference_stops) do
+    rows =
+      reference_stops
+      |> Enum.with_index(1)
+      |> Enum.map(fn {stop_id, position} ->
+        %{stop_id: stop_id, served: %{reference_id => position}}
+      end)
+
+    rows = Enum.reduce(rest, rows, &add_pattern(&2, &1))
+
+    %{rows: rows, spans: spans(rows, [reference_id | Enum.map(rest, &elem(&1, 0))])}
+  end
+
+  defp add_pattern(rows, {pattern_id, stops}) do
+    master = List.to_tuple(rows)
+
+    rows
+    |> Enum.map(& &1.stop_id)
+    |> align(stops)
+    |> Enum.map(fn
+      %{type: :same, a_pos: a_pos, b_pos: b_pos} ->
+        Map.update!(elem(master, a_pos - 1), :served, &Map.put(&1, pattern_id, b_pos))
+
+      %{type: :a, a_pos: a_pos} ->
+        elem(master, a_pos - 1)
+
+      %{type: :b, stop_id: stop_id, b_pos: b_pos} ->
+        %{stop_id: stop_id, served: %{pattern_id => b_pos}}
+    end)
+  end
+
+  defp spans(rows, ids) do
+    for id <- ids, positions = served_rows(rows, id), positions != [], into: %{} do
+      {id, {Enum.min(positions), Enum.max(positions)}}
+    end
+  end
+
+  defp served_rows(rows, id) do
+    for {row, index} <- Enum.with_index(rows), Map.has_key?(row.served, id), do: index
   end
 
   defp same_count(rows), do: Enum.count(rows, &(&1.type == :same))
