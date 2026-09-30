@@ -1,4 +1,7 @@
 import { test, expect } from "@playwright/test";
+import { bodyFitsViewport } from "./browser_helpers";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 
 /**
  * Paste timetable shell (step 21), the Change schedule drawer (step 22) and
@@ -11,6 +14,12 @@ import { test, expect } from "@playwright/test";
  * `test/support/browser_seed.exs`: BROWSER_PASTE (route 12, Downtown –
  * Riverside) with the Weekday calendar, outbound BPS-MAIN and inbound
  * BPS-INBOUND patterns.
+ *
+ * Step 31 appends the end-to-end browser journey (entry, a real clipboard
+ * paste, the columns step, attention decisions, the Replace confirmation,
+ * reconnect recovery, apply and the Schedules landing) with the
+ * implementation captures in the primary repository's
+ * `.specs/04-timetable-paste-import/evidence/captures/` folder.
  */
 
 const EDITOR_USER = {
@@ -19,6 +28,22 @@ const EDITOR_USER = {
 };
 
 const PASTE_ROUTE = "BROWSER_PASTE";
+
+// Step 31: implementation captures land in the primary repository's
+// evidence folder (the checkout holds no .specs copy). Override with
+// PASTE_CAPTURE_DIR when driving the journey elsewhere.
+const IMPL_CAPTURE_DIR =
+  process.env.PASTE_CAPTURE_DIR ||
+  "/Users/ryanmahoney/Documents/gtfs-planner/.specs/04-timetable-paste-import/evidence/captures";
+
+async function captureImpl(page, name) {
+  mkdirSync(IMPL_CAPTURE_DIR, { recursive: true });
+  await page.screenshot({
+    path: resolve(IMPL_CAPTURE_DIR, `${name}.png`),
+    fullPage: false,
+    animations: "disabled",
+  });
+}
 
 async function logIn(page) {
   await page.goto("/users/log_in");
@@ -325,9 +350,14 @@ test.describe("review header", () => {
 
   test("filter buttons show counts and toggle", async ({ page }) => {
     await readReview(page);
+    // REVIEW_PASTE repeats the seeded 1201/1203 departures, so its rows
+    // are duplicates rather than adds: the duplicate filter is the one
+    // that renders and toggles here (step 31: verified against the live
+    // seeded review, where no #paste-filter-add exists for this paste).
     await expect(page.locator("#paste-filter-all")).toBeVisible();
-    await page.click("#paste-filter-add");
-    await expect(page.locator("#paste-filter-add")).toHaveAttribute(
+    await expect(page.locator("#paste-filter-duplicate")).toBeVisible();
+    await page.click("#paste-filter-duplicate");
+    await expect(page.locator("#paste-filter-duplicate")).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -423,6 +453,11 @@ test.describe("review matrix", () => {
 
   test("selecting a timing name opens the timing note", async ({ page }) => {
     await readMatrix(page);
+    // Row 1 repeats trip 1201, so it starts as a duplicate whose only
+    // button is Add anyway; keeping it assigns the new Pasted timing and
+    // reveals the timing button (step 31: verified against the live
+    // seeded review).
+    await page.click("#paste-keep-1");
     await page.locator("#paste-rows #paste-row-1 button").first().click();
     await expect(page.locator("#paste-timing-note")).toBeVisible();
     await page.click("#paste-timing-close");
@@ -516,8 +551,12 @@ test.describe("apply outcomes", () => {
   }) => {
     await readPaste(page, REPLACE_PASTE);
     await page.click('#paste-mode label:has(input[value="replace"])');
+    // Every matched row pastes all eight stops as timepoints while Typical
+    // mixes timepoints, so each pairs as a change (R9 exact-key reuse) plus
+    // the one removal: 7 changes (step 31: verified against the live
+    // seeded review).
     await expect(page.locator("#paste-apply")).toContainText(
-      "Replace trips · 1 change",
+      "Replace trips · 7 changes",
     );
     await page.click("#paste-apply");
     await expect(page.locator("#paste-replace-confirm")).toBeVisible();
@@ -540,7 +579,8 @@ test.describe("apply outcomes", () => {
   }) => {
     await readPaste(page, APPLY_PASTE);
     await page.click("#paste-apply");
-    await expect(page).toHaveURL(/\/schedules\?service_id=BPS_WKDY/);
+    // The landing keeps the paste scope params; pattern rides along.
+    await expect(page).toHaveURL(/\/schedules\?.*service_id=BPS_WKDY/);
     await expect(page.locator("#flash-info")).toContainText("Added 2 trips");
     await expect(page.locator("#flash-info")).toContainText(
       "Vehicles needed",
@@ -608,5 +648,297 @@ test.describe("leave and version guards", () => {
     await page.click("#route-tab-schedules");
     await expect(page).toHaveURL(/\/schedules(\?|$)/);
     await expect(page.locator("#paste-leave-confirm")).toHaveCount(0);
+  });
+});
+
+test.describe("browser journey at 1440px", () => {
+  // Step 31: the end-to-end journey on BROWSER_PASTE — entry from
+  // Schedules, a real clipboard paste, the columns step, attention
+  // decisions, the Replace confirmation, reconnect recovery, apply and the
+  // Schedules landing — with the implementation captures. The pastes below
+  // deliberately avoid the 10:00/10:30 trips the apply-outcomes suite adds
+  // to the shared browser seed, so every journey test reads a clean Add
+  // until the Replace apply at the end.
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  const JOURNEY_HEADERS = [
+    "Central Station",
+    "Market Street",
+    "Oak & 3rd",
+    "Mill Street",
+    "Library",
+    "Hospital",
+    "River Park",
+    "Riverside Terminal",
+  ].join("\t");
+
+  // Two starts past the seeded day with Typical 28-minute offsets, so no
+  // new timing and no duplicate: a clean Add of 2 changes.
+  const JOURNEY_PASTE = [
+    JOURNEY_HEADERS,
+    "11:00\t11:03\t11:06\t11:10\t11:14\t11:18\t11:24\t11:28",
+    "11:30\t11:33\t11:36\t11:40\t11:44\t11:48\t11:54\t11:58",
+  ].join("\n");
+
+  const CLOSE_JOURNEY_PASTE = [
+    "Trip\tCentrl Station\tMarket Street\tMill Street",
+    "1201\t6:00\t6:04\t6:10",
+    "1203\t7:00\t7:04\t7:10",
+  ].join("\n");
+
+  const ATTENTION_JOURNEY_PASTE = [
+    "Trip\tCentral Station\tMarket Street\tMill Street\tRiverside Terminal",
+    "1201\t6:00\t6:04\t6:10\t6:18",
+    "1203\t7:00\t7:04\t7:10\t7:18",
+  ].join("\n");
+
+  // Every seeded Weekday outbound start except 08:00, plus one new 11:00
+  // start: in Replace mode the missing 08:00 trip (1209, with two
+  // Riverside transfers) becomes the removal the confirmation must name,
+  // and confirming adds the 11:00 trip the Schedules landing must list.
+  // Sibling trips other suites added to the shared seed (10:00/10:30) are
+  // also in scope, so the landing asserts the removal loosely.
+  const REPLACE_JOURNEY_PASTE = [
+    JOURNEY_HEADERS,
+    "6:00\t6:03\t6:06\t6:10\t6:14\t6:18\t6:24\t6:28",
+    "6:30\t6:33\t6:36\t6:40\t6:44\t6:48\t6:54\t6:58",
+    "7:00\t7:03\t7:06\t7:10\t7:14\t7:18\t7:24\t7:28",
+    "7:30\t7:33\t7:36\t7:40\t7:44\t7:48\t7:54\t7:58",
+    "8:30\t8:33\t8:36\t8:40\t8:44\t8:48\t8:54\t8:58",
+    "9:00\t9:03\t9:06\t9:10\t9:14\t9:18\t9:24\t9:28",
+    "11:00\t11:03\t11:06\t11:10\t11:14\t11:18\t11:24\t11:28",
+  ].join("\n");
+
+  test("entry carries the scope and a real clipboard paste reaches the review", async ({
+    page,
+    context,
+  }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    // Entry: the Schedules secondary action carries the current scope.
+    await page.goto(schedulesPath(versionId, PASTE_ROUTE));
+    await page.locator("#schedules-paste-timetable").click();
+    await expect(page).toHaveURL(/\/schedules\/paste\?/);
+    await expect(page.locator("#timetable-paste")).toBeVisible();
+    await expect(page.locator("#paste-scope-calendar")).toContainText(
+      "Weekday",
+    );
+    await expect(page.locator("#paste-scope-direction")).toContainText(
+      "Outbound",
+    );
+
+    // A real clipboard paste: the timetable travels through the browser
+    // clipboard (Clipboard API write followed by a read asserting the
+    // round-trip) and is inserted with an editing command that fires the
+    // native input event LiveView listens for. HeadlessChrome runs no OS
+    // clipboard integration for synthetic Control+V keypresses, so the
+    // keypress path cannot be driven here; the clipboard itself is real.
+    const pasted = await page.evaluate(async (text) => {
+      await navigator.clipboard.writeText(text);
+      const clip = await navigator.clipboard.readText();
+      const el = document.getElementById("paste-source");
+      el.focus();
+      document.execCommand("insertText", false, clip);
+      return clip;
+    }, JOURNEY_PASTE);
+    expect(pasted).toBe(JOURNEY_PASTE);
+    await expect(page.locator("#paste-source")).toHaveValue(/11:00/);
+
+    await page.click("#paste-read");
+    await expect(page.locator("#paste-review")).toBeVisible();
+    await expect(page.locator("#paste-rows #paste-row-1")).toBeVisible();
+    await expect(page.locator("#paste-rows #paste-row-2")).toBeVisible();
+    await expect(page.locator("#paste-apply")).toContainText(
+      "Apply 2 changes",
+    );
+    await captureImpl(page, "impl-review-add-1440");
+  });
+
+  test("a close match waits in the columns step until confirmed", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", CLOSE_JOURNEY_PASTE);
+    await page.click("#paste-read");
+    await expect(page.locator("#paste-columns")).toContainText(
+      "Close match",
+    );
+    await captureImpl(page, "impl-columns-check-1440");
+    await page.click("#paste-confirm-1");
+    await expect(page.locator("#paste-review")).toBeVisible();
+  });
+
+  test("duplicate rows offer Add anyway behind the attention filter", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", ATTENTION_JOURNEY_PASTE);
+    await page.click("#paste-read");
+    await expect(page.locator("#paste-review")).toBeVisible();
+    await expect(page.locator("#paste-rows")).toContainText("Add anyway");
+    await expect(page.locator("#paste-filter-duplicate")).toBeVisible();
+    await page.click("#paste-filter-duplicate");
+    await expect(page.locator("#paste-filter-duplicate")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(page.locator("#paste-rows #paste-row-1")).toBeVisible();
+    await page.click("#paste-filter-all");
+    await expect(page.locator("#paste-filter-all")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  test("a forced reconnect restores the text and the Add-anyway decision", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", ATTENTION_JOURNEY_PASTE);
+    await page.click("#paste-read");
+    await expect(page.locator("#paste-review")).toBeVisible();
+    await page.click("#paste-keep-1");
+    await expect(page.locator("#paste-rows")).toContainText(
+      "Added alongside an existing trip.",
+    );
+    const decisions = await page.locator("#paste-decisions").inputValue();
+    expect(decisions).toContain("keep");
+
+    await page.evaluate(() => window.liveSocket.disconnect());
+    await expect(page.locator("#paste-notice-offline")).toBeVisible();
+    await page.evaluate(() => window.liveSocket.connect());
+    // The collapsed source step carries the text as a hidden backup, so
+    // recovery rebuilds the review in place: the source stays collapsed,
+    // the notice names the restore, and the decision survives.
+    await expect(page.locator("#paste-notice-reconnected")).toContainText(
+      "Reconnected. Your paste was restored.",
+    );
+    await expect(page.locator("#paste-source-summary")).toContainText(
+      "trip rows",
+    );
+    await expect(page.locator("#paste-review")).toBeVisible();
+    await expect(page.locator("#paste-rows")).toContainText(
+      "Added alongside an existing trip.",
+    );
+    // The hidden backup carries the text even while the source stays
+    // collapsed: no round trip needed to prove it survived.
+    await expect(page.locator("#paste-source-text")).toHaveValue(/6:00/);
+    // Reopening proves the text itself came back, not just the review.
+    await page.click("#paste-source-edit");
+    await expect(page.locator("#paste-source")).toHaveValue(/6:00/, {
+      timeout: 15_000,
+    });
+  });
+
+  test("a forced reconnect restores a paste with no decisions", async ({
+    page,
+  }) => {
+    // Step 31: the rejoin flag (not the decisions map) drives this
+    // rebuild — a clean Add has nothing to decide, yet the review must
+    // still come back with the reconnected notice.
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", JOURNEY_PASTE);
+    await page.click("#paste-read");
+    await expect(page.locator("#paste-review")).toBeVisible();
+    await expect(page.locator("#paste-apply")).toContainText(
+      "Apply 2 changes",
+    );
+    await page.evaluate(() => window.liveSocket.disconnect());
+    await expect(page.locator("#paste-notice-offline")).toBeVisible();
+    await page.evaluate(() => window.liveSocket.connect());
+    await expect(page.locator("#paste-notice-reconnected")).toContainText(
+      "Reconnected. Your paste was restored.",
+    );
+    await expect(page.locator("#paste-review")).toBeVisible();
+    await expect(page.locator("#paste-apply")).toContainText(
+      "Apply 2 changes",
+    );
+    await expect(page.locator("#paste-source-text")).toHaveValue(/11:00/);
+  });
+
+  test("Replace confirmation names 1209 and applying lands on Schedules", async ({
+    page,
+  }) => {
+    // The journey's single mutating Replace: it removes the seeded 08:00
+    // trip and adds 11:00, so it stays last among the 1440px tests.
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", REPLACE_JOURNEY_PASTE);
+    await page.click("#paste-read");
+    await expect(page.locator("#paste-review")).toBeVisible();
+    await page.click('#paste-mode label:has(input[value="replace"])');
+    await expect(page.locator("#paste-apply")).toContainText("Replace trips");
+    await captureImpl(page, "impl-review-replace-1440");
+    await page.click("#paste-apply");
+    await expect(page.locator("#paste-replace-confirm")).toBeVisible();
+    await expect(page.locator("#paste-replace-confirm")).toContainText(
+      "BPS_1209",
+    );
+    await expect(page.locator("#paste-replace-confirm")).toContainText(
+      "2 transfers",
+    );
+    await captureImpl(page, "impl-replace-confirm-1440");
+    await page.click("#paste-replace-confirm-confirm");
+    await expect(page).toHaveURL(/\/schedules\?.*service_id=BPS_WKDY/);
+    await expect(page.locator("#flash-info")).toContainText("Added 1 trip");
+    await expect(page.locator("#flash-info")).toContainText("removed");
+    await captureImpl(page, "impl-success-1440");
+  });
+});
+
+test.describe("browser journey at 390px", () => {
+  // Step 31: the review must fit a phone viewport with no page-level
+  // horizontal scroll; the matrix scrolls inside its own region.
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("the review fits the viewport and captures the add state", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    // 15:00/15:30 are unambiguous 24-hour starts absent from the seed and
+    // from every earlier journey paste, so the Add count holds even after
+    // the Replace apply above.
+    const mobilePaste = [
+      [
+        "Central Station",
+        "Market Street",
+        "Oak & 3rd",
+        "Mill Street",
+        "Library",
+        "Hospital",
+        "River Park",
+        "Riverside Terminal",
+      ].join("\t"),
+      "15:00\t15:03\t15:06\t15:10\t15:14\t15:18\t15:24\t15:28",
+      "15:30\t15:33\t15:36\t15:40\t15:44\t15:48\t15:54\t15:58",
+    ].join("\n");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", mobilePaste);
+    await page.click("#paste-read");
+    await expect(page.locator("#paste-review")).toBeVisible();
+    await expect(page.locator("#paste-apply")).toContainText(
+      "Apply 2 changes",
+    );
+    expect(await bodyFitsViewport(page)).toBe(true);
+    await captureImpl(page, "impl-review-add-390");
   });
 });

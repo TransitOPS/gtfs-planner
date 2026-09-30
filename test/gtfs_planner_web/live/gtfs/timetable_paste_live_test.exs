@@ -2521,6 +2521,29 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
                "Reconnected. Your paste was restored."
              )
     end
+
+    # Step 31: the textarea unmounts with the collapsed source step, so the
+    # text, layout and header ride hidden backups that LiveView form
+    # recovery replays on a socket reconnect (the browser journey asserts
+    # the restore end to end; here the render contract).
+    test "the collapsed source carries hidden text backups for form recovery",
+         %{conn: conn, version: version} = context do
+      setup = apply_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = apply_open(view, version, setup.route, setup)
+
+      text = apply_headers() <> "\n08:30\t08:35\t08:40"
+      _html = apply_read(view, text)
+
+      assert has_element?(view, "#paste-review")
+      assert has_element?(view, "#paste-source-summary")
+      refute has_element?(view, "#paste-source")
+
+      assert view |> element("#paste-source-text") |> render() =~ "08:30"
+      assert has_element?(view, "#paste-source-layout")
+      assert has_element?(view, "#paste-source-header")
+    end
   end
 
   # Step 30: the leave and version-switch guards. A version switch with
