@@ -36,6 +36,8 @@ defmodule GtfsPlanner.Gtfs.Export do
   alias GtfsPlanner.Gtfs.Flex.Export, as: FlexExport
   alias GtfsPlanner.Gtfs.Flex.Export.FileSpecs, as: FlexFileSpecs
   alias GtfsPlanner.Gtfs.FlexService
+  alias GtfsPlanner.Gtfs.Rosters
+  alias GtfsPlanner.Gtfs.Rosters.AssignmentsExport
   alias GtfsPlanner.Gtfs.Runs
   alias GtfsPlanner.Gtfs.Runs.TodsExport, as: RunsTodsExport
   alias GtfsPlanner.Gtfs.Stop
@@ -487,6 +489,7 @@ defmodule GtfsPlanner.Gtfs.Export do
       warnings =
         movement_warnings(movements) ++
           run_warnings(movements) ++
+          assignment_warnings(movements) ++
           tods_omission_warnings(garages, vehicles) ++ missing_warnings
 
       {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id), warnings}
@@ -947,6 +950,8 @@ defmodule GtfsPlanner.Gtfs.Export do
           run_day_types: RunsTodsExport.run_day_types(run_days)
         })
 
+      ids = Map.get(rows, :ids, %{service_ids: %{}, movement_trip_ids: %{}})
+
       %{
         rows: rows,
         # `ids` is absent when no day type survived `collect/4` — with no day type
@@ -957,17 +962,45 @@ defmodule GtfsPlanner.Gtfs.Export do
           RunsTodsExport.rows(%{
             day_types: movements.day_types,
             run_days: run_days,
-            ids: Map.get(rows, :ids, %{service_ids: %{}, movement_trip_ids: %{}}),
+            ids: ids,
             garages_by_id: movements.garages_by_id
           }),
+        # The planned assignments, expanded over the very `movements` and
+        # `run_days` the run rows were just built from and hung on the very
+        # `service_ids` those rows used, so `employee_run_dates.txt` can never
+        # name a `(service_id, date)` the same ZIP's supplement does not list or a
+        # run its `run_events.txt` does not carry (INV-14). `nil` when the version
+        # has no roster line, which is what keeps the file and its warnings off a
+        # version that has never been rostered (AC-23).
+        assignment_rows:
+          assignment_rows(organization_id, gtfs_version_id, movements, run_days, ids),
         published?: true
       }
     else
       %{
         rows: empty_movement_rows(),
         run_rows: %{run_events: [], left_out: 0, uncovered: []},
+        assignment_rows: nil,
         published?: false
       }
+    end
+  end
+
+  # `Rosters.export_roster/4` composes the roster from the movements and runs
+  # this export already holds rather than deriving them a second time, and it
+  # answers `nil` for a version with no line (INV-11, INV-15).
+  defp assignment_rows(organization_id, gtfs_version_id, movements, run_days, ids) do
+    case Rosters.export_roster(organization_id, gtfs_version_id, movements, run_days) do
+      nil ->
+        nil
+
+      roster ->
+        AssignmentsExport.rows(%{
+          roster: roster,
+          day_types: movements.day_types,
+          run_days: run_days,
+          services: ids.service_ids
+        })
     end
   end
 
@@ -1009,7 +1042,8 @@ defmodule GtfsPlanner.Gtfs.Export do
       {Tods.routes_supplement_spec(), rows.routes},
       {Tods.trips_supplement_spec(), rows.trips},
       {Tods.stop_times_supplement_spec(), rows.stop_times},
-      {Tods.run_events_spec(), movements.run_rows.run_events}
+      {Tods.run_events_spec(), movements.run_rows.run_events},
+      {Tods.employee_run_dates_spec(), employee_run_date_rows(movements)}
     ]
     |> Enum.reject(fn {_spec, rows} -> rows == [] end)
     |> Enum.map(fn {spec, rows} -> write_tods_file(temp_dir, spec, rows) end)
@@ -1128,6 +1162,111 @@ defmodule GtfsPlanner.Gtfs.Export do
       end)
 
     unpublished ++ left_out ++ uncovered
+  end
+
+  # The planned assignments' rows, or none at all. A version with no roster line
+  # has no roster to expand, and a roster whose every line is open or stale has
+  # nothing to write: either way the file is omitted rather than written empty,
+  # and the warnings below say which of the two it was.
+  defp employee_run_date_rows(%{assignment_rows: nil}), do: []
+  defp employee_run_date_rows(%{assignment_rows: %{rows: rows}}), do: rows
+
+  # The roster-line warnings, in the order a reader meets them: what the file is,
+  # what it deliberately leaves out, and what could not be exported. They appear
+  # only for a version that has roster lines — a version nobody has rostered owes
+  # a consumer no announcement (AC-23).
+  defp assignment_warnings(%{assignment_rows: nil}), do: []
+
+  defp assignment_warnings(%{assignment_rows: assignments}) do
+    file = Tods.employee_run_dates_spec().filename
+
+    [
+      planned_warning(assignments, file),
+      other_service_warning(assignments, file),
+      unassigned_warning(assignments, file),
+      stale_warning(assignments, file),
+      left_out_warning(assignments, file)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  # The note that says what the file is not. Present whenever the file has rows,
+  # because a dispatch system that reads planned assignments as actual ones is
+  # the risk this spec accepts rather than one it designs away.
+  defp planned_warning(%{rows: []}, _file), do: nil
+
+  defp planned_warning(_assignments, file) do
+    warning(
+      "tods_assignments_planned",
+      "Planned from the pick. Vacations, sick days and extraboard are not included.",
+      file
+    )
+  end
+
+  defp other_service_warning(%{other_service_dates: []}, _file), do: nil
+
+  # The first three dates in date order and "and N more" only when there are
+  # more, so a long calendar reports its shape rather than its whole length.
+  defp other_service_warning(%{other_service_dates: dates} = assignments, file) do
+    {first_three, rest} = Enum.split(dates, 3)
+
+    listed = first_three |> Enum.map_join(", ", &Date.to_iso8601/1)
+    listed = if rest == [], do: listed, else: "#{listed} and #{length(rest)} more"
+    open = open_run_days(assignments.open_run_days)
+
+    detail =
+      if length(dates) == 1 do
+        "1 date runs different service: #{listed}. No assignment is exported for it; #{open}."
+      else
+        "#{length(dates)} dates run different service: #{listed}. " <>
+          "No assignments are exported for them; #{open}."
+      end
+
+    warning("tods_assignments_other_service", detail, file)
+  end
+
+  defp open_run_days(1), do: "1 run-day stays open"
+  defp open_run_days(n), do: "#{n} run-days stay open"
+
+  defp unassigned_warning(%{unassigned_lines: 0}, _file), do: nil
+
+  defp unassigned_warning(%{unassigned_lines: n}, file) do
+    noun = if n == 1, do: "1 line has", else: "#{n} lines have"
+    warning("tods_assignments_unassigned", "#{noun} no operator.", file)
+  end
+
+  defp stale_warning(%{stale_slots: 0}, _file), do: nil
+
+  defp stale_warning(%{stale_slots: n}, file) do
+    verb = if n == 1, do: "was", else: "were"
+    warning("tods_assignments_stale", "#{n} stale #{slot_noun(n)} #{verb} skipped.", file)
+  end
+
+  defp left_out_warning(%{left_out_slots: 0}, _file), do: nil
+
+  defp left_out_warning(%{left_out_slots: n}, file) do
+    verb =
+      if n == 1, do: "names a run with errors and was", else: "name runs with errors and were"
+
+    warning(
+      "tods_assignments_left_out",
+      "#{n} assigned #{slot_noun(n)} #{verb} left out.",
+      file
+    )
+  end
+
+  defp slot_noun(1), do: "slot"
+  defp slot_noun(_n), do: "slots"
+
+  @roster_line_warning %{
+    code: nil,
+    detail: nil,
+    file: nil,
+    entity_type: "roster_line"
+  }
+
+  defp warning(code, detail, file) do
+    %{@roster_line_warning | code: code, detail: detail, file: file}
   end
 
   # An empty table omits its file rather than exporting an empty one.

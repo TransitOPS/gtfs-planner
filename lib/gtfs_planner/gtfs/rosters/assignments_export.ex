@@ -63,6 +63,11 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExport do
   file and the page's preview read in the same order whatever order the day types,
   the lines and the slots arrive in. `other_service_dates` is sorted too, because
   the warning lists its first three dates in date order.
+
+  Dates are ordered by `Date.to_iso8601/1`, never by `Enum.sort/1` on the
+  structs. `%Date{}` is a map, and Erlang orders maps field by field —
+  `calendar`, `day`, `month`, `year` — so sorting the structs themselves puts
+  2 March after 1 June. Every date order here is chronological.
   """
   @spec rows(%{
           required(:roster) => Roster.t(),
@@ -79,9 +84,12 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExport do
       rows:
         days
         |> Enum.flat_map(& &1.rows)
-        |> Enum.sort_by(&{&1.date, &1.service_id, &1.run_id, &1.employee_id}),
+        |> Enum.sort_by(&{Date.to_iso8601(&1.date), &1.service_id, &1.run_id, &1.employee_id}),
       other_service_dates:
-        days |> Enum.flat_map(& &1.other_service_dates) |> Enum.uniq() |> Enum.sort(),
+        days
+        |> Enum.flat_map(& &1.other_service_dates)
+        |> Enum.uniq()
+        |> Enum.sort_by(&Date.to_iso8601/1),
       open_run_days: Enum.sum(Enum.map(days, & &1.open_run_days)),
       unassigned_lines: Enum.count(roster.lines, &is_nil(&1.operator)),
       stale_slots: roster.summary.stale_slots,
@@ -99,7 +107,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.AssignmentsExport do
 
       runs ->
         day_type.dates
-        |> Enum.sort()
+        |> Enum.sort_by(&Date.to_iso8601/1)
         |> Enum.reduce(%{rows: [], other_service_dates: [], open_run_days: 0}, fn date, acc ->
           expand_date(date, day_type, roster, runs, services, acc)
         end)

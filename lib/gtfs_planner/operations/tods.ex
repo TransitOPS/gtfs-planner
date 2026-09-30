@@ -302,6 +302,28 @@ defmodule GtfsPlanner.Operations.Tods do
   end
 
   @doc """
+  Column spec for the exported `employee_run_dates.txt`.
+
+  One row is one operator working one run on one service date. `date` and
+  `service_id` are the ones this same ZIP's `calendar_dates_supplement.txt`
+  lists, and `run_id` is one its `run_events.txt` carries, so a consumer can
+  follow a row without a second lookup. Only the operator's employee ID leaves
+  the app: a display name or a seniority number appears in no exported file.
+  """
+  @spec employee_run_dates_spec() :: %{filename: String.t(), fields: [{String.t(), atom()}]}
+  def employee_run_dates_spec do
+    %{
+      filename: "employee_run_dates.txt",
+      fields: [
+        {"date", :date},
+        {"service_id", :service_id},
+        {"run_id", :run_id},
+        {"employee_id", :employee_id}
+      ]
+    }
+  end
+
+  @doc """
   Maps a garage to its `stops_supplement.txt` row.
   """
   @spec garage_export_row(Garage.t()) :: map()
