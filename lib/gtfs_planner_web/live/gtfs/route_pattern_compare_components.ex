@@ -52,6 +52,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
     default: nil,
     doc: "per-side `%{change, open, times}` paths for the slot cards"
 
+  attr :reverse_path, :string,
+    default: nil,
+    doc: "the compare URL with the `reverse` param toggled; nil without a loaded pair"
+
   def page(assigns) do
     ~H"""
     <div id="compare-page" class="ds-page">
@@ -123,7 +127,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
           <% @view == :all -> %>
             <%!-- The all-patterns overview lands in a later step. --%>
           <% true -> %>
-            <.two_pattern_containers comparison={@comparison} slot_paths={@slot_paths} />
+            <.two_pattern_containers
+              comparison={@comparison}
+              slot_paths={@slot_paths}
+              reverse_path={@reverse_path}
+            />
         <% end %>
       </section>
     </div>
@@ -215,11 +223,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   # map's own column, which stacks above the table below `lg`.
   attr :comparison, :map, required: true
   attr :slot_paths, :map, required: true
+  attr :reverse_path, :string, default: nil
 
   defp two_pattern_containers(assigns) do
     ~H"""
     <div id="compare-two-view" class="mt-4">
       <.slots comparison={@comparison} slot_paths={@slot_paths} />
+
+      <.relation :if={@comparison.alignment} comparison={@comparison} reverse_path={@reverse_path} />
 
       <div
         id="compare-workspace"
@@ -260,6 +271,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
         comparison={@comparison}
         side={@comparison.a}
         paths={@slot_paths.a}
+        reversed?={reversed?(@comparison)}
       />
 
       <div class="flex items-center justify-center">
@@ -284,10 +296,112 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
         side={@comparison.b}
         unavailable_id={unavailable_id(@comparison)}
         paths={@slot_paths.b}
+        reversed?={reversed?(@comparison)}
       />
     </div>
     """
   end
+
+  # The relationship between the two patterns (AC-4, AC-17), between the slots
+  # and the workspace. At most one callout renders, in the prototype's order:
+  # the reversed view first (the URL asked for B reversed), then an opposite
+  # pair, then identical stops, then a pair with no shared stops. Each is a
+  # `PlannerComponents.message` with its kind's own icon, so the state is never
+  # carried by colour alone (`CR-1`). The reverse toggle is a patch, so the URL
+  # keeps the whole selection (`INV-4`).
+  attr :comparison, :map, required: true
+  attr :reverse_path, :string, required: true
+
+  def relation(%{comparison: %{alignment: %{reversed?: true}}} = assigns) do
+    ~H"""
+    <.message
+      id="relation-reversed"
+      kind="info"
+      class="mt-4"
+      title="B is shown in reverse order"
+    >
+      <.series_chip letter="B" />
+      runs {RoutePattern.direction_label(@comparison.b.pattern.direction_id)}.
+      Its stops are listed last to first so they line up with
+      <.series_chip letter="A" />; its stop numbers
+      count down. Running times aren’t compared while B is reversed, because its times run the other way.
+      <:action>
+        <.reverse_toggle label="Show B in its own order" path={@reverse_path} />
+      </:action>
+    </.message>
+    """
+  end
+
+  def relation(%{comparison: %{alignment: %{opposite?: true}}} = assigns) do
+    ~H"""
+    <.message
+      id="relation-opposite"
+      kind="info"
+      class="mt-4"
+      title="These patterns run in opposite directions"
+    >
+      <.series_chip letter="B" /> serves most of the same stops in reverse order. To see where the two
+      directions serve different stops, show B in reverse order.
+      <:action>
+        <.reverse_toggle label="Show B in reverse order" path={@reverse_path} />
+      </:action>
+    </.message>
+    """
+  end
+
+  def relation(%{comparison: %{alignment: %{identical?: true}}} = assigns) do
+    assigns = assign(assigns, :stop_count, plural(length(assigns.comparison.a.stops), "stop"))
+
+    ~H"""
+    <.message
+      id="relation-identical"
+      kind="success"
+      class="mt-4"
+      title="Same stops in the same order"
+    >
+      <.series_chip letter="A" /> and <.series_chip letter="B" />
+      serve the same {@stop_count} in the same
+      order. They differ only in running times and trips.
+    </.message>
+    """
+  end
+
+  def relation(%{comparison: %{alignment: %{counts: %{shared: 0}}}} = assigns) do
+    ~H"""
+    <.message
+      id="relation-none"
+      kind="neutral"
+      class="mt-4"
+      title="These patterns share no stops"
+    >
+      Nothing lines up, so <.series_chip letter="A" />’s stops are listed first and
+      <.series_chip letter="B" />’s after them, and running times aren’t compared. The map shows where
+      each runs.
+    </.message>
+    """
+  end
+
+  def relation(assigns), do: ~H""
+
+  attr :label, :string, required: true
+  attr :path, :string, required: true
+
+  defp reverse_toggle(assigns) do
+    ~H"""
+    <.button
+      id="compare-reverse-toggle"
+      type="button"
+      variant="secondary"
+      patch={@path}
+      class="min-h-11 gap-2"
+    >
+      <.icon name="hero-arrows-up-down" class="size-4" /> {@label}
+    </.button>
+    """
+  end
+
+  defp reversed?(%{alignment: %{reversed?: reversed?}}), do: reversed?
+  defp reversed?(_comparison), do: false
 
   attr :id, :string, required: true
   attr :letter, :string, required: true, values: ["A", "B"]
@@ -302,6 +416,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
     doc: "the requested ID when the side did not resolve"
 
   attr :paths, :map, required: true, doc: "this side's `%{change, open, times}` paths"
+
+  attr :reversed?, :boolean,
+    default: false,
+    doc: "the URL asked for B reversed; B's meta line says so"
 
   def slot(assigns) do
     assigns =
@@ -356,7 +474,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
             <span :if={@other_route?} class="font-[650]">{@route_name} ·</span>
             <span>{@pattern_name}</span>
           </h3>
-          <p class="mt-0.5 text-[13px] text-muted">{@meta_line}</p>
+          <p class="mt-0.5 text-[13px] text-muted">
+            {@meta_line}<span
+              :if={@letter == "B" and @reversed?}
+              class="font-[650] text-info-fg"
+            > · shown in reverse order</span>
+          </p>
           <p class="mt-0.5 text-sm text-default">
             <span class="font-[650] tabular-nums text-strong">{@trips_lead}</span>{@trips_after}<span
               :if={@trips_note}
@@ -427,7 +550,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
     ~H"""
     <span
       class={[
-        "inline-flex size-[18px] shrink-0 items-center justify-center rounded-badge text-[11px] font-bold leading-none text-white",
+        "inline-flex size-[18px] shrink-0 items-center justify-center rounded-badge align-[-3px] text-[11px] font-bold leading-none text-white",
         series_chip_class(@letter)
       ]}
       title={"Pattern " <> @letter}

@@ -168,3 +168,45 @@ test.describe("compare slots (step 13)", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 });
+
+// ── Relationship captures (step 14) ─────────────────────────────────────────
+//
+// The relationship callouts and the reverse toggle: the opposite-direction
+// pair before and after the reverse patch, an identical pair and a pair with
+// no shared stops. The seed has no two distinct patterns with the same stops
+// in the same order, so the identical state compares BROWSER-CMP-FULL with
+// itself; EV-12's fixture covers two distinct patterns. The no-shared B is on
+// another seeded route, as the prototype's own no-shared state is.
+
+test.describe("compare relation (step 14)", () => {
+  test("capture: relation", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    const states = [
+      ["reverse", "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-BACK", "#relation-opposite"],
+      ["reverse-on", "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-BACK&reverse=1", "#relation-reversed"],
+      ["identical", "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-FULL", "#relation-identical"],
+      ["no-shared", "?a=BROWSER-CMP-FULL&b=BROWSER-P1", "#relation-none"],
+    ];
+
+    for (const [name, query, selector] of states) {
+      for (const [width, height] of [
+        [1440, 900],
+        [390, 844],
+      ]) {
+        await page.setViewportSize({ width, height });
+        await page.goto(compareUrl(versionId, query));
+        await page.waitForSelector(selector);
+        await capture(page, `relation-${name}-${width}`);
+      }
+    }
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+});
