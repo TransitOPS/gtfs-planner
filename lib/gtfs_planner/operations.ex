@@ -854,6 +854,30 @@ defmodule GtfsPlanner.Operations do
     end
   end
 
+  @doc """
+  Deletes an operator belonging to the organization and returns the deleted row.
+
+  The delete is organization-scoped and hard: the row is gone. Its roster lines
+  are not — the foreign key empties `roster_lines.operator_id`, so every line the
+  operator held, in any version, shows Open rather than disappearing with them
+  (domain rule 12, AC-6). A caller names those lines with
+  `GtfsPlanner.Gtfs.Rosters.operator_holdings/2` before it confirms.
+
+  Returns `{:error, :not_found}` for a missing, malformed or foreign id and
+  deletes nothing.
+  """
+  @spec delete_operator(Ecto.UUID.t(), term()) ::
+          {:ok, Operator.t()} | {:error, :not_found}
+  def delete_operator(organization_id, id) do
+    case get_operator(organization_id, id) do
+      nil ->
+        {:error, :not_found}
+
+      operator ->
+        Repo.delete(operator)
+    end
+  end
+
   # --- TODS import -----------------------------------------------------------
 
   @doc """
