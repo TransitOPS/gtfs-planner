@@ -590,7 +590,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Alignment do
     anchors = Enum.reverse(anchors)
 
     %{
-      segments: segments_between(anchors),
+      segments: segments_between(anchors, untimed),
       untimed: untimed,
       waits: waits_at(anchors, last_a, last_b)
     }
@@ -610,7 +610,10 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Alignment do
 
   defp anchor(_row, _rows_a, _rows_b), do: :skip
 
-  defp segments_between(anchors) do
+  # Between two anchors every row is either an untimed shared row or one side's own
+  # stop, so the stretch has the same stops on both sides exactly when every row
+  # it spans is untimed.
+  defp segments_between(anchors, untimed) do
     anchors
     |> Enum.chunk_every(2, 1, :discard)
     |> Enum.map(fn [{from, _from_row, from_a, from_b}, {to, _to_row, to_a, to_b}] ->
@@ -623,7 +626,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Alignment do
         a_secs: a_secs,
         b_secs: b_secs,
         diff: b_secs - a_secs,
-        same_stops?: to == from + 1
+        same_stops?: Enum.all?((from + 1)..(to - 1)//1, &MapSet.member?(untimed, &1))
       }
     end)
   end
