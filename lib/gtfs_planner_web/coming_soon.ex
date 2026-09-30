@@ -36,37 +36,11 @@ defmodule GtfsPlannerWeb.ComingSoon do
   the information-architecture spec. Each `sections` entry names one thing the
   feature will let a person do, in the words an operator uses, followed by one
   sentence that says what it covers and where it stops.
+
+  Runs is deliberately absent: `/gtfs/:version/runs` is `Gtfs.RunsLive`, and a
+  Runs entry here would describe a page this catalog no longer renders.
   """
   @spec feature(atom()) :: feature()
-  def feature(:runs) do
-    %{
-      title: "Runs",
-      scope: :version,
-      summary: "Cut vehicle blocks into each operator’s daily work.",
-      sections: [
-        %{
-          name: "Review every run on one chart",
-          text:
-            "See when each operator signs on, which blocks they drive, where the break falls and when they sign off."
-        },
-        %{
-          name: "Get suggested runs",
-          text: "Preview a suggested way to cut your blocks. Nothing changes until you apply it."
-        },
-        %{
-          name: "Set your work rules",
-          text:
-            "Enter report time, sign-off time, the longest paid break and the longest spread. Runs shows how paid time adds up."
-        },
-        %{
-          name: "Catch problems early",
-          text:
-            "Flag work that isn’t in any run, stretches that run too long without a relief, and runs that spread past your limit."
-        }
-      ]
-    }
-  end
-
   def feature(:rosters) do
     %{
       title: "Rosters",

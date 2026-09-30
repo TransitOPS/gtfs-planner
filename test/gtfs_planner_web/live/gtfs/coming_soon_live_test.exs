@@ -14,14 +14,6 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
   # left this list with step 19: `/flex` is `Gtfs.FlexLive`'s list now.
   @standalone_destinations [
     %{
-      path: "/runs",
-      title: "Runs",
-      sections: 4,
-      bar: "#operations-sub-nav",
-      current: "/runs",
-      tabs: 3
-    },
-    %{
       path: "/rosters",
       title: "Rosters",
       sections: 4,
@@ -32,7 +24,6 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
   ]
 
   @placeholder_paths [
-    "/runs",
     "/rosters"
   ]
 
@@ -137,7 +128,7 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
 
       for version_id <- [Ecto.UUID.generate(), staging.id, foreign_version.id] do
         assert {:error, {:redirect, %{to: "/", flash: %{"error" => "GTFS version not found"}}}} =
-                 live(conn, "/gtfs/#{version_id}/runs")
+                 live(conn, "/gtfs/#{version_id}/rosters")
       end
     end
   end
@@ -153,7 +144,7 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
       conn = log_in_user(conn, user, organization: organization)
       selected_version_id = to_string(other_version.id)
 
-      for path <- ["/runs", "/rosters"] do
+      for path <- ["/rosters"] do
         {:ok, view, _html} = live(conn, "/gtfs/#{version.id}#{path}")
 
         render_hook(view, "switch_gtfs_version", %{"version" => selected_version_id})
@@ -183,7 +174,7 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
          %{conn: conn, user: user, organization: organization, version: version} do
       conn = log_in_user(conn, user, organization: organization)
 
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/runs")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/rosters")
 
       for version_id <- [to_string(version.id), nil] do
         render_hook(view, "gtfs_version_loaded", %{"version_id" => version_id})
@@ -199,7 +190,7 @@ defmodule GtfsPlannerWeb.Gtfs.ComingSoonLiveTest do
       foreign_version = gtfs_version_fixture(other_organization.id)
 
       conn = log_in_user(conn, user, organization: organization)
-      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/runs")
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/rosters")
 
       for version_id <- [staging.id, foreign_version.id, Ecto.UUID.generate()] do
         render_hook(view, "switch_gtfs_version", %{"version" => to_string(version_id)})

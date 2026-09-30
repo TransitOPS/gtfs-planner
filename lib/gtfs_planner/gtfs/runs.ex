@@ -97,6 +97,14 @@ defmodule GtfsPlanner.Gtfs.Runs do
   `:orphan_assignments` notice, and — because `Runs.Day.derive/4` counted its
   problems before this module saw them — the day's notice count is recounted
   rather than left one short.
+
+  A version with no service dates has no day type at all, so there is no day to
+  load and `day.day_type` is nil. That answers
+  `{:error, {:unknown_day_type, []}}` — the same shape as an unrecognised day
+  key, carrying an EMPTY list, which is what tells a caller to say "no dates"
+  rather than "choose one of these". Deriving anyway would raise on the nil day
+  type, and a read that 500s on a version with no calendars is worse than one
+  that says so.
   """
   @spec load_runs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
           {:ok, runs_day()}
@@ -104,6 +112,18 @@ defmodule GtfsPlanner.Gtfs.Runs do
   def load_runs(organization_id, gtfs_version_id, day_type_key) do
     Repo.transaction(fn ->
       case Blocking.load_day(organization_id, gtfs_version_id, day_type_key) do
+        # A version with no service dates has NO day type — `Blocking.load_day/3`
+        # answers `{:ok, day}` with `day.day_type` nil and no trips. There is
+        # then nothing to derive, and `build_runs_day/3` would raise on the nil
+        # day type. It is the same condition as an unrecognised day key — this
+        # version has no day of the name asked for — so it is reported through
+        # the same error, carrying the day types the version really has. That
+        # list is EMPTY here, and the empty list is what tells a caller to say
+        # "no dates" rather than "choose one of these". A read that 500s on a
+        # version with no calendars is worse than one that says so.
+        #
+        # The day is a plain map, not a struct, so this matches on the key.
+        {:ok, %{day_type: nil} = day} -> Repo.rollback({:unknown_day_type, day.day_types})
         {:ok, day} -> build_runs_day(organization_id, gtfs_version_id, day)
         # Rolled back rather than returned: a transaction function that returns
         # an `{:error, _}` tuple is itself a rollback, and the caller would see

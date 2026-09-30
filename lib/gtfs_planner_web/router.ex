@@ -155,16 +155,17 @@ defmodule GtfsPlannerWeb.Router do
       live "/stops/:stop_id/report", Gtfs.StationReport2Live, :index
       live "/stops/:stop_id/reachability", Gtfs.StationReachabilityLive, :index
       live "/stops/:stop_id/evolutions", Gtfs.PathwayEvolutionsLive, :index
-      live "/blocks", Gtfs.BlocksLive, :index
       # The moment access preview is the same LiveView at its second route, so
       # the two Evolutions views share one mounted station and one socket. Its
       # own `?date`/`?time` params name the service moment to check.
       live "/stops/:stop_id/evolutions/access", Gtfs.PathwayEvolutionsLive, :access
-      # Operations placeholders. They group under the Operations area; the
-      # organization-wide Garages and Fleet pages live in Settings, where the
+      # Operations area. Blocks and Runs are real pages; Rosters is still a
+      # placeholder and groups under the Operations bar it shares with them.
+      live "/blocks", Gtfs.BlocksLive, :index
+      live "/runs", Gtfs.RunsLive, :index
+      # The organization-wide Garages and Fleet pages live in Settings, where the
       # version in the URL is navigation context and selects the stop IDs the
       # garage conflict notice compares.
-      live "/runs", Gtfs.ComingSoonLive, :runs
       live "/rosters", Gtfs.ComingSoonLive, :rosters
       # Flex has no area bar of its own in the architecture's groups. The list is
       # the Flex workspace's landing surface; a service page is its child route,
