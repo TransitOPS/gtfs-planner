@@ -13,7 +13,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
   #
   # The prepared focused command is
   # `mix test test/gtfs_planner_web/live/gtfs/route_schedules_bulk_review_test.exs`
-  # (EV-28, 120 s deadline); the card defers it to branch review.
+  # (EV-28, 120 s deadline); the card defers it to branch review. Step 30's
+  # "the docked strip" cases drive the strip's rendered controls by their ids
+  # (`#bulk-shift`, `#shift-direction`, `#strip-min`, the minute chips,
+  # `#strip-from`, `#strip-timing`, `#strip-apply`, `#strip-refresh` and
+  # `#strip-cancel`) and read the same reviewed state back.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -549,6 +553,227 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
       assert assigns.change == nil
       assert assigns.outcome.text == message
       assert stop_time_clocks(trip) == @t0700_before
+    end
+  end
+
+  describe "the docked strip" do
+    test "renders the Shift controls and posts each control's own value", %{
+      conn: conn,
+      scope: scope
+    } do
+      trips = bulk_trips!(scope)
+      ids = Enum.sort([trips["BULK_T0700"].id, trips["BULK_T0715"].id])
+      {:ok, view, _html} = live(conn, schedules_path(scope))
+
+      select_trips(view, trips, ["BULK_T0700", "BULK_T0715"])
+      view |> element("#bulk-shift") |> render_click()
+
+      # The strip takes the bar: title, help, controls and one primary; the
+      # selection verbs and Add trips' primary are gone (the hand-off).
+      assert has_element?(view, "#shift-strip[role='group']", "Shift times · 2 trips")
+
+      assert has_element?(
+               view,
+               "#shift-strip",
+               "The new times show in the timetable in amber until you apply."
+             )
+
+      assert has_element?(
+               view,
+               "#shift-direction button[data-direction='later'][aria-pressed='true']"
+             )
+
+      assert has_element?(view, "#strip-min[value='5']")
+      assert has_element?(view, "#shift-strip button[data-minutes='1']")
+      assert has_element?(view, "#shift-strip button[data-minutes='60']")
+      assert has_element?(view, "#strip-from option", "Whole trip")
+      assert has_element?(view, "#strip-from option", "BULK_LIB onward")
+      assert has_element?(view, "#strip-consequences", "07:00 → 07:05, 07:15 → 07:20.")
+      assert has_element?(view, "#strip-apply.btn-primary", "Shift 2 trips")
+      assert has_element?(view, "#strip-cancel", "Cancel")
+      assert has_element?(view, "#grid-bar", "Changes save to #{scope.version.name} right away.")
+      assert has_element?(view, "#schedules-add-trips.btn-outline")
+      refute has_element?(view, "#selection-count")
+      refute has_element?(view, "#bulk-shift")
+
+      # The Later/Earlier group posts the direction it owns.
+      view |> element("#shift-direction button[data-direction='earlier']") |> render_click()
+      assert assigns(view).change.params == %{direction: -1, minutes: 5, from_position: nil}
+
+      assert has_element?(
+               view,
+               "#shift-direction button[data-direction='earlier'][aria-pressed='true']"
+             )
+
+      assert has_element?(view, "#strip-consequences", "07:00 → 06:55, 07:15 → 07:10.")
+
+      # A chip posts the minutes it names; the preview and the reviewed command
+      # follow it.
+      view |> element("#shift-strip button[data-minutes='15']") |> render_click()
+      assert assigns(view).change.params == %{direction: -1, minutes: 15, from_position: nil}
+      assert assigns(view).change.review.command == {:shift, ids, -900, nil}
+      assert has_element?(view, "#strip-consequences", "07:00 → 06:45, 07:15 → 07:00.")
+
+      # The minutes field posts through the form; zero keeps the surface open
+      # with the reason and a disabled primary.
+      view |> element("#strip-form") |> render_change(%{"change" => %{"minutes" => "0"}})
+      assert has_element?(view, "#strip-consequences", "Enter the minutes to shift by.")
+      assert has_element?(view, "#strip-apply[disabled]", "Shift 2 trips")
+
+      view |> element("#strip-form") |> render_change(%{"change" => %{"minutes" => "10"}})
+      assert assigns(view).change.params == %{direction: -1, minutes: 10, from_position: nil}
+      assert has_element?(view, "#strip-consequences", "07:00 → 06:50, 07:15 → 06:55.")
+
+      # "Starting at" posts a displayed timepoint; the reviewed command names it
+      # and only that stop and the later ones move.
+      view |> element("#strip-form") |> render_change(%{"change" => %{"from_position" => "2"}})
+      assert assigns(view).change.params == %{direction: -1, minutes: 10, from_position: 2}
+      assert assigns(view).change.review.command == {:shift, ids, -600, 2}
+      assert has_element?(view, "#strip-consequences", "07:00 → 07:00, 07:15 → 07:15.")
+      assert stop_time_clocks(trips["BULK_T0700"]) == @t0700_before
+
+      view |> element("#strip-apply") |> render_click()
+
+      assert assigns(view).change == nil
+      assert assigns(view).outcome.text == "Shifted 2 trips 10 min earlier."
+      refute has_element?(view, "#shift-strip")
+      assert has_element?(view, "#schedules-add-trips.btn-primary")
+    end
+
+    test "Cancel closes the strip, keeps the selection and returns the verbs", %{
+      conn: conn,
+      scope: scope
+    } do
+      trips = bulk_trips!(scope)
+      trip = trips["BULK_T0700"]
+      {:ok, view, _html} = live(conn, schedules_path(scope))
+
+      select_trips(view, trips, ["BULK_T0700"])
+      view |> element("#bulk-shift") |> render_click()
+      view |> element("#strip-cancel") |> render_click()
+
+      assigns = assigns(view)
+      assert assigns.change == nil
+      assert assigns.selected_ids == MapSet.new([trip.id])
+      assert has_element?(view, "#selection-count", "1 trip selected")
+      assert has_element?(view, "#bulk-shift", "Shift times")
+      refute has_element?(view, "#shift-strip")
+      assert stop_time_clocks(trip) == @t0700_before
+    end
+
+    test "renders the Change timing control and applies the chosen timing", %{
+      conn: conn,
+      scope: scope
+    } do
+      trips = bulk_trips!(scope)
+      trip = trips["BULK_T0715"]
+      base = scope.bundle.timing
+      peak = extra_timing!(scope.bundle, @peak_offsets, "Peak")
+      {:ok, view, _html} = live(conn, schedules_path(scope))
+
+      select_trips(view, trips, ["BULK_T0715"])
+      view |> element("#bulk-timing") |> render_click()
+
+      assert has_element?(view, "#timing-strip", "Change timing · the 07:15 trip")
+      assert has_element?(view, "#strip-timing")
+      assert has_element?(view, "#strip-timing option[value='#{base.id}']", "Base · 37 min")
+      assert has_element?(view, "#strip-timing option[value='#{peak.id}']", "Peak · 30 min")
+      assert has_element?(view, "#strip-apply", "Change timing for 1 trip")
+
+      assert has_element?(
+               view,
+               "#strip-consequences",
+               "Departures from BULK_START stay the same. Peak takes 30 min end to end."
+             )
+
+      # The select posts the chosen timing of the selection's pattern.
+      view |> element("#strip-form") |> render_change(%{"change" => %{"timing_id" => base.id}})
+      assert assigns(view).change.params.timing_id == base.id
+      assert assigns(view).change.review.command == {:set_timing, [trip.id], base.id}
+      assert has_element?(view, "#strip-consequences", "Base takes 37 min end to end.")
+
+      view |> element("#strip-apply") |> render_click()
+
+      assert assigns(view).change == nil
+      assert assigns(view).outcome.text == "1 trip now uses Base."
+      assert trip_row(trip).timed_pattern_id == base.id
+
+      assert Enum.map(stop_time_clocks(trip), fn {arrival, _departure, _timepoint, _pickup} ->
+               arrival
+             end) == ["07:15:00", "07:25:00", "07:32:00", "07:52:00"]
+    end
+
+    test "shows the changed-elsewhere callout with Refresh in place of the primary", %{
+      conn: conn,
+      scope: scope
+    } do
+      trips = bulk_trips!(scope)
+      trip = trips["BULK_T0700"]
+      {:ok, view, _html} = live(conn, schedules_path(scope))
+
+      select_trips(view, trips, ["BULK_T0700"])
+      view |> element("#bulk-shift") |> render_click()
+
+      # An independent editor retimes the trip after the review (FH-33).
+      {:ok, _retimed} =
+        Gtfs.update_trip(
+          @route_id,
+          trip.id,
+          %{"start_time" => "07:40"},
+          Repo.get!(Trip, trip.id).updated_at,
+          scope.audit
+        )
+
+      retimed = stop_time_clocks(trip)
+
+      view |> element("#strip-apply") |> render_click()
+
+      assert has_element?(
+               view,
+               "#strip-stale[role='alert']",
+               "These trips changed after this preview. Nothing was written."
+             )
+
+      assert has_element?(
+               view,
+               "#strip-stale",
+               "Refresh the preview to see their current times, then apply again."
+             )
+
+      assert has_element?(view, "#strip-refresh.btn-primary", "Refresh preview")
+      refute has_element?(view, "#strip-apply")
+      assert stop_time_clocks(trip) == retimed
+      assert assigns(view).undo_stack == []
+
+      view |> element("#strip-refresh") |> render_click()
+
+      assert has_element?(view, "#strip-apply", "Shift 1 trip")
+      refute has_element?(view, "#strip-stale")
+    end
+
+    test "disables the primary with the refusal's reason", %{conn: conn, scope: scope} do
+      trip = linked_trip!(scope, "00:02:00", %{trip_id: "BULK_EARLY"})
+      {:ok, view, _html} = live(conn, schedules_path(scope))
+
+      render_click(view, "toggle_trip", %{"trip" => trip.id})
+      view |> element("#bulk-shift") |> render_click()
+      view |> element("#shift-direction button[data-direction='earlier']") |> render_click()
+
+      assert has_element?(
+               view,
+               "#strip-consequences",
+               "A trip would start before 00:00. Nothing can be shifted earlier than the start of the service day."
+             )
+
+      assert has_element?(view, "#strip-apply[disabled]", "Shift 1 trip")
+      refute has_element?(view, "#strip-stale")
+
+      assert stop_time_clocks(trip) == [
+               {"00:02:00", "00:02:00", nil, nil},
+               {"00:12:00", "00:12:00", nil, nil},
+               {"00:19:00", "00:19:00", nil, nil},
+               {"00:39:00", "00:39:00", nil, nil}
+             ]
     end
   end
 
