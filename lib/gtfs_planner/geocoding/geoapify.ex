@@ -12,30 +12,45 @@ defmodule GtfsPlanner.Geocoding.Geoapify do
   @reverse_url "https://api.geoapify.com/v1/geocode/reverse"
   @reverse_limit 5
 
+  @doc """
+  Suggests addresses for a typed query.
+
+  `opts` may carry `:bias`, a `{lon, lat}` pair, which makes the API rank
+  results near that point first. That matters for a partial query: "9th" alone
+  matches 9th streets all over the world, and the one the editor wants is the
+  one near the other stops they are placing. Without a bias the request is
+  unchanged, so a caller that has no point to offer — the garages picker — gets
+  exactly the ranking it always got.
+  """
   @impl Behaviour
-  def autocomplete(text, _opts) when is_binary(text) do
+  def autocomplete(text, opts) when is_binary(text) do
     if String.length(text) < 3 do
       {:error, :text_too_short}
     else
-      fetch_from_api(text, [])
+      fetch_from_api(text, opts)
     end
   end
 
-  defp fetch_from_api(text, _opts) do
+  defp fetch_from_api(text, opts) do
     api_key = Application.get_env(:gtfs_planner, :geoapify_api_key)
 
     if is_nil(api_key) do
       {:error, :api_key_missing}
     else
-      params = %{
-        text: text,
-        apiKey: api_key,
-        format: "json",
-        limit: 5,
-        filter: "countrycode:us"
-      }
+      params =
+        %{
+          text: text,
+          apiKey: api_key,
+          format: "json",
+          limit: 5,
+          filter: "countrycode:us"
+        }
+        |> put_bias(Keyword.get(opts, :bias))
 
-      case Req.get("https://api.geoapify.com/v1/geocode/autocomplete", params: params) do
+      case Req.get(
+             "https://api.geoapify.com/v1/geocode/autocomplete",
+             autocomplete_options(params)
+           ) do
         {:ok, %{status: 200, body: %{"results" => results}}} ->
           parse_results(results)
 
@@ -47,6 +62,16 @@ defmodule GtfsPlanner.Geocoding.Geoapify do
       end
     end
   end
+
+  # Geoapify's bias is a `proximity:<lon>,<lat>` string, longitude first. The
+  # pair is positional, so a caller passing latitude first biases toward the
+  # wrong hemisphere; a pair that is not two numbers is dropped rather than sent
+  # half-formed.
+  defp put_bias(params, {lon, lat}) when is_number(lon) and is_number(lat) do
+    Map.put(params, :bias, "proximity:#{lon},#{lat}")
+  end
+
+  defp put_bias(params, _bias), do: params
 
   defp parse_results(results) when is_list(results) do
     parsed =
@@ -142,7 +167,18 @@ defmodule GtfsPlanner.Geocoding.Geoapify do
   # interest names itself through `name`. The full formatted address is not used
   # as the name: the editor shows the street on its own line.
   defp place_name(properties) do
-    Map.get(properties, "street") || Map.get(properties, "name") || Map.get(properties, "formatted", "")
+    Map.get(properties, "street") || Map.get(properties, "name") ||
+      Map.get(properties, "formatted", "")
+  end
+
+  # `autocomplete/2` predates the plug and is called on every keystroke, so it
+  # keeps its own options and takes only the plug. Routing it through the test
+  # plug is what lets a test assert the request it builds.
+  defp autocomplete_options(params) do
+    case Application.get_env(:gtfs_planner, :geocoding_req_plug) do
+      nil -> [params: params]
+      plug -> [params: params, plug: plug]
+    end
   end
 
   defp req_options(params) do
