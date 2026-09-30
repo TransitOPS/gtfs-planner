@@ -329,14 +329,15 @@ describe("TimetableGrid in-cell editor", () => {
           <td id="cell-A1-timing" data-trip="trip-a1" tabindex="-1"><span>Base</span></td>
         </tr>`,
     });
-    const cell = cursor("cell-A1-2");
+    // A local named `cell` would shadow the row helper above.
+    const cleared = cursor("cell-A1-2");
 
-    keydown(cell, "Delete");
-    expect(cell.getAttribute("title")).toBe("Saving…");
+    keydown(cleared, "Delete");
+    expect(cleared.getAttribute("title")).toBe("Saving…");
 
-    hook._clearPending(cell);
-    expect(cell.getAttribute("title")).toBe("Was 07:24");
-    expect(cell.classList.contains("is-pending")).toBe(false);
+    hook._clearPending(cleared);
+    expect(cleared.getAttribute("title")).toBe("Was 07:24");
+    expect(cleared.classList.contains("is-pending")).toBe(false);
   });
 
   it("a commit marks the cell pending, hides the editor and moves the cursor down on ok", () => {

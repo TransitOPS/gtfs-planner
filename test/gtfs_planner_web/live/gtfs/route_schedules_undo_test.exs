@@ -130,7 +130,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesUndoTest do
     end
 
     test "refuses a move before midnight and writes nothing", %{conn: conn, scope: scope} do
-      trip = linked_trip!(scope, "00:10:00", %{trip_id: "UNDO_EARLY"})
+      # 00:03 is inside the five-minute nudge, so -5 crosses midnight and the
+      # engine's `:negative_time` refusal is the path under test.
+      trip = linked_trip!(scope, "00:03:00", %{trip_id: "UNDO_EARLY"})
       {:ok, view, _html} = live(conn, schedules_path(scope))
       before = stop_time_clocks(trip)
 
@@ -161,7 +163,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesUndoTest do
         Gtfs.update_trip(
           @route_id,
           trip.id,
-          %{"start_time" => "07:40"},
+          %{"start_time" => "07:40:00"},
           Repo.get!(Trip, trip.id).updated_at,
           scope.audit
         )

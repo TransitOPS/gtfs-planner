@@ -199,6 +199,9 @@ test.describe("Schedules grid keyboard journeys", () => {
     await logInAs(page, EDITOR_USER);
     const versionId = await versionIdFor(page);
     await page.goto(schedulesPath(versionId, GRID_ROUTE));
+    // The journeys edit mid-pattern occurrences (BSS_3/BSS_4), which the default
+    // timepoints view hides; the ids address occurrence positions in All stops.
+    await page.locator('label[for="stops-filter-option-all"]').click();
 
     const edited = page.locator("#cell-BSG_T01-3");
     await expect(page.locator("#trip-BSG_T01-start")).toHaveText("05:00");
@@ -232,6 +235,8 @@ test.describe("Schedules grid keyboard journeys", () => {
     await logInAs(page, EDITOR_USER);
     const versionId = await versionIdFor(page);
     await page.goto(schedulesPath(versionId, GRID_ROUTE));
+    // BSS_4 is not a timepoint, so only the All stops view renders its cell.
+    await page.locator('label[for="stops-filter-option-all"]').click();
 
     const edited = page.locator("#cell-BSG_T05-4");
     await expect(page.locator("#trip-BSG_T05-start")).toHaveText("07:00");
@@ -294,9 +299,11 @@ test.describe("Schedules grid keyboard journeys", () => {
     await page.locator("#trip-drawer").waitFor({ state: "visible" });
 
     // The drawer is outside the hook's element and its field swallows the key:
-    // the bracket lands in the input and no nudge is posted (AC-7).
+    // the bracket lands in the input and no nudge is posted (AC-7). The field
+    // takes focus with the caret at offset 0, so the bracket may land before or
+    // after the existing text; only the containment is specified.
     await page.locator("#trip-start").press("]");
-    await expect(page.locator("#trip-start")).toHaveValue(/\]$/);
+    await expect(page.locator("#trip-start")).toHaveValue(/\]/);
 
     await expect(page.locator("#trip-BSG_T04-start")).toHaveText("06:30");
     await expect(page.locator("#cell-BSG_T04-2")).toHaveText("06:36");

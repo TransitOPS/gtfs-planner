@@ -195,6 +195,11 @@ const TimetableGrid = {
   // the grid's own shortcuts (Cmd/Ctrl+Z included) could no longer reach it.
   _pushEvent(name, payload, callback) {
     this._restoreFocus = this.el.contains(document.activeElement);
+
+    if (callback === undefined || callback === null) {
+      return this.pushEvent(name, payload);
+    }
+
     return this.pushEvent(name, payload, callback);
   },
 

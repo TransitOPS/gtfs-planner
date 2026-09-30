@@ -62,6 +62,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesConvertTest do
         timing_name: "Base"
       })
 
+    # Every case mounts the Schedules page for this service day, so the calendar
+    # identity the read resolves must exist before the trips are created.
+    named_calendar!(scope, @service, "Weekday")
+
     {:ok,
      conn: log_in_user(context.conn, scope.actor, organization: scope.organization), scope: scope}
   end
@@ -71,7 +75,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesConvertTest do
       conn: conn,
       scope: scope
     } do
-      named_calendar!(scope, @service, "Weekday")
       stored_frequency_trip!(scope)
       linked_trip!(scope, "08:00:00", %{trip_id: "CV_LISTED"})
 
@@ -128,7 +131,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesConvertTest do
       conn: conn,
       scope: scope
     } do
-      named_calendar!(scope, @service, "Weekday")
       frequency = stored_frequency_trip!(scope)
       later = linked_trip!(scope, "08:00:00", %{trip_id: "CV_LATER"})
 

@@ -119,7 +119,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesAddFrequencyTest do
 
       assert has_element?(
                view,
-               "#windows-1",
+               "#windows-row-1",
                "4 departures · last 13:30; the next would be 14:00"
              )
 
@@ -288,13 +288,13 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesAddFrequencyTest do
 
       submit_drawer(view, scope, windows, %{"service_id" => daily})
 
-      # The refusal is the choice's own error and names the service day whose
-      # listed trips block it; the primary stays but is unavailable until
+      # The refusal is the choice's own error and names the selected service
+      # day, the reference's copy; the primary stays but is unavailable until
       # something changes (FH-35), so a repeat cannot write.
       assert has_element?(
                view,
                "#add-refusal",
-               "School days already has listed trips on this pattern. Frequency service can't run on the same days. Add scheduled trips instead, or choose another service day."
+               "Daily already has listed trips on this pattern. Frequency service can't run on the same days. Add scheduled trips instead, or choose another service day."
              )
 
       assert has_element?(view, "#how-trips-run[aria-invalid='true']")
@@ -377,11 +377,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesAddFrequencyTest do
       open_add_drawer(view)
       choose_frequency(view)
 
+      forged = Ecto.UUID.generate()
+
       render_change(view, "drawer_change", %{
-        "drawer" => %{"pattern_id" => Ecto.UUID.generate(), "run_as" => "frequency"}
+        "drawer" => %{"pattern_id" => forged, "run_as" => "frequency"}
       })
 
-      submit_drawer(view, scope, [{"10:00", "11:00", "20"}])
+      # The full submit posts every control, so the forged pattern is what the
+      # command carries; the drawer answers with the not-found refusal.
+      submit_drawer(view, scope, [{"10:00", "11:00", "20"}], %{"pattern_id" => forged})
 
       assert has_element?(
                view,
