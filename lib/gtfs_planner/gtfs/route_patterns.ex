@@ -13,6 +13,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns.Materializer
   alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
@@ -1190,33 +1191,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     }
   end
 
+  defp apply_lifecycle_operation!(_route, pattern, {:details, attrs, selection}, audit_context) do
+    apply_details_operation!(pattern, attrs, selection, audit_context)
+  end
+
   defp apply_lifecycle_operation!(_route, pattern, {:details, attrs}, audit_context) do
-    with :ok <- reject_forged_linkage(attrs),
-         {:ok, attrs} <- normalize_allowed_attrs(attrs, @pattern_fields),
-         :ok <- validate_noop_or_pattern(pattern, attrs) do
-      attrs = RoutePattern.changeset(pattern, attrs).changes
-
-      if same_values?(pattern, attrs) do
-        %{pattern: pattern, trips_updated: 0}
-      else
-        trips_updated = update_direction_trips(pattern, attrs)
-
-        updated = pattern |> RoutePattern.changeset(attrs) |> update_or_rollback!()
-        maybe_clear_pattern_signature!(pattern, attrs)
-
-        audit!(
-          audit_context,
-          :route_pattern,
-          pattern,
-          "updated",
-          Map.put(attrs, :affected_trips, trips_updated)
-        )
-
-        %{pattern: load_pattern_for_audit!(updated.id), trips_updated: trips_updated}
-      end
-    else
-      {:error, reason} -> Repo.rollback(reason)
-    end
+    apply_details_operation!(pattern, attrs, empty_selection(), audit_context)
   end
 
   defp apply_lifecycle_operation!(
@@ -1231,25 +1211,17 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
+  defp apply_lifecycle_operation!(
+         _route,
+         pattern,
+         {:timing, timing_id, attrs, selection},
+         audit_context
+       ) do
+    apply_timing_operation!(pattern, timing_id, attrs, selection, audit_context)
+  end
+
   defp apply_lifecycle_operation!(_route, pattern, {:timing, timing_id, attrs}, audit_context) do
-    rows_input = Map.get(attrs, :rows, Map.get(attrs, "rows"))
-
-    with {:ok, values} <- normalize_allowed_attrs(attrs, @timing_fields),
-         %TimedPattern{} = timing <- scoped_timing(pattern, timing_id),
-         :ok <- validate_timing_attrs(values),
-         {:ok, rows} <- validate_timing_rows(pattern, timing, rows_input) do
-      values = TimedPattern.changeset(timing, values).changes
-      before = audit_timing_snapshot(timing)
-
-      if same_values?(timing, values) and timing_rows_unchanged?(timing, rows) do
-        %{pattern: pattern, trips_updated: 0}
-      else
-        apply_timing_edit!(pattern, timing, values, rows, before, audit_context)
-      end
-    else
-      nil -> Repo.rollback(:not_found)
-      {:error, reason} -> Repo.rollback(reason)
-    end
+    apply_timing_operation!(pattern, timing_id, attrs, empty_selection(), audit_context)
   end
 
   defp apply_lifecycle_operation!(_route, pattern, {:add_timing, attrs}, audit_context) do
@@ -1373,6 +1345,82 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp apply_lifecycle_operation!(_route, _pattern, _operation, _audit_context),
     do: Repo.rollback(:invalid_operation)
 
+  # The pattern update keeps its existing shape; a non-empty selection writes
+  # the selected trips through the fenced writer after the pattern row, and the
+  # audit row then carries the shared operation id and the total affected trips.
+  defp apply_details_operation!(pattern, attrs, selection, audit_context) do
+    with :ok <- reject_forged_linkage(attrs),
+         {:ok, attrs} <- normalize_allowed_attrs(attrs, @pattern_fields),
+         :ok <- validate_noop_or_pattern(pattern, attrs) do
+      attrs = RoutePattern.changeset(pattern, attrs).changes
+      old_default = Headsigns.normalize(pattern.headsign)
+      new_default = details_new_default(pattern, attrs)
+      changes = headsign_changes(pattern, :pattern, selection, new_default)
+
+      if same_values?(pattern, attrs) do
+        {written, _operation_id} = write_selection!(changes, audit_context)
+
+        %{
+          pattern: pattern,
+          trips_updated: 0,
+          headsign_undo: headsign_undo(:pattern, old_default, new_default, written)
+        }
+      else
+        trips_updated = update_direction_trips(pattern, attrs)
+
+        updated = pattern |> RoutePattern.changeset(attrs) |> update_or_rollback!()
+        maybe_clear_pattern_signature!(pattern, attrs)
+
+        {written, operation_id} = write_selection!(changes, audit_context)
+
+        audit_attrs =
+          attrs
+          |> Map.put(:affected_trips, trips_updated + length(written))
+          |> put_operation_id(operation_id)
+
+        audit!(audit_context, :route_pattern, pattern, "updated", audit_attrs)
+
+        %{
+          pattern: load_pattern_for_audit!(updated.id),
+          trips_updated: trips_updated,
+          headsign_undo: headsign_undo(:pattern, old_default, new_default, written)
+        }
+      end
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp apply_timing_operation!(pattern, timing_id, attrs, selection, audit_context) do
+    rows_input = Map.get(attrs, :rows, Map.get(attrs, "rows"))
+
+    with {:ok, values} <- normalize_allowed_attrs(attrs, @timing_fields),
+         %TimedPattern{} = timing <- scoped_timing(pattern, timing_id),
+         :ok <- validate_timing_attrs(values),
+         {:ok, rows} <- validate_timing_rows(pattern, timing, rows_input) do
+      values = TimedPattern.changeset(timing, values).changes
+      before = audit_timing_snapshot(timing)
+      old_default = timing_effective_default(pattern, timing, %{})
+      new_default = timing_effective_default(pattern, timing, values)
+      changes = headsign_changes(pattern, {:timing, timing.id}, selection, new_default)
+
+      if same_values?(timing, values) and timing_rows_unchanged?(timing, rows) do
+        {written, _operation_id} = write_selection!(changes, audit_context)
+
+        %{
+          pattern: pattern,
+          trips_updated: 0,
+          headsign_undo: headsign_undo({:timing, timing.id}, old_default, new_default, written)
+        }
+      else
+        apply_timing_edit!(pattern, timing, values, rows, before, changes, audit_context)
+      end
+    else
+      nil -> Repo.rollback(:not_found)
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
   # A new timing either starts blank or copies another timing of the same
   # pattern; the source is resolved from the loaded pattern, never trusted as a
   # browser-supplied identity.
@@ -1420,29 +1468,37 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     %{pattern: after_pattern, trips_updated: trips_updated}
   end
 
-  defp apply_timing_edit!(pattern, timing, values, rows, before, audit_context) do
+  defp apply_timing_edit!(pattern, timing, values, rows, before, changes, audit_context) do
     trips_updated = if rows, do: persist_timing_edit!(pattern, timing, rows), else: 0
     if rows, do: clear_timing_signature!(timing)
     if values != %{}, do: timing |> TimedPattern.changeset(values) |> update_or_rollback!()
     after_snapshot = audit_timing_snapshot(Repo.get!(TimedPattern, timing.id))
 
-    audit!(
-      audit_context,
-      :timed_pattern,
-      timing,
-      "updated",
+    {written, operation_id} = write_selection!(changes, audit_context)
+
+    audit_attrs =
       timing_audit_attrs(
         pattern,
         timing,
         Map.merge(values, %{
           before: before,
           after: after_snapshot,
-          affected_trips: trips_updated
+          affected_trips: trips_updated + length(written)
         })
       )
-    )
+      |> put_operation_id(operation_id)
 
-    %{pattern: pattern, trips_updated: trips_updated}
+    audit!(audit_context, :timed_pattern, timing, "updated", audit_attrs)
+
+    undo =
+      headsign_undo(
+        {:timing, timing.id},
+        timing_effective_default(pattern, timing, %{}),
+        timing_effective_default(pattern, timing, values),
+        written
+      )
+
+    %{pattern: pattern, trips_updated: trips_updated, headsign_undo: undo}
   end
 
   # FK-safe order: timing rows reference both timings and occurrences, so they
@@ -1568,25 +1624,37 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
-  # `opts` carries `require_acknowledgements: false` for the read-only preview, so
-  # the editor can show proposed values before staff acknowledge them.
-  defp validate_lifecycle_operation(pattern, operation, loaded, opts \\ [])
+  # The 2/3-tuple operations mean an empty headsign selection; the 3/4-tuple
+  # forms carry `%{headsign_trip_ids: ids}` and every id is validated against
+  # the new value's scope before anything is proposed or written.
+  defp validate_lifecycle_operation(pattern, operation, loaded, opts \\ []) do
+    {base_operation, selection} = split_operation(operation)
 
-  defp validate_lifecycle_operation(pattern, {:stops, entries, reviewed_values}, loaded, opts) do
+    with :ok <- validate_lifecycle_base_operation(pattern, base_operation, loaded, opts) do
+      validate_headsign_selection(pattern, base_operation, selection)
+    end
+  end
+
+  defp validate_lifecycle_base_operation(
+         pattern,
+         {:stops, entries, reviewed_values},
+         loaded,
+         opts
+       ) do
     case prepare_stop_edit(pattern, entries, reviewed_values, loaded, opts) do
       {:ok, _edit} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp validate_lifecycle_operation(pattern, {:details, attrs}, _loaded, _opts) do
+  defp validate_lifecycle_base_operation(pattern, {:details, attrs}, _loaded, _opts) do
     with :ok <- reject_forged_linkage(attrs),
          {:ok, values} <- normalize_allowed_attrs(attrs, @pattern_fields) do
       validate_noop_or_pattern(pattern, values)
     end
   end
 
-  defp validate_lifecycle_operation(pattern, {:timing, timing_id, attrs}, _loaded, _opts) do
+  defp validate_lifecycle_base_operation(pattern, {:timing, timing_id, attrs}, _loaded, _opts) do
     with %TimedPattern{} <- scoped_timing(pattern, timing_id),
          {:ok, values} <- normalize_allowed_attrs(attrs, @timing_fields),
          :ok <- validate_timing_attrs(values),
@@ -1599,7 +1667,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
-  defp validate_lifecycle_operation(pattern, {:add_timing, attrs}, _loaded, _opts) do
+  defp validate_lifecycle_base_operation(pattern, {:add_timing, attrs}, _loaded, _opts) do
     with :ok <- reject_forged_linkage(attrs),
          {:ok, values} <- normalize_allowed_attrs(attrs, @timing_fields),
          :ok <- validate_timing_attrs(values) do
@@ -1610,7 +1678,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
-  defp validate_lifecycle_operation(pattern, {:delete_timing, timing_id}, _loaded, _opts) do
+  defp validate_lifecycle_base_operation(pattern, {:delete_timing, timing_id}, _loaded, _opts) do
     timing = scoped_timing(pattern, timing_id)
 
     cond do
@@ -1621,15 +1689,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
-  defp validate_lifecycle_operation(pattern, :copy, _loaded, _opts) do
+  defp validate_lifecycle_base_operation(pattern, :copy, _loaded, _opts) do
     if is_nil(pattern), do: {:error, :not_found}, else: :ok
   end
 
-  defp validate_lifecycle_operation(pattern, :delete, _loaded, _opts) do
+  defp validate_lifecycle_base_operation(pattern, :delete, _loaded, _opts) do
     if pattern_used?(nil, pattern), do: {:error, :pattern_in_use}, else: :ok
   end
 
-  defp validate_lifecycle_operation(_pattern, _, _, _), do: {:error, :invalid_operation}
+  defp validate_lifecycle_base_operation(_pattern, _, _, _), do: {:error, :invalid_operation}
 
   defp operation_impact({:delete_timing, timing_id}, %{pattern: pattern}) do
     %{trips_affected: count_timing_trips(pattern, timing_id)}
@@ -1641,18 +1709,43 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp operation_impact({:stops, _entries, _values}, %{pattern: pattern}),
     do: %{trips_affected: count_pattern_trips(pattern)}
 
-  defp operation_impact({:timing, timing_id, _attrs}, %{pattern: pattern}),
-    do: %{trips_affected: count_timing_trips(pattern, timing_id)}
+  defp operation_impact({:timing, timing_id, attrs, selection}, %{pattern: pattern}),
+    do: timing_impact(pattern, timing_id, attrs, selection)
 
-  defp operation_impact({:details, attrs}, %{pattern: pattern}) when is_map(attrs) do
-    changes = RoutePattern.changeset(pattern, attrs).changes
+  defp operation_impact({:timing, timing_id, attrs}, %{pattern: pattern}),
+    do: timing_impact(pattern, timing_id, attrs, empty_selection())
 
-    if Map.has_key?(changes, :direction_id),
-      do: %{trips_affected: count_pattern_trips(pattern)},
-      else: %{trips_affected: 0}
-  end
+  defp operation_impact({:details, attrs, selection}, %{pattern: pattern}) when is_map(attrs),
+    do: details_impact(pattern, attrs, selection)
+
+  defp operation_impact({:details, attrs}, %{pattern: pattern}) when is_map(attrs),
+    do: details_impact(pattern, attrs, empty_selection())
 
   defp operation_impact(_, _), do: %{trips_affected: 0}
+
+  # A timing edit only touches trips through its rows; a headsign-only save has
+  # no rows and re-materializes nothing, so it affects no existing trips.
+  defp timing_impact(pattern, timing_id, attrs, selection) do
+    %{
+      trips_affected:
+        if(map_value(attrs, :rows), do: count_timing_trips(pattern, timing_id), else: 0),
+      headsign_trips: length(selected_scope_trips(pattern, {:timing, timing_id}, selection))
+    }
+  end
+
+  # `trips_affected` keeps its existing meaning (the direction dialog opens for
+  # it alone); headsign trip changes are reported only in `headsign_trips`.
+  defp details_impact(pattern, attrs, selection) do
+    changes = RoutePattern.changeset(pattern, attrs).changes
+
+    trips_affected =
+      if Map.has_key?(changes, :direction_id), do: count_pattern_trips(pattern), else: 0
+
+    %{
+      trips_affected: trips_affected,
+      headsign_trips: length(selected_scope_trips(pattern, :pattern, selection))
+    }
+  end
 
   defp operation_proposal({:details, attrs}, _pattern), do: attrs
   defp operation_proposal({:timing, _id, attrs}, _pattern), do: attrs
@@ -1679,16 +1772,213 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     end
   end
 
-  defp review_proposal(pattern, {:timing, timing_id, attrs}, _loaded, _opts) do
-    timing = scoped_timing(pattern, timing_id)
+  defp review_proposal(pattern, {:timing, _id, _attrs, _selection} = operation, _loaded, _opts) do
+    {{:timing, timing_id, attrs}, selection} = split_operation(operation)
+    {:ok, timing_proposal(pattern, timing_id, attrs, selection)}
+  end
 
-    with {:ok, rows} <- validate_timing_rows(pattern, timing, map_value(attrs, :rows)) do
-      {:ok, if(rows, do: %{attrs: Map.drop(attrs, [:rows, "rows"]), rows: rows}, else: attrs)}
-    end
+  defp review_proposal(pattern, {:timing, timing_id, attrs}, _loaded, _opts) do
+    {:ok, timing_proposal(pattern, timing_id, attrs, empty_selection())}
+  end
+
+  defp review_proposal(pattern, {:details, _attrs, _selection} = operation, _loaded, _opts) do
+    {{:details, attrs}, selection} = split_operation(operation)
+    {:ok, details_proposal(pattern, attrs, selection)}
+  end
+
+  defp review_proposal(pattern, {:details, attrs}, _loaded, _opts) do
+    {:ok, details_proposal(pattern, attrs, empty_selection())}
   end
 
   defp review_proposal(_pattern, operation, _loaded, _opts),
     do: {:ok, operation_proposal(operation, nil)}
+
+  defp timing_proposal(pattern, timing_id, attrs, selection) do
+    timing = scoped_timing(pattern, timing_id)
+
+    with {:ok, rows} <- validate_timing_rows(pattern, timing, map_value(attrs, :rows)) do
+      to = timing_new_default(pattern, timing, attrs)
+      changes = headsign_changes(pattern, {:timing, timing_id}, selection, to)
+
+      if rows do
+        {:ok, %{attrs: Map.drop(attrs, [:rows, "rows"]), rows: rows, headsign_changes: changes}}
+      else
+        {:ok, Map.put(attrs, :headsign_changes, changes)}
+      end
+    end
+  end
+
+  defp details_proposal(pattern, attrs, selection) do
+    to = details_new_default(pattern, attrs)
+    Map.put(attrs, :headsign_changes, headsign_changes(pattern, :pattern, selection, to))
+  end
+
+  # Existing 2/3-tuple operations mean an empty headsign selection; the
+  # 3/4-tuple forms carry `%{headsign_trip_ids: ids}` (the review/apply
+  # contract for selection-aware details and timing saves).
+  defp split_operation({:details, attrs}), do: {{:details, attrs}, empty_selection()}
+  defp split_operation({:details, attrs, selection}), do: {{:details, attrs}, selection}
+
+  defp split_operation({:timing, timing_id, attrs}),
+    do: {{:timing, timing_id, attrs}, empty_selection()}
+
+  defp split_operation({:timing, timing_id, attrs, selection}),
+    do: {{:timing, timing_id, attrs}, selection}
+
+  defp split_operation(operation), do: {operation, empty_selection()}
+
+  defp empty_selection, do: %{headsign_trip_ids: []}
+
+  defp selection_trip_ids(%{} = selection) do
+    case map_value(selection, :headsign_trip_ids) do
+      ids when is_list(ids) -> {:ok, ids}
+      _ -> :error
+    end
+  end
+
+  defp selection_trip_ids(_), do: :error
+
+  # Client-supplied ids are cast to UUIDs before any query touches them, so a
+  # malformed or non-UUID id fails closed as `:invalid_selection` instead of
+  # reaching the database driver. Unreachable after `validate_headsign_selection/3`;
+  # kept as defense in depth for the impact/proposal/apply call sites.
+  defp headsign_selection_ids(selection) do
+    case selection_trip_ids(selection) do
+      {:ok, ids} -> cast_selection_ids(ids)
+      :error -> Repo.rollback(:invalid_selection)
+    end
+  end
+
+  defp cast_selection_ids(ids) do
+    casts = Enum.map(ids, &Ecto.UUID.cast/1)
+
+    if Enum.all?(casts, &match?({:ok, _}, &1)) do
+      Enum.map(casts, fn {:ok, id} -> id end)
+    else
+      Repo.rollback(:invalid_selection)
+    end
+  end
+
+  # Every id must name a trip in the scope of the *new* value (Domain rule 3):
+  # pattern scope for details saves (shielded trips are out of scope), timing
+  # scope for timing saves. One out-of-scope id rejects the whole operation.
+  defp validate_headsign_selection(pattern, base_operation, selection) do
+    case selection_trip_ids(selection) do
+      {:ok, []} -> :ok
+      {:ok, ids} -> selection_in_scope?(pattern, base_operation, ids)
+      :error -> {:error, :invalid_selection}
+    end
+  end
+
+  defp selection_in_scope?(pattern, {:details, _attrs}, ids) do
+    selection_in_scope?(pattern, pattern_scope_query(pattern, carrying_timing_ids(pattern)), ids)
+  end
+
+  defp selection_in_scope?(pattern, {:timing, timing_id, _attrs}, ids) do
+    selection_in_scope?(pattern, timing_scope_query(pattern, timing_id), ids)
+  end
+
+  # `split_operation/1` only pairs non-empty selections with details and timing
+  # operations, so the scope query clause covers every reachable call.
+  defp selection_in_scope?(_pattern, scope_query, ids) do
+    ids = Enum.uniq(ids)
+
+    with true <- Enum.all?(ids, &match?({:ok, _}, Ecto.UUID.cast(&1))),
+         found = from(trip in scope_query, where: trip.id in ^ids, select: trip.id) |> Repo.all(),
+         true <- length(found) == length(ids) do
+      :ok
+    else
+      _ -> {:error, :invalid_selection}
+    end
+  end
+
+  # Timings with their own headsign shield their trips from the pattern scope,
+  # the same carrying rule the headsign usage read model applies.
+  defp carrying_timing_ids(pattern) do
+    pattern.id
+    |> pattern_timings()
+    |> Enum.filter(&(Headsigns.normalize(&1.headsign) != nil))
+    |> MapSet.new(& &1.id)
+  end
+
+  defp scope_query_for(pattern, :pattern),
+    do: pattern_scope_query(pattern, carrying_timing_ids(pattern))
+
+  defp scope_query_for(pattern, {:timing, timing_id}), do: timing_scope_query(pattern, timing_id)
+
+  defp selected_scope_trips(_pattern, _scope, %{headsign_trip_ids: []}), do: []
+
+  defp selected_scope_trips(pattern, scope, selection) do
+    case headsign_selection_ids(selection) do
+      [] ->
+        []
+
+      ids ->
+        from(trip in scope_query_for(pattern, scope),
+          where: trip.id in ^ids,
+          select: %{id: trip.id, trip_id: trip.trip_id, trip_headsign: trip.trip_headsign},
+          order_by: [asc: trip.id]
+        )
+        |> Repo.all()
+    end
+  end
+
+  # One reviewed change per selected in-scope trip: `from` the normalized
+  # stored value the writer fences on, `to` the new effective default.
+  defp headsign_changes(pattern, scope, selection, to) do
+    selected_scope_trips(pattern, scope, selection)
+    |> Enum.map(fn trip ->
+      %{id: trip.id, trip_id: trip.trip_id, from: Headsigns.normalize(trip.trip_headsign), to: to}
+    end)
+  end
+
+  # The effective default the pattern-scope selection receives: the new pattern
+  # headsign (in-scope trips carry no own timing headsign).
+  defp details_new_default(pattern, attrs) do
+    values = RoutePattern.changeset(pattern, attrs).changes
+    Headsigns.normalize(Map.get(values, :headsign, pattern.headsign))
+  end
+
+  defp timing_new_default(_pattern, nil, attrs),
+    do: Headsigns.normalize(map_value(attrs, :headsign))
+
+  defp timing_new_default(pattern, %TimedPattern{} = timing, attrs) do
+    values = TimedPattern.changeset(timing, attrs).changes
+    Headsigns.effective_default(Map.get(values, :headsign, timing.headsign), pattern.headsign)
+  end
+
+  # The scope's effective default after the save, for a timing whose headsign
+  # would become `values[:headsign]` (absent means unchanged).
+  defp timing_effective_default(pattern, timing, values) do
+    Headsigns.effective_default(Map.get(values, :headsign, timing.headsign), pattern.headsign)
+  end
+
+  # An empty selection writes nothing and needs no operation id; a non-empty
+  # one writes through the fenced writer under a fresh shared operation id.
+  defp write_selection!([], _audit_context), do: {[], nil}
+
+  defp write_selection!(changes, audit_context) do
+    operation_id = Ecto.UUID.generate()
+    {Schedules.write_trip_headsigns!(changes, operation_id, audit_context), operation_id}
+  end
+
+  # Undo covers exactly what the save changed headsign-wise: the default when
+  # it moved, and the trips the writer actually wrote. Nothing moved means no undo.
+  defp headsign_undo(scope, old_default, new_default, written) do
+    default =
+      if old_default == new_default,
+        do: nil,
+        else: %{scope: scope, from: old_default, to: new_default}
+
+    if default == nil and written == [] do
+      nil
+    else
+      %{default: default, trips: written}
+    end
+  end
+
+  defp put_operation_id(attrs, nil), do: attrs
+  defp put_operation_id(attrs, operation_id), do: Map.put(attrs, :operation_id, operation_id)
 
   defp prepare_stop_edit(pattern, entries, reviewed_values, loaded \\ nil, opts \\ []) do
     old_occurrences = if loaded, do: loaded.occurrences, else: pattern_occurrences(pattern)
@@ -2597,12 +2887,21 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp trips_lock_required?(:delete), do: true
   defp trips_lock_required?({:delete_timing, _timing_id}), do: true
   defp trips_lock_required?({:stops, _, _}), do: true
+  defp trips_lock_required?({:timing, _, _, _}), do: true
   defp trips_lock_required?({:timing, _, _}), do: true
+
+  # A direction change moves every trip of the pattern; a headsign selection
+  # writes exactly its trips, so both lock the pattern's trips up front.
+  defp trips_lock_required?({:details, attrs, selection}) when is_map(attrs) do
+    trips_lock_required?({:details, attrs}) or selection_nonempty?(selection)
+  end
 
   defp trips_lock_required?({:details, attrs}) when is_map(attrs),
     do: Map.has_key?(attrs, :direction_id) or Map.has_key?(attrs, "direction_id")
 
   defp trips_lock_required?(_operation), do: false
+
+  defp selection_nonempty?(selection), do: match?({:ok, [_ | _]}, selection_trip_ids(selection))
 
   defp scoped_pattern(org_id, version_id, route_id, pattern_id) do
     Repo.one(
