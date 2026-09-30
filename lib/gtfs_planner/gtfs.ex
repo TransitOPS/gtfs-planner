@@ -5905,6 +5905,28 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Renames a run on one day type and returns an undo.
+
+  Every row carrying `old_id` becomes a row carrying `new_id`; no other day
+  type's rows move, even one carrying the same ID.
+
+  The new ID is refused when it is not one to eight letters, digits or hyphens,
+  or when the day type already uses it — both as a changeset with the error on
+  `run_id`, so a rename form can render the message against the field. A run
+  that is not there answers `{:error, :unknown_run}` and a foreign or
+  unpublished version `{:error, :not_found}`.
+  """
+  @spec rename_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t(), String.t()) ::
+          {:ok, %{undo: [GtfsPlanner.Gtfs.Runs.Plan.move()]}}
+          | {:error,
+             :not_found
+             | :unknown_run
+             | Ecto.Changeset.t()}
+  def rename_run(organization_id, gtfs_version_id, day_type_key, old_id, new_id) do
+    Runs.rename_run(organization_id, gtfs_version_id, day_type_key, old_id, new_id)
+  end
+
+  @doc """
   Returns the current block errors and warnings involving the given trips.
 
   Natural trip IDs name the trips; for each one that runs in a block, every day

@@ -61,6 +61,42 @@ defmodule GtfsPlanner.Gtfs.TripRun do
         }
 
   @doc """
+  Changeset for a run ID, with no row behind it.
+
+  Renaming a run does not create or fetch a `TripRun` row — it changes the
+  `run_id` of every row carrying the old one — so this is a schemaless
+  changeset over one field, used by `GtfsPlanner.Gtfs.Runs.rename_run/5` to
+  answer a rename form. Keeping the format here rather than in the writer means
+  the regex that `changeset/2` checks a row against is the same one a rename is
+  checked against, and cannot drift.
+
+  The "already used in this day type" error is **not** here: whether an ID is
+  taken is a fact about the rows, so the writer adds that error after reading
+  them.
+  """
+  @spec change_run_id(map()) :: Ecto.Changeset.t()
+  def change_run_id(attrs) do
+    # The `{data, types}` form: a schemaless changeset still declares that
+    # `run_id` is a string, so a non-string parameter is cast rather than stored.
+    cast({%{}, %{run_id: :string}}, attrs, [:run_id])
+    |> validate_run_id_format()
+  end
+
+  defp validate_run_id_format(changeset) do
+    case fetch_change(changeset, :run_id) do
+      {:ok, _run_id} ->
+        validate_format(changeset, :run_id, @run_id_format,
+          message: "must be one to eight letters, digits or hyphens"
+        )
+
+      # A field that was not submitted has nothing to check yet, and
+      # `validate_format/4` raises rather than skipping on a missing value.
+      :error ->
+        changeset
+    end
+  end
+
+  @doc """
   Changeset for a trip assignment.
 
   Only `run_id` is cast, so `organization_id`, `gtfs_version_id`, `trip_id` and
