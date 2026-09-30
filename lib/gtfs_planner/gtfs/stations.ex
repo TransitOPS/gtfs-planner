@@ -4,7 +4,17 @@ defmodule GtfsPlanner.Gtfs.Stations do
   import Ecto.Query
 
   alias GtfsPlanner.Authorization
-  alias GtfsPlanner.Gtfs.{Audit, AuditContext, Level, Stop, StopReferences}
+
+  alias GtfsPlanner.Gtfs.{
+    Audit,
+    AuditContext,
+    Level,
+    Pathway,
+    StationNaming,
+    Stop,
+    StopReferences
+  }
+
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
@@ -85,6 +95,35 @@ defmodule GtfsPlanner.Gtfs.Stations do
       write_stop(audit, Stop.editor_changeset(stop, %{diagram_coordinate: coordinate}), "updated")
     end)
   end
+
+  @doc "Previews the selected station's stop IDs and all affected natural references."
+  def preview_station_naming(%AuditContext{} = audit, style \\ :structured, selected_ids \\ nil) do
+    run(audit, :share, fn station -> naming_preview(audit, station, style, selected_ids) end)
+    |> unwrap_preview()
+  end
+
+  @doc "Applies exactly the previewed mapping under the exclusive version lock."
+  def apply_station_naming(%AuditContext{} = audit, style, selected_ids, fingerprint)
+      when is_binary(fingerprint) do
+    run(audit, :exclusive, fn station ->
+      case naming_preview(audit, station, style, selected_ids) do
+        {:ok, %{fingerprint: ^fingerprint} = preview} ->
+          apply_naming_preview(audit, station, preview)
+
+        {:ok, _preview} ->
+          Repo.rollback(:stale_preview)
+
+        {:error, :no_stops} ->
+          Repo.rollback(:stale_preview)
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+  end
+
+  def apply_station_naming(%AuditContext{}, _style, _selected_ids, _fingerprint),
+    do: {:error, :stale_preview}
 
   @doc false
   def descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id) do
@@ -172,6 +211,164 @@ defmodule GtfsPlanner.Gtfs.Stations do
 
     if id, do: where(query, [s], s.id == ^id), else: query
   end
+
+  defp naming_preview(audit, station, style, selected_ids) do
+    child_stops =
+      from(s in child_query(audit, station),
+        where: s.location_type in [0, 2, 3, 4],
+        order_by: [asc: s.stop_id]
+      )
+      |> Repo.all()
+
+    selected_ids =
+      case selected_ids do
+        nil -> nil
+        %MapSet{} = ids -> ids
+        ids when is_list(ids) -> MapSet.new(ids)
+      end
+
+    cond do
+      child_stops == [] and selected_ids != MapSet.new() ->
+        {:error, :no_stops}
+
+      true ->
+        child_ids = Enum.map(child_stops, & &1.stop_id)
+
+        pathways =
+          from(p in Pathway,
+            where:
+              p.organization_id == ^audit.organization_id and
+                p.gtfs_version_id == ^audit.gtfs_version_id and
+                (p.from_stop_id in ^child_ids or p.to_stop_id in ^child_ids)
+          )
+          |> Repo.all()
+
+        mapping =
+          case style do
+            :kebab -> StationNaming.build_kebab_naming_map(child_stops)
+            _ -> StationNaming.build_naming_map(child_stops, pathways, station.stop_id)
+          end
+
+        rows =
+          Enum.filter(mapping, fn %{old_id: old_id, new_id: new_id} ->
+            old_id != new_id and (is_nil(selected_ids) or MapSet.member?(selected_ids, old_id))
+          end)
+
+        build_naming_preview(audit, rows, selected_ids)
+    end
+  end
+
+  defp build_naming_preview(audit, [], selected_ids) do
+    if selected_ids == MapSet.new() do
+      counts = StopReferences.count(audit.organization_id, audit.gtfs_version_id, [])
+
+      {:ok,
+       %{
+         rows: [],
+         renamed_stops_count: 0,
+         updated_pathways_count: 0,
+         updated_references_count: 0,
+         fingerprint: :crypto.hash(:sha256, :erlang.term_to_binary({%{}, counts}))
+       }}
+    else
+      {:error, :no_stops}
+    end
+  end
+
+  defp build_naming_preview(audit, rows, _selected_ids) do
+    old_ids = MapSet.new(rows, & &1.old_id)
+
+    candidate_ids =
+      rows
+      |> Enum.map(& &1.new_id)
+      |> MapSet.new()
+      |> MapSet.difference(old_ids)
+      |> MapSet.to_list()
+
+    existing_ids =
+      from(s in Stop,
+        where:
+          s.organization_id == ^audit.organization_id and
+            s.gtfs_version_id == ^audit.gtfs_version_id and s.stop_id in ^candidate_ids,
+        select: s.stop_id
+      )
+      |> Repo.all()
+      |> MapSet.new()
+
+    case StationNaming.detect_collisions(rows, existing_ids) do
+      [] ->
+        counts =
+          StopReferences.count(
+            audit.organization_id,
+            audit.gtfs_version_id,
+            MapSet.to_list(old_ids)
+          )
+
+        mapping = Map.new(rows, fn %{old_id: old_id, new_id: new_id} -> {old_id, new_id} end)
+
+        {:ok,
+         %{
+           rows: rows,
+           renamed_stops_count: length(rows),
+           updated_pathways_count: counts.pathways_from + counts.pathways_to,
+           updated_references_count: counts.total,
+           fingerprint: :crypto.hash(:sha256, :erlang.term_to_binary({mapping, counts}))
+         }}
+
+      collisions ->
+        {:error, {:naming_collision, collisions}}
+    end
+  end
+
+  defp apply_naming_preview(audit, station, preview) do
+    mapping = Map.new(preview.rows, fn %{old_id: old_id, new_id: new_id} -> {old_id, new_id} end)
+    old_ids = Map.keys(mapping)
+
+    original_stops =
+      from(s in child_query(audit, station),
+        where: s.stop_id in ^old_ids,
+        order_by: [asc: s.id],
+        lock: "FOR UPDATE"
+      )
+      |> Repo.all()
+
+    if length(original_stops) != length(preview.rows), do: Repo.rollback(:stale_preview)
+
+    reference_counts =
+      Map.new(original_stops, fn stop ->
+        {stop.stop_id,
+         StopReferences.count(audit.organization_id, audit.gtfs_version_id, [stop.stop_id])}
+      end)
+
+    counts = StopReferences.rename!(audit.organization_id, audit.gtfs_version_id, mapping)
+
+    if counts.total != preview.updated_references_count or
+         counts.pathways_from + counts.pathways_to != preview.updated_pathways_count do
+      Repo.rollback(:stale_preview)
+    end
+
+    Enum.each(original_stops, fn stop ->
+      changes = %{
+        stop_id: [stop.stop_id, Map.fetch!(mapping, stop.stop_id)],
+        references: Map.fetch!(reference_counts, stop.stop_id)
+      }
+
+      case Audit.record_change_in_transaction(audit, :stop, stop, "updated", changes) do
+        {:ok, _log} -> :ok
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+
+    %{
+      renamed_stops: length(original_stops),
+      updated_pathways: counts.pathways_from + counts.pathways_to,
+      updated_references: counts.total
+    }
+  end
+
+  defp unwrap_preview({:ok, {:ok, preview}}), do: {:ok, preview}
+  defp unwrap_preview({:ok, {:error, reason}}), do: {:error, reason}
+  defp unwrap_preview({:error, reason}), do: {:error, reason}
 
   defp lock_child!(audit, station, id) do
     with {:ok, id} <- Ecto.UUID.cast(id),

@@ -6569,6 +6569,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :updated_pathways_count, :integer, default: 0
   attr :applying?, :boolean, default: false
   attr :error, :string, default: nil
+  attr :stale?, :boolean, default: false
   attr :excluded_ids, :any, default: %MapSet{}
 
   def naming_drawer(assigns) do
@@ -6747,7 +6748,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             phx-click="apply_naming_convention"
             phx-disable-with="Renaming…"
             disabled={
-              @preview_rows == [] || @applying? || @error ||
+              @preview_rows == [] || @applying? || (@error && !@stale?) ||
                 MapSet.size(@excluded_ids) == length(@preview_rows)
             }
           >

@@ -44,6 +44,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.Stations
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
@@ -672,15 +673,19 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
         })
       end)
 
+      audit = bulk_audit(scope, station.stop_id)
+
+      unboxed(fn ->
+        organization_membership_fixture(%User{id: audit.actor_id}, scope.organization)
+      end)
+
+      on_exit(fn -> cleanup([], [audit.actor_id]) end)
+
       # The exact renamed ID comes from the real preview rather than from a naming convention
       # repeated in the test.
       assert {:ok, preview} =
                unboxed(fn ->
-                 Gtfs.preview_station_naming(
-                   scope.organization.id,
-                   scope.version.id,
-                   station.stop_id
-                 )
+                 Stations.preview_station_naming(audit)
                end)
 
       assert [%{old_id: "NAMING_PLATFORM", new_id: renamed_id}] = preview.rows
@@ -689,11 +694,7 @@ defmodule GtfsPlanner.Gtfs.Calendars.InputWriterConcurrencyTest do
 
       {writer, backend} =
         start_writer(supervisor, fn ->
-          Gtfs.apply_station_naming(
-            scope.organization.id,
-            scope.version.id,
-            station.stop_id
-          )
+          Stations.apply_station_naming(audit, :structured, nil, preview.fingerprint)
         end)
 
       send(writer.pid, :go)
