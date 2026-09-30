@@ -67,14 +67,33 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   (no database read). The `#paste-decisions` hidden input holds the
   Jason-encoded decisions, so a reconnect into a new process re-sends
   them with the form params and the `input` handler restores them.
+
+  Step 28 owns the apply bar, the Replace and Discard confirmations and
+  every apply outcome. `paste_apply` first surfaces open decisions in
+  `#paste-review-errors` (focused, button still enabled), then opens
+  `#paste-replace-confirm` for a Replace with removals or transfers, then
+  re-checks the editor role like `RouteSchedulesLive.editor_access?/1`
+  before calling `Gtfs.apply_timetable_paste/5`. `:stale_plan` keeps the
+  input and offers Review again (which reloads the scope); `:busy` offers
+  Apply again; anything else failed offers Try again with a reference id;
+  a missing role shows the permission notice and writes nothing. Clicking
+  Apply also marks the hidden `#paste-applying` flag, so a reconnect
+  during the apply recovers through form recovery into the unknown
+  notice instead of re-applying; a plain reconnect rebuilds the review
+  and shows the reconnected notice. Success push-navigates to Schedules
+  with the filters and a flash naming the change.
   """
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1, route_label: 1]
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.TimetablePaste
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Versions
+  alias GtfsPlannerWeb.EnsureRole
   alias GtfsPlannerWeb.Gtfs.TimetablePasteComponents
   alias GtfsPlannerWeb.Gtfs.TimetablePasteReview
 
@@ -106,6 +125,11 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
      |> assign(:plan_total, 0)
      |> assign(:plan_shown, 0)
      |> assign(:timing_note, nil)
+     |> assign(:apply_notice, nil)
+     |> assign(:failed_reference, nil)
+     |> assign(:replace_confirm, false)
+     |> assign(:discard_confirm, false)
+     |> assign(:show_review_errors, false)
      |> stream_configure(:plan_rows, dom_id: & &1.id)
      |> stream(:plan_rows, [])
      |> assign(:load_state, :loading)}
@@ -239,49 +263,16 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # reconnected notice on top).
   @impl true
   def handle_event("input", %{"paste" => params}, socket) when is_map(params) do
-    old_input = current_input(socket)
-    input = merge_paste_params(old_input, params)
-    recovery? = recovery_rebuild?(socket, old_input, params)
-    input = merge_column_overrides(socket, old_input, input, params, recovery?)
-    input = merge_decision_params(socket, old_input, input, params, recovery?)
-
-    socket =
-      socket
-      |> assign(:input, input)
-      |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))
-
-    socket =
-      cond do
-        blank_paste_text?(input.text) ->
-          socket
-          |> assign(:review, nil)
-          |> assign(:paste_error, nil)
-          |> assign(:source_open, true)
-          |> assign(:show_column_errors, false)
-          |> put_plan_rows()
-
-        recovery? ->
-          rebuild_recovered_review(socket, input)
-
-        recompute_columns?(socket, old_input, input, params) ->
-          recompute_columns_review(socket, input)
-
-        recompute_review_inputs?(socket, old_input, input) ->
-          recompute_columns_review(socket, input)
-
-        recompute_decisions?(socket, old_input, input) ->
-          recompute_columns_review(socket, input)
-
-        # Stops view only restashes for display; a change re-streams the
-        # matrix columns from the current review.
-        input.stops_view != old_input.stops_view ->
-          put_plan_rows(socket)
-
-        true ->
-          socket
-      end
-
-    {:noreply, socket}
+    # Step 28: the `#paste-applying` flag is only ever `"true"` right after
+    # an Apply click (the server always re-renders it `"false"`), so an
+    # input event carrying it is form recovery after a reconnect during the
+    # apply. Rebuild when the review is gone and show the unknown notice
+    # instead of re-applying; the paste itself is never written twice.
+    if params["applying"] == "true" do
+      {:noreply, recover_applying(socket, params)}
+    else
+      {:noreply, paste_input(socket, params)}
+    end
   end
 
   @impl true
@@ -482,6 +473,87 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     end
   end
 
+  # Step 28 owns the apply bar. With rows still needing a decision the
+  # error summary renders with row links and takes focus while the button
+  # stays enabled; a Replace with removals or transfers opens the Replace
+  # confirmation first; otherwise the editor role is re-checked and the
+  # paste is written through `Gtfs.apply_timetable_paste/5`.
+  @impl true
+  def handle_event("paste_apply", _params, socket) do
+    case socket.assigns[:review] do
+      %{plan: %{counts: %{needs_decision: open}}} when is_integer(open) and open > 0 ->
+        {:noreply,
+         socket
+         |> assign(:show_review_errors, true)
+         |> push_event("focus_scoped_target", %{id: "paste-review-errors"})}
+
+      %{plan: plan} when is_map(plan) ->
+        if replace_confirm_needed?(socket, plan) do
+          {:noreply, assign(socket, :replace_confirm, true)}
+        else
+          {:noreply, do_apply(socket)}
+        end
+
+      _no_plan ->
+        {:noreply, socket}
+    end
+  end
+
+  # Confirming the Replace dialog writes through the same role re-check
+  # and outcome mapping as a direct apply; cancelling only closes it.
+  @impl true
+  def handle_event("paste_replace_confirm", _params, socket) do
+    {:noreply, socket |> assign(:replace_confirm, false) |> do_apply()}
+  end
+
+  @impl true
+  def handle_event("paste_replace_cancel", _params, socket) do
+    {:noreply, assign(socket, :replace_confirm, false)}
+  end
+
+  # Discarding asks first, then drops the text, overrides, confirmations
+  # and decisions back to a blank paste; nothing was ever applied.
+  @impl true
+  def handle_event("paste_discard", _params, socket) do
+    {:noreply, assign(socket, :discard_confirm, true)}
+  end
+
+  @impl true
+  def handle_event("paste_discard_cancel", _params, socket) do
+    {:noreply, assign(socket, :discard_confirm, false)}
+  end
+
+  @impl true
+  def handle_event("paste_discard_confirm", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:input, fresh_paste_input())
+     |> assign(:paste_form, to_form(paste_form_params(), as: :paste))
+     |> assign(:review, nil)
+     |> assign(:paste_error, nil)
+     |> assign(:source_open, true)
+     |> assign(:show_column_errors, false)
+     |> assign(:show_review_errors, false)
+     |> assign(:apply_notice, nil)
+     |> assign(:failed_reference, nil)
+     |> assign(:replace_confirm, false)
+     |> assign(:discard_confirm, false)
+     |> put_plan_rows()}
+  end
+
+  # Review again reloads the scope around the kept input (text, columns
+  # and decisions stay) and clears the outcome, for the stale and unknown
+  # notices.
+  @impl true
+  def handle_event("paste_review_again", _params, socket) do
+    {:noreply, review_again(socket)}
+  end
+
+  @impl true
+  def handle_event("paste_dismiss_notice", _params, socket) do
+    {:noreply, assign(socket, :apply_notice, nil)}
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -545,6 +617,16 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
             route_label={route_label(@scope.route)}
           />
 
+          <TimetablePasteComponents.notices
+            :if={is_nil(setup_reason(@scope))}
+            notice={@apply_notice}
+            failed_reference={@failed_reference}
+            scope={@scope}
+            review={@review}
+            version_id={@current_gtfs_version.id}
+            route_id={@route_id}
+          />
+
           <.form
             :if={is_nil(setup_reason(@scope))}
             id="paste-form"
@@ -582,8 +664,19 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
               rows={@streams.plan_rows}
               shown={@plan_shown}
               timing_note={@timing_note}
+              show_errors={@show_review_errors}
+              notice={@apply_notice}
             />
           </.form>
+
+          <TimetablePasteComponents.replace_confirm
+            :if={@replace_confirm}
+            open={true}
+            review={@review}
+            scope={@scope}
+            input={@input}
+          />
+          <TimetablePasteComponents.discard_confirm :if={@discard_confirm} open={true} />
         </div>
       </div>
     </Layouts.app>
@@ -685,6 +778,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
         |> assign(:paste_error, :empty)
         |> assign(:source_open, true)
         |> assign(:load_state, :ready)
+        |> clear_apply_state()
         |> put_plan_rows()
 
       {:ok, %{scope: scope, review: review}} ->
@@ -696,6 +790,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
         |> assign(:source_open, false)
         |> assign(:show_column_errors, false)
         |> assign(:load_state, :ready)
+        |> clear_apply_state()
         |> put_plan_rows()
 
       {:error, :not_found} ->
@@ -706,8 +801,19 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
         |> assign(:review, nil)
         |> assign(:paste_error, reason)
         |> assign(:source_open, true)
+        |> clear_apply_state()
         |> put_plan_rows()
     end
+  end
+
+  # A fresh Read supersedes any apply outcome or error summary.
+  defp clear_apply_state(socket) do
+    socket
+    |> assign(:apply_notice, nil)
+    |> assign(:failed_reference, nil)
+    |> assign(:replace_confirm, false)
+    |> assign(:discard_confirm, false)
+    |> assign(:show_review_errors, false)
   end
 
   defp read_scope_params(nil), do: %{}
@@ -1137,6 +1243,59 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # scope is fresh from `handle_params`, so decisions never cost a
   # database read. Success collapses the step like a Read; a parse
   # failure keeps the text with the inline error.
+  # The ordinary paste input path step 23 owns (with step 24's column
+  # overrides, step 25's review header fields, step 26's view restash and
+  # step 27's decisions and recovery rebuild). Step 28 adds the
+  # reconnected notice on top of a recovery rebuild.
+  defp paste_input(socket, params) do
+    old_input = current_input(socket)
+    input = merge_paste_params(old_input, params)
+    recovery? = recovery_rebuild?(socket, old_input, params)
+    input = merge_column_overrides(socket, old_input, input, params, recovery?)
+    input = merge_decision_params(socket, old_input, input, params, recovery?)
+
+    socket =
+      socket
+      |> assign(:input, input)
+      |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))
+
+    socket =
+      cond do
+        blank_paste_text?(input.text) ->
+          socket
+          |> assign(:review, nil)
+          |> assign(:paste_error, nil)
+          |> assign(:source_open, true)
+          |> assign(:show_column_errors, false)
+          |> put_plan_rows()
+
+        recovery? ->
+          socket
+          |> rebuild_recovered_review(input)
+          |> assign(:apply_notice, :reconnected)
+          |> push_event("focus_scoped_target", %{id: "paste-notice-reconnected"})
+
+        recompute_columns?(socket, old_input, input, params) ->
+          recompute_columns_review(socket, input)
+
+        recompute_review_inputs?(socket, old_input, input) ->
+          recompute_columns_review(socket, input)
+
+        recompute_decisions?(socket, old_input, input) ->
+          recompute_columns_review(socket, input)
+
+        # Stops view only restashes for display; a change re-streams the
+        # matrix columns from the current review.
+        input.stops_view != old_input.stops_view ->
+          put_plan_rows(socket)
+
+        true ->
+          socket
+      end
+
+    socket
+  end
+
   defp rebuild_recovered_review(socket, input) do
     case TimetablePaste.review(socket.assigns.scope, input) do
       {:ok, review} ->
@@ -1256,6 +1415,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
               :show_column_errors,
               socket.assigns[:show_column_errors] == true and review.column_issues != []
             )
+            |> assign(:show_review_errors, keep_review_errors?(socket, review))
             |> put_plan_rows()
 
           {:error, _reason} ->
@@ -1263,6 +1423,18 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
         end
     end
   end
+
+  # The apply-time error summary stays until every decision resolves,
+  # like the column error summary step 24 owns.
+  defp keep_review_errors?(socket, review) do
+    socket.assigns[:show_review_errors] == true and review_needs_decision?(review)
+  end
+
+  defp review_needs_decision?(%{plan: %{counts: %{needs_decision: open}}})
+       when is_integer(open),
+       do: open > 0
+
+  defp review_needs_decision?(_review), do: false
 
   # Streams the review matrix from the current review, scope and input
   # filter/stops view. Streams are not enumerable, so the rows are rebuilt
@@ -1347,6 +1519,233 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp direction_param(0), do: "0"
   defp direction_param(1), do: "1"
   defp direction_param(_direction), do: nil
+
+  # --- Apply, confirm and outcomes (step 28) ----------------------------------
+
+  # A Replace that would remove trips or drop transfers naming them always
+  # asks first; Add mode and a Replace with nothing removed apply at once.
+  defp replace_confirm_needed?(socket, plan) do
+    current_input(socket).mode == :replace and
+      (plan.counts.remove > 0 or (plan.transfers_removed || 0) > 0)
+  end
+
+  # The apply re-checks the editor role before writing (never from a
+  # read-only role), then maps the writer result onto the outcome
+  # notices. The paste and decisions stay on every failure.
+  defp do_apply(socket) do
+    if editor_access?(socket) do
+      review = socket.assigns[:review]
+      scope = socket.assigns[:scope]
+
+      case Gtfs.apply_timetable_paste(
+             socket.assigns.route_id,
+             apply_scope_params(scope),
+             current_input(socket),
+             review.fingerprint,
+             audit_context(socket)
+           ) do
+        {:ok, summary} ->
+          apply_success(socket, scope, summary)
+
+        {:error, :stale_plan} ->
+          apply_outcome(socket, :stale, "paste-notice-stale")
+
+        {:error, :busy} ->
+          apply_outcome(socket, :busy, "paste-notice-busy")
+
+        {:error, _reason} ->
+          socket
+          |> assign(:failed_reference, failed_reference())
+          |> apply_outcome(:failed, "paste-notice-failed")
+      end
+    else
+      apply_outcome(socket, :permission, "paste-notice-permission")
+    end
+  end
+
+  defp apply_outcome(socket, notice, focus_id) do
+    socket
+    |> assign(:apply_notice, notice)
+    |> assign(:replace_confirm, false)
+    |> assign(:show_review_errors, false)
+    |> push_event("focus_scoped_target", %{id: focus_id})
+  end
+
+  # At apply time both the calendar and the direction are concrete, so
+  # the scope params carry the prepared values, like the writer documents.
+  defp apply_scope_params(scope) do
+    %{
+      service_id: scope.calendar && scope.calendar.service_id,
+      direction_id: scope.direction_id,
+      pattern_id: scope.pattern_id
+    }
+  end
+
+  # Success lands on Schedules with the filters and a flash naming the
+  # adds, changes, removals, timings created, transfers removed and the
+  # vehicles change (AC-32).
+  defp apply_success(socket, scope, summary) do
+    socket
+    |> put_flash(:info, apply_flash(scope, summary))
+    |> push_navigate(to: apply_schedules_path(socket, scope))
+  end
+
+  defp apply_flash(scope, summary) do
+    calendar = scope.calendar && (scope.calendar.name || scope.calendar.service_id)
+    direction = if scope.direction_id == 1, do: "Inbound", else: "Outbound"
+
+    counts =
+      [
+        {"Added", summary.added, "trip"},
+        {"changed", summary.changed, "trip"},
+        {"removed", summary.removed, "trip"}
+      ]
+      |> Enum.filter(fn {_label, count, _one} -> is_integer(count) and count > 0 end)
+      |> Enum.map(fn {label, count, one} -> "#{label} #{count} #{pluralize(count, one)}" end)
+
+    headline =
+      case counts do
+        [] -> "Applied the paste"
+        counts -> Enum.join(counts, ", ") |> capitalize_first()
+      end
+
+    [
+      "#{headline} on #{calendar} · #{direction}.",
+      timing_flash(summary),
+      transfer_flash(summary),
+      vehicle_flash(summary)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" ")
+  end
+
+  defp timing_flash(%{new_timings: []}), do: nil
+  defp timing_flash(%{new_timings: [name]}), do: "Created timing: #{name}."
+
+  defp timing_flash(%{new_timings: names}),
+    do: "Created #{length(names)} timings: #{Enum.join(names, ", ")}."
+
+  defp transfer_flash(%{transfers_removed: 0}), do: nil
+  defp transfer_flash(%{transfers_removed: 1}), do: "Removed 1 transfer."
+  defp transfer_flash(%{transfers_removed: count}), do: "Removed #{count} transfers."
+
+  defp vehicle_flash(%{vehicles_before: count_before, vehicles_after: count_after}) do
+    "Vehicles needed: #{count_before} → #{count_after}."
+  end
+
+  defp pluralize(1, one), do: one
+  defp pluralize(_count, one), do: "#{one}s"
+
+  defp capitalize_first(""), do: ""
+  defp capitalize_first(<<first::utf8, rest::binary>>), do: String.upcase(<<first::utf8>>) <> rest
+
+  defp apply_schedules_path(socket, scope) do
+    query =
+      URI.encode_query([
+        {"service_id", scope.calendar && scope.calendar.service_id},
+        {"direction", to_string(scope.direction_id)},
+        {"pattern", to_string(scope.pattern_id)}
+      ])
+
+    "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/schedules?#{query}"
+  end
+
+  # Review again reloads the scope around the kept input: the review is
+  # rebuilt from what is stored now, so a stale plan recovers without
+  # re-pasting. The text, columns and decisions are untouched.
+  defp review_again(socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    route_id = socket.assigns.route_id
+    input = current_input(socket)
+
+    case Gtfs.prepare_timetable_paste(
+           organization_id,
+           version_id,
+           route_id,
+           read_scope_params(socket.assigns.scope),
+           input
+         ) do
+      {:ok, %{scope: scope, review: review}} ->
+        socket
+        |> assign(:route, scope.route)
+        |> assign(:scope, scope)
+        |> assign(:review, review)
+        |> assign(:paste_error, nil)
+        |> assign(:source_open, is_nil(review))
+        |> assign(:show_column_errors, false)
+        |> assign(:show_review_errors, false)
+        |> assign(:apply_notice, nil)
+        |> assign(:failed_reference, nil)
+        |> assign(:replace_confirm, false)
+        |> assign(:load_state, :ready)
+        |> put_plan_rows()
+        |> push_event("focus_scoped_target", %{id: "paste-apply-status"})
+
+      {:error, :not_found} ->
+        route_not_found(socket)
+
+      {:error, _reason} ->
+        socket
+        |> assign(:failed_reference, failed_reference())
+        |> apply_outcome(:failed, "paste-notice-failed")
+    end
+  end
+
+  # Form recovery after a reconnect during the apply: the review may be
+  # gone (a new process) or intact (the same process survived). Either
+  # way the outcome is unknown — rebuild when needed, show
+  # `#paste-notice-unknown` and never re-apply.
+  defp recover_applying(socket, params) do
+    if is_nil(socket.assigns[:review]) do
+      old_input = current_input(socket)
+      input = merge_paste_params(old_input, params)
+      input = merge_column_overrides(socket, old_input, input, params, true)
+      input = merge_decision_params(socket, old_input, input, params, true)
+
+      socket
+      |> assign(:input, input)
+      |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))
+      |> rebuild_recovered_review(input)
+      |> apply_outcome(:unknown, "paste-notice-unknown")
+    else
+      apply_outcome(socket, :unknown, "paste-notice-unknown")
+    end
+  end
+
+  defp failed_reference do
+    <<a::binary-4, b::binary-4>> = Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
+    "#{a}-#{b}"
+  end
+
+  # The role is re-read from the membership on every apply, like every
+  # other mutating event in `RouteSchedulesLive`: the assign is only a
+  # snapshot from mount, so a role revoked while the page is open
+  # refuses the write.
+  defp editor_access?(socket) do
+    EnsureRole.has_role?(live_roles(socket), :pathways_studio_editor)
+  end
+
+  defp live_roles(socket) do
+    with %{id: user_id} <- socket.assigns[:current_user],
+         %{id: organization_id} <- socket.assigns[:current_organization],
+         %UserOrgMembership{} = membership <-
+           Accounts.get_user_org_membership(user_id, organization_id) do
+      membership.roles || []
+    else
+      _ -> []
+    end
+  end
+
+  defp audit_context(socket) do
+    %AuditContext{
+      organization_id: socket.assigns.current_organization.id,
+      gtfs_version_id: socket.assigns.current_gtfs_version.id,
+      station_stop_id: nil,
+      actor_id: socket.assigns.current_user.id,
+      actor_email: socket.assigns.current_user.email
+    }
+  end
 
   defp route_not_found(socket) do
     version_id = socket.assigns.current_gtfs_version.id

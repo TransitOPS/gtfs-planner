@@ -2076,4 +2076,450 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       assert has_element?(view, "#paste-rows #paste-row-1", "Add")
     end
   end
+
+  describe "apply outcomes" do
+    # Step 28: the apply bar, the Replace/Discard confirmations and every
+    # apply outcome wired to the real `Gtfs.apply_timetable_paste/5` writer
+    # (real database rows, `_paste04` partition). The success path writes
+    # through the transaction; the failure paths keep the paste and the
+    # decisions.
+    setup :editor_scope
+
+    alias GtfsPlanner.Gtfs.Trip
+    alias GtfsPlanner.Repo
+
+    # Two Weekday outbound trips on a zero-dwell Main pattern, 07:00
+    # (short 1207) and 08:00 (short 1209), with two transfers naming the
+    # 08:00 trip — the production shape of the browser seed's 1209 pair.
+    defp apply_setup(%{organization: organization, version: version}) do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "PASTE28",
+          route_short_name: "12",
+          route_long_name: "Downtown – Riverside"
+        })
+
+      weekday = weekly_calendar(organization, version, "PASTE28_WKD", "Weekday")
+
+      Enum.each(1..3, fn index ->
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "PASTE28_S#{index}",
+          stop_name: "Apply Stop #{index}"
+        })
+      end)
+
+      main =
+        schedule_pattern_fixture(organization.id, version.id, %{
+          route_id: route.route_id,
+          direction_id: 0,
+          route_pattern_id: "PASTE28-MAIN",
+          route_pattern_name: "Main",
+          route_pattern_typicality: 1,
+          timing_name: "Standard",
+          stops: [
+            {"PASTE28_S1", 0, 0, 1},
+            {"PASTE28_S2", 300, 300, 1},
+            {"PASTE28_S3", 600, 600, 1}
+          ]
+        })
+
+      schedule_trip_fixture(organization.id, version.id, route.route_id, main, %{
+        service_id: weekday,
+        trip_id: "PASTE28_T0700",
+        trip_short_name: "1207",
+        start_time: "07:00:00"
+      })
+
+      schedule_trip_fixture(organization.id, version.id, route.route_id, main, %{
+        service_id: weekday,
+        trip_id: "PASTE28_T0800",
+        trip_short_name: "1209",
+        start_time: "08:00:00"
+      })
+
+      transfer_fixture(organization.id, version.id, %{
+        from_stop_id: "PASTE28_S1",
+        to_stop_id: "PASTE28_S2",
+        from_trip_id: "PASTE28_T0700",
+        to_trip_id: "PASTE28_T0800",
+        transfer_type: 0
+      })
+
+      transfer_fixture(organization.id, version.id, %{
+        from_stop_id: "PASTE28_S2",
+        to_stop_id: "PASTE28_S3",
+        from_trip_id: "PASTE28_T0800",
+        to_trip_id: "PASTE28_T0700",
+        transfer_type: 0
+      })
+
+      %{route: route, weekday: weekday, main: main}
+    end
+
+    defp apply_open(view, version, route, setup) do
+      follow(
+        view,
+        paste_path(version, route, %{
+          "service_id" => setup.weekday,
+          "direction" => "0",
+          "pattern" => setup.main.pattern.id
+        })
+      )
+    end
+
+    defp apply_headers do
+      "Apply Stop 1\tApply Stop 2\tApply Stop 3"
+    end
+
+    defp apply_read(view, text) do
+      render_submit(view, "read", %{
+        "paste" => %{"text" => text, "layout" => "auto", "header" => "true"}
+      })
+    end
+
+    defp apply_redirect_path(version, route, setup) do
+      query =
+        URI.encode_query([
+          {"service_id", setup.weekday},
+          {"direction", "0"},
+          {"pattern", setup.main.pattern.id}
+        ])
+
+      "/gtfs/#{version.id}/routes/#{route.route_id}/schedules?#{query}"
+    end
+
+    defp service_trip_count(organization, version, service_id) do
+      import Ecto.Query, only: [from: 2]
+
+      Repo.aggregate(
+        from(t in Trip,
+          where:
+            t.organization_id == ^organization.id and
+              t.gtfs_version_id == ^version.id and t.service_id == ^service_id
+        ),
+        :count
+      )
+    end
+
+    test "the apply bar names the change count and the ready status",
+         %{conn: conn, version: version} = context do
+      setup = apply_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = apply_open(view, version, setup.route, setup)
+
+      text = apply_headers() <> "\n08:30\t08:35\t08:40\n09:00\t09:05\t09:10"
+      apply_read(view, text)
+
+      assert has_element?(view, "#paste-apply-bar")
+      assert has_element?(view, "#paste-apply", "Apply 2 changes")
+      assert has_element?(view, "#paste-apply-status", "Ready. Nothing has been saved yet.")
+      assert has_element?(view, "#paste-discard", "Discard paste")
+      assert view |> element("#paste-apply") |> render() =~ "Applying 2 changes…"
+    end
+
+    test "applying with open decisions shows the error summary and keeps the button enabled",
+         %{conn: conn, version: version} = context do
+      setup = apply_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = apply_open(view, version, setup.route, setup)
+
+      apply_read(view, apply_headers() <> "\n07:00\t12:1O\t07:10")
+      assert has_element?(view, "#paste-rows #paste-row-1", "isn’t a time")
+
+      render_click(view, "paste_apply")
+      refute_redirected(view)
+
+      assert has_element?(
+               view,
+               "#paste-review-errors",
+               "Nothing applied yet. 1 row needs a decision."
+             )
+
+      assert has_element?(view, "#paste-review-errors a[href=\"#paste-row-1\"]", "Row 1")
+      assert has_element?(view, "#paste-review-errors", "fix a time")
+      assert has_element?(view, "#paste-apply", "Apply 0 changes")
+      refute view |> element("#paste-apply") |> render() =~ " disabled"
+    end
+
+    test "replace with a removal opens the confirmation naming the trip and transfers",
+         %{conn: conn, version: version} = context do
+      setup = apply_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = apply_open(view, version, setup.route, setup)
+
+      # The 07:00 row repeats its trip; the 08:00 trip is unpaired and
+      # becomes the removal with its two transfers.
+      text = apply_headers() <> "\n07:00\t07:05\t07:10"
+      apply_read(view, text)
+
+      render_change(view, "input", %{
+        "paste" => %{
+          "text" => text,
+          "layout" => "auto",
+          "header" => "true",
+          "mode" => "replace"
+        }
+      })
+
+      assert has_element?(view, "#paste-apply", "Replace trips · 1 change")
+
+      render_click(view, "paste_apply")
+      refute_redirected(view)
+
+      assert has_element?(
+               view,
+               "#paste-replace-confirm",
+               "Replace Weekday outbound trips?"
+             )
+
+      assert has_element?(view, "#paste-replace-confirm", "PASTE28_T0800 at 08:00")
+      assert has_element?(view, "#paste-replace-confirm", "2 transfers")
+      assert has_element?(view, "#paste-replace-confirm-cancel", "Keep reviewing")
+      assert has_element?(view, "#paste-replace-confirm-confirm", "Replace trips")
+
+      # Cancelling keeps the review with nothing written.
+      render_click(view, "paste_replace_cancel")
+      refute has_element?(view, "#paste-replace-confirm")
+      assert has_element?(view, "#paste-review")
+      assert %Trip{} = Repo.get_by(Trip, trip_id: "PASTE28_T0800")
+
+      # Confirming writes the removal and lands on Schedules.
+      render_click(view, "paste_apply")
+      redirect = render_click(view, "paste_replace_confirm")
+
+      path = apply_redirect_path(version, setup.route, setup)
+      assert {:error, {:live_redirect, %{to: ^path}}} = redirect
+      assert Repo.get_by(Trip, trip_id: "PASTE28_T0800") == nil
+
+      {:ok, _schedules, html} = follow_redirect(redirect, conn)
+      assert html =~ "Removed 1 trip"
+      assert html =~ "Removed 2 transfers"
+      assert html =~ "Vehicles needed"
+    end
+
+    test "a successful apply writes the trips and lands on Schedules with the flash",
+         %{conn: conn, organization: organization, version: version} = context do
+      setup = apply_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = apply_open(view, version, setup.route, setup)
+
+      before = service_trip_count(organization, version, setup.weekday)
+
+      apply_read(
+        view,
+        apply_headers() <> "\n08:30\t08:35\t08:40\n09:00\t09:05\t09:10"
+      )
+
+      path = apply_redirect_path(version, setup.route, setup)
+      redirect = render_click(view, "paste_apply")
+      assert {:error, {:live_redirect, %{to: ^path}}} = redirect
+
+      assert service_trip_count(organization, version, setup.weekday) == before + 2
+
+      assert %Trip{trip_id: "PASTE28-0-PASTE28_WKD-0830"} =
+               Repo.get_by(Trip, trip_id: "PASTE28-0-PASTE28_WKD-0830")
+
+      assert %Trip{trip_id: "PASTE28-0-PASTE28_WKD-0900"} =
+               Repo.get_by(Trip, trip_id: "PASTE28-0-PASTE28_WKD-0900")
+
+      {:ok, _schedules, html} = follow_redirect(redirect, conn)
+      assert html =~ "Added 2 trips"
+      assert html =~ "Vehicles needed"
+    end
+
+    test "a demoted user sees the permission notice and nothing is written",
+         %{conn: conn, organization: organization, user: user, version: version} = context do
+      setup = apply_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = apply_open(view, version, setup.route, setup)
+
+      apply_read(view, apply_headers() <> "\n08:30\t08:35\t08:40")
+      assert has_element?(view, "#paste-apply", "Apply 1 change")
+
+      before = service_trip_count(organization, version, setup.weekday)
+
+      membership = Accounts.get_user_org_membership(user.id, organization.id)
+      assert {:ok, _membership} = Accounts.delete_user_org_membership(membership)
+
+      render_click(view, "paste_apply")
+      refute_redirected(view)
+
+      assert has_element?(
+               view,
+               "#paste-notice-permission",
+               "Nothing was applied. You can’t edit this version any more."
+             )
+
+      assert service_trip_count(organization, version, setup.weekday) == before
+      assert Repo.get_by(Trip, trip_id: "PASTE28-0-PASTE28_WKD-0830") == nil
+    end
+
+    test "a stale plan keeps the text and decisions and offers Review again",
+         %{conn: conn, version: version} = context do
+      setup = apply_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = apply_open(view, version, setup.route, setup)
+
+      text = apply_headers() <> "\n08:30\t08:35\t08:40\n09:00\t09:05\t09:10"
+      apply_read(view, text)
+      render_click(view, "paste_skip", %{"row" => "2"})
+      assert has_element?(view, "#paste-rows #paste-row-2", "Skipped")
+
+      # An edit to the pattern timing after the review stales the plan.
+      setup.main.rows
+      |> hd()
+      |> Ecto.Changeset.change(%{departure_offset: 61})
+      |> Repo.update!()
+
+      render_click(view, "paste_apply")
+      refute_redirected(view)
+
+      assert has_element?(view, "#paste-notice-stale", "Nothing was applied")
+      assert has_element?(view, "#paste-review-again", "Review again")
+
+      # The skip decision stays on the visible review.
+      assert has_element?(view, "#paste-rows #paste-row-2", "Skipped")
+
+      # The text stays behind the collapsed step.
+      render_click(view, "edit_source")
+      assert view |> element("#paste-source") |> render() =~ "08:30"
+      assert view |> element("#paste-source") |> render() =~ "09:00"
+      assert has_element?(view, "#paste-notice-stale", "Nothing was applied")
+
+      # Review again rebuilds around the kept paste and clears the notice.
+      render_click(view, "paste_review_again")
+      refute has_element?(view, "#paste-notice-stale")
+      assert has_element?(view, "#paste-review")
+      assert has_element?(view, "#paste-rows #paste-row-2", "Skipped")
+    end
+
+    @tag :scope_security
+    test "a deleted route refuses the apply with the failed notice and a reference",
+         %{conn: conn, version: version} = context do
+      setup = apply_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = apply_open(view, version, setup.route, setup)
+
+      apply_read(view, apply_headers() <> "\n08:30\t08:35\t08:40")
+      assert has_element?(view, "#paste-apply", "Apply 1 change")
+
+      # The scope no longer resolves — the same `:not_found` a foreign
+      # organization, version, route or calendar rolls back — so the
+      # write is refused and the paste stays.
+      Repo.delete!(setup.route)
+
+      render_click(view, "paste_apply")
+      refute_redirected(view)
+
+      notice = view |> element("#paste-notice-failed") |> render()
+      assert notice =~ "Nothing was applied. The schedule couldn’t be saved."
+      assert notice =~ ~r/Reference [0-9a-f]{4}-[0-9a-f]{4}/
+      assert has_element?(view, "#paste-try-again", "Try again")
+
+      render_click(view, "edit_source")
+      assert view |> element("#paste-source") |> render() =~ "08:30"
+    end
+
+    test "discarding asks first and clears the paste on confirm",
+         %{conn: conn, version: version} = context do
+      setup = apply_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = apply_open(view, version, setup.route, setup)
+
+      apply_read(view, apply_headers() <> "\n08:30\t08:35\t08:40")
+      assert has_element?(view, "#paste-review")
+
+      render_click(view, "paste_discard")
+      assert has_element?(view, "#paste-discard-confirm", "Discard this paste?")
+
+      render_click(view, "paste_discard_cancel")
+      refute has_element?(view, "#paste-discard-confirm")
+      assert has_element?(view, "#paste-review")
+
+      render_click(view, "paste_discard")
+      render_click(view, "paste_discard_confirm")
+      refute has_element?(view, "#paste-discard-confirm")
+      refute has_element?(view, "#paste-review")
+      assert has_element?(view, "#paste-source")
+      refute view |> element("#paste-source") |> render() =~ "08:30"
+    end
+
+    test "form recovery during an apply shows the unknown notice instead of re-applying",
+         %{conn: conn, organization: organization, version: version} = context do
+      setup = apply_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = apply_open(view, version, setup.route, setup)
+
+      text = apply_headers() <> "\n08:30\t08:35\t08:40"
+      apply_read(view, text)
+
+      before = service_trip_count(organization, version, setup.weekday)
+
+      # The reconnect re-sends the form with the Apply click's flag set;
+      # the handler rebuilds nothing twice and writes nothing.
+      render_change(view, "input", %{
+        "paste" => %{
+          "text" => text,
+          "layout" => "auto",
+          "header" => "true",
+          "mode" => "add",
+          "decisions" => Jason.encode!(%{}),
+          "applying" => "true"
+        }
+      })
+
+      refute_redirected(view)
+
+      assert has_element?(
+               view,
+               "#paste-notice-unknown",
+               "It isn’t known whether the changes were saved."
+             )
+
+      assert has_element?(view, "#paste-open-schedules", "Open Schedules")
+      assert has_element?(view, "#paste-unknown-review-again", "Review again")
+      assert service_trip_count(organization, version, setup.weekday) == before
+      assert Repo.get_by(Trip, trip_id: "PASTE28-0-PASTE28_WKD-0830") == nil
+    end
+
+    test "form recovery without an apply in flight shows the reconnected notice",
+         %{conn: conn, version: version} = context do
+      setup = apply_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = apply_open(view, version, setup.route, setup)
+
+      text = apply_headers() <> "\n08:30\t08:35\t08:40"
+
+      # A reconnect into a new process re-sends the form with the text
+      # still blank here, so the review rebuilds and the notice shows.
+      render_change(view, "input", %{
+        "paste" => %{
+          "text" => text,
+          "layout" => "auto",
+          "header" => "true",
+          "mode" => "add",
+          "decisions" => Jason.encode!(%{"1" => %{"skip" => true}})
+        }
+      })
+
+      assert has_element?(view, "#paste-review")
+      assert has_element?(view, "#paste-rows #paste-row-1", "Skipped")
+
+      assert has_element?(
+               view,
+               "#paste-notice-reconnected",
+               "Reconnected. Your paste was restored."
+             )
+    end
+  end
 end
