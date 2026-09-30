@@ -56,6 +56,17 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   changes the filter or stops view re-streams `:plan_rows` with
   `reset: true` through `put_plan_rows/1`; counts live in the separate
   `:plan_total`/`:plan_shown` assigns because streams are not countable.
+
+  Step 27 owns the row decisions: the pattern select, the cell correction,
+  the twelve-hour choice and the pairing radios post back through the
+  `input` event as `paste[pattern_choices]`/`paste[cells]`/`paste[pairs]`
+  (diffed like the column overrides, so untouched controls never write a
+  decision), while the twelve-hour buttons and skip/restore/Add-anyway
+  arrive as discrete `paste_*` events. Every decision event updates
+  `input.decisions` and recomputes the review purely from the loaded scope
+  (no database read). The `#paste-decisions` hidden input holds the
+  Jason-encoded decisions, so a reconnect into a new process re-sends
+  them with the form params and the `input` handler restores them.
   """
   use GtfsPlannerWeb, :live_view
 
@@ -217,11 +228,22 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # Step 26 extends the stash branch: a stops-view change re-streams the
   # matrix columns without recomputing the review (the plan is
   # view-independent, like the filter).
+  # Step 27 extends the merge branch: pattern, cell and pairing controls
+  # ride the same `input` event as structured `paste[pattern_choices]`,
+  # `paste[cells]` and `paste[pairs]` params (diffed like the overrides, so
+  # re-submitting an untouched control never writes a decision), and the
+  # `#paste-decisions` hidden field round-trips the committed decisions. A
+  # reconnect into a new process re-sends the form params with the text
+  # still blank here and the hidden field populated, so that shape rebuilds
+  # the review purely instead of waiting for Read (step 28 adds the
+  # reconnected notice on top).
   @impl true
   def handle_event("input", %{"paste" => params}, socket) when is_map(params) do
     old_input = current_input(socket)
     input = merge_paste_params(old_input, params)
-    input = merge_column_overrides(socket, old_input, input, params)
+    recovery? = recovery_rebuild?(socket, old_input, params)
+    input = merge_column_overrides(socket, old_input, input, params, recovery?)
+    input = merge_decision_params(socket, old_input, input, params, recovery?)
 
     socket =
       socket
@@ -238,10 +260,16 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
           |> assign(:show_column_errors, false)
           |> put_plan_rows()
 
+        recovery? ->
+          rebuild_recovered_review(socket, input)
+
         recompute_columns?(socket, old_input, input, params) ->
           recompute_columns_review(socket, input)
 
         recompute_review_inputs?(socket, old_input, input) ->
+          recompute_columns_review(socket, input)
+
+        recompute_decisions?(socket, old_input, input) ->
           recompute_columns_review(socket, input)
 
         # Stops view only restashes for display; a change re-streams the
@@ -271,7 +299,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
         _params -> %{}
       end
 
-    input = merge_paste_params(current_input(socket), paste_params)
+    old_input = current_input(socket)
+    input = merge_paste_params(old_input, paste_params)
+    input = merge_column_overrides(socket, old_input, input, paste_params, false)
+    input = merge_decision_params(socket, old_input, input, paste_params, false)
 
     socket =
       socket
@@ -377,6 +408,64 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     {:noreply, assign(socket, :timing_note, nil)}
   end
 
+  # Step 27 owns the button-driven row decisions: the twelve-hour choice
+  # and skip/restore/Add-anyway arrive as discrete events with the row
+  # number (the pattern select, cell correction and pairing radios ride
+  # the `input` event as native form fields instead). Each event writes
+  # `input.decisions` and recomputes the review purely from the loaded
+  # scope, like an override edit; the hidden `#paste-decisions` field
+  # re-renders with the new decisions, so a reconnect restores them.
+  @impl true
+  def handle_event("paste_twelve", %{"row" => row, "choice" => choice}, socket) do
+    {:noreply, update_row_decision(socket, row, &twelve_choice(&1, choice))}
+  end
+
+  @impl true
+  def handle_event("paste_twelve", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("paste_skip", %{"row" => row}, socket) do
+    {:noreply, update_row_decision(socket, row, &Map.put(&1, "skip", true))}
+  end
+
+  @impl true
+  def handle_event("paste_skip", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("paste_restore", %{"row" => row}, socket) do
+    {:noreply, update_row_decision(socket, row, &Map.delete(&1, "skip"))}
+  end
+
+  @impl true
+  def handle_event("paste_restore", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("paste_keep", %{"row" => row}, socket) do
+    {:noreply, update_row_decision(socket, row, &Map.put(&1, "keep", true))}
+  end
+
+  @impl true
+  def handle_event("paste_keep", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("paste_unkeep", %{"row" => row}, socket) do
+    {:noreply, update_row_decision(socket, row, &Map.delete(&1, "keep"))}
+  end
+
+  @impl true
+  def handle_event("paste_unkeep", _params, socket), do: {:noreply, socket}
+
+  # Saving a cell correction only recomputes: the correction itself rode
+  # the form's `input` event when the field blurred (or the submit when
+  # Enter read the paste), so the decisions are already current here.
+  @impl true
+  def handle_event("paste_cell_save", %{"row" => _row, "col" => _col}, socket) do
+    {:noreply, maybe_recompute_review(socket, current_input(socket))}
+  end
+
+  @impl true
+  def handle_event("paste_cell_save", _params, socket), do: {:noreply, socket}
+
   # Review trips with column issues shows the error summary and focuses
   # it; with no issues the review header is already showing.
   @impl true
@@ -465,6 +554,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
             phx-hook="FormErrorFocus"
             class="mt-4 grid gap-4"
           >
+            <input
+              type="hidden"
+              id="paste-decisions"
+              name="paste[decisions]"
+              value={@paste_form[:decisions].value || "{}"}
+            />
             <TimetablePasteComponents.source_step
               form={@paste_form}
               error={@paste_error}
@@ -689,14 +784,26 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # automatic pick (and silently confirm every close match) into an
   # override. Only a real change writes or clears an override; anything
   # else leaves the input's overrides alone. Without a review there is
-  # nothing to diff against, so the submitted selects are ignored (later
-  # steps extend this branch for form recovery).
-  defp merge_column_overrides(socket, old_input, input, params) do
-    with %{"overrides" => submitted} when is_map(submitted) <- params,
-         %{columns: columns} when is_list(columns) <- socket.assigns[:review] do
-      %{input | overrides: diff_overrides(columns, old_input.overrides, submitted)}
-    else
-      _no_diff -> input
+  # nothing to diff against, so the submitted selects are ignored — except
+  # on form recovery into a new process (step 27), where the submitted
+  # values are the last rendered picks and are taken wholesale so the
+  # rebuilt review matches what the person saw.
+  defp merge_column_overrides(socket, old_input, input, params, recovery?) do
+    case params do
+      %{"overrides" => submitted} when is_map(submitted) ->
+        case socket.assigns[:review] do
+          %{columns: columns} when is_list(columns) ->
+            %{input | overrides: diff_overrides(columns, old_input.overrides, submitted)}
+
+          _review when recovery? ->
+            %{input | overrides: accept_overrides(submitted)}
+
+          _no_review ->
+            input
+        end
+
+      _no_overrides ->
+        input
     end
   end
 
@@ -722,6 +829,254 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     end)
   end
 
+  # Recovery has no review to diff against, so the re-sent selects are
+  # the committed picks: every non-blank value becomes an override.
+  defp accept_overrides(submitted) do
+    submitted
+    |> Enum.map(fn {col, value} ->
+      {to_decision_col(col), value |> to_string_safe() |> String.trim()}
+    end)
+    |> Enum.reject(fn {col, value} -> is_nil(col) or value == "" end)
+    |> Map.new()
+  end
+
+  # Step 27 merges the row decisions. The `#paste-decisions` hidden field
+  # carries the committed decisions as JSON on every submit, so decoding
+  # it first keeps decisions across re-reviews and restores them on form
+  # recovery; the structured pattern/cell/pairing fields then overlay the
+  # freshest DOM state on top. Cell corrections are diffed against the
+  # current review's raw grid cell (like the overrides), so an untouched
+  # correction input never writes a decision; without a review there is
+  # nothing to diff against and recovery takes them wholesale. Pattern
+  # and pairing fields need no diffing: an unchosen select submits `""`
+  # (which clears) and unchecked radios submit nothing at all.
+  defp merge_decision_params(socket, old_input, input, params, recovery?) do
+    base =
+      case params["decisions"] do
+        json when is_binary(json) ->
+          case Jason.decode(json) do
+            {:ok, decoded} when is_map(decoded) -> canonical_decisions(decoded)
+            _undecodable -> canonical_decisions(old_input.decisions)
+          end
+
+        decoded when is_map(decoded) ->
+          canonical_decisions(decoded)
+
+        _absent ->
+          canonical_decisions(old_input.decisions)
+      end
+
+    decisions =
+      base
+      |> overlay_pattern_choices(params["pattern_choices"])
+      |> overlay_pair_choices(params["pairs"])
+      |> overlay_cell_corrections(socket, input, params["cells"], recovery?)
+      |> prune_decisions()
+
+    %{input | decisions: decisions}
+  end
+
+  defp overlay_pattern_choices(decisions, submitted) when is_map(submitted) do
+    Enum.reduce(submitted, decisions, fn {row, raw}, acc ->
+      case to_decision_row(row) do
+        nil ->
+          acc
+
+        row_num ->
+          value = raw |> to_string_safe() |> String.trim()
+
+          if value == "" do
+            acc |> Map.update(row_num, %{}, &Map.delete(&1, "pattern_id")) |> prune_decisions()
+          else
+            Map.update(acc, row_num, %{"pattern_id" => value}, &Map.put(&1, "pattern_id", value))
+          end
+      end
+    end)
+  end
+
+  defp overlay_pattern_choices(decisions, _submitted), do: decisions
+
+  defp overlay_pair_choices(decisions, submitted) when is_map(submitted) do
+    Enum.reduce(submitted, decisions, fn {row, raw}, acc ->
+      case to_decision_row(row) do
+        nil ->
+          acc
+
+        row_num ->
+          value = raw |> to_string_safe() |> String.trim()
+
+          if value == "" do
+            acc |> Map.update(row_num, %{}, &Map.delete(&1, "pair")) |> prune_decisions()
+          else
+            Map.update(acc, row_num, %{"pair" => value}, &Map.put(&1, "pair", value))
+          end
+      end
+    end)
+  end
+
+  defp overlay_pair_choices(decisions, _submitted), do: decisions
+
+  defp overlay_cell_corrections(decisions, _socket, _input, submitted, _recovery?)
+       when not is_map(submitted),
+       do: decisions
+
+  defp overlay_cell_corrections(decisions, socket, input, submitted, recovery?) do
+    review = if recovery?, do: nil, else: socket.assigns[:review]
+
+    Enum.reduce(submitted, decisions, fn {row, cols}, acc ->
+      with row_num when not is_nil(row_num) <- to_decision_row(row),
+           cols when is_map(cols) <- cols do
+        Map.update(acc, row_num, overlay_cells(%{}, cols, review, input, row_num), fn current ->
+          overlay_cells(current, cols, review, input, row_num)
+        end)
+      else
+        _skip -> acc
+      end
+    end)
+  end
+
+  defp overlay_cells(current, cols, review, input, row_num) when is_map(current) do
+    cells = if is_map(Map.get(current, "cells")), do: Map.get(current, "cells"), else: %{}
+
+    updated =
+      Enum.reduce(cols, cells, fn {col, raw}, acc ->
+        case to_decision_col(col) do
+          nil ->
+            acc
+
+          col_num ->
+            value = to_string_safe(raw)
+
+            if review_differs?(review, input, row_num, col_num, value) do
+              Map.put(acc, col_num, value)
+            else
+              Map.delete(acc, col_num)
+            end
+        end
+      end)
+
+    if map_size(updated) == 0 do
+      Map.delete(current, "cells")
+    else
+      Map.put(current, "cells", updated)
+    end
+  end
+
+  # Without a review there is nothing to diff a correction against, so
+  # recovery keeps every submitted value; otherwise only a value the
+  # person actually changed (anything but the raw grid cell) is stored.
+  defp review_differs?(nil, _input, _row, _col, _value), do: true
+
+  defp review_differs?(review, input, row_num, col_num, value) do
+    String.trim(value) != String.trim(raw_grid_cell(review, input, row_num, col_num))
+  end
+
+  defp raw_grid_cell(review, input, row_num, col_num) do
+    grid = if is_map(review), do: Map.get(review, :grid, []), else: []
+    header? = if is_map(input), do: Map.get(input, :header?, true) != false, else: true
+    index = if header?, do: row_num, else: row_num - 1
+
+    if is_list(grid) and is_integer(index) and index >= 0 do
+      grid |> Enum.at(index, []) |> List.wrap() |> Enum.at(col_num, "") |> to_string_safe()
+    else
+      ""
+    end
+  end
+
+  # Canonical decisions mirror `TimetablePaste.normalize_input/1`: integer
+  # row keys, string inner keys, integer cell columns. Empty rows prune
+  # away so untouched controls compare equal to no decision at all.
+  defp canonical_decisions(decisions) when is_map(decisions) do
+    decisions
+    |> Enum.map(fn {row, decision} -> {to_decision_row(row), canonical_decision(decision)} end)
+    |> Enum.reject(fn {row, decision} -> is_nil(row) or decision == %{} end)
+    |> Map.new()
+  end
+
+  defp canonical_decisions(_decisions), do: %{}
+
+  defp canonical_decision(decision) when is_map(decision) do
+    {cells, rest} = Map.split(decision, [:cells, "cells"])
+
+    normalized =
+      rest
+      |> Enum.map(fn {key, value} -> {to_string(key), value} end)
+      |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
+      |> Map.new()
+
+    case canonical_cells(cells) do
+      cells when map_size(cells) == 0 -> normalized
+      cells -> Map.put(normalized, "cells", cells)
+    end
+  end
+
+  defp canonical_decision(_decision), do: %{}
+
+  defp canonical_cells(taken) when is_map(taken) do
+    taken
+    |> Map.values()
+    |> Enum.filter(&is_map/1)
+    |> Enum.reduce(%{}, &Map.merge(&2, &1))
+    |> Enum.map(fn {col, value} -> {to_decision_col(col), to_string_safe(value)} end)
+    |> Enum.reject(fn {col, _value} -> is_nil(col) end)
+    |> Map.new()
+  end
+
+  defp canonical_cells(_taken), do: %{}
+
+  defp prune_decisions(decisions) when is_map(decisions) do
+    Map.reject(decisions, fn {_row, decision} -> not is_map(decision) or decision == %{} end)
+  end
+
+  defp prune_decisions(_decisions), do: %{}
+
+  defp to_decision_row(row) when is_integer(row) and row >= 1, do: row
+
+  defp to_decision_row(row) when is_binary(row) do
+    case Integer.parse(String.trim(row)) do
+      {num, ""} when num >= 1 -> num
+      _parse -> nil
+    end
+  end
+
+  defp to_decision_row(_row), do: nil
+
+  defp to_decision_col(col) when is_integer(col) and col >= 0, do: col
+
+  defp to_decision_col(col) when is_binary(col) do
+    case Integer.parse(String.trim(col)) do
+      {num, ""} when num >= 0 -> num
+      _parse -> nil
+    end
+  end
+
+  defp to_decision_col(_col), do: nil
+
+  # The hidden field round-trips through JSON, so rows and cell columns
+  # encode as strings and decode back through the canonicalizer.
+  defp encode_decisions(decisions) do
+    json =
+      decisions
+      |> canonical_decisions()
+      |> Enum.map(fn {row, decision} -> {Integer.to_string(row), json_decision(decision)} end)
+      |> Map.new()
+
+    case Jason.encode(json) do
+      {:ok, encoded} -> encoded
+      {:error, _reason} -> "{}"
+    end
+  end
+
+  defp json_decision(decision) when is_map(decision) do
+    Map.new(decision, fn
+      {"cells", cells} when is_map(cells) ->
+        {"cells", Map.new(cells, fn {col, value} -> {to_string(col), value} end)}
+
+      {key, value} ->
+        {to_string(key), value}
+    end)
+  end
+
   # The review is recomputed only when the paste itself did not change:
   # an override edit with the same text, layout and header re-reviews the
   # loaded scope, while typing waits for Read like step 23.
@@ -743,6 +1098,128 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
       (input.mode != old_input.mode or
          input.template_timing_id != old_input.template_timing_id)
   end
+
+  # Step 27 recomputes on the same criterion for the decision controls:
+  # with the paste itself untouched, a changed pattern choice, cell
+  # correction or pairing pick re-reviews the loaded scope. The merge
+  # diffs untouched controls away, so re-submitting the form with the same
+  # decisions never recomputes on its own.
+  defp recompute_decisions?(socket, old_input, input) do
+    not is_nil(socket.assigns[:scope]) and not is_nil(socket.assigns[:review]) and
+      input.text == old_input.text and input.layout == old_input.layout and
+      input.header? == old_input.header? and input.decisions != old_input.decisions
+  end
+
+  # Step 27 form recovery: a reconnect into a new process re-sends the
+  # whole form with this process's text still blank, the params carrying
+  # text and the hidden decisions field populated. Only that shape
+  # rebuilds (typing always carries the changed field, and the existing
+  # timetable-step tests submit text without decisions and must keep
+  # stashing until Read).
+  defp recovery_rebuild?(socket, old_input, params) do
+    not is_nil(socket.assigns[:scope]) and is_nil(socket.assigns[:review]) and
+      blank_paste_text?(old_input.text) and is_map(params) and
+      is_binary(params["text"]) and String.trim(params["text"]) != "" and
+      decisions_present?(params["decisions"])
+  end
+
+  defp decisions_present?(json) when is_binary(json) do
+    case Jason.decode(json) do
+      {:ok, decoded} when is_map(decoded) -> map_size(decoded) > 0
+      _undecodable -> false
+    end
+  end
+
+  defp decisions_present?(decoded) when is_map(decoded), do: map_size(decoded) > 0
+  defp decisions_present?(_decisions), do: false
+
+  # Rebuilds the review purely from the loaded scope on recovery: the
+  # scope is fresh from `handle_params`, so decisions never cost a
+  # database read. Success collapses the step like a Read; a parse
+  # failure keeps the text with the inline error.
+  defp rebuild_recovered_review(socket, input) do
+    case TimetablePaste.review(socket.assigns.scope, input) do
+      {:ok, review} ->
+        socket
+        |> assign(:review, review)
+        |> assign(:paste_error, nil)
+        |> assign(:source_open, false)
+        |> assign(:show_column_errors, false)
+        |> put_plan_rows()
+
+      {:error, reason} ->
+        socket
+        |> assign(:review, nil)
+        |> assign(:paste_error, reason)
+        |> assign(:source_open, true)
+        |> put_plan_rows()
+    end
+  end
+
+  # Applies a discrete decision-event update to one row: unknown rows
+  # leave the input alone, and an emptied row drops out of the map so it
+  # compares equal to no decision at all.
+  defp update_row_decision(socket, row, fun) when is_function(fun, 1) do
+    case to_decision_row(row) do
+      nil ->
+        socket
+
+      row_num ->
+        input = current_input(socket)
+        decisions = canonical_decisions(input.decisions)
+        updated = fun.(Map.get(decisions, row_num, %{}))
+
+        decisions =
+          if is_map(updated) and map_size(prune_row(updated)) > 0 do
+            Map.put(decisions, row_num, prune_row(updated))
+          else
+            Map.delete(decisions, row_num)
+          end
+
+        input = %{input | decisions: decisions}
+
+        socket
+        |> assign(:input, input)
+        |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))
+        |> maybe_recompute_review(input)
+    end
+  end
+
+  defp prune_row(decision) when is_map(decision) do
+    {cells, rest} = Map.split(decision, [:cells, "cells"])
+
+    pruned =
+      rest
+      |> Enum.map(fn {key, value} -> {to_string(key), value} end)
+      |> Enum.reject(fn {_key, value} -> value in [nil, "", false, 0] end)
+      |> Map.new()
+
+    merged_cells =
+      cells |> Map.values() |> Enum.filter(&is_map/1) |> Enum.reduce(%{}, &Map.merge(&2, &1))
+
+    if map_size(merged_cells) == 0 do
+      pruned
+    else
+      Map.put(pruned, "cells", merged_cells)
+    end
+  end
+
+  defp twelve_choice(decision, choice) when is_map(decision) do
+    case choice do
+      shift when shift in ["86400", "43200"] ->
+        decision
+        |> Map.put("shift", String.to_integer(shift))
+        |> Map.delete("keep_early")
+
+      "keep" ->
+        decision |> Map.put("keep_early", true) |> Map.delete("shift")
+
+      _choice ->
+        decision
+    end
+  end
+
+  defp twelve_choice(decision, _choice), do: decision
 
   # Recomputes when a review is showing; otherwise the input just rests
   # (the button that triggers this only renders on a refusal callout).
@@ -834,6 +1311,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
       "mode" => if(input.mode == :replace, do: "replace", else: "add"),
       "template_timing_id" => input.template_timing_id || "",
       "stops_view" => if(input.stops_view == :all, do: "all", else: "pasted"),
+      "decisions" => encode_decisions(input.decisions),
       "overrides" =>
         Map.new(input.overrides || %{}, fn {col, value} -> {to_string(col), value} end)
     }

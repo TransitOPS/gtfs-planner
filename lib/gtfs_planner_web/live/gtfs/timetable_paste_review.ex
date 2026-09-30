@@ -17,6 +17,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
   the minute, `+1 day` marks `>= 24:00`, `arr HH:MM` marks a differing
   arrival, `was HH:MM` marks a changed cell, and removals strike their old
   times. Pure: no Repo, clock or process state.
+
+  Step 27 precomputes each row's `:decision` control from the plan change,
+  the review columns, the scope patterns and `input.decisions` for
+  `TimetablePasteComponents.row_decision/1`: the ambiguous-pattern select,
+  the cell correction, the twelve-hour readings, the pairing radios, skip
+  and restore, and Add anyway.
   """
 
   @type column :: %{key: term(), name: String.t(), pasted?: boolean()}
@@ -42,6 +48,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
           timing: %{ref: String.t(), name: String.t(), new?: boolean()} | nil,
           cells: [cell()],
           details: [%{text: String.t(), warning?: boolean()}],
+          decision: map() | nil,
           warned?: boolean()
         }
 
@@ -63,7 +70,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
         }
   def build(review, scope, input)
 
-  def build(%{plan: %{changes: changes}} = _review, scope, input)
+  def build(%{plan: %{changes: changes}} = review, scope, input)
       when is_list(changes) and is_map(scope) do
     spine = build_spine(scope)
     enriched = Enum.map(changes, &enrich_change(&1, scope, spine))
@@ -75,7 +82,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
       enriched
       |> Enum.filter(&matches_filter?(&1.change, filter))
       |> Enum.with_index()
-      |> Enum.map(fn {en, index} -> row_view(en, columns, index) end)
+      |> Enum.map(fn {en, index} -> row_view(en, columns, index, review, scope, input) end)
 
     %{
       columns: columns,
@@ -476,7 +483,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
 
   # --- Row view ---
 
-  defp row_view(en, columns, index) do
+  defp row_view(en, columns, index, review, scope, input) do
     change = en.change
 
     %{
@@ -490,6 +497,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
       timing: removal_timing(en) || en.timing,
       cells: Enum.map(columns, &cell_for(en, &1)),
       details: change_details(en),
+      decision: row_decision(en, change, review, scope, input),
       warned?: warned?(change)
     }
   end
@@ -662,7 +670,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
         :change -> change_notes(change, trip)
         :unchanged -> unchanged_notes(change, trip)
         :duplicate -> duplicate_notes(change, en)
-        :skipped -> [note("Not applied.")]
+        :skipped -> skipped_notes(change)
         :remove -> remove_notes(trip)
         _needs_decision -> []
       end
@@ -726,6 +734,16 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
     [note("Skipped: trip #{existing} already leaves#{start}.")]
   end
 
+  defp skipped_notes(change) do
+    row = if is_map(change), do: fetch(change, :row), else: nil
+
+    if is_map(row) and fetch(row, :issue) == :empty do
+      [note("This row has no times.")]
+    else
+      [note("Not applied.")]
+    end
+  end
+
   defp remove_notes(trip) when is_map(trip) do
     trip_id = fetch(trip, :trip_id)
     transfer_count = trip |> fetch(:transfer_ids, []) |> List.wrap() |> length()
@@ -787,6 +805,262 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteReview do
 
   defp plural(1, one), do: "1 #{one}"
   defp plural(count, one), do: "#{count} #{one}s"
+
+  # --- Row decisions (step 27) ---
+
+  # Precomputes the decision control for a matrix row so
+  # `TimetablePasteComponents.row_decision/1` stays dumb: every label,
+  # option and current value is resolved here from the plan change, the
+  # review columns, the scope patterns and `input.decisions`. Needs-
+  # decision rows carry their issue shape (ambiguous pattern, no pattern,
+  # cell/backwards correction, twelve-hour readings, pairing candidates
+  # or a stale withheld choice); duplicates carry Add anyway, skipped
+  # rows carry Restore and kept adds carry Skip it. Anything else renders
+  # no control.
+  @spec row_decision(map(), map(), map(), map(), map()) :: map() | nil
+  defp row_decision(en, change, review, scope, input) do
+    row_num = row_number(change, en)
+
+    if is_nil(row_num) do
+      nil
+    else
+      decision = Map.get(input_decisions(input), row_num, %{})
+
+      case en.op do
+        :needs_decision -> needs_decision_info(change, scope, review, row_num, decision)
+        :duplicate -> %{kind: :duplicate, row: row_num}
+        :skipped -> %{kind: :skipped, row: row_num, empty?: skipped_empty?(change)}
+        :add -> if keep_chosen?(decision), do: %{kind: :kept, row: row_num}, else: nil
+        _op -> nil
+      end
+    end
+  end
+
+  defp needs_decision_info(change, scope, review, row_num, decision) do
+    row = fetch(change, :row)
+    issue = if is_map(row), do: fetch(row, :issue), else: nil
+
+    case issue do
+      {:pattern, ids} when is_list(ids) ->
+        %{
+          kind: :pattern,
+          row: row_num,
+          options: pattern_options(scope, ids),
+          current: decision_text(decision, [:pattern_id, "pattern_id", :pattern, "pattern"]),
+          misfit?: false
+        }
+
+      :no_pattern ->
+        %{kind: :no_pattern, row: row_num, direction: scope_direction_adjective(scope)}
+
+      {:cell, col, raw} ->
+        cell_decision(row_num, col, raw, false, review, decision)
+
+      {:backwards, col, raw} ->
+        cell_decision(row_num, col, raw, true, review, decision)
+
+      {:twelve_hour, secs} when is_integer(secs) ->
+        %{kind: :twelve, row: row_num, secs: secs}
+
+      _issue ->
+        pairing_or_misfit(change, scope, row_num, decision)
+    end
+  end
+
+  # Replace-undecided rows carry their candidate trips; a needs-decision
+  # row with no issue and no candidates is a withheld choice (a chosen
+  # pattern the row no longer fits), so it offers every direction pattern
+  # again with a stale-choice lead instead of the fit count.
+  defp pairing_or_misfit(change, scope, row_num, decision) do
+    candidates = if is_map(change), do: List.wrap(fetch(change, :candidates, [])), else: []
+    candidates = Enum.filter(candidates, &is_map/1)
+
+    if candidates == [] do
+      %{
+        kind: :pattern,
+        row: row_num,
+        options: all_pattern_options(scope),
+        current: decision_text(decision, [:pattern_id, "pattern_id", :pattern, "pattern"]),
+        misfit?: true
+      }
+    else
+      row = fetch(change, :row)
+      start = if is_map(row), do: fetch(row, :start_secs), else: nil
+
+      %{
+        kind: :pairing,
+        row: row_num,
+        start_secs: if(is_integer(start), do: start, else: nil),
+        options: Enum.map(candidates, &pair_option/1),
+        current: decision_text(decision, [:pair, "pair", :trip_id, "trip_id", :choice, "choice"])
+      }
+    end
+  end
+
+  defp cell_decision(row_num, col, raw, backwards?, review, decision) do
+    raw_text = if is_binary(raw), do: raw, else: ""
+    header = column_header(review, col) || "Column #{decision_col_letter(col)}"
+    letter = cell_letter_hint(raw_text)
+    cells = if is_map(decision), do: fetch(decision, :cells, %{}), else: %{}
+    value = cell_correction(cells, col) || raw_text
+
+    %{
+      kind: :cell,
+      row: row_num,
+      col: col,
+      header: header,
+      letter: letter,
+      raw: raw_text,
+      value: value,
+      backwards?: backwards?
+    }
+  end
+
+  defp pattern_options(scope, ids) do
+    patterns = if is_map(scope), do: List.wrap(fetch(scope, :patterns, [])), else: []
+
+    ids
+    |> List.wrap()
+    |> Enum.map(fn id ->
+      name =
+        case Enum.find(patterns, &(fetch(&1, :id) == id)) do
+          nil -> nil
+          pattern -> fetch(pattern, :name) || "Pattern"
+        end
+
+      if is_nil(name), do: nil, else: %{value: id, name: name}
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp all_pattern_options(scope) do
+    patterns = if is_map(scope), do: List.wrap(fetch(scope, :patterns, [])), else: []
+
+    Enum.map(patterns, fn pattern ->
+      %{value: fetch(pattern, :id), name: fetch(pattern, :name) || "Pattern"}
+    end)
+    |> Enum.reject(&is_nil(&1.value))
+  end
+
+  defp pair_option(trip) do
+    id = fetch(trip, :id) || fetch(trip, :trip_id)
+
+    short =
+      cond do
+        is_binary(fetch(trip, :trip_short_name)) and fetch(trip, :trip_short_name) != "" ->
+          fetch(trip, :trip_short_name)
+
+        is_binary(fetch(trip, :trip_id)) ->
+          fetch(trip, :trip_id)
+
+        true ->
+          "trip"
+      end
+
+    block = fetch(trip, :block_id)
+
+    %{
+      value: if(is_nil(id), do: "", else: to_string(id)),
+      trip: short,
+      block: if(is_binary(block) and block != "", do: block, else: nil)
+    }
+  end
+
+  defp column_header(review, col) do
+    columns = if is_map(review), do: List.wrap(fetch(review, :columns, [])), else: []
+
+    case Enum.find(columns, &(fetch(&1, :col) == col)) do
+      nil -> nil
+      column -> fetch(column, :header)
+    end
+  end
+
+  defp cell_letter_hint(raw) do
+    case Regex.run(~r/[a-zA-Z]/, raw) do
+      [letter] -> letter
+      _no_letter -> nil
+    end
+  end
+
+  defp cell_correction(cells, col) when is_map(cells) do
+    case Map.fetch(cells, col) do
+      {:ok, value} -> value
+      :error -> Map.get(cells, to_string(col))
+    end
+  end
+
+  defp cell_correction(_cells, _col), do: nil
+
+  defp skipped_empty?(change) do
+    row = if is_map(change), do: fetch(change, :row), else: nil
+    is_map(row) and fetch(row, :issue) == :empty
+  end
+
+  defp keep_chosen?(decision) when is_map(decision) do
+    value = fetch(decision, :keep)
+    value not in [nil, false, 0, "", "false", "0"]
+  end
+
+  defp keep_chosen?(_decision), do: false
+
+  defp scope_direction_adjective(%{direction_id: 1}), do: "inbound"
+  defp scope_direction_adjective(%{"direction_id" => 1}), do: "inbound"
+  defp scope_direction_adjective(_scope), do: "outbound"
+
+  # Decisions tolerate integer and numeric-string row keys with atom or
+  # string inner keys (the LiveView JSON round-trip), like RowResolver.
+  defp input_decisions(input) when is_map(input) do
+    raw = fetch(input, :decisions, %{}) || %{}
+
+    if is_map(raw) do
+      raw
+      |> Enum.map(fn {row, decision} -> {to_decision_row(row), decision} end)
+      |> Enum.reject(fn {row, _decision} -> is_nil(row) end)
+      |> Map.new()
+    else
+      %{}
+    end
+  end
+
+  defp input_decisions(_input), do: %{}
+
+  defp to_decision_row(row) when is_integer(row) and row >= 1, do: row
+
+  defp to_decision_row(row) when is_binary(row) do
+    case Integer.parse(String.trim(row)) do
+      {num, ""} when num >= 1 -> num
+      _parse -> nil
+    end
+  end
+
+  defp to_decision_row(_row), do: nil
+
+  defp decision_text(decision, keys) when is_map(decision) and is_list(keys) do
+    Enum.find_value(keys, fn key ->
+      case Map.fetch(decision, key) do
+        {:ok, value} when is_binary(value) -> value
+        {:ok, value} when is_integer(value) -> Integer.to_string(value)
+        _missing -> nil
+      end
+    end)
+  end
+
+  defp decision_text(_decision, _keys), do: nil
+
+  # Mirrors `TimetablePasteComponents.column_letter/1` so the Details cell
+  # needs no component callback for its Column-letter fallback.
+  defp decision_col_letter(col) when is_integer(col) and col >= 0 do
+    do_decision_col_letter(col + 1, "")
+  end
+
+  defp decision_col_letter(_col), do: "?"
+
+  defp do_decision_col_letter(0, acc), do: acc
+
+  defp do_decision_col_letter(number, acc) do
+    remainder = rem(number - 1, 26)
+    do_decision_col_letter(div(number - 1, 26), <<65 + remainder>> <> acc)
+  end
 
   # --- Filters ---
 

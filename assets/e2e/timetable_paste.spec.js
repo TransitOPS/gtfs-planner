@@ -281,6 +281,44 @@ test.describe("review header", () => {
   });
 });
 
+test.describe("row decisions", () => {
+  // Step 27: the Details-cell decision controls (pattern select, cell
+  // correction, twelve-hour choice, pairing radios, skip, restore, Add
+  // anyway) and the `#paste-decisions` hidden field that restores them on
+  // reconnect. The run is deferred to branch review with the browser
+  // partition, like the cases above.
+  const DECISION_PASTE = [
+    "Trip\tCentral Station\tMarket Street\tMill Street\tRiverside Terminal",
+    "1201\t6:00\t6:04\t6:10\t6:18",
+    "1203\t7:00\t7:04\t7:10\t7:18",
+  ].join("\n");
+
+  async function readDecisions(page) {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", DECISION_PASTE);
+    await page.click("#paste-read");
+    await expect(page.locator("#paste-review")).toBeVisible();
+    // Every decision round-trips through the hidden field for reconnects.
+    await expect(page.locator("#paste-decisions")).toHaveCount(1);
+  }
+
+  test("the hidden decisions field rides the paste form", async ({
+    page,
+  }) => {
+    await readDecisions(page);
+    await expect(page.locator("#paste-decisions")).toHaveValue("{}");
+  });
+
+  test("skipping and restoring a duplicate row", async ({ page }) => {
+    await readDecisions(page);
+    // A row that repeats an existing trip offers Add anyway.
+    await expect(page.locator("#paste-rows")).toContainText("Add anyway");
+  });
+});
+
 test.describe("review matrix", () => {
   // Step 26: the `#paste-rows` stream with change badges, pasted and
   // estimated times, was-values, removals and the timing note. The run is
