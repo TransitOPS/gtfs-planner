@@ -1,6 +1,8 @@
 defmodule GtfsPlanner.Accounts.InviteAuthorizationTest do
   use GtfsPlanner.DataCase
 
+  import GtfsPlanner.OrganizationsFixtures, only: [organization_fixture: 0]
+
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.{User, UserOrgMembership, UserToken}
 
