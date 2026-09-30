@@ -567,7 +567,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
             sign_off_minutes: 5
           },
           stop_names: %{},
-          open?: true
+          open?: true,
+          # Step 30 added the rename form INSIDE the drawer, so this hand-built
+          # assign set has to carry the form too. Rendering the component
+          # directly is worth the extra fields: it is the only way to reach the
+          # clean-run branch, which no fixture in this file produces.
+          rename_form: Phoenix.Component.to_form(%{"run_id" => ""}, as: :run),
+          rename_errors: []
         )
 
       assert html =~ "No problems"
