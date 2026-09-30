@@ -89,8 +89,14 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
           departure_secs: integer() | nil,
           timing_name: String.t() | nil,
           custom?: boolean(),
-          next_block: nil,
-          mid_trip_change: nil
+          next_block:
+            nil
+            | %{
+                route_short_name: String.t() | nil,
+                departure_secs: integer(),
+                headsign: String.t() | nil
+              },
+          mid_trip_change: String.t() | nil
         }
 
   @type usage_group :: %{
@@ -136,8 +142,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   (change mode) splits the trips that still follow `from` into a first
   `:follows` group. Groups otherwise hold only trips that differ from the
   default, ordered likely typo first, then by trip count descending, then by
-  value. `next_block` and `mid_trip_change` stay nil here; the block and
-  mid-trip facts reader fills them.
+  value. Trips in differing groups also carry their block and mid-trip facts:
+  `next_block` names the earliest later trip in the same organization,
+  version, service and block on another route (nil when the next block trip
+  runs this route), and `mid_trip_change` names the first stop where the
+  trip's timing carries its own stop headsign. Trips in the `:follows` group
+  keep both facts nil.
 
   An unknown pattern id, a timing outside the pattern, or an unrecognized scope
   returns `{:error, :not_found}` so a crafted scope cannot read foreign data.
@@ -174,8 +184,11 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
         }
       end)
 
-    trips = usage_trips(pattern, pattern_scope_query(pattern, carrying_ids), timings)
+    {trips, rows_by_id} =
+      usage_trips(pattern, pattern_scope_query(pattern, carrying_ids), timings)
+
     counts_and_groups = usage_counts_and_groups(trips, default, opts)
+    groups = trip_facts(pattern, counts_and_groups.groups, default, rows_by_id)
 
     {:ok,
      %{
@@ -186,7 +199,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
        differ: counts_and_groups.differ,
        shielded: Enum.filter(carrying_rows, &(&1.trip_count > 0)),
        timings_carry: if(default == nil, do: carrying_rows, else: []),
-       groups: counts_and_groups.groups
+       groups: groups
      }}
   end
 
@@ -199,8 +212,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
       %TimedPattern{} = timing ->
         default = Headsigns.effective_default(timing.headsign, pattern.headsign)
-        trips = usage_trips(pattern, timing_scope_query(pattern, timing.id), timings)
+
+        {trips, rows_by_id} =
+          usage_trips(pattern, timing_scope_query(pattern, timing.id), timings)
+
         counts_and_groups = usage_counts_and_groups(trips, default, opts)
+        groups = trip_facts(pattern, counts_and_groups.groups, default, rows_by_id)
 
         {:ok,
          %{
@@ -211,7 +228,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
            differ: counts_and_groups.differ,
            shielded: [],
            timings_carry: [],
-           groups: counts_and_groups.groups
+           groups: groups
          }}
     end
   end
@@ -263,6 +280,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     )
   end
 
+  # Returns the public usage trips plus the internal rows keyed by trip id;
+  # the rows carry block_id and timed_pattern_id, which the facts reader needs
+  # but the public usage_trip contract shape does not expose.
   defp usage_trips(pattern, query, timings) do
     rows =
       from(trip in query,
@@ -293,29 +313,31 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
     timings_by_id = Map.new(timings, &{&1.id, &1})
 
-    Enum.map(rows, fn row ->
-      %{
-        id: row.id,
-        trip_id: row.trip_id,
-        headsign: Headsigns.normalize(row.headsign),
-        service_id: row.service_id,
-        departure_secs: departure_secs(row.first_departure),
-        timing_name: timing_name(timings_by_id, row.timed_pattern_id),
-        custom?: row.pattern_derivation_state == "custom",
-        # Block and mid-trip facts stay nil until the facts reader fills them;
-        # counts and groups do not depend on them.
-        next_block: nil,
-        mid_trip_change: nil
-      }
-    end)
+    trips =
+      Enum.map(rows, fn row ->
+        %{
+          id: row.id,
+          trip_id: row.trip_id,
+          headsign: Headsigns.normalize(row.headsign),
+          service_id: row.service_id,
+          departure_secs: gtfs_secs(row.first_departure),
+          timing_name: timing_name(timings_by_id, row.timed_pattern_id),
+          custom?: row.pattern_derivation_state == "custom",
+          # Block and mid-trip facts default to nil; the facts reader fills them
+          # for differing groups after the counts and groups are computed.
+          next_block: nil,
+          mid_trip_change: nil
+        }
+      end)
+
+    {trips, Map.new(rows, &{&1.id, &1})}
   end
 
-  # The first departure is the SQL min over the trip's scoped stop times,
-  # parsed through the shared GTFS clock parser; absent or unparsable values
-  # stay nil.
-  defp departure_secs(nil), do: nil
+  # GTFS clock strings from the SQL min/max aggregates parse through the
+  # shared clock parser; absent or unparsable values stay nil.
+  defp gtfs_secs(nil), do: nil
 
-  defp departure_secs(value) do
+  defp gtfs_secs(value) do
     case GtfsTime.parse(value) do
       {:ok, seconds} -> seconds
       {:error, :invalid_time} -> nil
@@ -371,6 +393,203 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       }
     end)
     |> Enum.sort_by(&{not &1.likely_typo, -length(&1.trips), &1.value})
+  end
+
+  # Fills the block and mid-trip facts for differing groups only: trips in the
+  # :follows group already follow the default, so the drawer never shows them
+  # next-block or mid-trip lines and their facts stay nil (no lookups run for
+  # them). The group kind is re-run through the shared Headsigns rule with the
+  # facts so an interline value is labelled :interline.
+  defp trip_facts(pattern, groups, default, rows_by_id) do
+    differing_trips =
+      Enum.flat_map(groups, fn
+        %{kind: :follows} -> []
+        group -> group.trips
+      end)
+
+    next_blocks = next_blocks_by_trip(pattern, differing_trips, rows_by_id)
+    mid_trip_changes = mid_trip_changes_by_timing(pattern, differing_trips, rows_by_id)
+
+    Enum.map(groups, fn
+      %{kind: :follows} = group ->
+        group
+
+      group ->
+        trips =
+          Enum.map(group.trips, &put_trip_facts(&1, next_blocks, mid_trip_changes, rows_by_id))
+
+        %{kind: kind, likely_typo: likely_typo} =
+          Headsigns.difference(group.value, default, hd(trips).next_block)
+
+        %{group | trips: trips, kind: kind, likely_typo: likely_typo}
+    end)
+  end
+
+  defp put_trip_facts(trip, next_blocks, mid_trip_changes, rows_by_id) do
+    timed_pattern_id = Map.fetch!(rows_by_id, trip.id).timed_pattern_id
+
+    %{
+      trip
+      | next_block: Map.get(next_blocks, trip.id),
+        mid_trip_change: Map.get(mid_trip_changes, timed_pattern_id)
+    }
+  end
+
+  # One block query per call: the differing trips join their block-mates on
+  # service and block, scoped to the pattern's organization and version, on
+  # another route; the differing subquery only admits trips with a non-nil
+  # block id. The earliest eligible successor per differing trip is selected
+  # in Elixir because first departure and last arrival are GTFS clock strings
+  # compared through the shared parser, not SQL strings.
+  defp next_blocks_by_trip(pattern, differing_trips, rows_by_id) do
+    differing_trip_ids =
+      differing_trips
+      |> Enum.filter(&is_binary(Map.fetch!(rows_by_id, &1.id).block_id))
+      |> Enum.map(& &1.id)
+
+    case differing_trip_ids do
+      [] ->
+        %{}
+
+      ids ->
+        ids |> block_successor_rows(pattern) |> earliest_next_blocks()
+    end
+  end
+
+  defp block_successor_rows(differing_trip_ids, pattern) do
+    differing = differing_block_query(differing_trip_ids, pattern)
+
+    from(successor in Trip,
+      as: :block_successor,
+      join: differs in subquery(differing),
+      on:
+        successor.service_id == differs.service_id and
+          successor.block_id == differs.block_id and
+          successor.route_id != differs.route_id,
+      where:
+        successor.organization_id == ^pattern.organization_id and
+          successor.gtfs_version_id == ^pattern.gtfs_version_id,
+      join: route in Route,
+      on:
+        route.organization_id == successor.organization_id and
+          route.gtfs_version_id == successor.gtfs_version_id and
+          route.route_id == successor.route_id,
+      select: %{
+        differing_id: differs.id,
+        trip_id: successor.trip_id,
+        headsign: successor.trip_headsign,
+        route_short_name: route.route_short_name,
+        last_arrival: differs.last_arrival,
+        first_departure:
+          subquery(
+            from(stop_time in StopTime,
+              where:
+                stop_time.organization_id == ^pattern.organization_id and
+                  stop_time.gtfs_version_id == ^pattern.gtfs_version_id and
+                  stop_time.trip_id == parent_as(:block_successor).trip_id,
+              select: min(stop_time.departure_time)
+            )
+          )
+      }
+    )
+    |> Repo.all()
+  end
+
+  # The differing trips' block facts in one derived table: one row per
+  # differing trip with a non-nil block id, carrying its service, block,
+  # route and last arrival. The last arrival is a grouped max over the trip's
+  # stop times because a nested scalar subquery is not allowed inside a
+  # join's derived table.
+  defp differing_block_query(differing_trip_ids, pattern) do
+    from(trip in Trip,
+      left_join: stop_time in StopTime,
+      on:
+        stop_time.organization_id == trip.organization_id and
+          stop_time.gtfs_version_id == trip.gtfs_version_id and
+          stop_time.trip_id == trip.trip_id,
+      where:
+        trip.organization_id == ^pattern.organization_id and
+          trip.gtfs_version_id == ^pattern.gtfs_version_id and
+          trip.id in ^differing_trip_ids and
+          not is_nil(trip.block_id),
+      group_by: [trip.id, trip.service_id, trip.block_id, trip.route_id],
+      select: %{
+        id: trip.id,
+        service_id: trip.service_id,
+        block_id: trip.block_id,
+        route_id: trip.route_id,
+        last_arrival: max(stop_time.arrival_time)
+      }
+    )
+  end
+
+  # A successor qualifies when its parsed first departure is at or after the
+  # differing trip's parsed last arrival; absent or unparsable clock values
+  # never qualify. The earliest qualifying successor wins, with the trip id
+  # breaking ties deterministically.
+  defp earliest_next_blocks(rows) do
+    rows
+    |> Enum.map(fn row ->
+      departure_secs = gtfs_secs(row.first_departure)
+      arrival_secs = gtfs_secs(row.last_arrival)
+
+      %{
+        differing_id: row.differing_id,
+        trip_id: row.trip_id,
+        headsign: Headsigns.normalize(row.headsign),
+        route_short_name: row.route_short_name,
+        departure_secs: departure_secs,
+        eligible?:
+          departure_secs != nil and arrival_secs != nil and departure_secs >= arrival_secs
+      }
+    end)
+    |> Enum.filter(& &1.eligible?)
+    |> Enum.group_by(& &1.differing_id)
+    |> Map.new(fn {differing_id, candidates} ->
+      earliest = Enum.min_by(candidates, &{&1.departure_secs, &1.trip_id})
+
+      {differing_id,
+       %{
+         route_short_name: earliest.route_short_name,
+         departure_secs: earliest.departure_secs,
+         headsign: earliest.headsign
+       }}
+    end)
+  end
+
+  # One timed_pattern_stops query per distinct timing of the differing trips:
+  # the lowest-position occurrence whose timing row carries a non-blank stop
+  # headsign names the stop where riders see the headsign change.
+  defp mid_trip_changes_by_timing(pattern, differing_trips, rows_by_id) do
+    differing_trips
+    |> Enum.map(&Map.fetch!(rows_by_id, &1.id).timed_pattern_id)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Map.new(fn timing_id -> {timing_id, mid_trip_change(pattern, timing_id)} end)
+  end
+
+  defp mid_trip_change(pattern, timing_id) do
+    from(timed_stop in TimedPatternStop,
+      join: occurrence in RoutePatternStop,
+      on:
+        occurrence.id == timed_stop.route_pattern_stop_id and
+          occurrence.organization_id == ^pattern.organization_id and
+          occurrence.gtfs_version_id == ^pattern.gtfs_version_id,
+      join: stop in Stop,
+      on:
+        stop.stop_id == occurrence.stop_id and
+          stop.organization_id == ^pattern.organization_id and
+          stop.gtfs_version_id == ^pattern.gtfs_version_id,
+      where: timed_stop.timed_pattern_id == ^timing_id,
+      order_by: [asc: occurrence.position],
+      select: %{stop_headsign: timed_stop.stop_headsign, stop_name: stop.stop_name}
+    )
+    |> Repo.all()
+    |> Enum.find(&(Headsigns.normalize(&1.stop_headsign) != nil))
+    |> case do
+      nil -> nil
+      row -> row.stop_name
+    end
   end
 
   @doc """
