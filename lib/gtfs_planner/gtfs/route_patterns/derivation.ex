@@ -34,6 +34,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatterns.Grouping
+  alias GtfsPlanner.Gtfs.RoutePatterns.LabelRules
   alias GtfsPlanner.Gtfs.RoutePatterns.TimingRules
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Stop
@@ -1351,14 +1352,16 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         end
       end)
 
-    {supplied, names} = plan_supplied_targets(route, context, stage_one, context.names)
-    {derived, patterns_created, _names} = plan_derived_targets(route, context, stage_one, names)
+    {supplied, children_created, names} =
+      plan_supplied_targets(route, context, stage_one, context.names)
+
+    {derived, derived_created, _names} = plan_derived_targets(route, context, stage_one, names)
 
     %{
       status: status,
       supplied: supplied,
       derived: derived,
-      patterns_created: patterns_created,
+      patterns_created: children_created + derived_created,
       eligible_stops: context.eligible_stops
     }
   end
@@ -1366,15 +1369,138 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   defp status_for(route, pattern_route_id),
     do: if(pattern_route_id == route.route_id, do: :ok, else: :scope_mismatch)
 
-  defp plan_supplied_targets(_route, context, stage_one, names) do
-    targets =
-      stage_one.supplied_referenced
-      |> MapSet.to_list()
-      |> Map.new(fn natural_id ->
-        {natural_id, supplied_target(context, stage_one, natural_id)}
-      end)
+  defp plan_supplied_targets(route, context, stage_one, names) do
+    stop_names = stop_names(route, supplied_sequence_stop_ids(stage_one))
 
-    {targets, names}
+    stage_one.supplied_referenced
+    |> MapSet.to_list()
+    |> Enum.sort()
+    |> Enum.reduce({%{}, 0, names}, fn natural_id, {targets, created, names} ->
+      target = supplied_target(context, stage_one, natural_id)
+
+      {target, created, names} =
+        plan_supplied_children(
+          route,
+          context,
+          stage_one,
+          target,
+          stop_names,
+          created,
+          names
+        )
+
+      {Map.put(targets, natural_id, target), created, names}
+    end)
+  end
+
+  # A supplied trip whose ordered stops differ from its supplied pattern's
+  # canonical sequence joins a child pattern labelled by that owner, so the
+  # exported `route_pattern_id` stays the owner's supplied ID (rule 1 of the
+  # proposal, AC-19). Only the sequences the first pass actually saw are
+  # planned, so a child is never created for a sequence no trip serves.
+  defp plan_supplied_children(
+         route,
+         context,
+         stage_one,
+         %{pattern: owner, sequence: canonical} = target,
+         stop_names,
+         created,
+         names
+       ) do
+    case canonical do
+      nil ->
+        {Map.put(target, :children, %{}), created, names}
+
+      _canonical ->
+        {children, created, names} =
+          stage_one.supplied
+          |> Map.get(owner.route_pattern_id, %{})
+          |> Enum.reject(fn {_key, entry} -> entry.sequence == canonical end)
+          |> Enum.sort_by(fn {key, _entry} -> key end)
+          |> Enum.reduce({%{}, created, names}, fn {key, entry}, {children, created, names} ->
+            {child, created, names} =
+              supplied_child_target(route, context, entry, owner, stop_names, created, names)
+
+            {Map.put(children, key, child), created, names}
+          end)
+
+        {Map.put(target, :children, children), created, names}
+    end
+  end
+
+  # A child is reused when the route already holds the pattern this owner and
+  # this sequence derived before, and created otherwise. Its key names the
+  # owner, the direction and the stop list, so the same express trips always
+  # reach the same child across a re-run.
+  defp supplied_child_target(route, context, entry, owner, stop_names, created, names) do
+    key = child_derivation_key(owner, entry.sequence)
+
+    case Map.get(context.derived, key) do
+      %RoutePattern{} = pattern ->
+        validate_label_pair!(pattern, owner)
+
+        {existing_child_target(context, pattern, entry.sequence), created, names}
+
+      nil ->
+        name = unique_pattern_name(entry.sequence, stop_names, names, key)
+
+        pattern =
+          insert_pattern!(
+            route,
+            owner.direction_id,
+            key,
+            name,
+            0,
+            entry.representative,
+            owner.id
+          )
+
+        validate_label_pair!(pattern, owner)
+
+        occurrences = insert_occurrences!(pattern, entry.sequence)
+
+        child = %{
+          pattern: pattern,
+          sequence: entry.sequence,
+          occurrences: occurrence_ids(occurrences)
+        }
+
+        {child, created + 1, MapSet.put(names, name)}
+    end
+  end
+
+  # INV-3: every label pair is decided by `LabelRules` and nowhere else, and the
+  # transaction rolls back rather than committing an inconsistent pair.
+  defp validate_label_pair!(child, owner) do
+    case LabelRules.validate(child, owner) do
+      :ok -> :ok
+      {:error, _violation} -> Repo.rollback(:invalid_label_pair)
+    end
+  end
+
+  # The key already names the stop list, so an existing child that does not
+  # carry it is not this sequence's child and the route is rolled back instead
+  # of linking trips to a pattern with the wrong stops.
+  defp existing_child_target(context, pattern, sequence) do
+    case Map.get(context.occurrences, pattern.id) do
+      nil ->
+        existing_derived_target(pattern, sequence, true)
+
+      occurrences ->
+        if Enum.map(occurrences, & &1.stop_id) == sequence do
+          occurred_target(pattern, occurrences)
+        else
+          Repo.rollback(:label_child_mismatch)
+        end
+    end
+  end
+
+  defp supplied_sequence_stop_ids(stage_one) do
+    stage_one.supplied
+    |> Map.values()
+    |> Enum.flat_map(fn sequences -> Enum.map(Map.values(sequences), & &1.sequence) end)
+    |> Enum.flat_map(& &1)
+    |> Enum.uniq()
   end
 
   defp supplied_target(context, stage_one, natural_id) do
@@ -1622,7 +1748,17 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     )
   end
 
-  defp insert_pattern!(route, direction, derivation_key, name, typicality, representative_trip_id) do
+  # `label_pattern_id` is deliberately not cast by the changeset, so a label
+  # child is given its owner here and nowhere else (rule 8).
+  defp insert_pattern!(
+         route,
+         direction,
+         derivation_key,
+         name,
+         typicality,
+         representative_trip_id,
+         label_pattern_id \\ nil
+       ) do
     %RoutePattern{}
     |> RoutePattern.changeset(%{
       route_pattern_id: "app-" <> Ecto.UUID.generate(),
@@ -1635,6 +1771,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       organization_id: route.organization_id,
       gtfs_version_id: route.gtfs_version_id
     })
+    |> Ecto.Changeset.change(label_pattern_id: label_pattern_id)
     |> insert_or_rollback!()
   end
 
@@ -1671,6 +1808,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   end
 
   defp occurrence_ids(occurrences), do: Enum.map(occurrences, & &1.id)
+
+  defp child_derivation_key(owner, sequence) do
+    "l-" <> owner.route_pattern_id <> "-" <> derivation_key(owner.direction_id, sequence)
+  end
 
   defp derivation_key(direction, sequence) do
     "d#{direction}-#{String.slice(sequence_key(sequence), 0, 32)}"
@@ -1796,11 +1937,21 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       not usable_labels?(Enum.map(rows, &{&1.stop_id, &1.stop_sequence}), eligible_stops) ->
         custom_decision(trip, :unusable_stops, state)
 
-      Enum.map(rows, & &1.stop_id) != canonical ->
-        custom_decision(trip, :different_stops, state)
-
       true ->
-        assign_trip(target, rows, trip, state)
+        case supplied_sequence_target(target, rows) do
+          nil -> custom_decision(trip, :different_stops, state)
+          sequence_target -> assign_trip(sequence_target, rows, trip, state)
+        end
+    end
+  end
+
+  # The owner's own sequence keeps the owner; any other sequence the supplied
+  # pattern's trips served joins the child planned for it, so the exported
+  # `route_pattern_id` stays the supplied ID.
+  defp supplied_sequence_target(%{sequence: canonical} = target, rows) do
+    case Enum.map(rows, & &1.stop_id) do
+      ^canonical -> target
+      sequence -> Map.get(Map.get(target, :children, %{}), sequence_key(sequence))
     end
   end
 
@@ -2116,7 +2267,9 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
   # A. Custom trips and their imported stop times stay untouched, and retry skips
   # any pattern that already has a timing.
   defp initialize_template_timings(state, plan) do
-    Enum.reduce(Map.values(plan.supplied) ++ Map.values(plan.derived), state, fn target, state ->
+    (Map.values(plan.supplied) ++
+       Map.values(plan.derived) ++ supplied_child_targets(plan.supplied))
+    |> Enum.reduce(state, fn target, state ->
       if length(target.occurrences) >= 2 and not pattern_has_timing?(target.pattern.id) do
         {_timing_id, state} =
           create_timing(target, nil, zero_rows(length(target.occurrences)), state)
@@ -2126,6 +2279,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
         state
       end
     end)
+  end
+
+  defp supplied_child_targets(supplied) do
+    supplied
+    |> Map.values()
+    |> Enum.flat_map(fn target -> Map.values(Map.get(target, :children, %{})) end)
   end
 
   defp pattern_has_timing?(pattern_id) do
