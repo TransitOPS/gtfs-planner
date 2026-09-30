@@ -18,6 +18,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   and the filter buttons. Step 26 owns the review matrix
   (`review_matrix/1`): the streamed timetable rows with change badges,
   pasted and estimated times, was-values, removals and the timing note.
+  Step 27 owns the row decisions (`row_decision/1`): the pattern select,
+  the cell correction, the twelve-hour choice, the pairing radios, skip
+  and restore, and Add anyway, plus the discarded-decisions notice.
   """
   use GtfsPlannerWeb, :html
 
@@ -28,6 +31,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
 
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlannerWeb.Gtfs.TimetablePasteReview
+
+  # Small decision buttons follow the prototype's secondary small button:
+  # keyboard-operable at 44 px with a visible label.
+  @decision_button_class "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-control border border-control bg-white px-3 text-[13px] font-[650] text-strong hover:bg-canvas"
 
   @doc """
   Renders the schedule line: the resolved Calendar, Direction and Pattern plus
@@ -901,6 +908,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
       |> assign(:route_short, review_route_short(assigns.scope))
       |> assign(:filters, visible_filters(assigns.input, plan))
       |> assign(:refusal, plan.refusal)
+      |> assign(:discarded, discarded_decisions(plan))
 
     ~H"""
     <section
@@ -1120,6 +1128,14 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
       >
         Every row repeats a trip that already exists, so there is nothing to apply.
       </.message>
+      <.message
+        :if={@discarded != []}
+        id="paste-decisions-notice"
+        kind="warning"
+        role="status"
+        title={discarded_title(@discarded)}
+        class="mx-5 mt-4"
+      />
       <div
         id="paste-filters"
         class="flex flex-wrap items-center gap-2 px-5 pb-3 pt-4"
@@ -1319,7 +1335,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
               <% end %>
             </td>
             <td class="border-b border-subtle px-3 py-2.5 align-top">
-              <%!-- Step 27 fills the row decision controls here. --%>
+              <.row_decision :if={row.decision} decision={row.decision} />
               <div :if={row.details != []} class="grid gap-1 text-[13px] text-muted">
                 <p :for={detail <- row.details} class={detail.warning? && "text-warning-fg"}>
                   {detail.text}
@@ -1377,6 +1393,268 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
       Select a timing name to see how it was built.
     </p>
     """
+  end
+
+  @doc """
+  Renders step 27, one row's decision controls for the matrix Details cell.
+
+  The control follows the row's issue shape from
+  `TimetablePasteReview.build/3`: an ambiguous-pattern select (`N patterns
+  fit. Choose the one this trip follows.`), a no-pattern notice, a cell
+  correction (header, raw value, letter hint), a twelve-hour choice (three
+  readings, after-midnight first), pairing radios (trip and block per
+  option plus `Neither · add as a new trip`), skip and restore, and Add
+  anyway for duplicates. Pattern, cell and pairing controls are native
+  form fields, so they post through `#paste-form`'s `input` event like the
+  columns selects; the buttons are `type="button"` server events.
+  """
+  attr :decision, :map, required: true, doc: "the precomputed row decision from the review"
+
+  def row_decision(assigns) do
+    assigns = assign(assigns, :decision_button_class, @decision_button_class)
+
+    ~H"""
+    <div :if={@decision.kind == :pattern} class="grid gap-2">
+      <p class="text-[13px] text-warning-fg">
+        <%= if @decision.misfit? do %>
+          <strong>The chosen pattern no longer fits this row.</strong>
+          Choose the one this trip follows.
+        <% else %>
+          <strong>{decision_count_text(@decision.options, "pattern fits", "patterns fit")}.</strong>
+          Choose the one this trip follows.
+        <% end %>
+      </p>
+      <div class="flex flex-wrap items-center gap-2">
+        <label class="sr-only" for={"paste-pattern-#{@decision.row}"}>
+          Pattern for row {@decision.row}
+        </label>
+        <select
+          id={"paste-pattern-#{@decision.row}"}
+          name={"paste[pattern_choices][#{@decision.row}]"}
+          aria-invalid="true"
+          class="min-h-11 w-[240px] rounded-control border border-control bg-white px-3 text-sm text-strong"
+        >
+          <option value="">Choose pattern</option>
+          <option
+            :for={option <- @decision.options}
+            value={option.value}
+            selected={@decision.current == option.value}
+          >
+            {option.name}
+          </option>
+        </select>
+        <button
+          type="button"
+          id={"paste-skip-#{@decision.row}"}
+          phx-click="paste_skip"
+          phx-value-row={@decision.row}
+          class={@decision_button_class}
+        >
+          Skip row
+        </button>
+      </div>
+    </div>
+    <div :if={@decision.kind == :no_pattern} class="grid gap-2">
+      <p class="text-[13px] text-warning-fg">
+        <strong>No pattern fits.</strong>
+        No {@decision.direction} pattern calls at exactly these stops. Skip the row, or add the pattern and review again.
+      </p>
+      <div class="flex flex-wrap gap-2">
+        <button
+          type="button"
+          id={"paste-skip-#{@decision.row}"}
+          phx-click="paste_skip"
+          phx-value-row={@decision.row}
+          class={@decision_button_class}
+        >
+          Skip row
+        </button>
+      </div>
+    </div>
+    <div :if={@decision.kind == :cell} class="grid gap-2">
+      <p class="text-[13px] text-warning-fg">
+        <strong>{@decision.header}:</strong>
+        <%= if @decision.backwards? do %>
+          {@decision.raw} is earlier than the stop before it.
+        <% else %>
+          “{@decision.raw}” isn’t a time<%= if @decision.letter do %>
+            : it has the letter {@decision.letter} where a digit belongs
+          <% end %>.
+        <% end %>
+      </p>
+      <div class="flex flex-wrap items-center gap-2">
+        <label class="sr-only" for={"paste-cell-#{@decision.row}-#{@decision.col}"}>
+          Time at {@decision.header}, row {@decision.row}
+        </label>
+        <input
+          id={"paste-cell-#{@decision.row}-#{@decision.col}"}
+          name={"paste[cells][#{@decision.row}][#{@decision.col}]"}
+          value={@decision.value}
+          phx-debounce="blur"
+          aria-invalid="true"
+          class="min-h-11 w-24 rounded-control border border-control bg-white px-3 font-mono text-sm text-strong"
+        />
+        <button
+          type="button"
+          id={"paste-cell-save-#{@decision.row}"}
+          phx-click="paste_cell_save"
+          phx-value-row={@decision.row}
+          phx-value-col={@decision.col}
+          class={@decision_button_class}
+        >
+          Use time
+        </button>
+        <button
+          type="button"
+          id={"paste-skip-#{@decision.row}"}
+          phx-click="paste_skip"
+          phx-value-row={@decision.row}
+          class={@decision_button_class}
+        >
+          Skip row
+        </button>
+      </div>
+    </div>
+    <div :if={@decision.kind == :twelve} class="grid gap-2">
+      <p class="text-[13px] text-warning-fg">
+        <strong>Starts at {TimetablePasteReview.format_clock(@decision.secs)};</strong>
+        the other trips start in the evening. Which time is it?
+      </p>
+      <div class="flex flex-wrap gap-2">
+        <button
+          type="button"
+          id={"paste-twelve-#{@decision.row}-after-midnight"}
+          phx-click="paste_twelve"
+          phx-value-row={@decision.row}
+          phx-value-choice="86400"
+          class={@decision_button_class}
+        >
+          {TimetablePasteReview.format_clock(@decision.secs + 86_400)} · after midnight
+        </button>
+        <button
+          type="button"
+          id={"paste-twelve-#{@decision.row}-plus-twelve"}
+          phx-click="paste_twelve"
+          phx-value-row={@decision.row}
+          phx-value-choice="43200"
+          class={@decision_button_class}
+        >
+          {TimetablePasteReview.format_clock(@decision.secs + 43_200)}
+        </button>
+        <button
+          type="button"
+          id={"paste-twelve-#{@decision.row}-keep"}
+          phx-click="paste_twelve"
+          phx-value-row={@decision.row}
+          phx-value-choice="keep"
+          class={@decision_button_class}
+        >
+          Keep {TimetablePasteReview.format_clock(@decision.secs)}
+        </button>
+      </div>
+    </div>
+    <fieldset :if={@decision.kind == :pairing}>
+      <legend class="text-[13px] text-warning-fg">
+        <strong>{pairing_legend(@decision)}</strong>
+        Choose the one this row replaces. The other is removed.
+      </legend>
+      <div class="mt-1 grid">
+        <label
+          :for={{option, index} <- Enum.with_index(@decision.options)}
+          class="inline-flex min-h-11 items-center gap-2 text-[13px]"
+        >
+          <input
+            type="radio"
+            id={"paste-pair-#{@decision.row}-#{index}"}
+            name={"paste[pairs][#{@decision.row}]"}
+            value={option.value}
+            checked={@decision.current == option.value}
+            class="size-4 accent-action"
+          />Trip {option.trip} · {if option.block, do: "Block #{option.block}", else: "No block"}
+        </label>
+        <label class="inline-flex min-h-11 items-center gap-2 text-[13px]">
+          <input
+            type="radio"
+            id={"paste-pair-#{@decision.row}-neither"}
+            name={"paste[pairs][#{@decision.row}]"}
+            value="neither"
+            checked={neither_chosen?(@decision.current)}
+            class="size-4 accent-action"
+          />Neither · add as a new trip
+        </label>
+      </div>
+    </fieldset>
+    <div
+      :if={@decision.kind == :duplicate}
+      class="flex items-center justify-end gap-3"
+    >
+      <button
+        type="button"
+        id={"paste-keep-#{@decision.row}"}
+        phx-click="paste_keep"
+        phx-value-row={@decision.row}
+        class={@decision_button_class}
+      >
+        Add anyway
+      </button>
+    </div>
+    <div
+      :if={@decision.kind == :skipped}
+      class="flex items-center justify-end gap-3"
+    >
+      <button
+        type="button"
+        id={"paste-restore-#{@decision.row}"}
+        phx-click="paste_restore"
+        phx-value-row={@decision.row}
+        class={@decision_button_class}
+      >
+        Restore row
+      </button>
+    </div>
+    <div
+      :if={@decision.kind == :kept}
+      class="flex items-center justify-between gap-3"
+    >
+      <p class="text-[13px] text-muted">Added alongside an existing trip.</p>
+      <button
+        type="button"
+        id={"paste-unkeep-#{@decision.row}"}
+        phx-click="paste_unkeep"
+        phx-value-row={@decision.row}
+        class="min-h-11 font-[650] text-action underline underline-offset-4"
+      >
+        Skip it
+      </button>
+    </div>
+    """
+  end
+
+  defp decision_count_text(options, one, many) when is_list(options) do
+    case length(options) do
+      1 -> "1 #{one}"
+      count -> "#{count} #{many}"
+    end
+  end
+
+  defp pairing_legend(%{start_secs: start_secs, options: options}) when is_integer(start_secs) do
+    "#{decision_count_text(options, "trip", "trips")} leave at #{TimetablePasteReview.format_clock(start_secs)}."
+  end
+
+  defp pairing_legend(%{options: options}) do
+    "#{decision_count_text(options, "trip leaves", "trips leave")} at the same time."
+  end
+
+  defp neither_chosen?(current) when is_binary(current),
+    do: String.downcase(String.trim(current)) == "neither"
+
+  defp neither_chosen?(_current), do: false
+
+  defp discarded_title(discards) when is_list(discards) do
+    case length(discards) do
+      1 -> "1 saved choice no longer applies and was cleared."
+      count -> "#{count} saved choices no longer apply and were cleared."
+    end
   end
 
   @doc """
@@ -1624,6 +1902,17 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     do: trip
 
   defp refusal_trip(_refusal), do: %{}
+
+  # Stale choices `Plan` validated off the rebuilt candidates
+  # (`plan.discarded_decisions`): a one-line notice, no row links.
+  defp discarded_decisions(plan) when is_map(plan) do
+    case Map.get(plan, :discarded_decisions, Map.get(plan, "discarded_decisions")) do
+      discards when is_list(discards) -> discards
+      _discards -> []
+    end
+  end
+
+  defp discarded_decisions(_plan), do: []
 
   defp refusal_trip_id(refusal) do
     trip = refusal_trip(refusal)

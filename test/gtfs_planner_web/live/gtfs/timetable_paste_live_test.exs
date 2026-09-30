@@ -1654,4 +1654,426 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       refute has_element?(view, "#paste-rows #paste-row-3")
     end
   end
+
+  describe "row decisions" do
+    # Step 27: the Details-cell decision controls (pattern select, cell
+    # correction, twelve-hour choice, pairing radios, skip, restore, Add
+    # anyway) and the `#paste-decisions` hidden field that restores them on
+    # form recovery. Pattern, cell and pairing controls post through the
+    # form's `input` event; the buttons arrive as discrete events. Every
+    # decision recomputes the pure review from the loaded scope (no
+    # database read).
+    setup :editor_scope
+
+    # A chosen Main pattern plus two identical short turns: a row that
+    # skips the middle stop fits both shorts, so it needs a pattern
+    # decision; choice, skip and restore all act on row 1.
+    defp decision_setup(%{organization: organization, version: version}) do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "PASTE27",
+          route_short_name: "12",
+          route_long_name: "Downtown – Riverside"
+        })
+
+      weekday = weekly_calendar(organization, version, "PASTE27_WKD", "Weekday")
+
+      Enum.each(1..3, fn index ->
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "PASTE27_S#{index}",
+          stop_name: "Decision Stop #{index}"
+        })
+      end)
+
+      main =
+        schedule_pattern_fixture(organization.id, version.id, %{
+          route_id: route.route_id,
+          direction_id: 0,
+          route_pattern_id: "PASTE27-MAIN",
+          route_pattern_name: "Main",
+          route_pattern_typicality: 1,
+          timing_name: "Standard",
+          stops: [
+            {"PASTE27_S1", 0, 0, 1},
+            {"PASTE27_S2", 300, 300, 1},
+            {"PASTE27_S3", 600, 600, 1}
+          ]
+        })
+
+      short1 =
+        schedule_pattern_fixture(organization.id, version.id, %{
+          route_id: route.route_id,
+          direction_id: 0,
+          route_pattern_id: "PASTE27-SHORT1",
+          route_pattern_name: "Short Turn",
+          route_pattern_typicality: 0,
+          timing_name: "Standard",
+          stops: [
+            {"PASTE27_S1", 0, 0, 1},
+            {"PASTE27_S3", 600, 600, 1}
+          ]
+        })
+
+      short2 =
+        schedule_pattern_fixture(organization.id, version.id, %{
+          route_id: route.route_id,
+          direction_id: 0,
+          route_pattern_id: "PASTE27-SHORT2",
+          route_pattern_name: "Short North",
+          route_pattern_typicality: 0,
+          timing_name: "Standard",
+          stops: [
+            {"PASTE27_S1", 0, 0, 1},
+            {"PASTE27_S3", 600, 600, 1}
+          ]
+        })
+
+      %{route: route, weekday: weekday, main: main, short1: short1, short2: short2}
+    end
+
+    defp decision_open(view, version, route, setup) do
+      follow(
+        view,
+        paste_path(version, route, %{
+          "service_id" => setup.weekday,
+          "direction" => "0",
+          "pattern" => setup.main.pattern.id
+        })
+      )
+    end
+
+    defp decision_headers do
+      "Decision Stop 1\tDecision Stop 2\tDecision Stop 3"
+    end
+
+    defp decision_read(view, text) do
+      render_submit(view, "read", %{
+        "paste" => %{"text" => text, "layout" => "auto", "header" => "true"}
+      })
+    end
+
+    defp decision_params(text, decisions, extra \\ %{}) do
+      %{
+        "paste" =>
+          Map.merge(
+            %{
+              "text" => text,
+              "layout" => "auto",
+              "header" => "true",
+              "mode" => "add",
+              "template_timing_id" => "",
+              "stops_view" => "pasted",
+              "decisions" => Jason.encode!(decisions)
+            },
+            extra
+          )
+      }
+    end
+
+    test "choosing a pattern for an ambiguous row adds it",
+         %{conn: conn, version: version} = context do
+      setup = decision_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = decision_open(view, version, setup.route, setup)
+
+      text = decision_headers() <> "\n06:00\t–\t06:10"
+      decision_read(view, text)
+
+      assert has_element?(
+               view,
+               "#paste-rows #paste-row-1",
+               "2 patterns fit. Choose the one this trip follows."
+             )
+
+      assert has_element?(view, "#paste-pattern-1")
+      assert has_element?(view, "#paste-skip-1", "Skip row")
+
+      render_change(
+        view,
+        "input",
+        decision_params(text, %{}, %{
+          "pattern_choices" => %{"1" => setup.short1.pattern.id}
+        })
+      )
+
+      assert has_element?(view, "#paste-rows #paste-row-1", "Add")
+      refute has_element?(view, "#paste-pattern-1")
+
+      assert view |> element("#paste-decisions") |> render() =~ setup.short1.pattern.id
+    end
+
+    test "fixing the 12:1O cell resolves the row and names the letter",
+         %{conn: conn, version: version} = context do
+      setup = decision_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = decision_open(view, version, setup.route, setup)
+
+      text = decision_headers() <> "\n06:00\t12:1O\t06:20"
+      decision_read(view, text)
+
+      assert has_element?(view, "#paste-rows #paste-row-1", "12:1O")
+      assert has_element?(view, "#paste-rows #paste-row-1", "isn’t a time")
+      assert has_element?(view, "#paste-rows #paste-row-1", "letter O")
+      assert has_element?(view, "#paste-rows #paste-row-1", "Decision Stop 2")
+      assert has_element?(view, "#paste-cell-1-1")
+
+      render_change(
+        view,
+        "input",
+        decision_params(text, %{}, %{"cells" => %{"1" => %{"1" => "12:10"}}})
+      )
+
+      assert has_element?(view, "#paste-rows #paste-row-1", "Add")
+      assert has_element?(view, "#paste-rows #paste-row-1", "12:10")
+      refute has_element?(view, "#paste-cell-1-1")
+    end
+
+    test "choosing after midnight resolves the owl row",
+         %{conn: conn, version: version} = context do
+      setup = decision_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = decision_open(view, version, setup.route, setup)
+
+      text =
+        decision_headers() <>
+          "\n18:00\t18:05\t18:10\n19:00\t19:05\t19:10\n20:00\t20:05\t20:10\n1:15\t1:20\t1:25"
+
+      decision_read(view, text)
+
+      row = view |> element("#paste-rows #paste-row-4") |> render()
+      assert row =~ "Starts at 01:15"
+      assert row =~ "after midnight"
+      assert has_element?(view, "#paste-twelve-4-after-midnight")
+      assert has_element?(view, "#paste-twelve-4-plus-twelve")
+      assert has_element?(view, "#paste-twelve-4-keep")
+
+      # After-midnight reads first.
+      {first, _} = :binary.match(row, "after-midnight")
+      {second, _} = :binary.match(row, "plus-twelve")
+      {third, _} = :binary.match(row, "4-keep")
+      assert first < second and second < third
+
+      view |> element("#paste-twelve-4-after-midnight") |> render_click()
+
+      assert has_element?(view, "#paste-rows #paste-row-4", "Add")
+      assert has_element?(view, "#paste-rows #paste-row-4", "25:15")
+      assert has_element?(view, "#paste-rows #paste-row-4", "+1 day")
+      refute has_element?(view, "#paste-twelve-4-after-midnight")
+    end
+
+    test "choosing a trip in a pairing group removes the other",
+         %{conn: conn, organization: organization, version: version} do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "PASTE27P",
+          route_short_name: "12",
+          route_long_name: "Downtown – Riverside"
+        })
+
+      weekday = weekly_calendar(organization, version, "PASTE27P_WKD", "Weekday")
+
+      Enum.each(1..3, fn index ->
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "PASTE27P_S#{index}",
+          stop_name: "Pair Stop #{index}"
+        })
+      end)
+
+      main =
+        schedule_pattern_fixture(organization.id, version.id, %{
+          route_id: route.route_id,
+          direction_id: 0,
+          route_pattern_id: "PASTE27P-MAIN",
+          route_pattern_name: "Main",
+          route_pattern_typicality: 1,
+          timing_name: "Standard",
+          stops: [
+            {"PASTE27P_S1", 0, 0, 1},
+            {"PASTE27P_S2", 300, 300, 1},
+            {"PASTE27P_S3", 600, 600, 1}
+          ]
+        })
+
+      schedule_trip_fixture(organization.id, version.id, route.route_id, main, %{
+        service_id: weekday,
+        trip_id: "PASTE27P_T0700A",
+        start_time: "07:00:00",
+        trip_short_name: "101",
+        block_id: "B1"
+      })
+
+      schedule_trip_fixture(organization.id, version.id, route.route_id, main, %{
+        service_id: weekday,
+        trip_id: "PASTE27P_T0700B",
+        start_time: "07:00:00",
+        trip_short_name: "102",
+        block_id: "B2"
+      })
+
+      {:ok, view, _html} = live(conn, paste_path(version, route))
+
+      _html =
+        follow(
+          view,
+          paste_path(version, route, %{
+            "service_id" => weekday,
+            "direction" => "0",
+            "pattern" => main.pattern.id
+          })
+        )
+
+      text = "Pair Stop 1\tPair Stop 2\tPair Stop 3\n07:00\t07:06\t07:11"
+      decision_read(view, text)
+
+      render_change(
+        view,
+        "input",
+        decision_params(text, %{}, %{"mode" => "replace"})
+      )
+
+      assert has_element?(
+               view,
+               "#paste-rows #paste-row-1",
+               "Choose the one this row replaces"
+             )
+
+      assert has_element?(view, "#paste-rows #paste-row-1", "Trip 101 · Block B1")
+      assert has_element?(view, "#paste-rows #paste-row-1", "Trip 102 · Block B2")
+      assert has_element?(view, "#paste-rows #paste-row-1", "Neither · add as a new trip")
+
+      render_change(
+        view,
+        "input",
+        decision_params(text, %{}, %{
+          "mode" => "replace",
+          "pairs" => %{"1" => "PASTE27P_T0700A"}
+        })
+      )
+
+      assert has_element?(view, "#paste-rows #paste-row-1", "Change")
+      assert has_element?(view, "#paste-remove-PASTE27P_T0700B")
+    end
+
+    test "skipping and restoring a row needs no database read",
+         %{conn: conn, version: version} = context do
+      setup = decision_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = decision_open(view, version, setup.route, setup)
+
+      text = decision_headers() <> "\n06:00\t–\t06:10"
+      decision_read(view, text)
+      assert has_element?(view, "#paste-pattern-1")
+
+      render_click(view, "paste_skip", %{"row" => "1"})
+
+      assert has_element?(view, "#paste-rows #paste-row-1", "Skipped")
+      assert has_element?(view, "#paste-restore-1", "Restore row")
+      refute has_element?(view, "#paste-pattern-1")
+
+      render_click(view, "paste_restore", %{"row" => "1"})
+
+      assert has_element?(view, "#paste-pattern-1")
+      assert has_element?(view, "#paste-rows #paste-row-1", "Needs decision")
+    end
+
+    test "adding anyway promotes a duplicate and skipping it restores the duplicate",
+         %{conn: conn, version: version} = context do
+      setup = decision_setup(context)
+
+      schedule_trip_fixture(
+        context.organization.id,
+        version.id,
+        setup.route.route_id,
+        setup.main,
+        %{service_id: setup.weekday, trip_id: "PASTE27_T0600", start_time: "06:00:00"}
+      )
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = decision_open(view, version, setup.route, setup)
+
+      text = decision_headers() <> "\n06:00\t06:05\t06:10"
+      decision_read(view, text)
+
+      assert has_element?(view, "#paste-rows #paste-row-1", "Already exists")
+      assert has_element?(view, "#paste-keep-1", "Add anyway")
+
+      render_click(view, "paste_keep", %{"row" => "1"})
+
+      assert has_element?(view, "#paste-rows #paste-row-1", "Add")
+      assert has_element?(view, "#paste-unkeep-1", "Skip it")
+
+      render_click(view, "paste_unkeep", %{"row" => "1"})
+
+      assert has_element?(view, "#paste-rows #paste-row-1", "Already exists")
+    end
+
+    test "recovered form params restore decisions, including rows hidden by a filter",
+         %{conn: conn, version: version} = context do
+      setup = decision_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = decision_open(view, version, setup.route, setup)
+
+      text =
+        decision_headers() <> "\n06:00\t–\t06:10\n07:00\t–\t07:10"
+
+      # A reconnect into a new process re-sends the form params with the
+      # hidden decisions field populated; the text is still blank here, so
+      # the review rebuilds purely with row 2's pattern choice applied.
+      render_change(
+        view,
+        "input",
+        decision_params(text, %{"2" => %{"pattern_id" => setup.short1.pattern.id}})
+      )
+
+      assert has_element?(view, "#paste-review")
+      assert has_element?(view, "#paste-rows #paste-row-2", "Add")
+      assert has_element?(view, "#paste-pattern-1")
+      refute has_element?(view, "#paste-pattern-2")
+
+      # Hiding the decided row behind a filter still round-trips it.
+      render_click(view, "paste_filter", %{"filter" => "needs_decision"})
+      refute has_element?(view, "#paste-rows #paste-row-2")
+
+      render_change(
+        view,
+        "input",
+        decision_params(text, %{"2" => %{"pattern_id" => setup.short1.pattern.id}})
+      )
+
+      render_click(view, "paste_filter", %{"filter" => "all"})
+      assert has_element?(view, "#paste-rows #paste-row-2", "Add")
+      assert has_element?(view, "#paste-pattern-1")
+    end
+
+    test "a stale choice shows the one-line discarded notice",
+         %{conn: conn, version: version} = context do
+      setup = decision_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = decision_open(view, version, setup.route, setup)
+
+      text = decision_headers() <> "\n06:00\t06:05\t06:10"
+      decision_read(view, text)
+      refute has_element?(view, "#paste-decisions-notice")
+
+      render_change(
+        view,
+        "input",
+        decision_params(text, %{"1" => %{"pattern_id" => Ecto.UUID.generate()}})
+      )
+
+      assert has_element?(
+               view,
+               "#paste-decisions-notice",
+               "1 saved choice no longer applies and was cleared."
+             )
+
+      assert has_element?(view, "#paste-rows #paste-row-1", "Add")
+    end
+  end
 end
