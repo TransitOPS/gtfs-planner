@@ -1,11 +1,13 @@
 defmodule GtfsPlanner.Operations.Tods do
   @moduledoc """
-  Pure TODS file parsing, classification and export row mapping for garages and
-  vehicles.
+  Pure TODS file parsing, classification and export row mapping for garages,
+  vehicles and operators.
 
   `parse/3` runs the shared strict CSV parser over an uploaded
-  `stops_supplement.txt` or `vehicles.txt`; `classify/1` splits the parsed rows
-  into accepted, skipped and error rows. Nothing here touches the database —
+  `stops_supplement.txt`, `vehicles.txt` or operators CSV; `classify/1` splits
+  the garage and vehicle rows into accepted, skipped and error rows. Operators
+  are classified by `GtfsPlanner.Operations.OperatorImport`, which owns the
+  fields an operator row needs. Nothing here touches the database —
   `GtfsPlanner.Operations` owns every decision that depends on stored records,
   such as add versus update and the coordinates a new garage needs.
 
@@ -37,11 +39,12 @@ defmodule GtfsPlanner.Operations.Tods do
 
   @garage_id_format ~r/^[A-Za-z0-9_.:-]+$/
 
-  @id_headers %{garages: "stop_id", vehicles: "vehicle_id"}
+  @id_headers %{garages: "stop_id", vehicles: "vehicle_id", operators: "employee_id"}
 
   @mapped_headers %{
     garages: ["stop_id", "stop_name", "stop_lat", "stop_lon", "TODS_location_type", "TODS_delete"],
-    vehicles: ["vehicle_id", "vehicle_label", "license_plate"]
+    vehicles: ["vehicle_id", "vehicle_label", "license_plate"],
+    operators: ["employee_id", "display_name", "seniority_number"]
   }
 
   @field_atoms %{
@@ -56,7 +59,7 @@ defmodule GtfsPlanner.Operations.Tods do
 
   @coordinate_columns [{"stop_lat", -90, 90}, {"stop_lon", -180, 180}]
 
-  @type kind :: :garages | :vehicles
+  @type kind :: :garages | :vehicles | :operators
 
   @type parsed :: %{
           kind: kind(),
@@ -84,13 +87,17 @@ defmodule GtfsPlanner.Operations.Tods do
   @doc """
   Parses one TODS file into its headers and physical rows.
 
+  An operators CSV is accepted with an `employee_id` column; its rows are
+  classified by `GtfsPlanner.Operations.OperatorImport`, not by `classify/1`.
+
   Returns `{:error, message}` for content above `max_import_bytes/0`, for a CSV
   parser error (the message names the row when the parser knows it) and for a
   missing ID column. Nothing may be previewed or applied after a structural
   error. `file` is the uploaded filename and is used for diagnostics only.
   """
   @spec parse(kind(), String.t(), binary()) :: {:ok, parsed()} | {:error, String.t()}
-  def parse(kind, file, content) when kind in [:garages, :vehicles] and is_binary(content) do
+  def parse(kind, file, content)
+      when kind in [:garages, :vehicles, :operators] and is_binary(content) do
     if byte_size(content) > @max_import_bytes do
       {:error, "#{file} is too large (limit #{@max_import_bytes} bytes)."}
     else
