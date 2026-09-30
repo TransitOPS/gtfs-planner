@@ -222,3 +222,61 @@ test.describe("columns step", () => {
     await expect(page.locator("#paste-review")).toBeVisible();
   });
 });
+
+test.describe("review header", () => {
+  // Step 25: How to apply, Fill other stops from, Stops view, the three
+  // metrics, refusal/nothing callouts and the filter buttons. The run is
+  // deferred to branch review with the browser partition, like the cases
+  // above.
+  const REVIEW_PASTE = [
+    "Trip\tCentral Station\tMarket Street\tMill Street\tRiverside Terminal",
+    "1201\t6:00\t6:04\t6:10\t6:18",
+    "1203\t7:00\t7:04\t7:10\t7:18",
+  ].join("\n");
+
+  async function readReview(page) {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", REVIEW_PASTE);
+    await page.click("#paste-read");
+    await expect(page.locator("#paste-review")).toBeVisible();
+  }
+
+  test("the review header shows the mode switch, template, stops view and metrics", async ({
+    page,
+  }) => {
+    await readReview(page);
+    await expect(page.locator("#paste-review")).toContainText("Not applied");
+    await expect(page.locator("#paste-mode")).toContainText("How to apply");
+    await expect(page.locator("#paste-template")).toBeVisible();
+    await expect(page.locator("#paste-stops-view")).toContainText("All stops");
+    await expect(page.locator("#paste-metric-trips")).toBeVisible();
+    await expect(page.locator("#paste-metric-vehicles")).toContainText("alone");
+    await expect(page.locator("#paste-metric-timings")).toBeVisible();
+    await expect(page.locator("#paste-filters")).toContainText("All rows");
+    await expect(page.locator("#paste-rows")).toBeVisible();
+  });
+
+  test("switching to Replace changes the consequence text", async ({ page }) => {
+    await readReview(page);
+    await expect(page.locator("#paste-mode-help")).toContainText(
+      "Existing trips stay",
+    );
+    await page.click(
+      "label:has(input[name='paste[mode]'][value='replace'])",
+    );
+    await expect(page.locator("#paste-mode-help")).toContainText("removed");
+  });
+
+  test("filter buttons show counts and toggle", async ({ page }) => {
+    await readReview(page);
+    await expect(page.locator("#paste-filter-all")).toBeVisible();
+    await page.click("#paste-filter-add");
+    await expect(page.locator("#paste-filter-add")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+});

@@ -930,4 +930,331 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       assert_push_event(view, "focus_scoped_target", %{id: "paste-column-errors"})
     end
   end
+
+  describe "review header" do
+    # Step 25: How to apply, Fill other stops from, Stops view, the three
+    # metrics, refusal/nothing callouts and the filter buttons. Mode and
+    # template changes recompute the pure review from the loaded scope (no
+    # database read); stops view and filter only restash for display. The
+    # matrix (step 26), decisions (27) and apply (28) stay placeholders.
+    setup :editor_scope
+
+    # Seven weekday outbound trips on a zero-dwell Main pattern: exact
+    # pasted rows refine to :unchanged (a lone column serves as both
+    # arrival and departure, so minute-exact rows key-match the timing).
+    defp review_setup(%{organization: organization, version: version}) do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "PASTE25",
+          route_short_name: "12",
+          route_long_name: "Downtown – Riverside"
+        })
+
+      weekday = weekly_calendar(organization, version, "PASTE25_WKD", "Weekday")
+
+      Enum.each(1..3, fn index ->
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "PASTE25_S#{index}",
+          stop_name: "Review Stop #{index}"
+        })
+      end)
+
+      main =
+        schedule_pattern_fixture(organization.id, version.id, %{
+          route_id: route.route_id,
+          direction_id: 0,
+          route_pattern_id: "PASTE25-MAIN",
+          route_pattern_name: "Main",
+          route_pattern_typicality: 1,
+          timing_name: "Standard",
+          stops: [
+            {"PASTE25_S1", 0, 0, 1},
+            {"PASTE25_S2", 300, 300, 1},
+            {"PASTE25_S3", 600, 600, 1}
+          ]
+        })
+
+      starts = [
+        {"PASTE25_T0600", "06:00:00"},
+        {"PASTE25_T0605", "06:05:00"},
+        {"PASTE25_T0700", "07:00:00"},
+        {"PASTE25_T0705", "07:05:00"},
+        {"PASTE25_T0800", "08:00:00"},
+        {"PASTE25_T0900", "09:00:00"},
+        {"PASTE25_T1000", "10:00:00"}
+      ]
+
+      Enum.each(starts, fn {trip_id, start_time} ->
+        schedule_trip_fixture(organization.id, version.id, route.route_id, main, %{
+          service_id: weekday,
+          trip_id: trip_id,
+          start_time: start_time
+        })
+      end)
+
+      %{route: route, weekday: weekday, main: main}
+    end
+
+    # Five exact rows, one retimed 09:00 row, two new starts; the 10:00
+    # trip is unpaired. Replace gives 2 added, 1 removed, 1 changed and
+    # 7 → 8 trips with 2 → 3 vehicles (the 06:07 add overlaps the 06:00
+    # and 06:05 trips).
+    defp review_text do
+      "Review Stop 1\tReview Stop 2\tReview Stop 3\n" <>
+        Enum.join(
+          [
+            "06:00\t06:05\t06:10",
+            "06:05\t06:10\t06:15",
+            "07:00\t07:05\t07:10",
+            "07:05\t07:10\t07:15",
+            "08:00\t08:05\t08:10",
+            "09:00\t09:06\t09:11",
+            "06:07\t06:12\t06:17",
+            "11:00\t11:05\t11:10"
+          ],
+          "\n"
+        )
+    end
+
+    defp review_params(text, overrides \\ %{}) do
+      %{
+        "paste" =>
+          Map.merge(
+            %{"text" => text, "layout" => "auto", "header" => "true"},
+            overrides
+          )
+      }
+    end
+
+    defp review_read(view, text) do
+      render_submit(view, "read", review_params(text))
+    end
+
+    defp review_open(view, version, route, setup) do
+      follow(
+        view,
+        paste_path(version, route, %{
+          "service_id" => setup.weekday,
+          "direction" => "0",
+          "pattern" => setup.main.pattern.id
+        })
+      )
+    end
+
+    test "an exact paste shows the review header with controls and add-mode metrics",
+         %{conn: conn, version: version} = context do
+      setup = review_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = review_open(view, version, setup.route, setup)
+
+      review_read(view, review_text())
+
+      assert has_element?(view, "#paste-review")
+      assert has_element?(view, "#paste-review h2", "Review")
+      assert has_element?(view, "#paste-review", "Not applied")
+      assert has_element?(view, "#paste-review", "Weekday · Outbound · 8 pasted rows")
+
+      assert has_element?(view, "#paste-mode", "How to apply")
+      assert has_element?(view, "#paste-mode", "Add trips")
+      assert has_element?(view, "#paste-mode", "Replace trips")
+      assert has_element?(view, "#paste-mode-help", "Existing trips stay")
+
+      assert has_element?(view, "#paste-template")
+      assert has_element?(view, "#paste-review", "Fill other stops from")
+      assert has_element?(view, "#paste-template option", "Standard · 10 min")
+
+      assert has_element?(view, "#paste-stops-view", "Stops view")
+      assert has_element?(view, "#paste-stops-view", "Pasted")
+      assert has_element?(view, "#paste-stops-view", "All stops")
+
+      # Add mode: the six repeats are Already exists, the two new starts add.
+      assert has_element?(view, "#paste-metric-trips", "7 → 9")
+      assert has_element?(view, "#paste-metric-trips", "2 added")
+      assert has_element?(view, "#paste-metric-vehicles", "route 12 alone")
+      assert has_element?(view, "#paste-metric-vehicles", "Weekday, both directions")
+
+      assert has_element?(
+               view,
+               "#paste-metric-timings",
+               "Every row matches an existing timing"
+             )
+
+      assert has_element?(view, "#paste-filters", "All rows")
+      assert has_element?(view, "#paste-rows")
+      refute has_element?(view, "#paste-nothing")
+      refute has_element?(view, "#paste-refusal-frequency")
+    end
+
+    test "switching to Replace changes the consequence and the metrics to 7 → 8 and 2 → 3",
+         %{conn: conn, version: version} = context do
+      setup = review_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = review_open(view, version, setup.route, setup)
+
+      review_read(view, review_text())
+
+      render_change(view, "input", review_params(review_text(), %{"mode" => "replace"}))
+
+      assert has_element?(view, "#paste-mode-help", "Weekday")
+      assert has_element?(view, "#paste-mode-help", "outbound")
+      assert has_element?(view, "#paste-mode-help", "Main")
+      assert has_element?(view, "#paste-mode-help", "removed")
+
+      assert has_element?(view, "#paste-metric-trips", "7 → 8")
+      assert has_element?(view, "#paste-metric-trips", "2 added · 1 removed · 1 changed")
+
+      assert has_element?(view, "#paste-metric-vehicles", "2 → 3")
+
+      assert view |> element("#paste-metric-timings") |> render() =~ "Pasted"
+    end
+
+    test "a frequency trip in scope refuses Replace with a Use Add trips escape",
+         %{conn: conn, organization: organization, version: version} do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "PASTE25F",
+          route_short_name: "12",
+          route_long_name: "Downtown – Riverside"
+        })
+
+      weekday = weekly_calendar(organization, version, "PASTE25F_WKD", "Weekday")
+
+      Enum.each(1..3, fn index ->
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "PASTE25F_S#{index}",
+          stop_name: "Review Stop #{index}"
+        })
+      end)
+
+      main =
+        schedule_pattern_fixture(organization.id, version.id, %{
+          route_id: route.route_id,
+          direction_id: 0,
+          route_pattern_id: "PASTE25F-MAIN",
+          route_pattern_name: "Main",
+          route_pattern_typicality: 1,
+          timing_name: "Standard",
+          stops: [
+            {"PASTE25F_S1", 0, 0, 1},
+            {"PASTE25F_S2", 300, 300, 1},
+            {"PASTE25F_S3", 600, 600, 1}
+          ]
+        })
+
+      schedule_trip_fixture(organization.id, version.id, route.route_id, main, %{
+        service_id: weekday,
+        trip_id: "PASTE25F_T0900",
+        start_time: "09:00:00",
+        frequencies: [
+          %{start_time: "09:00:00", end_time: "12:00:00", headway_secs: 1200, exact_times: 0}
+        ]
+      })
+
+      text = "Review Stop 1\tReview Stop 2\tReview Stop 3\n10:00\t10:05\t10:10"
+
+      {:ok, view, _html} = live(conn, paste_path(version, route))
+
+      _html =
+        follow(
+          view,
+          paste_path(version, route, %{
+            "service_id" => weekday,
+            "direction" => "0",
+            "pattern" => main.pattern.id
+          })
+        )
+
+      review_read(view, text)
+      assert has_element?(view, "#paste-review")
+      refute has_element?(view, "#paste-refusal-frequency")
+
+      render_change(view, "input", review_params(text, %{"mode" => "replace"}))
+
+      assert has_element?(view, "#paste-refusal-frequency", "Replace can")
+      assert has_element?(view, "#paste-use-add", "Use Add trips")
+
+      html = view |> element("#paste-refusal-frequency") |> render()
+      assert html =~ "Main"
+      assert html =~ "every 20 min"
+      assert html =~ "09:00"
+
+      render_click(view, "use_add")
+
+      assert has_element?(view, "#paste-mode-help", "Existing trips stay")
+      refute has_element?(view, "#paste-refusal-frequency")
+    end
+
+    test "filters show counts, hide zero-count types and toggle",
+         %{conn: conn, version: version} = context do
+      setup = review_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = review_open(view, version, setup.route, setup)
+
+      review_read(view, review_text())
+      render_change(view, "input", review_params(review_text(), %{"mode" => "replace"}))
+
+      assert has_element?(view, "#paste-filter-all", "All rows")
+      assert view |> element("#paste-filter-all") |> render() =~ ">9<"
+      assert has_element?(view, "#paste-filter-add", "2")
+      assert has_element?(view, "#paste-filter-change", "1")
+      assert has_element?(view, "#paste-filter-remove", "1")
+      assert has_element?(view, "#paste-filter-unchanged", "5")
+      refute has_element?(view, "#paste-filter-duplicate")
+      refute has_element?(view, "#paste-filter-skipped")
+      refute has_element?(view, "#paste-filter-needs_decision")
+
+      render_click(view, "paste_filter", %{"filter" => "add"})
+
+      assert has_element?(view, "#paste-filter-add[aria-pressed='true']")
+      assert has_element?(view, "#paste-filter-all[aria-pressed='false']")
+
+      render_click(view, "paste_filter", %{"filter" => "all"})
+
+      assert has_element?(view, "#paste-filter-all[aria-pressed='true']")
+    end
+
+    test "a paste that repeats every trip shows the nothing-to-apply notice",
+         %{conn: conn, version: version} = context do
+      setup = review_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = review_open(view, version, setup.route, setup)
+
+      review_read(
+        view,
+        "Review Stop 1\tReview Stop 2\tReview Stop 3\n06:00\t06:05\t06:10\n07:00\t07:05\t07:10"
+      )
+
+      assert has_element?(view, "#paste-nothing", "Nothing to apply")
+      assert has_element?(view, "#paste-metric-trips", "no change")
+    end
+
+    test "stops view and template changes stay on the review",
+         %{conn: conn, version: version} = context do
+      setup = review_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = review_open(view, version, setup.route, setup)
+
+      review_read(view, review_text())
+
+      render_change(view, "input", review_params(review_text(), %{"stops_view" => "all"}))
+
+      assert has_element?(view, "#paste-review")
+      assert has_element?(view, "#paste-metric-trips", "7 → 9")
+      assert view |> element("#paste-stops-view input[value='all']") |> render() =~ "checked"
+
+      render_change(
+        view,
+        "input",
+        review_params(review_text(), %{"template_timing_id" => setup.main.timing.id})
+      )
+
+      assert has_element?(view, "#paste-review")
+      assert has_element?(view, "#paste-metric-trips", "7 → 9")
+    end
+  end
 end

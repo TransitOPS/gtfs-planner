@@ -37,6 +37,17 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   the review purely from the loaded scope through
   `TimetablePaste.review/2` (no database read); `to_review` with issues
   shows the error summary and focuses it.
+
+  Step 25 owns the review header controls: the How-to-apply radios
+  (`paste[mode]`), the Fill-other-stops-from select
+  (`paste[template_timing_id]`) and the Stops-view radios
+  (`paste[stops_view]`) ride the same `input` event as native form fields.
+  A mode or template change recomputes the review purely from the loaded
+  scope, like an override edit; stops-view and filter changes only restash
+  the input for display. `use_add` returns a refused Replace to Add mode;
+  `paste_filter` records the row filter. The review matrix (step 26),
+  decisions (step 27) and apply (step 28) build on the `input`/`review`
+  assigns kept here.
   """
   use GtfsPlannerWeb, :live_view
 
@@ -184,6 +195,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # read) and advances to the review placeholder when the last issue
   # clears. Text, layout and header edits alone only stash, exactly like
   # step 23; clearing the textarea still invalidates the last read.
+  # Step 25 extends the input event with the review header controls: the
+  # mode and template fields recompute the review purely when they change
+  # with the paste itself untouched; the stops-view radios and the filter
+  # buttons only restash for display.
   @impl true
   def handle_event("input", %{"paste" => params}, socket) when is_map(params) do
     old_input = current_input(socket)
@@ -205,6 +220,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
           |> assign(:show_column_errors, false)
 
         recompute_columns?(socket, old_input, input, params) ->
+          recompute_columns_review(socket, input)
+
+        recompute_review_inputs?(socket, old_input, input) ->
           recompute_columns_review(socket, input)
 
         true ->
@@ -280,8 +298,40 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   @impl true
   def handle_event("confirm_column", _params, socket), do: {:noreply, socket}
 
+  # Step 25 owns the refusal escape hatch: Use Add trips returns a
+  # refused Replace to Add mode and recomputes the review purely from the
+  # loaded scope. The button only renders on a refusal callout, so a
+  # review is always present; the guard keeps the no-review path total.
+  @impl true
+  def handle_event("use_add", _params, socket) do
+    input = %{current_input(socket) | mode: :add}
+
+    socket =
+      socket
+      |> assign(:input, input)
+      |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))
+
+    {:noreply, maybe_recompute_review(socket, input)}
+  end
+
+  # Step 25 owns the row filter: a filter button only restashes the input
+  # for display (step 26 reads it for the matrix). No recompute: the plan
+  # is filter-independent.
+  @impl true
+  def handle_event("paste_filter", params, socket) when is_map(params) do
+    input = Map.put(current_input(socket), :filter, normalize_filter(params["filter"]))
+
+    {:noreply,
+     socket
+     |> assign(:input, input)
+     |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))}
+  end
+
+  @impl true
+  def handle_event("paste_filter", _params, socket), do: {:noreply, socket}
+
   # Review trips with column issues shows the error summary and focuses
-  # it; with no issues the review placeholder is already showing.
+  # it; with no issues the review header is already showing.
   @impl true
   def handle_event("to_review", _params, socket) do
     case socket.assigns[:review] do
@@ -381,9 +431,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
               header?={@input.header?}
               show_errors={@show_column_errors}
             />
-            <TimetablePasteComponents.review_placeholder :if={
-              @review != nil and !@source_open and @review.column_issues == []
-            } />
+            <TimetablePasteComponents.review_header
+              :if={@review != nil and !@source_open and @review.column_issues == []}
+              review={@review}
+              scope={@scope}
+              input={@input}
+            />
           </.form>
         </div>
       </div>
@@ -524,13 +577,20 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   end
 
   # Form params for the paste form. Only keys the form carries override the
-  # input, so later steps' decisions/overrides ride along untouched.
+  # input, so later steps' decisions/overrides ride along untouched. Step 25
+  # adds the review header fields: the mode and stops-view radios and the
+  # template select always submit their current pick, so merging is a plain
+  # take (unlike the columns selects, no diffing is needed); the filter
+  # buttons are not form fields and arrive through `paste_filter` instead.
   defp merge_paste_params(input, params) do
     %{
       input
       | text: paste_text(params, input),
         layout: paste_layout(params, input),
-        header?: paste_header(params, input)
+        header?: paste_header(params, input),
+        mode: paste_mode(params, input),
+        template_timing_id: paste_template(params, input),
+        stops_view: paste_stops_view(params, input)
     }
   end
 
@@ -545,6 +605,27 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   defp paste_header(%{"header" => header}, _input), do: header != "false"
   defp paste_header(_params, input), do: input.header? != false
+
+  defp paste_mode(%{"mode" => mode}, _input) when mode in ["add", "replace"] do
+    String.to_atom(mode)
+  end
+
+  defp paste_mode(_params, input), do: input.mode || :add
+
+  defp paste_template(%{"template_timing_id" => id}, _input) when is_binary(id) do
+    case String.trim(id) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp paste_template(_params, input), do: input.template_timing_id
+
+  defp paste_stops_view(%{"stops_view" => view}, _input) when view in ["pasted", "all"] do
+    String.to_atom(view)
+  end
+
+  defp paste_stops_view(_params, input), do: input.stops_view || :pasted
 
   # Step 24 diffs the submitted Use-as selects against the current review's
   # effective values. A select re-submits its displayed pick whether or not
@@ -593,6 +674,34 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
       input.layout == old_input.layout and input.header? == old_input.header? and
       not is_nil(socket.assigns[:scope]) and not is_nil(socket.assigns[:review])
   end
+
+  # Step 25 recomputes on the same criterion for the review header's mode
+  # and template fields: with the paste itself untouched, switching How to
+  # apply or Fill-other-stops-from re-reviews the loaded scope (mode
+  # changes the plan, the template changes the estimates). Stops view and
+  # filter never recompute: they only restash for display.
+  defp recompute_review_inputs?(socket, old_input, input) do
+    not is_nil(socket.assigns[:scope]) and not is_nil(socket.assigns[:review]) and
+      input.text == old_input.text and input.layout == old_input.layout and
+      input.header? == old_input.header? and
+      (input.mode != old_input.mode or
+         input.template_timing_id != old_input.template_timing_id)
+  end
+
+  # Recomputes when a review is showing; otherwise the input just rests
+  # (the button that triggers this only renders on a refusal callout).
+  defp maybe_recompute_review(socket, input) do
+    if is_nil(socket.assigns[:scope]) or is_nil(socket.assigns[:review]) do
+      socket
+    else
+      recompute_columns_review(socket, input)
+    end
+  end
+
+  @review_filters ~w(all add change remove unchanged duplicate skipped needs_decision)
+
+  defp normalize_filter(filter) when filter in @review_filters, do: filter
+  defp normalize_filter(_filter), do: "all"
 
   # Recomputes the review purely from the loaded scope: the scope was
   # already read for the last Read or patch, so overrides and
@@ -644,6 +753,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
       "text" => input.text || "",
       "layout" => layout_param(input.layout),
       "header" => if(input.header? == false, do: "false", else: "true"),
+      "mode" => if(input.mode == :replace, do: "replace", else: "add"),
+      "template_timing_id" => input.template_timing_id || "",
+      "stops_view" => if(input.stops_view == :all, do: "all", else: "pasted"),
       "overrides" =>
         Map.new(input.overrides || %{}, fn {col, value} -> {to_string(col), value} end)
     }
@@ -729,6 +841,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # reviews it to `nil`, so the shell and the drawer render without a review
   # until the person pastes. `change_schedule` keeps the text and resets the
   # rest, so changing the schedule rebuilds the review from the same paste.
+  # Step 25 adds the review header's display state: the Pasted stops view
+  # and the All-rows filter. `TimetablePaste.review/2` ignores both, so
+  # they never affect the plan or its fingerprint.
   defp fresh_paste_input do
     %{
       text: "",
@@ -739,6 +854,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
       decisions: %{},
       mode: :add,
       template_timing_id: nil,
+      stops_view: :pasted,
+      filter: "all",
       stamp: "",
       block_rows: []
     }
