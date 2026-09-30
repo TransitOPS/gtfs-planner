@@ -8,6 +8,7 @@ defmodule GtfsPlanner.Operations.Tods do
   into accepted, skipped and error rows. Nothing here touches the database —
   `GtfsPlanner.Operations` owns every decision that depends on stored records,
   such as add versus update and the coordinates a new garage needs.
+
   Accepted rows carry the destination field atoms for the columns the file
   actually has (`:name`, `:lat`, `:lon` for garages; `:vehicle_label`,
   `:license_plate` for vehicles). A present column appears with its trimmed
