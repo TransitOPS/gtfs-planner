@@ -252,8 +252,9 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Usage do
     |> Enum.group_by(& &1.trip_id)
   end
 
-  # The first stop time of every trip in view, minimal columns, one query. The
-  # first row per trip is its first departure; a later stop never replaces it.
+  # The first stop time of every trip in view, minimal columns, one query.
+  # `DISTINCT ON (trip_id)` returns only each trip's lowest stop_sequence row, so
+  # a long route does not read every stop time to keep one per trip.
   defp load_first_departures(_scope, []), do: %{}
 
   defp load_first_departures(scope, trip_ids) do
@@ -261,12 +262,13 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Usage do
       where:
         st.organization_id == ^scope.organization_id and
           st.gtfs_version_id == ^scope.gtfs_version_id and st.trip_id in ^trip_ids,
-      order_by: [asc: st.trip_id, asc: st.stop_sequence, asc: st.id],
+      distinct: [asc: st.trip_id],
+      order_by: [asc: st.stop_sequence, asc: st.id],
       select: %{trip_id: st.trip_id, departure_time: st.departure_time}
     )
     |> Repo.all()
-    |> Enum.reduce(%{}, fn %{trip_id: trip_id, departure_time: departure_time}, departures ->
-      Map.put_new(departures, trip_id, parse_seconds(departure_time))
+    |> Map.new(fn %{trip_id: trip_id, departure_time: departure_time} ->
+      {trip_id, parse_seconds(departure_time)}
     end)
   end
 
