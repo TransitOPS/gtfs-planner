@@ -57,6 +57,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   attr :filters, :map, required: true
   attr :direction_labels, :map, required: true
   attr :calendars_path, :string, required: true
+  attr :paste_path, :string, required: true, doc: "the Schedules-filtered paste page URL"
   attr :can_add?, :boolean, required: true
   attr :add_reason, :string, default: nil
 
@@ -127,6 +128,14 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
       <div class="ml-auto">
         <div class="flex flex-wrap items-center justify-end gap-3">
+          <.link
+            :if={@can_add?}
+            id="schedules-paste-timetable"
+            navigate={@paste_path}
+            class="btn btn-outline min-h-11"
+          >
+            <.icon name="hero-clipboard-document" class="size-4" /> Paste timetable
+          </.link>
           <.button
             :if={@can_add?}
             id="schedules-add-trips"

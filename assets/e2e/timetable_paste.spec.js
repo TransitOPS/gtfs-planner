@@ -44,6 +44,59 @@ function pastePath(versionId, routeId) {
   return `/gtfs/${versionId}/routes/${routeId}/schedules/paste`;
 }
 
+function schedulesPath(versionId, routeId) {
+  return `/gtfs/${versionId}/routes/${routeId}/schedules`;
+}
+
+test.describe("entry from Schedules", () => {
+  // Step 29: the Paste timetable secondary action beside Add trips carries
+  // the current calendar, direction and pattern into the paste page. The
+  // run is deferred to branch review with the browser partition, like the
+  // cases below.
+  test("the Schedules action opens the paste page with the same scope", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(schedulesPath(versionId, PASTE_ROUTE));
+    const action = page.locator("#schedules-paste-timetable");
+    await expect(action).toBeVisible();
+    await expect(action).toContainText("Paste timetable");
+    await action.click();
+    await expect(page).toHaveURL(/\/schedules\/paste\?/);
+    await expect(page).toHaveURL(/direction=0/);
+    await expect(page).toHaveURL(/service_id=/);
+    await expect(page.locator("#timetable-paste")).toBeVisible();
+    await expect(page.locator("#paste-scope-calendar")).toContainText(
+      "Weekday",
+    );
+    await expect(page.locator("#paste-scope-direction")).toContainText(
+      "Outbound",
+    );
+  });
+
+  test("the action sits before Add trips as the secondary button", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(schedulesPath(versionId, PASTE_ROUTE));
+    const action = page.locator("#schedules-paste-timetable");
+    await expect(action).toHaveClass(/btn-outline/);
+
+    const order = await page.$$eval("#schedules-controls [id]", (els) =>
+      els.map((el) => el.id),
+    );
+    expect(order).toContain("schedules-paste-timetable");
+    expect(order).toContain("schedules-add-trips");
+    expect(order.indexOf("schedules-paste-timetable")).toBeLessThan(
+      order.indexOf("schedules-add-trips"),
+    );
+  });
+});
+
 test.describe("Paste timetable shell", () => {
   test("the schedule line shows the Weekday outbound main pattern", async ({
     page,
