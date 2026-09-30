@@ -47,14 +47,14 @@ async function captureViewport(page, name) {
 // The panel slides in over 300ms (ds-drawer-slide-in), so a capture or a
 // coordinate taken at open time freezes it mid-flight; wait for it to sit at
 // the viewport's right edge.
-async function waitDrawerSettled(page) {
+async function waitDrawerSettled(page, panelId = "headsign-review-drawer") {
   await expect
     .poll(() =>
-      page.evaluate(() => {
-        const panel = document.querySelector("#headsign-review-drawer");
+      page.evaluate((id) => {
+        const panel = document.querySelector(`#${id}`);
         const aside = panel && panel.closest("aside");
         return aside ? aside.getBoundingClientRect().right - window.innerWidth : Number.NaN;
-      }),
+      }, panelId),
     )
     .toBeLessThanOrEqual(1);
 }
@@ -399,4 +399,102 @@ test("patterns list headsign column", async ({ page }) => {
   await expect(cell).toContainText("Lincoln City");
   await expect(cell).toContainText("2 trips differ · 1 likely typo");
   await capture(page, "patterns-headsign-390");
+});
+
+// The Schedules headsign facts (read-only, BROWSER-HS5): the timetable shows
+// "To …" only for trips that don't follow the default — the typo trip in
+// warning ink, the interline trip muted — and the trip drawer's note explains
+// the field and fills the default through Use Lincoln City. Nothing is saved:
+// the drawers close through Cancel, and the ExUnit suite owns the note
+// variants this seed can't show.
+test("schedules headsign facts", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  // The trips run on the BROWSER_PATTERN_SERVICE calendar, so the journey pins
+  // it in the URL; a missing filter lands on the first calendar, which has no
+  // trips on this route.
+  await page.goto(
+    `/gtfs/${versionId}/routes/BROWSER_HEADSIGNS/schedules?service_id=BROWSER_PATTERN_SERVICE`,
+  );
+  await page.waitForSelector("#trip-BROWSER_HS5_T4-headsign", { timeout: 15000 });
+  await waitForLiveView(page);
+
+  const typoLine = page.locator("#trip-BROWSER_HS5_T4-headsign");
+  await expect(typoLine).toContainText("To Lincoln city");
+  await expect(typoLine).toHaveClass(/text-warning-fg/);
+
+  const interlineLine = page.locator("#trip-BROWSER_HS5_T5-headsign");
+  await expect(interlineLine).toContainText("To Roads End via Lincoln City");
+  await expect(interlineLine).toHaveClass(/text-muted/);
+
+  // Trips that follow the default show nothing under their timing.
+  expect(await page.locator("#trip-BROWSER_HS5_T1-headsign").count()).toBe(0);
+
+  await capture(page, "sched-hs5-1440");
+
+  // The typo trip's drawer: the warning note with the Use default button.
+  await page.locator("#trip-BROWSER_HS5_T4-edit").click();
+  const drawer = page.locator("#trip-drawer");
+  await expect(drawer).toBeVisible();
+  await waitDrawerSettled(page, "trip-drawer");
+
+  const note = page.locator("#trip-headsign-note");
+  await expect(note).toContainText(
+    "Differs from the pattern’s headsign, Lincoln City, only in capital letters or spacing.",
+  );
+  await expect(note).toContainText("Riders may see both spellings.");
+  const useDefault = page.locator("#trip-headsign-note-use-default");
+  await expect(useDefault).toHaveText("Use Lincoln City");
+  await note.scrollIntoViewIfNeeded();
+
+  await captureViewport(page, "sched-trip-case-1440");
+
+  // Use default fills the field and the note flips to the same-as confirmation.
+  await useDefault.click();
+  await expect(page.locator("#trip-headsign")).toHaveValue("Lincoln City");
+  await expect(note).toContainText(
+    "Same as the pattern’s headsign. Changing that headsign can update this trip.",
+  );
+
+  await captureViewport(page, "sched-trip-same-1440");
+
+  await page.locator("#trip-drawer-cancel").click();
+  await expect(page.locator("#trip-drawer-form")).toHaveCount(0);
+
+  // The interline trip's drawer: the info note that names the kept value, with
+  // the same Use default button.
+  await page.locator("#trip-BROWSER_HS5_T5-edit").click();
+  await expect(drawer).toBeVisible();
+  await waitDrawerSettled(page, "trip-drawer");
+  await expect(note).toContainText(
+    "This trip shows Roads End via Lincoln City instead of the pattern’s headsign, Lincoln City.",
+  );
+  await expect(note).toContainText(
+    "When that headsign changes later, this trip keeps Roads End via Lincoln City.",
+  );
+  await expect(useDefault).toHaveText("Use Lincoln City");
+  await note.scrollIntoViewIfNeeded();
+
+  await captureViewport(page, "sched-trip-interline-1440");
+
+  await page.locator("#trip-drawer-cancel").click();
+  await expect(page.locator("#trip-drawer-form")).toHaveCount(0);
+
+  // At 390 px the To-line rides the timing cell without clipping, and the
+  // drawer's warning note stays readable with its button.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(typoLine).toBeVisible();
+  await expect(typoLine).toContainText("To Lincoln city");
+  await typoLine.scrollIntoViewIfNeeded();
+  await capture(page, "sched-hs5-390");
+
+  await page.locator("#trip-BROWSER_HS5_T4-edit").click();
+  await expect(drawer).toBeVisible();
+  await waitDrawerSettled(page, "trip-drawer");
+  await expect(note).toContainText("Differs from the pattern’s headsign, Lincoln City");
+  await expect(useDefault).toBeVisible();
+  await note.scrollIntoViewIfNeeded();
+  await captureViewport(page, "sched-trip-case-390");
+
+  await page.locator("#trip-drawer-cancel").click();
+  await expect(page.locator("#trip-drawer-form")).toHaveCount(0);
 });

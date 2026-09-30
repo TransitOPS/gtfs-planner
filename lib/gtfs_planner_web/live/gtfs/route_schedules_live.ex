@@ -36,6 +36,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.Schedules
   alias GtfsPlanner.Gtfs.Schedules.FrequencyWindows
   alias GtfsPlanner.Gtfs.Schedules.Summary
@@ -434,6 +435,25 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   @impl true
   def handle_event("close_drawer", _params, socket) do
     {:noreply, assign(socket, :drawer, nil)}
+  end
+
+  @impl true
+  def handle_event("trip_use_default_headsign", _params, socket) do
+    case socket.assigns.drawer do
+      %{mode: :edit} = drawer ->
+        default = drawer_headsign_default(socket, drawer)
+
+        drawer = %{
+          drawer
+          | values: Map.put(drawer.values, "trip_headsign", default || ""),
+            errors: %{}
+        }
+
+        {:noreply, assign(socket, :drawer, refresh_drawer(socket, drawer))}
+
+      _ ->
+        {:noreply, socket}
+    end
   end
 
   @impl true
@@ -3757,6 +3777,22 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp next_window(_window), do: @default_window
+
+  # The headsign a blank field stores for the drawer's current pattern and timing
+  # choice, through the one Headsigns rule (INV-2): the selected timing's own
+  # headsign when it has one, else the pattern's. The pattern resolves exactly as
+  # the drawer note resolves it, so the button always fills what the note names.
+  defp drawer_headsign_default(socket, drawer) do
+    patterns = socket.assigns.payload.patterns
+
+    pattern =
+      Enum.find(patterns, &(&1.id == drawer.values["pattern_id"])) ||
+        Enum.find(patterns, &(&1.route_pattern_id == drawer.trip.route_pattern_id))
+
+    timing = pattern && Enum.find(pattern.timings, &(&1.id == drawer.values["timed_pattern_id"]))
+
+    Headsigns.effective_default(timing && timing.headsign, pattern && pattern.headsign)
+  end
 
   defp edit_values(socket, row) do
     values = %{
