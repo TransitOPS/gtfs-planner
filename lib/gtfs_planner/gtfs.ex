@@ -1613,6 +1613,22 @@ defmodule GtfsPlanner.Gtfs do
     do: RoutePatterns.apply_review(pattern_id, operation, fingerprint, audit_context)
 
   @doc """
+  Returns the scoped headsign usage read model for a pattern or one of its
+  timings: the effective default, follower and differing counts, shielded
+  timings, timings carrying the headsign, and value groups.
+
+  The organization and version always come from the caller's scope, never from
+  `opts`, so a client cannot read another tenant's usage.
+  """
+  def headsign_usage(organization_id, gtfs_version_id, pattern_id, scope, opts \\ []) do
+    RoutePatterns.headsign_usage(
+      pattern_id,
+      scope,
+      Keyword.merge(opts, organization_id: organization_id, gtfs_version_id: gtfs_version_id)
+    )
+  end
+
+  @doc """
   Builds or retries derived route patterns for one published route as an
   authorized editor.
 
