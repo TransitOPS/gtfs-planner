@@ -140,6 +140,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
      |> assign(:timing_note, nil)
      |> assign(:apply_notice, nil)
      |> assign(:failed_reference, nil)
+     |> assign(:paste_rejoined, rejoined_mount?(socket))
      |> assign(:replace_confirm, false)
      |> assign(:discard_confirm, false)
      |> assign(:switch_confirm, nil)
@@ -272,10 +273,11 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # `paste[cells]` and `paste[pairs]` params (diffed like the overrides, so
   # re-submitting an untouched control never writes a decision), and the
   # `#paste-decisions` hidden field round-trips the committed decisions. A
-  # reconnect into a new process re-sends the form params with the text
-  # still blank here and the hidden field populated, so that shape rebuilds
-  # the review purely instead of waiting for Read (step 28 adds the
-  # reconnected notice on top).
+  # reconnect into a new process re-sends the form params: the collapsed
+  # source step carries the text, layout and header as hidden backups
+  # (`#paste-source-text` and friends, since the textarea itself unmounts),
+  # so that shape rebuilds the review purely instead of waiting for Read
+  # (step 28 adds the reconnected notice on top).
   @impl true
   def handle_event("input", %{"paste" => params}, socket) when is_map(params) do
     # Step 28: the `#paste-applying` flag is only ever `"true"` right after
@@ -314,6 +316,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
       socket
       |> assign(:input, input)
       |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))
+      |> assign(:paste_rejoined, false)
 
     if blank_paste_text?(input.text) do
       {:noreply,
@@ -544,6 +547,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
      socket
      |> assign(:input, fresh_paste_input())
      |> assign(:paste_form, to_form(paste_form_params(), as: :paste))
+     |> assign(:paste_rejoined, false)
      |> assign(:review, nil)
      |> assign(:paste_error, nil)
      |> assign(:source_open, true)
@@ -1309,15 +1313,21 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   # Step 27 form recovery: a reconnect into a new process re-sends the
   # whole form with this process's text still blank, the params carrying
-  # text and the hidden decisions field populated. Only that shape
-  # rebuilds (typing always carries the changed field, and the existing
-  # timetable-step tests submit text without decisions and must keep
-  # stashing until Read).
+  # text and the hidden decisions field populated. Step 31 records whether
+  # the connected mount is a rejoin (client `_mounts` > 0): a replay on a
+  # rejoined mount rebuilds even with an empty decisions map, so a paste
+  # with no attention rows still comes back. The decisions shape stays
+  # because the ExUnit recovery tests simulate the replay with
+  # `render_change` on a fresh mount (the test client always joins with
+  # `_mounts` 0); on a fresh mount ordinary typing carries no decisions
+  # and keeps stashing until Read. The flag is consumed by the first input
+  # event either way.
   defp recovery_rebuild?(socket, old_input, params) do
     not is_nil(socket.assigns[:scope]) and is_nil(socket.assigns[:review]) and
       blank_paste_text?(old_input.text) and is_map(params) and
       is_binary(params["text"]) and String.trim(params["text"]) != "" and
-      decisions_present?(params["decisions"])
+      (socket.assigns[:paste_rejoined] == true or
+         decisions_present?(params["decisions"]))
   end
 
   defp decisions_present?(json) when is_binary(json) do
@@ -1329,6 +1339,22 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   defp decisions_present?(decoded) when is_map(decoded), do: map_size(decoded) > 0
   defp decisions_present?(_decisions), do: false
+
+  # A recovery replay is shaped exactly like ordinary typing, so the fresh
+  # mount tells them apart with the client's `_mounts` connect param: the
+  # first connected mount sends 0, every rejoin sends 1 or more. Without
+  # the gate the first blur after pasting would rebuild the review instead
+  # of waiting for Read.
+  defp rejoined_mount?(socket) do
+    if connected?(socket) do
+      case get_connect_params(socket) do
+        %{"_mounts" => mounts} when is_integer(mounts) -> mounts > 0
+        _params -> false
+      end
+    else
+      false
+    end
+  end
 
   # Rebuilds the review purely from the loaded scope on recovery: the
   # scope is fresh from `handle_params`, so decisions never cost a
@@ -1349,6 +1375,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
       socket
       |> assign(:input, input)
       |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))
+      |> assign(:paste_rejoined, false)
 
     socket =
       cond do

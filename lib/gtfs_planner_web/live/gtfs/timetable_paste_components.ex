@@ -484,6 +484,30 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
       aria-label="Timetable"
       class="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-card border border-subtle bg-white px-5 py-2.5"
     >
+      <!-- Step 31: the textarea unmounts with the source step, so the text,
+        layout and header ride hidden fields here. A socket reconnect replays
+        the form through LiveView form recovery, and without these the fresh
+        mount would come back empty even with decisions restored. The open
+        and collapsed states are exact complements, so exactly one control
+        carries each name at all times. -->
+      <input
+        type="hidden"
+        id="paste-source-text"
+        name={@form[:text].name}
+        value={@form[:text].value || ""}
+      />
+      <input
+        type="hidden"
+        id="paste-source-layout"
+        name={@form[:layout].name}
+        value={@layout_value}
+      />
+      <input
+        type="hidden"
+        id="paste-source-header"
+        name={@form[:header].name}
+        value={if @header_checked, do: "true", else: "false"}
+      />
       <span
         class="grid size-7 shrink-0 place-items-center rounded-full bg-success-bg text-success-fg"
         title="Done"
@@ -492,7 +516,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
       </span>
       <h2 class="text-[15px] font-bold text-strong">Timetable</h2>
       <p class="min-w-0 flex-1 basis-[280px] text-sm text-muted">{@summary}</p>
-      <.button id="paste-source-edit" variant="secondary" phx-click="edit_source">
+      <.button id="paste-source-edit" type="button" variant="secondary" phx-click="edit_source">
         Edit timetable
       </.button>
     </section>
