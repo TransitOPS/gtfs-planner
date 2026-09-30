@@ -3047,7 +3047,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   # Wording warnings for the Details draft, with the route's name facts and
   # the one sibling pattern whose headsign matches except for case. The
   # Headsigns module owns every comparison; `Headsigns.difference/3` re-labels
-  # the case-equal sibling so the warning can name it.
+  # the case-equal sibling so the warning can name it. Byte-equal siblings stay
+  # out of the lint context: AC-20 warns on "equal except for case", and only a
+  # byte difference leaves the note a sibling to name.
   defp headsign_warnings(assigns) do
     headsign_warnings_for(assigns, assigns.details_params["headsign"])
   end
@@ -3065,7 +3067,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         Headsigns.lint(draft, %{
           route_short_name: assigns.route && assigns.route.route_short_name,
           route_long_name: assigns.route && assigns.route.route_long_name,
-          sibling_headsigns: Enum.map(siblings, & &1.headsign)
+          sibling_headsigns: siblings |> Enum.map(& &1.headsign) |> Enum.reject(&(&1 == draft))
         }),
       value: draft,
       sibling: sibling && %{name: sibling.name, headsign: sibling.headsign},

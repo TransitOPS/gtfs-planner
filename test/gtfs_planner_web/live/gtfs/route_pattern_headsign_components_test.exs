@@ -479,6 +479,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponentsTest do
                "Lincoln City express uses “Lincoln City”. Match its capitals so riders see one destination."
     end
 
+    test "renders nothing for a sibling-case warning with no named sibling" do
+      html =
+        render_component(&Headsign.wording_warnings/1,
+          warnings: [:sibling_case],
+          value: "Lincoln City",
+          sibling: nil
+        )
+
+      refute present?(html, "#headsign-warnings")
+    end
+
     test "renders the length warning with the character count" do
       value = "Lincoln City Transit Center Depot"
 
