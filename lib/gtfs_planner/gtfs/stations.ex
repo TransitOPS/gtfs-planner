@@ -10,6 +10,7 @@ defmodule GtfsPlanner.Gtfs.Stations do
     AuditContext,
     Level,
     Pathway,
+    PathwayEvolution,
     StationNaming,
     Stop,
     StopReferences
@@ -93,6 +94,63 @@ defmodule GtfsPlanner.Gtfs.Stations do
       stop = lock_child!(audit, station, id)
       stale!(stop, expected_revision)
       write_stop(audit, Stop.editor_changeset(stop, %{diagram_coordinate: coordinate}), "updated")
+    end)
+  end
+
+  @doc "Deletes an unreferenced child stop, its pathways, and their history atomically."
+  def delete_child_stop(%AuditContext{} = audit, id, expected_revision) do
+    run(audit, :exclusive, fn station ->
+      stop = lock_child!(audit, station, id)
+      stale!(stop, expected_revision)
+
+      child_ids =
+        from(s in Stop,
+          where:
+            s.organization_id == ^audit.organization_id and
+              s.gtfs_version_id == ^audit.gtfs_version_id and
+              s.parent_station == ^stop.stop_id,
+          select: s.stop_id
+        )
+        |> Repo.all()
+
+      dependents =
+        StopReferences.dependents(
+          audit.organization_id,
+          audit.gtfs_version_id,
+          [stop.stop_id | child_ids]
+        )
+
+      if map_size(dependents) > 0, do: Repo.rollback({:in_use, dependents})
+
+      delete_pathways_for_stop!(audit, stop.stop_id)
+
+      with {:ok, deleted} <- Repo.delete(stop),
+           {:ok, _log} <- Audit.record_change_in_transaction(audit, :stop, stop, "deleted") do
+        deleted
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc "Clears a child stop's diagram placement and deletes its pathways at one revision."
+  def remove_child_stop_from_diagram(%AuditContext{} = audit, id, expected_revision) do
+    run(audit, :share, fn station ->
+      stop = lock_child!(audit, station, id)
+      stale!(stop, expected_revision)
+      delete_pathways_for_stop!(audit, stop.stop_id)
+
+      if is_nil(stop.diagram_coordinate) and is_nil(stop.level_id) do
+        stop
+      else
+        changes = %{diagram_coordinate: nil, level_id: nil}
+        updated = stop |> Ecto.Changeset.change(changes) |> Repo.update!()
+
+        case Audit.record_change_in_transaction(audit, :stop, stop, "updated", changes) do
+          {:ok, _log} -> updated
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end
     end)
   end
 
@@ -181,7 +239,13 @@ defmodule GtfsPlanner.Gtfs.Stations do
       action.(station)
     end)
   rescue
-    error in Ecto.ConstraintError -> {:error, error}
+    error in Ecto.ConstraintError ->
+      if pathway_closure_violation?(error), do: {:error, :pathway_in_use}, else: {:error, error}
+
+    error in Postgrex.Error ->
+      if pathway_closure_violation?(error),
+        do: {:error, :pathway_in_use},
+        else: reraise(error, __STACKTRACE__)
   end
 
   defp station(%AuditContext{} = audit) do
@@ -378,6 +442,61 @@ defmodule GtfsPlanner.Gtfs.Stations do
       _ -> Repo.rollback(:not_found)
     end
   end
+
+  defp delete_pathways_for_stop!(audit, stop_id) do
+    pathways =
+      from(p in Pathway,
+        where:
+          p.organization_id == ^audit.organization_id and
+            p.gtfs_version_id == ^audit.gtfs_version_id and
+            (p.from_stop_id == ^stop_id or p.to_stop_id == ^stop_id),
+        order_by: [asc: p.id],
+        lock: "FOR UPDATE"
+      )
+      |> Repo.all()
+
+    pathway_ids = Enum.map(pathways, & &1.pathway_id)
+
+    if pathway_ids != [] and
+         Repo.exists?(
+           from(e in PathwayEvolution,
+             where:
+               e.organization_id == ^audit.organization_id and
+                 e.gtfs_version_id == ^audit.gtfs_version_id and e.pathway_id in ^pathway_ids
+           )
+         ) do
+      Repo.rollback(:pathway_in_use)
+    end
+
+    Enum.each(pathways, fn pathway ->
+      with {:ok, _deleted} <- Repo.delete(pathway),
+           {:ok, _log} <-
+             Audit.record_change_in_transaction(audit, :pathway, pathway, "deleted") do
+        :ok
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp pathway_closure_violation?(%Ecto.ConstraintError{
+         type: :foreign_key,
+         constraint: constraint
+       }),
+       do: to_string(constraint) == "pathway_evolutions_pathway_fkey"
+
+  defp pathway_closure_violation?(%Postgrex.Error{postgres: postgres})
+       when is_map(postgres),
+       do:
+         Map.get(postgres, :constraint) == "pathway_evolutions_pathway_fkey" and
+           to_string(Map.get(postgres, :code)) in [
+             "restrict_violation",
+             "foreign_key_violation",
+             "23001",
+             "23503"
+           ]
+
+  defp pathway_closure_violation?(_), do: false
 
   defp stale!(%Stop{lock_version: current}, expected) when current == expected, do: :ok
   defp stale!(%Stop{lock_version: current}, _expected), do: Repo.rollback({:stale, current})
