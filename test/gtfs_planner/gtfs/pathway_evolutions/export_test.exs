@@ -230,8 +230,18 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ExportTest do
       assert {:ok, full_zip} =
                unboxed(fn -> Export.export_to_zip(organization.id, version.id, :full) end)
 
-      assert {:ok, operations_zip, []} =
+      assert {:ok, operations_zip, warnings} =
                unboxed(fn -> Export.build_zip(organization.id, version.id, :operations) end)
+
+      # The version has no blocks, so the four movement supplements are omitted.
+      assert Enum.map(warnings, & &1.file) == [
+               "calendar_dates_supplement.txt",
+               "routes_supplement.txt",
+               "trips_supplement.txt",
+               "stop_times_supplement.txt"
+             ]
+
+      assert Enum.all?(warnings, &(&1.code == "tods_file_omitted"))
 
       full = unzip(full_zip)
       operations = unzip(operations_zip)
@@ -266,7 +276,7 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ExportTest do
       assert Enum.map(conflicts, & &1.garage_id) == ["garage_ops"]
     end
 
-    test "an organization with no TODS rows reports both omissions beside its closures" do
+    test "an organization with no TODS rows reports every omission beside its closures" do
       organization = new_org("closure-operations-empty")
       on_exit(fn -> cleanup([organization.id]) end)
 
@@ -286,7 +296,15 @@ defmodule GtfsPlanner.Gtfs.PathwayEvolutions.ExportTest do
                "stops.txt"
              ]
 
-      assert Enum.map(warnings, & &1.file) == ["stops_supplement.txt", "vehicles.txt"]
+      assert Enum.map(warnings, & &1.file) == [
+               "calendar_dates_supplement.txt",
+               "routes_supplement.txt",
+               "trips_supplement.txt",
+               "stop_times_supplement.txt",
+               "stops_supplement.txt",
+               "vehicles.txt"
+             ]
+
       assert Enum.all?(warnings, &(&1.code == "tods_file_omitted"))
     end
   end
