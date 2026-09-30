@@ -14,6 +14,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   import GtfsPlannerWeb.RouteWorkspace, only: [badge: 1]
 
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents
   alias GtfsPlannerWeb.RouteWorkspace
@@ -769,6 +770,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
       |> assign(:trip_count, selected_trip_count(assigns.timings, assigns.selected_timing))
       |> assign(:preview_by_position, preview_by_position(assigns[:fill_preview]))
       |> assign(:failed_positions, failed_preview_positions(assigns[:fill_preview]))
+      |> assign(:riders_default, riders_default(assigns))
+      |> assign(:last_row_position, last_row_position(assigns.timing_rows))
 
     ~H"""
     <section
@@ -1058,6 +1061,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
                     Sample trip
                     <span class="block text-xs font-normal text-muted">arrive → depart</span>
                   </th>
+                  <th scope="col">
+                    Riders see
+                    <span class="block text-xs font-normal text-muted">headsign at this stop</span>
+                  </th>
                   <th scope="col">Timepoint</th>
                 </tr>
               </thead>
@@ -1068,6 +1075,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
                     timing_error={@timing_error}
                     preview_row={Map.get(@preview_by_position, row.position)}
                     failed_preview?={MapSet.member?(@failed_positions, row.position)}
+                    riders_default={@riders_default}
+                    last?={row.position == @last_row_position}
                   />
                 <% end %>
               </tbody>
@@ -1105,10 +1114,30 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
       "a different destination, such as a school timing signed “Lincoln City via Taft High”."
   end
 
+  # The Riders see column's muted fallback: the timing's effective default, the
+  # value the prototype's `norm(t.headsign) || pv()` shows on rows without a
+  # stop headsign.
+  defp riders_default(%{selected_timing: %{headsign: timing_headsign}} = assigns) do
+    Headsigns.effective_default(timing_headsign, assigns.headsign_summary.pattern_value)
+  end
+
+  defp riders_default(_), do: nil
+
+  # The final row's "Last stop · none" wins over a stop headsign there, as the
+  # prototype's `last ? … : stopHs ? …` does.
+  defp last_row_position([]), do: nil
+  defp last_row_position(rows), do: List.last(rows).position
+
   attr :row, :map, required: true
   attr :timing_error, :string, default: nil
   attr :preview_row, :map, default: nil
   attr :failed_preview?, :boolean, default: false
+
+  attr :riders_default, :string,
+    default: nil,
+    doc: "the timing's effective default, shown muted when the stop sets no headsign"
+
+  attr :last?, :boolean, default: false
 
   defp timing_row(assigns) do
     assigns =
@@ -1121,6 +1150,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         assigns[:preview_row] != nil and assigns.preview_row.estimated
       )
       |> assign(:chips, board_chips(assigns.row))
+      |> assign(:stop_headsign, Headsigns.normalize(assigns.row.stop_headsign))
       |> assign(
         :error?,
         assigns.row.arrival_error == true or assigns.row.departure_error == true
@@ -1230,6 +1260,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           {sample_trip(@row)}
         </span>
       </td>
+      <td
+        id={"timing-riders-#{@row.position}"}
+        class={["pe-cell-riders", @stop_headsign && "bg-info-bg/60"]}
+      >
+        <span class="pe-cell-label">Riders see</span>
+        <%= cond do %>
+          <% @last? -> %>
+            <span class="text-[13px] text-muted">Last stop · none</span>
+          <% @stop_headsign -> %>
+            <span class="text-sm font-[650] text-strong">{@stop_headsign}</span>
+            <span class="block text-[12px] text-muted">Set at this stop</span>
+          <% is_nil(@riders_default) -> %>
+            <span class="text-sm italic text-muted">No headsign</span>
+          <% true -> %>
+            <span class="text-sm text-muted">{@riders_default}</span>
+        <% end %>
+      </td>
       <td class="pe-cell-timepoint">
         <label
           class="flex min-h-11 cursor-pointer items-center gap-2 text-sm"
@@ -1250,13 +1297,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
       </td>
     </tr>
     <tr :if={@error?} id={"timing-err-#{@row.position}"} class="pe-err-row">
-      <td colspan="5" id={"timing-error-#{@row.position}"}>
+      <td colspan="6" id={"timing-error-#{@row.position}"}>
         <.icon name="hero-exclamation-triangle" class="mr-1.5 inline size-4 align-[-3px]" />
         Stop {@row.position}, {@row.name}: {@timing_error || "Check this time."}
       </td>
     </tr>
     <tr id={"timing-options-#{@row.position}"} class="pe-options-row">
-      <td colspan="5">
+      <td colspan="6">
         <details id={"timing-boarding-#{@row.position}"} class="group">
           <summary class="flex min-h-11 cursor-pointer list-none items-center gap-1.5 text-[13px] font-[650] text-muted hover:text-strong [&::-webkit-details-marker]:hidden">
             <.icon

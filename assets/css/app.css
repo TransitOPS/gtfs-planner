@@ -2753,7 +2753,8 @@ dialog[role="alertdialog"][open] > div > div {
   font-weight: 400;
 }
 
-#pattern-editor .pe-times .pe-cell-sample {
+#pattern-editor .pe-times .pe-cell-sample,
+#pattern-editor .pe-times .pe-cell-riders {
   padding-top: 18px;
 }
 
@@ -2829,6 +2830,7 @@ dialog[role="alertdialog"][open] > div > div {
 
   #pattern-editor .pe-times tr.pe-row > th,
   #pattern-editor .pe-times tr.pe-row > .pe-cell-sample,
+  #pattern-editor .pe-times tr.pe-row > .pe-cell-riders,
   #pattern-editor .pe-times tr.pe-row > .pe-cell-timepoint {
     grid-column: 1 / -1;
   }
