@@ -104,12 +104,20 @@ defmodule GtfsPlanner.Gtfs.Runs do
   defp build_runs_day(organization_id, gtfs_version_id, day) do
     key = day.day_type.key
     blocks = block_inputs(day)
-    rows = trip_run_rows(organization_id, gtfs_version_id, key)
     sequence_ids = MapSet.new(Enum.flat_map(blocks, &Enum.map(&1.trips, fn trip -> trip.id end)))
-    live = restrict(Map.new(rows, &{&1.trip_id, &1.run_id}), sequence_ids)
+    rows = day_type_rows(organization_id, gtfs_version_id, key)
+    version_rows = version_rows(organization_id, gtfs_version_id)
+
+    live =
+      rows
+      |> Enum.map(fn {_id, trip_id, run_id} -> {trip_id, run_id} end)
+      |> Map.new()
+      |> restrict(sequence_ids)
+
     crew = get_crew_settings(organization_id, gtfs_version_id)
     derived = Day.derive(blocks, live, day.context, crew)
-    orphans = orphan_count(organization_id, gtfs_version_id, rows, sequence_ids, day.day_types)
+    orphan_ids = orphan_row_ids(rows, version_rows, sequence_ids, day.day_types)
+    orphans = length(orphan_ids)
 
     %{
       day: day,
@@ -142,13 +150,32 @@ defmodule GtfsPlanner.Gtfs.Runs do
     end)
   end
 
-  defp trip_run_rows(organization_id, gtfs_version_id, key) do
-    from(row in TripRun,
-      where:
-        row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id and
-          row.day_type_key == ^key
+  # The day's own rows, as `{row_id, trip_id, run_id}`. Projecting rather than
+  # loading whole rows keeps this to what the assignments, the orphan test and
+  # the undo each need, and it is the projection `orphan_row_ids/4` takes.
+  defp day_type_rows(organization_id, gtfs_version_id, key) do
+    Repo.all(
+      from(row in TripRun,
+        where:
+          row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id and
+            row.day_type_key == ^key,
+        select: {row.id, row.trip_id, row.run_id},
+        order_by: [asc: row.trip_id]
+      )
     )
-    |> Repo.all()
+  end
+
+  # Every row of the version, as `{row_id, day_type_key}` — enough to find the
+  # rows whose key is no longer a day type, which is a question about the keys
+  # held in memory rather than about anything the database knows.
+  defp version_rows(organization_id, gtfs_version_id) do
+    Repo.all(
+      from(row in TripRun,
+        where:
+          row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id,
+        select: {row.id, row.day_type_key}
+      )
+    )
   end
 
   # A row whose trip is not a sequence trip of this day is an orphan, not an
@@ -161,30 +188,30 @@ defmodule GtfsPlanner.Gtfs.Runs do
         do: {trip_id, run_id}
   end
 
-  # This day type's own orphans, plus every row of the version under a key that is
-  # no longer a day type. The two are disjoint — a stale-key row is not under this
-  # key — so no row is counted twice.
-  defp orphan_count(organization_id, gtfs_version_id, rows, sequence_ids, day_types) do
+  # The rows `remove_orphans/3` deletes and `load_runs/3` counts: this day type's
+  # own orphans, plus every row of the version under a key that is no longer a
+  # day type. One definition, because a cleanup that counted a different set from
+  # the read that offered it would either miss rows or delete live ones.
+  #
+  # The two are disjoint — a stale-key row is not under this day's key, and this
+  # day's key is by construction a current one — so no row appears twice.
+  #
+  # Both callers pass the rows in rather than this querying, so the read path
+  # pays for no extra query and the writer sees exactly the rows the read saw.
+  defp orphan_row_ids(day_rows, version_rows, sequence_ids, day_types) do
     keys = MapSet.new(Enum.map(day_types, & &1.key))
 
-    mine = Enum.count(rows, &(not MapSet.member?(sequence_ids, &1.trip_id)))
+    mine =
+      for {row_id, trip_id, _run_id} <- day_rows,
+          not MapSet.member?(sequence_ids, trip_id),
+          do: row_id
 
     theirs =
-      organization_id
-      |> stale_keys(gtfs_version_id)
-      |> Enum.count(&(not MapSet.member?(keys, &1)))
+      for {row_id, key} <- version_rows,
+          not MapSet.member?(keys, key),
+          do: row_id
 
-    mine + theirs
-  end
-
-  defp stale_keys(organization_id, gtfs_version_id) do
-    Repo.all(
-      from(row in TripRun,
-        where:
-          row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id,
-        select: row.day_type_key
-      )
-    )
+    Enum.sort(mine ++ theirs)
   end
 
   # The day's problems were counted inside `Runs.Day.derive/4`, before this
@@ -558,6 +585,62 @@ defmodule GtfsPlanner.Gtfs.Runs do
         order_by: [asc: row.trip_id]
       )
     )
+  end
+
+  @doc """
+  Deletes this day type's orphaned assignments and returns how many were deleted.
+
+  The rows removed are **exactly** the ones `load_runs/3` counted — the same
+  `orphan_row_ids/4`, fed the same rows. A cleanup that computed its own set
+  would either miss rows the page told the planner about, or delete live ones,
+  and neither failure would be visible in the count it returns.
+
+  Two kinds are removed: a row whose trip is no longer a sequence trip of this
+  day type, and a row under a day type key that no longer exists. The second is
+  removed from whichever day type asks, which is what makes it findable at all —
+  no page reads its key.
+
+  Scoped to the organization and version, so another organization's orphans are
+  untouched even when the trip UUIDs are the same shape (FH-18). A second call
+  finds nothing left and returns `{:ok, 0}`: removal is idempotent because it is
+  defined by what is there, not by what happened to be there before.
+  """
+  @spec remove_orphans(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
+          {:ok, non_neg_integer()} | {:error, :not_found | {:unknown_day_type, list()}}
+  def remove_orphans(organization_id, gtfs_version_id, day_type_key) do
+    Repo.transaction(fn ->
+      Versions.lock_for_input_write!(organization_id, gtfs_version_id)
+      :ok = Blocking.lock_blocking!(gtfs_version_id)
+
+      case Blocking.load_day(organization_id, gtfs_version_id, day_type_key) do
+        {:ok, day} -> delete_orphans(organization_id, gtfs_version_id, day)
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp delete_orphans(organization_id, gtfs_version_id, day) do
+    sequence_ids =
+      MapSet.new(Enum.flat_map(day.blocks, &Enum.map(&1.trips, fn trip -> trip.id end)))
+
+    case orphan_row_ids(
+           day_type_rows(organization_id, gtfs_version_id, day.day_type.key),
+           version_rows(organization_id, gtfs_version_id),
+           sequence_ids,
+           day.day_types
+         ) do
+      # A count, not `:ok`: the Contracts answer `{:ok, non_neg_integer()}`, and a
+      # page showing "removed N" needs the N to be zero rather than missing.
+      [] ->
+        0
+
+      ids ->
+        # Deleted by primary key rather than by a repeat of the orphan test: the
+        # rows were already selected and validated, and re-deriving the predicate
+        # in SQL is a second chance to disagree with the count above.
+        {count, _} = Repo.delete_all(from(row in TripRun, where: row.id in ^ids))
+        count
+    end
   end
 
   @doc """
