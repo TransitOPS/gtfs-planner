@@ -566,6 +566,23 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewLiveTest do
       refute has_element?(view, "#blocks-review-checks.btn-primary")
     end
 
+    test "a trip selection during the preview leaves Apply suggestion the one primary",
+         context do
+      garage!(context)
+      block_day!(context)
+
+      {:ok, view, _html} = live(editor_conn(context), blocks_path(context.version.id))
+      open_suggest(view)
+      preview(view)
+
+      render_click(view, "toggle_trip", %{"trip" => "8105"})
+
+      assert has_element?(view, "#blocks-bulk-bar")
+      assert has_element?(view, "#apply-suggestion.btn-primary")
+      assert has_element?(view, "#bulk-assign.btn-outline")
+      refute has_element?(view, "#bulk-assign.btn-primary")
+    end
+
     test "their events are refused even when they are sent", context do
       garage!(context)
       block_day!(context)

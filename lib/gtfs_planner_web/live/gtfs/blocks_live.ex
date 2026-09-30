@@ -3590,14 +3590,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     |> stream(:pool_rows, [], reset: true)
   end
 
-  # The count strip and the Plan summary chart use the same 15-minute bins, so
-  # the bin width is one constant rather than two that could drift apart.
-  @bin_secs 900
-
-  # The count strip and the Plan summary chart use the same 15-minute bins, so
-  # the bin width is one constant rather than two that could drift apart.
-  @bin_secs 900
-
   # The plan figures of one day type, as the day load derived them, and the
   # short fleet rows with the garage and type names the day resolved, so
   # `render/1` prints numbers and words rather than re-deriving either.
@@ -3972,7 +3964,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   counts={@counts}
                   figures={@figures}
                   peak={@peak}
-                  open_drawer={@open_drawer}
                   preview?={not is_nil(@plan_preview)}
                 />
               </div>

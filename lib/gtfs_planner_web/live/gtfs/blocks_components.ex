@@ -204,7 +204,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :counts, :map, required: true
   attr :figures, :map, required: true
   attr :peak, :map, required: true
-  attr :open_drawer, :atom, default: nil
   attr :preview?, :boolean, default: false
 
   def summary_strip(assigns) do
@@ -4426,6 +4425,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         count={@bulk.count}
         elsewhere={@bulk.elsewhere}
         removable?={@bulk.removable?}
+        primary?={@primary == :bulk}
       />
 
       <div
@@ -4729,11 +4729,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   the others are already in the pool.
 
   While the bar shows, its Assign is the page's one primary: the header's Review
-  action drops to secondary.
+  action drops to secondary. During a suggestion preview Apply suggestion keeps
+  the primary, so Assign drops to secondary.
   """
   attr :count, :integer, required: true
   attr :elsewhere, :integer, required: true
   attr :removable?, :boolean, required: true
+  attr :primary?, :boolean, default: true
 
   def bulk_bar(assigns) do
     ~H"""
@@ -4771,6 +4773,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         <.button
           id="bulk-assign"
           type="button"
+          variant={if @primary?, do: "primary", else: "secondary"}
           class="min-h-11"
           phx-click="open_assign"
           phx-value-scope="selection"
@@ -5664,7 +5667,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         {time_out(@summary.start_secs, @summary.end_secs)}
       </td>
       <td class={["blocks-meta", "blocks-meta-hours"]}>{hours(@summary.hours)}</td>
-      <td class={["blocks-meta", "blocks-meta-status"]}>
+      <%!-- Beside the Changed chip a long status label ellipsizes; the title keeps it whole. --%>
+      <td
+        class={["blocks-meta", "blocks-meta-status"]}
+        title={@changed? && "Changed · " <> @status.label}
+      >
         <span
           :if={@changed?}
           data-role="block-changed"
