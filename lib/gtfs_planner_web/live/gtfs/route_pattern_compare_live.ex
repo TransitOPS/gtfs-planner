@@ -5,8 +5,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
   Route › Patterns › Compare patterns lines two patterns up stop by stop. The
   route header, the title row with its view switch and calendar select, and the
   loading and unavailable states are rendered here from
-  `RoutePatternCompareComponents.page/1`; the slots, summary, stop table and map
-  arrive in later steps.
+  `RoutePatternCompareComponents.page/1`; the slots, summary and stop table
+  arrive with it, and the map arrives in a later step. The stop table is a
+  stream (`:compare_rows`), reset on every load and rendered with stable DOM ids
+  per row index (`INV-4`).
 
   The URL carries the whole selection (`R11`): `a`, `b`, `service`, `ta`, `tb`,
   `reverse`, `view`, `dir` and `picker`. A visit without `a` resolves `R8`'s entry
@@ -39,7 +41,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
      |> assign(:requested, %{})
      |> assign(:view, :two)
      |> assign(:comparison, nil)
-     |> assign(:load_state, :loading)}
+     |> assign(:load_state, :loading)
+     |> stream(:compare_rows, [], dom_id: & &1.dom_id)}
   end
 
   @impl true
@@ -126,6 +129,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
         version={@current_gtfs_version}
         view={@view}
         comparison={@comparison}
+        rows={@streams.compare_rows}
         two_path={compare_path(@current_gtfs_version.id, @route_id, @requested, %{"view" => nil})}
         all_path={compare_path(@current_gtfs_version.id, @route_id, @requested, %{"view" => "all"})}
         patterns_path={patterns_path(@current_gtfs_version.id, @route_id)}
@@ -183,7 +187,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
         {:noreply,
          socket
          |> assign(:comparison, comparison)
-         |> assign(:load_state, :ready)}
+         |> assign(:load_state, :ready)
+         |> stream(:compare_rows, RoutePatternCompareComponents.stop_table_items(comparison),
+           reset: true
+         )}
 
       {:error, :not_found} ->
         not_found(socket)

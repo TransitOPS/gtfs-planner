@@ -251,3 +251,52 @@ test.describe("compare summary (step 15)", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 });
+// ── Stop-table captures (step 16) ───────────────────────────────────────────
+//
+// The "Stop by stop" table: the deviation pair with its stretch note and
+// running times, the short turn's −1:00 at the shared end stop, the loop's
+// repeated visit, the moved stop's linked rows, the extension where B adds
+// stops past A and the no-running-times side, whose cells read "—". Every
+// state waits on the table's footer, which only renders with the table itself.
+// The seed has no long pattern, so the reference's "large" (folded) state has
+// no capture here; EV-14's 34-row fixture and the reference render cover the
+// folds. The no-times pair compares BROWSER_PATTERNS_READY's BROWSER-P1 with a
+// timings-less context pattern that serves the same first two stops, so the
+// read has two shared anchors and no times to put in them.
+
+test.describe("compare stop table (step 16)", () => {
+  test("capture: table", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    const noTimesUrl = `/gtfs/${versionId}/routes/BROWSER_PATTERNS_READY/patterns/compare?a=BROWSER-P1&b=BROWSER_CTX_01-P1`;
+
+    const states = [
+      ["ideal", compareUrl(versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-DEV"), "#compare-rows tr[data-stop-id]"],
+      ["short-turn", compareUrl(versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-SHORT"), "#stops-footer"],
+      ["repeat", compareUrl(versionId, "?a=BROWSER-CMP-LOOP&b=BROWSER-CMP-FULL"), "#stops-footer"],
+      ["moved", compareUrl(versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-MOVED"), "#stops-footer"],
+      ["extension", compareUrl(versionId, "?a=BROWSER-CMP-SHORT&b=BROWSER-CMP-FULL"), "#stops-footer"],
+      ["no-times", noTimesUrl, "#stops-footer"],
+    ];
+
+    for (const [name, url, selector] of states) {
+      for (const [width, height] of [
+        [1440, 900],
+        [390, 844],
+      ]) {
+        await page.setViewportSize({ width, height });
+        await page.goto(url);
+        await page.waitForSelector(selector);
+        await capture(page, `table-${name}-${width}`);
+      }
+    }
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+});
