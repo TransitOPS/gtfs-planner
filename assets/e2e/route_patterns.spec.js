@@ -323,7 +323,7 @@ for (const viewport of VIEWPORTS) {
     await expect(page.locator("#stop-review-dialog-confirm")).toBeEnabled();
     await page.locator("#stop-review-dialog-confirm").click();
 
-    await expect(page.locator("#status")).toContainText("1 trips updated", { timeout: 15000 });
+    await expect(page.locator("#status")).toContainText("1 trip updated", { timeout: 15000 });
     await expect(page.locator("#stop-review-dialog[data-open='true']")).toBeHidden();
 
     // The occurrence order is persisted, not just rendered.
@@ -366,7 +366,7 @@ for (const viewport of VIEWPORTS) {
     await expect(page.locator("#timing-review-dialog-title")).toContainText("Update 1 trip?");
     await page.locator("#timing-review-dialog-confirm").click();
 
-    await expect(page.locator("#status")).toContainText("1 trips updated");
+    await expect(page.locator("#status")).toContainText("1 trip updated");
     await page.reload();
     await page.waitForSelector("#timing-rows", { timeout: 10000 });
     await waitForLiveView(page);
@@ -558,7 +558,7 @@ test("a terminal stop addition collects explicit values before it can be applied
   await expect(page.locator("#stop-review-dialog-confirm")).toBeEnabled();
   await page.locator("#stop-review-dialog-confirm").click();
 
-  await expect(page.locator("#status")).toContainText("1 trips updated", { timeout: 15000 });
+  await expect(page.locator("#status")).toContainText("1 trip updated", { timeout: 15000 });
   await expect(page.locator("#stop-review-dialog[data-open='true']")).toBeHidden();
 
   // The appended stop and the supplied times are persisted service, read back
@@ -660,7 +660,7 @@ test("the downloaded export carries the mutated pattern's exact stop times", asy
   await page.locator("#timing-save").click();
   await expect(page.locator("#timing-review-dialog[data-open='true']")).toBeVisible();
   await page.locator("#timing-review-dialog-confirm").click();
-  await expect(page.locator("#status")).toContainText("1 trips updated");
+  await expect(page.locator("#status")).toContainText("1 trip updated");
 
   const zip = await downloadExport(page);
   const stopTimes = readZipTextMember(zip, "stop_times.txt");
