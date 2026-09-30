@@ -1901,8 +1901,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   end
 
   # The leave guard only ever navigates to a same-origin path the hook
-  # read off a link the page rendered; anything else is dropped.
-  defp safe_leave_path?(to) when is_binary(to), do: String.starts_with?(to, "/")
+  # read off a link the page rendered; anything else is dropped, including a
+  # protocol-relative "//host" or "/\\host" that would leave the origin.
+  defp safe_leave_path?(to) when is_binary(to) do
+    String.starts_with?(to, "/") and not String.starts_with?(to, ["//", "/\\"])
+  end
+
   defp safe_leave_path?(_to), do: false
 
   defp leave_schedules_path(socket) do

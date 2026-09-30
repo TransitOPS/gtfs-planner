@@ -2719,6 +2719,19 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
         render_click(view, "paste_leave_guard", %{"to" => schedules})
     end
 
+    test "the leave guard ignores a protocol-relative path",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = guard_open(view, version, paste.route, paste)
+
+      render_click(view, "paste_leave_guard", %{"to" => "//evil.example/gtfs"})
+
+      assert has_element?(view, "#paste-source")
+      refute has_element?(view, "#paste-leave-confirm")
+    end
+
     test "the leave guard hook watches the paste form",
          %{conn: conn, version: version} = context do
       paste = paste_route(context)
