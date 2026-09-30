@@ -131,8 +131,13 @@ const TimetableGrid = {
   },
 
   updated() {
-    const focus = this._restoreFocus;
+    // Focus comes back only when nothing else holds it: a control outside the grid
+    // (a filter, a strip field) the user moved to keeps its focus.
+    const focus = this._restoreFocus && this._focusIsFree();
     this._restoreFocus = false;
+    if (this._selectionAnchor && !this._hasTrip(this._selectionAnchor)) {
+      this._selectionAnchor = null;
+    }
     if (!this._cursor && !this._cursorCell) return;
 
     // An open editor owns the focus ring: re-rendering the cell under it must
@@ -165,6 +170,22 @@ const TimetableGrid = {
 
   _cells() {
     return Array.from(this.el.querySelectorAll(CELL_SELECTOR));
+  },
+
+  _focusIsFree() {
+    const active = document.activeElement;
+    return !active || active === document.body || this.el.contains(active);
+  },
+
+  _hasTrip(trip) {
+    return this._cells().some((cell) => cell.dataset.trip === trip);
+  },
+
+  // The row says whether it is frequency service; a descendant id is not a signal,
+  // because a trip id may itself end in "-frequency".
+  _frequencyRow(cell) {
+    const row = cell.closest("tr");
+    return Boolean(row && row.dataset.frequency !== undefined);
   },
 
   _rows() {
@@ -265,8 +286,7 @@ const TimetableGrid = {
         return;
       }
 
-      const row = cell.closest("tr");
-      if (row && row.querySelector('[id$="-frequency"]')) {
+      if (this._frequencyRow(cell)) {
         this._pushEvent("open_edit_drawer", { trip: cell.dataset.trip });
         return;
       }
@@ -380,8 +400,11 @@ const TimetableGrid = {
     this._pushEvent("toggle_trip", { trip });
   },
 
+  // An anchor whose row a filter or reload removed can't bound a range the server
+  // resolves, so the range starts again from the cursor row.
   _extendSelection(cell, delta) {
-    const anchor = this._selectionAnchor || this._tripFor(cell);
+    const kept = this._selectionAnchor && this._hasTrip(this._selectionAnchor);
+    const anchor = kept ? this._selectionAnchor : this._tripFor(cell);
     if (!anchor) return;
 
     this._selectionAnchor = anchor;
@@ -470,11 +493,16 @@ const TimetableGrid = {
   },
 
   // Only a stop time is edited here: the timing cell carries no occurrence
-  // position, and a frequency trip's cells open its drawer instead (step 24).
+  // position, a frequency trip's cells open its drawer instead (step 24), and a
+  // trip whose stops differ from the pattern shows no editable times.
   _canEdit(cell) {
-    if (!cell || !cell.dataset.pos) return false;
-    const row = cell.closest("tr");
-    return !(row && row.querySelector('[id$="-frequency"]'));
+    if (!cell || !cell.dataset.pos || cell.dataset.readonly !== undefined) return false;
+    return !this._frequencyRow(cell);
+  },
+
+  // An estimate is a blank stored time shown in italics, so it edits as blank.
+  _blankCell(cell) {
+    return cell.dataset.estimated !== undefined || this._cellText(cell) === "";
   },
 
   _cellFor(source) {
@@ -492,6 +520,7 @@ const TimetableGrid = {
   // The server owns the grammar, so the editor starts from the cell's shown
   // text: `8:05` without the `+1 day` marker, and empty for a missing time.
   _cellText(cell) {
+    if (cell.dataset.estimated !== undefined) return "";
     const shown = cell.querySelector(".tabular-nums") || cell;
     const text = (shown.textContent || "").trim();
     return text === "—" ? "" : text;
@@ -558,6 +587,8 @@ const TimetableGrid = {
   },
 
   _handleEditorKeydown(event) {
+    // An IME composition owns Enter and Tab until it ends.
+    if (event.isComposing) return;
     const modifier = event.metaKey || event.ctrlKey;
 
     if (event.key === "Enter") {
@@ -608,6 +639,8 @@ const TimetableGrid = {
       "cell_preview",
       { trip: editor.trip, position: Number(editor.pos), text: editor.value },
       (reply) => {
+        // A reading never patches the grid, so no update will consume the flag.
+        this._restoreFocus = false;
         if (this._editor !== editor || editor.sequence !== sequence) return;
         if (reply && reply.ok && reply.reading !== undefined) this._renderReading(reply);
         else this._renderError(reply && reply.message);
@@ -709,13 +742,17 @@ const TimetableGrid = {
     else this._moveV(cell, 1);
   },
 
+  // A blank or estimated cell has no stored time to clear. The reply ends the
+  // pending state even when the server writes nothing and sends no patch.
   _clearCell(cell) {
     const trip = cell.dataset.trip;
     const position = cell.dataset.pos;
-    if (!trip || !position) return;
+    if (!trip || !position || this._blankCell(cell)) return;
 
     this._setPending(cell);
-    this._pushEvent("cell_clear", { trip, position: Number(position) });
+    this._pushEvent("cell_clear", { trip, position: Number(position) }, () => {
+      this._clearPending(this._cellFor({ trip, pos: position }) || cell);
+    });
   },
 
   _setPending(cell) {
@@ -807,7 +844,8 @@ const TimetableGrid = {
 
     this._editorReadingKeys.replaceChildren();
 
-    for (const [cap, text] of this._keyHintSegments(first)) {
+    // Filling a blank stop moves no other stop, so it has only the save hint.
+    for (const [cap, text] of this._keyHintSegments(first || this._blankCell(cell))) {
       const key = document.createElement("kbd");
       key.textContent = cap;
       this._editorReadingKeys.append(key);
@@ -815,8 +853,8 @@ const TimetableGrid = {
     }
   },
 
-  _keyHintSegments(first) {
-    if (first) {
+  _keyHintSegments(saveOnly) {
+    if (saveOnly) {
       return [
         ["Enter", " save · "],
         ["Esc", " cancel"],

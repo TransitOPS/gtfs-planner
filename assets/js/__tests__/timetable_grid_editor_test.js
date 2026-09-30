@@ -6,19 +6,19 @@ import TimetableGrid from "../timetable_grid_hook.js";
 // data-trip and data-pos mirror the production markup from step 21: a stop cell
 // wraps the clock in a `tabular-nums` span, the day marker is its own span, the
 // timing cell carries no occurrence position and a frequency row names itself.
-function cell(trip, id, pos, text, { marker = "", title = null } = {}) {
+function cell(trip, id, pos, text, { marker = "", title = null, flags = "" } = {}) {
   const titleAttribute = title ? ` title="${title}"` : "";
   const markerHtml = marker ? `<span class="ml-1 text-[12px] text-muted">${marker}</span>` : "";
 
   return `
-    <td id="cell-${id}-${pos}" data-trip="${trip}" data-pos="${pos}" tabindex="-1"${titleAttribute}>
+    <td id="cell-${id}-${pos}" data-trip="${trip}" data-pos="${pos}" tabindex="-1"${titleAttribute}${flags}>
       <span><span class="tabular-nums">${text}</span>${markerHtml}</span>
     </td>`;
 }
 
 function row(trip, id, { frequency = false } = {}) {
   return `
-    <tr id="trip-${id}">
+    <tr id="trip-${id}"${frequency ? " data-frequency" : ""}>
       ${cell(trip, id, 1, "07:15")}
       ${cell(trip, id, 2, "07:26")}
       ${cell(trip, id, 3, "07:33", { marker: "+1 day" })}
@@ -318,6 +318,96 @@ describe("TimetableGrid in-cell editor", () => {
     }
     expect(cell.classList.contains("is-pending")).toBe(true);
     expect(cell.getAttribute("title")).toBe("Saving…");
+  });
+
+  it("an estimated cell edits as blank: Enter opens an empty editor with only the save hint", () => {
+    const { editor } = grid({
+      rows: `
+        <tr id="trip-A1">
+          ${cell("trip-a1", "A1", 1, "07:15")}
+          ${cell("trip-a1", "A1", 2, "07:21", { flags: " data-estimated" })}
+          ${cell("trip-a1", "A1", 3, "07:33")}
+        </tr>`,
+    });
+
+    keydown(cursor("cell-A1-2"), "Enter");
+
+    expect(input(editor).value).toBe("");
+    expect(keys(editor)).toBe("Enter save · Esc cancel");
+  });
+
+  it("Delete on an estimated cell pushes nothing and leaves the cell as it was", () => {
+    const { hook } = grid({
+      rows: `
+        <tr id="trip-A1">
+          ${cell("trip-a1", "A1", 1, "07:15")}
+          ${cell("trip-a1", "A1", 2, "07:21", { flags: " data-estimated" })}
+        </tr>`,
+    });
+    const estimated = cursor("cell-A1-2");
+
+    keydown(estimated, "Delete");
+
+    expect(hook.pushEvent).not.toHaveBeenCalled();
+    expect(estimated.classList.contains("is-pending")).toBe(false);
+  });
+
+  it("the cell_clear reply ends the pending state when no patch arrives", () => {
+    const { hook } = grid();
+    const cleared = cursor("cell-A1-2");
+
+    keydown(cleared, "Delete");
+    expect(cleared.classList.contains("is-pending")).toBe(true);
+
+    call(0, hook).reply({});
+
+    expect(cleared.classList.contains("is-pending")).toBe(false);
+    expect(cleared.hasAttribute("title")).toBe(false);
+  });
+
+  it("a read-only Departs cell of a trip whose stops differ opens no editor and clears nothing", () => {
+    const { hook, editor } = grid({
+      rows: `
+        <tr id="trip-A1">
+          ${cell("trip-a1", "A1", 1, "07:15", { flags: " data-readonly" })}
+          <td id="cell-A1-timing" data-trip="trip-a1" tabindex="-1"><span>Base</span></td>
+        </tr>`,
+    });
+    const departs = cursor("cell-A1-1");
+
+    keydown(departs, "Enter");
+    keydown(departs, "7");
+    keydown(departs, "Delete");
+
+    expect(editor.classList.contains("is-open")).toBe(false);
+    expect(hook.pushEvent).not.toHaveBeenCalled();
+  });
+
+  it("a listed trip whose id ends in -frequency still opens the editor", () => {
+    const { editor } = grid({
+      rows: `
+        <tr id="trip-X-frequency">
+          ${cell("trip-x", "X-frequency", 1, "07:15")}
+          <td><input type="checkbox" id="trip-select-X-frequency" /></td>
+        </tr>`,
+    });
+
+    keydown(cursor("cell-X-frequency-1"), "Enter");
+
+    expect(editor.classList.contains("is-open")).toBe(true);
+  });
+
+  it("Enter during an IME composition does not commit", () => {
+    const { hook, editor } = grid();
+    keydown(cursor("cell-A1-2"), "7");
+    type(editor, "7:28");
+    vi.runAllTimers();
+    const pushes = hook.pushEvent.mock.calls.length;
+
+    keydown(input(editor), "Enter", { isComposing: true });
+
+    expect(hook.pushEvent.mock.calls.length).toBe(pushes);
+    expect(editor.classList.contains("is-open")).toBe(true);
   });
 
   it("a cleared cell keeps its stored title when the pending state goes away", () => {
