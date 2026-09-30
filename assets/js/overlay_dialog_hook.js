@@ -2,9 +2,11 @@ const OverlayDialog = {
   mounted() {
     this._overlayDialog_boundCancel = this._onCancel.bind(this);
     this._overlayDialog_boundClick = this._onBackdropClick.bind(this);
+    this._overlayDialog_boundKeydown = this._onTabKeydown.bind(this);
 
     this.el.addEventListener("cancel", this._overlayDialog_boundCancel);
     this.el.addEventListener("click", this._overlayDialog_boundClick);
+    this.el.addEventListener("keydown", this._overlayDialog_boundKeydown);
 
     if (this._isOpenRequested() && !this.el.open) {
       this._activate();
@@ -67,6 +69,10 @@ const OverlayDialog = {
     if (this._overlayDialog_boundClick) {
       this.el.removeEventListener("click", this._overlayDialog_boundClick);
       this._overlayDialog_boundClick = null;
+    }
+    if (this._overlayDialog_boundKeydown) {
+      this.el.removeEventListener("keydown", this._overlayDialog_boundKeydown);
+      this._overlayDialog_boundKeydown = null;
     }
     if (this.el.open) {
       this.el.close();
@@ -180,6 +186,40 @@ const OverlayDialog = {
 
     const dismiss = this._findDismissButton();
     if (dismiss) dismiss.click();
+  },
+
+  // Modal containment keeps the page behind inert, but the tested Chromium
+  // still lets Tab from the dialog's last control escape to the browser. The
+  // drawers promise a keyboard trap, so wrap the Tab here: forward from the
+  // last tabbable to the first, backward from the first to the last.
+  _onTabKeydown(e) {
+    if (e.key !== "Tab" || !this.el.open) return;
+
+    const tabbables = this._tabbables();
+    if (tabbables.length === 0) {
+      e.preventDefault();
+      return;
+    }
+
+    const active = document.activeElement;
+    const first = tabbables[0];
+    const last = tabbables[tabbables.length - 1];
+
+    if (e.shiftKey && (active === first || !this.el.contains(active))) {
+      e.preventDefault();
+      this._focusWithoutScroll(last);
+    } else if (!e.shiftKey && (active === last || !this.el.contains(active))) {
+      e.preventDefault();
+      this._focusWithoutScroll(first);
+    }
+  },
+
+  _tabbables() {
+    return Array.from(
+      this.el.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter((candidate) => this._isRendered(candidate));
   },
 };
 

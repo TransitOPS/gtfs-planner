@@ -13,6 +13,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.HeadsignUsageFactsTest do
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Route
 
   setup do
     organization =
@@ -315,6 +316,19 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.HeadsignUsageFactsTest do
   end
 
   defp block_successor(route_id, context, attrs \\ []) do
+    # The next-block lookup joins routes for the successor's short name, so a
+    # successor trip needs its route row to exist; only "10" comes with setup.
+    unless Repo.get_by(Route,
+             organization_id: context.organization.id,
+             gtfs_version_id: context.version.id,
+             route_id: route_id
+           ) do
+      route_fixture(context.organization.id, context.version.id,
+        route_id: route_id,
+        route_short_name: route_id
+      )
+    end
+
     trip_fixture(context.organization.id, context.version.id, route_id,
       trip_headsign: "Boston",
       service_id: "WK",
