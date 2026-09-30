@@ -1,7 +1,7 @@
 defmodule GtfsPlanner.Operations do
   @moduledoc """
-  Organization-wide operational assets (TODS garages, vehicle types and
-  vehicles).
+  Organization-wide operational assets (TODS garages, vehicle types, vehicles
+  and operators).
 
   Every read and write filters on the caller's `organization_id` only; GTFS
   versions remain navigation context. `organization_id`, the assignment
@@ -768,6 +768,25 @@ defmodule GtfsPlanner.Operations do
   # --- Operators -------------------------------------------------------------
 
   @doc """
+  Lists the organization's operators in seniority order.
+
+  Seniority numbers ascend with blanks last; equal numbers are ordered by
+  employee ID and an operator without a number by display name, then employee
+  ID. This is the single ordering every operator list reads (domain rule 11).
+  """
+  @spec list_operators(Ecto.UUID.t()) :: [Operator.t()]
+  def list_operators(organization_id) do
+    Operator
+    |> where([o], o.organization_id == ^organization_id)
+    |> order_by([o],
+      asc_nulls_last: o.seniority_number,
+      asc: fragment("CASE WHEN ? IS NULL THEN ? END", o.seniority_number, o.display_name),
+      asc: o.employee_id
+    )
+    |> Repo.all()
+  end
+
+  @doc """
   Gets an operator by organization and id, or nil when it does not exist or
   belongs to another organization. A malformed id is treated as missing.
 
@@ -775,11 +794,63 @@ defmodule GtfsPlanner.Operations do
   the `operators` table itself — `GtfsPlanner.Gtfs.Rosters.assign_operator/4`
   uses it, the way the block writers resolve a garage or vehicle type.
   """
-  @spec get_operator(Ecto.UUID.t(), Ecto.UUID.t()) :: Operator.t() | nil
+  @spec get_operator(Ecto.UUID.t(), term()) :: Operator.t() | nil
   def get_operator(organization_id, id) do
     case Ecto.UUID.cast(id) do
       {:ok, id} -> Repo.get_by(Operator, id: id, organization_id: organization_id)
       :error -> nil
+    end
+  end
+
+  @doc """
+  Returns a changeset for tracking operator changes.
+  """
+  @spec change_operator(Operator.t(), map()) :: Ecto.Changeset.t()
+  def change_operator(%Operator{} = operator, attrs \\ %{}) do
+    Operator.changeset(operator, attrs)
+  end
+
+  @doc """
+  Creates an operator for the organization and records the acting user.
+
+  An employee ID the organization already holds is refused with an error naming
+  the operator who holds it, so the editor is not left searching the list.
+  """
+  @spec create_operator(Ecto.UUID.t(), actor(), map()) ::
+          {:ok, Operator.t()} | {:error, Ecto.Changeset.t()}
+  def create_operator(organization_id, actor, attrs) do
+    changeset =
+      %Operator{organization_id: organization_id, updated_by_id: actor_id(actor)}
+      |> Operator.changeset(attrs)
+
+    with {:ok, changeset} <- refuse_employee_id(changeset, organization_id, nil) do
+      Repo.insert(changeset)
+    end
+  end
+
+  @doc """
+  Updates an operator belonging to the organization and records the acting user.
+
+  Returns `{:error, :not_found}` for a missing, malformed or foreign id and
+  changes nothing. An employee ID another operator already holds is refused with
+  an error naming the holder.
+  """
+  @spec update_operator(Ecto.UUID.t(), actor(), term(), map()) ::
+          {:ok, Operator.t()} | {:error, Ecto.Changeset.t() | :not_found}
+  def update_operator(organization_id, actor, id, attrs) do
+    case get_operator(organization_id, id) do
+      nil ->
+        {:error, :not_found}
+
+      operator ->
+        changeset =
+          operator
+          |> Operator.changeset(attrs)
+          |> put_change(:updated_by_id, actor_id(actor))
+
+        with {:ok, changeset} <- refuse_employee_id(changeset, organization_id, operator.id) do
+          Repo.update(changeset)
+        end
     end
   end
 
@@ -1597,4 +1668,37 @@ defmodule GtfsPlanner.Operations do
 
   defp actor_id(%{id: id}), do: id
   defp actor_id(_), do: nil
+
+  # The holder is read before the write, the way `Rosters.assign_operator/4`
+  # reads the line an operator already holds: an insert that violates the unique
+  # index leaves a failed transaction behind, and this refusal is one scoped read
+  # that never fails. The index still rejects a concurrent insert that claimed
+  # the ID between the read and the write; that write keeps Ecto's own message.
+  defp refuse_employee_id(changeset, organization_id, operator_id) do
+    employee_id = Ecto.Changeset.get_field(changeset, :employee_id)
+
+    holder =
+      changeset.valid? and is_binary(employee_id) and employee_id != "" and
+        employee_id_holder(organization_id, employee_id, operator_id)
+
+    if holder,
+      do:
+        {:error,
+         Ecto.Changeset.add_error(
+           changeset,
+           :employee_id,
+           "is already used by #{holder.display_name}."
+         )},
+      else: {:ok, changeset}
+  end
+
+  defp employee_id_holder(organization_id, employee_id, operator_id) do
+    Operator
+    |> where([o], o.organization_id == ^organization_id and o.employee_id == ^employee_id)
+    |> exclude_operator(operator_id)
+    |> Repo.one()
+  end
+
+  defp exclude_operator(query, nil), do: query
+  defp exclude_operator(query, operator_id), do: where(query, [o], o.id != ^operator_id)
 end
