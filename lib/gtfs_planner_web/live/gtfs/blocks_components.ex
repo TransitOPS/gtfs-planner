@@ -3006,6 +3006,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         :stay_warnings,
         connection_stay_warnings(connection, assigns.gap, assigns.connection_draft)
       )
+      |> assign(
+        :pair_map,
+        connection_pair_map(assigns.from, assigns.to, assigns.gap, assigns.routes)
+      )
 
     ~H"""
     <.drawer
@@ -3264,6 +3268,46 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           </div>
           <p id="gap-rider-footnote" class="mt-2 text-[13px] text-muted">
             {@rider_footnote}
+          </p>
+        </.drawer_section>
+
+        <%!-- The handoff mini-map (AC-18). It is a picture of the two stops the
+        drawer already names above, so it is `phx-update="ignore"` and read-only:
+        the hook owns the canvas and never sends an event, and the stops stay
+        legible in the drawer's own text with the map gone. The distance rides
+        the connector rather than the body, so the picture and the sentence cannot
+        drift apart. A pair whose stops this version cannot place renders the
+        sentence instead — a half-drawn handoff would be a wrong one. --%>
+        <.drawer_section id="gap-where" title="Where the vehicle waits">
+          <div :if={@pair_map} id="connection-pair-map-region" class="max-w-full">
+            <div
+              id="connection-pair-map"
+              phx-hook="ConnectionMap"
+              phx-update="ignore"
+              data-mode="pair"
+              data-pair={Jason.encode!(@pair_map)}
+              aria-label="Map of the arrival and departure stops"
+              class="h-44 w-full overflow-hidden rounded-card border border-subtle"
+            >
+            </div>
+            <p
+              id="connection-pair-map-unavailable"
+              data-role="connection-map-unavailable"
+              class="hidden h-44 w-full content-center bg-canvas px-6 text-center text-[13px] text-muted"
+            >
+              Map unavailable. The two stops are named above.
+            </p>
+            <%!-- Leaflet draws its own attribution control inside the canvas, so
+            there is no caption here: a second copy of the same credit beside it
+            would read as a mistake. --%>
+          </div>
+          <p
+            :if={is_nil(@pair_map)}
+            id="connection-pair-map-unknown"
+            data-role="connection-map-unknown"
+            class="text-[13px] text-muted"
+          >
+            Location unknown — this version places {connection_pair_unknown(assigns.from, assigns.to)} nowhere.
           </p>
         </.drawer_section>
       </.drawer_scroll>
@@ -4940,6 +4984,72 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     do: station_name(stop)
 
   defp window_place(%{stop_id: stop_id}, _from, _to), do: stop_id
+
+  # The handoff mini-map's payload: the stop the earlier trip arrives at, the stop
+  # the later trip departs from, each in its own route's colour, and the distance
+  # the gap's own handoff already measured. `nil` when either stop has no
+  # coordinates, because half a handoff is a wrong one — the drawer prints
+  # "Location unknown" instead. Nothing here recomputes the distance: R5 already
+  # measured it, and a second measurement could only disagree with the drawer's
+  # own text about the same handoff.
+  defp connection_pair_map(from, to, gap, routes) do
+    with {:ok, arrival} <- pair_point(from.last_stop, route_color(routes, from.route_id)),
+         {:ok, departure} <- pair_point(to.first_stop, route_color(routes, to.route_id)) do
+      %{
+        arrival: arrival,
+        departure: departure,
+        meters: handoff_meters(gap.handoff)
+      }
+    else
+      :error -> nil
+    end
+  end
+
+  # A stop reference with usable coordinates, or `:error`. A coordinate the
+  # version stores as 0 is a real position; one it never stored is `nil`.
+  defp pair_point(stop, color) do
+    with %{stop_id: stop_id, name: name, lat: lat, lon: lon} <- stop,
+         true <- is_number(lat) and is_number(lon) do
+      {:ok, %{stop_id: stop_id, name: name, lat: lat, lon: lon, color: color}}
+    else
+      _other -> :error
+    end
+  end
+
+  # The route's own colour, normalized so an unvalidated feed value never reaches
+  # a canvas. A route with no usable colour draws in the page's primary, which is
+  # what an uncoloured feed gets everywhere else too.
+  defp route_color(routes, route_id) do
+    case Map.get(routes, route_id) do
+      %{route_color: value} ->
+        case RouteIdentity.normalize_hex(value) do
+          {:ok, hex} -> "#" <> hex
+          :error -> nil
+        end
+
+      _other ->
+        nil
+    end
+  end
+
+  # R5's own distance. A handoff that does not move the vehicle has nothing to
+  # measure, and a deadhead whose length the version could not compute is drawn
+  # without a number rather than with a zero.
+  defp handoff_meters({:nearby, meters}) when is_number(meters), do: meters
+  defp handoff_meters({:moves, meters}) when is_number(meters), do: meters
+  defp handoff_meters(_handoff), do: nil
+
+  # The stops the map could not place, named for the sentence that says so.
+  defp connection_pair_unknown(from, to) do
+    case {pair_placeable?(from.last_stop), pair_placeable?(to.first_stop)} do
+      {false, _} -> "the arrival stop"
+      {_, false} -> "the departure stop"
+      {_, _} -> "one of the two stops"
+    end
+  end
+
+  defp pair_placeable?(%{lat: lat, lon: lon}), do: is_number(lat) and is_number(lon)
+  defp pair_placeable?(_stop), do: false
 
   # The pair a driving-time entry names, in the stored `stop:<id>` form
   # `Gtfs.list_deadhead_pairs/3` hands out, so the drawer the link opens can
