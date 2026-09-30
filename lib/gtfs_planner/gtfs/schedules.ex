@@ -56,6 +56,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Schedules.Summary
   alias GtfsPlanner.Gtfs.Schedules.Timetable
+  alias GtfsPlanner.Gtfs.Schedules.TripChanges
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.TimedPattern
@@ -674,7 +675,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   are rematerialized (or its stop times re-inserted when its stop count
   differs) with one `'updated'` audit carrying the before/after
   `trip_snapshot/6`. Each `:add` then inserts one trip with an
-  `allocate_trip_ids/5` natural ID, `linked` state and the plan's R13
+  `TripChanges.allocate_trip_ids/5` natural ID, `linked` state and the plan's R13
   metadata, materializes its stop times (R9 timepoints 1/0) via
   `stop_time_rows/3` + `insert_stop_times!/1`, and audits 'created' — all
   under the same `operation_id`. `vehicles_before/after` come from the
@@ -1092,7 +1093,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   # Step 18: one insert per :add, in plan order (AC-11, AC-16, AC-22).
-  # IDs come from `allocate_trip_ids/5` seeded with the version's IDs read
+  # IDs come from `TripChanges.allocate_trip_ids/5` seeded with the version's IDs read
   # after the removals, so a removed natural ID is free to reuse and a
   # later departure never reuses an ID this apply already reserved (a
   # same-HHMM collision takes the `-2` suffix). Each add sets its
@@ -1126,7 +1127,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       starts = Enum.map(adds, &paste_add_start!(&1))
 
       trip_ids =
-        allocate_trip_ids(
+        TripChanges.allocate_trip_ids(
           route.route_id,
           direction,
           service_id,
@@ -2325,7 +2326,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     existing_trip_ids = version_trip_ids(organization_id, version_id)
 
     trip_ids =
-      allocate_trip_ids(
+      TripChanges.allocate_trip_ids(
         route.route_id,
         pattern.direction_id,
         service_id,
@@ -2890,7 +2891,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     [materialized] = materialized_stop_times([start_secs], occurrences, timing_rows(timing))
 
     [new_trip_id] =
-      allocate_trip_ids(
+      TripChanges.allocate_trip_ids(
         route.route_id,
         pattern.direction_id,
         trip.service_id,
@@ -3297,50 +3298,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       select: t.trip_id
     )
     |> Repo.all()
-  end
-
-  # Trip IDs are unique within the organization and version, so the version's
-  # existing IDs seed the candidate set. Across the batch, a later departure can
-  # never reuse an ID this call already reserved.
-  defp allocate_trip_ids(route_id, direction_id, service_id, starts, existing_trip_ids) do
-    {trip_ids, _taken} =
-      Enum.map_reduce(starts, MapSet.new(existing_trip_ids), fn start_secs, taken ->
-        base = trip_id_base(route_id, direction_id, service_id, start_secs)
-        trip_id = next_free_trip_id(base, taken)
-
-        {trip_id, MapSet.put(taken, trip_id)}
-      end)
-
-    trip_ids
-  end
-
-  # The base itself when free; otherwise the smallest free suffix at or above 2.
-  defp next_free_trip_id(base, taken) do
-    if MapSet.member?(taken, base) do
-      suffix =
-        2
-        |> Stream.iterate(&(&1 + 1))
-        |> Enum.find(fn candidate -> not MapSet.member?(taken, "#{base}-#{candidate}") end)
-
-      "#{base}-#{suffix}"
-    else
-      base
-    end
-  end
-
-  defp trip_id_base(route_id, direction_id, service_id, start_secs) do
-    "#{route_id}-#{direction_id}-#{service_id}-#{trip_id_stamp(start_secs)}"
-  end
-
-  # `HHMM` is unwrapped `hours * 100 + minutes`, zero-padded to four digits, so
-  # `25:10` is `2510`.
-  defp trip_id_stamp(start_secs) do
-    hours = div(start_secs, 3_600)
-    minutes = start_secs |> rem(3_600) |> div(60)
-
-    (hours * 100 + minutes)
-    |> Integer.to_string()
-    |> String.pad_leading(4, "0")
   end
 
   defp series(start_secs, every_secs, until_secs) do
