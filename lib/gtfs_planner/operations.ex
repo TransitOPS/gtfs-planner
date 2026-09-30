@@ -36,6 +36,7 @@ defmodule GtfsPlanner.Operations do
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Operations.Garage
   alias GtfsPlanner.Operations.Operator
+  alias GtfsPlanner.Operations.OperatorImport
   alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Operations.Vehicle
   alias GtfsPlanner.Operations.VehicleType
@@ -877,6 +878,155 @@ defmodule GtfsPlanner.Operations do
         Repo.delete(operator)
     end
   end
+
+  # --- Operator import -------------------------------------------------------
+
+  @doc """
+  Classifies a parsed operators CSV against the organization's stored operators.
+
+  A valid row carrying an employee ID the organization already holds is an
+  update, any other valid row is an add, and an invalid row is skipped with its
+  reason. Skipped rows and `ignored_columns` come from
+  `Operations.OperatorImport.classify/2` unchanged: only `employee_id`,
+  `display_name` and `seniority_number` are read, and a file without a
+  `seniority_number` column marks every row `:keep`.
+  """
+  @spec preview_operator_import(Ecto.UUID.t(), Tods.parsed()) :: OperatorImport.preview()
+  def preview_operator_import(organization_id, parsed) do
+    classify_operators(organization_id, parsed, false)
+  end
+
+  @doc """
+  Applies a previewed operators CSV in one transaction, or changes nothing.
+
+  The organization's operators are locked `FOR UPDATE` in employee ID order and
+  the preview is recomputed from them, so an operator created, deleted or
+  re-identified since the preview changes the add or update ID set and the apply
+  returns `{:error, {:preview_changed, preview}}` with a fresh preview instead of
+  writing. Adds are inserted with `on_conflict: :nothing`; a short insert (a
+  concurrent insert claimed an ID after the recompute) rolls back every write and
+  returns a freshly read `{:error, {:preview_changed, preview}}` too.
+
+  Updates go through `update_operator/4`, so they record the acting user and keep
+  its duplicate employee ID refusal, and only the file's mapped fields are
+  written: a file with no `seniority_number` column leaves the stored number
+  alone and a blank cell clears it. No stored operator is deleted and an update
+  keeps the row's UUID.
+  """
+  @spec apply_operator_import(Ecto.UUID.t(), actor(), Tods.parsed(), OperatorImport.preview()) ::
+          {:ok, %{added: non_neg_integer(), updated: non_neg_integer()}}
+          | {:error, {:preview_changed, OperatorImport.preview()}}
+  def apply_operator_import(organization_id, actor, parsed, preview) do
+    outcome =
+      Repo.transaction(fn ->
+        existing = load_operators(organization_id, true)
+        fresh = classify_operators(existing, parsed)
+
+        if same_operator_plan?(fresh, preview) do
+          write_operator_import(organization_id, actor, existing, fresh)
+        else
+          Repo.rollback({:preview_changed, fresh})
+        end
+      end)
+
+    case outcome do
+      {:ok, %{added: _added, updated: _updated} = result} ->
+        {:ok, result}
+
+      {:error, {:preview_changed, fresh}} ->
+        {:error, {:preview_changed, fresh}}
+
+      {:error, :short_insert} ->
+        {:error, {:preview_changed, preview_operator_import(organization_id, parsed)}}
+    end
+  end
+
+  defp classify_operators(organization_id, parsed, lock?) do
+    organization_id
+    |> load_operators(lock?)
+    |> classify_operators(parsed)
+  end
+
+  defp classify_operators(existing, parsed) do
+    OperatorImport.classify(parsed, MapSet.new(Map.keys(existing)))
+  end
+
+  # Every stored operator of the organization is locked, not only the ones the
+  # file names: the plan comparison reads the whole employee ID set, and an
+  # update writes the locked row rather than a row read after the lock.
+  defp load_operators(organization_id, lock?) do
+    Operator
+    |> where([o], o.organization_id == ^organization_id)
+    |> lock_rows(lock?)
+    |> order_by([o], asc: o.employee_id)
+    |> Repo.all()
+    |> Map.new(&{&1.employee_id, &1})
+  end
+
+  defp same_operator_plan?(fresh, preview) do
+    Enum.sort(employee_ids(fresh.add)) == Enum.sort(employee_ids(Map.get(preview, :add, []))) and
+      Enum.sort(employee_ids(fresh.update)) ==
+        Enum.sort(employee_ids(Map.get(preview, :update, [])))
+  end
+
+  defp employee_ids(rows), do: Enum.map(rows, & &1.employee_id)
+
+  # Each update goes through `update_operator/4` against the locked row, so the
+  # acting user is recorded and its duplicate employee ID refusal stays: the
+  # stored row carries the file's employee ID, and the holder lookup excludes
+  # the row being updated.
+  defp write_operator_import(organization_id, actor, existing, fresh) do
+    Enum.each(fresh.update, fn row ->
+      {:ok, _operator} =
+        update_operator(
+          organization_id,
+          actor,
+          Map.fetch!(existing, row.employee_id).id,
+          operator_import_fields(row)
+        )
+    end)
+
+    added = insert_operator_adds(organization_id, actor_id(actor), fresh.add)
+
+    %{added: added, updated: length(fresh.update)}
+  end
+
+  # `:keep` leaves the stored seniority number untouched; a present cell,
+  # including a blank one, is written as it stands.
+  defp operator_import_fields(row) do
+    fields = %{employee_id: row.employee_id, display_name: row.display_name}
+
+    case row.seniority_number do
+      :keep -> fields
+      number -> Map.put(fields, :seniority_number, number)
+    end
+  end
+
+  defp insert_operator_adds(_organization_id, _actor_id, []), do: 0
+
+  defp insert_operator_adds(organization_id, actor_id, rows) do
+    now = DateTime.utc_now()
+
+    entries =
+      Enum.map(rows, fn row ->
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: organization_id,
+          employee_id: row.employee_id,
+          display_name: row.display_name,
+          # An add has no stored seniority to keep, so `:keep` inserts none.
+          seniority_number: new_seniority_number(row.seniority_number),
+          updated_by_id: actor_id,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    insert_planned(Operator, entries, length(rows))
+  end
+
+  defp new_seniority_number(:keep), do: nil
+  defp new_seniority_number(seniority_number), do: seniority_number
 
   # --- TODS import -----------------------------------------------------------
 

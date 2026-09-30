@@ -133,7 +133,9 @@ defmodule GtfsPlanner.Operations.OperatorImport do
 
   # Mirrors `Tods.classify/1`: a repeat is reported against the first row that
   # was accepted with that ID, so a row skipped for its own reason neither
-  # claims the ID nor is blamed for a later one.
+  # claims the ID nor is blamed for a later one. An accepted row lands in
+  # exactly one of add and update: a stored employee ID is an update only, and
+  # an apply would otherwise insert the row it also updates.
   defp accept_or_reject({add, update, skipped, first_rows}, row, new_row, existing_ids) do
     case Map.fetch(first_rows, new_row.employee_id) do
       {:ok, first_row} ->
@@ -147,7 +149,7 @@ defmodule GtfsPlanner.Operations.OperatorImport do
         first_rows = Map.put(first_rows, new_row.employee_id, row)
 
         if MapSet.member?(existing_ids, new_row.employee_id) do
-          {[new_row | add], [new_row | update], skipped, first_rows}
+          {add, [new_row | update], skipped, first_rows}
         else
           {[new_row | add], update, skipped, first_rows}
         end
