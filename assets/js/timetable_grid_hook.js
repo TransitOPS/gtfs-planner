@@ -26,11 +26,33 @@
  * a 150 ms debounce over `cell_preview`, Enter asks `cell_commit` and the cell
  * carries the pending state until the reply. The editor never holds a parsed
  * time, a fingerprint or a restore payload.
+ *
+ * R12 scopes the shortcuts: they act only while focus is inside the grid and
+ * never when the event target is a field (the hook's own editor included), a
+ * dialog or a drawer. Space toggles the cursor row (`toggle_trip`), Shift+Up/
+ * Down extend the selection (`select_range`), Cmd/Ctrl+A selects every visible
+ * row, `]`/`[`/`}`/`{` nudge by ±1/±5 minutes (`nudge`, the cursor row's
+ * trip), Cmd/Ctrl+Z undoes (never while the editor is open), Cmd/Ctrl+C copies
+ * the selection, a `paste` event pushes `paste_trips`, `?` and Cmd/Ctrl+/
+ * open the shortcut sheet, and Cmd/Ctrl+S is prevented and pushes
+ * `save_shortcut`. Brackets match on `event.key`, so AltGr/Option layouts work;
+ * Meta with a bracket stays with the browser's Back/Forward. Enter opens the
+ * editor on a stop cell, the Change timing strip on the Timing cell and the
+ * trip drawer on a frequency row.
  */
 const CELL_SELECTOR = 'td[id^="cell-"]';
 const SCROLL_REGION_SELECTOR = '[id$="-table-container"]';
 const TYPING_SELECTOR = "input, textarea, select, [contenteditable]";
+const DIALOG_SELECTOR = "dialog, [role=dialog]";
 const EDITOR_SELECTOR = "#cell-editor";
+// The shifted faces of the bracket keys are included, so the same physical key
+// nudges on layouts that report `{`/`}`; Meta is handled by the browser.
+const NUDGE_MINUTES = new Map([
+  ["]", 1],
+  ["[", -1],
+  ["}", 5],
+  ["{", -5],
+]);
 // The design system's text input, 44 px tall and right-aligned for a clock.
 const EDITOR_INPUT_CLASS =
   "min-h-11 w-full rounded-control border border-control bg-white px-3 text-right text-sm font-[650] text-strong tabular-nums focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus";
@@ -67,9 +89,11 @@ const TimetableGrid = {
     this._editorInput = null;
     this._editorReadingText = null;
     this._editorReadingKeys = null;
+    this._selectionAnchor = null;
 
     this._onKeydown = (event) => this._handleKeydown(event);
     this._onClick = (event) => this._handleClick(event);
+    this._onPaste = (event) => this._handlePaste(event);
     this._onFocusIn = () => this.el.classList.remove("grid-idle");
     this._onFocusOut = (event) => {
       if (!this.el.contains(event.relatedTarget)) this.el.classList.add("grid-idle");
@@ -80,6 +104,7 @@ const TimetableGrid = {
     this.el.addEventListener("click", this._onClick);
     this.el.addEventListener("focusin", this._onFocusIn);
     this.el.addEventListener("focusout", this._onFocusOut);
+    this.el.addEventListener("paste", this._onPaste);
     // Capture so the table region's own scrolling keeps the editor on its cell.
     window.addEventListener("scroll", this._onViewportChange, true);
     window.addEventListener("resize", this._onViewportChange);
@@ -113,11 +138,13 @@ const TimetableGrid = {
     this.el.removeEventListener("click", this._onClick);
     this.el.removeEventListener("focusin", this._onFocusIn);
     this.el.removeEventListener("focusout", this._onFocusOut);
+    this.el.removeEventListener("paste", this._onPaste);
     window.removeEventListener("scroll", this._onViewportChange, true);
     window.removeEventListener("resize", this._onViewportChange);
     this._stopEditing();
     this._onKeydown = null;
     this._onClick = null;
+    this._onPaste = null;
   },
 
   _cells() {
@@ -149,7 +176,33 @@ const TimetableGrid = {
     if (event.defaultPrevented) return;
 
     const target = event.target;
-    if (!(target instanceof Element) || target.closest(TYPING_SELECTOR)) return;
+    if (!(target instanceof Element) || !this.el.contains(target)) return;
+    // R12: a field, dialog or drawer keeps every key. The editor's own input is
+    // a field too, so its keys never reach this handler.
+    if (target.closest(TYPING_SELECTOR) || target.closest(DIALOG_SELECTOR)) return;
+
+    const modifier = event.metaKey || event.ctrlKey;
+    const key = event.key;
+
+    // These chords act anywhere in the grid, so they are checked before the
+    // cursor cell. Cmd/Ctrl+S never reaches the browser's Save dialog.
+    if (modifier && key.toLowerCase() === "s") {
+      event.preventDefault();
+      this.pushEvent("save_shortcut", {});
+      return;
+    }
+
+    if (modifier && key.toLowerCase() === "z" && !event.shiftKey && !this._editorOpen()) {
+      event.preventDefault();
+      this.pushEvent("undo", {});
+      return;
+    }
+
+    if ((key === "?" && !modifier) || (modifier && key === "/")) {
+      event.preventDefault();
+      this.pushEvent("toggle_shortcuts", {});
+      return;
+    }
 
     const cell = target.closest(CELL_SELECTOR);
 
@@ -157,7 +210,7 @@ const TimetableGrid = {
     // scroll area) enters the grid at that section's first cell, so a keyboard
     // user reaches the cursor without a pointer.
     if (!cell || !this.el.contains(cell)) {
-      if (!NAVIGATION_KEYS.has(event.key)) return;
+      if (!NAVIGATION_KEYS.has(key)) return;
 
       const region = target.closest(SCROLL_REGION_SELECTOR);
       const first =
@@ -169,37 +222,76 @@ const TimetableGrid = {
       return;
     }
 
-    const modifier = event.metaKey || event.ctrlKey;
-
-    // Enter and F2 open the editor on the cell's current text; a digit, `+` or
-    // `-` opens it already holding that character. The timing cell (no
-    // occurrence position) and a frequency row's cells are not editable here.
-    if (event.key === "Enter" || event.key === "F2") {
-      if (!this._canEdit(cell)) return;
+    // Enter and F2 open the Timing strip from the timing cell (no occurrence
+    // position), a frequency trip's drawer from its cells, and the editor from
+    // a listed stop cell; a digit, `+` or `-` opens the editor already holding
+    // that character.
+    if (key === "Enter" || key === "F2") {
       event.preventDefault();
+
+      if (!cell.dataset.pos) {
+        this.pushEvent("open_change", { kind: "timing", trip: cell.dataset.trip });
+        return;
+      }
+
+      const row = cell.closest("tr");
+      if (row && row.querySelector('[id$="-frequency"]')) {
+        this.pushEvent("open_edit_drawer", { trip: cell.dataset.trip });
+        return;
+      }
+
+      if (!this._canEdit(cell)) return;
       this._startEdit(cell);
       return;
     }
 
-    if (event.key === "Delete" || event.key === "Backspace") {
+    if (key === "Delete" || key === "Backspace") {
       if (!this._canEdit(cell)) return;
       event.preventDefault();
       this._clearCell(cell);
       return;
     }
 
-    if (!modifier && !event.altKey && START_EDIT_KEYS.test(event.key) && this._canEdit(cell)) {
+    if (!modifier && !event.altKey && START_EDIT_KEYS.test(key) && this._canEdit(cell)) {
       event.preventDefault();
-      this._startEdit(cell, event.key);
+      this._startEdit(cell, key);
       return;
     }
 
-    switch (event.key) {
+    if (key === " ") {
+      event.preventDefault();
+      this._toggleTrip(cell);
+      return;
+    }
+
+    if (modifier && key.toLowerCase() === "a") {
+      event.preventDefault();
+      this.pushEvent("select_all", {});
+      return;
+    }
+
+    if (modifier && key.toLowerCase() === "c") {
+      event.preventDefault();
+      this.pushEvent("copy_trips", {});
+      return;
+    }
+
+    // Matched on `event.key` so AltGr/Option layouts work; Meta with a bracket
+    // is left to the browser's Back/Forward.
+    const minutes = NUDGE_MINUTES.get(key);
+    if (minutes !== undefined && !event.metaKey) {
+      event.preventDefault();
+      this._nudge(cell, minutes);
+      return;
+    }
+
+    switch (key) {
       case "ArrowDown":
       case "ArrowUp": {
         event.preventDefault();
-        const delta = event.key === "ArrowDown" ? 1 : -1;
+        const delta = key === "ArrowDown" ? 1 : -1;
         if (modifier) this._moveV(cell, 0, { to: delta > 0 ? "last" : "first" });
+        else if (event.shiftKey) this._extendSelection(cell, delta);
         else this._moveV(cell, delta);
         return;
       }
@@ -208,21 +300,21 @@ const TimetableGrid = {
         // Cmd/Ctrl+Left/Right belong to the browser's Back and Forward.
         if (modifier) return;
         event.preventDefault();
-        this._moveH(cell, event.key === "ArrowRight" ? 1 : -1);
+        this._moveH(cell, key === "ArrowRight" ? 1 : -1);
         return;
       }
       case "Home":
       case "End": {
         if (modifier) return;
         event.preventDefault();
-        this._moveH(cell, 0, { to: event.key === "Home" ? "first" : "last" });
+        this._moveH(cell, 0, { to: key === "Home" ? "first" : "last" });
         return;
       }
       case "PageDown":
       case "PageUp": {
         event.preventDefault();
         const pages = this._pageRows(cell);
-        this._moveV(cell, event.key === "PageDown" ? pages : -pages);
+        this._moveV(cell, key === "PageDown" ? pages : -pages);
         return;
       }
       default:
@@ -243,6 +335,60 @@ const TimetableGrid = {
     if (!cell || !this.el.contains(cell)) return;
 
     this._setCursor(cell, { focus: true });
+  },
+
+  // --- selection, nudges and the clipboard ----------------------------------
+
+  // Space toggles the cursor row and becomes the anchor the next Shift+Up/Down
+  // extends from, like the reference's row toggle.
+  _toggleTrip(cell) {
+    const trip = this._tripFor(cell);
+    if (!trip) return;
+
+    this._selectionAnchor = trip;
+    this.pushEvent("toggle_trip", { trip });
+  },
+
+  _extendSelection(cell, delta) {
+    const anchor = this._selectionAnchor || this._tripFor(cell);
+    if (!anchor) return;
+
+    this._selectionAnchor = anchor;
+    this._moveV(cell, delta);
+
+    const to = this._cursor && this._cursor.trip;
+    if (to) this.pushEvent("select_range", { from: anchor, to });
+  },
+
+  // Nudges act on the selection server-side; `trip` names the cursor row.
+  _nudge(cell, minutes) {
+    const trip = this._tripFor(cell);
+    if (!trip) return;
+
+    this.pushEvent("nudge", { minutes, trip });
+  },
+
+  _tripFor(cell) {
+    return (this._cursor && this._cursor.trip) || cell.dataset.trip || null;
+  },
+
+  // A paste in the grid asks the LiveView for its server-held clipboard; when
+  // that is empty and the system clipboard carried text, the server says so
+  // and `paste_text` reports the spreadsheet message instead.
+  _handlePaste(event) {
+    const target = event.target;
+    if (!(target instanceof Element) || !this.el.contains(target)) return;
+    if (target.closest(TYPING_SELECTOR) || target.closest(DIALOG_SELECTOR)) return;
+
+    const cell = target.closest(CELL_SELECTOR);
+    if (!cell || this._editorOpen()) return;
+
+    event.preventDefault();
+    const text = event.clipboardData ? event.clipboardData.getData("text") : "";
+
+    this.pushEvent("paste_trips", {}, (reply) => {
+      if (reply && reply.clipboard === false && text) this.pushEvent("paste_text", {});
+    });
   },
 
   _moveH(reference, delta, { to = null } = {}) {
