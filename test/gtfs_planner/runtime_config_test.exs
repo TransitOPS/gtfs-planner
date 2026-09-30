@@ -8,6 +8,8 @@ defmodule GtfsPlanner.RuntimeConfigTest do
     "GEOAPIFY_API_KEY" => "test-geoapify-key",
     "OPENROUTER_API_KEY" => "test-openrouter-key",
     "OPENROUTER_MODEL" => "test/model-a",
+    "AGENT_ORG_DAILY_ATTEMPTS" => "500",
+    "AGENT_ACTOR_DAILY_ATTEMPTS" => "200",
     "AWS_SES_REGION" => "test-ses-region",
     "AWS_ACCESS_KEY_ID" => "test-ses-access-key",
     "AWS_SECRET_ACCESS_KEY" => "test-ses-secret-key"
@@ -146,6 +148,32 @@ defmodule GtfsPlanner.RuntimeConfigTest do
 
       assert Keyword.fetch!(mailer_config, :adapter) == Swoosh.Adapters.AmazonSES
       assert Keyword.fetch!(mailer_config, :region) == "test-ses-region"
+    end
+  end
+
+  describe "production agent limits" do
+    for variable <- ["AGENT_ORG_DAILY_ATTEMPTS", "AGENT_ACTOR_DAILY_ATTEMPTS"],
+        invalid <- [nil, "0", "abc"] do
+      test "rejects #{inspect(invalid)} for #{variable} without exposing the value" do
+        put_required_prod_env!()
+        variable = unquote(variable)
+        invalid = unquote(invalid)
+
+        if invalid == nil,
+          do: System.delete_env(variable),
+          else: System.put_env(variable, invalid)
+
+        error = assert_raise RuntimeError, fn -> read_prod_app_config!() end
+        assert error.message == "#{variable} must be a positive integer"
+      end
+    end
+
+    test "loads both positive limits" do
+      put_required_prod_env!()
+      config = read_prod_app_config!() |> Keyword.fetch!(GtfsPlanner.Agents.UsageBudget)
+
+      assert Keyword.fetch!(config, :organization_daily_attempts) == 500
+      assert Keyword.fetch!(config, :actor_daily_attempts) == 200
     end
   end
 

@@ -175,6 +175,24 @@ if config_env() != :test do
   config :gtfs_planner, GtfsPlanner.Agents.Model, model: openrouter_model
 
   config :gtfs_planner, :openrouter_api_key, openrouter_api_key
+
+  if config_env() == :prod do
+    agent_limits =
+      for {key, variable} <- [
+            organization_daily_attempts: "AGENT_ORG_DAILY_ATTEMPTS",
+            actor_daily_attempts: "AGENT_ACTOR_DAILY_ATTEMPTS"
+          ] do
+        value =
+          case Integer.parse(System.get_env(variable) || "") do
+            {number, ""} when number > 0 -> number
+            _ -> raise "#{variable} must be a positive integer"
+          end
+
+        {key, value}
+      end
+
+    config :gtfs_planner, GtfsPlanner.Agents.UsageBudget, agent_limits
+  end
 end
 
 if config_env() == :prod do

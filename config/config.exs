@@ -76,6 +76,10 @@ config :gtfs_planner, GtfsPlannerWeb.Endpoint,
 # configuration (`config/runtime.exs`), and the model has no default.
 config :gtfs_planner, GtfsPlanner.Agents.Model, base_url: "https://openrouter.ai/api/v1"
 
+config :gtfs_planner, GtfsPlanner.Agents.UsageBudget,
+  organization_daily_attempts: 500,
+  actor_daily_attempts: 200
+
 # Configure the mailer
 #
 # By default it uses the "Local" adapter which stores the emails

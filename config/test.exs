@@ -152,6 +152,10 @@ config :gtfs_planner,
 # `:agent_scenarios` suite replaces these values, and it restores them.
 config :gtfs_planner, GtfsPlanner.Agents.Model, model: "test/model-a"
 
+config :gtfs_planner, GtfsPlanner.Agents.UsageBudget,
+  organization_daily_attempts: 1000,
+  actor_daily_attempts: 1000
+
 config :gtfs_planner, :openrouter_api_key, "test-openrouter-key"
 
 # The helper's browser journey drives the helper in a real browser, where no

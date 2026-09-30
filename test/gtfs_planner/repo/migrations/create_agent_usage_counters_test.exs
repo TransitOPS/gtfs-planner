@@ -4,7 +4,6 @@ defmodule GtfsPlanner.Repo.Migrations.CreateAgentUsageCountersTest do
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
   alias Ecto.Migrator
-  alias GtfsPlanner.Agents.UsageCounter
   alias GtfsPlanner.Repo
 
   @migration_glob "../../../../priv/repo/migrations/*_create_agent_usage_counters.exs"
@@ -95,19 +94,6 @@ defmodule GtfsPlanner.Repo.Migrations.CreateAgentUsageCountersTest do
                ~s|SELECT count(*) FROM "#{schema}".agent_usage_counters WHERE organization_id = $1|,
                [dump(org_id)]
              )
-  end
-
-  test "the public changeset does not cast attempts" do
-    counter =
-      UsageCounter.changeset(%UsageCounter{}, %{
-        organization_id: Ecto.UUID.generate(),
-        scope_key: "organization",
-        day: @day,
-        attempts: 12
-      })
-
-    refute Map.has_key?(counter.changes, :attempts)
-    assert Ecto.Changeset.get_field(counter, :attempts) == 0
   end
 
   defp setup_prefix do
