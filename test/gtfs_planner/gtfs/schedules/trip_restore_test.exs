@@ -36,9 +36,12 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripRestoreTest do
   import GtfsPlanner.ScheduleEditingFixtures
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Calendar
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.StopTime
+  alias GtfsPlanner.Gtfs.TimedPattern
+  alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
@@ -214,6 +217,96 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripRestoreTest do
     end
   end
 
+  describe "undo after the restored calendar or timing changed" do
+    test "a deleted original calendar refuses and writes nothing", %{scope: scope} do
+      services = weekday_and_saturday!(scope)
+      trip = linked_trip!(scope, "07:00:00", %{service_id: services.weekday})
+      command = {:move_calendar, [trip.id], services.saturday}
+
+      assert {:ok, review} = Gtfs.review_trip_change("12", command, scope.audit)
+
+      assert {:ok, applied} =
+               Gtfs.apply_trip_change("12", command, {:reviewed, review.fingerprint}, scope.audit)
+
+      # The weekday calendar is deleted once no trip uses it.
+      from(c in Calendar, where: c.gtfs_version_id == ^scope.version.id)
+      |> where([c], c.service_id == ^services.weekday)
+      |> Repo.delete_all()
+
+      logs_before = log_count(scope)
+
+      assert {:error, :calendar_not_found} =
+               Gtfs.restore_trips("12", applied.restore, scope.audit)
+
+      assert trip_row(trip).service_id == services.saturday
+      assert log_count(scope) == logs_before
+    end
+
+    test "a timing edited after the change refuses the relink and writes nothing",
+         %{scope: scope} do
+      trip = timing_linked_trip!(scope)
+      original = scope.bundle.timing
+      slow = extra_timing!(scope.bundle, [{0, 0, 1}, {360, 390, 1}, {840, 840, 1}], "Slow")
+      applied = apply_set_timing!(scope, trip, slow)
+
+      # Another editor retimes the original timing; the trip, now on Slow, keeps
+      # its updated_at.
+      from(s in TimedPatternStop,
+        where: s.timed_pattern_id == ^original.id and s.arrival_offset == 720
+      )
+      |> Repo.update_all(set: [arrival_offset: 780, departure_offset: 780])
+
+      clocks_before = stop_time_clocks(trip)
+      logs_before = log_count(scope)
+
+      assert {:error, {:not_restorable, :changed, [changed_id]}} =
+               Gtfs.restore_trips("12", applied.restore, scope.audit)
+
+      assert changed_id == trip.id
+      assert trip_row(trip).timed_pattern_id == slow.id
+      assert stop_time_clocks(trip) == clocks_before
+      assert log_count(scope) == logs_before
+    end
+
+    test "a timing deleted after the change refuses the relink and writes nothing",
+         %{scope: scope} do
+      trip = timing_linked_trip!(scope)
+      original = scope.bundle.timing
+      slow = extra_timing!(scope.bundle, [{0, 0, 1}, {360, 390, 1}, {840, 840, 1}], "Slow")
+      applied = apply_set_timing!(scope, trip, slow)
+
+      Repo.delete_all(from(s in TimedPatternStop, where: s.timed_pattern_id == ^original.id))
+      Repo.delete_all(from(t in TimedPattern, where: t.id == ^original.id))
+
+      logs_before = log_count(scope)
+
+      assert {:error, {:not_restorable, :changed, [changed_id]}} =
+               Gtfs.restore_trips("12", applied.restore, scope.audit)
+
+      assert changed_id == trip.id
+      assert trip_row(trip).timed_pattern_id == slow.id
+      assert log_count(scope) == logs_before
+    end
+
+    test "an unchanged timing is linked back", %{scope: scope} do
+      trip = timing_linked_trip!(scope)
+      original = scope.bundle.timing
+      slow = extra_timing!(scope.bundle, [{0, 0, 1}, {360, 390, 1}, {840, 840, 1}], "Slow")
+      applied = apply_set_timing!(scope, trip, slow)
+
+      assert {:ok, restored} = Gtfs.restore_trips("12", applied.restore, scope.audit)
+
+      assert restored.restored_trip_ids == [trip.id]
+      assert trip_row(trip).timed_pattern_id == original.id
+
+      assert stop_time_clocks(trip) == [
+               {"07:00:00", "07:00:00", 1, nil},
+               {"07:05:00", "07:05:30", 1, nil},
+               {"07:12:00", "07:12:00", 1, nil}
+             ]
+    end
+  end
+
   describe "the restore logs" do
     test "carry undoes and the pre- and post-restore clocks", %{scope: scope} do
       trip = custom_trip!(scope, custom_stop_times(25_200))
@@ -330,6 +423,29 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripRestoreTest do
                {"07:12:00", "07:12:00", nil, nil}
              ]
     end
+  end
+
+  # The fixture leaves stop-time timepoints empty; a trip linked by the engine
+  # stores its timing's rows exactly, so the relink check can match them.
+  defp timing_linked_trip!(scope) do
+    trip = linked_trip!(scope, "07:00:00")
+
+    from(st in StopTime,
+      where: st.trip_id == ^trip.trip_id and st.gtfs_version_id == ^trip.gtfs_version_id
+    )
+    |> Repo.update_all(set: [timepoint: 1])
+
+    trip
+  end
+
+  defp apply_set_timing!(scope, trip, timing) do
+    command = {:set_timing, [trip.id], timing.id}
+    {:ok, review} = Gtfs.review_trip_change("12", command, scope.audit)
+
+    {:ok, applied} =
+      Gtfs.apply_trip_change("12", command, {:reviewed, review.fingerprint}, scope.audit)
+
+    applied
   end
 
   # -- Payloads --------------------------------------------------------------

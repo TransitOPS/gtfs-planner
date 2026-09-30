@@ -348,14 +348,17 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
   def plan(_command, _state), do: {:error, :invalid_command}
 
   @doc """
-  Hashes the reviewed command, the affected trips' state and the finding keys the
-  change adds (R3).
+  Hashes the reviewed command, the affected trips' state, the planned change set and
+  the finding keys the change adds (R3).
 
   The command's id lists are sorted, so a reordered selection fingerprints the
   same. Each affected trip contributes `{id, updated_at, service_id,
   timed_pattern_id, pattern_derivation_state, block_id, ordered stop-time clocks,
   frequency rows}`, sorted by id; a trip missing from `state` contributes
-  `{id, :missing}`. The engine recomputes this value under lock and refuses the
+  `{id, :missing}`. The change set's updates, inserts and deletes are each sorted, so
+  apply refuses when the rows it would write differ from the reviewed ones even
+  though no command trip changed (for example, the chosen timing was edited). The
+  engine recomputes this value under lock and refuses the
   write when it differs (`{:error, {:stale_review, review}}`).
   """
   @spec fingerprint(command(), state(), change_set()) :: String.t()
@@ -363,11 +366,16 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
     {
       sorted_command(command),
       trip_state_tuples(command, state),
+      planned_changes(change_set),
       added_finding_keys(change_set)
     }
     |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
+  end
+
+  defp planned_changes(change_set) do
+    {Enum.sort(change_set.updates), Enum.sort(change_set.inserts), Enum.sort(change_set.deletes)}
   end
 
   @doc """

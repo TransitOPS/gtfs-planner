@@ -1387,6 +1387,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       {:error, {:not_restorable, :transfer_names_created_trip, ids}} ->
         undo_transfer_refused(socket, payload, ids)
 
+      {:error, :calendar_not_found} ->
+        warning_outcome(
+          socket,
+          "Nothing was undone. A service day from that change was deleted after it."
+        )
+
       {:error, reason} ->
         warning_outcome(socket, ScheduleComponents.error_message(reason))
     end

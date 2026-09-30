@@ -239,6 +239,31 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChangeApplyTest do
       assert DateTime.compare(trip_row(trip).updated_at, trip.updated_at) == :eq
     end
 
+    test "a reviewed timing change is stale when the chosen timing's rows change before apply",
+         %{scope: scope} do
+      trip = linked_trip!(scope, "07:00:00")
+      slow = extra_timing!(scope.bundle, [{0, 0, 1}, {360, 390, 1}, {840, 840, 1}], "Slow")
+      command = {:set_timing, [trip.id], slow.id}
+
+      assert {:ok, review} = Gtfs.review_trip_change("12", command, scope.audit)
+
+      # Another editor lengthens the Slow timing's last leg after the review; the
+      # command trip itself is untouched.
+      from(s in TimedPatternStop,
+        where: s.timed_pattern_id == ^slow.id and s.arrival_offset == 840
+      )
+      |> Repo.update_all(set: [arrival_offset: 900, departure_offset: 900])
+
+      rows_before = stop_time_rows(scope, [trip.trip_id])
+
+      assert {:error, {:stale_review, stale_review}} =
+               Gtfs.apply_trip_change("12", command, {:reviewed, review.fingerprint}, scope.audit)
+
+      assert stale_review.fingerprint != review.fingerprint
+      assert stop_time_rows(scope, [trip.trip_id]) == rows_before
+      assert trip_logs(trip) == []
+    end
+
     test "a fence outside the §4.4 table is refused with nothing written", %{scope: scope} do
       trip = linked_trip!(scope, "07:00:00")
       rows_before = stop_time_rows(scope, [trip.trip_id])
