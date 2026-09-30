@@ -235,4 +235,79 @@ test.describe("Station diagram legibility", () => {
       }
     }
   });
+
+  test("acts on the point nearest the pointer where two hit targets overlap", async ({
+    page,
+  }) => {
+    const north = { name: "Overlap Point North", x: 12, y: 12 };
+    const south = { name: "Overlap Point South", x: 13, y: 13.5 };
+    const group = (name) => `#diagram-overlay g[data-stop-id][data-label-text="${name}"]`;
+
+    await openDiagram(page, VIEWPORTS[0]);
+
+    try {
+      // South is added last, so its hit target is painted over North's.
+      await addPoint(page, north);
+      await addPoint(page, south);
+      await page.locator('[aria-label="Reset view"]').click();
+
+      const centers = await page.evaluate(
+        ([northGroup, southGroup]) => {
+          const center = (selector) => {
+            const rect = document
+              .querySelector(`${selector} [data-stop-hit-target]`)
+              .getBoundingClientRect();
+            return {
+              x: rect.left + rect.width / 2,
+              y: rect.top + rect.height / 2,
+              half: rect.width / 2,
+            };
+          };
+          return { north: center(northGroup), south: center(southGroup) };
+        },
+        [group(north.name), group(south.name)],
+      );
+
+      // A quarter of the way from North to South: inside both 24px targets,
+      // nearer North.
+      const pointer = {
+        x: centers.north.x + (centers.south.x - centers.north.x) * 0.25,
+        y: centers.north.y + (centers.south.y - centers.north.y) * 0.25,
+      };
+      for (const { x, y, half } of [centers.north, centers.south]) {
+        expect(Math.abs(pointer.x - x)).toBeLessThan(half);
+        expect(Math.abs(pointer.y - y)).toBeLessThan(half);
+      }
+      const paintedOnTop = await page.evaluate(
+        ({ x, y }) => document.elementFromPoint(x, y).closest("g[data-stop-id]")?.dataset.labelText,
+        pointer,
+      );
+      expect(paintedOnTop).toBe(south.name);
+
+      await page.mouse.click(pointer.x, pointer.y);
+
+      await expect(page.locator(group(north.name))).toHaveAttribute(
+        "data-stop-state",
+        "selected",
+      );
+      await expect(page.locator(group(south.name))).toHaveAttribute(
+        "data-stop-state",
+        "active",
+      );
+    } finally {
+      // Selecting a point opened its edit drawer.
+      await page.keyboard.press("Escape");
+      await expect(page.locator("#child-stop-drawer-overlay")).not.toHaveAttribute(
+        "data-open",
+        "true",
+      );
+      // The seeded database is shared with later specs; leave it as found.
+      await page.locator('[aria-label="Reset view"]').click();
+      for (const { name } of [north, south]) {
+        if (await page.locator(`g[data-label-text="${name}"]`).count()) {
+          await deletePoint(page, name);
+        }
+      }
+    }
+  });
 });
