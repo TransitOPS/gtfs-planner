@@ -547,3 +547,66 @@ test.describe("apply outcomes", () => {
     );
   });
 });
+
+test.describe("leave and version guards", () => {
+  // Step 30: switching versions or leaving with a paste asks first; with
+  // an empty form navigation is immediate. The run is deferred to branch
+  // review with the browser partition, like the cases above.
+  const GUARD_PASTE =
+    "Central Station\tMarket Street\tOak & 3rd\tMill Street\tLibrary\tHospital\tRiver Park\tRiverside Terminal\n" +
+    "10:00\t10:03\t10:06\t10:10\t10:14\t10:18\t10:24\t10:28";
+
+  test("switching versions with a paste opens the confirm", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", GUARD_PASTE);
+    await page.click("#gtfs-version-trigger");
+    const other = page.locator(
+      "#gtfs-version-panel [data-version-option]:not([aria-current='true'])",
+    );
+    await other.first().click();
+    await expect(page.locator("#paste-switch-confirm")).toBeVisible();
+    await expect(page.locator("#paste-switch-confirm")).toContainText(
+      "Switch to",
+    );
+    await expect(page.locator("#paste-switch-confirm-cancel")).toBeFocused();
+    await page.click("#paste-switch-confirm-cancel");
+    await expect(page.locator("#paste-switch-confirm")).toHaveCount(0);
+    await expect(page.locator("#timetable-paste")).toBeVisible();
+  });
+
+  test("leaving through the Schedules tab with text asks first", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", GUARD_PASTE);
+    await page.click("#route-tab-schedules");
+    await expect(page.locator("#paste-leave-confirm")).toBeVisible();
+    await expect(page.locator("#paste-leave-confirm")).toContainText(
+      "Leave without applying?",
+    );
+    await page.click("#paste-leave-confirm-cancel");
+    await expect(page.locator("#paste-leave-confirm")).toHaveCount(0);
+    await expect(page.locator("#paste-source")).toHaveValue(GUARD_PASTE);
+  });
+
+  test("with no text the Schedules tab navigates immediately", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await expect(page.locator("#paste-source")).toHaveValue("");
+    await page.click("#route-tab-schedules");
+    await expect(page).toHaveURL(/\/schedules(\?|$)/);
+    await expect(page.locator("#paste-leave-confirm")).toHaveCount(0);
+  });
+});

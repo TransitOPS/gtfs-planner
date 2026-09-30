@@ -23,7 +23,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   and restore, and Add anyway, plus the discarded-decisions notice.
   Step 28 owns the apply bar (`apply_bar/1`), the apply outcome notices
   (`notices/1`) and the Replace and Discard confirmations
-  (`replace_confirm/1`, `discard_confirm/1`).
+  (`replace_confirm/1`, `discard_confirm/1`). Step 30 owns the leave and
+  version-switch guards: the switch and leave confirmations
+  (`switch_confirm/1`, `leave_confirm/1`), the colocated
+  `.PasteLeaveGuard` hook (`leave_guard/1`) that intercepts tab, header
+  and version-switcher navigation plus `beforeunload` while the form holds
+  text, and the Open Schedules link's dirty-only `data-confirm`.
   """
   use GtfsPlannerWeb, :html
 
@@ -2474,13 +2479,16 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   attr :version_id, :any, required: true, doc: "the current GTFS version id"
   attr :route_id, :string, required: true, doc: "the natural route id"
 
+  attr :has_text, :boolean,
+    default: false,
+    doc: "the paste form holds text, so Open Schedules asks first (step 30)"
+
   def notices(assigns) do
     assigns =
       assigns
       |> assign(:calendar_name, review_calendar_name(assigns.scope))
       |> assign(:direction_adjective, review_direction_adjective(assigns.scope))
       |> assign(:unknown_count, unknown_change_count(assigns.review))
-      |> assign(:schedules_path, paste_schedules_path(assigns))
 
     ~H"""
     <div id="paste-notices" class="mt-4 grid gap-3 empty:hidden">
@@ -2569,7 +2577,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
           <div class="flex flex-wrap gap-2">
             <.link
               id="paste-open-schedules"
-              navigate={@schedules_path}
+              href="#"
+              phx-click="paste_leave"
+              data-confirm={@has_text && leave_confirm_message()}
               class="btn btn-outline min-h-11"
             >
               Open Schedules
@@ -2723,6 +2733,137 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     """
   end
 
+  @doc """
+  Renders step 30, the version-switch confirmation: a `confirm_dialog`
+  naming the version, focused on Keep reviewing with Switch version as
+  the confirm. Confirming navigates like `RouteSchedulesLive`
+  `switch_version/2`; cancelling keeps the paste.
+  """
+  attr :open, :boolean, required: true, doc: "the dialog is requested open"
+  attr :version_name, :string, required: true, doc: "the target version name"
+
+  def switch_confirm(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="paste-switch-confirm"
+      chrome="planner"
+      open={@open}
+      title={"Switch to #{@version_name}?"}
+      confirm_label="Switch version"
+      pending_label="Switching…"
+      cancel_label="Keep reviewing"
+      on_confirm="paste_switch_confirm"
+      on_cancel="paste_switch_cancel"
+      return_focus_id="gtfs-version-trigger"
+      described_by="paste-switch-confirm-body"
+    >
+      <p>
+        Each version has its own schedules, so your pasted timetable and review are
+        discarded. Paste again after switching.
+      </p>
+    </.confirm_dialog>
+    """
+  end
+
+  @doc """
+  Renders step 30, the leave confirmation: a `confirm_dialog` shown when
+  in-app navigation (the route tabs, the header) is intercepted with a
+  paste in progress. Confirming leaves for the intercepted path;
+  cancelling keeps the paste. The copy matches the prototype's leave
+  state.
+  """
+  attr :open, :boolean, required: true, doc: "the dialog is requested open"
+
+  def leave_confirm(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="paste-leave-confirm"
+      chrome="planner"
+      open={@open}
+      title="Leave without applying?"
+      confirm_label="Leave page"
+      pending_label="Leaving…"
+      cancel_label="Keep reviewing"
+      on_confirm="paste_leave_confirm"
+      on_cancel="paste_leave_cancel"
+      return_focus_id="paste-source"
+      described_by="paste-leave-confirm-body"
+    >
+      <p>
+        Your pasted timetable, column matches and decisions are discarded. Nothing
+        has been applied to the schedule.
+      </p>
+    </.confirm_dialog>
+    """
+  end
+
+  @doc """
+  Renders step 30, the leave guard hook: an inert, invisible element
+  carrying the colocated `.PasteLeaveGuard` hook. The hook manages its
+  own listeners (never the element's children), so the element is
+  `phx-update="ignore"`d with a stable id and `hidden`.
+
+  While the paste form holds text (or a columns/review step is on the
+  page), the hook answers `beforeunload`, which covers full-page leaves
+  such as the header version switcher, and intercepts in-app
+  (`data-phx-link="redirect"`) navigation clicks plus header version
+  option clicks, pushing them to the LiveView (`paste_leave_guard` /
+  `switch_gtfs_version`) so the server opens `#paste-leave-confirm` /
+  `#paste-switch-confirm`. With an empty form the hook stays silent and
+  navigation is immediate.
+  """
+  def leave_guard(assigns) do
+    ~H"""
+    <div
+      id="paste-leave-guard"
+      phx-hook=".PasteLeaveGuard"
+      phx-update="ignore"
+      hidden
+    >
+    </div>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".PasteLeaveGuard">
+      export default {
+        mounted() {
+          this.beforeUnload = (event) => {
+            if (!this.hasPaste()) return
+            event.preventDefault()
+            event.returnValue = ""
+          }
+          window.addEventListener("beforeunload", this.beforeUnload)
+          this.clickHandler = (event) => {
+            if (!(event.target instanceof Element)) return
+            const version = event.target.closest("#gtfs-version-switcher [data-version-option]")
+            const nav = event.target.closest('a[data-phx-link="redirect"]')
+            if (!version && !nav) return
+            if (!this.hasPaste()) return
+            if (version && version.dataset.versionId === this.currentVersion()) return
+            event.preventDefault()
+            event.stopPropagation()
+            if (version) {
+              this.pushEvent("switch_gtfs_version", {version: version.dataset.versionId})
+            } else {
+              this.pushEvent("paste_leave_guard", {to: nav.getAttribute("href")})
+            }
+          }
+          document.addEventListener("click", this.clickHandler, true)
+        },
+        destroyed() {
+          window.removeEventListener("beforeunload", this.beforeUnload)
+          document.removeEventListener("click", this.clickHandler, true)
+        },
+        currentVersion() {
+          return document.querySelector("#gtfs-version-switcher")?.dataset.currentVersion || null
+        },
+        hasPaste() {
+          const source = document.querySelector("#paste-source")
+          if (source && source.value.trim() !== "") return true
+          return !!document.querySelector("#paste-review, #paste-columns")
+        }
+      }
+    </script>
+    """
+  end
+
   # --- Apply bar, notices and confirmations (step 28) ---
 
   defp apply_label(:replace, applied), do: "Replace trips · #{plural(applied, "change")}"
@@ -2832,31 +2973,14 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   defp unknown_them(1), do: "it"
   defp unknown_them(_count), do: "them"
 
-  defp paste_schedules_path(%{version_id: version_id, route_id: route_id, scope: scope})
-       when is_map(scope) do
-    query =
-      URI.encode_query([
-        {"service_id", scope_service_id(scope)},
-        {"direction", scope_direction_param(scope)},
-        {"pattern", to_string(scope_pattern_id(scope))}
-      ])
-
-    "/gtfs/#{version_id}/routes/#{route_id}/schedules?#{query}"
+  # Step 30, the leave `data-confirm` copy for the page's own Open
+  # Schedules link: the prototype's leave dialog content in the one
+  # string a native confirm shows. The `.PasteLeaveGuard` hook carries
+  # the same copy for the tabs and header it intercepts.
+  defp leave_confirm_message do
+    "Leave without applying? Your pasted timetable, column matches and decisions " <>
+      "are discarded. Nothing has been applied to the schedule."
   end
-
-  defp paste_schedules_path(%{version_id: version_id, route_id: route_id}) do
-    "/gtfs/#{version_id}/routes/#{route_id}/schedules"
-  end
-
-  defp scope_service_id(%{calendar: %{service_id: service_id}}), do: service_id
-  defp scope_service_id(%{calendar: %{"service_id" => service_id}}), do: service_id
-  defp scope_service_id(_scope), do: ""
-
-  defp scope_direction_param(%{direction_id: 1}), do: "1"
-  defp scope_direction_param(_scope), do: "0"
-
-  defp scope_pattern_id(%{pattern_id: pattern_id}), do: pattern_id
-  defp scope_pattern_id(_scope), do: ""
 
   # Removals in plan order for the Replace confirmation: each names its
   # natural trip id and start clock.
