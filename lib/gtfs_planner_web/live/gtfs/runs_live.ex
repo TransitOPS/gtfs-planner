@@ -56,7 +56,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:runs_day, nil)
      |> assign(:day_types, [])
      |> assign(:day, nil)
-     |> assign(:loaded_day_key, nil)}
+     |> assign(:loaded_day_key, nil)
+     # The summary drawer is closed and has never loaded its shares, so the
+     # drawer cannot appear on a page whose day type has not loaded.
+     |> assign(:drawer, nil)
+     |> assign(:shares_state, :loading)
+     |> assign(:shares, [])}
   end
 
   @impl true
@@ -81,6 +86,81 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     # `assign/3` is what makes `ensure_day_loaded/1` re-read rather than see its
     # own guard and return the socket untouched.
     {:noreply, socket |> assign(:loaded_day_key, nil) |> ensure_day_loaded()}
+  end
+
+  # Every strip tile opens the same drawer, and the pressed tile is the one the
+  # reader pressed. The prototype sends each tile its own `data-act`; only the
+  # summary drawer exists at this step, so all six open it — but the tile that
+  # was clicked stays `aria-pressed`, because a control that shows nothing
+  # pressed after the press is a control the reader cannot tell apart from one
+  # that did nothing.
+  #
+  # `CoreComponents.count_strip/1` documents that a focusable `aria-disabled`
+  # button can still dispatch, so the handler rejects an unknown key rather than
+  # trusting it — a key this component does not own would mark a tile pressed
+  # that does not exist.
+  @count_tile_keys ~w(runs straight_share paid_hours on_vehicles longest_spread uncovered)
+
+  @impl true
+  def handle_event("open_drawer", %{"key" => key}, socket) do
+    # `is_map/1` rather than a truthiness check: `runs_day` is a map or `nil`,
+    # and `and` refuses a non-boolean left side rather than treating a map as
+    # true, which is the safer of the two surprises to get right.
+    if is_map(socket.assigns.runs_day) and key in @count_tile_keys do
+      {:noreply, socket |> assign(:drawer, {:summary, key}) |> start_shares_load()}
+    else
+      # No day type is loaded, or the key is not one of this strip's. The strip
+      # is not rendered without a loaded day, so the first case is unreachable
+      # from the page — and a no-op is still better than a drawer of zeros.
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("close_drawer", _params, socket) do
+    {:noreply, assign(socket, :drawer, nil)}
+  end
+
+  # The share of every day type is a WHOLE-VERSION read — `Runs.day_type_shares/2`
+  # exports movements, reads the crew rules and derives each day type — so it is
+  # far more work than the day's own read and none of it is needed to draw the
+  # strip. Loading it in the LiveView process would block the page on every
+  # drawer open, and the drawer is opened by clicking a tile, so the reader would
+  # feel the wait as the page hanging.
+  #
+  # The task captures only the two ids, never the socket, and `handle_async/3`
+  # applies the result — the rule `station_diagram_live.ex` already states.
+  defp start_shares_load(socket) do
+    %{current_organization: organization, current_gtfs_version: version} = socket.assigns
+
+    socket
+    |> assign(:shares_state, :loading)
+    |> assign(:shares, [])
+    |> start_async(:shares, fn ->
+      Gtfs.run_day_type_shares(organization.id, version.id)
+    end)
+  end
+
+  @impl true
+  def handle_async(:shares, {:ok, {:ok, shares}}, socket) do
+    {:noreply, socket |> assign(:shares, shares) |> assign(:shares_state, :loaded)}
+  end
+
+  def handle_async(:shares, {:ok, {:error, _reason}}, socket) do
+    # The version can stop being published between the page's read and this one.
+    # The drawer's own day-type figures are still on screen, so the failure is
+    # one line in one region rather than an error over the whole drawer.
+    {:noreply, socket |> assign(:shares, []) |> assign(:shares_state, :failed)}
+  end
+
+  def handle_async(:shares, {:exit, reason}, socket) do
+    # A task the reader has already moved on from — the drawer closed, the day
+    # type changed — exits with `:shutdown`. That is not a failure to report.
+    if reason == {:shutdown, :cancel} do
+      {:noreply, socket}
+    else
+      {:noreply, socket |> assign(:shares, []) |> assign(:shares_state, :failed)}
+    end
   end
 
   # `BlocksLive.ensure_day_loaded/1`'s rule: the disconnected render shows the
@@ -112,6 +192,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         |> assign(:day_types, runs_day.day.day_types)
         |> assign(:loaded_day_key, {:key, runs_day.day.day_type.key})
         |> assign(:load_state, day_state(runs_day))
+        # A reloaded day type closes the drawer. The shares are version-wide and
+        # would still be right, but the drawer's *other* half is this day's
+        # figures, and leaving a drawer open across a day-type change would show
+        # the new day under the old day's figures for as long as the share read
+        # took.
+        |> assign(:drawer, nil)
 
       {:error, {:unknown_day_type, []}} ->
         # An EMPTY list is the version saying it has no day types at all, which
@@ -202,7 +288,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
             :if={@load_state == :loaded or @load_state == :unavailable}
             day_types={@day_types}
             selected={@day || ""}
-          />
+          >
+            <:counts>
+              <RunsComponents.count_strip
+                :if={@runs_day}
+                stats={@runs_day.derived.stats}
+                spread_limit_minutes={@runs_day.crew.max_spread_minutes}
+                selected_key={selected_count_tile(@drawer)}
+              />
+            </:counts>
+          </RunsComponents.scope_bar>
 
           <RunsComponents.plan_card
             :if={panel_state?(@load_state)}
@@ -218,8 +313,38 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
           <RunsComponents.page_footnote :if={@load_state == :loaded} />
         </div>
       </div>
+
+      <RunsComponents.summary_drawer
+        :if={@runs_day}
+        open?={match?({:summary, _key}, @drawer)}
+        stats={@runs_day.derived.stats}
+        crew={@runs_day.crew}
+        max_piece_minutes={@runs_day.day.context.max_piece_minutes}
+        relief_stop_ids={MapSet.to_list(@runs_day.day.context.relief_stop_ids) |> Enum.sort()}
+        day_label={day_label(@runs_day)}
+        day_type_key={@day}
+        shares_state={@shares_state}
+        shares={@shares}
+      />
     </Layouts.app>
     """
+  end
+
+  # The count tile that is currently pressed, or nil when the drawer is closed.
+  defp selected_count_tile({:summary, key}), do: key
+  defp selected_count_tile(_drawer), do: nil
+
+  # The drawer's subtitle is the LOADED day type's own label rather than its key,
+  # which is a base64 hash a reader cannot check against anything — and rather
+  # than every day type the version has, which would name days the drawer says
+  # nothing about.
+  defp day_label(runs_day) do
+    key = runs_day.day.day_type.key
+
+    case Enum.find(runs_day.day.day_types, &(&1.key == key)) do
+      %{label: label} -> label
+      nil -> key
+    end
   end
 
   # `:loaded` and `:unavailable` have no panel: the plan step fills the first

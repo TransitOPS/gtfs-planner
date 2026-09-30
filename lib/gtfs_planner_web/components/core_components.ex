@@ -1580,7 +1580,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
 
   @count_strip_tones [:neutral, :info, :success, :warning, :error]
   @count_strip_required_fields [:key, :label, :count, :tone]
-  @count_strip_allowed_fields [:key, :label, :count, :tone, :disabled_reason]
+  @count_strip_allowed_fields [:key, :label, :count, :tone, :disabled_reason, :value, :detail]
   @count_strip_key_format ~r/\A[A-Za-z0-9_-]+\z/
 
   @count_strip_tone_classes %{
@@ -1617,6 +1617,13 @@ defmodule GtfsPlannerWeb.CoreComponents do
   every button always states `aria-pressed` so the state never appears or
   disappears between renders.
 
+  A figure that is not a plain integer carries it in `:value` — a share of time
+  prints as `"57%"` — while `:count` keeps the number the caller counted, so a
+  test can still read the count itself. `:detail` is the quiet trailing text of
+  the item, the “of paid time” beside a share or the run and limit beside the
+  longest spread, and `:disabled_reason` stays the sentence that explains an
+  unavailable item rather than a second detail.
+
   A zero-count filter item stays present and keyboard-focusable and is marked
   `aria-disabled="true"` with a dashed border; its count and any
   `:disabled_reason` explain the unavailability on screen. Native `disabled` is
@@ -1635,7 +1642,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
               required(:label) => String.t(),
               required(:count) => non_neg_integer(),
               required(:tone) => :neutral | :info | :success | :warning | :error,
-              optional(:disabled_reason) => String.t()
+              optional(:disabled_reason) => String.t(),
+              optional(:value) => String.t(),
+              optional(:detail) => String.t()
             }
 
   ## Examples
@@ -1737,7 +1746,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
         "font-semibold tabular-nums",
         @colorize && @entry.count > 0 && @entry.count_class
       ]}
-    >{@entry.count}</span>
+    >{@entry.value}</span>
+    <span
+      :if={@entry.detail}
+      data-role="count-strip-detail"
+      class="min-w-0 break-words font-normal text-base-content/70"
+    >
+      {@entry.detail}
+    </span>
     <span
       :if={@entry.disabled_reason}
       data-role="count-strip-reason"
@@ -1781,6 +1797,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
       key: key,
       label: validate_count_strip_label!(item.label, id),
       count: count,
+      value: Map.get(item, :value) || count,
+      detail: validate_count_strip_detail!(Map.get(item, :detail), id),
       disabled_reason: validate_count_strip_reason!(Map.get(item, :disabled_reason), id),
       dom_id: "#{id}-item-#{key}",
       tone_class: count_strip_tone_class!(item.tone, id),
@@ -1844,6 +1862,19 @@ defmodule GtfsPlannerWeb.CoreComponents do
       count_strip_error(
         id,
         ":disabled_reason must be a non-empty string when given, got: #{inspect(reason)}"
+      )
+    end
+  end
+
+  defp validate_count_strip_detail!(nil, _id), do: nil
+
+  defp validate_count_strip_detail!(detail, id) do
+    if is_binary(detail) and String.trim(detail) != "" do
+      detail
+    else
+      count_strip_error(
+        id,
+        ":detail must be a non-empty string when given, got: #{inspect(detail)}"
       )
     end
   end
