@@ -70,6 +70,10 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   @stop_time_chunk_size 1_000
   # Spec 01's bounded retry for serialization or lock contention.
   @write_attempts 3
+  # A maximum paste (500 trips × 150 stops) took about 11 s on an idle machine,
+  # close to the 15 s connection default, so the paste apply gets its own
+  # bounded transaction budget. Other Schedules writers keep the default.
+  @paste_transaction_timeout 60_000
 
   @type filters :: %{
           service_id: String.t() | nil,
@@ -646,7 +650,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   `TimetablePaste.review/2` input the fingerprint was prepared from, and
   `fingerprint` is that review's fingerprint.
 
-  Runs through `run_write/2` (SERIALIZABLE, 3 attempts; retries exhausted →
+  Runs through `run_write/3` (SERIALIZABLE, 3 attempts, a 60 s transaction
+  budget; retries exhausted →
   `:busy`). Inside, in the Schedules lock order:
   `Calendars.lock_service_for_reference!/3` → `lock_published_route!/2` →
   `lock_pattern!/2` for every pattern of the route in the direction, ascending
@@ -683,9 +688,13 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   def apply_paste(route_id, scope_params, input, fingerprint, %AuditContext{} = audit_context)
       when is_binary(route_id) and is_map(scope_params) and is_map(input) and
              is_binary(fingerprint) do
-    case run_write(fn ->
-           apply_paste_transaction(route_id, scope_params, input, fingerprint, audit_context)
-         end) do
+    case run_write(
+           fn ->
+             apply_paste_transaction(route_id, scope_params, input, fingerprint, audit_context)
+           end,
+           @write_attempts,
+           timeout: @paste_transaction_timeout
+         ) do
       # A forged or foreign calendar is a scope failure for this writer.
       {:error, :calendar_not_found} -> {:error, :not_found}
       result -> result
@@ -2183,39 +2192,48 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   # Spec 01's bounded retry: a serialization failure or lock contention retries
   # the whole transaction; every other failure is returned unchanged.
-  defp run_write(transaction, attempts \\ @write_attempts) do
-    case run_write_transaction(transaction) do
+  defp run_write(transaction, attempts \\ @write_attempts, options \\ []) do
+    case run_write_transaction(transaction, options) do
       {:ok, result} ->
         {:ok, result}
 
       {:serialization_failure, _error} ->
-        retry_write(transaction, attempts)
+        retry_write(transaction, attempts, options)
 
       {:error, reason} ->
-        retry_write_error(reason, transaction, attempts)
+        retry_write_error(reason, transaction, attempts, options)
     end
   end
 
-  defp retry_write(transaction, attempts) when attempts > 1,
-    do: run_write(transaction, attempts - 1)
+  defp retry_write(transaction, attempts, options) when attempts > 1,
+    do: run_write(transaction, attempts - 1, options)
 
-  defp retry_write(_transaction, _attempts), do: {:error, :busy}
+  defp retry_write(_transaction, _attempts, _options), do: {:error, :busy}
 
-  defp retry_write_error(reason, transaction, attempts) do
+  defp retry_write_error(reason, transaction, attempts, options) do
     if serialization_failure?(reason),
-      do: retry_write(transaction, attempts),
+      do: retry_write(transaction, attempts, options),
       else: {:error, reason}
+  end
+
+  defp run_write_transaction(transaction, []), do: run_write_transaction(transaction)
+
+  defp run_write_transaction(transaction, options) do
+    write_transaction_module().run(transaction, options)
+  rescue
+    error in Postgrex.Error -> write_failure(error, __STACKTRACE__)
   end
 
   defp run_write_transaction(transaction) do
     write_transaction_module().run(transaction)
   rescue
-    error in Postgrex.Error ->
-      if serialization_failure?(error) do
-        {:serialization_failure, error}
-      else
-        reraise error, __STACKTRACE__
-      end
+    error in Postgrex.Error -> write_failure(error, __STACKTRACE__)
+  end
+
+  defp write_failure(error, stacktrace) do
+    if serialization_failure?(error),
+      do: {:serialization_failure, error},
+      else: reraise(error, stacktrace)
   end
 
   defp write_transaction_module do
