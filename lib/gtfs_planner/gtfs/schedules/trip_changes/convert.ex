@@ -14,8 +14,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Convert do
   Convert is not undoable, so an apply returns no restore payload (R10).
 
   A linked trip whose stored stops match its pattern's occurrences follows its
-  timing: each insert is that timing materialized at the departure with the
-  occurrence's shape distance, and stays linked to the timing (R1's whole-trip rule).
+  timing: each insert is that timing materialized at the departure, keeps the
+  source's stored continuous flags and shape distance (the occurrence's distance
+  fills a blank one), and stays linked to the timing (R1's whole-trip rule).
   Every other source — a custom trip, a trip with no followable linkage, or one whose
   stored stops differ — offsets its stored template by the difference between the
   departure and the template's first departure, keeping each stored clock, flag and
@@ -135,7 +136,13 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Convert do
          true <- compatible_stops?(rows, occurrences),
          {:ok, timing} <- pattern_timing(entry, timing_id),
          {:ok, _probe} <- Materializer.materialize(first_departure, occurrences, timing.rows) do
-      {:ok, %{timing_id: timing.timing_id, occurrences: occurrences, rows: timing.rows}}
+      {:ok,
+       %{
+         timing_id: timing.timing_id,
+         occurrences: occurrences,
+         rows: timing.rows,
+         source_rows: rows
+       }}
     else
       _other -> :custom
     end
@@ -226,15 +233,16 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Convert do
   end
 
   # A materialized timing row is the timing's own row: its clocks, timepoint and
-  # per-stop values, with the occurrence's shape distance for a drawn pattern — the
-  # same full row `Schedules.create_trips/3` and `TripChanges.Frequency` insert for a
-  # linked trip (a pattern without a shape contributes nil distances, R15).
+  # per-stop values. The source's stored continuous flags and shape distance are not
+  # timing values, so each converted row keeps the source row's at the same position;
+  # a source row with no stored distance takes the occurrence's for a drawn pattern
+  # (a pattern without a shape contributes nil distances, R15).
   defp linked_stop_times(rows, timing, trip) do
     shape_id = value(trip, :shape_id)
 
-    rows
-    |> Enum.zip(timing.occurrences)
-    |> Enum.map(fn {row, occurrence} ->
+    [rows, timing.occurrences, timing.source_rows]
+    |> Enum.zip()
+    |> Enum.map(fn {row, occurrence, source} ->
       %{
         stop_id: value(row, :stop_id),
         stop_sequence: value(row, :stop_sequence),
@@ -243,9 +251,10 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Convert do
         stop_headsign: value(row, :stop_headsign),
         pickup_type: value(row, :pickup_type),
         drop_off_type: value(row, :drop_off_type),
-        continuous_pickup: nil,
-        continuous_drop_off: nil,
-        shape_dist_traveled: shape_distance(occurrence, shape_id),
+        continuous_pickup: value(source, :continuous_pickup),
+        continuous_drop_off: value(source, :continuous_drop_off),
+        shape_dist_traveled:
+          value(source, :shape_dist_traveled) || shape_distance(occurrence, shape_id),
         timepoint: value(row, :timepoint)
       }
     end)

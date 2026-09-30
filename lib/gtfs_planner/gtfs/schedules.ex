@@ -3184,13 +3184,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         arrival_time: st.arrival_time,
         departure_time: st.departure_time,
         timepoint: st.timepoint,
-        timepoint: st.timepoint,
-        shape_dist_traveled: st.shape_dist_traveled,
         pickup_type: st.pickup_type,
         drop_off_type: st.drop_off_type,
         stop_headsign: st.stop_headsign,
-        # A copy writes a full stop-time row (R7), so the loader reads the two
-        # continuous flags and the shape distance it must reproduce.
+        # A copy or a conversion writes a full stop-time row (R7, R8), so the
+        # loader reads the two continuous flags and the shape distance it keeps.
         continuous_pickup: st.continuous_pickup,
         continuous_drop_off: st.continuous_drop_off,
         shape_dist_traveled: st.shape_dist_traveled
