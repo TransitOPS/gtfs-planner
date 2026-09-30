@@ -5,6 +5,10 @@ const EDITOR_USER = {
   password: "DiagramTest123!",
 };
 
+// Browser E2E Version's calendars in list order. The last two "Weekday" rows are
+// fixtures other journeys own: BPS_WKDY (the timetable-paste calendar) and
+// BROWSER_CMP_WEEKDAY (the pattern-comparison calendar). Both run Monday to Friday
+// and both have trips, so they take part in the counts and the status filters below.
 const SEEDED_NAMES = [
   "Every day service",
   "Legacy service",
@@ -12,7 +16,22 @@ const SEEDED_NAMES = [
   "Odd service id",
   "School days",
   "Unused calendar",
+  "Weekday",
+  "Weekday",
 ];
+
+const SEEDED_COUNT = SEEDED_NAMES.length;
+
+// BPS_WKDY has fixed dates, unlike the calendars seeded relative to today, so its
+// place in the status filters depends on where the agency-local date falls.
+const PASTE_WEEKDAY_FIRST = "2026-09-08";
+const PASTE_WEEKDAY_LAST = "2027-06-25";
+
+// "before", "during" or "after" BPS_WKDY's service period, for an ISO date.
+function pasteWeekdayPhase(date) {
+  if (date < PASTE_WEEKDAY_FIRST) return "before";
+  return date > PASTE_WEEKDAY_LAST ? "after" : "during";
+}
 
 const VIEWPORTS = [
   { label: "1440x1000", width: 1440, height: 1000 },
@@ -50,16 +69,46 @@ async function openCalendars(page, versionName = "Browser E2E Version") {
   return versionId;
 }
 
-// School days and Unused calendar run Monday to Friday, so which calendars run
-// today depends on the agency-local date the list shows, not on the runner's clock.
-async function runsTodayNames(page) {
+// The agency-local date the list shows, as midnight UTC.
+async function agencyToday(page) {
   const text = await page.locator("#calendars-today").textContent();
-  const date = new Date(`${text.split("·").pop().trim()} UTC`);
+  return new Date(`${text.split("·").pop().trim()} UTC`);
+}
+
+// School days, Unused calendar and the two Weekday fixtures run Monday to Friday, so
+// which calendars run today depends on the agency-local date the list shows, not on
+// the runner's clock. Only BPS_WKDY's fixed dates can also keep it from running.
+async function runsTodayNames(page) {
+  const date = await agencyToday(page);
   const weekend = date.getUTCDay() === 0 || date.getUTCDay() === 6;
 
-  return weekend
-    ? ["Every day service"]
-    : ["Every day service", "School days", "Unused calendar"];
+  if (weekend) return ["Every day service"];
+
+  const names = ["Every day service", "School days", "Unused calendar", "Weekday"];
+  return pasteWeekdayPhase(isoDate(date)) === "during"
+    ? [...names, "Weekday"]
+    : names;
+}
+
+function isWeekday(date) {
+  return date.getUTCDay() !== 0 && date.getUTCDay() !== 6;
+}
+
+// School days is seeded to end ten days from today and to lose the three dates after
+// today, but it runs Monday to Friday. Its last service day is the last weekday on or
+// before the end date, and only the weekdays among the removed dates are service days.
+function schoolDaysCalendar(today) {
+  let endsIn = 10;
+  while (!isWeekday(shiftDays(today, endsIn))) endsIn -= 1;
+
+  const daysOff = [1, 2, 3].filter((offset) =>
+    isWeekday(shiftDays(today, offset)),
+  ).length;
+
+  // Three removed service days in a row make a break; fewer are days off.
+  const removed = { 1: "1 day off", 2: "2 days off", 3: "1 break" }[daysOff];
+
+  return { endsIn, removed };
 }
 
 async function expectRows(page, names, timeout = 8000) {
@@ -115,7 +164,9 @@ test.describe("calendar list", () => {
 
       // Result count, run-today and ending-soon counts, agency-local today, and the
       // feed-gap callout.
-      await expect(page.locator("#result-count")).toContainText("6");
+      await expect(page.locator("#result-count")).toContainText(
+        String(SEEDED_COUNT),
+      );
       await expect(
         page.locator("#calendar-counts-item-run-today"),
       ).toContainText(String((await runsTodayNames(page)).length));
@@ -128,7 +179,9 @@ test.describe("calendar list", () => {
       expect(statusText).toContain("Runs today");
       expect(statusText).toContain("Ended");
       expect(statusText).toContain("No service");
-      expect(statusText).toContain("Ends in 10 days");
+      expect(statusText).toContain(
+        `Ends in ${schoolDaysCalendar(await agencyToday(page)).endsIn} days`,
+      );
       expect(statusText).toContain("Ends in 5 days");
       expect(statusText).toContain("Not used by trips");
 
@@ -196,7 +249,9 @@ test.describe("calendar list", () => {
       .poll(() => rowNames(page), { timeout: 5000 })
       .toEqual(["School days"]);
     await expect(page.locator("#calendars-list tr")).toHaveCount(1);
-    await expect(page.locator("#result-count")).toHaveText("1 of 6 calendars");
+    await expect(page.locator("#result-count")).toHaveText(
+      `1 of ${SEEDED_COUNT} calendars`,
+    );
 
     // Search by service ID.
     await page.fill("#calendar-search", "CAL_LEGACY");
@@ -209,24 +264,36 @@ test.describe("calendar list", () => {
     await expect(page.locator("#calendars-filtered-empty")).toBeVisible({
       timeout: 5000,
     });
-    await expect(page.locator("#result-count")).toHaveText("0 of 6 calendars");
+    await expect(page.locator("#result-count")).toHaveText(
+      `0 of ${SEEDED_COUNT} calendars`,
+    );
     await page.click("#calendars-clear-filters");
-    await expect(page.locator("#calendars-list tr")).toHaveCount(6, {
+    await expect(page.locator("#calendars-list tr")).toHaveCount(SEEDED_COUNT, {
       timeout: 5000,
     });
 
     // Status filters with the documented allowlist.
+    // BPS_WKDY ends on a fixed date, so it joins Legacy service once that date passes.
+    const phase = pasteWeekdayPhase(isoDate(await agencyToday(page)));
+
     await page.selectOption("#calendar-status", "ended");
-    await expectRows(page, ["Legacy service"]);
+    await expectRows(
+      page,
+      phase === "after" ? ["Legacy service", "Weekday"] : ["Legacy service"],
+    );
 
     await page.selectOption("#calendar-status", "active_today");
     await expectRows(page, await runsTodayNames(page));
 
+    // BROWSER_CMP_WEEKDAY is in its period for 30 days either side of today; BPS_WKDY
+    // only between its fixed dates.
     await page.selectOption("#calendar-status", "active_period");
     await expectRows(page, [
       "Every day service",
       "School days",
       "Unused calendar",
+      "Weekday",
+      ...(phase === "during" ? ["Weekday"] : []),
     ]);
 
     await page.selectOption("#calendar-status", "unused");
@@ -359,7 +426,9 @@ test.describe("calendar coverage", () => {
       // One axis for the whole table, one bar for every row, and the four columns stay
       // four: the axis row's cells are not header cells.
       await expect(page.locator("#calendar-coverage-axis")).toHaveCount(1);
-      await expect(page.locator("[data-calendar-coverage]")).toHaveCount(6);
+      await expect(page.locator("[data-calendar-coverage]")).toHaveCount(
+        SEEDED_COUNT,
+      );
       await expect(
         page.locator("#calendars-list-container thead th"),
       ).toHaveText([/Calendar/, /When it runs/, "Trips", "Status"]);
@@ -380,8 +449,9 @@ test.describe("calendar coverage", () => {
       expect(Math.abs(geometry.axisWidth - geometry.laneWidth)).toBeLessThan(1);
       expect(geometry.tickLabels.length).toBeGreaterThan(0);
 
-      // The caption states the exact dates and counts in text. Dates and counts stay
-      // weekday-independent, so the assertions hold whatever day the suite runs.
+      // The caption states the exact dates and counts in text. The patterns hold
+      // whatever day the suite runs; School days' break or days-off wording follows
+      // which of its removed dates fall on a weekday, so it is derived from today.
       const captions = await page
         .locator("[data-calendar-coverage] .calendar-coverage-caption")
         .allTextContents();
@@ -405,7 +475,9 @@ test.describe("calendar coverage", () => {
         page.locator(
           '[data-calendar-coverage="CAL_SCHOOL"] .calendar-coverage-caption',
         ),
-      ).toHaveText(/(break|day off)/);
+      ).toHaveText(
+        new RegExp(`${schoolDaysCalendar(await agencyToday(page)).removed}$`),
+      );
       expect(captions.join(" | ")).not.toContain("undefined");
 
       // The legend names every state in words.
@@ -790,7 +862,7 @@ test.describe("calendar editor", () => {
     await expect(
       page.locator("#calendars-list tr", { hasText: "Browser editor journey" }),
     ).toHaveCount(0);
-    await expect(page.locator("#calendars-list tr")).toHaveCount(6);
+    await expect(page.locator("#calendars-list tr")).toHaveCount(SEEDED_COUNT);
   });
 
   test("reviews and applies a date change, guards dirty navigation and returns focus", async ({
@@ -931,6 +1003,18 @@ async function waitForDrawerReady(page) {
   });
 }
 
+// Every calendar running on a chosen date starts checked for removal, and that
+// includes the two Weekday fixtures other journeys own. A journey that changes only the
+// calendars it names unchecks them, so the review counts just those and the fixtures stay
+// as seeded. BPS_WKDY is listed only while a chosen date falls inside its fixed dates.
+async function uncheckWeekdayFixtures(page, dates) {
+  await page.uncheck("#calendar-date-change-remove-BROWSER_CMP_WEEKDAY input");
+
+  if (dates.some((date) => pasteWeekdayPhase(date) === "during")) {
+    await page.uncheck("#calendar-date-change-remove-BPS_WKDY input");
+  }
+}
+
 test.describe("cross-calendar date change drawer", () => {
   test("reviews and applies one atomic date change for several calendars at both desktop viewports", async ({
     page,
@@ -995,6 +1079,7 @@ test.describe("cross-calendar date change drawer", () => {
       // Stop the school calendar and run the unused one instead, in one review.
       await page.uncheck("#calendar-date-change-remove-CAL_DAILY input");
       await page.uncheck("#calendar-date-change-remove-CAL_UNUSED input");
+      await uncheckWeekdayFixtures(page, [serviceDate]);
       await expect(
         page.locator("#calendar-date-change-remove-CAL_DAILY input"),
       ).not.toBeChecked();
@@ -1016,6 +1101,9 @@ test.describe("cross-calendar date change drawer", () => {
       await expect(
         page.locator("#calendar-date-change-review-count"),
       ).toContainText("This changes 2 calendars");
+      await expect(
+        page.locator("#calendar-date-change-review-count"),
+      ).toContainText("GTFS: 2 rows change");
 
       await page.click("#calendar-date-change-apply");
       await expect(page.locator("#calendars-date-change-status")).toContainText(
@@ -1097,6 +1185,7 @@ test("retains sequential dates, shows pending, recovers a stale write and guards
   await expect(page.locator(`#calendar-date-change-dates-chip-${second}`)).toBeVisible();
   await page.uncheck("#calendar-date-change-remove-CAL_SCHOOL input");
   await page.uncheck("#calendar-date-change-remove-CAL_UNUSED input");
+  await uncheckWeekdayFixtures(page, [first, second]);
   await page.click("#calendar-date-change-review");
   await expect(page.locator("#calendar-date-change-review-panel")).toBeVisible();
 
@@ -1228,7 +1317,7 @@ test("switches versions on the list and keeps each version's own identities", as
   // Row identity comes from the semantic detail link, whose attribute is the exact service ID.
   await expect(
     page.locator("#calendars-list [data-calendar-link]"),
-  ).toHaveCount(6);
+  ).toHaveCount(SEEDED_COUNT);
   await expect(
     page.locator('#calendars-list [data-calendar-link="CAL_DAILY"]'),
   ).toBeVisible();
@@ -1261,7 +1350,7 @@ test("switches versions on the list and keeps each version's own identities", as
   );
   await expect(
     page.locator("#calendars-list [data-calendar-link]"),
-  ).toHaveCount(6);
+  ).toHaveCount(SEEDED_COUNT);
   await expect(
     page.locator('#calendars-list [data-calendar-link="CAL_DAILY"]'),
   ).toBeVisible();
