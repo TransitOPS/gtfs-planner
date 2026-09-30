@@ -6,8 +6,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   empty states (`setup_empty/1`) and the first-paint skeleton. Step 22 owns
   the Change schedule drawer (`scope_drawer/1`): the calendar select over
   every calendar, the direction radios and the direction-filtered pattern
-  select with trip counts. The timetable step (step 23) and the review UI
-  (steps 25-28) add components here in later steps.
+  select with trip counts. Step 23 owns the Timetable step (`source_step/1`):
+  the paste form textarea, hint, Layout disclosure, Read timetable, inline
+  errors and the collapsed summary, plus the columns/review placeholders
+  that steps 24-28 replace with real UI.
   """
   use GtfsPlannerWeb, :html
 
@@ -343,4 +345,239 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   end
 
   defp stop_count(_pattern), do: nil
+
+  @doc """
+  Renders step 1, the Timetable step: the paste form while it is open and
+  the collapsed summary after a successful read.
+
+  The open form holds the `#paste-source` textarea (monospace,
+  `phx-debounce="blur"`, labelled 'Timetable copied from your
+  spreadsheet'), the `#paste-source-hint`, the `#paste-layout` disclosure
+  with layout radios and the header checkbox, and the `#paste-read` button.
+  A failed read renders the specific message as `#paste-source-error`
+  (wired through `<.input>` errors, so the field carries `aria-invalid`)
+  and keeps the text. A successful read collapses to
+  `#paste-source-summary` with the Edit timetable button.
+
+  The hint is a plain paragraph rather than the input help text so it keeps
+  the contract `#paste-source-hint` id; `<.input>` reserves
+  `#paste-source-help` for its own help element.
+  """
+  attr :form, :any, required: true, doc: "the paste form from `to_form`"
+  attr :error, :any, default: nil, doc: "the last read failure reason, if any"
+  attr :open, :boolean, required: true, doc: "the step is expanded"
+  attr :review, :any, default: nil, doc: "the last successful review, if any"
+
+  def source_step(assigns) do
+    assigns =
+      assigns
+      |> assign(:error_message, paste_error_message(assigns.error))
+      |> assign(:layout_value, assigns.form[:layout].value || "auto")
+      |> assign(:header_checked, header_checked?(assigns.form))
+      |> assign(:summary, source_summary(assigns.review, assigns.form))
+
+    ~H"""
+    <section
+      :if={@open or is_nil(@review)}
+      id="paste-source-step"
+      aria-label="Timetable"
+      class="overflow-hidden rounded-card border border-subtle bg-white"
+    >
+      <div class="flex flex-wrap items-center gap-3 border-b border-subtle bg-canvas px-5 py-3.5">
+        <span class="grid size-7 shrink-0 place-items-center rounded-full bg-soft text-[13px] font-bold text-strong">
+          1
+        </span>
+        <div class="min-w-0">
+          <h2 class="text-[17px] font-bold tracking-normal text-strong">Timetable</h2>
+          <p class="text-[13px] text-muted">From Excel, Google Sheets or Numbers</p>
+        </div>
+      </div>
+      <div class="grid gap-3 px-5 py-5">
+        <.input
+          type="textarea"
+          field={@form[:text]}
+          id="paste-source"
+          label="Timetable copied from your spreadsheet"
+          errors={if @error_message, do: [@error_message], else: []}
+          phx-debounce="blur"
+          rows="12"
+          class="w-full textarea textarea-lg font-mono text-[13px] leading-6"
+        />
+        <p id="paste-source-hint" class="text-[13px] text-muted">
+          Copy the stop names and the trip rows together. Times like 6:05, 6:05 PM and
+          25:10 work. Leave a cell empty, or use –, where a trip skips a stop. Up to
+          500 trips.
+        </p>
+        <details id="paste-layout" class="group text-sm">
+          <summary class="inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 font-[650] text-strong [&::-webkit-details-marker]:hidden">
+            Layout
+            <span class="font-normal text-muted">
+              · {layout_summary(@layout_value, @header_checked)}
+            </span>
+          </summary>
+          <div class="mt-2 flex flex-wrap gap-x-8 gap-y-3 pl-6">
+            <fieldset>
+              <legend class="text-[13px] font-[650] text-strong">Trips are</legend>
+              <div class="mt-1 flex flex-wrap gap-x-5">
+                <label
+                  :for={option <- layout_options()}
+                  class="inline-flex min-h-11 items-center gap-2"
+                >
+                  <input
+                    type="radio"
+                    id={"paste-layout-#{option.value}"}
+                    name={@form[:layout].name}
+                    value={option.value}
+                    checked={@layout_value == option.value}
+                    class="size-4 accent-action"
+                  />
+                  {option.label}
+                </label>
+              </div>
+            </fieldset>
+            <.input
+              type="checkbox"
+              field={@form[:header]}
+              id="paste-layout-header"
+              label="First row or column has stop names"
+              class="size-4 accent-action"
+            />
+          </div>
+        </details>
+      </div>
+      <div class="flex flex-wrap items-center justify-between gap-3 border-t border-subtle px-5 py-4">
+        <p class="text-[13px] text-muted">Reading doesn’t change the schedule.</p>
+        <.button id="paste-read" type="submit" class="min-h-11" phx-disable-with="Reading…">
+          Read timetable
+        </.button>
+      </div>
+    </section>
+    <section
+      :if={!@open and not is_nil(@review)}
+      id="paste-source-summary"
+      aria-label="Timetable"
+      class="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-card border border-subtle bg-white px-5 py-2.5"
+    >
+      <span
+        class="grid size-7 shrink-0 place-items-center rounded-full bg-success-bg text-success-fg"
+        title="Done"
+      >
+        <.icon name="hero-check" class="size-4" />
+      </span>
+      <h2 class="text-[15px] font-bold text-strong">Timetable</h2>
+      <p class="min-w-0 flex-1 basis-[280px] text-sm text-muted">{@summary}</p>
+      <.button id="paste-source-edit" variant="secondary" phx-click="edit_source">
+        Edit timetable
+      </.button>
+    </section>
+    """
+  end
+
+  @doc """
+  Placeholder for step 2, the Columns step (step 24 replaces this with the
+  pasted grid, Use-as selects, status badges and pattern strip).
+  """
+  def columns_step_placeholder(assigns) do
+    ~H"""
+    <section
+      id="paste-columns"
+      aria-label="Columns"
+      class="rounded-card border border-subtle bg-white px-5 py-4"
+    >
+      <h2 class="text-[15px] font-bold text-strong">Columns</h2>
+      <p class="mt-1 text-sm text-muted">Column matching will appear here.</p>
+    </section>
+    """
+  end
+
+  @doc """
+  Placeholder for step 3, the Review (steps 25-28 replace this with the
+  review header, matrix, decisions and apply bar).
+  """
+  def review_placeholder(assigns) do
+    ~H"""
+    <section
+      id="paste-review"
+      aria-label="Review"
+      class="rounded-card border border-subtle bg-white px-5 py-4"
+    >
+      <h2 class="text-[15px] font-bold text-strong">Review</h2>
+      <p class="mt-1 text-sm text-muted">The review will appear here.</p>
+    </section>
+    """
+  end
+
+  @doc """
+  The inline message for a failed read. Copy follows the spec proposal §1
+  and the prototype source stage: each reason names its fix and the text
+  stays in the textarea.
+  """
+  def paste_error_message(nil), do: nil
+
+  def paste_error_message(:empty),
+    do: "Paste a timetable first. Copy the stop names and the rows of times together."
+
+  def paste_error_message(:no_times),
+    do: "No times found. Copy the rows of times as well as the stop names."
+
+  def paste_error_message({:too_large, _bytes}),
+    do: "This paste is larger than 200 KB. Paste one calendar and direction at a time."
+
+  def paste_error_message({:too_many_rows, count}),
+    do:
+      "This paste has #{count} trip rows. Paste up to 500 at a time: split the timetable, or remove rows you don’t need."
+
+  def paste_error_message({:too_many_columns, count}),
+    do:
+      "This paste has #{count} columns. Paste up to 150: remove columns you don’t need, such as notes."
+
+  def paste_error_message({:unclosed_quote, line}),
+    do:
+      "A quoted cell that starts on line #{line} never closes. Copy the cells from the spreadsheet again."
+
+  def paste_error_message(_reason),
+    do: "This paste couldn’t be read. Copy the cells from the spreadsheet again."
+
+  defp layout_options do
+    [
+      %{value: "auto", label: "Detect automatically"},
+      %{value: "trips_in_rows", label: "Rows"},
+      %{value: "stops_in_rows", label: "Columns (stops down the side)"}
+    ]
+  end
+
+  defp layout_summary(layout_value, header_checked) do
+    label =
+      case layout_value do
+        "trips_in_rows" -> "Rows"
+        "stops_in_rows" -> "Columns (stops down the side)"
+        _layout -> "Detect automatically"
+      end
+
+    if header_checked, do: label, else: "#{label} · no header row"
+  end
+
+  defp header_checked?(form) do
+    form[:header].value not in ["false", false]
+  end
+
+  defp source_summary(nil, _form), do: nil
+
+  defp source_summary(review, form) when is_map(review) do
+    grid = Map.get(review, :grid, [])
+    columns = grid |> List.first([]) |> length()
+    rows = length(grid)
+    trips = if header_checked?(form), do: max(rows - 1, 0), else: rows
+
+    summary =
+      "#{plural(trips, "trip row")} · #{plural(columns, "column")} · #{orientation_label(Map.get(review, :orientation))}"
+
+    if header_checked?(form), do: summary, else: "#{summary} · no header row"
+  end
+
+  defp orientation_label(:stops_in_rows), do: "stops down the side"
+  defp orientation_label(_orientation), do: "trips in rows"
+
+  defp plural(1, one), do: "1 #{one}"
+  defp plural(count, one), do: "#{count} #{one}s"
 end

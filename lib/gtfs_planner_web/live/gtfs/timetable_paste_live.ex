@@ -16,8 +16,17 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   patterns when the calendar or direction changes, and `change_schedule`
   `push_patch`es the new params while the LiveView keeps `input.text`,
   clears the overrides/confirmations/decisions and re-reviews with the new
-  scope on the patch. The timetable step (step 23) and the review UI
-  (steps 25-28) build on the `input`/`review` assigns kept here. The
+  scope on the patch.
+
+  Step 23 owns the timetable step: the `#paste-form` (`phx-change="input"`,
+  `phx-submit="read"`) wraps `TimetablePasteComponents.source_step/1` and
+  the columns/review placeholders steps 24-28 fill. The `input` event stashes
+  the text, layout and header without touching the database; the `read` event
+  re-resolves the scope through `Gtfs.prepare_timetable_paste/5` with the
+  full current input. Parse failures keep the text and render the specific
+  inline message; success collapses the step and auto-advances to the review
+  placeholder when no column issues remain. The review UI (steps 25-28)
+  builds on the `input`/`review` assigns kept here. The
   version-switch events mirror `RouteSchedulesLive`; the unsaved-work
   confirmation arrives in step 30.
   """
@@ -45,6 +54,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
      |> assign(:requested, %{})
      |> assign(:input, fresh_paste_input())
      |> assign(:review, nil)
+     |> assign(:paste_form, to_form(paste_form_params(), as: :paste))
+     |> assign(:paste_error, nil)
+     |> assign(:source_open, true)
      |> assign(:scope_draft, nil)
      |> assign(:scope_form, to_form(%{}, as: :scope))
      |> assign(:scope_calendars, [])
@@ -149,6 +161,72 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   @impl true
   def handle_event("change_schedule", _params, socket), do: {:noreply, socket}
 
+  # Step 23 owns the timetable step. Typing stashes the text, layout and
+  # header into the input and rebuilds the form without touching the
+  # database; only Read, Review again and Change schedule reload the scope
+  # (review-recompute criterion). Clearing the textarea invalidates the last
+  # read, so the stale review and error go away with it.
+  @impl true
+  def handle_event("input", %{"paste" => params}, socket) when is_map(params) do
+    input = merge_paste_params(current_input(socket), params)
+
+    socket =
+      socket
+      |> assign(:input, input)
+      |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))
+
+    socket =
+      if blank_paste_text?(input.text) do
+        socket
+        |> assign(:review, nil)
+        |> assign(:paste_error, nil)
+        |> assign(:source_open, true)
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("input", _params, socket), do: {:noreply, socket}
+
+  # Reading re-resolves the scope through the facade with the full current
+  # input (text, layout, header and whatever decisions/overrides later steps
+  # add). A blank read names the empty fix; parse failures keep the text and
+  # render the specific inline message; success collapses the step.
+  @impl true
+  def handle_event("read", params, socket) do
+    paste_params =
+      case params do
+        %{"paste" => paste} when is_map(paste) -> paste
+        _params -> %{}
+      end
+
+    input = merge_paste_params(current_input(socket), paste_params)
+
+    socket =
+      socket
+      |> assign(:input, input)
+      |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))
+
+    if blank_paste_text?(input.text) do
+      {:noreply,
+       socket
+       |> assign(:review, nil)
+       |> assign(:paste_error, :empty)
+       |> assign(:source_open, true)}
+    else
+      {:noreply, read_paste(socket, input)}
+    end
+  end
+
+  # Reopening keeps the text and the last review; the next Read replaces it.
+  @impl true
+  def handle_event("edit_source", _params, socket) do
+    {:noreply, assign(socket, :source_open, true)}
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -211,6 +289,28 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
             review={@review}
             route_label={route_label(@scope.route)}
           />
+
+          <.form
+            :if={is_nil(setup_reason(@scope))}
+            id="paste-form"
+            for={@paste_form}
+            phx-change="input"
+            phx-submit="read"
+            class="mt-4 grid gap-4"
+          >
+            <TimetablePasteComponents.source_step
+              form={@paste_form}
+              error={@paste_error}
+              open={@source_open}
+              review={@review}
+            />
+            <TimetablePasteComponents.columns_step_placeholder :if={
+              @review != nil and !@source_open and @review.column_issues != []
+            } />
+            <TimetablePasteComponents.review_placeholder :if={
+              @review != nil and !@source_open and @review.column_issues == []
+            } />
+          </.form>
         </div>
       </div>
     </Layouts.app>
@@ -232,6 +332,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
          ) do
       {:ok, %{scope: scope, review: review}} -> apply_scope(socket, scope, review, params)
       {:error, :not_found} -> route_not_found(socket)
+      {:error, reason} -> apply_paste_error(socket, params, reason)
     end
   end
 
@@ -248,9 +349,141 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     |> assign(:route, scope.route)
     |> assign(:scope, scope)
     |> assign(:review, review)
+    |> assign(:paste_error, nil)
+    |> assign(:source_open, is_nil(review))
     |> assign(:load_state, :ready)
     |> push_canonical(scope, params)
   end
+
+  # A parse failure is scope-independent, so the schedule line still
+  # resolves: load the scope alone, then show the inline error with the text
+  # kept. A blank input cannot fail the review, so any inner failure is the
+  # missing route.
+  defp apply_paste_error(socket, params, reason) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    route_id = socket.assigns.route_id
+
+    case Gtfs.prepare_timetable_paste(
+           organization_id,
+           version_id,
+           route_id,
+           scope_params(params),
+           %{}
+         ) do
+      {:ok, %{scope: scope}} ->
+        socket
+        |> assign(:route, scope.route)
+        |> assign(:scope, scope)
+        |> assign(:review, nil)
+        |> assign(:paste_error, reason)
+        |> assign(:source_open, true)
+        |> assign(:load_state, :ready)
+        |> push_canonical(scope, params)
+
+      {:error, _reason} ->
+        route_not_found(socket)
+    end
+  end
+
+  # Reading re-resolves the current scope with the full input. Success
+  # refreshes the scope and collapses the step; a parse failure keeps the
+  # scope line and the text with the inline error.
+  defp read_paste(socket, input) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    route_id = socket.assigns.route_id
+
+    case Gtfs.prepare_timetable_paste(
+           organization_id,
+           version_id,
+           route_id,
+           read_scope_params(socket.assigns.scope),
+           input
+         ) do
+      {:ok, %{scope: scope, review: nil}} ->
+        socket
+        |> assign(:route, scope.route)
+        |> assign(:scope, scope)
+        |> assign(:review, nil)
+        |> assign(:paste_error, :empty)
+        |> assign(:source_open, true)
+        |> assign(:load_state, :ready)
+
+      {:ok, %{scope: scope, review: review}} ->
+        socket
+        |> assign(:route, scope.route)
+        |> assign(:scope, scope)
+        |> assign(:review, review)
+        |> assign(:paste_error, nil)
+        |> assign(:source_open, false)
+        |> assign(:load_state, :ready)
+
+      {:error, :not_found} ->
+        route_not_found(socket)
+
+      {:error, reason} ->
+        socket
+        |> assign(:review, nil)
+        |> assign(:paste_error, reason)
+        |> assign(:source_open, true)
+    end
+  end
+
+  defp read_scope_params(nil), do: %{}
+
+  defp read_scope_params(scope) do
+    %{
+      service_id: scope.calendar && scope.calendar.service_id,
+      direction: direction_param(scope.direction_id),
+      pattern: scope.pattern_id
+    }
+  end
+
+  defp current_input(socket) do
+    case socket.assigns[:input] do
+      input when is_map(input) -> input
+      _input -> fresh_paste_input()
+    end
+  end
+
+  # Form params for the paste form. Only keys the form carries override the
+  # input, so later steps' decisions/overrides ride along untouched.
+  defp merge_paste_params(input, params) do
+    %{
+      input
+      | text: paste_text(params, input),
+        layout: paste_layout(params, input),
+        header?: paste_header(params, input)
+    }
+  end
+
+  defp paste_text(%{"text" => text}, _input) when is_binary(text), do: text
+  defp paste_text(_params, input), do: input.text || ""
+
+  defp paste_layout(%{"layout" => layout}, _input)
+       when layout in ["auto", "trips_in_rows", "stops_in_rows"],
+       do: String.to_atom(layout)
+
+  defp paste_layout(_params, input), do: input.layout || :auto
+
+  defp paste_header(%{"header" => header}, _input), do: header != "false"
+  defp paste_header(_params, input), do: input.header? != false
+
+  defp paste_form_params(input \\ fresh_paste_input()) do
+    %{
+      "text" => input.text || "",
+      "layout" => layout_param(input.layout),
+      "header" => if(input.header? == false, do: "false", else: "true")
+    }
+  end
+
+  defp layout_param(:trips_in_rows), do: "trips_in_rows"
+  defp layout_param(:stops_in_rows), do: "stops_in_rows"
+  defp layout_param(_layout), do: "auto"
+
+  defp blank_paste_text?(text) when is_binary(text), do: String.trim(text) == ""
+  defp blank_paste_text?(_text), do: true
 
   defp push_canonical(socket, scope, params) do
     canonical = canonical_scope_params(scope)

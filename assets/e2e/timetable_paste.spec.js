@@ -1,11 +1,13 @@
 import { test, expect } from "@playwright/test";
 
 /**
- * Paste timetable shell (step 21) plus the Change schedule drawer (step 22).
+ * Paste timetable shell (step 21), the Change schedule drawer (step 22) and
+ * the timetable step (step 23).
  *
  * The full paste journey lands in step 31; this file proves the shell
- * renders its schedule line and the drawer patches the schedule while the
- * paste stays. The fixture route comes from
+ * renders its schedule line, the drawer patches the schedule while the
+ * paste stays, and the timetable step reads a paste with inline errors and
+ * a collapsed summary. The fixture route comes from
  * `test/support/browser_seed.exs`: BROWSER_PASTE (route 12, Downtown –
  * Riverside) with the Weekday calendar, outbound BPS-MAIN and inbound
  * BPS-INBOUND patterns.
@@ -110,5 +112,61 @@ test.describe("Change schedule drawer", () => {
     await expect(page.locator("#paste-scope-drawer")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.locator("#paste-scope-open")).toBeFocused();
+  });
+});
+
+test.describe("timetable step", () => {
+  // Step 23: the paste form textarea, hint, Layout disclosure, Read
+  // timetable, inline errors and the collapsed summary. The run is deferred
+  // to branch review with the browser partition, like the shell and drawer
+  // cases above.
+  const EXACT_PASTE = [
+    "Trip\tCentral Station\tMarket Street\tMill Street\tRiverside Terminal",
+    "1201\t6:00\t6:04\t6:10\t6:18",
+    "1203\t7:00\t7:04\t7:10\t7:18",
+  ].join("\n");
+
+  test("the first-use step shows the labelled textarea, hint and layout", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await expect(page.locator("#paste-form")).toBeVisible();
+    await expect(page.locator("#paste-source")).toBeVisible();
+    await expect(page.locator("#paste-source-hint")).toContainText("Up to 500 trips");
+    await expect(page.locator("#paste-layout")).toContainText("Layout");
+    await expect(page.locator("#paste-read")).toContainText("Read timetable");
+  });
+
+  test("a paste with no times shows the inline error and keeps the text", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", "Trip\tCentral Station\nfoo\tbar");
+    await page.click("#paste-read");
+    await expect(page.locator("#paste-source-error")).toContainText("No times found");
+    await expect(page.locator("#paste-source")).toHaveValue(/foo/);
+  });
+
+  test("an exact paste collapses the step and shows the review area", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", EXACT_PASTE);
+    await page.click("#paste-read");
+    await expect(page.locator("#paste-source-summary")).toContainText("trip rows");
+    await expect(page.locator("#paste-source-edit")).toContainText("Edit timetable");
+    await expect(page.locator("#paste-review")).toBeVisible();
+
+    await page.click("#paste-source-edit");
+    await expect(page.locator("#paste-source")).toHaveValue(/6:00/);
   });
 });
