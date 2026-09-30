@@ -403,7 +403,10 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   then the trips, all in one transaction. Returns `%{trips: ..., transfers: ...}`
   with the number of deleted trips and removed transfers. One `"trip"` audit log
   per deleted trip shares a single `operation_id` and lists the affected trip
-  UUIDs; removed transfers are not audited.
+  UUIDs, and each removed transfer is logged with a `"deleted"` `"transfer"`
+  change carrying its own before snapshot under the same `operation_id` (R11).
+  An audit failure rolls the whole deletion back, so a transfer row is never
+  removed unaudited.
   """
   @spec delete_trips(String.t(), String.t() | nil, [Ecto.UUID.t()], AuditContext.t()) ::
           {:ok, delete_result()} | {:error, delete_error()}
@@ -2047,7 +2050,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
     remove_trips = apply_removal_trips!(review.plan, locked_trips)
     snapshots = trip_audit_snapshots(organization_id, version_id, remove_trips)
-    result = remove_locked_trips!(organization_id, version_id, remove_trips)
+    result = remove_locked_trips!(audit_context, remove_trips, operation_id)
     audit_removed_trips!(audit_context, remove_trips, snapshots, operation_id)
 
     pasted_timings = create_paste_timings!(route, review.plan, audit_context, operation_id)
@@ -4401,9 +4404,12 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     # The whole list is valid, so nothing has been deleted yet.
     snapshots = Enum.map(trips, &{&1, deleted_trip_snapshot(&1)})
 
-    result = remove_locked_trips!(organization_id, version_id, trips)
-
+    # R11/INV-5: the transfers the deletion removes are audited with the trip
+    # logs, so the operation id exists before any child row goes.
     operation_id = Ecto.UUID.generate()
+
+    result = remove_locked_trips!(audit_context, trips, operation_id)
+
     affected_trip_ids = Enum.map(trips, & &1.id)
 
     Enum.each(snapshots, fn {trip, before} ->
@@ -4424,22 +4430,76 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   # Shared trip removal for `delete_trips/4` and the paste (R14/INV-6).
   #
   # `trips` are the locked scoped trips in UUID order. Deletes stop_times,
-  # frequencies and every transfer naming a removed natural `trip_id` via
-  # `trip_transfers_query/3`, then the trip rows. Callers own the locks and
-  # the audits; this helper only removes rows and reports the counts.
-  defp remove_locked_trips!(organization_id, version_id, trips) do
+  # frequencies and every transfer naming a removed natural `trip_id`, then the
+  # trip rows. Each removed transfer is audited with the caller's `operation_id`
+  # (R11/INV-5), so the paste and the deletion log the transfers they remove with
+  # the same operation id as their trip logs.
+  defp remove_locked_trips!(audit_context, trips, operation_id) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
     natural_ids = Enum.map(trips, & &1.trip_id)
     trip_uuids = Enum.map(trips, & &1.id)
 
     delete_children!(:stop_times, organization_id, version_id, natural_ids)
     delete_children!(:frequencies, organization_id, version_id, natural_ids)
 
-    {transfers, nil} =
-      Repo.delete_all(trip_transfers_query(organization_id, version_id, natural_ids))
+    transfers = delete_trip_transfers!(audit_context, natural_ids, operation_id)
 
     count = delete_trip_rows!(organization_id, version_id, trip_uuids)
 
     %{trips: count, transfers: transfers}
+  end
+
+  # R11: each removed transfer is locked in id order, snapshotted, deleted and
+  # logged with this deletion's operation id, in 15's R9 shape. The scope is the
+  # existing `trip_transfers_query/3`, so a general type 0-3 row naming a deleted
+  # trip is removed and audited exactly like a type 4/5 row, and the returned
+  # count is the number of rows the same cleanup removed before.
+  defp delete_trip_transfers!(audit_context, natural_ids, operation_id) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+
+    rows =
+      from(t in Transfer,
+        where:
+          t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+            (t.from_trip_id in ^natural_ids or t.to_trip_id in ^natural_ids),
+        order_by: [asc: t.id],
+        lock: "FOR UPDATE"
+      )
+      |> Repo.all()
+
+    {count, nil} = Repo.delete_all(trip_transfers_query(organization_id, version_id, natural_ids))
+
+    affected_ids = Enum.map(rows, & &1.id)
+
+    Enum.each(rows, fn row ->
+      audit_transfer!(
+        audit_context,
+        row,
+        "deleted",
+        Transfer.audit_snapshot(row),
+        nil,
+        operation_id,
+        affected_ids
+      )
+    end)
+
+    count
+  end
+
+  # An audit failure is the caller's rollback: no transfer row is ever removed
+  # unaudited (INV-5), and it rolls back the trips with it.
+  defp audit_transfer!(audit_context, transfer, action, before, after_snapshot, op, affected) do
+    case Gtfs.record_change_in_transaction(audit_context, :transfer, transfer, action, %{
+           before: before,
+           after: after_snapshot,
+           operation_id: op,
+           affected_transfer_ids: affected
+         }) do
+      {:ok, _log} -> :ok
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
   end
 
   defp lock_matching_trips!(organization_id, version_id, route_id, trip_uuids) do
