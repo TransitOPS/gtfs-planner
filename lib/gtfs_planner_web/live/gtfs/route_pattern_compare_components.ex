@@ -2226,8 +2226,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
       [{"a", comparison.a.pattern.route_pattern_id}, {"b", suggestion.route_pattern_id}] ++
         if(comparison.service_id, do: [{"service", comparison.service_id}], else: [])
 
-    "/gtfs/#{route.gtfs_version_id}/routes/#{route.route_id}/patterns/compare?" <>
-      URI.encode_query(params)
+    ~p"/gtfs/#{route.gtfs_version_id}/routes/#{route.route_id}/patterns/compare?#{params}"
   end
 
   defp suggestion_meta(comparison, suggestion, calendar_name) do

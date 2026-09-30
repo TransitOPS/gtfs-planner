@@ -256,6 +256,39 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLiveTest do
       assert has_element?(view, "#slot-b", "Short turn")
     end
 
+    test "a nested query param is ignored instead of crashing the page",
+         %{conn: conn, version: version} = context do
+      %{route: route} = comparison_route(context)
+
+      {:ok, view, _html} =
+        live(conn, compare_path(version, route, %{"a" => "FULL"}) <> "&b[k]=SHORT&ta[]=x")
+
+      assert has_element?(view, "#slot-a", "Full")
+      refute has_element?(view, "#slot-b", "Short turn")
+    end
+
+    test "a route ID with a slash keeps its links on that route",
+         %{conn: conn, version: version} = context do
+      route = route(context.organization, version, "10/A")
+      stops = Enum.map(1..2, &stop(context.organization, version, "SLASH", &1))
+
+      schedule_pattern(
+        context.organization,
+        version,
+        route,
+        %{id: "P1", name: "Slash", direction_id: 0, sort_order: 0},
+        Enum.map(stops, &{&1.stop_id, 0, 0, 1})
+      )
+
+      {:ok, view, _html} =
+        live(conn, "/gtfs/#{version.id}/routes/10%2FA/patterns/compare?a=P1")
+
+      assert has_element?(
+               view,
+               ~s(#slot-a-open[href="/gtfs/#{version.id}/routes/10%2FA/patterns/P1?task=stops"])
+             )
+    end
+
     test "a pattern of another route returns to the Patterns tab",
          %{conn: conn, version: version} = context do
       %{route: route} = comparison_route(context)

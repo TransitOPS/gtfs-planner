@@ -70,6 +70,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
+    # A crafted query such as `?b[k]=v` decodes to a map; only string values are
+    # IDs or flags, so anything else is dropped before it can reach a query.
+    params = Map.filter(params, fn {_key, value} -> is_binary(value) end)
+
     socket =
       socket
       |> assign(:route_id, params["route_id"])
@@ -516,7 +520,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
 
   defp side_paths(side, version_id, change_path) do
     base =
-      "/gtfs/#{version_id}/routes/#{side.route.route_id}/patterns/#{side.pattern.route_pattern_id}"
+      ~p"/gtfs/#{version_id}/routes/#{side.route.route_id}/patterns/#{side.pattern.route_pattern_id}"
 
     %{change: change_path, open: base <> "?task=stops", times: base <> "?task=timings"}
   end
@@ -538,7 +542,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
   end
 
   defp patterns_path(version_id, route_id) do
-    "/gtfs/#{version_id}/routes/#{route_id}/patterns"
+    ~p"/gtfs/#{version_id}/routes/#{route_id}/patterns"
   end
 
   # The direction toggle's patch targets: the all-patterns URL for each
@@ -576,7 +580,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
         if value in [nil, ""], do: [], else: [{key, value}]
       end)
 
-    base = "/gtfs/#{version_id}/routes/#{route_id}/patterns/compare"
+    # `~p` percent-encodes each segment, so an imported route ID such as `10/A`
+    # stays one segment instead of producing a path no route matches.
+    base = ~p"/gtfs/#{version_id}/routes/#{route_id}/patterns/compare"
 
     case params do
       [] -> base
