@@ -78,6 +78,7 @@ defmodule GtfsPlanner.Agents.SessionTest do
   alias GtfsPlanner.Agents.Scope
   alias GtfsPlanner.Agents.Session
   alias GtfsPlanner.Agents.SessionTest.SentinelPack
+  alias GtfsPlanner.Agents.UsageBudget
 
   # The test environment routes `GtfsPlanner.Agents.Model` through this plug, so
   # every scripted response below replaces only the HTTP boundary (INV-5).
@@ -90,6 +91,7 @@ defmodule GtfsPlanner.Agents.SessionTest do
   @unavailable_text "The helper is unavailable right now. Try again, or make the change yourself on this page."
   @context_limit_text "This conversation is too large. Start a new conversation or narrow the request."
   @forbidden_text "Your access changed. The helper stopped."
+  @allowance_exhausted_text "Daily assistant limit reached. It resets at 00:00 UTC."
 
   @weekdays %{
     monday: 1,
@@ -268,6 +270,53 @@ defmodule GtfsPlanner.Agents.SessionTest do
   end
 
   describe "stopping and ending one turn" do
+    test "an exhausted turn stays visible and new conversations or sessions cannot reset today's allowance",
+         context do
+      previous = Application.fetch_env!(:gtfs_planner, UsageBudget)
+
+      Application.put_env(:gtfs_planner, UsageBudget,
+        organization_daily_attempts: 2,
+        actor_daily_attempts: 2
+      )
+
+      on_exit(fn -> Application.put_env(:gtfs_planner, UsageBudget, previous) end)
+
+      session = start_session(context, EchoPack)
+      attach(session)
+      expect_reply(calls_reply([{"call_1", "echo", ~s|{"text":"again"}|}], 0.0001), 2)
+
+      assert :ok = Session.send_message(session, "Keep echoing.")
+
+      assert_receive {:agent_event, ^session,
+                      {:entry, %{role: :assistant, status: :allowance_exhausted} = entry}},
+                     5_000
+
+      assert entry.text == @allowance_exhausted_text
+      assert entry.prepared == nil
+      assert entry.activity == ["Echoed text", "Echoed text"]
+      assert_receive {:agent_event, ^session, {:status, :allowance_exhausted}}, 2_000
+      assert {:ok, %{status: :allowance_exhausted}} = Session.attach(session)
+
+      assert length(collect_requests()) == 2
+
+      assert :ok = Session.new_conversation(session)
+      assert :ok = Session.send_message(session, "Try a new conversation.")
+
+      assert_receive {:agent_event, ^session,
+                      {:entry, %{role: :assistant, status: :allowance_exhausted}}},
+                     5_000
+
+      new_session = start_session(context, EchoPack)
+      attach(new_session)
+      assert :ok = Session.send_message(new_session, "Try a new session.")
+
+      assert_receive {:agent_event, ^new_session,
+                      {:entry, %{role: :assistant, status: :allowance_exhausted}}},
+                     5_000
+
+      assert collect_requests() == []
+    end
+
     test "stop kills the running task and settles one stopped entry", context do
       session = start_session(context, EchoPack)
       attach(session)

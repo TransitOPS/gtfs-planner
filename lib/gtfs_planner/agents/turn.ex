@@ -32,6 +32,7 @@ defmodule GtfsPlanner.Agents.Turn do
   alias GtfsPlanner.Agents.Pack
   alias GtfsPlanner.Agents.Prompt
   alias GtfsPlanner.Agents.Scope
+  alias GtfsPlanner.Agents.UsageBudget
 
   # Bounds are code constants, not configuration (AC-30, FH-9). Every model call
   # is one provider attempt because `Model` disables automatic POST retries.
@@ -85,8 +86,14 @@ defmodule GtfsPlanner.Agents.Turn do
       {:error, :step_limit, progress(acc)}
     else
       case Scope.authorize(scope) do
-        :ok -> request(pack, scope, history, acc, calls_made, notify)
-        {:error, :forbidden} -> {:error, :forbidden, progress(acc)}
+        :ok ->
+          case UsageBudget.consume(scope.organization_id, scope.user_id) do
+            :ok -> request(pack, scope, history, acc, calls_made, notify)
+            {:error, :allowance_exhausted} -> {:error, :allowance_exhausted, progress(acc)}
+          end
+
+        {:error, :forbidden} ->
+          {:error, :forbidden, progress(acc)}
       end
     end
   end

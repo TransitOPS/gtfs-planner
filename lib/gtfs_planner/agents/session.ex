@@ -60,9 +60,10 @@ defmodule GtfsPlanner.Agents.Session do
   @unavailable_text "The helper is unavailable right now. Try again, or make the change yourself on this page."
   @context_limit_text "This conversation is too large. Start a new conversation or narrow the request."
   @forbidden_text "Your access changed. The helper stopped."
+  @allowance_exhausted_text "Daily assistant limit reached. It resets at 00:00 UTC."
 
   @typedoc "Session status the panel renders alongside the entries."
-  @type status :: :idle | :working | :ended | :forbidden | :limit
+  @type status :: :idle | :working | :ended | :forbidden | :limit | :allowance_exhausted
 
   @typedoc "One visible turn in the transcript."
   @type entry :: %{
@@ -72,7 +73,14 @@ defmodule GtfsPlanner.Agents.Session do
           activity: [String.t()],
           prepared: Pack.prepared() | nil,
           applied?: boolean(),
-          status: :done | :working | :stopped | :failed | :incomplete | :forbidden
+          status:
+            :done
+            | :working
+            | :stopped
+            | :failed
+            | :incomplete
+            | :forbidden
+            | :allowance_exhausted
         }
 
   @typedoc "What `attach/1` returns and what `Agents.open/1` exposes."
@@ -473,6 +481,10 @@ defmodule GtfsPlanner.Agents.Session do
   defp failure_outcome(:step_limit), do: {:incomplete, @incomplete_text, "step_limit"}
   defp failure_outcome(:incomplete_response), do: {:incomplete, @incomplete_text, "incomplete"}
   defp failure_outcome(:context_limit), do: {:incomplete, @context_limit_text, "context_limit"}
+
+  defp failure_outcome(:allowance_exhausted),
+    do: {:allowance_exhausted, @allowance_exhausted_text, "allowance_exhausted"}
+
   defp failure_outcome(_reason), do: {:failed, @unavailable_text, "failed"}
 
   defp timeout_turn(state) do
@@ -546,7 +558,7 @@ defmodule GtfsPlanner.Agents.Session do
 
     log_turn(state, turn, outcome, progress)
     state = broadcast(state, {:entry, find_entry(state, turn.entry_id)})
-    state = %{state | status: final_status(state)}
+    state = %{state | status: final_status(state, status)}
     broadcast(state, {:status, state.status}) |> arm_idle()
   end
 
@@ -608,9 +620,9 @@ defmodule GtfsPlanner.Agents.Session do
     |> arm_idle()
   end
 
-  defp final_status(state) do
-    if state.requests >= @max_requests, do: :limit, else: :idle
-  end
+  defp final_status(_state, :allowance_exhausted), do: :allowance_exhausted
+  defp final_status(state, _entry_status) when state.requests >= @max_requests, do: :limit
+  defp final_status(_state, _entry_status), do: :idle
 
   ## Turn bookkeeping
 
