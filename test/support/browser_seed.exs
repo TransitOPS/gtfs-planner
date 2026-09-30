@@ -5695,6 +5695,408 @@ case Accounts.register_first_admin(%{
         "101-104, a 2-trip pool plus frequency trip F30, 2 garages and 2 vehicle types"
     )
 
+    # ── Basic runs browser journey (EV-20, step 20) ──
+    #
+    # A published "Browser Runs Version" carries the prototype's default runs
+    # problems, isolated from every other scenario by its version and by its
+    # `RN_` names:
+    #
+    #   * two calendars — "Weekday" on weekdays and "Saturday" on Saturday —
+    #     deriving {WKDY} and {SAT}. The Weekday day type is the one the
+    #     journeys open, and the Saturday one exists so a run ID can be shown
+    #     scoped to its day type (the same ID on both is two runs);
+    #   * two MARKED STATIONS, Northgate and Southgate, each a location_type 1
+    #     station with one bay beneath it. A station is what a relief mark means:
+    #     a change of hands at a station reads as a relief, at a plain stop it
+    #     does not. Two of them, so the seed can show a change that IS at relief
+    #     next to one that is not;
+    #   * a relief point at each marked station, Northgate and Southgate, so a
+    #     change of hands there reads as relief and a change anywhere else does
+    #     not. `Blocking.Relief` matches a bay through its `parent_station`, so
+    #     naming the station is enough for the bay beneath it;
+    #   * `max_piece_minutes` 330, the researched operator-change limit, and the
+    #     default crew rules (15 min pull-out, 5 min relief, 5 min sign-off,
+    #     30 min paid break, 720 min max spread). Both matter: without
+    #     `max_piece_minutes` there is no `:piece_too_long` check at all
+    #     (rule 9), and the 30-minute paid-break maximum is what separates the
+    #     straight run from the split one;
+    #   * eight weekday blocks, 101-108, and the trip_runs rows below.
+    #
+    # The five states the page opens on, one per problem the prototype names.
+    # Note that a PIECE is cut where the run ID changes, not where a relief
+    # point is: `Runs.Pieces.cut/2` chunks a block's sequence by assignment. So a
+    # multi-piece run is a run that works two BLOCKS — one vehicle's shift
+    # across a relief — and the run's type follows the length of the break
+    # between them.
+    #
+    #   * run 2001, the AM/PM TRIPPER, works block 101's two morning trips and
+    #     block 104's two afternoon trips. The break between them measures
+    #     30060 s, far past the 30-minute paid-break maximum, so it is unpaid,
+    #     the operator changes, and the run is a :SPLIT;
+    #   * run 2002 works block 102's two trips and block 106's two, twenty
+    #     minutes later and starting at the same stop. Its break measures
+    #     300 s — inside the paid-break maximum — so the same operator works
+    #     both pieces and the run is :STRAIGHT. The ONLY difference from 2001 is
+    #     the length of the gap, which is the whole distinction the page exists
+    #     to show;
+    #   * 103 THE PROBLEM BLOCK is two runs. Run 2003 works five trips and its
+    #     piece measures 21720 s (362 min) against the 330-minute limit, so it
+    #     raises :piece_too_long; and the change of hands from 2003 to 2004
+    #     happens at Market Street, which is not a relief point, so it raises
+    #     :not_at_relief. One block, both problems;
+    #   * 105 is assigned to nothing, so it is the UNCOVERED segment: its two
+    #     trips are on the chart and no run holds them;
+    #   * runs 2005 and 2006 are plain one-piece runs on blocks 107 and 108, so
+    #     ordinary work sits either side of the interesting blocks.
+    #
+    # Saturday carries run "2001" as well. It is a DIFFERENT run from the
+    # weekday "2001" — same name, other day type — which is what "a run is
+    # scoped to its day type" looks like on the page.
+    #
+    # Block IDs are numeric (101-108) and every name is `RN_`-prefixed, so this
+    # version can collide with neither the `BB-` nor the `AB-` names. The
+    # version is backdated to 2020-07-01, after the advanced and transfers
+    # versions and long before the `DateTime.utc_now()` defaults, so it never
+    # becomes the organization's latest published default.
+    {:ok, runs_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Runs Version"})
+
+    runs_version =
+      Repo.update!(
+        Ecto.Changeset.change(runs_version,
+          published_at: ~U[2020-07-01 00:00:00.000000Z]
+        )
+      )
+
+    runs_week_start = ~D[2026-09-07]
+    runs_week_end = ~D[2027-06-25]
+
+    for {service_id, name, days} <- [
+          {"WKDY", "Weekday",
+           [monday: 1, tuesday: 1, wednesday: 1, thursday: 1, friday: 1, saturday: 0, sunday: 0]},
+          {"SAT", "Saturday",
+           [monday: 0, tuesday: 0, wednesday: 0, thursday: 0, friday: 0, saturday: 1, sunday: 0]}
+        ] do
+      attrs =
+        Map.merge(
+          %{
+            service_id: service_id,
+            name: name,
+            start_date: runs_week_start,
+            end_date: runs_week_end
+          },
+          Map.new(days)
+        )
+
+      GtfsPlanner.BlockingFixtures.calendar_service_fixture(
+        org.id,
+        runs_version.id,
+        attrs
+      )
+    end
+
+    # The two marked stations and the two plain stops. A bay carries no point of
+    # its own, so every estimate uses the station's coordinates and a handover
+    # between the two halves of one station is a same-station handover rather
+    # than a drive.
+    for {stop_id, stop_name, lat, lon} <- [
+          {"RN_NG", "Northgate Station", 40.758000, -74.006000},
+          {"RN_SG", "Southgate Station", 40.735000, -73.988000}
+        ] do
+      AdvancedBlockingFixtures.stop_with_coordinates_fixture(org.id, runs_version.id, %{
+        stop_id: stop_id,
+        stop_name: stop_name,
+        location_type: 1,
+        stop_lat: lat,
+        stop_lon: lon
+      })
+    end
+
+    for {stop_id, parent, platform} <- [
+          {"RN_NG_A", "RN_NG", "A"},
+          {"RN_SG_A", "RN_SG", "A"}
+        ] do
+      AdvancedBlockingFixtures.stop_with_coordinates_fixture(org.id, runs_version.id, %{
+        stop_id: stop_id,
+        stop_name: "#{parent} · Bay #{platform}",
+        location_type: 0,
+        parent_station: parent,
+        platform_code: platform,
+        stop_lat: nil,
+        stop_lon: nil
+      })
+    end
+
+    for {stop_id, stop_name, lat, lon} <- [
+          {"RN_MKT", "Market Street", 40.770000, -73.995000},
+          {"RN_RIVER", "Riverbend", 40.712000, -74.010000}
+        ] do
+      AdvancedBlockingFixtures.stop_with_coordinates_fixture(org.id, runs_version.id, %{
+        stop_id: stop_id,
+        stop_name: stop_name,
+        location_type: 0,
+        stop_lat: lat,
+        stop_lon: lon
+      })
+    end
+
+    runs_routes =
+      [
+        {"RN_R10", "10", "Northgate - Riverbend", "1F5FBF"},
+        {"RN_R20", "20", "Southgate - Riverbend", "4B1F78"},
+        {"RN_R30", "30", "Market crosstown", "267548"}
+      ]
+      |> Map.new(fn {route_id, short_name, long_name, color} ->
+        {:ok, route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: runs_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3,
+            route_color: color,
+            route_text_color: "FFFFFF"
+          })
+
+        {route_id, route}
+      end)
+
+    runs_trip = fn attrs ->
+      attrs = Map.new(attrs)
+
+      GtfsPlanner.BlockingFixtures.blocked_trip_fixture(
+        org.id,
+        runs_version.id,
+        Map.fetch!(runs_routes, Map.fetch!(attrs, :route_id)).route_id,
+        Map.merge(
+          Map.take(attrs, [
+            :trip_id,
+            :block_id,
+            :trip_headsign,
+            :first_stop,
+            :last_stop,
+            :first_arrival,
+            :last_arrival
+          ]),
+          %{service_id: Map.get(attrs, :service_id, "WKDY")}
+        )
+      )
+    end
+
+    # Eight weekday blocks. Each row is {trip_id, block, route, first stop, last
+    # stop, first arrival, last arrival}; the handovers are what make the states
+    # below, so the stop each block changes hands at is the load-bearing column.
+    for {trip_id, block_id, route_id, first_stop, last_stop, first_arrival, last_arrival} <- [
+          # 101 AM TRIPPER — run 2001 works these two morning trips and then
+          # block 104's two afternoon trips, so the run has a piece per block
+          # and the break between them is most of a working day. Unpaid, so the
+          # run is a :split: one run, two operators, two shifts.
+          {"1001", "101", "RN_R10", "RN_RIVER", "RN_NG_A", "05:50:00", "06:20:00"},
+          {"1002", "101", "RN_R10", "RN_NG_A", "RN_RIVER", "06:40:00", "07:10:00"},
+          # 102 — run 2002 works these two trips and then block 106's two, 20
+          # minutes later and starting at the same stop (RN_SG_A). Each block
+          # charges its own pull-out, so the break measures 300 s: inside the
+          # 30-minute paid-break maximum, which makes the run a :straight. The
+          # only difference from run 2001 is the length of the gap between its
+          # two blocks, which is the whole distinction the page exists to show.
+          {"1021", "102", "RN_R20", "RN_RIVER", "RN_MKT", "06:00:00", "06:30:00"},
+          {"1022", "102", "RN_R20", "RN_MKT", "RN_SG_A", "06:50:00", "07:20:00"},
+          # 103 THE PROBLEM BLOCK — two runs. Run 2003's single piece measures
+          # 21720 s (362 min) against the 330-minute limit, so it raises
+          # :piece_too_long, and the change of hands from 2003 to 2004 happens
+          # at Market Street, which is not a relief point, so it raises
+          # :not_at_relief. One block carrying both problems is the point: the
+          # two findings are independent checks that a single block trips both.
+          {"1025", "103", "RN_R30", "RN_RIVER", "RN_MKT", "05:55:00", "06:30:00"},
+          {"1026", "103", "RN_R30", "RN_MKT", "RN_SG_A", "07:00:00", "07:35:00"},
+          {"1027", "103", "RN_R30", "RN_SG_A", "RN_MKT", "08:10:00", "08:45:00"},
+          {"1028", "103", "RN_R30", "RN_MKT", "RN_SG_A", "09:20:00", "09:55:00"},
+          {"1029", "103", "RN_R30", "RN_SG_A", "RN_MKT", "11:20:00", "11:55:00"},
+          {"1030", "103", "RN_R30", "RN_MKT", "RN_RIVER", "12:40:00", "13:20:00"},
+          # 104 — run 2001's second piece, the afternoon half of the tripper.
+          {"1031", "104", "RN_R10", "RN_RIVER", "RN_MKT", "15:50:00", "16:20:00"},
+          {"1032", "104", "RN_R10", "RN_MKT", "RN_RIVER", "16:40:00", "17:10:00"},
+          # 105 — the UNCOVERED block. These trips exist and are on the chart,
+          # but no run holds them.
+          {"1033", "105", "RN_R20", "RN_RIVER", "RN_MKT", "09:30:00", "10:00:00"},
+          {"1034", "105", "RN_R20", "RN_MKT", "RN_RIVER", "10:30:00", "11:00:00"},
+          # 106 — run 2002's second piece, twenty minutes after block 102 ends
+          # and starting at the same stop, so the break between them is paid.
+          # 107 and 108 — plain one-piece runs, so the chart has ordinary work on
+          # it either side of the interesting blocks.
+          {"1051", "106", "RN_R20", "RN_SG_A", "RN_MKT", "08:00:00", "08:30:00"},
+          {"1052", "106", "RN_R20", "RN_MKT", "RN_RIVER", "08:50:00", "09:20:00"},
+          {"1061", "107", "RN_R10", "RN_RIVER", "RN_MKT", "13:50:00", "14:20:00"},
+          {"1062", "107", "RN_R10", "RN_MKT", "RN_RIVER", "14:50:00", "15:20:00"},
+          {"1071", "108", "RN_R20", "RN_RIVER", "RN_SG_A", "19:00:00", "19:30:00"},
+          {"1072", "108", "RN_R20", "RN_SG_A", "RN_RIVER", "20:00:00", "20:30:00"}
+        ] do
+      runs_trip.(%{
+        trip_id: trip_id,
+        route_id: route_id,
+        block_id: block_id,
+        first_stop: first_stop,
+        last_stop: last_stop,
+        first_arrival: first_arrival,
+        last_arrival: last_arrival
+      })
+    end
+
+    # Saturday blocks, so the page can show that run "2001" on Saturday is a
+    # DIFFERENT run from the weekday run of the same name: a run is scoped to
+    # its day type, and the pair is its identity.
+    for {trip_id, block_id, route_id, first_stop, last_stop, first_arrival, last_arrival} <- [
+          {"10101", "201", "RN_R10", "RN_RIVER", "RN_MKT", "09:00:00", "09:30:00"},
+          {"10102", "201", "RN_R10", "RN_MKT", "RN_RIVER", "10:00:00", "10:30:00"},
+          {"10103", "202", "RN_R20", "RN_RIVER", "RN_SG_A", "11:00:00", "11:30:00"},
+          {"10104", "202", "RN_R20", "RN_SG_A", "RN_RIVER", "12:00:00", "12:30:00"}
+        ] do
+      runs_trip.(%{
+        trip_id: trip_id,
+        route_id: route_id,
+        block_id: block_id,
+        first_stop: first_stop,
+        last_stop: last_stop,
+        first_arrival: first_arrival,
+        last_arrival: last_arrival,
+        service_id: "SAT"
+      })
+    end
+
+    # One garage for the whole version, and the default driving-time settings
+    # with the researched 330-minute operator-change limit. `max_piece_minutes`
+    # is what makes 103's over-limit piece a `:piece_too_long` warning; with it
+    # unset there would be no such check at all (rule 9), so the seeded state
+    # depends on this line.
+    runs_garage =
+      GtfsPlanner.OperationsFixtures.garage_fixture(org.id, %{
+        garage_id: "RNGB",
+        name: "Riverbend Garage",
+        lat: 40.705000,
+        lon: -74.015000
+      })
+
+    for {service_id, block_id} <- [
+          {"WKDY", "101"},
+          {"WKDY", "102"},
+          {"WKDY", "103"},
+          {"WKDY", "104"},
+          {"WKDY", "105"},
+          {"WKDY", "106"},
+          {"WKDY", "107"},
+          {"WKDY", "108"},
+          {"SAT", "201"},
+          {"SAT", "202"}
+        ] do
+      AdvancedBlockingFixtures.block_attribute_fixture(org.id, runs_version.id, %{
+        service_id: service_id,
+        block_id: block_id,
+        garage_id: runs_garage.id
+      })
+    end
+
+    {:ok, _runs_settings} =
+      GtfsPlanner.Gtfs.Blocking.update_settings(org.id, runs_version.id, %{
+        min_layover_minutes: 5,
+        max_block_minutes: nil,
+        pull_out_buffer_minutes: 0,
+        interlining: :any,
+        deadhead_speed_kmh: 30,
+        deadhead_circuity: Decimal.new("1.3"),
+        max_piece_minutes: 330,
+        default_garage_id: runs_garage.id
+      })
+
+    # Two relief points, at the two marked stations. The trippers hand over at
+    # those stations, so their handovers are at relief; 103 hands over at Market
+    # Street and Southgate's bay, and the Southgate handover is therefore away
+    # from the marked station stop the relief point names.
+    for stop_id <- ["RN_NG", "RN_SG"] do
+      AdvancedBlockingFixtures.relief_point_fixture(org.id, runs_version.id, %{stop_id: stop_id})
+    end
+
+    # The default crew rules, written explicitly so the seeded page's figures
+    # come from this version's own row rather than from `@crew_defaults` by
+    # accident. A 15-minute pull-out and a 5-minute relief are what put 103's
+    # single piece at 398 minutes rather than at its trip times.
+    {:ok, _runs_crew} =
+      GtfsPlanner.Gtfs.update_crew_settings(org.id, runs_version.id, %{
+        report_pull_out_minutes: 15,
+        report_relief_minutes: 5,
+        sign_off_minutes: 5,
+        paid_break_max_minutes: 30,
+        max_spread_minutes: 720
+      })
+
+    # The trip_runs rows. Read back through `Runs.count_runs_for_trips/3` and
+    # `Runs.load_runs/3` rather than assumed, so the day type key is the one the
+    # day load itself derives (INV-6) and the counts below are the real answer.
+    runs_weekday_key =
+      case GtfsPlanner.Gtfs.Blocking.load_day(org.id, runs_version.id, nil) do
+        {:ok, day} -> day.day_type.key
+        {:error, reason} -> raise "runs browser seed: no default day type (#{inspect(reason)})"
+      end
+
+    runs_saturday_key =
+      GtfsPlanner.Gtfs.Blocking.DayTypes.key(["SAT"])
+
+    runs_trip_by_name =
+      Ecto.Query.from(t in GtfsPlanner.Gtfs.Trip,
+        where: t.organization_id == ^org.id and t.gtfs_version_id == ^runs_version.id,
+        select: t
+      )
+      |> GtfsPlanner.Repo.all()
+      |> Map.new(&{&1.trip_id, &1})
+
+    # {block, trip names, run ID, day type key}. The block is the row's own
+    # claim about where the trips sit, and it is CHECKED against the trip rather
+    # than assumed: a trip silently moved to another block would otherwise be
+    # assigned to a run that does not touch it, and the seeded state would be
+    # wrong with nothing to say so.
+    #
+    #   * 101 and 104 share run 2001, so that run has a piece per block and the
+    #     break between them is most of a working day — unpaid, so a :split;
+    #   * 102 and 106 share run 2002 with a 20-minute gap, inside the
+    #     paid-break maximum, so the page's :straight multi-piece run;
+    #   * 103 carries TWO runs, and that is the point. The change of hands at
+    #     Market Street is away from relief (:not_at_relief) and the first of
+    #     the two is over the 330-minute limit (:piece_too_long);
+    #   * 105 is absent, so its two trips are the uncovered segment;
+    #   * 107 and 108 are one-piece runs 2005 and 2006.
+    #
+    # Saturday carries run "2001" too, which is a different run from the
+    # weekday "2001" — same name, other day type.
+    for {block_id, trip_names, run_id, day_type_key} <- [
+          {"101", ["1001", "1002"], "2001", runs_weekday_key},
+          {"104", ["1031", "1032"], "2001", runs_weekday_key},
+          {"102", ["1021", "1022"], "2002", runs_weekday_key},
+          {"106", ["1051", "1052"], "2002", runs_weekday_key},
+          {"103", ["1025", "1026", "1027", "1028", "1029"], "2003", runs_weekday_key},
+          {"103", ["1030"], "2004", runs_weekday_key},
+          {"107", ["1061", "1062"], "2005", runs_weekday_key},
+          {"108", ["1071", "1072"], "2006", runs_weekday_key},
+          {"201", ["10101", "10102"], "2001", runs_saturday_key},
+          {"202", ["10103", "10104"], "2009", runs_saturday_key}
+        ] do
+      for trip_name <- trip_names do
+        trip = Map.fetch!(runs_trip_by_name, trip_name)
+
+        unless trip.block_id == block_id do
+          raise "runs browser seed: trip #{trip_name} is on block #{trip.block_id}, " <>
+                  "but the assignment row claims #{block_id}"
+        end
+
+        GtfsPlanner.RunsFixtures.trip_run_fixture(org.id, runs_version.id, %{
+          trip: trip,
+          day_type_key: day_type_key,
+          run_id: run_id
+        })
+      end
+    end
+
+    IO.puts("Browser seed: runs version #{runs_version.id}")
+
     {:ok, schedules_version} =
       Versions.create_gtfs_version(org.id, %{name: "Browser Schedules No Calendars"})
 
