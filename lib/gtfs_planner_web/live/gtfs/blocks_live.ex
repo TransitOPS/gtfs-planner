@@ -292,6 +292,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
      |> assign(:operator_changes, @empty_operator_changes)
      |> assign(:suggest, @empty_suggest)
      |> assign(:plan_preview, nil)
+     |> assign(:runs_touched, 0)
      |> assign(:preview_day, nil)
      |> assign(:suggestion, @empty_suggestion)
      |> assign(:apply, @empty_apply)
@@ -1248,6 +1249,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         # A reloaded day is a different plan, so a suggestion previewed over the
         # last one is dropped rather than drawn over rows it no longer describes.
         |> assign(:plan_preview, nil)
+        |> assign(:runs_touched, 0)
         |> assign(:preview_day, nil)
         |> assign(:suggestion, @empty_suggestion)
         |> assign(:apply, @empty_apply)
@@ -2904,6 +2906,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     socket =
       socket
       |> assign(:plan_preview, plan)
+      |> assign_runs_touched(plan)
       |> put_suggest(%{@empty_suggest | scope: socket.assigns.suggest.scope})
       |> assign(:open_drawer, nil)
       |> assign(:timeline_key, nil)
@@ -2940,6 +2943,29 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       moves: length(plan.moves),
       days: Enum.map(plan.review.effects, & &1.day_type.label)
     }
+  end
+
+  # How many RUNS contain the trips this suggestion moves, computed ONCE here
+  # rather than in the render.
+  #
+  # A render-time query would be wrong twice over: `render/1` must stay a pure
+  # function of its assigns, and a preview is re-rendered on every event on the
+  # page — a sort, a scale change, a selected trip. The count is a fact about the
+  # PLAN, not about the page, so it is taken where the plan is stored.
+  #
+  # It reflects the runs as they are SAVED, because a Blocks preview writes
+  # nothing until Apply.
+  defp assign_runs_touched(socket, plan) do
+    trip_ids = plan.moves |> Enum.map(& &1.trip.id) |> Enum.uniq()
+
+    count =
+      Gtfs.count_runs_for_trips(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id,
+        trip_ids
+      )
+
+    assign(socket, :runs_touched, count)
   end
 
   # The write itself: one `start_async` task over the plan this page is showing,
@@ -3750,6 +3776,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp drop_preview(socket) do
     socket
     |> assign(:plan_preview, nil)
+    |> assign(:runs_touched, 0)
     |> assign(:preview_day, nil)
     |> assign(:suggestion, @empty_suggestion)
     |> assign(:apply, @empty_apply)
@@ -3983,6 +4010,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 plan={@suggestion.plan}
                 day_type={@day_type}
                 scope={@suggestion.scope}
+                runs_touched={@runs_touched}
+                version_id={@current_gtfs_version.id}
                 picked={@suggestion.picked}
                 minimum={@suggestion.minimum}
                 existing_problems={@suggestion.existing}
