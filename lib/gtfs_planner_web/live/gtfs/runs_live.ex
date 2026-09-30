@@ -39,6 +39,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   use GtfsPlannerWeb, :live_view
 
+  # While a suggestion is on screen the saved runs are still the truth, and an
+  # edit made now would be made against rows nobody is looking at. So the
+  # editing entry points are refused for exactly as long as the preview is up,
+  # and they say why: a disabled control with no reason is a dead end.
+  @preview_locked_message "Apply or discard the suggestion first."
+
   alias GtfsPlanner.Gtfs
   alias GtfsPlannerWeb.Gtfs.RunsComponents
 
@@ -65,6 +71,14 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      # The summary drawer is closed and has never loaded its shares, so the
      # drawer cannot appear on a page whose day type has not loaded.
      |> assign(:drawer, nil)
+     # A suggestion is PREVIEW state, not page state: it is not in the URL
+     # (step 35's rule that drawers are not URL state carries over to the
+     # preview, which is drawn on the page rather than in a drawer), and it is
+     # lost on reload because nothing wrote it.
+     |> assign(:plan, nil)
+     |> assign(:suggest_open, false)
+     |> assign(:suggest_scope, :uncovered_only)
+     |> assign(:suggest_notice, nil)
      |> assign(:shares_state, :loading)
      |> assign(:shares, [])
      # The duty chart's state. `sort`/`dir`/`scale` are read from the URL and
@@ -277,37 +291,18 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # Every move is `from: nil, to: :new`, and `apply_run_moves/4` resolves every
   # `:new` in one call to the SAME run: an operator covering three trips means one
   # run over them, not three runs of one trip each.
+  # NOT a separate clause above this one. `handle_event("create_run", _params, _)`
+  # matches EVERY create_run, so a refusal clause written that way swallows the
+  # real handler whenever the page is not locked: the click is accepted, nothing
+  # happens, and no toast appears. The lock is a guard on the one clause instead.
   def handle_event("create_run", params, socket) do
-    case find_uncovered(socket.assigns.runs_day, params) do
-      nil ->
-        {:noreply,
-         socket
-         |> put_undo(nil)
-         |> put_toast(
-           "That block is no longer uncovered. Reload to see the latest runs.",
-           :refused
-         )}
-
-      segment ->
-        moves = Enum.map(segment.trips, fn trip -> %{trip_id: trip.id, from: nil, to: :new} end)
-
-        {:noreply,
-         apply_moves(
-           socket,
-           moves,
-           &created_text/1,
-           "These trips changed since the page loaded. Reload to see the latest runs."
-         )}
+    if edit_locked?(socket.assigns) do
+      {:noreply, put_toast(socket, @preview_locked_message, :refused)}
+    else
+      create_run_unchecked(params, socket)
     end
   end
 
-  # Undo the last move set, through the SAME call with the moves reversed.
-  #
-  # It is the same function and the same optimistic check by design: undo is not a
-  # privileged path that trusts the page, it is an ordinary move set that happens
-  # to run backwards. So a colleague who moved one of those trips in the meantime
-  # refuses the undo rather than reverting their work — which is the card's third
-  # case, and is why the refusal names what changed.
   def handle_event("undo", _params, socket) do
     case socket.assigns.undo do
       nil ->
@@ -349,6 +344,67 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # button can still dispatch, so the handler rejects an unknown key rather than
   # trusting it — a key this component does not own would mark a tile pressed
   # that does not exist.
+  # Step 36 adds the drawer and the preview. The PREVIEW is the whole step: it
+  # renders `plan.preview` in place of the saved derivation and writes nothing.
+  # `apply_suggestion` is deliberately NOT handled here — step 37 wires it to
+  # `Gtfs.apply_run_plan/3` — so the panel's Apply button exists for the layout
+  # this step specifies and does nothing until then.
+  def handle_event("open_suggest", _params, socket) do
+    if previewing?(socket.assigns) do
+      {:noreply, socket}
+    else
+      {:noreply,
+       socket
+       |> assign(:suggest_open, true)
+       |> assign(:suggest_notice, nil)
+       |> assign(:suggest_scope, default_scope(socket.assigns))}
+    end
+  end
+
+  def handle_event("close_suggest", _params, socket) do
+    {:noreply, assign(socket, :suggest_open, false)}
+  end
+
+  def handle_event("select_scope", %{"value" => value}, socket) do
+    case parse_scope(value) do
+      {:ok, scope} -> {:noreply, assign(socket, :suggest_scope, scope)}
+      :error -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("select_scope", _params, socket), do: {:noreply, socket}
+
+  def handle_event("preview_suggestion", _params, socket) do
+    scope = socket.assigns.suggest_scope
+
+    case Gtfs.suggest_runs(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           socket.assigns.day,
+           scope
+         ) do
+      {:ok, plan} ->
+        {:noreply,
+         socket
+         |> assign(:plan, plan)
+         |> assign(:suggest_open, false)
+         |> stream_run_rows()}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, :suggest_notice, {:error, suggest_error(reason)})}
+    end
+  end
+
+  def handle_event("discard_suggestion", _params, socket) do
+    # Discard is SAFE BY CONSTRUCTION: nothing was written, so restoring the
+    # saved rows is dropping the plan and streaming them again. There is no
+    # undo to run and nothing to check.
+    {:noreply,
+     socket
+     |> assign(:plan, nil)
+     |> stream_run_rows()}
+  end
+
   def handle_event("open_drawer", %{"key" => key}, socket) do
     # `is_map/1` rather than a truthiness check: `runs_day` is a map or `nil`,
     # and `and` refuses a non-boolean left side rather than treating a map as
@@ -476,22 +532,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   end
 
   def handle_event("open_run", %{"run" => run_id}, socket) do
-    # A run is addressed by a URL parameter rather than by a number this page
-    # hands out, for the reason `?day=` is: a drawer a reader cannot link to is a
-    # drawer they have to find again, and a colleague cannot be shown the run you
-    # are looking at. The handler refuses an unknown run rather than opening an
-    # empty one.
-    case find_run(socket.assigns.runs_day, run_id) do
-      nil ->
-        {:noreply, assign(socket, :drawer, nil)}
-
-      run ->
-        {:noreply,
-         socket
-         |> assign(:drawer, {:run, run.run_id})
-         |> assign(:run, run.run_id)
-         |> reset_rename_form()
-         |> sync_run_context()}
+    if edit_locked?(socket.assigns) do
+      {:noreply, put_toast(socket, @preview_locked_message, :refused)}
+    else
+      open_run_unchecked(run_id, socket)
     end
   end
 
@@ -695,6 +739,58 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # them. It is LAST among the `handle_event` clauses on purpose: a catch-all
   # placed earlier would shadow the drawer events above it.
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  defp create_run_unchecked(params, socket) do
+    case find_uncovered(socket.assigns.runs_day, params) do
+      nil ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast(
+           "That block is no longer uncovered. Reload to see the latest runs.",
+           :refused
+         )}
+
+      segment ->
+        moves = Enum.map(segment.trips, fn trip -> %{trip_id: trip.id, from: nil, to: :new} end)
+
+        {:noreply,
+         apply_moves(
+           socket,
+           moves,
+           &created_text/1,
+           "These trips changed since the page loaded. Reload to see the latest runs."
+         )}
+    end
+  end
+
+  # Undo the last move set, through the SAME call with the moves reversed.
+  #
+  # It is the same function and the same optimistic check by design: undo is not a
+  # privileged path that trusts the page, it is an ordinary move set that happens
+  # to run backwards. So a colleague who moved one of those trips in the meantime
+  # refuses the undo rather than reverting their work — which is the card's third
+  # case, and is why the refusal names what changed.
+
+  defp open_run_unchecked(run_id, socket) do
+    # A run is addressed by a URL parameter rather than by a number this page
+    # hands out, for the reason `?day=` is: a drawer a reader cannot link to is a
+    # drawer they have to find again, and a colleague cannot be shown the run you
+    # are looking at. The handler refuses an unknown run rather than opening an
+    # empty one.
+    case find_run(socket.assigns.runs_day, run_id) do
+      nil ->
+        {:noreply, assign(socket, :drawer, nil)}
+
+      run ->
+        {:noreply,
+         socket
+         |> assign(:drawer, {:run, run.run_id})
+         |> assign(:run, run.run_id)
+         |> reset_rename_form()
+         |> sync_run_context()}
+    end
+  end
 
   defp save_crew_settings(socket, entries) do
     %{current_organization: organization, current_gtfs_version: version} = socket.assigns
@@ -1356,15 +1452,122 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # sign-on second are ordered by name, so clicking a header twice returns the
   # same order both times. Without the tiebreak, a re-sort that does not change
   # the key would shuffle rows that the reader has learned the positions of.
+  # What the page is SHOWING: the saved day, or — while a suggestion is
+  # previewed — the same day with `derived` replaced by the plan's own preview.
+  #
+  # It is a `runs_day`-shaped map rather than a second field at every call site,
+  # so the chart, the list, the count strip and the tabs all read ONE source and
+  # cannot disagree about which runs are on screen. `day`, `crew` and `context`
+  # are unchanged: a preview changes the CUTTING, not the day it cuts.
+  # The runs this suggestion would add or change, as a MapSet. Read from the
+  # plan's own `changed_run_ids` and `new_run_ids` — the domain's account of
+  # which runs a plan touches — rather than by diffing the two derivations here,
+  # which would be a second, weaker implementation of the same question.
+  defp changed_run_ids(assigns) do
+    case assigns[:plan] do
+      nil -> MapSet.new()
+      plan -> MapSet.new(plan.changed_run_ids ++ plan.new_run_ids)
+    end
+  end
+
+  defp shown(assigns) do
+    case assigns[:plan] do
+      nil -> assigns.runs_day
+      plan -> %{assigns.runs_day | derived: plan.preview}
+    end
+  end
+
+  defp previewing?(assigns), do: is_map(assigns[:plan])
+
+  # `replace_all` is the fallback when there is no uncovered work: the uncovered
+  # scope would plan nothing, and a reader who opened the drawer to do
+  # something would be offered a no-op.
+  defp default_scope(assigns) do
+    if uncovered_trip_count(shown(assigns)) > 0, do: :uncovered_only, else: :replace_all
+  end
+
+  # The radio VALUES are the card's strings; the scope ATOMS are
+  # `Runs.Cutter`'s. The cast lives here rather than in the domain because the
+  # domain already guarantees the two atoms it accepts, and nothing else
+  # produces a scope from user input.
+  defp parse_scope("uncovered_only"), do: {:ok, :uncovered_only}
+  defp parse_scope("replace_all"), do: {:ok, :replace_all}
+  defp parse_scope(_value), do: :error
+
+  # The number new runs would start from. The drawer's uncovered-scope sentence
+  # names it, and on a day that is not loaded there is no number to name, so it
+  # is nil rather than a guess — the sentence then says only the trip count.
+  defp edit_locked?(assigns), do: previewing?(assigns)
+
+  defp lock_reason(assigns), do: if(edit_locked?(assigns), do: @preview_locked_message)
+
+  defp next_run_id(assigns) do
+    case Map.get(assigns, :runs_day) do
+      %{derived: %{runs: runs}} -> Gtfs.next_run_id(Enum.map(runs, & &1.run_id))
+      _ -> nil
+    end
+  end
+
+  # The relief stops the cutter would split at, as `{stop_id, name}` pairs for
+  # the drawer's rules list. Read from the day's blocks rather than from the
+  # version-wide setting list, because the drawer is about THIS day.
+  # The relief stop IDs this day's blocks actually offer, read from the blocks'
+  # own WINDOWS.
+  #
+  # IDs and not names, deliberately. A window carries `stop_id` and nothing
+  # else, and the nearest name source is the day's trips, which name only their
+  # first and last stop — so a relief point in the middle of a block has no name
+  # to show and inventing one would be a lie the reader could check. This is the
+  # same convention the crew rules drawer already uses for its relief points.
+  defp relief_stop_ids(assigns) do
+    case Map.get(assigns, :runs_day) do
+      %{day: %{blocks: blocks}} ->
+        blocks
+        |> Enum.flat_map(fn block ->
+          case block do
+            %{windows: windows} when is_list(windows) -> Enum.map(windows, & &1.stop_id)
+            _ -> []
+          end
+        end)
+        |> Enum.uniq()
+        |> Enum.sort()
+
+      _ ->
+        []
+    end
+  end
+
+  # The count of travel legs the CUTTER had to guess at.
+  #
+  # It is 0 here, and that is a FACT rather than a stub. The prototype's "3
+  # travel times are estimated" is its own browser heuristic guessing between
+  # stops. The Elixir cutter does not guess: `Blocking.Relief` builds no window
+  # for a drive it cannot compute, so a day with unknown drives simply offers
+  # fewer relief points and the checks say so. There is therefore no domain
+  # source of "estimated" legs to count, and the note is rendered only if a
+  # count is ever supplied — today that is never. Recorded in the step-36
+  # learning as prototype drift rather than faked with a count.
+  defp estimated_travel(_assigns), do: 0
+
+  defp suggest_error({:unknown_day_type, _}),
+    do: "That day type is not in this version. Nothing was suggested."
+
+  defp suggest_error(_reason),
+    do: "Runs could not be suggested. Nothing has changed."
+
   defp stream_run_rows(socket) do
-    runs_day = socket.assigns.runs_day
+    runs_day = shown(socket.assigns)
     %{sort: sort, dir: dir} = socket.assigns
+
+    changed = changed_run_ids(socket.assigns)
 
     runs =
       runs_day.derived.runs
       |> Enum.sort_by(fn run -> {run.run_id} end)
       |> Enum.sort_by(&sort_value(&1, sort), sorter_comparator(dir))
-      |> Enum.map(fn run -> %{id: "run-#{run.run_id}", run: run} end)
+      |> Enum.map(fn run ->
+        %{id: "run-#{run.run_id}", run: run, changed: MapSet.member?(changed, run.run_id)}
+      end)
 
     socket
     |> assign(:run_axis, runs_day.derived.axis)
@@ -1549,20 +1752,21 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
               <RunsComponents.crew_button
                 :if={@runs_day}
                 crew={@runs_day.crew}
+                locked_reason={lock_reason(assigns)}
               />
             </:crew_summary>
             <:counts>
               <RunsComponents.count_strip
                 :if={@runs_day}
-                stats={@runs_day.derived.stats}
+                stats={shown(assigns).derived.stats}
                 spread_limit_minutes={@runs_day.crew.max_spread_minutes}
                 selected_key={selected_count_tile(@drawer)}
               />
 
               <RunsComponents.uncovered_callout
                 :if={@runs_day}
-                segments={@runs_day.derived.uncovered}
-                duration_secs={@runs_day.derived.stats.uncovered.secs}
+                segments={shown(assigns).derived.uncovered}
+                duration_secs={shown(assigns).derived.stats.uncovered.secs}
               />
             </:counts>
           </RunsComponents.scope_bar>
@@ -1589,9 +1793,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
               <RunsComponents.tabs
                 :if={@runs_day}
                 panel={@panel}
-                run_count={length(@runs_day.derived.runs)}
-                uncovered_trips={uncovered_trip_count(@runs_day)}
-                uncovered_segments={length(uncovered_segments(@runs_day))}
+                run_count={length(shown(assigns).derived.runs)}
+                uncovered_trips={uncovered_trip_count(shown(assigns))}
+                uncovered_segments={length(uncovered_segments(shown(assigns)))}
               />
 
               <.segmented_control
@@ -1628,13 +1832,14 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
                 <RunsComponents.first_use
                   version_id={@current_gtfs_version.id}
                   day_type_key={@day || ""}
-                  uncovered_trips={uncovered_trip_count(@runs_day)}
+                  uncovered_trips={uncovered_trip_count(shown(assigns))}
                 />
               <% else %>
                 <%= if @panel == :uncovered do %>
                   <RunsComponents.uncovered
-                    segments={uncovered_segments(@runs_day)}
-                    windows={uncovered_windows(@runs_day)}
+                    segments={uncovered_segments(shown(assigns))}
+                    windows={uncovered_windows(shown(assigns))}
+                    locked_reason={lock_reason(assigns)}
                     routes={@run_routes}
                     stop_names={@run_stop_names}
                   />
@@ -1663,6 +1868,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
             </RunsComponents.plan_card>
           </div>
 
+          <RunsComponents.suggestion_panel
+            :if={previewing?(assigns) and @panel != :uncovered}
+            plan={@plan}
+            runs_day={@runs_day}
+            day_label={day_label(@runs_day)}
+          />
+
           <RunsComponents.page_footnote :if={@load_state == :loaded} />
         </div>
       </div>
@@ -1675,6 +1887,26 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         max_piece_minutes={crew_piece_limit(assigns)}
         version_id={@current_gtfs_version.id}
         day_type_key={@day || ""}
+      />
+
+      <%!-- The drawer describes a DAY, and a closed `<.drawer>` still renders
+            its body. Before the day loads there is no crew, no relief point and
+            no next number to name, so the drawer does not exist yet rather than
+            existing with blanks in it. The button that opens it is already
+            `:if={@runs_day}`, so this cannot hide an open drawer. --%>
+      <RunsComponents.suggest_drawer
+        :if={@runs_day}
+        open={@suggest_open}
+        runs_day={@runs_day}
+        day_label={day_label(@runs_day)}
+        scope={@suggest_scope}
+        uncovered_trips={uncovered_trip_count(shown(assigns))}
+        next_run_id={next_run_id(assigns)}
+        max_piece_minutes={crew_piece_limit(assigns)}
+        relief_stop_ids={relief_stop_ids(assigns)}
+        crew={runs_crew(assigns.runs_day)}
+        estimated_travel={estimated_travel(assigns)}
+        notice={@suggest_notice}
       />
 
       <RunsComponents.problems_drawer
@@ -1859,11 +2091,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   end
 
   defp first_use?(assigns) do
-    case assigns do
-      %{
-        load_state: :loaded,
-        runs_day: %{day: %{counts: %{blocks: blocks}}, derived: %{runs: runs}}
-      } ->
+    # Read the SHOWN day, not the saved one. A preview of a first-use day has
+    # runs in it, so reading the saved day would keep the first-use panel on
+    # screen over the suggestion's own runs.
+    day = if previewing?(assigns), do: shown(assigns), else: Map.get(assigns, :runs_day)
+
+    case {Map.get(assigns, :load_state), day} do
+      {:loaded, %{day: %{counts: %{blocks: blocks}}, derived: %{runs: runs}}} ->
         blocks > 0 and runs == []
 
       _ ->
