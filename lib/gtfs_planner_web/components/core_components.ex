@@ -894,9 +894,23 @@ defmodule GtfsPlannerWeb.CoreComponents do
         </.form>
       </.drawer>
 
+  ## Non-modal mode
+
+  `modal={false}` opens the panel with the dialog's `show()` instead of
+  `showModal()`: it gets no backdrop, the page beside it stays clickable, and
+  the panel sits at the right edge of the viewport under its own scroll. The
+  panel's width still comes from `class`, so a non-modal inspector is as wide
+  as its caller asks for. Escape, the Close button, `pending`, the backdrop
+  flag and both focus IDs behave exactly as they do in modal mode; the only
+  difference is the absence of a backdrop, the focus trap and
+  `aria-modal="true"`.
+
+      <.drawer id="connection-drawer" chrome="planner" modal={false} class="max-w-[480px]" ...>
+
   """
   attr :id, :string, required: true
   attr :chrome, :string, values: ~w(default planner), default: "default"
+  attr :modal, :boolean, default: true
   attr :pending, :boolean, default: false
   attr :open, :boolean, default: false
   attr :on_close, :string, default: "close_drawer"
@@ -918,21 +932,25 @@ defmodule GtfsPlannerWeb.CoreComponents do
       phx-mounted={JS.ignore_attributes("open")}
       phx-hook="OverlayDialog"
       data-open={to_string(@open)}
+      data-modal={to_string(@modal)}
       data-pending={to_string(@pending)}
       data-initial-focus={to_string(@initial_focus)}
       data-initial-focus-id={@initial_focus_id}
       data-return-focus-id={@return_focus_id}
       data-close-on-backdrop={to_string(@close_on_backdrop)}
       aria-labelledby={"#{@id}-title"}
-      {if @open, do: %{role: "dialog", "aria-modal": "true"}, else: %{inert: true, "aria-hidden": "true"}}
-      class="m-0 border-0 w-full h-full max-w-none max-h-none overflow-hidden bg-transparent p-0"
+      {drawer_dialog_attrs(assigns)}
+      class={[
+        "m-0 border-0 w-full h-full max-w-none max-h-none overflow-hidden bg-transparent p-0",
+        !@modal && "fixed inset-0 z-40 pointer-events-none"
+      ]}
     >
       <aside
         id={@id}
         aria-labelledby={"#{@id}-title"}
         data-dialog-panel
         tabindex="-1"
-        class={[drawer_panel_class(@chrome), @class]}
+        class={[drawer_panel_class(@chrome, @modal), @class]}
       >
         <.planner_drawer_body
           :if={@chrome == "planner"}
@@ -980,13 +998,30 @@ defmodule GtfsPlannerWeb.CoreComponents do
     """
   end
 
-  defp drawer_panel_class("planner"),
+  # A modal panel is positioned inside the full-viewport top-layer dialog. A
+  # non-modal panel is the fixed right-hand inspector itself: it re-enables
+  # pointer events on the transparent dialog wrapper it sits in. The wrapper
+  # carries the inspector's stacking context, because a `position: fixed`
+  # dialog is one, and the application header is `relative z-30`.
+  defp drawer_panel_class("planner", modal),
     do:
-      "absolute top-0 right-0 flex h-full w-screen min-w-[320px] flex-col overflow-x-hidden border-l border-subtle bg-white text-default shadow-float sm:rounded-l-card"
+      "#{drawer_panel_position(modal)} top-0 right-0 flex h-full w-screen min-w-[320px] flex-col overflow-x-hidden border-l border-subtle bg-white text-default shadow-float sm:rounded-l-card"
 
-  defp drawer_panel_class(_default),
+  defp drawer_panel_class(_default, modal),
     do:
-      "absolute top-0 right-0 h-full w-screen min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 overflow-x-hidden"
+      "#{drawer_panel_position(modal)} top-0 right-0 h-full w-screen min-w-[320px] bg-base-100 shadow-xl border-l border-base-200 overflow-x-hidden"
+
+  defp drawer_panel_position(true), do: "absolute"
+  defp drawer_panel_position(false), do: "fixed pointer-events-auto"
+
+  defp drawer_dialog_attrs(%{open: false}),
+    do: %{inert: true, "aria-hidden": "true"}
+
+  defp drawer_dialog_attrs(%{modal: true}),
+    do: %{role: "dialog", "aria-modal": "true"}
+
+  defp drawer_dialog_attrs(%{modal: false}),
+    do: %{role: "dialog"}
 
   attr :id, :string, required: true
   attr :title, :string, required: true
