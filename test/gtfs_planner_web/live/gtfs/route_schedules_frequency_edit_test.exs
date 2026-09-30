@@ -197,11 +197,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesFrequencyEditTest do
       assert updated.timed_pattern_id == scope.bundle.timing.id
       assert DateTime.compare(updated.updated_at, trip.updated_at) == :gt
 
-      # The contract's combined windows+details submit is two writes (windows
-      # first, then metadata), so the action records one update log per write.
-      logs = trip_logs(trip)
-      assert logs != []
-      assert Enum.all?(logs, &(&1.action == "updated"))
+      # A window-only submit writes the windows and no details: the drawer's
+      # prefilled details (a blank accessibility shows as "0") are not a change.
+      assert [log] = trip_logs(trip)
+      assert log.action == "updated"
+      assert updated.wheelchair_accessible == nil
+      assert updated.bikes_allowed == nil
 
       # The write reports on the grid bar with Undo and closes the drawer.
       view_assigns = assigns(view)

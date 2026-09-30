@@ -51,6 +51,9 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   @drawer_fields ~w(pattern_id timed_pattern_id service_id start_time repeat every until
     run_as windows exact_times trip_headsign trip_short_name wheelchair_accessible
     bikes_allowed)
+  # The trip details a frequency edit saves after its windows.
+  @frequency_detail_keys ~w(service_id trip_headsign trip_short_name wheelchair_accessible
+    bikes_allowed)
   @duplicate_offset_secs 1_800
   # A `:copy` offset is a whole minute inside ±24 h (TripChanges.validate_offset/1),
   # so a typed "first departure at" further away is not a time this page can paste.
@@ -3082,15 +3085,28 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
-  # The details request is the same one the unchanged path sends, so a submit that
-  # changed only a window writes the details as a no-op (the context writes nothing
-  # when they did not move). Its fence is the timestamp the engine captured for the
-  # window write, since the row the drawer loaded is already stale. A details write
-  # that really moved something forced a newer `updated_at`, so the result's
-  # restore payload is re-fenced on it: Undo still restores the windows and
-  # template the window write replaced, and the details are never part of its
-  # capture either way (R10).
+  # A submit that changed only a window writes no details: its details equal the
+  # drawer's prefill of the stored row (a blank accessibility shows as "0"), so
+  # sending them would store 0 over a blank and add a second audit entry. Changed
+  # details save through the page's `update_trip/5` fenced on the timestamp the
+  # engine captured for the window write, since the row the drawer loaded is
+  # already stale. That write forces a newer `updated_at`, so the result's restore
+  # payload is re-fenced on it: Undo still restores the windows and template the
+  # window write replaced, and the details are never part of its capture (R10).
   defp write_frequency_details(socket, drawer, result) do
+    if frequency_details_unchanged?(socket, drawer) do
+      {:ok, result}
+    else
+      update_frequency_details(socket, drawer, result)
+    end
+  end
+
+  defp frequency_details_unchanged?(socket, drawer) do
+    Map.take(drawer.values, @frequency_detail_keys) ==
+      Map.take(edit_values(socket, drawer.trip), @frequency_detail_keys)
+  end
+
+  defp update_frequency_details(socket, drawer, result) do
     case {update_attrs(drawer), written_updated_at(result, drawer.trip.id)} do
       {{:ok, attrs}, %DateTime{} = updated_at} ->
         case Gtfs.update_trip(
