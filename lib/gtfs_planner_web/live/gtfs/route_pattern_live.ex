@@ -88,6 +88,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:route_trip_count, 0)
      |> assign(:pending_trip_count, 0)
      |> assign(:custom_trip_count, 0)
+     |> assign(:left_out, [])
      |> assign(:derivation_error, nil)
      |> assign(:build_state, :idle)
      |> assign(:build_error, nil)
@@ -1755,6 +1756,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                 route_trip_count={@route_trip_count}
                 pending_trip_count={@pending_trip_count}
                 custom_trip_count={@custom_trip_count}
+                left_out={@left_out}
                 derivation_error={@derivation_error}
                 build_state={@build_state}
                 build_error={@build_error}
@@ -2151,10 +2153,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     ]
 
     case Gtfs.load_route_pattern_screen(organization_id, version_id, route_id, opts) do
-      {:ok, screen} -> socket |> apply_screen(screen) |> load_headsign_usage()
-      {:error, :not_found} -> not_found(socket)
-      {:error, :timing_not_found} -> timing_not_found(socket)
-      {:error, :unavailable} -> unavailable(socket)
+      {:ok, screen} ->
+        socket |> apply_screen(screen) |> load_headsign_usage() |> load_left_out()
+
+      {:error, :not_found} ->
+        not_found(socket)
+
+      {:error, :timing_not_found} ->
+        timing_not_found(socket)
+
+      {:error, :unavailable} ->
+        unavailable(socket)
     end
   end
 
@@ -2226,6 +2235,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       assign(socket, :headsign_selection, nil)
     end
   end
+
+  # The Patterns tab names why trips stayed outside patterns; the editor tabs for one
+  # pattern never show the route's whole list.
+  defp load_left_out(%{assigns: %{live_action: :index}} = socket) do
+    assign(
+      socket,
+      :left_out,
+      Gtfs.left_out_trips(
+        socket.assigns.current_organization.id,
+        socket.assigns.current_gtfs_version.id,
+        socket.assigns.route_id
+      )
+    )
+  end
+
+  defp load_left_out(socket), do: assign(socket, :left_out, [])
 
   # A timing outside the loaded pattern is refused without leaking the other
   # pattern's data, and the page falls back to the pattern's first timing.

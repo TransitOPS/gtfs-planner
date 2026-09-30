@@ -323,7 +323,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       assert Repo.aggregate(own_patterns(organization, version), :count) == 1
     end
 
-    test "a custom-only route shows the honest blocked build state, not an error",
+    test "a custom-only route names why its trip stayed out, not an error",
          %{conn: conn, organization: organization, version: version} do
       route = route(organization, version, "CUSTOM1")
       stops = Enum.map(1..2, &stop(organization, version, "CUSTOM1", &1))
@@ -340,8 +340,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       {:ok, view, _html} = live(conn, patterns_path(version, route))
 
-      assert has_element?(view, "#patterns-build-blocked", "No trips to group")
-      assert has_element?(view, "#patterns-build-blocked", "1")
+      assert has_element?(view, "#patterns-left-out-title", "1 trip isn\u2019t in a pattern")
+      assert has_element?(view, "#patterns-left-out-codes", "timing_missing")
+      assert has_element?(view, "#patterns-empty-inline")
       refute has_element?(view, "#patterns-unlinked")
       refute has_element?(view, "#patterns-unavailable")
       refute has_element?(view, "#patterns-derivation-error")
@@ -368,7 +369,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
 
       render_click(element(view, "#patterns-build"))
 
-      assert has_element?(view, "#patterns-build-blocked", "No trips to group")
+      assert has_element?(view, "#patterns-left-out-title", "1 trip isn\u2019t in a pattern")
+      refute has_element?(view, "#patterns-build-blocked")
       refute has_element?(view, "#patterns-unavailable")
       refute has_element?(view, "#patterns-derivation-error")
       refute render(view) =~ "could not be built"
