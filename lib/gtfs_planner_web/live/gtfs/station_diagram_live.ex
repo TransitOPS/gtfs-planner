@@ -6835,6 +6835,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
   defp commit_diagram_candidate(socket, pending) do
     case DiagramStorage.commit_candidate(
+           socket.assigns.audit_ctx,
            socket.assigns.active_stop_level,
            pending.candidate_filename
          ) do

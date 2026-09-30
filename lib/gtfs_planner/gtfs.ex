@@ -6,6 +6,7 @@ defmodule GtfsPlanner.Gtfs do
   import Ecto.Query, warn: false
   import GtfsPlanner.Gtfs.Stations, only: [descendant_stop_ids_query: 3]
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.AlignmentInference
@@ -2640,17 +2641,43 @@ defmodule GtfsPlanner.Gtfs do
          expected_fingerprint,
          %AuditContext{} = audit_ctx
        ) do
+    Authorization.lock_editor!(audit_ctx)
+
     # Reviewed alignment rewrites child stop geometry, a combination input, so the scoped version
     # share lock is taken before the stop-level `FOR UPDATE`, the fingerprint comparison and every
     # child update. The surrounding serializable transaction and its whole-transaction retry stay
     # exactly as they were.
-    Versions.lock_for_input_write!(audit_ctx.organization_id, audit_ctx.gtfs_version_id)
+    version = Versions.lock_for_input_write!(audit_ctx.organization_id, audit_ctx.gtfs_version_id)
 
-    case load_stop_level_for_update_scoped(stop_level_id, audit_ctx) do
+    if version.publication_status != "published" or is_nil(version.published_at),
+      do: Repo.rollback(:not_found)
+
+    station =
+      from(s in Stop,
+        where:
+          s.organization_id == ^audit_ctx.organization_id and
+            s.gtfs_version_id == ^audit_ctx.gtfs_version_id and
+            s.stop_id == ^audit_ctx.station_stop_id and s.location_type == 1,
+        lock: "FOR SHARE"
+      )
+      |> Repo.one()
+
+    if is_nil(station), do: Repo.rollback(:not_found)
+
+    case load_stop_level_for_update_scoped(stop_level_id, audit_ctx, station.id) do
       nil ->
         Repo.rollback(:not_found)
 
       %StopLevel{} = stop_level ->
+        alignment_changeset = StopLevel.alignment_changeset(stop_level, proposed_alignment)
+
+        alignment_changeset =
+          if alignment_changeset.changes == %{} do
+            Ecto.Changeset.force_change(alignment_changeset, :updated_at, DateTime.utc_now())
+          else
+            alignment_changeset
+          end
+
         with {:ok, projection} <-
                build_alignment_projection(
                  stop_level.id,
@@ -2661,9 +2688,15 @@ defmodule GtfsPlanner.Gtfs do
                ),
              :ok <- verify_review_fingerprint(projection, expected_fingerprint),
              {:ok, updated_stop_level} <-
-               stop_level
-               |> StopLevel.alignment_changeset(proposed_alignment)
-               |> Repo.update(),
+               Repo.update(alignment_changeset),
+             {:ok, _alignment_log} <-
+               Audit.record_change_in_transaction(
+                 audit_ctx,
+                 :stop_level,
+                 stop_level,
+                 "updated",
+                 alignment_changeset.changes
+               ),
              {:ok, changed_stops} <-
                persist_changed_stops_with_audit(
                  projection,
@@ -2689,12 +2722,12 @@ defmodule GtfsPlanner.Gtfs do
     end
   end
 
-  defp load_stop_level_for_update_scoped(stop_level_id, %AuditContext{} = audit_ctx) do
+  defp load_stop_level_for_update_scoped(stop_level_id, %AuditContext{} = audit_ctx, station_id) do
     from(sl in StopLevel,
       where:
         sl.id == ^stop_level_id and
           sl.organization_id == ^audit_ctx.organization_id and
-          sl.gtfs_version_id == ^audit_ctx.gtfs_version_id,
+          sl.gtfs_version_id == ^audit_ctx.gtfs_version_id and sl.stop_id == ^station_id,
       lock: "FOR UPDATE"
     )
     |> Repo.one()

@@ -4,6 +4,7 @@ defmodule GtfsPlanner.Gtfs.Stations do
   import Ecto.Query
 
   alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Gtfs
 
   alias GtfsPlanner.Gtfs.{
     Audit,
@@ -263,6 +264,124 @@ defmodule GtfsPlanner.Gtfs.Stations do
         {:error, reason} -> Repo.rollback(reason)
       end
     end)
+  end
+
+  @doc "Saves calibration and recalculates derived pathway lengths in the selected station."
+  def save_scale(%AuditContext{} = audit, stop_level_id, attrs, expected_revision)
+      when is_map(attrs) do
+    run(audit, :share, fn station ->
+      stop_level = lock_stop_level!(audit, station, stop_level_id)
+      stale_stop_level!(stop_level, expected_revision)
+      level = scoped_level!(audit, stop_level.level_id)
+      changeset = stop_level |> StopLevel.scale_changeset(attrs) |> force_stop_level_update()
+
+      with {:ok, updated} <- Repo.update(changeset),
+           {:ok, counts} <-
+             Gtfs.recalculate_pathway_lengths_for_level(
+               stop_level,
+               updated,
+               audit.organization_id,
+               audit.gtfs_version_id,
+               level.id,
+               station.id,
+               audit
+             ),
+           {:ok, _log} <-
+             Audit.record_change_in_transaction(
+               audit,
+               :stop_level,
+               stop_level,
+               "updated",
+               changeset.changes
+             ) do
+        Map.put(counts, :stop_level, updated)
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc "Clears calibration at the expected stop-level revision."
+  def clear_scale(%AuditContext{} = audit, stop_level_id, expected_revision) do
+    run(audit, :share, fn station ->
+      stop_level = lock_stop_level!(audit, station, stop_level_id)
+      stale_stop_level!(stop_level, expected_revision)
+
+      changeset =
+        StopLevel.scale_changeset(stop_level, %{
+          scale_point_a: nil,
+          scale_point_b: nil,
+          scale_distance_meters: nil,
+          scale_meters_per_unit: nil
+        })
+
+      write_stop_level(audit, stop_level, changeset)
+    end)
+  end
+
+  @doc "Saves a floorplan alignment at the expected stop-level revision."
+  def save_alignment(%AuditContext{} = audit, stop_level_id, attrs, expected_revision)
+      when is_map(attrs) do
+    run(audit, :share, fn station ->
+      stop_level = lock_stop_level!(audit, station, stop_level_id)
+      stale_stop_level!(stop_level, expected_revision)
+      write_stop_level(audit, stop_level, StopLevel.alignment_changeset(stop_level, attrs))
+    end)
+  end
+
+  @doc "Applies the saved alignment to child stops and records each changed stop."
+  def apply_alignment_to_child_stops(
+        %AuditContext{} = audit,
+        %StopLevel{} = expected_stop_level,
+        {image_w, image_h}
+      ) do
+    run(audit, :share, fn station ->
+      stop_level = lock_stop_level!(audit, station, expected_stop_level.id)
+      stale_stop_level!(stop_level, expected_stop_level.lock_version)
+
+      # Lock all descendants before deriving coordinates so another editor cannot
+      # move a point between the projection read and its audited write.
+      from(s in child_query(audit, station), order_by: [asc: s.id], lock: "FOR UPDATE")
+      |> Repo.all()
+
+      case Gtfs.derive_child_stop_coords(stop_level, image_w, image_h) do
+        {:ok, derived} ->
+          Enum.reduce(derived, 0, fn %{stop_id: id, lat: lat, lon: lon}, count ->
+            stop = lock_child!(audit, station, id)
+            changes = %{stop_lat: Decimal.from_float(lat), stop_lon: Decimal.from_float(lon)}
+
+            if decimal_changed?(stop.stop_lat, changes.stop_lat) or
+                 decimal_changed?(stop.stop_lon, changes.stop_lon) do
+              with {:ok, _updated} <- stop |> Stop.changeset(changes) |> Repo.update(),
+                   {:ok, _log} <-
+                     Audit.record_change_in_transaction(audit, :stop, stop, "updated", changes) do
+                count + 1
+              else
+                {:error, reason} -> Repo.rollback(reason)
+              end
+            else
+              count
+            end
+          end)
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc false
+  def put_stop_level_diagram!(%StopLevel{} = stop_level, filename) when is_binary(filename) do
+    changeset =
+      StopLevel.changeset(stop_level, %{
+        diagram_filename: filename,
+        scale_point_a: nil,
+        scale_point_b: nil,
+        scale_distance_meters: nil,
+        scale_meters_per_unit: nil
+      })
+
+    Repo.update!(changeset)
   end
 
   @doc "Creates a child stop under the selected station and records its history."
@@ -560,6 +679,47 @@ defmodule GtfsPlanner.Gtfs.Stations do
     end
   end
 
+  defp lock_stop_level!(audit, station, stop_level_uuid) do
+    with {:ok, id} <- Ecto.UUID.cast(stop_level_uuid),
+         %StopLevel{} = stop_level <-
+           Repo.one(
+             from(sl in StopLevel,
+               where:
+                 sl.id == ^id and sl.organization_id == ^audit.organization_id and
+                   sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id,
+               lock: "FOR UPDATE"
+             )
+           ) do
+      stop_level
+    else
+      _ -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp write_stop_level(audit, previous, changeset) do
+    changeset = force_stop_level_update(changeset)
+
+    with {:ok, updated} <- Repo.update(changeset),
+         {:ok, _log} <-
+           Audit.record_change_in_transaction(
+             audit,
+             :stop_level,
+             previous,
+             "updated",
+             changeset.changes
+           ) do
+      updated
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  defp force_stop_level_update(%Ecto.Changeset{changes: changes} = changeset)
+       when map_size(changes) == 0,
+       do: Ecto.Changeset.force_change(changeset, :updated_at, DateTime.utc_now())
+
+  defp force_stop_level_update(changeset), do: changeset
+
   defp insert_stop_level(audit, station, level, attrs) do
     %StopLevel{
       stop_id: station.id,
@@ -602,6 +762,9 @@ defmodule GtfsPlanner.Gtfs.Stations do
 
   defp stale_stop_level!(%StopLevel{lock_version: current}, _),
     do: Repo.rollback({:stale, current})
+
+  defp decimal_changed?(%Decimal{} = old, %Decimal{} = new), do: not Decimal.equal?(old, new)
+  defp decimal_changed?(_, _), do: true
 
   defp pathway_query(audit, station, id) do
     ids = station_scope_ids(audit, station)

@@ -4118,7 +4118,7 @@ defmodule GtfsPlanner.GtfsTest do
     setup do
       organization = organization_fixture()
       gtfs_version = gtfs_version_fixture(organization.id)
-      user = GtfsPlanner.AccountsFixtures.user_fixture()
+      user = GtfsPlanner.AccountsFixtures.editor_fixture(organization)
 
       station =
         stop_fixture(organization.id, gtfs_version.id, %{
@@ -5027,7 +5027,7 @@ defmodule GtfsPlanner.GtfsTest do
     setup do
       organization = organization_fixture()
       gtfs_version = gtfs_version_fixture(organization.id)
-      user = GtfsPlanner.AccountsFixtures.user_fixture()
+      user = GtfsPlanner.AccountsFixtures.editor_fixture(organization)
 
       station =
         stop_fixture(organization.id, gtfs_version.id, %{

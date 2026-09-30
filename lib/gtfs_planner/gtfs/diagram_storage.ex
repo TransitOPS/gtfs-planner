@@ -16,12 +16,14 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
   directory moves.
   """
 
-  alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Authorization
+  alias GtfsPlanner.Gtfs.{Audit, AuditContext, Stations}
   alias GtfsPlanner.Gtfs.DiagramUploadValidator
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions
 
   require Logger
 
@@ -34,7 +36,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
   Writes validated raster bytes to an unreferenced, exact-station candidate path.
 
   A candidate is intentionally not visible through a `StopLevel` until
-  `commit_candidate/2` succeeds. Its random reserved name prevents a caller from
+  `commit_candidate/3` succeeds. Its random reserved name prevents a caller from
   selecting an existing diagram or a directory as a cleanup target.
   """
   @spec store_candidate(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t(), binary()) ::
@@ -60,14 +62,20 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
   resource: if the update fails, the unreferenced file remains available for aged
   cleanup while the previous database filename is unchanged.
   """
-  @spec commit_candidate(StopLevel.t(), String.t()) ::
+  @spec commit_candidate(AuditContext.t(), StopLevel.t(), String.t()) ::
           {:ok, StopLevel.t()} | {:error, :not_found | :not_candidate | term()}
-  def commit_candidate(%StopLevel{} = stop_level, filename) when is_binary(filename) do
+  def commit_candidate(%AuditContext{} = audit, %StopLevel{} = stop_level, filename)
+      when is_binary(filename) do
+    scope = %{
+      organization_id: audit.organization_id,
+      gtfs_version_id: audit.gtfs_version_id,
+      station_stop_id: audit.station_stop_id
+    }
+
     with true <- candidate_filename?(filename),
-         {:ok, scope} <- scope_for_stop_level(stop_level),
          {:ok, path} <- candidate_path(scope, filename) do
       Repo.transaction(fn ->
-        commit_candidate_under_lock(stop_level.id, scope, filename, path)
+        commit_candidate_under_lock(audit, stop_level, scope, filename, path)
       end)
       |> transaction_result()
     else
@@ -76,7 +84,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
     end
   end
 
-  def commit_candidate(_, _), do: {:error, :not_found}
+  def commit_candidate(_, _, _), do: {:error, :not_found}
 
   @doc """
   Idempotently removes one unreferenced candidate in the exact station scope.
@@ -396,29 +404,6 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
     PathSafety.safe_path_component?(filename) and Regex.match?(@candidate_filename, filename)
   end
 
-  defp scope_for_stop_level(%StopLevel{} = stop_level) do
-    query =
-      from(s in Stop,
-        where:
-          s.id == ^stop_level.stop_id and s.organization_id == ^stop_level.organization_id and
-            s.gtfs_version_id == ^stop_level.gtfs_version_id,
-        select: s.stop_id
-      )
-
-    case Repo.one(query) do
-      station_stop_id when is_binary(station_stop_id) ->
-        {:ok,
-         %{
-           organization_id: stop_level.organization_id,
-           gtfs_version_id: stop_level.gtfs_version_id,
-           station_stop_id: station_stop_id
-         }}
-
-      _ ->
-        {:error, :not_found}
-    end
-  end
-
   defp candidate_path(scope, filename) do
     with {:ok, org_dir} <- safe_org_dir(scope.organization_id),
          {:ok, station_dir} <- safe_station_dir(scope.station_stop_id),
@@ -495,12 +480,41 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
     |> transaction_result()
   end
 
-  defp commit_candidate_under_lock(stop_level_id, scope, filename, path) do
+  defp commit_candidate_under_lock(audit, expected_stop_level, scope, filename, path) do
+    Authorization.lock_editor!(audit)
+    version = Versions.lock_for_input_write!(audit.organization_id, audit.gtfs_version_id)
+
+    if version.publication_status != "published" or is_nil(version.published_at),
+      do: Repo.rollback(:not_found)
+
+    station =
+      from(s in Stop,
+        where:
+          s.organization_id == ^scope.organization_id and
+            s.gtfs_version_id == ^scope.gtfs_version_id and
+            s.stop_id == ^scope.station_stop_id and s.location_type == 1,
+        lock: "FOR SHARE"
+      )
+      |> Repo.one()
+
+    if is_nil(station), do: Repo.rollback(:not_found)
+
     with :ok <- advisory_lock(scope, filename),
-         %StopLevel{} = current <- locked_stop_level(stop_level_id, scope),
+         %StopLevel{} = current <- locked_stop_level(expected_stop_level.id, scope, station.id),
          true <- File.regular?(path) do
-      case Gtfs.update_stop_level_diagram(current, filename) do
-        {:ok, updated} -> updated
+      if current.lock_version != expected_stop_level.lock_version,
+        do: Repo.rollback({:stale, current.lock_version})
+
+      updated = Stations.put_stop_level_diagram!(current, filename)
+
+      case Audit.record_change_in_transaction(audit, :stop_level, current, "updated", %{
+             diagram_filename: filename,
+             scale_point_a: nil,
+             scale_point_b: nil,
+             scale_distance_meters: nil,
+             scale_meters_per_unit: nil
+           }) do
+        {:ok, _log} -> updated
         {:error, reason} -> Repo.rollback(reason)
       end
     else
@@ -556,13 +570,11 @@ defmodule GtfsPlanner.Gtfs.DiagramStorage do
     |> Kernel.==(true)
   end
 
-  defp locked_stop_level(stop_level_id, scope) do
+  defp locked_stop_level(stop_level_id, scope, station_id) do
     from(sl in StopLevel,
-      join: s in Stop,
-      on: s.id == sl.stop_id,
       where:
         sl.id == ^stop_level_id and sl.organization_id == ^scope.organization_id and
-          sl.gtfs_version_id == ^scope.gtfs_version_id and s.stop_id == ^scope.station_stop_id,
+          sl.gtfs_version_id == ^scope.gtfs_version_id and sl.stop_id == ^station_id,
       lock: "FOR UPDATE"
     )
     |> Repo.one()

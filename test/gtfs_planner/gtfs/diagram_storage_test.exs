@@ -8,11 +8,13 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
   use GtfsPlanner.DataCase, async: false
 
   import ExUnit.CaptureLog
+  import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.{Audit, AuditContext, StopLevel}
   alias GtfsPlanner.Gtfs.DiagramStorage
   alias GtfsPlanner.Gtfs.Extensions.PathSafety
   alias GtfsPlanner.Repo
@@ -52,8 +54,25 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
       )
 
     level = level_fixture(organization.id, version.id)
+    actor = editor_fixture(organization)
 
-    %{root: root, organization: organization, version: version, station: station, level: level}
+    audit = %AuditContext{
+      organization_id: organization.id,
+      gtfs_version_id: version.id,
+      station_stop_id: station.stop_id,
+      actor_id: actor.id,
+      actor_email: actor.email
+    }
+
+    %{
+      root: root,
+      organization: organization,
+      version: version,
+      station: station,
+      level: level,
+      actor: actor,
+      audit: audit
+    }
   end
 
   describe "store_import_image/5" do
@@ -217,7 +236,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
     end
 
     test "commits only an extant candidate and preserves the previous diagram when its candidate disappears",
-         %{organization: org, version: version, station: station, level: level} do
+         %{organization: org, version: version, station: station, level: level, audit: audit} do
       {:ok, stop_level} =
         Gtfs.create_stop_level(%{
           stop_id: station.id,
@@ -241,7 +260,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
       File.rm!(candidate_path)
 
-      assert {:error, :not_found} = DiagramStorage.commit_candidate(stop_level, candidate)
+      assert {:error, :not_found} = DiagramStorage.commit_candidate(audit, stop_level, candidate)
 
       assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).diagram_filename ==
                "previous.png"
@@ -337,7 +356,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
     end
 
     test "cleanup-first and commit-first outcomes retain a committed reference or fail commit safely",
-         %{organization: org, version: version, station: station, level: level} do
+         %{organization: org, version: version, station: station, level: level, audit: audit} do
       {:ok, stop_level} =
         Gtfs.create_stop_level(%{
           stop_id: station.id,
@@ -365,7 +384,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
                  []
                )
 
-      assert {:error, :not_found} = DiagramStorage.commit_candidate(stop_level, cleanup_first)
+      assert {:error, :not_found} =
+               DiagramStorage.commit_candidate(audit, stop_level, cleanup_first)
 
       assert Repo.get!(GtfsPlanner.Gtfs.StopLevel, stop_level.id).diagram_filename ==
                "previous.png"
@@ -379,7 +399,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
           @candidate_png
         )
 
-      assert {:ok, committed} = DiagramStorage.commit_candidate(stop_level, commit_first)
+      assert {:ok, committed} = DiagramStorage.commit_candidate(audit, stop_level, commit_first)
       assert committed.diagram_filename == commit_first
 
       assert :ok =
@@ -393,6 +413,146 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
       assert {:ok, _} =
                DiagramStorage.published_path(org.id, version.id, station.stop_id, commit_first)
+    end
+
+    test "revoked editor cannot commit a staged candidate", scope do
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          stop_id: scope.station.id,
+          level_id: scope.level.id,
+          diagram_filename: "previous.png",
+          organization_id: scope.organization.id,
+          gtfs_version_id: scope.version.id
+        })
+
+      {:ok, candidate} =
+        DiagramStorage.store_candidate(
+          scope.organization.id,
+          scope.version.id,
+          scope.station.stop_id,
+          ".png",
+          @candidate_png
+        )
+
+      membership =
+        GtfsPlanner.Accounts.get_user_org_membership(scope.actor.id, scope.organization.id)
+
+      deactivate_membership_fixture(membership)
+
+      assert {:error, :forbidden} =
+               DiagramStorage.commit_candidate(scope.audit, stop_level, candidate)
+
+      assert Repo.get!(StopLevel, stop_level.id).diagram_filename == "previous.png"
+
+      assert Audit.list_change_logs_for_entity(
+               scope.organization.id,
+               scope.version.id,
+               "stop_level",
+               stop_level.id
+             ) == []
+    end
+
+    test "candidate commit rejects a stale stop-level revision", scope do
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          stop_id: scope.station.id,
+          level_id: scope.level.id,
+          diagram_filename: "previous.png",
+          organization_id: scope.organization.id,
+          gtfs_version_id: scope.version.id
+        })
+
+      {:ok, candidate} =
+        DiagramStorage.store_candidate(
+          scope.organization.id,
+          scope.version.id,
+          scope.station.stop_id,
+          ".png",
+          @candidate_png
+        )
+
+      {:ok, current} = Gtfs.update_stop_level_diagram(stop_level, "newer.png")
+      current_revision = current.lock_version
+
+      assert {:error, {:stale, ^current_revision}} =
+               DiagramStorage.commit_candidate(scope.audit, stop_level, candidate)
+
+      assert Repo.get!(StopLevel, stop_level.id).diagram_filename == "newer.png"
+    end
+
+    test "successful candidate commit records history with the filename and reset calibration",
+         scope do
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          stop_id: scope.station.id,
+          level_id: scope.level.id,
+          diagram_filename: "previous.png",
+          organization_id: scope.organization.id,
+          gtfs_version_id: scope.version.id
+        })
+
+      {:ok, candidate} =
+        DiagramStorage.store_candidate(
+          scope.organization.id,
+          scope.version.id,
+          scope.station.stop_id,
+          ".png",
+          @candidate_png
+        )
+
+      assert {:ok, committed} =
+               DiagramStorage.commit_candidate(scope.audit, stop_level, candidate)
+
+      assert committed.diagram_filename == candidate
+      assert committed.lock_version == stop_level.lock_version + 1
+
+      assert [%{action: "updated", changed_fields: fields}] =
+               Audit.list_change_logs_for_entity(
+                 scope.organization.id,
+                 scope.version.id,
+                 "stop_level",
+                 stop_level.id
+               )
+
+      assert fields["diagram_filename"] == %{
+               "from" => "previous.png",
+               "to" => candidate
+             }
+    end
+
+    test "failed diagram history leaves the previous filename in place", scope do
+      {:ok, stop_level} =
+        Gtfs.create_stop_level(%{
+          stop_id: scope.station.id,
+          level_id: scope.level.id,
+          diagram_filename: "previous.png",
+          organization_id: scope.organization.id,
+          gtfs_version_id: scope.version.id
+        })
+
+      {:ok, candidate} =
+        DiagramStorage.store_candidate(
+          scope.organization.id,
+          scope.version.id,
+          scope.station.stop_id,
+          ".png",
+          @candidate_png
+        )
+
+      invalid_audit = %{scope.audit | actor_email: nil}
+
+      assert {:error, %Ecto.Changeset{}} =
+               DiagramStorage.commit_candidate(invalid_audit, stop_level, candidate)
+
+      assert Repo.get!(StopLevel, stop_level.id).diagram_filename == "previous.png"
+
+      assert {:ok, _path} =
+               DiagramStorage.published_path(
+                 scope.organization.id,
+                 scope.version.id,
+                 scope.station.stop_id,
+                 candidate
+               )
     end
   end
 
@@ -720,7 +880,7 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
     end
 
     test "rejects an unsafe version component without broadening the path",
-         %{root: root, organization: org, version: version} do
+         %{root: root, organization: org} do
       # Craft a component that fails validation; nothing is deleted and no
       # broader path is touched. Because safe_path_component? rejects slashes,
       # the only remaining guard is ensure_within_root, exercised for every
