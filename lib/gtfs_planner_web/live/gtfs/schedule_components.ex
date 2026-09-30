@@ -1773,6 +1773,10 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   attr :selected_ids, :any, required: true
   attr :calendar_label, :string, required: true
 
+  attr :export_defaults_path, :string,
+    default: nil,
+    doc: "link behind the estimate note; nil renders the note without a link"
+
   def section(assigns) do
     section = assigns.section
     rows = section.rows
@@ -1799,6 +1803,9 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
       )
       |> assign(:after_midnight?, after_midnight?(rows))
       |> assign(:missing_times?, missing_times?(rows, stop_columns))
+      |> assign(:estimate_method, Map.get(section, :estimate_method))
+      |> assign(:estimate_note, estimate_note(rows, Map.get(section, :estimate_method)))
+      |> assign(:estimated_cells?, estimated_cells?(rows))
 
     ~H"""
     <section
@@ -1879,6 +1886,49 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
             </div>
           </dd>
         </dl>
+      </div>
+
+      <div :if={@estimate_note} class="px-5 pb-1 pt-3">
+        <.message
+          :if={@estimate_note.kind == :estimate}
+          id={"section-#{@section_id}-estimate-note"}
+          kind="info"
+          title={@estimate_note.title}
+        >
+          Exports estimate them by {@estimate_note.method_label}. They're shown here in
+          italics and aren't saved in the trips.
+          <:action :if={@export_defaults_path}>
+            <.link
+              navigate={@export_defaults_path}
+              class={[
+                "inline-flex min-h-11 items-center text-sm font-[650] text-action hover:underline",
+                focus_inset()
+              ]}
+            >
+              Export defaults
+            </.link>
+          </:action>
+        </.message>
+        <.message
+          :if={@estimate_note.kind == :left_blank}
+          id={"section-#{@section_id}-estimate-note"}
+          kind="warning"
+          role="status"
+          title={@estimate_note.title}
+        >
+          Exports leave them blank, so each rider app will guess them its own way.
+          <:action :if={@export_defaults_path}>
+            <.link
+              navigate={@export_defaults_path}
+              class={[
+                "inline-flex min-h-11 items-center text-sm font-[650] underline underline-offset-4",
+                focus_inset()
+              ]}
+            >
+              Export defaults
+            </.link>
+          </:action>
+        </.message>
       </div>
 
       <div
@@ -2003,6 +2053,16 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
                     <span class="tabular-nums text-muted">{timing_minutes(@timing_totals, row)}</span>
                   <% end %>
                 </span>
+                <span
+                  :if={estimate_problem_text(Map.get(row, :estimate_problem))}
+                  id={"trip-#{row.trip_id}-estimate-problem"}
+                  class="mt-1 inline-flex rounded-badge bg-warning-bg px-2 py-0.5 text-[13px] font-[650] text-warning-fg"
+                  role="img"
+                  aria-label={estimate_problem_text(Map.get(row, :estimate_problem))}
+                >
+                  <.icon name="hero-exclamation-triangle" class="mr-1 size-3.5" />
+                  {estimate_problem_text(Map.get(row, :estimate_problem))}
+                </span>
                 <span :if={row.headsign} class="block text-[12px] text-muted">
                   To {row.headsign}
                 </span>
@@ -2059,6 +2119,12 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
         <p :if={@missing_times?} id={"section-#{@section_id}-missing-times"}>
           — means no time is recorded for that stop.
         </p>
+        <p :if={@estimated_cells?} id={"section-#{@section_id}-estimate-legend"}>
+          <span class="italic tabular-nums text-cyan-800 underline decoration-cyan-600 decoration-dotted decoration-2 underline-offset-4">
+            08:14
+          </span>
+          estimated when exported, not saved.
+        </p>
       </div>
     </section>
     """
@@ -2084,9 +2150,21 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   attr :cell, :map, required: true
 
   def timetable_cell(assigns) do
+    estimated? = Map.get(assigns.cell, :estimated?, false)
+    assigns = assign(assigns, :estimated?, estimated?)
+
     ~H"""
     <span>
-      <span class={["tabular-nums", @cell.missing? && "text-muted"]} title={@cell.title}>
+      <span
+        class={
+          if @estimated? do
+            "italic tabular-nums text-cyan-800 underline decoration-cyan-600 decoration-dotted decoration-2 underline-offset-4"
+          else
+            ["tabular-nums", @cell.missing? && "text-muted"]
+          end
+        }
+        title={cell_title(@cell, @estimated?)}
+      >
         {@cell.text}
       </span>
       <span :if={@cell.marker} class="ml-1 text-[12px] text-muted">{day_marker(@cell.marker)}</span>
@@ -2163,7 +2241,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   defp row_cell(row, column) do
     Map.get(row.cells, column.position) ||
-      %{text: "—", marker: nil, title: nil, missing?: true}
+      %{text: "—", marker: nil, title: nil, missing?: true, estimated?: false}
   end
 
   defp after_midnight?(rows) do
@@ -2178,6 +2256,72 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
       not row.stops_differ? and Enum.any?(stop_columns, &row_cell(row, &1).missing?)
     end)
   end
+
+  # The estimate note above the table (spec 23, AC-26): with estimation on, the
+  # trips with blanks name the export method; with estimation off, the same
+  # trips warn that exports leave them blank. Either way there is no "Save
+  # estimates" action — bulk writes belong to spec 18.
+  defp estimate_note(rows, nil), do: blank_trips_note(rows)
+
+  defp estimate_note(rows, method) do
+    blanks = Enum.filter(rows, &row_has_blanks?/1)
+
+    if blanks == [] do
+      nil
+    else
+      %{
+        kind: :estimate,
+        title: blank_trips_title(blanks),
+        method_label: estimate_method_label(method)
+      }
+    end
+  end
+
+  # With estimation off the note still names the trips with blanks, so the
+  # sch-off state explains why every rider app will guess them its own way.
+  defp blank_trips_note(rows) do
+    blanks = Enum.filter(rows, &row_has_blanks?/1)
+
+    if blanks == [], do: nil, else: %{kind: :left_blank, title: blank_trips_title(blanks)}
+  end
+
+  defp row_has_blanks?(row) do
+    row.custom? and not row.stops_differ? and
+      (Enum.any?(row.cells, fn {_position, cell} -> Map.get(cell, :estimated?, false) end) or
+         Map.get(row, :estimate_problem) != nil or
+         Enum.any?(row.cells, fn {_position, cell} -> cell.missing? end))
+  end
+
+  defp blank_trips_title([_single]), do: "1 trip has missing times"
+  defp blank_trips_title(blanks), do: "#{length(blanks)} trips have missing times"
+
+  defp estimate_method_label(:even), do: "equal time per stop"
+  defp estimate_method_label(_method), do: "distance along the path"
+
+  defp estimated_cells?(rows) do
+    Enum.any?(rows, fn row ->
+      Enum.any?(row.cells, fn {_position, cell} -> Map.get(cell, :estimated?, false) end)
+    end)
+  end
+
+  defp estimate_problem_text(:no_first_time), do: "No time at first stop"
+  defp estimate_problem_text(:no_last_time), do: "No time at last stop"
+  defp estimate_problem_text(:timepoint_without_time), do: "Timepoint without time"
+  defp estimate_problem_text(:order), do: "Times out of order"
+  defp estimate_problem_text(_reason), do: nil
+
+  # An estimated cell names the exported time and that it is not saved; a day
+  # marker title, when present, is kept after it so no signal is lost.
+  defp cell_title(cell, true) do
+    estimated = "Estimated when exported: #{cell.text}. Not saved in this trip."
+
+    case cell.title do
+      nil -> estimated
+      title -> estimated <> " " <> title
+    end
+  end
+
+  defp cell_title(cell, _estimated?), do: cell.title
 
   defp facts_text(section, row_count) do
     shown = length(section.columns)

@@ -38,6 +38,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   custom trip is flagged `stops_differ?: true` with no cells.
   """
 
+  alias GtfsPlanner.Gtfs.Export.MissingTimes
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Schedules.Summary
 
@@ -65,13 +66,16 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
 
   `:text` is `HH:MM` (with `:SS` only when seconds are nonzero), `:marker` is the
   visible `+N` day marker when `div(secs, 86_400) >= 1`, and `:title` is the
-  matching "…, next day" / "…, N days later" label.
+  matching "…, next day" / "…, N days later" label. `:estimated?` is true only
+  for a cell filled from the export estimate (spec 23, AC-26); stored values
+  are never marked.
   """
   @type cell :: %{
           text: String.t(),
           marker: String.t() | nil,
           title: String.t() | nil,
-          missing?: boolean()
+          missing?: boolean(),
+          estimated?: boolean()
         }
 
   @typedoc "One timetable row."
@@ -95,6 +99,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
           frequency?: boolean(),
           custom?: boolean(),
           stops_differ?: boolean(),
+          estimate_problem:
+            nil | :no_first_time | :no_last_time | :timepoint_without_time | :order,
           updated_at: term(),
           cells: %{optional(pos_integer()) => cell()}
         }
@@ -114,7 +120,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   `:columns` is the timepoints view, `:all_columns` is every occurrence and
   `:omitted_stop_count` is how many occurrences the timepoints view leaves out.
   `:timing_lines` are computed for `:columns`; a caller showing `:all_columns`
-  recomputes them with `Summary.timing_segments/2`.
+  recomputes them with `Summary.timing_segments/2`. `:estimate_method` names the
+  export estimate method the cells were previewed with, or nil when estimation
+  is off (spec 23, AC-26).
   """
   @type section :: %{
           pattern: term(),
@@ -124,7 +132,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
           rows: [row()],
           bands: [Summary.band()],
           timing_lines: [timing_line()],
-          custom_trip_count: non_neg_integer()
+          custom_trip_count: non_neg_integer(),
+          estimate_method: :distance | :even | nil
         }
 
   @doc """
@@ -135,10 +144,18 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
   keeps the first `#{@timepoint_fallback_columns - 1}` positions plus the last, or
   every occurrence when there are `#{@timepoint_fallback_columns}` or fewer.
   `all_columns` always keeps every occurrence.
+
+  With `estimate: :distance | :even` and `coordinates: %{stop_id => {lat, lon}}`,
+  a custom trip with a blank time shows the export estimate in its blank cells
+  (each marked `estimated?: true`) without changing the stored stop times; a
+  custom trip the estimator rejects keeps its blanks and carries
+  `estimate_problem` with the reason. Linked trips and `estimate: nil` (the
+  default) always show stored values only.
   """
-  @spec build(map(), [occurrence()], map(), [map()], [map()]) :: section()
-  def build(pattern, occurrences, stops_by_id, timings, trips)
+  @spec build(map(), [occurrence()], map(), [map()], [map()], keyword()) :: section()
+  def build(pattern, occurrences, stops_by_id, timings, trips, opts \\ [])
       when is_list(occurrences) and is_list(timings) and is_list(trips) do
+    estimate = estimate_opts(opts)
     occurrences = Enum.sort_by(occurrences, &Map.fetch!(&1, :position))
 
     all_columns = Enum.map(occurrences, &column(&1, stops_by_id))
@@ -148,7 +165,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
 
     rows =
       trips
-      |> Enum.map(&build_row(&1, pattern, occurrences, all_columns, timings))
+      |> Enum.map(&build_row(&1, pattern, occurrences, all_columns, timings, estimate))
       |> Enum.sort_by(&row_sort_key/1)
 
     complete_trips = Enum.filter(trips, &complete_times?/1)
@@ -168,9 +185,25 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
       rows: rows,
       bands: Summary.headway_bands(scheduled_departures, frequency_windows),
       timing_lines: timing_lines(timings, trips, columns),
-      custom_trip_count: Enum.count(rows, & &1.custom?)
+      custom_trip_count: Enum.count(rows, & &1.custom?),
+      estimate_method: estimate_method(estimate)
     }
   end
+
+  # Only the export estimate methods enable the Schedules preview; anything
+  # else (including `estimate: nil`, the default) shows stored values only.
+  defp estimate_opts(opts) do
+    method = Keyword.get(opts, :estimate)
+
+    if method in [:distance, :even] do
+      %{method: method, coordinates: Keyword.get(opts, :coordinates, %{})}
+    else
+      nil
+    end
+  end
+
+  defp estimate_method(nil), do: nil
+  defp estimate_method(%{method: method}), do: method
 
   defp column(occurrence, stops_by_id) do
     stop_id = Map.fetch!(occurrence, :stop_id)
@@ -245,17 +278,24 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
     end
   end
 
-  defp build_row(trip, pattern, occurrences, all_columns, timings) do
+  defp build_row(trip, pattern, occurrences, all_columns, timings, estimate) do
     stop_times = trip |> Map.get(:stop_times, []) |> sort_stop_times()
     timing = find_timing(trip, timings)
     custom? = is_nil(timing)
-    start_secs = first_departure(stop_times)
     frequencies = Map.get(trip, :frequencies, [])
+
+    {display_stop_times, estimated_positions, estimate_problem} =
+      estimate_trip(custom?, stop_times, estimate)
+
+    start_secs = first_departure(display_stop_times)
 
     stops_differ? =
       custom? and occurrences != [] and not compatible?(stop_times, occurrences)
 
-    cells = if stops_differ? or occurrences == [], do: %{}, else: cells(stop_times, all_columns)
+    cells =
+      if stops_differ? or occurrences == [],
+        do: %{},
+        else: cells(display_stop_times, all_columns, estimated_positions)
 
     %{
       id: Map.get(trip, :id),
@@ -279,9 +319,70 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
       frequency?: frequencies != [],
       custom?: custom?,
       stops_differ?: stops_differ?,
+      estimate_problem: estimate_problem,
       updated_at: Map.get(trip, :updated_at),
       cells: cells
     }
+  end
+
+  # The Schedules estimate preview (spec 23, AC-26): only a custom trip with a
+  # blank time and estimation enabled runs the export classifier
+  # (`MissingTimes.fill_trip/3`); everything else shows stored values. The
+  # filled records are display-only — the stored stop times are never written
+  # (INV-1).
+  defp estimate_trip(_custom?, stop_times, nil),
+    do: {stop_times, MapSet.new(), nil}
+
+  defp estimate_trip(false, stop_times, _estimate),
+    do: {stop_times, MapSet.new(), nil}
+
+  defp estimate_trip(true, stop_times, %{method: method, coordinates: coords}) do
+    if Enum.any?(stop_times, &blank_record?/1) do
+      case MissingTimes.fill_trip(stop_times, method, coords) do
+        {_records, :unchanged} ->
+          {stop_times, MapSet.new(), nil}
+
+        {filled, :filled} ->
+          {filled, estimated_positions(stop_times, filled), nil}
+
+        {records, {:not_estimated, _warning}} ->
+          {records, MapSet.new(), MissingTimes.estimate_problem(stop_times, method, coords)}
+      end
+    else
+      {stop_times, MapSet.new(), nil}
+    end
+  end
+
+  defp blank_record?(record) do
+    blank_value?(Map.get(record, :arrival_time)) or
+      blank_value?(Map.get(record, :departure_time))
+  end
+
+  defp blank_value?(nil), do: true
+  defp blank_value?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_value?(_value), do: false
+
+  # A filled position is estimated only when its stored row had neither time
+  # and the fill wrote one: kept rows (including the R1 one-sided copy) and
+  # untouched rows are never marked.
+  defp estimated_positions(stored, filled) do
+    stored
+    |> Enum.zip(filled)
+    |> Enum.with_index()
+    |> Enum.filter(fn {{original, filled_record}, _index} ->
+      both_blank?(original) and has_time?(filled_record)
+    end)
+    |> Enum.map(&elem(&1, 1))
+    |> MapSet.new()
+  end
+
+  defp both_blank?(record) do
+    blank_value?(Map.get(record, :arrival_time)) and
+      blank_value?(Map.get(record, :departure_time))
+  end
+
+  defp has_time?(record) do
+    not blank_record?(record)
   end
 
   defp find_timing(trip, timings) do
@@ -323,25 +424,31 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
       Enum.map(occurrences, &Map.get(&1, :stop_id))
   end
 
-  defp cells(stop_times, all_columns) do
+  defp cells(stop_times, all_columns, estimated_positions) do
     last_position = all_columns |> List.last() |> Map.fetch!(:position)
 
     all_columns
     |> Enum.with_index()
     |> Map.new(fn {column, index} ->
       stop_time = Enum.at(stop_times, index)
-      {column.position, cell(stop_time, column.position == last_position)}
+
+      {column.position,
+       cell(
+         stop_time,
+         column.position == last_position,
+         MapSet.member?(estimated_positions, index)
+       )}
     end)
   end
 
-  defp cell(nil, _last?), do: missing_cell()
+  defp cell(nil, _last?, _estimated?), do: missing_cell()
 
-  defp cell(stop_time, last?) do
+  defp cell(stop_time, last?, estimated?) do
     value =
       if last?, do: Map.get(stop_time, :arrival_time), else: Map.get(stop_time, :departure_time)
 
     case GtfsTime.parse(value) do
-      {:ok, secs} -> time_cell(secs)
+      {:ok, secs} -> time_cell(secs, estimated?)
       {:error, :invalid_time} -> missing_cell()
     end
   end
@@ -352,16 +459,17 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
 
   defp start_cell(start_secs), do: time_cell(start_secs)
 
-  defp missing_cell, do: %{text: "—", marker: nil, title: nil, missing?: true}
+  defp missing_cell, do: %{text: "—", marker: nil, title: nil, missing?: true, estimated?: false}
 
-  defp time_cell(secs) do
+  defp time_cell(secs, estimated? \\ false) do
     days = div(secs, @seconds_per_day)
 
     %{
       text: clock(secs),
       marker: if(days >= 1, do: "+#{days}", else: nil),
       title: if(days >= 1, do: day_title(secs, days), else: nil),
-      missing?: false
+      missing?: false,
+      estimated?: estimated?
     }
   end
 

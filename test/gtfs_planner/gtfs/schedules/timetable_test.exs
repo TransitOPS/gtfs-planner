@@ -1,6 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Schedules.TimetableTest do
   use ExUnit.Case, async: true
 
+  alias GtfsPlanner.Gtfs.Export.MissingTimes
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Schedules.Summary
   alias GtfsPlanner.Gtfs.Schedules.Timetable
@@ -9,6 +10,11 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimetableTest do
   @stops %{
     "A" => %{stop_name: "Alpha", stop_code: "1"},
     "B" => %{stop_name: "Beta", stop_code: "2"}
+  }
+  @stops3 %{
+    "A" => %{stop_name: "Alpha", stop_code: "1"},
+    "B" => %{stop_name: "Beta", stop_code: "2"},
+    "C" => %{stop_name: "Gamma", stop_code: "3"}
   }
 
   describe "build/5 row ordering" do
@@ -63,14 +69,16 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimetableTest do
                text: "25:10",
                marker: "+1",
                title: "1:10 AM, next day",
-               missing?: false
+               missing?: false,
+               estimated?: false
              }
 
       assert row.cells[2] == %{
                text: "25:45",
                marker: "+1",
                title: "1:45 AM, next day",
-               missing?: false
+               missing?: false,
+               estimated?: false
              }
     end
 
@@ -92,7 +100,8 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimetableTest do
                text: "49:05",
                marker: "+2",
                title: "1:05 AM, 2 days later",
-               missing?: false
+               missing?: false,
+               estimated?: false
              }
     end
 
@@ -109,9 +118,15 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimetableTest do
       midnight_row = Enum.find(section.rows, &(&1.trip_id == "T-before-midnight"))
 
       assert seconds_row.cells[1] ==
-               %{text: "06:05:30", marker: nil, title: nil, missing?: false}
+               %{text: "06:05:30", marker: nil, title: nil, missing?: false, estimated?: false}
 
-      assert midnight_row.cells[1] == %{text: "23:59", marker: nil, title: nil, missing?: false}
+      assert midnight_row.cells[1] == %{
+               text: "23:59",
+               marker: nil,
+               title: nil,
+               missing?: false,
+               estimated?: false
+             }
     end
 
     test "shows a missing value as a dash and never as midnight" do
@@ -128,7 +143,14 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimetableTest do
 
       [row] = Timetable.build(@pattern, occurrences, @stops, [], trips).rows
 
-      assert row.cells[1] == %{text: "—", marker: nil, title: nil, missing?: true}
+      assert row.cells[1] == %{
+               text: "—",
+               marker: nil,
+               title: nil,
+               missing?: true,
+               estimated?: false
+             }
+
       refute Enum.any?(Map.values(row.cells), &(&1.text == "00:00"))
     end
   end
@@ -331,6 +353,162 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimetableTest do
 
       assert row.frequency?
       assert row.frequency_label == "Every 20 min, 09:00–12:00; Every 30 min, 12:00–15:00"
+    end
+  end
+
+  describe "build/6 estimate preview" do
+    test "a custom trip with a blank middle shows the fill_trip estimate marked estimated" do
+      occurrences = [occurrence(1, "A"), occurrence(2, "B"), occurrence(3, "C")]
+
+      stored = [
+        stop_time_pair(1, "A", "08:00:00", "08:00:00"),
+        stop_time_pair(2, "B", nil, nil),
+        stop_time_pair(3, "C", "08:10:00", "08:10:00")
+      ]
+
+      trips = [trip_fields("T-est", %{stop_times: stored})]
+
+      section =
+        Timetable.build(@pattern, occurrences, @stops3, [], trips,
+          estimate: :distance,
+          coordinates: %{}
+        )
+
+      assert section.estimate_method == :distance
+      [row] = section.rows
+      assert row.estimate_problem == nil
+
+      assert row.cells[1] == %{
+               text: "08:00",
+               marker: nil,
+               title: nil,
+               missing?: false,
+               estimated?: false
+             }
+
+      # 600 s across one blank stop with no distances or coordinates falls back
+      # to an even share: 08:00 + 300 s.
+      assert row.cells[2] == %{
+               text: "08:05",
+               marker: nil,
+               title: nil,
+               missing?: false,
+               estimated?: true
+             }
+
+      assert row.cells[3] == %{
+               text: "08:10",
+               marker: nil,
+               title: nil,
+               missing?: false,
+               estimated?: false
+             }
+
+      {filled, status} = MissingTimes.fill_trip(stored, :distance, %{})
+      assert status == :filled
+      assert Enum.map(filled, & &1.departure_time) == ["08:00:00", "08:05:00", "08:10:00"]
+
+      # The preview never rewrites its input (INV-1).
+      assert Enum.map(stored, & &1.departure_time) == ["08:00:00", nil, "08:10:00"]
+    end
+
+    test "a linked trip with blanks never carries estimated cells" do
+      occurrences = [occurrence(1, "A"), occurrence(2, "B"), occurrence(3, "C")]
+
+      timings = [
+        timing("t1", "Standard", [
+          timing_row(1, 0, 0, 1),
+          timing_row(2, 300, 300, 0),
+          timing_row(3, 600, 600, 1)
+        ])
+      ]
+
+      trips = [
+        trip_fields("T-linked", %{
+          timed_pattern_id: "t1",
+          pattern_derivation_state: "linked",
+          stop_times: [
+            stop_time_pair(1, "A", "08:00:00", "08:00:00"),
+            stop_time_pair(2, "B", nil, nil),
+            stop_time_pair(3, "C", "08:10:00", "08:10:00")
+          ]
+        })
+      ]
+
+      [row] =
+        Timetable.build(@pattern, occurrences, @stops3, timings, trips,
+          estimate: :distance,
+          coordinates: %{}
+        ).rows
+
+      refute row.custom?
+      assert row.estimate_problem == nil
+
+      assert row.cells[2] == %{
+               text: "—",
+               marker: nil,
+               title: nil,
+               missing?: true,
+               estimated?: false
+             }
+
+      refute Enum.any?(row.cells, fn {_position, cell} -> cell.estimated? end)
+    end
+
+    test "a custom trip without a last time keeps blanks and names the reason" do
+      occurrences = [occurrence(1, "A"), occurrence(2, "B"), occurrence(3, "C")]
+
+      trips = [
+        trip_fields("T-nolast", %{
+          stop_times: [
+            stop_time_pair(1, "A", "08:00:00", "08:00:00"),
+            stop_time_pair(2, "B", nil, nil),
+            stop_time_pair(3, "C", nil, nil)
+          ]
+        })
+      ]
+
+      [row] =
+        Timetable.build(@pattern, occurrences, @stops3, [], trips,
+          estimate: :distance,
+          coordinates: %{}
+        ).rows
+
+      assert row.estimate_problem == :no_last_time
+      assert row.cells[2].missing?
+      assert row.cells[3].missing?
+      refute Enum.any?(row.cells, fn {_position, cell} -> cell.estimated? end)
+    end
+
+    test "estimate nil renders stored values only" do
+      occurrences = [occurrence(1, "A"), occurrence(2, "B"), occurrence(3, "C")]
+
+      trips = [
+        trip_fields("T-off", %{
+          stop_times: [
+            stop_time_pair(1, "A", "08:00:00", "08:00:00"),
+            stop_time_pair(2, "B", nil, nil),
+            stop_time_pair(3, "C", "08:10:00", "08:10:00")
+          ]
+        })
+      ]
+
+      for section <- [
+            Timetable.build(@pattern, occurrences, @stops3, [], trips),
+            Timetable.build(@pattern, occurrences, @stops3, [], trips, estimate: nil)
+          ] do
+        assert section.estimate_method == nil
+        [row] = section.rows
+        assert row.estimate_problem == nil
+
+        assert row.cells[2] == %{
+                 text: "—",
+                 marker: nil,
+                 title: nil,
+                 missing?: true,
+                 estimated?: false
+               }
+      end
     end
   end
 

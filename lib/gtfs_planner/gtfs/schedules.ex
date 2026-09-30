@@ -9,7 +9,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   The read canonicalizes the requested calendar, direction, pattern and stops
   filters, builds every section from the stored stop times through
-  `Schedules.Timetable.build/5` (never from a timing), and derives the planning
+  `Schedules.Timetable.build/6` (never from a timing), and derives the planning
   summary with `Schedules.Summary`. Stored clock strings are parsed in Elixir with
   `GtfsTime`; no SQL string `MIN`/`MAX` orders times. The query count is constant
   and independent of the trip count.
@@ -44,6 +44,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Calendars
+  alias GtfsPlanner.Gtfs.Export.MissingTimes
+  alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
@@ -1361,6 +1363,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
     section_patterns = Enum.filter(direction_patterns, &(pattern == :all or &1.id == pattern))
 
+    estimate = schedule_estimate(organization_id, version_id)
+
     sections =
       build_sections(section_patterns, %{
         trips: trips,
@@ -1369,7 +1373,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         timings_by_pattern: timings_by_pattern,
         stops_by_id: stops_by_id,
         stop_times_by_trip: stop_times_by_trip,
-        frequencies_by_trip: frequencies_by_trip
+        frequencies_by_trip: frequencies_by_trip,
+        estimate: estimate
       })
 
     %{
@@ -1916,7 +1921,9 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         id: st.id,
         stop_id: st.stop_id,
         arrival_time: st.arrival_time,
-        departure_time: st.departure_time
+        departure_time: st.departure_time,
+        timepoint: st.timepoint,
+        shape_dist_traveled: st.shape_dist_traveled
       }
     )
     |> Repo.all()
@@ -2029,8 +2036,33 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         occurrences = Map.get(data.occurrences_by_pattern, pattern.id, [])
         timings = Map.get(data.timings_by_pattern, pattern.id, [])
         timetable_trips = Enum.map(trips, &timetable_trip(&1, data))
+        estimate = Map.get(data, :estimate, nil)
 
-        [Timetable.build(pattern, occurrences, data.stops_by_id, timings, timetable_trips)]
+        opts =
+          case estimate do
+            %{method: method, coordinates: coords} -> [estimate: method, coordinates: coords]
+            _ -> []
+          end
+
+        [Timetable.build(pattern, occurrences, data.stops_by_id, timings, timetable_trips, opts)]
+    end
+  end
+
+  # The Schedules estimate preview follows the current Export defaults
+  # (spec 23, AC-26): with estimation on, custom trips preview the export
+  # method with stop coordinates; with estimation off, no estimate is passed
+  # and the timetable shows stored values only. Read-only (INV-1) and scoped
+  # to this organization and version (INV-2).
+  defp schedule_estimate(organization_id, version_id) do
+    defaults = ExportDefaults.get(organization_id)
+
+    if defaults.estimate_missing_times do
+      %{
+        method: defaults.estimate_method,
+        coordinates: MissingTimes.stop_coordinates(organization_id, version_id)
+      }
+    else
+      nil
     end
   end
 
