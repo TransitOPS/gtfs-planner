@@ -54,6 +54,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.FloorplanTransform
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.Level
+  alias GtfsPlanner.Gtfs.InSeatTransfers
   alias GtfsPlanner.Gtfs.JournalEntry
   alias GtfsPlanner.Gtfs.Location
   alias GtfsPlanner.Gtfs.Network
@@ -6268,6 +6269,49 @@ defmodule GtfsPlanner.Gtfs do
           | {:error, :not_found | :unavailable}
   def check_in_seat_connections(organization_id, gtfs_version_id, pairs) do
     Blocking.check_connections(organization_id, gtfs_version_id, pairs)
+  end
+
+  @doc """
+  Writes, replaces or deletes one trip pair's in-seat record through
+  `GtfsPlanner.Gtfs.InSeatTransfers.set_connection/5`.
+
+  `choice` is `:not_stated`, `:stay_on_board` or `:must_reboard`, and `expected` is
+  the list of `%{id, transfer_type, updated_at}` rows the editor saw, sorted by id
+  (R4). The organization, version and actor come from the audit context, so a
+  foreign tenant or version in the request is never written (R5).
+
+  The write decides R1 through `Blocking.lock_and_check_connections!/2` — the same
+  rule `check_in_seat_connections/3` pre-checks with, evaluated under the block
+  writers' locks — and refuses `{:refused, state}` carrying the rule's own state
+  unless the to-trip immediately follows the from-trip on every date both run
+  (R1). `:not_stated` is never refused. A trip this version does not hold is
+  `{:error, :not_found}` and a mismatched `expected` is `{:error, :stale}`, both
+  with nothing written.
+
+  The pair holds at most one row afterwards, storing the from-trip's last and the
+  to-trip's first `stop_time` stop with nil routes and no minimum time (R2/R3).
+  Every change writes one `"transfer"` change log sharing this command's
+  `operation_id`, a choice that changes nothing returns `operation_id: nil`, and an
+  audit failure rolls the write back (INV-5). Serialization failures and deadlocks
+  retry up to three attempts before `{:error, :busy}` (R4).
+  """
+  @spec set_in_seat_connection(
+          String.t(),
+          String.t(),
+          GtfsPlanner.Gtfs.InSeatTransfers.choice(),
+          [GtfsPlanner.Gtfs.InSeatTransfers.expected_row()],
+          AuditContext.t()
+        ) ::
+          {:ok, GtfsPlanner.Gtfs.InSeatTransfers.result()}
+          | {:error,
+             :invalid_choice
+             | :not_found
+             | :stale
+             | {:refused, term()}
+             | :busy
+             | {:audit_failed, term()}}
+  def set_in_seat_connection(from_trip_id, to_trip_id, choice, expected, %AuditContext{} = audit) do
+    InSeatTransfers.set_connection(from_trip_id, to_trip_id, choice, expected, audit)
   end
 
   @doc """
