@@ -848,6 +848,54 @@ defmodule GtfsPlanner.Gtfs.Runs do
   end
 
   @doc """
+  Counts the day-type runs that hold any of the given trips.
+
+  This is the figure the Blocks preview asks for: how many runs would a change
+  to these trips disturb. The count is of **distinct `(day_type_key, run_id)`
+  pairs**, which is what makes it a count of runs rather than of rows. Two
+  trips of one run count 1, and the same run ID on two day types counts 2,
+  because a run is scoped to its day type — the same ID on a Saturday is a
+  different run from the weekday one, and the pair is the run's identity.
+
+  **The trips are named by UUID, not by GTFS trip ID.** `trip_runs.trip_id` is
+  the `belongs_to :trip` key, so it holds `Trip.id`. A caller holding GTFS
+  strings — the page's own `trip_id` — has to resolve them first; passing them
+  straight here is a cast error rather than a wrong answer, so the mistake
+  cannot be silent. The Blocks preview holds `Trip` structs, so it already has
+  what this wants.
+
+  The answer is a plain number, not `{:ok, n}`: there is no failure to report.
+  An empty list, and a trip held by no run, both count 0, and another
+  organization's or version's rows are excluded rather than refused — the
+  question is a count, and a row the caller may not see is a row that does not
+  contribute.
+
+  Orphaned rows — a stored assignment whose trip has left the day type — are
+  still counted, because they are still runs in the table. Removing them is
+  `remove_orphans/3`'s separate job; quietly excluding them here would make
+  this figure disagree with the rows an orphan cleanup would go on to delete.
+
+  It opens no transaction. It is a single statement, so it is already atomic,
+  and a transaction would add nothing but a savepoint.
+  """
+  @spec count_runs_for_trips(Ecto.UUID.t(), Ecto.UUID.t(), [Ecto.UUID.t()]) :: non_neg_integer()
+  def count_runs_for_trips(organization_id, gtfs_version_id, trip_ids) do
+    if trip_ids == [] do
+      0
+    else
+      from(row in TripRun,
+        where:
+          row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id,
+        where: row.trip_id in ^trip_ids,
+        select: {row.day_type_key, row.run_id},
+        distinct: true
+      )
+      |> Repo.all()
+      |> length()
+    end
+  end
+
+  @doc """
   Derives every day type's runs from the movements export read.
 
   Takes the `Blocking.export_movements/2` result, an assignment map keyed by day

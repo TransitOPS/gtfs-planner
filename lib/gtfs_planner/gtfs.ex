@@ -6012,6 +6012,22 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Counts the day-type runs that hold any of the given trips.
+
+  A plain number, never a tuple. Two trips of one run count 1; the same run ID
+  on two day types counts 2, because a run is scoped to its day type. An empty
+  list counts 0, as do trips held by no run, and rows belonging to another
+  organization or version.
+
+  The trips are named by **UUID** (`Trip.id`), not by GTFS trip ID, because
+  that is what `trip_runs.trip_id` stores.
+  """
+  @spec count_runs_for_trips(Ecto.UUID.t(), Ecto.UUID.t(), [Ecto.UUID.t()]) :: non_neg_integer()
+  def count_runs_for_trips(organization_id, gtfs_version_id, trip_ids) do
+    Runs.count_runs_for_trips(organization_id, gtfs_version_id, trip_ids)
+  end
+
+  @doc """
   Returns the current block errors and warnings involving the given trips.
 
   Natural trip IDs name the trips; for each one that runs in a block, every day
