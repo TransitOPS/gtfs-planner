@@ -26,12 +26,15 @@ defmodule GtfsPlanner.Gtfs.Rosters.BaseWeekTest do
   @sunday 7
 
   defp dates(weekdays, count) do
-    for offset <- 1..(count * 7),
-        do:
-          Date.add(@monday, offset)
-          |> Enum.filter(&(Date.day_of_week(&1) in weekdays))
-          |> Enum.take(count)
+    @monday
+    |> offsets(count * 7)
+    |> Enum.filter(&(Date.day_of_week(&1) in weekdays))
+    |> Enum.take(count)
   end
+
+  defp offsets(_monday, 0), do: []
+
+  defp offsets(monday, count), do: [monday | offsets(Date.add(monday, 1), count - 1)]
 
   defp day_type(key, label, dates) do
     %{
@@ -64,6 +67,36 @@ defmodule GtfsPlanner.Gtfs.Rosters.BaseWeekTest do
 
       assert Enum.map(1..5, &week[&1].day_type.label) ==
                List.duplicate("Weekdays + school days", 5)
+    end
+
+    test "counts dates on that weekday rather than total dates or list order" do
+      # Same two weekday day types, listed with the shorter one first: the most
+      # dates on Monday is still the school day type, not the first listed.
+      day_types = [
+        day_type("short_break", "Weekdays without school", dates(@weekdays_monday_to_friday, 38)),
+        day_type("school", "Weekdays + school days", dates(@weekdays_monday_to_friday, 143))
+      ]
+
+      week = BaseWeek.resolve(day_types, %{})
+
+      assert Enum.map(1..5, &week[&1].day_type.label) ==
+               List.duplicate("Weekdays + school days", 5)
+    end
+
+    test "prefers the day type with more dates on that weekday over one with more overall" do
+      # The school type is listed first and has 86 dates overall, but the
+      # short-break type has 60 Tuesdays against the school's 43, so Tuesday
+      # resolves to the short-break day type. Counting all dates, or taking the
+      # first listed, would both answer "school".
+      day_types = [
+        day_type("school", "Weekdays + school days", dates(@weekdays_monday_to_friday, 43)),
+        day_type("short_break", "Weekdays without school", dates([2], 60))
+      ]
+
+      week = BaseWeek.resolve(day_types, %{})
+
+      assert week[2].day_type.label == "Weekdays without school"
+      assert week[1].day_type.label == "Weekdays + school days"
     end
 
     test "gives Saturday and Sunday their own day types" do
