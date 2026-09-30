@@ -51,7 +51,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     retry_review apply_stop_review save_timing apply_timing_review
     refresh_timing_review retry_timing_review confirm_timing_dialog
     confirm_delete_timing copy_pattern confirm_delete_pattern
-    undo_headsign
+    undo_headsign apply_headsign_reset
     alignment_save_requested confirm_alignment_save alignment_conflict_keep_local
     alignment_generate_paths alignment_confirm_generate alignment_cancel_generation
     alignment_follow_streets confirm_bulk_generation reactivate_route
@@ -181,6 +181,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:headsign_usage, nil)
      |> assign(:headsign_selection, nil)
      |> assign(:headsign_undo, nil)
+     |> assign(:headsign_review, nil)
      |> assign(:headsign_siblings, [])
      |> assign(:patterns_editable, false)
      |> assign(:impact_dialog, nil)
@@ -380,32 +381,39 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   def handle_event("save_details", _params, socket), do: {:noreply, socket}
 
-  # Undo of the last headsign save (or of a review reset, once the drawer
-  # stores one there): the recorded from/to values swap under the per-trip
-  # fence, so a trip edited since the save reports stale and writes nothing.
+  # Undo of the last headsign save, or of the review drawer's stored reset:
+  # the recorded from/to values swap under the per-trip fence, so a trip edited
+  # since the write reports stale and writes nothing. The drawer's own result
+  # is undone first while it is on screen, and the drawer closes either way so
+  # the confirmation (or the stale copy) is visible on the page.
   @impl true
   def handle_event("undo_headsign", _params, socket) do
-    case socket.assigns.headsign_undo do
-      %{undo: undo} when is_map(undo) ->
+    case active_headsign_undo(socket) do
+      {_source, undo} when is_map(undo) ->
         case Gtfs.undo_headsign_update(pattern_uuid(socket), undo, audit_context(socket)) do
           {:ok, %{applied: applied}} ->
             {:noreply,
              socket
              |> saved(undo_saved_message(undo, applied), :details)
-             |> assign(:headsign_undo, nil)}
+             |> drop_headsign_undo(active_source(socket))
+             |> assign(:headsign_review, nil)}
 
           {:error, {:stale, _changed}} ->
             {:noreply,
              socket
-             |> assign(:headsign_undo, nil)
+             |> drop_headsign_undo(active_source(socket))
+             |> assign(:headsign_review, nil)
              |> load_screen()
              |> assign(:error_message, undo_stale_message())}
 
           {:error, reason} ->
-            {:noreply, reject_editor(socket, reasons_message(reason), nil)}
+            {:noreply,
+             socket
+             |> assign(:headsign_review, nil)
+             |> reject_editor(reasons_message(reason), nil)}
         end
 
-      _ ->
+      nil ->
         {:noreply, socket}
     end
   end
@@ -424,6 +432,141 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   @impl true
   def handle_event("cancel_details_review", _params, socket) do
     {:noreply, assign(socket, :impact_dialog, nil)}
+  end
+
+  # --- headsign review drawer -------------------------------------------------
+
+  # Change mode reuses the staged usage (already split on the stored default)
+  # and the staged selection, exactly like the prototype's pending proposal;
+  # an unchecked box opens the drawer with nothing preselected. Exceptions
+  # mode renders the loading skeleton first and loads its own usage without a
+  # from split, so the followers group cannot leak into it.
+  @impl true
+  def handle_event("open_headsign_review", %{"mode" => "change"}, socket) do
+    case socket.assigns do
+      %{headsign_usage: %{} = usage, headsign_selection: %{ids: ids, update?: update?}} ->
+        {:noreply,
+         assign(socket, :headsign_review, %{
+           mode: :change,
+           state: :ready,
+           usage: usage,
+           selected: if(update?, do: ids, else: MapSet.new()),
+           open_groups: [],
+           change: %{from: usage.default, to: draft_headsign(socket)},
+           reviewed: nil,
+           undo: nil,
+           done: nil
+         })}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event(
+        "open_headsign_review",
+        %{"mode" => "exceptions", "scope" => "pattern"},
+        socket
+      ) do
+    {:noreply, load_headsign_review(socket)}
+  end
+
+  def handle_event("open_headsign_review", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("select_headsign_trip", %{"trip" => trip_id}, socket) do
+    {:noreply,
+     update_headsign_review(socket, fn review ->
+       %{review | selected: headsign_toggle(review.selected, trip_id)}
+     end)}
+  end
+
+  def handle_event("select_headsign_trip", _params, socket), do: {:noreply, socket}
+
+  # A group checkbox adds all of its trips, and clears them once every trip is
+  # already selected, like the prototype's native checkbox toggle.
+  @impl true
+  def handle_event("select_headsign_group", %{"group" => group}, socket) do
+    {:noreply, toggle_headsign_group(socket, group_index(group))}
+  end
+
+  def handle_event("select_headsign_group", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("show_headsign_group", %{"group" => group}, socket) do
+    {:noreply, open_headsign_group(socket, group_index(group))}
+  end
+
+  def handle_event("show_headsign_group", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("select_headsign_typos", _params, socket) do
+    {:noreply,
+     update_headsign_review(socket, fn review ->
+       %{review | selected: MapSet.union(review.selected, typo_ids(review.usage))}
+     end)}
+  end
+
+  # Change mode's hand-back: the drawer's selection becomes the inline box's
+  # staged selection, so the save writes exactly what the editor chose. Like
+  # the prototype, handing back an empty selection leaves the box unchecked —
+  # nothing existing changes until trips are staged again.
+  @impl true
+  def handle_event("use_headsign_selection", _params, socket) do
+    case socket.assigns do
+      %{headsign_review: %{mode: :change, selected: selected}, headsign_selection: %{key: key}} ->
+        {:noreply,
+         socket
+         |> assign(:headsign_selection, %{
+           key: key,
+           update?: MapSet.size(selected) > 0,
+           ids: selected
+         })
+         |> assign(:headsign_review, nil)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  # Exceptions mode's primary: every selected trip returns to its effective
+  # default, fenced per trip on the value the loaded usage reviewed — not the
+  # value at click time — so a trip changed since the drawer loaded rolls the
+  # whole reset back into the stale state, which offers Refresh list.
+  @impl true
+  def handle_event("apply_headsign_reset", _params, socket) do
+    case socket.assigns.headsign_review do
+      %{mode: :exceptions, state: state, selected: selected, reviewed: reviewed} = review
+      when state in [:ready, :failed, :done] and is_map(reviewed) ->
+        apply_headsign_reset(socket, review, selected, reviewed)
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  # The stale state's Refresh list: read the usage again; the selection keeps
+  # the ids that still differ, now reviewed at their current values.
+  @impl true
+  def handle_event("refresh_headsign_review", _params, socket) do
+    case socket.assigns.headsign_review do
+      %{mode: :exceptions, state: :stale} = review ->
+        {:noreply,
+         socket
+         |> assign(:headsign_review, %{review | state: :loading})
+         |> start_headsign_review_usage()}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  # The review drawer's close: the header button, the footer cancel and the
+  # Escape path all arrive here, and the drawer primitive returns focus to the
+  # opener (unless the write is still in flight, which the drawer refuses).
+  @impl true
+  def handle_event("close_drawer", _params, socket) do
+    {:noreply, assign(socket, :headsign_review, nil)}
   end
 
   # --- creation --------------------------------------------------------------
@@ -1498,6 +1641,43 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     {:noreply, assign_dirty(socket)}
   end
 
+  @impl true
+  # The exceptions drawer's usage: fresh groups and fence values; a refresh
+  # keeps the selected ids that still differ. Results for a drawer that has
+  # since closed (or a change-mode drawer, which never loads) touch nothing.
+  def handle_async(:headsign_review_usage, {:ok, {:ok, usage}}, socket) do
+    case socket.assigns.headsign_review do
+      %{mode: :exceptions} = review ->
+        {:noreply,
+         assign(socket, :headsign_review, %{
+           review
+           | state: :ready,
+             usage: usage,
+             selected: MapSet.intersection(review.selected, differing_ids(usage)),
+             reviewed: reviewed_from_values(usage)
+         })}
+
+      _review ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  # A failed usage read cannot render groups, so the drawer closes with the
+  # page's unavailable copy.
+  def handle_async(:headsign_review_usage, _result, socket) do
+    case socket.assigns.headsign_review do
+      %{mode: :exceptions} ->
+        {:noreply,
+         socket
+         |> assign(:headsign_review, nil)
+         |> assign(:error_message, reasons_message(:unavailable))}
+
+      _review ->
+        {:noreply, socket}
+    end
+  end
+
   defp handle_version_switch(socket, version_id) do
     organization_id = socket.assigns.current_organization.id
     current_version_id = to_string(socket.assigns.current_gtfs_version.id)
@@ -1918,6 +2098,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
             {unsaved_summary(assigns)} If you leave now, they are lost.
           </p>
         </.confirm_dialog>
+
+        <RoutePatternHeadsignComponents.review_drawer
+          :if={@headsign_review}
+          open
+          mode={@headsign_review.mode}
+          usage={@headsign_review.usage}
+          selected={@headsign_review.selected}
+          open_groups={@headsign_review.open_groups}
+          state={@headsign_review.state}
+          done={@headsign_review.done}
+          change={@headsign_review.change}
+          scope_label={@pattern && @pattern.route_pattern_name}
+          version_label={@current_gtfs_version.name}
+        />
       </div>
     </Layouts.app>
     """
@@ -2206,6 +2400,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:applying?, false)
     |> assign(:headsign_selection, nil)
     |> assign(:headsign_undo, nil)
+    |> assign(:headsign_review, nil)
     |> assign(:stop_search_options, [])
     |> assign(:stop_search_results, [])
     |> assign(:stop_search_truncated?, false)
@@ -2411,6 +2606,233 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       %{trips: trips} -> Enum.map(trips, & &1.id)
       nil -> []
     end
+  end
+
+  # --- headsign review drawer wiring -------------------------------------------
+
+  # The primary is disabled without a selection; a forced event writes nothing.
+  defp apply_headsign_reset(socket, review, selected, reviewed) do
+    if MapSet.size(selected) == 0 do
+      {:noreply, socket}
+    else
+      selections =
+        selected
+        |> MapSet.to_list()
+        |> Enum.map(&%{id: &1, from: Map.fetch!(reviewed, &1)})
+
+      socket =
+        socket
+        |> assign(:headsign_review, %{review | state: :applying, done: nil})
+        |> reset_headsign_trips(selections, review)
+
+      {:noreply, socket}
+    end
+  end
+
+  # The undo the visible UI offers: the review drawer's stored reset while it
+  # is open, else the last save's banner offer.
+  defp active_headsign_undo(socket) do
+    case socket.assigns do
+      %{headsign_review: %{undo: %{} = undo}} -> {:review, undo}
+      %{headsign_undo: %{undo: %{} = undo}} -> {:save, undo}
+      _ -> nil
+    end
+  end
+
+  defp active_source(socket) do
+    case active_headsign_undo(socket) do
+      {source, _undo} -> source
+      nil -> nil
+    end
+  end
+
+  # A completed or failed undo retires only the offer it acted on; an older
+  # save's undo stays valid and keeps its banner offer.
+  defp drop_headsign_undo(socket, :save), do: assign(socket, :headsign_undo, nil)
+  defp drop_headsign_undo(socket, _source), do: socket
+
+  # The exceptions drawer's own usage read: nothing is preselected, so the
+  # read runs without a from split and the followers group cannot leak in.
+  defp load_headsign_review(socket) do
+    socket
+    |> assign(:headsign_review, %{
+      mode: :exceptions,
+      state: :loading,
+      usage: nil,
+      selected: MapSet.new(),
+      open_groups: [],
+      change: nil,
+      reviewed: nil,
+      undo: nil,
+      done: nil
+    })
+    |> start_headsign_review_usage()
+  end
+
+  # The read runs as an async task so the skeleton renders first, like the
+  # alignment loads on this LiveView.
+  defp start_headsign_review_usage(socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+    pattern_id = socket.assigns.pattern.id
+
+    start_async(socket, :headsign_review_usage, fn ->
+      Gtfs.headsign_usage(organization_id, version_id, pattern_id, :pattern, [])
+    end)
+  end
+
+  defp reset_headsign_trips(socket, selections, review) do
+    case Gtfs.reset_trip_headsigns(
+           pattern_uuid(socket),
+           :pattern,
+           selections,
+           audit_context(socket)
+         ) do
+      {:ok, %{applied: applied, undo: undo}} ->
+        socket = saved(socket, affected_message(length(applied)), :details)
+        usage = socket.assigns.headsign_usage || review.usage
+
+        assign(socket, :headsign_review, %{
+          review
+          | state: :done,
+            done: reset_done_message(applied, usage),
+            undo: undo,
+            selected: MapSet.new()
+        })
+
+      {:error, {:stale, _changed}} ->
+        assign(socket, :headsign_review, %{review | state: :stale})
+
+      {:error, _reason} ->
+        assign(socket, :headsign_review, %{review | state: :failed})
+    end
+  end
+
+  # The drawer's reset result, per the prototype: what the written trips show
+  # now, and how many trips still differ (the fresh counts the post-write
+  # reload brought back).
+  defp reset_done_message(applied, usage) do
+    count = length(applied)
+    kept = usage.differ
+
+    body =
+      if kept > 0 do
+        "#{kept} #{trip_noun(kept)} kept a different headsign. Each change is in History."
+      else
+        "Every trip now shows #{done_word(usage.default)}. Each change is in History."
+      end
+
+    %{
+      title:
+        "#{count} #{trip_noun(count)} now #{if(count == 1, do: "shows", else: "show")} " <>
+          done_word(usage.default),
+      body: body
+    }
+  end
+
+  defp done_word(nil), do: "no headsign"
+  defp done_word(value), do: value
+
+  # Selection events only mutate a drawer that can act on them.
+  defp update_headsign_review(socket, fun) do
+    case socket.assigns.headsign_review do
+      %{state: state} = review when state != :applying and state != :loading ->
+        assign(socket, :headsign_review, fun.(review))
+
+      _review ->
+        socket
+    end
+  end
+
+  defp headsign_toggle(selected, trip_id) do
+    if MapSet.member?(selected, trip_id) do
+      MapSet.delete(selected, trip_id)
+    else
+      MapSet.put(selected, trip_id)
+    end
+  end
+
+  defp toggle_headsign_group(socket, nil), do: socket
+
+  defp toggle_headsign_group(socket, index) do
+    update_headsign_review(socket, fn review ->
+      toggle_review_group(review, index)
+    end)
+  end
+
+  defp toggle_review_group(%{usage: %{groups: groups}} = review, index) do
+    case Enum.at(groups, index) do
+      %{trips: trips} ->
+        %{review | selected: toggle_group_selection(review.selected, trips)}
+
+      nil ->
+        review
+    end
+  end
+
+  defp toggle_review_group(review, _index), do: review
+
+  # Like the prototype's group checkbox: a click on an all-selected group
+  # clears it, any other state selects the whole group.
+  defp toggle_group_selection(selected, trips) do
+    ids = MapSet.new(trips, & &1.id)
+
+    if MapSet.subset?(ids, selected) do
+      MapSet.difference(selected, ids)
+    else
+      MapSet.union(selected, ids)
+    end
+  end
+
+  defp open_headsign_group(socket, nil), do: socket
+
+  defp open_headsign_group(socket, index) do
+    update_headsign_review(socket, fn
+      %{open_groups: open_groups} = review ->
+        if index in open_groups do
+          review
+        else
+          %{review | open_groups: open_groups ++ [index]}
+        end
+    end)
+  end
+
+  defp typo_ids(%{groups: groups}) do
+    groups
+    |> Enum.filter(& &1.likely_typo)
+    |> Enum.flat_map(& &1.trips)
+    |> MapSet.new(& &1.id)
+  end
+
+  defp typo_ids(_usage), do: MapSet.new()
+
+  # The drawer's group indices arrive as phx-value strings from the browser.
+  defp group_index(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {index, ""} -> index
+      _ -> nil
+    end
+  end
+
+  defp group_index(_value), do: nil
+
+  defp draft_headsign(socket), do: Headsigns.normalize(socket.assigns.details_params["headsign"])
+
+  # Every trip id the usage's groups still hold — the ids a selection can act
+  # on after a refresh.
+  defp differing_ids(%{groups: groups}) do
+    Enum.reduce(groups, MapSet.new(), fn group, acc ->
+      MapSet.union(acc, MapSet.new(group.trips, & &1.id))
+    end)
+  end
+
+  # The fence values from the loaded usage: each trip's normalized headsign at
+  # load time, so the reset fences on what the editor reviewed rather than the
+  # value at click time.
+  defp reviewed_from_values(%{groups: groups}) do
+    groups
+    |> Enum.flat_map(& &1.trips)
+    |> Map.new(fn trip -> {trip.id, Headsigns.normalize(trip.headsign)} end)
   end
 
   # The headsign field's companions, derived once per render: the usage line
@@ -4577,6 +4999,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   end
 
   defp affected_message(0), do: "Changes saved in this version."
+
+  defp affected_message(1), do: "Changes saved in this version. 1 trip updated."
 
   defp affected_message(updated),
     do: "Changes saved in this version. #{updated} trips updated."
