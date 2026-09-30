@@ -2160,7 +2160,23 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   defp spans_for(_data), do: []
 
-  defp frequency_windows(frequencies) do
+  @doc """
+  Reduces stored frequencies.txt windows to parsed integer seconds.
+
+  One window per `%Frequency{}` row with a positive `headway_secs` and parseable
+  `start_time`/`end_time`; a row failing either check is dropped, so a trip whose
+  every row drops out is summarized from its stored departure instead of from the
+  window. `end_time` stays the exclusive window end, so shared summaries of these
+  windows stay identical for every caller.
+  """
+  @spec frequency_windows([map()]) :: [
+          %{
+            start_secs: non_neg_integer(),
+            until_secs: non_neg_integer(),
+            headway_secs: pos_integer()
+          }
+        ]
+  def frequency_windows(frequencies) do
     for %{start_time: start_time, end_time: end_time, headway_secs: headway_secs} <- frequencies,
         is_integer(headway_secs) and headway_secs > 0,
         {:ok, start_secs} <- [GtfsTime.parse(start_time)],
