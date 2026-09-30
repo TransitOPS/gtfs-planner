@@ -7,8 +7,9 @@ import { resolve } from "node:path";
  * Headsign propagation journeys (spec 20).
  *
  * Every journey owns one BROWSER-HS* pattern from `test/support/browser_seed.exs`,
- * so a mutating journey never inherits another's writes: the Details usage line
- * and the read-only review-drawer render read BROWSER-HS1, the inline edit, save
+ * so a mutating journey never inherits another's writes: the Details usage line,
+ * the read-only review-drawer render, and the read-only Riders see column read
+ * BROWSER-HS1, the inline edit, save
  * and undo drives BROWSER-HS2, the review drawer fixes a typo on BROWSER-HS3,
  * the timing disclosure BROWSER-HS4, and the schedules surface BROWSER-HS5. The
  * continuation trips live on the BROWSER_HEADSIGNS_20 route and share each
@@ -339,4 +340,32 @@ test("timing headsign disclosure", async ({ page }) => {
   await page.fill("#timing-headsign", "Lincoln City");
   await expect(usage).toBeVisible();
   await expect(box).toHaveCount(0);
+});
+
+// The Riders see column (read-only, BROWSER-HS1): row 3's stop headsign is
+// bold with "Set at this stop" on the info tint, other rows show the pattern
+// default muted, and the last row shows "Last stop · none". Nothing is saved —
+// the ExUnit suite owns the column's rendering contracts.
+test("riders see column", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openPattern(page, versionId, "BROWSER_HEADSIGNS", "BROWSER-HS1", "timings");
+
+  await expect(page.locator("#timing-table")).toContainText("Riders see");
+  await expect(page.locator("#timing-table")).toContainText("headsign at this stop");
+
+  await expect(page.locator("#timing-riders-3")).toContainText("Lincoln City Transit Center");
+  await expect(page.locator("#timing-riders-3")).toContainText("Set at this stop");
+  await expect(page.locator("#timing-riders-3")).toHaveClass(/bg-info-bg\/60/);
+  await expect(page.locator("#timing-riders-1")).toContainText("Lincoln City");
+  await expect(page.locator("#timing-riders-4")).toContainText("Last stop · none");
+
+  await capture(page, "times-stop-headsign-1440");
+
+  // At 390 px the column rides the table's stacked cards, so every value stays
+  // readable without horizontal scrolling.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator("#timing-riders-3")).toBeVisible();
+  await expect(page.locator("#timing-riders-3")).toContainText("Lincoln City Transit Center");
+  await expect(page.locator("#timing-riders-4")).toContainText("Last stop · none");
+  await capture(page, "times-stop-headsign-390");
 });
