@@ -31,6 +31,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
   alias GtfsPlannerWeb.Components.RouteIdentity
 
+  # The select's marker for "a run of its own". Run IDs are one to eight
+  # letters, digits or hyphens, so no real run can carry this value and the
+  # marker can never be confused with a run the page is offering.
+  @new_run_option "__new"
+
   @doc """
   Renders the page head: the H1, the subtitle and any head actions.
 
@@ -1063,6 +1068,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   attr :rename_form, :any, required: true
   # A list, not a form field's errors: see the `errors=` attribute below.
   attr :rename_errors, :list, default: []
+  # `{label, value}` options for the per-piece move select, and the number the
+  # "New run" option will actually use. The page builds both from the day's runs;
+  # the drawer only decides which value means "a run of its own".
+  attr :move_form, :any, required: true
+  attr :move_runs, :list, default: []
+  attr :next_run_id, :string, default: "1"
 
   def run_drawer(assigns) do
     ~H"""
@@ -1171,6 +1182,47 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       <p id="run-drawer-rule" data-role="run-rule" class="mt-2 text-[13px] text-base-content/70">
         {crew_rule_sentence(@crew)}
       </p>
+
+      <h3 class="mt-5 text-base font-bold">Move a piece to another run</h3>
+      <p class="mt-1 text-sm text-base-content/70">
+        Only the trips in the piece you choose move. Everything else on this run stays.
+      </p>
+
+      <div :for={{piece, index} <- Enum.with_index(@run.pieces, 1)} class="mt-4">
+        <fieldset class="rounded-card border border-base-300 px-4 pb-4 pt-2">
+          <legend class="px-1 text-[13px] font-semibold text-base-content">
+            Piece {index} &middot; block {piece.block_id}
+          </legend>
+          <.form
+            for={@move_form}
+            id={"run-move-piece-form-#{index}"}
+            novalidate
+            phx-submit="move_piece"
+            action="#run-drawer"
+          >
+            <%!-- The piece is named by POSITION, because that is what the
+                  fieldset above says. The trips come from the drawer's own piece
+                  list, never from a `trip_id` a form could tamper with. --%>
+            <input type="hidden" name="piece" value={index} />
+            <div class="grid grid-cols-1 items-end gap-3 sm:grid-cols-[1fr_auto]">
+              <div>
+                <.input
+                  field={@move_form[:to]}
+                  id={"run-move-to-#{index}"}
+                  type="select"
+                  label="Move piece to run"
+                  prompt="Choose a run"
+                  options={move_options(@move_runs, @next_run_id)}
+                  errors={[]}
+                />
+              </div>
+              <.button type="submit" phx-disable-with="Moving…" class="min-h-11">
+                Move piece
+              </.button>
+            </div>
+          </.form>
+        </fieldset>
+      </div>
 
       <h3 class="mt-5 text-base font-bold">Rename this run</h3>
       <.form for={@rename_form} id="run-rename-form" novalidate phx-submit="rename_run" class="mt-2">
@@ -1319,6 +1371,39 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # A place, with the kind of boundary it is, because a change of operator at a
   # relief is not the same place-change as a garage move and the reader is being
   # told where a run may be interrupted.
+  # The select's options, "New run (N)" first because that is the prototype's
+  # order, followed by the day's runs. The value `"__new"` is a MARKER, not an
+  # ID: run IDs are one to eight letters, digits or hyphens, so a run could
+  # never be called `__new`, and the marker cannot collide with a real run.
+  # A KEYWORD list of `label: value`, which is what `options_for_select/2` reads.
+  # A list of `{label, value}` tuples renders each pair's whole text as BOTH the
+  # label and the value, so every option posts its own sentence as a run ID and
+  # the move fails as an unusable run ID.
+  # A FLAT list of `{label, value}` pairs — the shape `options_for_select/2`
+  # reads, which renders `value="1002"` for `{"Run 1002 ...", "1002"}`.
+  #
+  # Nesting each pair in its own list, `[{"Run 1002 ...", "1002"}]`, is the shape
+  # that fails, and it fails LOUDLY on the way past: "expected :key key when
+  # building <option> from keyword list". The other failing shape is a keyword
+  # list of string keys, which renders each option's whole label as its VALUE —
+  # so the list looks right on screen and every option posts its own sentence as
+  # a run ID.
+  defp move_options(runs, next_run_id) do
+    [{"New run (#{next_run_id})", @new_run_option} | Enum.map(runs, &move_option/1)]
+  end
+
+  # "Run 1002 · one piece · 06:00–14:00": which run, what shape, and when — the
+  # three things that let a reader tell two runs apart without opening either.
+  defp move_option(run) do
+    {move_option_text(run), run.run_id}
+  end
+
+  defp move_option_text(run) do
+    "Run #{run.run_id} · #{run_type_label(run.work.type)} · " <>
+      BlocksComponents.clock(run.work.sign_on_secs) <>
+      "–" <> BlocksComponents.clock(run.work.sign_off_secs)
+  end
+
   defp piece_place(_stop_names, nil, _kind), do: "Unknown stop"
 
   defp piece_place(stop_names, %{stop_id: stop_id}, kind) do
