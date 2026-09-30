@@ -19,6 +19,14 @@ import { resolve } from "node:path";
  * The details journey here runs against the wired Details task; the read-only
  * review-drawer render opens through the wired `open_headsign_review` event,
  * and the mutating review journey fixes the typo on BROWSER-HS3.
+ *
+ * The keyboard journey drives BROWSER-HS5 with `page.keyboard` alone and is the
+ * file's last test on purpose: its final write fixes the seeded typo, so the
+ * read-only schedules journey must read that typo before it runs. With
+ * HEADSIGN_CAPTURE_DIR set the journeys also record the prototype states they
+ * cover — details, details-editing, change-review, details-saved, review,
+ * times-open, times-stop-headsign, list, sched and sched-trip-case — for the
+ * parity check against the prototype.
  */
 
 const EDITOR_USER = {
@@ -89,6 +97,27 @@ async function openPattern(page, versionId, routeId, patternId, task) {
   await page.goto(`/gtfs/${versionId}/routes/${routeId}/patterns/${patternId}?task=${task}`);
   await page.waitForSelector("#pattern-editor-content", { timeout: 15000 });
   await waitForLiveView(page);
+}
+
+// Walks Tab from the current focus until the browser's own focus lands on
+// `selector` (or inside an element matching it) — the same walk a keyboard
+// user makes, so the journey never focuses anything programmatically. Fails
+// when the walk exceeds `maxTabs` stops.
+async function tabUntilFocused(page, selector, maxTabs = 150) {
+  for (let step = 0; step <= maxTabs; step++) {
+    if (
+      await page.evaluate(
+        (sel) => Boolean(document.activeElement?.closest(sel)),
+        selector,
+      )
+    ) {
+      return;
+    }
+
+    await page.keyboard.press("Tab");
+  }
+
+  throw new Error(`Tab never reached ${selector} within ${maxTabs} stops`);
 }
 
 let versionId;
@@ -318,6 +347,7 @@ test("timing headsign disclosure", async ({ page }) => {
   await expect(page.locator("#timing-headsign-usage-review")).toContainText("Review 2 trips");
 
   await capture(page, "times-hs4-open-1440");
+  await capture(page, "times-open");
 
   // Editing stages the update box against the timing's effective default and
   // names the narrower save in the bar.
@@ -361,6 +391,7 @@ test("riders see column", async ({ page }) => {
   await expect(page.locator("#timing-riders-4")).toContainText("Last stop · none");
 
   await capture(page, "times-stop-headsign-1440");
+  await capture(page, "times-stop-headsign");
 
   // At 390 px the column rides the table's stacked cards, so every value stays
   // readable without horizontal scrolling.
@@ -390,6 +421,7 @@ test("patterns list headsign column", async ({ page }) => {
   await expect(cell.locator(".hero-exclamation-triangle")).toBeVisible();
 
   await capture(page, "patterns-headsign-1440");
+  await capture(page, "list");
 
   // At 390 px the cell is a full-width card block with its visible label, so
   // the value and the count stay readable without horizontal scrolling.
@@ -430,6 +462,7 @@ test("schedules headsign facts", async ({ page }) => {
   expect(await page.locator("#trip-BROWSER_HS5_T1-headsign").count()).toBe(0);
 
   await capture(page, "sched-hs5-1440");
+  await capture(page, "sched");
 
   // The typo trip's drawer: the warning note with the Use default button.
   await page.locator("#trip-BROWSER_HS5_T4-edit").click();
@@ -447,6 +480,7 @@ test("schedules headsign facts", async ({ page }) => {
   await note.scrollIntoViewIfNeeded();
 
   await captureViewport(page, "sched-trip-case-1440");
+  await captureViewport(page, "sched-trip-case");
 
   // Use default fills the field and the note flips to the same-as confirmation.
   await useDefault.click();
@@ -497,4 +531,124 @@ test("schedules headsign facts", async ({ page }) => {
 
   await page.locator("#trip-drawer-cancel").click();
   await expect(page.locator("#trip-drawer-form")).toHaveCount(0);
+});
+
+// The keyboard journey (BROWSER-HS5): everything after login happens through
+// `page.keyboard` — Tab walks to every control, typing stages the headsign,
+// Space clears a staged row, Enter presses the buttons, Escape closes the
+// drawer — so AC-24's keyboard path and the focus returns are exercised the
+// way a keyboard user meets them. Its final write fixes the seeded typo, so
+// it must stay the file's last test on this pattern.
+test("keyboard journey", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openPattern(page, versionId, "BROWSER_HEADSIGNS", "BROWSER-HS5", "details");
+
+  const usage = page.locator("#headsign-usage");
+  await expect(usage).toContainText("Used by 5 trips");
+  await expect(usage).toContainText("2 show a different headsign");
+
+  await capture(page, "details");
+
+  // Tab to the headsign field and type the new value over the stored one.
+  await tabUntilFocused(page, "#pattern-details-headsign");
+  await page.keyboard.press("ControlOrMeta+a");
+  await page.keyboard.type("Lincoln City via Depoe Bay");
+
+  const box = page.locator("#headsign-update-box");
+  await expect(box).toContainText("Also update 3 trips that show Lincoln City");
+  await expect(page.locator("#headsign-update-toggle")).toBeChecked();
+  await expect(page.locator("#pattern-details-submit")).toHaveText("Save headsign");
+
+  await capture(page, "details-editing");
+
+  // Tab to Review trips and open the change drawer by keyboard.
+  await tabUntilFocused(page, "#headsign-update-review");
+  await page.keyboard.press("Enter");
+
+  const drawer = page.locator("#headsign-review-drawer");
+  await expect(drawer).toBeVisible();
+  await waitDrawerSettled(page);
+  await expect(drawer).toContainText("Trips the new headsign reaches");
+  await expect(page.locator("#headsign-review-drawer-group-0-toggle")).toBeChecked();
+
+  await captureViewport(page, "change-review");
+
+  // Clear one staged follower with Space, then hand the selection back; focus
+  // returns to the box's opener control inside #headsign-update-box.
+  await tabUntilFocused(page, 'input[aria-label^="Change trip"]');
+  const firstRow = page.locator('input[aria-label^="Change trip"]').first();
+  await expect(firstRow).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(firstRow).not.toBeChecked();
+  await expect(page.locator("#headsign-review-drawer-status")).toContainText(
+    "2 trips selected",
+  );
+
+  await tabUntilFocused(page, "#headsign-review-drawer-use");
+  await page.keyboard.press("Enter");
+
+  await expect(drawer).toHaveCount(0);
+  await expect(box).toContainText("Also update 2 of 3 trips that show Lincoln City");
+  await expect(page.locator("#headsign-update-review")).toBeFocused();
+
+  // Save headsign from the keyboard; a headsign-only save opens no dialog.
+  await tabUntilFocused(page, "#pattern-details-submit");
+  await page.keyboard.press("Enter");
+
+  const result = page.locator("#headsign-result");
+  await expect(result).toContainText("Headsign saved · 2 trips updated");
+  await expect(result).toContainText("2 trips now show Lincoln City via Depoe Bay");
+  await expect(result).toContainText("Undo headsign change");
+
+  await capture(page, "details-saved");
+
+  // Undo headsign change from the keyboard restores the prior usage counts.
+  await tabUntilFocused(page, "#headsign-undo");
+  await page.keyboard.press("Enter");
+
+  await expect(result).toHaveCount(0);
+  await expect(page.locator("#pattern-save-status")).toContainText("Headsign change undone");
+  await expect(page.locator("#pattern-details-headsign")).toHaveValue("Lincoln City");
+  await expect(usage).toContainText("Used by 5 trips");
+  await expect(usage).toContainText("2 show a different headsign");
+
+  // Review 2 trips opens the exceptions drawer by keyboard.
+  await tabUntilFocused(page, "#headsign-usage-review");
+  await page.keyboard.press("Enter");
+
+  await expect(drawer).toBeVisible();
+  await waitDrawerSettled(page);
+  await expect(drawer).toContainText("Trips with a different headsign");
+  await expect(drawer).toContainText("Lincoln city");
+  await expect(drawer).toContainText("Likely typo");
+  await expect(drawer).toContainText("Roads End via Lincoln City");
+
+  await captureViewport(page, "review");
+
+  await tabUntilFocused(page, "#headsign-review-drawer-select-typos");
+  await page.keyboard.press("Enter");
+
+  const apply = page.locator("#headsign-review-drawer-apply");
+  await expect(apply).toContainText("Change 1 trip to Lincoln City");
+  await expect(apply).toBeEnabled();
+
+  // Tab from the drawer's last control wraps to the drawer's first control —
+  // the trap keeps every Tab inside the open drawer.
+  await tabUntilFocused(page, "#headsign-review-drawer-apply");
+  await page.keyboard.press("Tab");
+  await expect(page.locator("#headsign-review-drawer-close")).toBeFocused();
+
+  await tabUntilFocused(page, "#headsign-review-drawer-apply");
+  await page.keyboard.press("Enter");
+
+  const done = page.locator("#headsign-review-drawer-done");
+  await expect(done).toContainText("1 trip now shows Lincoln City");
+  await expect(page.locator("#headsign-review-drawer-undo")).toBeVisible();
+
+  // Escape closes a drawer that isn't applying and focus returns to the
+  // opener, over the usage line the write's reload already refreshed.
+  await page.keyboard.press("Escape");
+  await expect(drawer).toHaveCount(0);
+  await expect(page.locator("#headsign-usage-review")).toBeFocused();
+  await expect(usage).toContainText("1 shows a different headsign");
 });

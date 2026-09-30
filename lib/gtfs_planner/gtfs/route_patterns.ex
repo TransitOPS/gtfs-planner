@@ -314,8 +314,12 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
     timings_by_id = Map.new(timings, &{&1.id, &1})
 
+    # Rows read chronologically, like the prototype's drawers: first departure
+    # ascending with trip_id as the stable tiebreaker, no-stop-time trips last.
+    # Grouping and the from-split below preserve this order.
     trips =
-      Enum.map(rows, fn row ->
+      rows
+      |> Enum.map(fn row ->
         %{
           id: row.id,
           trip_id: row.trip_id,
@@ -330,6 +334,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
           mid_trip_change: nil
         }
       end)
+      |> Enum.sort_by(&{&1.departure_secs == nil, &1.departure_secs || 0, &1.trip_id})
 
     {trips, Map.new(rows, &{&1.id, &1})}
   end
@@ -390,6 +395,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   # Trips are grouped by their normalized value, and a group's kind and typo
   # flag come from the shared Headsigns rule. Order: likely typo first, then
   # group size descending, then value (term order puts a blank group first).
+  # Rows keep the chronological order usage_trips established.
   defp value_groups(trips, default) do
     trips
     |> Enum.group_by(& &1.headsign)
@@ -400,7 +406,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
         value: value,
         kind: kind,
         likely_typo: likely_typo,
-        trips: Enum.sort_by(value_trips, & &1.id)
+        trips: value_trips
       }
     end)
     |> Enum.sort_by(&{not &1.likely_typo, -length(&1.trips), &1.value})

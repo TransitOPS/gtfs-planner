@@ -517,6 +517,129 @@ describe("OverlayDialog", () => {
   });
 
   // =========================================================================
+  // Tab containment
+  // =========================================================================
+  describe("tab containment", () => {
+    const threeButtons = '<button id="first">First</button><button id="second">Second</button><button id="last">Last</button>';
+
+    function tabEvent(shiftKey = false) {
+      return new KeyboardEvent("keydown", {
+        key: "Tab",
+        shiftKey,
+        cancelable: true,
+        bubbles: true,
+      });
+    }
+
+    function renderedDialog(innerHTML, dataset = { open: "true" }) {
+      const dialog = buildDialog({ dataset, innerHTML });
+      dialog.querySelectorAll("button").forEach(makeRendered);
+      return dialog;
+    }
+
+    it("wraps forward Tab from the last tabbable to the first", () => {
+      const dialog = renderedDialog(threeButtons);
+      const hook = makeHook(dialog);
+      hook.mounted();
+
+      dialog.querySelector("#last").focus();
+      const event = tabEvent();
+      const preventSpy = vi.spyOn(event, "preventDefault");
+      dialog.dispatchEvent(event);
+
+      expect(preventSpy).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).toBe(dialog.querySelector("#first"));
+    });
+
+    it("wraps Shift+Tab from the first tabbable to the last", () => {
+      const dialog = renderedDialog(threeButtons);
+      const hook = makeHook(dialog);
+      hook.mounted();
+
+      dialog.querySelector("#first").focus();
+      const event = tabEvent(true);
+      const preventSpy = vi.spyOn(event, "preventDefault");
+      dialog.dispatchEvent(event);
+
+      expect(preventSpy).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).toBe(dialog.querySelector("#last"));
+    });
+
+    it("leaves Tab alone between middle stops", () => {
+      const dialog = renderedDialog(threeButtons);
+      const hook = makeHook(dialog);
+      hook.mounted();
+
+      dialog.querySelector("#second").focus();
+      const event = tabEvent();
+      const preventSpy = vi.spyOn(event, "preventDefault");
+      dialog.dispatchEvent(event);
+
+      expect(preventSpy).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(dialog.querySelector("#second"));
+    });
+
+    it("skips disabled and hidden candidates at the edges", () => {
+      const inner =
+        '<button id="first">First</button><button id="gone" disabled>Gone</button><input id="quiet" type="hidden" />';
+      const dialog = renderedDialog(inner);
+      const hook = makeHook(dialog);
+      hook.mounted();
+
+      dialog.querySelector("#first").focus();
+      const event = tabEvent();
+      dialog.dispatchEvent(event);
+
+      // The only tabbable wraps to itself instead of escaping the dialog.
+      expect(document.activeElement).toBe(dialog.querySelector("#first"));
+    });
+
+    it("keeps focus put when the dialog has no tabbable at all", () => {
+      const dialog = renderedDialog("<p>Nothing interactive</p>");
+      dialog.querySelector("p").focus?.();
+      const hook = makeHook(dialog);
+      hook.mounted();
+
+      const event = tabEvent();
+      const preventSpy = vi.spyOn(event, "preventDefault");
+      expect(() => dialog.dispatchEvent(event)).not.toThrow();
+      expect(preventSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("ignores non-Tab keys and keydown while closed", () => {
+      const dialog = renderedDialog(threeButtons);
+      const hook = makeHook(dialog);
+      hook.mounted();
+
+      dialog.querySelector("#last").focus();
+      const enter = new KeyboardEvent("keydown", { key: "Enter", cancelable: true });
+      const enterSpy = vi.spyOn(enter, "preventDefault");
+      dialog.dispatchEvent(enter);
+      expect(enterSpy).not.toHaveBeenCalled();
+
+      dialog.open = false;
+      const tab = tabEvent();
+      const tabSpy = vi.spyOn(tab, "preventDefault");
+      dialog.dispatchEvent(tab);
+      expect(tabSpy).not.toHaveBeenCalled();
+    });
+
+    it("stops trapping after cleanup removes the listener", () => {
+      const dialog = renderedDialog(threeButtons);
+      const hook = makeHook(dialog);
+      hook.mounted();
+
+      dialog.querySelector("#last").focus();
+      hook._cleanup();
+
+      const event = tabEvent();
+      const preventSpy = vi.spyOn(event, "preventDefault");
+      dialog.dispatchEvent(event);
+      expect(preventSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
   // Close and return focus
   // =========================================================================
   describe("close and return focus", () => {
