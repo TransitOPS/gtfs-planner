@@ -226,7 +226,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsProblemsLiveTest do
       assert Enum.filter(day.derived.findings, &(&1.severity in [:error, :warning])) == []
 
       assert attribute(view, "#runs-review-problems", "data-count") == "0"
-      refute render(view) =~ "btn-primary"
+      # Scoped to the Review problems BUTTON, not to the page as a string.
+      #
+      # It used to be a page-wide `refute render(view) =~ "btn-primary"`, which
+      # passed until step 34 added the Crew rules drawer: that drawer keeps one
+      # element in the DOM and toggles `data-open` on it, so its Save button is
+      # present in the HTML whether or not the drawer is open. A CLOSED dialog's
+      # controls are inert and invisible, so they are not the primary action the
+      # reader can see, and counting them made this assertion about markup rather
+      # than about the surface.
+      refute attribute(view, "#runs-review-problems", "class") =~ "btn-primary"
     end
   end
 
