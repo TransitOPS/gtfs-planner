@@ -29,8 +29,10 @@ const OVERLAY_BASE = {
   stopLabelStrokeWidth: 3,
   stopLabelLineHeight: 14,
   stopLabelMinScale: 0.85,
-  stopLabelSmallPlanMinScale: 1.4,
-  stopLabelSmallPlanWidth: 600,
+  // Clear space kept around a label when it is tested against others (px), and
+  // between a marker and a label moved beside it.
+  stopLabelClearance: 2,
+  stopLabelMarkerGap: 4,
   // Pathways.
   pathwayLabelMinScale: 1.1,
   pathwayLabelFontSize: 11,
@@ -133,6 +135,47 @@ function trimSegmentEnds(x1, y1, x2, y2, trimStart, trimEnd) {
     y2: y2 - unitY * trimEnd
   };
 }
+
+const rectsOverlap = (a, b) =>
+  a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+
+// A marker's bounds in overlay units, from the geometry `scaleOverlayElements`
+// just set; null when it has none.
+const markerRect = (marker) => {
+  const num = (name) => parseFloat(marker.getAttribute(name));
+  const r = num("r");
+  const rect = Number.isFinite(r)
+    ? { x: num("cx") - r, y: num("cy") - r, width: 2 * r, height: 2 * r }
+    : { x: num("x"), y: num("y"), width: num("width"), height: num("height") };
+
+  return Object.values(rect).every(Number.isFinite) ? rect : null;
+};
+
+// Lower places first: the selected point, then platforms, entrances, boarding
+// areas and other nodes.
+const STOP_LABEL_TYPE_RANK = { 0: 1, 2: 2, 4: 3, 3: 4 };
+
+const stopLabelRank = (label) => {
+  if (label.closest("[data-stop-state]")?.getAttribute("data-stop-state") === "selected") {
+    return 0;
+  }
+
+  return STOP_LABEL_TYPE_RANK[label.getAttribute("data-location-type")] ?? 5;
+};
+
+// The rendered text size in overlay units, or null where the browser cannot
+// measure it (jsdom, or not laid out).
+const measureLabel = (label) => {
+  try {
+    const bbox = label.getBBox?.();
+
+    return bbox && bbox.width > 0 && bbox.height > 0
+      ? { width: bbox.width, height: bbox.height }
+      : null;
+  } catch {
+    return null;
+  }
+};
 
 const DiagramCanvasHook = {
   // CSS pixels to overlay viewBox units, or 0 while the overlay has no layout.
@@ -1092,7 +1135,14 @@ const DiagramCanvasHook = {
       return;
     }
 
-    this.tooltipEl.textContent = tooltipText.trim();
+    // A point whose name was hidden to avoid overlap shows it here instead.
+    const hiddenName = target.querySelector("[data-stop-label][display='none']")
+      ? target.getAttribute("data-label-text")?.trim()
+      : "";
+
+    this.tooltipEl.textContent = hiddenName
+      ? `${hiddenName}\n${tooltipText.trim()}`
+      : tooltipText.trim();
     const tooltipColor = target.getAttribute("data-tooltip-color");
 
     if (tooltipColor && tooltipColor.trim() !== "") {
@@ -1259,6 +1309,122 @@ const DiagramCanvasHook = {
     }
   },
 
+  // Places each point name at the first spot that clears every placed name and
+  // every other point's marker: its default corner, then right, left, above and
+  // below the marker. A name with no free spot hides (its point still shows the
+  // name on hover). Priority: the selected point, then platforms (0), entrances
+  // (2), boarding areas (4), other nodes; ties keep document order, so a rerun
+  // gives the same result.
+  // Ceiling: every name is tested against every other, O(n^2); a station has
+  // tens of points. Index the placed rects by grid cell before going to
+  // thousands.
+  placeStopLabels(overlay, entries, px, mk) {
+    const markers = [];
+
+    overlay.querySelectorAll("[data-stop-marker]").forEach((marker) => {
+      const rect = markerRect(marker);
+
+      if (rect) {
+        markers.push({
+          rect,
+          cx: parseFloat(marker.getAttribute("data-center-x")),
+          cy: parseFloat(marker.getAttribute("data-center-y")),
+        });
+      }
+    });
+
+    const clearance = px(OVERLAY_BASE.stopLabelClearance);
+    const gap = px(OVERLAY_BASE.stopLabelMarkerGap);
+    const placed = [];
+
+    const ranked = entries
+      .map((entry) => ({ entry, rank: stopLabelRank(entry.label) }))
+      .sort((a, b) => a.rank - b.rank);
+
+    ranked.forEach(({ entry }) => {
+      const { label, labelBox, box, cx, cy } = entry;
+
+      if (!labelBox) {
+        entry.spot = { x: cx + mk(entry.offsetX), y: cy + mk(entry.offsetY) };
+        return;
+      }
+
+      // Text size in overlay units: measured when the browser can, else the
+      // server's per-character estimate (box size less its padding).
+      const size = measureLabel(label) ?? {
+        width: px(box.width - 2 * box.paddingX),
+        height: px(box.height - 2 * box.paddingY),
+      };
+
+      const own = markers.find((marker) => marker.cx === cx && marker.cy === cy)?.rect ?? {
+        x: cx,
+        y: cy,
+        width: 0,
+        height: 0,
+      };
+      const middleY = own.y + own.height / 2 - size.height / 2;
+      const centerX = own.x + own.width / 2 - size.width / 2;
+      const candidates = [
+        { x: cx + mk(entry.offsetX), y: cy + mk(entry.offsetY) },
+        { x: own.x + own.width + gap, y: middleY },
+        { x: own.x - gap - size.width, y: middleY },
+        { x: centerX, y: own.y - gap - size.height },
+        { x: centerX, y: own.y + own.height + gap },
+      ];
+
+      entry.spot = candidates.find((spot) => {
+        const rect = {
+          x: spot.x - clearance,
+          y: spot.y - clearance,
+          width: size.width + 2 * clearance,
+          height: size.height + 2 * clearance,
+        };
+
+        return (
+          !placed.some((other) => rectsOverlap(rect, other)) &&
+          !markers.some((marker) => marker.rect !== own && rectsOverlap(rect, marker.rect))
+        );
+      });
+
+      if (entry.spot) {
+        placed.push({
+          x: entry.spot.x - clearance,
+          y: entry.spot.y - clearance,
+          width: size.width + 2 * clearance,
+          height: size.height + 2 * clearance,
+        });
+      }
+
+      entry.size = size;
+    });
+
+    entries.forEach((entry) => {
+      const { label, labelBox, box, spot, size } = entry;
+
+      if (!spot) {
+        label.setAttribute("display", "none");
+        labelBox?.setAttribute("display", "none");
+        return;
+      }
+
+      label.setAttribute("x", `${spot.x}`);
+      label.setAttribute("y", `${spot.y}`);
+      label.querySelectorAll("tspan").forEach((tspan) => {
+        tspan.setAttribute("x", `${spot.x}`);
+      });
+
+      if (!labelBox) {
+        return;
+      }
+
+      labelBox.setAttribute("x", `${spot.x - px(box.paddingX)}`);
+      labelBox.setAttribute("y", `${spot.y - px(box.paddingY)}`);
+      labelBox.setAttribute("width", `${size.width + 2 * px(box.paddingX)}`);
+      labelBox.setAttribute("height", `${size.height + 2 * px(box.paddingY)}`);
+      labelBox.setAttribute("stroke-width", `${px(box.stroke)}`);
+    });
+  },
+
   scaleOverlayElements() {
     const overlay = this.el.parentElement.querySelector("#diagram-overlay");
 
@@ -1420,13 +1586,8 @@ const DiagramCanvasHook = {
     });
 
     // Point names are how a mapper identifies a point, so they show from 85%
-    // zoom. On a plan narrower than 600px they crowd each other, so they wait
-    // for 140%. A width of 0 (not laid out) is not a narrow plan.
-    const planWidth = overlay.getBoundingClientRect().width;
-    const smallPlan = planWidth > 0 && planWidth < OVERLAY_BASE.stopLabelSmallPlanWidth;
-    const stopLabelMinScale = smallPlan
-      ? OVERLAY_BASE.stopLabelSmallPlanMinScale
-      : OVERLAY_BASE.stopLabelMinScale;
+    // zoom. Crowded names move beside their point or hide (placeStopLabels).
+    const labelEntries = [];
 
     overlay.querySelectorAll("[data-stop-label]").forEach((label) => {
       const cx = parseFloat(label.getAttribute("data-center-x"));
@@ -1456,7 +1617,7 @@ const DiagramCanvasHook = {
         return;
       }
 
-      if (scale < stopLabelMinScale) {
+      if (scale < OVERLAY_BASE.stopLabelMinScale) {
         label.setAttribute("display", "none");
         if (labelBox) {
           labelBox.setAttribute("display", "none");
@@ -1464,49 +1625,39 @@ const DiagramCanvasHook = {
         return;
       }
 
+      // Shown for now so it can be measured; placeStopLabels may hide it again.
       label.removeAttribute("display");
       if (labelBox) {
         labelBox.removeAttribute("display");
       }
-      const newLabelX = cx + mk(offsetX);
-      const newLabelY = cy + mk(offsetY);
 
-      label.setAttribute("x", `${newLabelX}`);
-      label.setAttribute("y", `${newLabelY}`);
       label.setAttribute("font-size", `${px(baseFontSize)}`);
       label.setAttribute("stroke-width", `${px(baseStroke)}`);
 
       label.querySelectorAll("tspan").forEach((tspan, index) => {
-        tspan.setAttribute("x", `${newLabelX}`);
         tspan.setAttribute("dy", `${index === 0 ? 0 : px(baseLineHeight)}`);
       });
 
-      if (!labelBox) {
-        return;
-      }
+      const box = {
+        width: parseFloat(labelBox?.getAttribute("data-base-width")),
+        height: parseFloat(labelBox?.getAttribute("data-base-height")),
+        paddingX: parseFloat(labelBox?.getAttribute("data-base-padding-x")),
+        paddingY: parseFloat(labelBox?.getAttribute("data-base-padding-y")),
+        stroke: parseFloat(labelBox?.getAttribute("data-base-stroke")),
+      };
 
-      const baseWidth = parseFloat(labelBox.getAttribute("data-base-width"));
-      const baseHeight = parseFloat(labelBox.getAttribute("data-base-height"));
-      const basePaddingX = parseFloat(labelBox.getAttribute("data-base-padding-x"));
-      const basePaddingY = parseFloat(labelBox.getAttribute("data-base-padding-y"));
-      const baseBoxStroke = parseFloat(labelBox.getAttribute("data-base-stroke"));
-
-      if (
-        !Number.isFinite(baseWidth) ||
-        !Number.isFinite(baseHeight) ||
-        !Number.isFinite(basePaddingX) ||
-        !Number.isFinite(basePaddingY) ||
-        !Number.isFinite(baseBoxStroke)
-      ) {
-        return;
-      }
-
-      labelBox.setAttribute("x", `${newLabelX - px(basePaddingX)}`);
-      labelBox.setAttribute("y", `${newLabelY - px(basePaddingY)}`);
-      labelBox.setAttribute("width", `${px(baseWidth)}`);
-      labelBox.setAttribute("height", `${px(baseHeight)}`);
-      labelBox.setAttribute("stroke-width", `${px(baseBoxStroke)}`);
+      labelEntries.push({
+        label,
+        labelBox: Object.values(box).every(Number.isFinite) ? labelBox : null,
+        box,
+        cx,
+        cy,
+        offsetX,
+        offsetY,
+      });
     });
+
+    this.placeStopLabels(overlay, labelEntries, px, mk);
 
     overlay.querySelectorAll("[data-cross-level-badge-stairs]").forEach((stairsPath) => {
       const cx = parseFloat(stairsPath.getAttribute("data-center-x"));

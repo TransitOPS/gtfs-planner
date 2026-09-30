@@ -1865,7 +1865,7 @@ html:has(#route-details-save-bar:not([hidden])) {
   font-size: 0.75rem;
   font-weight: 600;
   line-height: 1.25;
-  white-space: nowrap;
+  white-space: pre-line;
   pointer-events: none;
   opacity: 0;
   transform: translateY(4px);

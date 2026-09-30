@@ -803,6 +803,188 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     });
   });
 
+  describe("point label collisions", () => {
+    // One overlay unit is one px, so coordinates and sizes below are px. Every
+    // label is 60x14 (jsdom cannot measure text; the box attributes carry the
+    // server's estimate, less 6px/2px padding).
+    const LABEL_W = 60;
+    const LABEL_H = 14;
+
+    const point = ({ id, x, y, type = 3, selected = false, label = true }) => {
+      const marker =
+        type === 3
+          ? `<circle data-stop-marker="true" data-location-type="${type}" data-center-x="${x}" data-center-y="${y}"></circle>`
+          : `<rect data-stop-marker="true" data-location-type="${type}" data-center-x="${x}" data-center-y="${y}"></rect>`;
+      const text = label
+        ? `<rect id="${id}-box" data-stop-label-box="true" data-center-x="${x}" data-center-y="${y}"
+             data-base-width="${LABEL_W + 12}" data-base-height="${LABEL_H + 4}"
+             data-base-padding-x="6" data-base-padding-y="2" data-base-stroke="1"></rect>
+           <text id="${id}-label" data-stop-label="true" data-location-type="${type}"
+             data-center-x="${x}" data-center-y="${y}" data-label-offset-x="2" data-label-offset-y="10"
+             data-base-font-size="12" data-base-stroke="3" data-base-line-height="14">
+             <tspan id="${id}-line">${id}</tspan>
+           </text>`
+        : "";
+
+      return `<g id="${id}" data-stop-state="${selected ? "selected" : "active"}">${marker}${text}</g>`;
+    };
+
+    const mount = (points) => {
+      document.body.innerHTML = `
+        <div id="container">
+          <svg id="diagram-overlay"><g id="stops-svg">${points.map(point).join("")}</g></svg>
+          <svg id="canvas"></svg>
+        </div>
+      `;
+    };
+
+    const label = (id) => document.querySelector(`#${id}-label`);
+    const shown = (id) => label(id).getAttribute("display") === null;
+    const labelRect = (id) => ({
+      x: attr(`#${id}-label`, "x"),
+      y: attr(`#${id}-label`, "y"),
+      width: LABEL_W,
+      height: LABEL_H,
+    });
+    const overlaps = (a, b) =>
+      a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+    const renderPx = (options = {}) => render({ fitted: 1, ...options });
+
+    it("moves a label that overlaps an earlier one to another side of its marker", () => {
+      mount([
+        { id: "a", x: 100, y: 100 },
+        { id: "b", x: 110, y: 100 },
+      ]);
+
+      renderPx();
+
+      expect(shown("a")).toBe(true);
+      expect(shown("b")).toBe(true);
+      expect(attr("#a-label", "y")).toBe(110);
+      expect(attr("#b-label", "y") + LABEL_H).toBeLessThan(94);
+      expect(overlaps(labelRect("a"), labelRect("b"))).toBe(false);
+      expect(attr("#b-line", "x")).toBe(attr("#b-label", "x"));
+      expect(attr("#b-box", "x")).toBe(attr("#b-label", "x") - 6);
+    });
+
+    it("keeps a label off every other point's marker", () => {
+      mount([
+        { id: "a", x: 100, y: 100 },
+        { id: "blocker", x: 130, y: 118, label: false },
+      ]);
+
+      renderPx();
+
+      const blocker = { x: 124, y: 112, width: 12, height: 12 };
+      expect(shown("a")).toBe(true);
+      expect(overlaps(labelRect("a"), blocker)).toBe(false);
+    });
+
+    it("hides a label with no free side and keeps the platform label", () => {
+      mount([
+        { id: "node", x: 200, y: 200 },
+        { id: "right", x: 240, y: 200, label: false },
+        { id: "left", x: 160, y: 200, label: false },
+        { id: "above", x: 200, y: 183, label: false },
+        { id: "below", x: 230, y: 217, label: false },
+        { id: "platform", x: 400, y: 400, type: 0 },
+      ]);
+
+      renderPx();
+
+      expect(shown("node")).toBe(false);
+      expect(document.querySelector("#node-box").getAttribute("display")).toBe("none");
+      expect(shown("platform")).toBe(true);
+    });
+
+    it("gives a platform its default spot before a node listed earlier", () => {
+      mount([
+        { id: "node", x: 100, y: 100 },
+        { id: "platform", x: 104, y: 100, type: 0 },
+      ]);
+
+      renderPx();
+
+      expect(attr("#platform-label", "x")).toBe(106);
+      expect(attr("#platform-label", "y")).toBe(110);
+      expect(overlaps(labelRect("node"), labelRect("platform"))).toBe(false);
+    });
+
+    it("gives the selected point its default spot before a platform listed earlier", () => {
+      mount([
+        { id: "platform", x: 100, y: 100, type: 0 },
+        { id: "picked", x: 104, y: 100, selected: true },
+      ]);
+
+      renderPx();
+
+      expect(attr("#picked-label", "x")).toBe(106);
+      expect(attr("#picked-label", "y")).toBe(110);
+      expect(overlaps(labelRect("picked"), labelRect("platform"))).toBe(false);
+    });
+
+    it("keeps every label hidden below the zoom threshold and shows them at it", () => {
+      mount([
+        { id: "a", x: 100, y: 100 },
+        { id: "b", x: 300, y: 300 },
+      ]);
+
+      const { hook } = renderPx({ zoom: 0.8 });
+      expect(shown("a")).toBe(false);
+      expect(shown("b")).toBe(false);
+
+      overlay().getScreenCTM = () => ({ a: 0.85 });
+      hook.scale = 0.85;
+      hook.scaleOverlayElements();
+      expect(shown("a")).toBe(true);
+      expect(shown("b")).toBe(true);
+    });
+
+    it("places labels identically on a second run", () => {
+      mount([
+        { id: "a", x: 100, y: 100 },
+        { id: "b", x: 110, y: 100 },
+        { id: "c", x: 120, y: 104, type: 2 },
+        { id: "d", x: 105, y: 96, selected: true },
+      ]);
+      const snapshot = () =>
+        ["a", "b", "c", "d"].map((id) => [
+          shown(id),
+          label(id).getAttribute("x"),
+          label(id).getAttribute("y"),
+          document.querySelector(`#${id}-box`).getAttribute("x"),
+        ]);
+
+      const { hook } = renderPx();
+      const first = snapshot();
+      hook.scaleOverlayElements();
+
+      expect(snapshot()).toEqual(first);
+    });
+  });
+
+  it("names a point in its tooltip when its label is hidden", () => {
+    const hook = buildTooltipHook();
+    const tooltip = document.querySelector("#diagram-edit-tooltip");
+    const group = document.querySelector("#editable-stop");
+    const hit = document.querySelector("#editable-stop-hit");
+    const hover = () =>
+      hit.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX: 100, clientY: 120 }));
+
+    group.setAttribute("data-label-text", "Stairs to Platform 1");
+    group.insertAdjacentHTML("beforeend", `<text data-stop-label="true"></text>`);
+
+    hover();
+    expect(tooltip.textContent).toBe("Click to edit stop");
+
+    group.querySelector("[data-stop-label]").setAttribute("display", "none");
+    hit.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }));
+    hover();
+    expect(tooltip.textContent).toBe("Stairs to Platform 1\nClick to edit stop");
+
+    hook.removeTooltipListeners();
+  });
+
   it("shows and hides tooltip on hover for stop and pathway targets", () => {
     const hook = buildTooltipHook();
     const tooltip = document.querySelector("#diagram-edit-tooltip");

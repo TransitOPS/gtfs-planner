@@ -5062,6 +5062,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
                "#child_stops-#{boarding_without_code.id} [data-stop-label]",
                "Boarding No Code"
              )
+
+      # The hook ranks labels by type when they collide and names a point in
+      # its tooltip when its label is hidden.
+      assert has_element?(
+               view,
+               "#child_stops-#{platform_stop.id}[data-label-text='Platform Label · 3A'] [data-stop-label][data-location-type='0']"
+             )
     end
 
     test "renders bounded and wrapped stop labels for long names", %{

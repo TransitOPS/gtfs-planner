@@ -3462,6 +3462,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
             data-editable="stop"
             data-tooltip={stop_tooltip_text(@mode, @measurement_enabled)}
             data-tooltip-color={active_fill}
+            data-label-text={label}
             tabindex={if @mode == :view, do: "0"}
             role={if @mode == :view, do: "button"}
             aria-label={stop_aria_label}
@@ -3585,6 +3586,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
               text-anchor="start"
               dominant-baseline="hanging"
               data-stop-label="true"
+              data-location-type={stop.location_type}
               data-center-x={cx}
               data-center-y={cy}
               data-label-offset-x={label_offset_x}
