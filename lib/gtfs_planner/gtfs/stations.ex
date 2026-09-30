@@ -388,10 +388,17 @@ defmodule GtfsPlanner.Gtfs.Stations do
   @doc "Creates a child stop under the selected station and records its history."
   def create_child_stop(%AuditContext{} = audit, attrs) when is_map(attrs) do
     run(audit, :share, fn station ->
-      changeset =
-        %Stop{parent_station: station.stop_id}
-        |> Stop.create_changeset(Map.drop(attrs, [:parent_station, "parent_station"]), audit)
+      platform = Map.get(attrs, :parent_platform) || Map.get(attrs, "parent_platform")
+      parent = if platform in [nil, ""], do: station.stop_id, else: platform
 
+      changeset =
+        %Stop{parent_station: parent}
+        |> Stop.create_changeset(
+          Map.drop(attrs, [:parent_station, "parent_station", :parent_platform, "parent_platform"]),
+          audit
+        )
+
+      ensure_station_parent!(audit, station, changeset)
       ensure_scoped_level!(audit, changeset)
       write_stop(audit, changeset, "created")
     end)
@@ -1417,7 +1424,8 @@ defmodule GtfsPlanner.Gtfs.Stations do
               where:
                 s.organization_id == ^audit.organization_id and
                   s.gtfs_version_id == ^audit.gtfs_version_id and
-                  s.parent_station == ^station.stop_id and s.stop_id == ^parent
+                  s.parent_station == ^station.stop_id and s.stop_id == ^parent and
+                  s.location_type == 0
             )
           )
 

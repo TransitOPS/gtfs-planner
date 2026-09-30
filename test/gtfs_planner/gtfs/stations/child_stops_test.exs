@@ -66,6 +66,51 @@ defmodule GtfsPlanner.Gtfs.Stations.ChildStopsTest do
     assert actor_id == audit.actor_id
   end
 
+  test "a boarding area can be created under a platform in the selected station", scope do
+    platform =
+      child_stop_fixture(
+        scope.organization.id,
+        scope.version.id,
+        scope.station.stop_id,
+        stop_id: "BOARDING_PARENT",
+        location_type: 0
+      )
+
+    assert {:ok, boarding} =
+             Stations.create_child_stop(scope.audit, %{
+               stop_id: "BOARDING_CHILD",
+               stop_name: "Boarding area",
+               location_type: 4,
+               parent_platform: platform.stop_id,
+               level_id: scope.level.level_id
+             })
+
+    assert boarding.parent_station == platform.stop_id
+    assert Stations.get_child_stop(scope.audit, boarding.id).id == boarding.id
+
+    other_station = stop_fixture(scope.organization.id, scope.version.id, location_type: 1)
+
+    foreign_platform =
+      child_stop_fixture(scope.organization.id, scope.version.id, other_station.stop_id,
+        location_type: 0
+      )
+
+    assert {:error, :not_found} =
+             Stations.create_child_stop(scope.audit, %{
+               stop_id: "FOREIGN_BOARDING_CHILD",
+               stop_name: "Foreign boarding area",
+               location_type: 4,
+               parent_platform: foreign_platform.stop_id,
+               level_id: scope.level.level_id
+             })
+
+    assert GtfsPlanner.Gtfs.get_stop_by_stop_id(
+             scope.organization.id,
+             scope.version.id,
+             "FOREIGN_BOARDING_CHILD"
+           ) == nil
+  end
+
   test "foreign organization, version, station, and absent UUIDs look identical", %{
     audit: audit,
     organization: organization,

@@ -4671,6 +4671,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
   attr :drawer_journal_scope, :any, default: nil
   attr :journal_target_counts, :map, default: %{}
   attr :child_stop_error, :any, default: nil
+  attr :child_stop_outcome, :any, default: nil
 
   def child_stop_drawer(assigns) do
     show_toggle =
@@ -4776,6 +4777,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
           :if={@pending_xy && !@reposition?}
           child_stop_form={@child_stop_form}
           child_stop_error={@child_stop_error}
+          child_stop_outcome={@child_stop_outcome}
           platform_options={@platform_options}
           selected_stop_id={@selected_stop_id}
           pending_xy={@pending_xy}
@@ -5026,6 +5028,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
 
   attr :child_stop_form, :any, required: true
   attr :child_stop_error, :any, default: nil
+  attr :child_stop_outcome, :any, default: nil
   attr :selected_stop_id, :any
   attr :pending_xy, :any, required: true
   attr :all_levels, :list, required: true
@@ -5078,6 +5081,28 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
       class="flex min-h-0 flex-1 flex-col"
     >
       <.drawer_scroll>
+        <.input field={@child_stop_form[:lock_version]} type="hidden" />
+        <.message
+          :if={@child_stop_outcome}
+          id="child-stop-outcome"
+          kind={@child_stop_outcome.kind}
+          title={@child_stop_outcome.message}
+          tabindex="-1"
+          phx-mounted={JS.focus()}
+          class="break-words"
+        >
+          <:action :if={@child_stop_outcome.reload?}>
+            <.button
+              id="child-stop-reload"
+              type="button"
+              variant="secondary"
+              phx-click="reload_child_stop"
+              class="min-h-11"
+            >
+              Reload station
+            </.button>
+          </:action>
+        </.message>
         <.deletion_refusal
           :if={@child_stop_error}
           id="child-stop-in-use-error"
@@ -5318,7 +5343,12 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramComponents do
         >
           Cancel
         </.button>
-        <.button id="child-stop-submit" type="submit" class="min-h-11">
+        <.button
+          id="child-stop-submit"
+          type="submit"
+          class="min-h-11"
+          disabled={@child_stop_outcome && @child_stop_outcome.kind == "error"}
+        >
           {if @selected_stop_id, do: "Save changes", else: "Create point"}
         </.button>
       </.drawer_footer>
