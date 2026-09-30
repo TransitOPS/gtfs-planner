@@ -45,6 +45,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     trip_headsign trip_short_name wheelchair_accessible bikes_allowed)
   @duplicate_offset_secs 1_800
   @undo_limit 20
+  @nudge_minutes [-5, -1, 1, 5]
   @default_departure "06:00"
   @default_every "30"
   @default_until "09:00"
@@ -197,6 +198,19 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   def handle_event("cell_clear", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("nudge", %{} = params, socket) do
+    {:noreply, nudge(socket, params)}
+  end
+
+  def handle_event("nudge", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("undo", _params, socket), do: {:noreply, undo(socket)}
+
+  @impl true
+  def handle_event("save_shortcut", _params, socket), do: {:noreply, save_shortcut(socket)}
 
   @impl true
   def handle_event("retry", _params, socket) do
@@ -1035,6 +1049,212 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       end
 
     "#{display_hour}:#{pad(minutes)} #{meridiem}"
+  end
+
+  # --- nudges and undo ---------------------------------------------------------
+
+  # `]`/`[`/`}`/`{` (R12): an immediate R4 Shift of the selection, or of the cursor
+  # row's trip when nothing is selected, by ±1 or ±5 whole minutes. The params carry
+  # only a minute count and one trip UUID; the trips, their times and the fence all
+  # come from the loaded rows (AC-11, AC-23, INV-2).
+  defp nudge(socket, %{"minutes" => minutes} = params) do
+    cond do
+      not editor_access?(socket) ->
+        warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
+
+      not nudge_minutes?(minutes) ->
+        socket
+
+      true ->
+        case nudge_ids(socket, params["trip"]) do
+          {:ok, ids} -> shift_trips(socket, ids, minutes)
+          :not_found -> warning_outcome(socket, ScheduleComponents.error_message(:not_found))
+          :none -> socket
+        end
+    end
+  end
+
+  defp nudge(socket, _params), do: socket
+
+  defp nudge_minutes?(value), do: is_integer(value) and value in @nudge_minutes
+
+  # The selection wins over the cursor row; either way only rows this page loaded
+  # can move, so a forged UUID resolves to `:not_found` and writes nothing.
+  defp nudge_ids(socket, trip_id) do
+    case visible_ids(socket, MapSet.to_list(socket.assigns.selected_ids)) do
+      [] -> nudge_trip_id(socket, trip_id)
+      ids -> {:ok, ids}
+    end
+  end
+
+  defp nudge_trip_id(socket, trip_id) when is_binary(trip_id) do
+    case find_row(socket, trip_id) do
+      nil -> :not_found
+      row -> {:ok, [row.id]}
+    end
+  end
+
+  defp nudge_trip_id(_socket, _trip_id), do: :none
+
+  # R4's Shift with the loaded rows' `updated_at` as the fence (INV-2) and no
+  # `from_position`: every selected trip moves as a whole and keeps its block.
+  defp shift_trips(socket, ids, minutes) do
+    rows = Enum.map(ids, &find_row(socket, &1))
+    command = {:shift, ids, minutes * 60, nil}
+    fence = {:expected, Map.new(rows, &{&1.id, &1.updated_at})}
+
+    case Gtfs.apply_trip_change(socket.assigns.route_id, command, fence, audit_context(socket)) do
+      {:ok, result} -> nudged(socket, ids, minutes, result)
+      {:error, {:refused, errors}} -> nudge_refused(socket, errors)
+      {:error, reason} -> warning_outcome(socket, ScheduleComponents.error_message(reason))
+    end
+  end
+
+  # A nudge keeps the selection, so the bar can repeat it; the outcome stays
+  # undoable and the moved rows take the just-changed tint (AC-9).
+  defp nudged(socket, ids, minutes, result) do
+    message = nudge_outcome(length(ids), minutes)
+
+    socket
+    |> assign(:just_changed, MapSet.new(result.changed_trip_ids))
+    |> assign(:cell_error, nil)
+    |> assign(:outcome, %{tone: :info, text: message, undo?: true})
+    |> push_undo(result.restore, message)
+    |> reload_cell()
+  end
+
+  defp nudge_outcome(count, minutes) do
+    trips = if count == 1, do: "1 trip", else: "#{count} trips"
+    direction = if minutes > 0, do: "later", else: "earlier"
+    "Moved #{trips} #{abs(minutes)} min #{direction}."
+  end
+
+  # The one R1 refusal a nudge reaches is a whole-trip move before 00:00; its copy
+  # is the reference's, not the cell error's "Type a later time".
+  defp nudge_refused(socket, errors) do
+    case errors do
+      [{:error, :negative_time} | _rest] ->
+        warning_outcome(socket, "Nothing was shifted. A trip can't start before 00:00.")
+
+      _other ->
+        warning_outcome(socket, refusal_message(errors))
+    end
+  end
+
+  # R10's Undo: the params are ignored, the newest entry (the payload this process
+  # captured when it wrote) is popped and re-submitted to `Gtfs.restore_trips/3`.
+  # A refusal consumes the entry: a payload is single-use and cannot be retried.
+  defp undo(socket) do
+    case socket.assigns.undo_stack do
+      [] ->
+        socket
+
+      [entry | rest] ->
+        if editor_access?(socket) do
+          restore_entry(assign(socket, :undo_stack, rest), entry)
+        else
+          warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
+        end
+    end
+  end
+
+  defp restore_entry(socket, %{payload: payload, message: message}) do
+    case Gtfs.restore_trips(socket.assigns.route_id, payload, audit_context(socket)) do
+      {:ok, result} ->
+        undone(socket, result, message)
+
+      {:error, {:not_restorable, :changed, ids}} ->
+        undo_refused(socket, ids)
+
+      {:error, {:not_restorable, :transfer_names_created_trip, ids}} ->
+        undo_transfer_refused(socket, payload, ids)
+
+      {:error, reason} ->
+        warning_outcome(socket, ScheduleComponents.error_message(reason))
+    end
+  end
+
+  # An undo tints the trips it put back and repeats the restored action's own
+  # sentence; Undo stays available while the stack holds older entries.
+  defp undone(socket, result, message) do
+    socket
+    |> assign(:just_changed, MapSet.new(result.restored_trip_ids))
+    |> assign(:cell_error, nil)
+    |> assign(:outcome, %{
+      tone: :info,
+      text: "Undid: " <> String.trim_trailing(message, ".") <> ".",
+      undo?: socket.assigns.undo_stack != []
+    })
+    |> reload_cell()
+  end
+
+  # R10's first refusal: another writer changed a payload trip, so nothing is
+  # restored and the page reloads to show that trip's current times (FH-26).
+  defp undo_refused(socket, ids) do
+    socket =
+      socket
+      |> assign(:just_changed, MapSet.new())
+      |> assign(:cell_error, nil)
+      |> reload_cell()
+
+    assign(socket, :outcome, %{
+      tone: :warning,
+      text: undo_refused_copy(socket, ids),
+      undo?: false
+    })
+  end
+
+  # The refusal names the first changed trip whose row is on screen; a payload trip
+  # gone from the rows falls back to the reference's deleted-trip sentence.
+  defp undo_refused_copy(socket, ids) do
+    case Enum.find_value(ids, &find_row(socket, &1)) do
+      nil ->
+        "Nothing was undone. A trip from that change was deleted after it."
+
+      row ->
+        "Nothing was undone. The #{clock(row.start_secs)} trip changed after your change. " <>
+          "Its current times are shown."
+    end
+  end
+
+  # R10's second refusal: a transfer names a created trip the restore would delete,
+  # so nothing is restored and the warning names that trip (FH-27).
+  defp undo_transfer_refused(socket, payload, ids) do
+    warning_outcome(socket, transfer_undo_copy(payload, ids))
+  end
+
+  defp transfer_undo_copy(payload, ids) do
+    names =
+      payload
+      |> Map.get(:created, [])
+      |> Enum.filter(&(Map.get(&1, :id) in ids))
+      |> Enum.map(&Map.get(&1, :trip_id))
+      |> Enum.reject(&is_nil/1)
+
+    case names do
+      [] ->
+        "Nothing was undone. A transfer record still names a trip this change created."
+
+      [name] ->
+        "Nothing was undone. A transfer record still names the #{name} trip this change created."
+
+      names ->
+        "Nothing was undone. Transfer records still name the #{Enum.join(names, ", ")} trips " <>
+          "this change created."
+    end
+  end
+
+  # Cmd/Ctrl+S: nothing to save, because each action already saved (R12).
+  defp save_shortcut(socket) do
+    if editor_access?(socket) do
+      assign(socket, :outcome, %{tone: :info, text: "All changes are saved.", undo?: false})
+    else
+      warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
+    end
+  end
+
+  defp warning_outcome(socket, text) do
+    assign(socket, :outcome, %{tone: :warning, text: text, undo?: false})
   end
 
   # --- mutations -------------------------------------------------------------
