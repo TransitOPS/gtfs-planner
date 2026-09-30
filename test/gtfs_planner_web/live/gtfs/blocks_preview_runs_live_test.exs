@@ -1,11 +1,10 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewRunsLiveTest do
-  # EV-36, rejecting FH-22 for CL-16: the Suggested blocks panel names the runs a
-  # proposal reaches, and links to them.
+  # The Suggested blocks panel names the runs a proposal reaches, and links to
+  # them.
   #
-  # This is the only step in the package whose surface is **Blocks** rather than
-  # Runs, and the claim is a sentence plus a link: before applying a blocks
-  # suggestion, a planner can see how many saved runs it will disturb and go look
-  # at them.
+  # The surface is Blocks rather than Runs, and the behavior is a sentence plus a
+  # link: before applying a blocks suggestion, a planner can see how many saved
+  # runs it will disturb and go look at them.
   #
   # The count is read from the domain in every case that asserts a number, so a
   # count that happened to match a hardcoded 2 would prove nothing. It is read
@@ -15,7 +14,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewRunsLiveTest do
   # Rows are created inside the SQL Sandbox transaction and rolled back; nothing
   # here substitutes an adapter, a context or a plan.
   #
-  # The focused gate command is deferred to branch review:
+  # Run with:
   # `mix test test/gtfs_planner_web/live/gtfs/blocks_preview_runs_live_test.exs`.
   use GtfsPlannerWeb.ConnCase, async: false
 
@@ -50,8 +49,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewRunsLiveTest do
 
     version = gtfs_version_fixture(organization.id)
 
-    # TWO day types, because one cannot show that the count is over RUNS rather
-    # than over day types, and the card asks for runs on two day types.
+    # Two day types, because one cannot show that the count is over runs rather
+    # than over day types.
     dates = for(offset <- 0..25, do: Date.add(~D[2026-10-05], offset))
 
     calendar_service_fixture(organization.id, version.id, %{
@@ -304,13 +303,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPreviewRunsLiveTest do
       plan = assigns(view).plan_preview
       trip_ids = plan.moves |> Enum.map(& &1.trip.id) |> Enum.uniq()
 
-      # Counted from the ASSIGNMENTS, independently of the page's helper.
+      # Counted from the assignments, independently of the page's helper.
       #
-      # A run's identity is `{day_type_key, run_id}` — step 19's rule — so one run
-      # id saved on two day types is TWO pieces of saved work and must read as
-      # two. Counting distinct run ids alone would say 1 here, which is the wrong
-      # answer for a planner deciding what to go and look at: they will meet two
-      # separate pieces of work on the page.
+      # A run's identity is `{day_type_key, run_id}`, so one run id saved on two
+      # day types is two pieces of saved work and must read as two. Counting
+      # distinct run ids alone would say 1 here, which is the wrong answer for a
+      # planner deciding what to go and look at: they will meet two separate
+      # pieces of work on the page.
       expected =
         GtfsPlanner.Gtfs.TripRun
         |> where([t], t.trip_id in ^trip_ids)

@@ -1,13 +1,13 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsLiveTest do
   @moduledoc """
-  EV-19: the Runs page shell and its load states (CL-10, CL-13).
+  The Runs page shell and its load states.
 
-  The independence field is **the production adapter**, and that is deliberate:
-  every state except `:unavailable` is reached by loading a real version built
-  from `RunsFixtures.runs_version_fixture/1`, so the page is proven against the
-  reads it will actually make. The mock adapter is installed for exactly one
-  case — the reload that fails — and only after a real load has succeeded, so
-  the test can prove the runs already on screen survive the failure.
+  The tests use the production adapter, and that is deliberate: every state except
+  `:unavailable` is reached by loading a real version built from
+  `RunsFixtures.runs_version_fixture/1`, so the page is proven against the reads
+  it will actually make. The mock adapter is installed for exactly one case — the
+  reload that fails — and only after a real load has succeeded, so the test can
+  prove the runs already on screen survive the failure.
 
   Assertions are on element IDs and `data-*` attributes through
   `has_element?/2` and `LazyHTML`, not on raw HTML, so a copy change that keeps
@@ -91,7 +91,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLiveTest do
       assert has_element?(view, "#operations-tab-runs[aria-current=page]")
 
       # The page this replaced. If any of this survives, the route did not
-      # actually change and the rest of the gate is testing a placeholder.
+      # actually change and the rest of the file is testing a placeholder.
       refute html =~ "Coming soon"
       refute has_element?(view, "#coming-soon")
     end

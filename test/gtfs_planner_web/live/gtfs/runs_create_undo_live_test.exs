@@ -1,22 +1,21 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsCreateUndoLiveTest do
   @moduledoc """
-  EV-26: Create run from uncovered work, with Undo.
+  Create run from uncovered work, with Undo.
 
-  This is the first WRITE on the Runs page, so the card's risk lenses are
-  **idempotency** and **cross-step-contract**, and both of the card's four cases
-  are about the same thing: what the page says when somebody else has moved since
-  it was loaded.
+  This is the first write on the Runs page, so the risks are idempotency and the
+  shared toast contract, and the cases are about the same thing: what the page
+  says when somebody else has moved since it was loaded.
 
-  The assertions are therefore deliberately split in two. The **rows** are read
-  back out of the database, not off the toast: a toast that says "Run 1031
-  created" proves the page wanted to say it, and says nothing about whether
-  anything was written. And the **refusals** are proved by writing the conflicting
-  row directly, so the conflict is a fact rather than a race the test has to win.
+  The assertions are therefore deliberately split in two. The rows are read back
+  out of the database, not off the toast: a toast that says "Run 1031 created"
+  proves the page wanted to say it, and says nothing about whether anything was
+  written. And the refusals are proved by writing the conflicting row directly, so
+  the conflict is a fact rather than a race the test has to win.
 
-  The shared surface is asserted as a *contract*, not as a convenience:
-  `toast/1` and the two assigns are what steps 30, 31, 32 and 37 will reuse, so
+  The shared surface is asserted as a contract, not as a convenience: `toast/1`
+  and the two assigns are what rename, move, split and apply reuse, so
   `#runs-toast`, `#runs-undo`, `data-role=toast-text` and `data-role=undo` are
-  named here once and every later step reads them from here.
+  named here once.
   """
   use GtfsPlannerWeb.ConnCase, async: true
 
@@ -39,8 +38,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCreateUndoLiveTest do
   end
 
   # One run over the head of block 101 and the tail of block 102, leaving the tail
-  # of 101 and the head of 102 uncovered — step 27's world, so the two gates
-  # describe the same day and a change to the fixture shows up in both.
+  # of 101 and the head of 102 uncovered — the same world as
+  # `runs_uncovered_live_test.exs`, so the two files describe the same day and a
+  # change to the fixture shows up in both.
   defp world(ctx) do
     user = ctx.user
     w = runs_version_fixture()
@@ -327,8 +327,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCreateUndoLiveTest do
 
       view |> element("#runs-undo") |> render_click()
 
-      # An Undo button with nothing to undo is a control that does nothing — the
-      # objection step 26 raised about the scale control on the List.
+      # An Undo button with nothing to undo is a control that does nothing, which
+      # is also why the List view hides the scale control.
       refute has_element?(view, "#runs-undo")
     end
 

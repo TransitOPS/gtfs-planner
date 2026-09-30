@@ -1,40 +1,34 @@
 defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
   @moduledoc """
-  Merge evidence (EV-3) for CL-3: pieces, handovers and uncovered segments follow
-  the relief-window rule, the deadhead sides and service-day arithmetic, so FH-3
-  and FH-4 stay rejected.
+  Pieces, handovers and uncovered segments follow the relief-window rule, the
+  deadhead sides and service-day arithmetic.
 
   Every block here is built by the real `Blocking.Movements.build/3` and
   `Blocking.Relief.windows/3` over hand-built `Checks.trip_row` maps, so the
-  movements and windows under test are spec 07's own, not a restatement of them:
-  a change of this module's rule about which window a gap has would be caught
-  here rather than hidden behind a fixture. The module under test calls no
+  movements and windows under test are the Blocks page's own, not a restatement of
+  them: a change of this module's rule about which window a gap has would be
+  caught here rather than hidden behind a fixture. The module under test calls no
   repository, clock, file or network, so these cases need no sandbox and no
   cleanup.
 
-  The independence EV-3 names is the first case: the hand-computed 6104 → 8106
-  example from `context.md`, where 6104 ends 07:40 at an unmarked Valley College,
-  the entered drive to the marked Market Square takes 14 minutes and 8106 leaves
-  08:20, so the only window is `:destination` [07:54, 08:20]. The vehicle can only
-  be at Market Square at 07:54 if the operator who held it at Valley College drove
-  it, which is what the case asserts about gap ownership.
+  The first case is a hand-computed example: 6104 ends 07:40 at an unmarked Valley
+  College, the entered drive to the marked Market Square takes 14 minutes and 8106
+  leaves 08:20, so the only window is `:destination` [07:54, 08:20]. The vehicle
+  can only be at Market Square at 07:54 if the operator who held it at Valley
+  College drove it, which is what the case asserts about gap ownership.
 
-  ## A discrepancy this test records
+  ## Who drives the handover deadhead
 
-  The side-to-gap-ownership mapping here is the card's, and it is the physically
-  coherent one, but `spec.md` states it the other way round in three places — rule
-  3 ("`:origin` → the incoming operator drives"), AC-3 ("with an `:origin` window
-  the incoming piece owns the drive") and the step 4 description ("`:origin`/
-  `:same` puts the boundary gap in the incoming piece's `gaps`, `:destination` in
-  the outgoing piece's"). The 6104 → 8106 times settle it: a `:destination`
-  handover at 07:54 at Market Square cannot happen unless the incoming operator
-  drove, so `:destination` is the incoming piece's gap and `:origin` is the
-  outgoing piece's — the reverse of all three sentences. This is raised for
-  correction in the step 4 learning; the test pins the coherent behaviour so a
-  later step cannot quietly pick up the prose.
+  With a `:destination` window the operator whose piece ends at the boundary
+  drives to the relief stop, so the boundary gap belongs to the ending piece. With
+  an `:origin` window the operator whose piece starts at the boundary takes the
+  vehicle and drives on, so the gap belongs to the starting piece. The 6104 → 8106
+  times show why: a `:destination` handover at 07:54 at Market Square cannot
+  happen unless the operator who held the vehicle at Valley College drove it
+  there.
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/pieces_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/pieces_test.exs`.
   """
   use ExUnit.Case, async: true
 
@@ -202,7 +196,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
       assert piece.start_secs == block.movements.pull_out.start_secs
       assert piece.start_ref == {:garage, @garage_uuid}
       # The first stop is where service begins; the drive from the garage is the
-      # travel in, which is step 5's work, not this module's.
+      # travel in, which `Runs.WorkTime` computes, not this module.
       assert piece.start_stop == @bay_a
 
       assert piece.end_kind == :block_end

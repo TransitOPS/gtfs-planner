@@ -1,34 +1,28 @@
-// Runs roving-row keyboard journey (EV-23, step 25).
+// Runs roving-row keyboard journey.
 //
-// The duty chart's rows are ONE tab stop each: a run's pieces are reachable with
+// The duty chart's rows are one tab stop each: a run's pieces are reachable with
 // Left and Right, Home and End jumps to the ends, and Tab leaves the row. This
 // journey drives real key events through Chromium, because the half that moves
 // focus is the half no Elixir test can reach — a server-side assertion can prove
 // the tabindex is rendered and nothing about where the browser puts focus.
 //
-// Every expectation is a literal from the card's cases or from the seeded
-// "Browser Runs Version" in `test/support/browser_seed.exs`, never a value read
-// back from the surface under test. The seed's run 2001 is a :SPLIT over blocks
-// 101 and 102 and run 2002 is a :STRAIGHT over 102 and 106, so the rows that
-// hold two pieces are named rather than discovered; 2003–2006 are one-piece
-// rows, which is what makes "one stop per row" checkable against rows of
-// different widths.
+// Every expectation is a literal from the cases below or from the seeded "Browser
+// Runs Version" in `test/support/browser_seed.exs`, never a value read back from
+// the surface under test. The seed's run 2001 is a :SPLIT over blocks 101 and 102
+// and run 2002 is a :STRAIGHT over 102 and 106, so the rows that hold two pieces
+// are named rather than discovered; 2003–2006 are one-piece rows, which is what
+// makes "one stop per row" checkable against rows of different widths.
 //
-// The card's fifth case — that a LiveView patch keeps `tabindex="0"` on each
-// row's first bar — is asserted here against the real DOM after a real sort
-// click, because the failure it guards against (a client-owned tabindex restored
-// to whichever bar happens to be first in the NEW order) only exists in a
-// browser.
+// One case — that a LiveView patch keeps `tabindex="0"` on each row's first bar —
+// is asserted here against the real DOM after a real sort click, because the
+// failure it guards against (a client-owned tabindex restored to whichever bar
+// happens to be first in the new order) only exists in a browser.
 //
-// The card's fourth case, "Enter on a focused piece opens #run-drawer", is NOT
-// asserted: that drawer is step 29's surface and does not exist yet. A bar is a
-// real <button>, so Enter is native activation once the drawer lands, and the
-// journey asserts the tag rather than a drawer it cannot open. The gap is
-// recorded in step 25's learning.
+// "Enter on a focused piece opens #run-drawer" is not asserted here. A bar is a
+// real <button>, so Enter is native activation, and the journey asserts the tag
+// rather than the drawer; the LiveView tests cover the drawer opening.
 //
-// `bin/test-browser` is absent from this base branch, so this file is committed
-// unrun: it is the EV-23 gate and the branch review executes it. Do not run
-// `mise run prepare:browser` to make it runnable — that resets a database.
+// Run it with `bin/test-browser e2e/runs_keyboard.spec.js`.
 
 import { readFileSync } from "node:fs";
 
@@ -36,15 +30,10 @@ import { expect, test } from "@playwright/test";
 
 const VERSION_NAME = "Browser Runs Version";
 
-// The card names `logInAs` from `assets/e2e/browser_helpers.js`, and that
-// function does not exist: the file exports VIEWPORTS, watchPendingState,
-// readPendingStates, bodyFitsViewport and readZipTextMember, and every spec that
-// needs a session carries its own `logIn`. This is the same naming drift steps
-// 22 and 23 recorded, and it is recorded here rather than fixed here — adding a
-// shared login helper to a file a dozen committed specs do not use is a wider
-// change than this step's.
+// `assets/e2e/browser_helpers.js` has no log-in helper, and every spec that needs
+// a session carries its own `logIn`; this one follows that pattern.
 //
-// The credential is READ from the seed rather than written into this file, so it
+// The credential is read from the seed rather than written into this file, so it
 // cannot drift from the account `bin/test-browser` actually creates and so this
 // spec does not become a second copy of a password.
 function seededEditor() {
@@ -139,11 +128,11 @@ test.describe("Runs duty chart roving row", () => {
     await expect(page.locator("#runs-timeline")).toBeVisible();
   });
 
-  // Case 1: Tab from the header reaches exactly one piece bar per row.
+  // Tab from the header reaches exactly one piece bar per row.
   test("Tab reaches exactly one piece bar per row", async ({ page }) => {
-    // Every row contributes one stop, and the stop is that row's FIRST piece.
-    // A chart whose bars were each a stop would return two from the split row
-    // and this would fail.
+    // Every row contributes one stop, and the stop is that row's first piece. A
+    // chart whose bars were each a stop would return two from the split row and
+    // this would fail.
     const stops = await pageTabStops(page);
 
     expect(stops.length).toBeGreaterThan(1);
@@ -169,7 +158,7 @@ test.describe("Runs duty chart roving row", () => {
     expect(await focusedRun(page)).not.toBe(SPLIT_RUN);
   });
 
-  // Case 2: ArrowRight moves to the next piece of the same row; ArrowLeft back.
+  // ArrowRight moves to the next piece of the same row; ArrowLeft back.
   test("ArrowRight and ArrowLeft move between a run's own pieces", async ({ page }) => {
     await page.locator(bar(SPLIT_RUN, 1)).focus();
 
@@ -189,7 +178,7 @@ test.describe("Runs duty chart roving row", () => {
   test("the arrows are clamped to the row and never wrap", async ({ page }) => {
     await page.locator(bar(SPLIT_RUN, 2)).focus();
 
-    // Right on the LAST piece stays put. Wrapping would make a reader who
+    // Right on the last piece stays put. Wrapping would make a reader who
     // overshot believe they had changed row.
     await page.keyboard.press("ArrowRight");
     expect(await focusedPiece(page)).toBe("2");
@@ -199,7 +188,7 @@ test.describe("Runs duty chart roving row", () => {
     expect(await focusedPiece(page)).toBe("1");
   });
 
-  // Case 3: End focuses the row's last piece and Home its first.
+  // End focuses the row's last piece and Home its first.
   test("End and Home jump to the row's ends", async ({ page }) => {
     await page.locator(bar(SPLIT_RUN, 1)).focus();
 
@@ -243,21 +232,18 @@ test.describe("Runs duty chart roving row", () => {
     expect(await tabStopsIn(page, SPLIT_RUN)).toEqual(["0", "-1"]);
   });
 
-  // The card's fourth case, as far as this step can reach it: a piece is a real
-  // button, so Enter is native activation. #run-drawer is step 29's surface and
-  // does not exist yet; the hook deliberately does not handle Enter.
+  // A piece is a real button, so Enter is native activation; the hook
+  // deliberately does not handle Enter.
   test("a piece bar is a real button, so Enter activates it", async ({ page }) => {
     expect(await page.locator(`${row(SPLIT_RUN)} .runs-piece`).first().evaluate((el) => el.tagName)).toBe("BUTTON");
 
     await page.locator(bar(SPLIT_RUN, 1)).focus();
-    // Enter does not crash the channel and does not move focus: with no
-    // `open_run` handler mounted yet the click is a no-op, which is exactly the
-    // state step 29 inherits.
+    // Enter does not crash the channel and does not move focus.
     await page.keyboard.press("Enter");
     expect(await focusedPiece(page)).toBe("1");
   });
 
-  // Case 5: a LiveView patch (sort) keeps tabindex 0 on each row's first bar.
+  // a LiveView patch (sort) keeps tabindex 0 on each row's first bar.
   test("sorting re-renders the rows and every row keeps one tab stop", async ({ page }) => {
     await page.locator(bar(SPLIT_RUN, 2)).focus();
     expect(await tabStopsIn(page, SPLIT_RUN)).toEqual(["-1", "0"]);
@@ -266,7 +252,7 @@ test.describe("Runs duty chart roving row", () => {
     await expect(page).toHaveURL(/sort=paid/);
 
     // The sort re-streams every row, so the row the reader was standing in has
-    // been re-rendered with a tabindex the SERVER computed. If the tabindex were
+    // been re-rendered with a tabindex the server computed. If the tabindex were
     // the client's to keep, the row would come back with whichever bar happened
     // to be first in the new order and a reader who had walked to the second
     // piece would silently jump.
@@ -280,8 +266,8 @@ test.describe("Runs duty chart roving row", () => {
   test("zooming the track leaves the roving order untouched", async ({ page }) => {
     const before = await pageTabStops(page);
 
-    // The radio is visually hidden behind its label, so the LABEL is clicked,
-    // not the input: `check()` on an invisible element fails.
+    // The radio is visually hidden behind its label, so the label is clicked, not
+    // the input: `check()` on an invisible element fails.
     await page.locator('label[for="runs-scale-option-zoom"]').click();
     await expect(page.locator("#runs-timeline")).toHaveAttribute("data-scale", "zoom");
 

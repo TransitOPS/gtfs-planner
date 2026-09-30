@@ -1,28 +1,27 @@
 defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
   @moduledoc """
-  Merge evidence (EV-17) for CL-9 and CL-10: applying a runs plan is atomic and
-  refuses a plan the day has moved past, so FH-14, FH-15 and FH-16 stay rejected.
+  Applying a runs plan is atomic and refuses a plan the day has moved past.
 
-  This is the gate that closes rule 12. Step 11 proved the fingerprint *reacts*
-  to each input; step 16 proved suggesting writes nothing. Neither proved
-  anything checks the fingerprint, and until now a plan nobody verified would
-  have been a plan that could be applied to a day it was not computed for.
+  `plan_test.exs` shows the fingerprint reacts to each input and
+  `suggest_runs_test.exs` shows suggesting writes nothing. These cases show that
+  applying checks the fingerprint, so a plan cannot be applied to a day it was not
+  computed for.
 
-  The gate's independence field — **each input edited through its real writer** —
-  is the whole design. A staleness test that edited a row behind the application's
-  back would prove the fingerprint covers a column; editing through
-  `Blocking.apply_block_change/4`, `update_crew_settings/3`, `put_deadhead_time/4`
-  and the rest proves it covers the *inputs* those writers change, which is what
-  a planner's colleague actually does.
+  Each input is edited through its real writer, and that is the whole design. A
+  staleness test that edited a row behind the application's back would prove the
+  fingerprint covers a column; editing through `Blocking.apply_block_change/4`,
+  `update_crew_settings/3`, `put_deadhead_time/4` and the rest proves it covers
+  the *inputs* those writers change, which is what a planner's colleague actually
+  does.
 
   The `:write_failed` case is equally deliberate: a plan of more than 500 moves
-  whose **last** batch carries a run ID the database refuses, so earlier batches
+  whose last batch carries a run ID the database refuses, so earlier batches
   really were written and really were rolled back.
 
   Rows are created inside the SQL Sandbox transaction and rolled back.
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/apply_run_plan_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/apply_run_plan_test.exs`.
   """
   use GtfsPlanner.DataCase, async: true
 

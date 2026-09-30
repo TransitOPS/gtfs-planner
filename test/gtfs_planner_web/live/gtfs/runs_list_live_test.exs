@@ -1,18 +1,18 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsListLiveTest do
   @moduledoc """
-  EV-24: the Runs List view.
+  The Runs List view.
 
-  The card's independence field is "values equal the timeline's", and that is the
-  whole shape of this gate. Seven of the eight columns are the same numbers the
-  chart shows, and the risk is not that they are wrong but that the two views
-  drift apart: a second implementation of the same seven cells would be free to
-  print a bare time on one view and a `+1d` clock on the other, and a test that
-  checked each view against its own expected value would pass both.
+  The list's values must equal the timeline's, and that is the whole shape of
+  these tests. Seven of the eight columns are the same numbers the chart shows,
+  and the risk is not that they are wrong but that the two views drift apart: a
+  second implementation of the same seven cells would be free to print a bare time
+  on one view and a `+1d` clock on the other, and a test that checked each view
+  against its own expected value would pass both.
 
-  So the central assertion here is a **cell-by-cell comparison between the two
-  views on the same data**, not a comparison against a second copy of the
-  arithmetic. Everything the list adds — the Pieces column, the sort, the
-  switching — is asserted around that.
+  So the central assertion here is a cell-by-cell comparison between the two views
+  on the same data, not a comparison against a second copy of the arithmetic.
+  Everything the list adds — the Pieces column, the sort, the switching — is
+  asserted around that.
   """
   use GtfsPlannerWeb.ConnCase, async: true
 
@@ -25,9 +25,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsListLiveTest do
   @moduletag :ev_24
   @moduletag timeout: 120_000
 
-  # Only the user is built here. `runs_version_fixture/1` creates its OWN
-  # organization, so the membership goes on THAT one — the step 21 learning's
-  # standing trap.
+  # Only the user is built here. `runs_version_fixture/1` creates its own
+  # organization, so the membership goes on that one, not on a separate
+  # organization fixture.
   setup do
     %{user: user_fixture()}
   end
@@ -320,10 +320,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsListLiveTest do
         html
         |> LazyHTML.from_document()
         |> LazyHTML.query("#runs-list .runs-list-row[data-run='1002'] > *")
-        # The per-cell CLASS is the name every cell carries. `data-role` is not:
-        # the Status cell's role is on the `status_cell/1` span INSIDE it, and
-        # moving it out would make step 24's `[data-role=run-status]` selector
-        # match two elements and break its count assertions.
+        # The per-cell class is the name every cell carries. `data-role` is not:
+        # the Status cell's role is on the `status_cell/1` span inside it, and
+        # moving it out would make the marks tests' `[data-role=run-status]`
+        # selector match two elements and break its count assertions.
         |> Enum.map(fn cell ->
           cell |> LazyHTML.attribute("class") |> hd() |> String.split() |> List.last()
         end)

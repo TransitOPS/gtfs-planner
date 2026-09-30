@@ -1,7 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
   @moduledoc """
-  The `run_events.txt` rows for every day type's derived runs, as R13 and the
-  architecture's Export table define them.
+  The `run_events.txt` rows for every day type's derived runs, in the TODS v2.1.0
+  `run_events.txt` layout.
 
   A run is the finest thing a planner made by hand, and this file is where it
   becomes something a consumer can read. Each run's events follow the run's own
@@ -10,8 +10,8 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
   the piece that owns them rather than being written as one event per piece. A
   piece is a span of a vehicle's day; a consumer needs to see the trips inside it.
 
-  Identifiers are read, never generated. `service_id` is spec 07's per-day-type
-  service, and the `Pull-Out`, `Deadhead` and `Pull-Back` trip IDs come from
+  Identifiers are read, never generated. `service_id` is the movement export's
+  per-day-type service, and the `Pull-Out`, `Deadhead` and `Pull-Back` trip IDs come from
   `Blocking.TodsExport`'s `ids`, because those are the IDs the movement files were
   actually written under. A caller that appended a suffix to reach the
   previous-day service would name a service nobody wrote: reservation suffixes the
@@ -29,8 +29,8 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
   same reason.
 
   The module is pure: it reads its arguments and calls no repository, clock, file
-  or network (CR-1). Runs stay derived and stored nowhere — these rows are rebuilt
-  from `Day.derived()` on every export (INV-8, INV-11).
+  or network. Runs stay derived and stored nowhere — these rows are rebuilt from
+  `Day.derived()` on every export.
   """
 
   @seconds_per_day 86_400
@@ -77,7 +77,7 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
   with `prev?: false`. This is the rule that keeps a version with blocks but no
   runs from gaining an empty `calendar_dates_supplement.txt`: asking for a service
   makes `Blocking.TodsExport` mint one and list the day type's dates on it, which
-  is precisely the header-only file spec 07 refuses to write. A day type is asked
+  is precisely the header-only file the movement export refuses to write. A day type is asked
   for a service when it has something to hang on that service.
 
   A run with an error finding does not count towards `prev?`: it is left out of
@@ -107,7 +107,7 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
   a row no consumer can act on.
 
   `garages_by_id` resolves a garage endpoint to its public `garage_id`, the only
-  place a planning reference becomes a public one (CR-7). A garage a run names but
+  place a planning reference becomes a public one. A garage a run names but
   the map does not cover is resolved with `Map.fetch!/2`, so a caller that passed
   the wrong map is told rather than served an event with no location.
   """
@@ -223,7 +223,7 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
     segments
     |> Enum.reverse()
     |> Enum.map_reduce(nil, fn segment, next ->
-      # Walking backwards, a piece segment is the one the segments BEFORE it
+      # Walking backwards, a piece segment is the one the segments before it
       # report for.
       next = if segment.kind == :piece, do: segment.piece_index, else: next
 
@@ -450,7 +450,7 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
   end
 
   # A location is a GTFS `stop_id`, or the garage's own public `garage_id` — the
-  # only place a planning reference becomes a public one (CR-7). A location the
+  # only place a planning reference becomes a public one. A location the
   # event does not name is blank rather than a made-up stop.
   defp location(nil, _garages_by_id), do: ""
   defp location({:stop, stop_id}, _garages_by_id), do: stop_id

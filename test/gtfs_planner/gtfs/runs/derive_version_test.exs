@@ -1,27 +1,25 @@
 defmodule GtfsPlanner.Gtfs.Runs.DeriveVersionTest do
   @moduledoc """
-  Merge evidence (EV-18) for CL-6: every day type's runs come from the same
-  derivation the page uses, so FH-9 stays rejected.
+  Every day type's runs come from the same derivation the page uses.
 
-  FH-9 is two derivations drifting apart. The export derives a version's
+  The failure is two derivations drifting apart. The export derives a version's
   movements for every day type at once; the page derives one day type at a time.
   If those two answers a run type or a figure, a planner sees one thing on the
   summary and another in the exported file.
 
-  The gate's independence field is **compared with `load_runs/3` per day type**,
-  and that is the whole test: the same day, derived two ways, must give the same
-  straight, split and share. A version-wide read and a single-day read agreeing
-  is the property; either one on its own would prove nothing.
+  Each day type is compared with `load_runs/3`, and that is the whole test: the
+  same day, derived two ways, must give the same straight, split and share. A
+  version-wide read and a single-day read agreeing is the property; either one on
+  its own would prove nothing.
 
-  The second half of the gate is that
-  `test/gtfs_planner/gtfs/export/operations_movements_test.exs` passes
-  **unchanged** — `export_movements/2` gained a key, and the export that consumes
-  it must not have moved.
+  `test/gtfs_planner/gtfs/export/operations_movements_test.exs` also passes
+  unchanged: `export_movements/2` gained a key, and the export that consumes it
+  must not have moved.
 
   Rows are created inside the SQL Sandbox transaction and rolled back.
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/derive_version_test.exs test/gtfs_planner/gtfs/export/operations_movements_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/derive_version_test.exs test/gtfs_planner/gtfs/export/operations_movements_test.exs`.
   """
   use GtfsPlanner.DataCase, async: true
 

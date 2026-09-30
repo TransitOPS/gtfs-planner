@@ -6,7 +6,7 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTime do
   Pure: it reads no repository, clock, file or network, and writes nothing. Every
   driving time comes from `Blocking.DeadheadTimes.lookup/5` over the version's
   context, so an entered time wins over an estimate and an unknown leg is never
-  quietly read as reachable (spec 07 FH-40).
+  quietly read as reachable.
 
   ## What is paid
 
@@ -25,14 +25,14 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTime do
 
   A travel leg is charged between the garage and a piece, or between two pieces,
   whenever the two ends are **different places**. A piece that starts a block in a
-  garage already begins at the garage — step 4 gave it the pull-out's own start —
-  so its travel in is the garage to itself and is skipped, and the same is true of
-  the pull-back at the end. A piece that begins or ends at a handover does carry a
+  garage already begins at the garage — `Runs.Pieces` gave it the pull-out's own
+  start — so its travel in is the garage to itself and is skipped, and the same
+  is true of the pull-back at the end. A piece that begins or ends at a handover does carry a
   real leg to or from the relief stop.
 
   A leg with no coordinates at one end is a zero-length `:travel` segment with
   `source: :unknown`, listed in `unknown_travel`, so a planner sees the gap
-  instead of a leg that silently costs nothing (rule 7).
+  instead of a leg that silently costs nothing.
 
   ## Where a break sits
 
@@ -44,8 +44,7 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTime do
 
   A negative break means the later piece cannot be reached. Its segment is emitted
   with that true negative span, kept in `breaks` as it is and counted as zero
-  paid: raising `:cannot_reach_piece` is `Runs.Checks`' job in step 6, not this
-  module's (rule 8).
+  paid: raising `:cannot_reach_piece` is `Runs.Checks`' job, not this module's.
   """
 
   alias GtfsPlanner.Gtfs.Blocking.DeadheadTimes
@@ -182,8 +181,8 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTime do
 
   # Every leg the run's geometry implies, each already placed in time. A leg
   # between the same place twice is not a drive at all and is dropped: a
-  # block-start piece in a garage begins and ends at the garage, because step 4
-  # gave it the pull-out's and the pull-back's own seconds.
+  # block-start piece in a garage begins and ends at the garage, because
+  # `Runs.Pieces` gave it the pull-out's and the pull-back's own seconds.
   defp travels(pieces, garage_id, context, reports) do
     legs =
       in_leg(pieces, garage_id, context, reports) ++
@@ -303,7 +302,7 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTime do
   end
 
   # The idle time between two pieces, measured from the earlier piece's end to the
-  # later piece's report and travel (rule 8).
+  # later piece's report and travel.
   defp breaks(pieces, crew, travels) do
     max_paid = crew.paid_break_max_minutes * @minute
 
@@ -317,7 +316,7 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTime do
       %{
         secs: secs,
         # A negative break is not a paid break and contributes nothing to paid
-        # time; it is kept as it is so step 6 can raise the finding against the
+        # time; it is kept as it is so `Runs.Checks` can raise the finding against the
         # real number rather than a clamped one.
         paid?: secs >= 0 and secs <= max_paid,
         after_piece: previous_index,

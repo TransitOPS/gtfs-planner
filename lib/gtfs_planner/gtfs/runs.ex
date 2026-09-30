@@ -10,9 +10,9 @@ defmodule GtfsPlanner.Gtfs.Runs do
   The crew rules are the work rules a cut is judged against: how long an operator
   reports before a piece, how long a sign-off takes, how long a break may be and
   stay paid, and how long a spread may be. They are stored per published
-  organization and version alongside spec 07's Block rules, on the same row, and
+  organization and version alongside the Block rules, on the same row, and
   each writer replaces only the columns it owns — a crew save cannot reset a
-  minimum layover and a Block rules save cannot reset a crew rule (AC-1, FH-1).
+  minimum layover and a Block rules save cannot reset a crew rule.
 
   A version with no stored crew rules reads the researched defaults and writes
   nothing: a read never inserts a row.
@@ -36,8 +36,8 @@ defmodule GtfsPlanner.Gtfs.Runs do
   }
 
   # The five crew columns plus the write timestamp: an upsert that replaced more
-  # than these would reset the Block rules spec 07 stores on the same row, and one
-  # that replaced fewer would leave a previous save's value behind (AC-1, FH-1).
+  # than these would reset the Block rules stored on the same row, and one that
+  # replaced fewer would leave a previous save's value behind.
   @replace_crew_columns BlockingSetting.crew_fields() ++ [:updated_at]
 
   @published_status "published"
@@ -101,7 +101,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
   A version with no service dates has no day type at all, so there is no day to
   load and `day.day_type` is nil. That answers
   `{:error, {:unknown_day_type, []}}` — the same shape as an unrecognised day
-  key, carrying an EMPTY list, which is what tells a caller to say "no dates"
+  key, carrying an empty list, which is what tells a caller to say "no dates"
   rather than "choose one of these". Deriving anyway would raise on the nil day
   type, and a read that 500s on a version with no calendars is worse than one
   that says so.
@@ -112,13 +112,13 @@ defmodule GtfsPlanner.Gtfs.Runs do
   def load_runs(organization_id, gtfs_version_id, day_type_key) do
     Repo.transaction(fn ->
       case Blocking.load_day(organization_id, gtfs_version_id, day_type_key) do
-        # A version with no service dates has NO day type — `Blocking.load_day/3`
+        # A version with no service dates has no day type — `Blocking.load_day/3`
         # answers `{:ok, day}` with `day.day_type` nil and no trips. There is
         # then nothing to derive, and `build_runs_day/3` would raise on the nil
         # day type. It is the same condition as an unrecognised day key — this
         # version has no day of the name asked for — so it is reported through
         # the same error, carrying the day types the version really has. That
-        # list is EMPTY here, and the empty list is what tells a caller to say
+        # list is empty here, and the empty list is what tells a caller to say
         # "no dates" rather than "choose one of these". A read that 500s on a
         # version with no calendars is worse than one that says so.
         #
@@ -292,18 +292,18 @@ defmodule GtfsPlanner.Gtfs.Runs do
   new run: an operator dragging three trips onto "new run" means one run, not
   three, and three calls to `next_run_id/1` would give three.
 
-  The check is optimistic and per trip (rule 14, INV-12). A move names what the
+  The check is optimistic and per trip. A move names what the
   editor saw as that trip's current run, and the write is refused with
   `:stale_moves` if any of them differ — so one trip somebody else moved since
   the page loaded fails the whole call and writes nothing, rather than
   overwriting a colleague. This is what makes undo safe: undo is the same call
   with the moves reversed, so it is refused by the same rule.
 
-  The lock order is rule 13's, in one transaction: the version's input-write lock
-  (which also refuses an unpublished version), then the blocking lock, then the
-  reads, then the writes. Rows are scoped by organization, version and day type
-  key on every query, so a Weekday write cannot reach a Saturday row that happens
-  to carry the same run ID (AC-20).
+  The lock order is the one every runs writer shares, in one transaction: the
+  version's input-write lock (which also refuses an unpublished version), then
+  the blocking lock, then the reads, then the writes. Rows are scoped by
+  organization, version and day type key on every query, so a Weekday write
+  cannot reach a Saturday row that happens to carry the same run ID.
   """
   @spec apply_moves(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), [map()]) ::
           {:ok,
@@ -375,7 +375,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
 
   # A move naming a trip that is not a sequence trip of this day type is refused
   # before any current run is read, and every offending trip is returned rather
-  # than the first, so a page can mark all of them at once (AC-21).
+  # than the first, so a page can mark all of them at once.
   defp check_trips(moves, sequence_ids) do
     case moves
          |> Enum.map(& &1.trip_id)
@@ -509,14 +509,14 @@ defmodule GtfsPlanner.Gtfs.Runs do
 
   Every row carrying `old_id` becomes a row carrying `new_id`, and nothing else
   moves. The returned `undo` is the reversed moves, so undoing a rename is
-  `apply_moves/4` on it — the same optimistic per-trip rule (INV-12) that any
+  `apply_moves/4` on it — the same optimistic per-trip rule that any
   other write obeys, which is what stops an undo from reverting somebody else's
   edit made in between.
 
   The new ID is checked before the transaction with `TripRun.change_run_id/1`,
   which is the same format `TripRun.changeset/2` checks a row against. Whether
   the ID is **already used in this day type** is a fact about the rows, so it is
-  checked inside, under the same lock order as step 13: the version's
+  checked inside, under the same lock order as `apply_moves/4`: the version's
   input-write lock, then the blocking lock, then the reads, then the update.
 
   Existence is checked before uniqueness, so renaming a run that is not there
@@ -633,7 +633,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
   no page reads its key.
 
   Scoped to the organization and version, so another organization's orphans are
-  untouched even when the trip UUIDs are the same shape (FH-18). A second call
+  untouched even when the trip UUIDs are the same shape. A second call
   finds nothing left and returns `{:ok, 0}`: removal is idempotent because it is
   defined by what is there, not by what happened to be there before.
   """
@@ -661,7 +661,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
            sequence_ids,
            day.day_types
          ) do
-      # A count, not `:ok`: the Contracts answer `{:ok, non_neg_integer()}`, and a
+      # A count, not `:ok`: the `@spec` answers `{:ok, non_neg_integer()}`, and a
       # page showing "removed N" needs the N to be zero rather than missing.
       [] ->
         0
@@ -681,7 +681,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
   The plan is what a planner is shown before deciding, and it carries three
   things they cannot compute themselves: the moves the suggestion would make, the
   figures the day would have afterwards, and the fingerprint the apply will
-  re-check (rule 12).
+  re-check.
 
   **It takes no lock and writes no row** — not a `trip_runs` row, not a crew
   column, not a settings row. A suggestion is a read that happens to run the
@@ -699,8 +699,8 @@ defmodule GtfsPlanner.Gtfs.Runs do
   `after` is the figures the day *would* have, computed by deriving the proposed
   assignments through the same path `load_runs/3` uses, orphan notice included.
   Skipping the notice would make `after` disagree with what an apply actually
-  produces on a day that has orphans, and AC-18 asks for the figures after, not
-  for the figures the derivation alone gives.
+  produces on a day that has orphans: the figures a planner is shown are the
+  ones the apply will leave, not the ones the derivation alone gives.
   """
   @spec suggest_runs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil, Cutter.scope()) ::
           {:ok, Plan.t()}
@@ -751,7 +751,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
   set: a check run after a write would see the write's own effect and refuse a
   plan this call had just applied correctly.
 
-  A mismatch rolls back with `:stale_plan` and writes nothing (rule 12, AC-19).
+  A mismatch rolls back with `:stale_plan` and writes nothing.
   The plan is **not** re-validated against its own `from` values beyond the trip
   check — the fingerprint already covers every assignment on the day type, so a
   stale plan is detected before the moves are read, and one mechanism is enough.
@@ -784,8 +784,8 @@ defmodule GtfsPlanner.Gtfs.Runs do
 
   defp write_plan(organization_id, gtfs_version_id, day, plan) do
     # The same read `suggest_runs/4` used, and therefore the same fingerprint:
-    # rule 12 works because both sides compute it with one function, not because
-    # two implementations agree.
+    # the stale check works because both sides compute it with one function, not
+    # because two implementations agree.
     runs_day = build_runs_day(organization_id, gtfs_version_id, day)
 
     if runs_day.fingerprint == plan.fingerprint do
@@ -859,7 +859,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
   end
 
   # The undo is `apply_moves/4` material: every move reversed, in the same shape,
-  # so undoing a plan is refused by the same per-trip rule (INV-12) rather than by
+  # so undoing a plan is refused by the same per-trip rule rather than by
   # a bespoke reverse-update that would bypass it.
   defp plan_undo(moves) do
     moves
@@ -932,7 +932,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
   the same two places: the export's blocks carry the movements, and the relief
   windows come from `Blocking.Relief.windows/3` over the export's **context**,
   which is why that context is returned rather than recomputed. The composition
-  is then `Runs.Day.derive/4` — the only day composition in the system (INV-11),
+  is then `Runs.Day.derive/4` — the only day composition in the system,
   so a day type's runs here and its runs on the page are the same runs.
   """
   @spec derive_version(Blocking.export_movements_result(), %{String.t() => map()}, map()) ::
@@ -961,7 +961,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
   @doc """
   Returns every day type's straight and split counts and the straight share.
 
-  This is the version-wide summary AC-12 asks for: every day type of the
+  This is the version-wide summary: every day type of the
   version, not just one, so a planner comparing a weekday with a Saturday does
   not have to load each in turn. A day type with no runs is **listed** with
   straight 0, split 0 and a share of `nil` — a nil share is the answer
@@ -1092,11 +1092,11 @@ defmodule GtfsPlanner.Gtfs.Runs do
   cannot change under a calendar combination that owns the version, and this save
   waits behind such an owner in turn. It then takes `Blocking.lock_blocking!/1`, so
   a crew save serializes with every other planning-input writer and cannot slip
-  between a plan's review and its apply (INV-1, INV-7, rule 13).
+  between a plan's review and its apply.
 
   The upsert replaces only the five crew columns and the write timestamp. Its base
   carries the stored Block rules values, so a first save on a version with no row
-  satisfies the columns spec 07 owns rather than inserting defaults over them.
+  satisfies the Block rules columns rather than inserting defaults over them.
 
   Returns `{:error, :not_found}` when the version is unpublished or belongs to
   another organization, and `{:error, changeset}` when a value is outside its range
@@ -1113,7 +1113,7 @@ defmodule GtfsPlanner.Gtfs.Runs do
 
   # The version share lock is the first statement of the write transaction, before
   # the published check and the upsert, and `lock_blocking!/1` follows it and
-  # nothing else, in INV-1's order, so this writer joins the same serialization
+  # nothing else, in the blocking writers' order, so this writer joins the same serialization
   # point as the block writers instead of taking a second runs lock.
   defp write_crew_settings!(organization_id, gtfs_version_id, attrs) do
     version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)

@@ -2945,15 +2945,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
     }
   end
 
-  # How many RUNS contain the trips this suggestion moves, computed ONCE here
+  # How many runs contain the trips this suggestion moves, computed once here
   # rather than in the render.
   #
   # A render-time query would be wrong twice over: `render/1` must stay a pure
   # function of its assigns, and a preview is re-rendered on every event on the
   # page — a sort, a scale change, a selected trip. The count is a fact about the
-  # PLAN, not about the page, so it is taken where the plan is stored.
+  # plan, not about the page, so it is taken where the plan is stored.
   #
-  # It reflects the runs as they are SAVED, because a Blocks preview writes
+  # It reflects the runs as they are saved, because a Blocks preview writes
   # nothing until Apply.
   defp assign_runs_touched(socket, plan) do
     trip_ids = plan.moves |> Enum.map(& &1.trip.id) |> Enum.uniq()

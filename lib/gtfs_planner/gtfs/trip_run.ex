@@ -3,8 +3,8 @@ defmodule GtfsPlanner.Gtfs.TripRun do
   One trip's assignment to one run on one day type of one GTFS version.
 
   A row is the only stored fact about a run: which trips it holds on a day type.
-  Pieces, work time and run types are derived from these rows and the day's blocks
-  (INV-10), so a run exists only while its rows do.
+  Pieces, work time and run types are derived from these rows and the day's blocks,
+  so a run exists only while its rows do.
 
   Rows are keyed by `(organization_id, gtfs_version_id, day_type_key, trip_id)`.
   `day_type_key`, `trip_id`, `organization_id` and `gtfs_version_id` are set on the

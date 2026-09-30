@@ -1,14 +1,14 @@
 defmodule GtfsPlanner.Gtfs.Runs.WorkTimeTest do
   @moduledoc """
   Work time for one run: sign-on, sign-off, travel, reports, breaks, paid time,
-  type and the ordered segment list (domain rules 6-8, EV-4).
+  type and the ordered segment list.
 
   Every figure here is computed by hand in the comment above each test, in
-  minutes, and the code is seconds. The pieces are built as plain maps rather
-  than through `Movements`, because this module's subject is what it charges for
-  a run's shape — a garage piece, a piece that starts at a handover, a block
-  with no garage at all — and not that the movement build produced it. Step 4's
-  `pieces_test.exs` is where that derivation is proved.
+  minutes, and the code is seconds. The pieces are built as plain maps rather than
+  through `Movements`, because this module's subject is what it charges for a
+  run's shape — a garage piece, a piece that starts at a handover, a block with no
+  garage at all — and not that the movement build produced it. `pieces_test.exs`
+  is where that derivation is tested.
 
   The fixture is a garage on the same meridian as one marked station, so an
   estimated drive is a real drive rather than a rounding artefact, and an
@@ -52,8 +52,8 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTimeTest do
   defp crew(opts), do: Map.merge(@crew, Map.new(opts))
 
   # A whole garage block: it starts at the garage with the pull-out and ends there
-  # with the pull-back, so step 4 gave it the garage's own seconds at both ends
-  # and no travel leg is charged into or out of it.
+  # with the pull-back, so `Runs.Pieces` gives it the garage's own seconds at both
+  # ends and no travel leg is charged into or out of it.
   defp garage_piece(start, finish, opts \\ []) do
     %{
       run_id: Keyword.get(opts, :run_id, "1010"),
@@ -230,7 +230,7 @@ defmodule GtfsPlanner.Gtfs.Runs.WorkTimeTest do
     # The second block starts before the first one ends: 08:00 − 10 + 15 = 08:05.
     # The gap is −10 minutes. It is not paid and it does not take a negative out
     # of paid time, but it is kept as the negative number it is, because that is
-    # what step 6 raises :cannot_reach_piece against.
+    # what `Runs.Checks` raises :cannot_reach_piece against.
     test "is kept negative and adds nothing to paid time" do
       work =
         WorkTime.compute(

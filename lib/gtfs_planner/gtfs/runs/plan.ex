@@ -2,10 +2,10 @@ defmodule GtfsPlanner.Gtfs.Runs.Plan do
   @moduledoc """
   Builds a runs plan — the diff between what a day looks like now and what a
   suggestion would make it — and the fingerprint that says whether the day still
-  looks the same (domain rule 12).
+  looks the same.
 
   Pure: it reads its arguments, calls `Blocking.Context.digest/1` and no
-  repository, clock, file or network, and writes nothing. It proposes; step 18's
+  repository, clock, file or network, and writes nothing. It proposes;
   `Runs.apply_run_plan/3` is what writes, and it recomputes this fingerprint
   under the lock before it does.
 
@@ -103,7 +103,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Plan do
 
   Takes `%{day_type_key:, scope:, current:, proposed:, before:, after:, preview:,
   fingerprint:}`, where `current` and `proposed` are assignment maps keyed by
-  trip UUID. The result is the Contracts' `t()`.
+  trip UUID. The result is `t()`.
   """
   @spec build(map()) :: t()
   def build(%{

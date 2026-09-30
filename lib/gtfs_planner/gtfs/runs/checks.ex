@@ -25,7 +25,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Checks do
 
   This module reports; it does not repair. A run whose spread is too long still
   computes its work time and still appears, carrying a warning, and nothing is
-  truncated, dropped or re-cut to make a limit pass (rule 9, AC-10).
+  truncated, dropped or re-cut to make a limit pass.
 
   `:orphan_assignments` is the one code this module never raises. It is not a
   property of any run, piece or boundary: it counts assignment rows that belong
@@ -84,12 +84,12 @@ defmodule GtfsPlanner.Gtfs.Runs.Checks do
   Findings about a day's handovers.
 
   A boundary whose `at_relief?` is false is a change the plan had to make away
-  from a relief point, and it is an error (rule 4). It names only the run that is
+  from a relief point, and it is an error. It names only the run that is
   actually there: a change *into* uncovered work has no run on the far side, and
   naming a run that is not involved would point a planner at the wrong operator.
   A boundary between two uncovered segments raises nothing here — the
   `:uncovered_work` warning is the page-level statement about them, and
-  `:orphan_assignments` is step 12's.
+  `:orphan_assignments` is `Runs.load_runs/3`'s.
   """
   @spec boundary_findings([map()]) :: [finding()]
   def boundary_findings(boundaries) do
@@ -125,8 +125,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Checks do
     ]
   end
 
-  # More than two pieces is a split the plan should not be carrying silently
-  # (rule 9).
+  # More than two pieces is a split the plan should not be carrying silently.
   defp too_many_pieces(run_id, block_id, pieces) when length(pieces) > 2 do
     [
       %{
@@ -144,7 +143,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Checks do
 
   defp first([piece | _]), do: piece
 
-  # A negative break means the next piece cannot be reached (rule 8). The work
+  # A negative break means the next piece cannot be reached. The work
   # time already measured the gap, so the two numbers are read off it rather than
   # re-derived: what is available is the span between the two pieces, and what
   # is needed is whatever is left of it, which is the difference. That keeps
@@ -197,8 +196,8 @@ defmodule GtfsPlanner.Gtfs.Runs.Checks do
     end
   end
 
-  # A piece over spec 07's own piece limit is a warning, and no check at all when
-  # that limit is unset (rule 9).
+  # A piece over the blocking settings' own piece limit is a warning, and no
+  # check at all when that limit is unset.
   defp piece_too_long(run_id, block_id, pieces, context) do
     case context.max_piece_minutes do
       nil ->

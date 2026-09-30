@@ -1,14 +1,14 @@
 defmodule GtfsPlanner.RunsFixtures do
   @moduledoc """
-  Runs fixtures for the database, LiveView and export tests of spec 08.
+  Runs fixtures for the database, LiveView and export tests of the Runs page.
 
-  They live in their own module, separate from the spec 07 fixture modules this
-  package reuses rather than edits, and every function takes the organization and
-  the GTFS version it writes into, so a test can build a foreign organization, a
-  second day type or a staging version beside its own.
+  They live in their own module, separate from the blocking fixture modules they
+  reuse rather than edit, and every function takes the organization and the GTFS
+  version it writes into, so a test can build a foreign organization, a second day
+  type or a staging version beside its own.
 
-  `runs_version_fixture/1` is the shared planning day the later steps cut into
-  runs: a published version with one weekday calendar, a garage, four stops on one
+  `runs_version_fixture/1` is the shared planning day the tests cut into runs: a
+  published version with one weekday calendar, a garage, four stops on one
   meridian, block 101 of four trips and block 102 of two. Its relief point is
   marked through `Blocking.update_relief_settings/4` and its default garage and
   piece limit through `Blocking`'s own writers, so the fixture takes the same path
@@ -62,7 +62,7 @@ defmodule GtfsPlanner.RunsFixtures do
   @valley_college_stop "VC"
   @market_square_stop "MS"
 
-  # The long drives of the two blocks and the piece limit spec 07 owns. Every
+  # The long drives of the two blocks and the piece limit Block rules own. Every
   # fixture block here is an hour or less, so 330 leaves the limit doing its real
   # job of refusing a piece that runs long without cutting a normal day short.
   @max_piece_minutes 330
@@ -96,7 +96,7 @@ defmodule GtfsPlanner.RunsFixtures do
 
     * `day_type_key` — the version's own weekday key, read back through
       `Blocking.load_day/3` rather than assumed, so a fixture cannot name a day
-      type the day load would refuse (INV-6).
+      type the day load would refuse.
     * `blocks` — `"101"` and `"102"` mapped to their trips in service order, the
       shape the piece, cut and plan tests cut from.
     * `relief_stop_id` — the marked station's own stop ID, which is also the
@@ -130,7 +130,7 @@ defmodule GtfsPlanner.RunsFixtures do
 
     # The default garage and the piece limit are planning inputs, so they are
     # written through the writers that take the version and blocking locks rather
-    # than by inserting a settings row behind their back (INV-1, INV-7).
+    # than by inserting a settings row behind their back.
     {:ok, _settings} =
       Blocking.update_settings(organization.id, version.id, %{
         min_layover_minutes: 5,
@@ -262,7 +262,7 @@ defmodule GtfsPlanner.RunsFixtures do
   end
 
   # The version's own weekday key, read from the day load rather than assumed, so
-  # a fixture can never name a day type the load would refuse (INV-6).
+  # a fixture can never name a day type the load would refuse.
   defp day_type_key!(organization, version) do
     {:ok, day} = Blocking.load_day(organization.id, version.id, nil)
     day.day_type.key

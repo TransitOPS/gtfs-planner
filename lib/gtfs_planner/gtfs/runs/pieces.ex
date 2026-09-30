@@ -5,11 +5,11 @@ defmodule GtfsPlanner.Gtfs.Runs.Pieces do
   Pure: it reads no repository, clock, file or network, and writes nothing. Every
   block is cut from what `GtfsPlanner.Gtfs.Blocking` already derived — the day's
   `Checks.trip_row` maps, the block's `Movements.t()` and its `Relief.window()`s —
-  so relief, garages and driving times have one source (INV-8, INV-9).
+  so relief, garages and driving times have one source.
 
   A piece is a maximal run of consecutive sequence trips of one block that share a
-  run assignment, plus the block's own ends. Pieces are derived, never stored
-  (INV-10): nothing here is persisted, and a run exists only as far as its
+  run assignment, plus the block's own ends. Pieces are derived, never stored:
+  nothing here is persisted, and a run exists only as far as its
   assignments do.
 
   ## The handover rule
@@ -19,7 +19,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Pieces do
   and the origin is the earlier of the two instants. With no window at *g* — both
   ends unmarked, the gap infeasible, or its drive unknown — the handover happens
   where the incoming trip ends, at its last arrival and last stop, and the
-  boundary says so with `at_relief?: false` so step 6 can raise the finding.
+  boundary says so with `at_relief?: false` so `Runs.Checks` can raise the finding.
 
   ## Which piece owns the deadhead
 
@@ -44,7 +44,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Pieces do
   ## Service-day arithmetic
 
   Times are service-day seconds throughout, so a pull-out starting at −900 and a
-  trip arriving at 25:10 are ordinary values carried through unchanged (AC-5).
+  trip arriving at 25:10 are ordinary values carried through unchanged.
   """
 
   alias GtfsPlanner.Gtfs.Blocking.Checks
@@ -99,7 +99,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Pieces do
 
       # An unassigned run of trips is the same shape of segment as a piece, with
       # no run, and the caller keeps the two apart: uncovered work is never part
-      # of any run's time (rule 2).
+      # of any run's time.
       {assigned, uncovered} = Enum.split_with(pieces, & &1.run_id)
 
       %{
@@ -112,7 +112,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Pieces do
 
   # One block's sequence trips cut into maximal runs of equal assignment. A block
   # with no usable trip has no piece and no boundary, and its frequency-based and
-  # unplottable rows are already gone by `Checks.sequence/1` (AC-6).
+  # unplottable rows are already gone by `Checks.sequence/1`.
   defp cut(block, assignments) do
     groups =
       block.trips
@@ -246,7 +246,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Pieces do
         }
 
       # The clock starts at the garage, where the pull-out begins; the first stop
-      # is where service begins, and the drive between them is step 5's travel in.
+      # is where service begins, and the drive between them is the run's travel in.
       pull_out ->
         %{
           start_secs: pull_out.start_secs,

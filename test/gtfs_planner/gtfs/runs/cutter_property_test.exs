@@ -1,30 +1,29 @@
 defmodule GtfsPlanner.Gtfs.Runs.CutterPropertyTest do
   @moduledoc """
-  Merge evidence (EV-10) for CL-7: a seeded property sweep of `Cutter.run/5`, so
-  FH-10 and FH-11 stay rejected.
+  A seeded property sweep of `Cutter.run/5`.
 
   300 generated days, each built through the real `Movements.build/3` and
-  `Relief.windows/3` and then **checked with `Runs.Day.derive/4`**, which the
-  cutter does not use for its own bookkeeping. That is what the gate names as its
-  independence: agreement between the two is evidence, not a tautology.
+  `Relief.windows/3` and then checked with `Runs.Day.derive/4`, which the cutter
+  does not use for its own bookkeeping, so agreement between the two is evidence,
+  not a tautology.
 
   It is a plain loop over a fixed `:rand` seed rather than `ExUnitProperties`,
-  which is not a dependency of this project and was not added for this. The
-  seed is `:exsss` with `{8, 8, 8}` and the case count is 300, both fixed by the
-  card, so a failure reproduces exactly — the case index is in the message.
+  which is not a dependency of this project and was not added for this. The seed
+  is `:exsss` with `{8, 8, 8}` and the case count is 300, both fixed, so a failure
+  reproduces exactly — the case index is in the message.
 
   ## What each case asserts
 
-  - every sequence trip is assigned **exactly once** afterwards
+  - every sequence trip is assigned exactly once afterwards
   - the suggestion introduces no `:not_at_relief`, `:too_many_pieces` or
     `:cannot_reach_piece` finding that the day did not already have
-  - every **two-piece** run's spread is within the limit
+  - every two-piece run's spread is within the limit
   - `:uncovered_only` leaves every pre-existing assignment untouched
   - and, for determinism, the same day built again in a shuffled order gives the
     same assignments and the same run IDs
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/cutter_property_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/cutter_property_test.exs`.
   """
   use ExUnit.Case, async: true
 

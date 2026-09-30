@@ -1,14 +1,11 @@
 defmodule GtfsPlanner.Gtfs.Runs.SuggestRunsTest do
   @moduledoc """
-  Merge evidence (EV-16) for CL-9: suggesting is read-only and hands back a
-  fingerprinted plan, so FH-14 stays rejected.
+  Suggesting is read-only and hands back a fingerprinted plan.
 
-  FH-14 says an input edited after the preview falls outside the fingerprint and
-  a stale plan is written. Step 11 closed the sensitivity half — that each input
-  *changes* the fingerprint. This gate closes the other two: that suggesting
-  **writes nothing** (the card's independence field, "row count unchanged after
-  suggest"), and that the plan's own numbers are the ones an apply would produce
-  rather than a second, hopeful derivation of them.
+  `plan_test.exs` shows each input changes the fingerprint. These cases show the
+  other two properties: that suggesting writes nothing (the row count is unchanged
+  after a suggestion), and that the plan's own numbers are the ones an apply would
+  produce rather than a second, hopeful derivation of them.
 
   That last one is the assertion worth reading twice. `plan.after` is compared
   against the figures from `load_runs/3` *after* `apply_moves/4` has actually
@@ -17,8 +14,8 @@ defmodule GtfsPlanner.Gtfs.Runs.SuggestRunsTest do
 
   Rows are created inside the SQL Sandbox transaction and rolled back.
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/suggest_runs_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/suggest_runs_test.exs`.
   """
   use GtfsPlanner.DataCase, async: true
 
@@ -139,9 +136,9 @@ defmodule GtfsPlanner.Gtfs.Runs.SuggestRunsTest do
   describe "a replace-all plan" do
     test "numbers from the rebuild prefix, not from the highest run", %{world: world} do
       # Put the day's only run on 1013 first, so the two numbering rules give
-      # different answers: rule 11's rebuild prefix is 1000, so a rebuild numbers
-      # 1001, 1002 - while "one above the highest" would have given 1014. The
-      # plan is only interesting on a day type whose scheme has to survive.
+      # different answers: the rebuild prefix is 1000, so a rebuild numbers 1001,
+      # 1002 - while "one above the highest" would have given 1014. The plan is
+      # only interesting on a day type whose scheme has to survive.
       {:ok, _} =
         Gtfs.rename_run(
           world.organization.id,
@@ -245,8 +242,8 @@ defmodule GtfsPlanner.Gtfs.Runs.SuggestRunsTest do
       {:ok, runs_day} =
         Gtfs.load_runs(world.organization.id, world.version.id, world.day_type_key)
 
-      # This is the value step 18 re-checks under the lock, so it must be the
-      # one the page is looking at, not a fresh one computed here.
+      # This is the value apply re-checks under the lock, so it must be the one
+      # the page is looking at, not a fresh one computed here.
       assert plan.fingerprint == runs_day.fingerprint
     end
 

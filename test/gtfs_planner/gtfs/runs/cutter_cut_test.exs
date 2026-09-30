@@ -1,28 +1,28 @@
 defmodule GtfsPlanner.Gtfs.Runs.Cutter.CutTest do
   @moduledoc """
-  Merge evidence (EV-8) for CL-7: the cut rule of domain rule 10, so FH-10
-  stays rejected.
+  Where the cutter cuts a segment into pieces: at the latest handover whose piece
+  stays within `max_piece_minutes`, else the earliest handover after it.
 
-  The windows here are **hand-placed** rather than built by
-  `Blocking.Relief.windows/3`, which is what the gate names as its
-  independence. The subject is this module's choice of cut point, and a window
-  list that a movement build produced would already encode a judgement this test
-  is meant to make.
+  The windows here are hand-placed rather than built by
+  `Blocking.Relief.windows/3`, so the cases stay independent of the movement
+  build. The subject is this module's choice of cut point, and a window list that
+  a movement build produced would already encode a judgement this test is meant to
+  make.
 
   ## The greedy ceiling, on the numbers
 
   A segment starting at 08:00 with a 330-minute limit:
 
-  - Handovers at **3 h** and **5 h** after the start are 180 and 300 minutes
-    after it. Both fit, and the rule takes the **latest**, so the cut is at
-    5 h. An earliest-fit cut would be at 3 h, and the test asserts it is not.
-  - Handovers at **6 h** and **8 h** are 360 and 480 minutes, both over the
-    limit. Nothing fits, so the rule takes the **earliest** and the first piece
-    runs 6 h — 360 minutes, thirty over the limit. The test asserts the
-    over-length explicitly rather than treating it as a failure of the cut.
+  - Handovers at 3 h and 5 h after the start are 180 and 300 minutes
+    after it. Both fit, and the rule takes the latest, so the cut is at 5 h. An
+    earliest-fit cut would be at 3 h, and the test asserts it is not.
+  - Handovers at 6 h and 8 h are 360 and 480 minutes, both over the
+    limit. Nothing fits, so the rule takes the earliest and the first piece runs
+    6 h — 360 minutes, thirty over the limit. The test asserts the over-length
+    explicitly rather than treating it as a failure of the cut.
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/cutter_cut_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/cutter_cut_test.exs`.
   """
   use ExUnit.Case, async: true
 

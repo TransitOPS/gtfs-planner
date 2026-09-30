@@ -1,28 +1,26 @@
 defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
   @moduledoc """
-  Merge evidence (EV-14) for CL-11: a rename moves every trip of one run, refuses
-  the IDs it must, and undoes through the same optimistic per-trip rule as any
-  other write, so FH-17 stays rejected.
+  A rename moves every trip of one run, refuses the IDs it must, and undoes
+  through the same optimistic per-trip rule as any other write.
 
-  FH-17 is the clobbering hypothesis. A rename is the one write that touches a
-  whole run rather than the trips a planner dragged, so it is where an
-  over-broad `UPDATE` does the most damage: every trip of the run at once,
-  including a trip somebody else moved since the page loaded. The scoping
-  cases here are built so a missing scope column would be *visible* — another
-  day type holding the same old ID, and a day type holding the same **new** ID,
-  which is the case a uniqueness check written against the wrong scope would
-  refuse.
+  The failure is a write that clobbers someone else's change. A rename is the one
+  write that touches a whole run rather than the trips a planner dragged, so it is
+  where an over-broad `UPDATE` does the most damage: every trip of the run at
+  once, including a trip somebody else moved since the page loaded. The scoping
+  cases here are built so a missing scope column would be *visible* — another day
+  type holding the same old ID, and a day type holding the same new ID, which is
+  the case a uniqueness check written against the wrong scope would refuse.
 
-  The card's independence note — rows re-read — is why the assertions read
-  `trip_runs` directly and through `load_runs/3`, never the rename's own return
-  value for the rows it claims to have moved.
+  Rows are re-read, which is why the assertions read `trip_runs` directly and
+  through `load_runs/3`, never the rename's own return value for the rows it
+  claims to have moved.
 
   Every case goes through the `Gtfs` facade, the path the page calls.
 
   Rows are created inside the SQL Sandbox transaction and rolled back.
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/rename_run_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/rename_run_test.exs`.
   """
   use GtfsPlanner.DataCase, async: true
 

@@ -1,15 +1,14 @@
 defmodule GtfsPlanner.Gtfs.Runs.ChecksTest do
   @moduledoc """
-  The findings a plan raises about runs, handovers and uncovered work (rules 4, 8
-  and 9, EV-5).
+  The findings a plan raises about runs, handovers and uncovered work.
 
-  Each test pins a **boundary value** rather than a typical one, because these
-  are all comparisons against a limit and the interesting case is the one sitting
-  exactly on it. A piece of exactly `max_piece_minutes` is fine and one second
-  more is a warning; a spread of exactly 720 minutes is fine and 721 is not; a
-  break of 30 minutes is straight and 31 is not. A test in the middle of the
-  range would pass whether the comparison were `>`, `>=` or off by a factor of
-  sixty, and these are exactly the comparisons a run's publishability turns on.
+  Each test pins a boundary value rather than a typical one, because these are all
+  comparisons against a limit and the interesting case is the one sitting exactly
+  on it. A piece of exactly `max_piece_minutes` is fine and one second more is a
+  warning; a spread of exactly 720 minutes is fine and 721 is not; a break of 30
+  minutes is straight and 31 is not. A test in the middle of the range would pass
+  whether the comparison were `>`, `>=` or off by a factor of sixty, and these are
+  exactly the comparisons a run's publishability turns on.
 
   The work time handed to `run_findings/5` is built by the real
   `Runs.WorkTime.compute/3` over hand-built pieces, so the `breaks` a finding

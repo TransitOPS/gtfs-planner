@@ -3,19 +3,17 @@ defmodule GtfsPlannerWeb.Gtfs.RunsKeyboardLiveTest do
   The server's half of the duty chart's roving row: the `tabindex` it renders,
   the hook that moves focus, and the hint that explains both.
 
-  ## Why half of this gate is not here
+  ## Where the other half is tested
 
-  EV-23 is a Playwright gate and is **blocked**: `bin/test-browser` is absent
-  from this base branch, so Chromium never runs. The spec is written and
-  committed at `assets/e2e/runs_keyboard.spec.js` against the seeded Browser
-  Runs Version, and it is the only place the focus MOVEMENT is proved.
+  Focus movement needs a browser, so it is tested by the Playwright journey
+  `assets/e2e/runs_keyboard.spec.js` against the seeded Browser Runs Version.
 
-  What is proved here is the half that is the server's to get right, and it is
-  the half that is easy to get wrong silently: a client that computed the
-  `tabindex` itself would ship a chart with no tab stop in it at all until
-  JavaScript arrived, and nothing in a rendered page would look broken. These
-  assertions read the `tabindex` in the initial HTML and after a LiveView patch,
-  which is where that failure would live.
+  What is tested here is the half that is the server's to get right, and it is the
+  half that is easy to get wrong silently: a client that computed the `tabindex`
+  itself would ship a chart with no tab stop in it at all until JavaScript
+  arrived, and nothing in a rendered page would look broken. These assertions read
+  the `tabindex` in the initial HTML and after a LiveView patch, which is where
+  that failure would live.
   """
   use GtfsPlannerWeb.ConnCase, async: true
 
@@ -29,9 +27,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsKeyboardLiveTest do
   @moduletag :ev_24
   @moduletag timeout: 120_000
 
-  # Only the user is built here. `runs_version_fixture/1` creates its OWN
-  # organization, so the membership goes on THAT one — the step 21 learning's
-  # standing trap.
+  # Only the user is built here. `runs_version_fixture/1` creates its own
+  # organization, so the membership goes on that one, not on a separate
+  # organization fixture.
   setup do
     %{user: user_fixture()}
   end
@@ -320,18 +318,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsKeyboardLiveTest do
     end
   end
 
-  describe "what this step cannot prove" do
+  describe "Enter on a piece" do
     test "a piece bar is a real button, so Enter is native activation", ctx do
       w = world(ctx)
       view = open_runs(ctx, w)
 
-      # The card's own case is "Enter on a focused piece opens #run-drawer", and
-      # that drawer is step 29's surface — it does not exist yet, and
-      # `phx-click="open_run"` has no handler until then. What this step owns is
-      # the half that makes Enter work at all: a real `<button>`, which the
-      # browser activates on Enter with no key handler of our own. A `<div>`
-      # with a click listener would need JS to open the drawer on Enter, and the
-      # roving hook deliberately does not handle Enter.
+      # Enter on a focused piece opens #run-drawer. What makes Enter work at all
+      # is a real `<button>`, which the browser activates on Enter with no key
+      # handler of our own. A `<div>` with a click listener would need JS to open
+      # the drawer on Enter, and the roving hook deliberately does not handle
+      # Enter.
       html = render(view)
 
       assert html =~ ~s(<button type="button" data-role="piece")

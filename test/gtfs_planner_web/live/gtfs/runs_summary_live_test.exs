@@ -1,14 +1,14 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsSummaryLiveTest do
   @moduledoc """
-  EV-20: the Runs count strip and the Runs summary drawer (CL-13).
+  The Runs count strip and the Runs summary drawer.
 
-  The independence field is **seeded counts**. Every figure in the strip is
-  produced by `Runs.Day.derive/4` on a real `runs_version_fixture/1` world whose
-  trip_runs rows are written through `RunsFixtures.trip_run_fixture/3`, and the
-  expected strings below are those figures read back out of the domain — so the
-  case proves the DOM carries the derived numbers rather than a second
-  arithmetic pass. The arithmetic itself is EV-6 and EV-18's evidence and is not
-  re-proved here.
+  The counts are seeded. Every figure in the strip is produced by
+  `Runs.Day.derive/4` on a real `runs_version_fixture/1` world whose trip_runs
+  rows are written through `RunsFixtures.trip_run_fixture/3`, and the expected
+  strings below are those figures read back out of the domain — so the case proves
+  the DOM carries the derived numbers rather than a second arithmetic pass. The
+  arithmetic itself is tested in `day_test.exs` and `derive_version_test.exs` and
+  is not re-tested here.
 
   Asserted figures, for the world `two_runs/1` builds:
 
@@ -20,12 +20,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSummaryLiveTest do
 
   ## Why the drawer is exercised through the page, not the component
 
-  The strip's figures arrive with the page's read, but the drawer's **share
-  table** is a `start_async` read of `Gtfs.run_day_type_shares/2` — a
-  whole-version read the page does not otherwise perform. Driving the real
-  button is the only way to prove the async is *started by the click* and not by
-  the mount, which is the property that keeps a slow version-wide read off the
-  page's critical path. `render_async/2` is what settles it.
+  The strip's figures arrive with the page's read, but the drawer's share table is
+  a `start_async` read of `Gtfs.run_day_type_shares/2` — a whole-version read the
+  page does not otherwise perform. Driving the real button is the only way to
+  prove the async is *started by the click* and not by the mount, which is the
+  property that keeps a slow version-wide read off the page's critical path.
+  `render_async/2` is what settles it.
 
   Rows are created inside the SQL Sandbox transaction and rolled back.
   """
@@ -125,11 +125,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSummaryLiveTest do
     world
   end
 
-  # Block 101 is cut into a run; block 102's trips are left unassigned, so they are
-  # the day's uncovered work. Every world above assigns both blocks, so without
-  # this one the strip's "N trips" branch — and its duration and its warning tone
-  # — are never rendered by any test, and a strip that always said "None" would
-  # pass the gate.
+  # Block 101 is cut into a run; block 102's trips are left unassigned, so they
+  # are the day's uncovered work. Every world above assigns both blocks, so
+  # without this one the strip's "N trips" branch — and its duration and its
+  # warning tone — are never rendered by any test, and a strip that always said
+  # "None" would pass.
   defp uncovered_work(context) do
     world = seeded_world(context)
 
@@ -484,13 +484,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSummaryLiveTest do
   describe "the drawer's share read failing" do
     setup :editor_setup
 
-    # `Gtfs.run_day_type_shares/2` does NOT go through the catalog read adapter —
+    # `Gtfs.run_day_type_shares/2` does not go through the catalog read adapter —
     # it calls `Runs.day_type_shares/2` directly, which opens its own transaction
-    # over `Blocking.export_movements/2` and the crew rules. So unlike the
-    # page's own read there is no stub to install, and the failure branch is
-    # driven by rendering the component in the state `handle_async/3` produces.
-    # That is a real render of the real branch; what it does not prove is that
-    # the LiveView reaches it, which is recorded in the learning as a gap.
+    # over `Blocking.export_movements/2` and the crew rules. So unlike the page's
+    # own read there is no stub to install, and the failure branch is driven by
+    # rendering the component in the state `handle_async/3` produces. That is a
+    # real render of the real branch; what it does not prove is that the LiveView
+    # reaches it, which remains untested.
     test "renders one line and keeps the day type's own figures" do
       html =
         render_component(&RunsComponents.summary_drawer/1,

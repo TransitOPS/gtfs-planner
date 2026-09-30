@@ -737,10 +737,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           <span :if={@facts_note}>{@facts_note}</span>
         </p>
 
-        <%!-- The runs this proposal reaches, counted ONCE when the preview was
+        <%!-- The runs this proposal reaches, counted once when the preview was
         built and never on render.
-        It is INFORMATIONAL: it tells a planner that applying will disturb runs
-        they may have built by hand, BEFORE they apply rather than after.
+        It is informational: it tells a planner that applying will disturb runs
+        they may have built by hand, before they apply rather than after.
         Nothing at zero — a proposal that touches no run has nothing to say about
         runs, and a line reading "0 runs" would be noise on most proposals. --%>
         <p

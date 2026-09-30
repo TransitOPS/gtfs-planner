@@ -1,18 +1,18 @@
 defmodule GtfsPlanner.Gtfs.Runs.NumberingTest do
   @moduledoc """
-  Merge evidence (EV-7) for CL-8: run numbering follows domain rule 11, so FH-13
-  stays rejected.
+  Run numbering: a rebuild numbers from the day type's lowest numeric run ID with
+  every digit after the first set to zero, and any other new run is numbered above
+  the highest.
 
-  The examples here are rule 11's own, which is what the gate names as its
-  independence. The two rules are deliberately tested against each other: a
-  rebuild takes the **lowest** numeric ID and zeroes it, while a new run takes
-  the **highest** and adds one. A single "next number" function would pass
-  whichever example it was written for, so the cases that matter are the ones
-  where the two answers differ — `["1013", "1030", "A1"]` has a lowest of 1013
-  and a highest of 1030, and the two rules must not be confused.
+  The two rules are deliberately tested against each other: a rebuild takes the
+  lowest numeric ID and zeroes it, while a new run takes the highest and adds one.
+  A single "next number" function would pass whichever example it was written for,
+  so the cases that matter are the ones where the two answers differ — `["1013",
+  "1030", "A1"]` has a lowest of 1013 and a highest of 1030, and the two rules
+  must not be confused.
 
-  The focused gate command is deferred to branch review:
-  `MIX_ENV=test MIX_TEST_PARTITION=_runs08 mix test test/gtfs_planner/gtfs/runs/numbering_test.exs`.
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/numbering_test.exs`.
   """
   use ExUnit.Case, async: true
 
@@ -50,9 +50,9 @@ defmodule GtfsPlanner.Gtfs.Runs.NumberingTest do
     end
 
     test "takes the lowest, not the highest" do
-      # The distinction FH-13 names. The highest here is 1030, whose prefix
-      # would be 1000 as well, so the case that separates them is a set whose
-      # lowest and highest zero differently.
+      # Lowest versus highest. The highest here is 1030, whose prefix would be
+      # 1000 as well, so the case that separates them is a set whose lowest and
+      # highest zero differently.
       assert Numbering.rebuild_prefix(["1200", "1013"]) == 1000
       assert Numbering.rebuild_prefix(["150", "101"]) == 100
     end
@@ -156,7 +156,7 @@ defmodule GtfsPlanner.Gtfs.Runs.NumberingTest do
     end
 
     test "a rebuild starting from the prefix does not continue from the highest" do
-      # FH-13: the wrong answer here is 1031, continuing from the highest.
+      # The wrong answer here is 1031, continuing from the highest.
       existing = ["1013", "1030"]
       rebuilt = Numbering.numeric_after(Numbering.rebuild_prefix(existing), 2)
 

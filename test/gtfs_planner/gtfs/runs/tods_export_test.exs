@@ -1,24 +1,24 @@
 defmodule GtfsPlanner.Gtfs.Runs.TodsExportTest do
   @moduledoc """
-  Merge evidence (EV-38) for CL-17: the `run_events.txt` rows a set of derived
-  runs become.
+  The `run_events.txt` rows a set of derived runs become.
 
-  Every expected row below is **hand-written** from the architecture's Export
-  table: the event types, their order, their `10, 20, …` numbering, and their
-  times computed as seconds and formatted by hand. Nothing here reads the result
-  to build an expectation, so a row that came out in the wrong order, with the
-  wrong service, or with a wrong time fails rather than confirming itself.
+  Every expected row below is hand-written from the TODS `run_events.txt` layout:
+  the event types, their order, their `10, 20, …` numbering, and their times
+  computed as seconds and formatted by hand. Nothing here reads the result to
+  build an expectation, so a row that came out in the wrong order, with the wrong
+  service, or with a wrong time fails rather than confirming itself.
 
   The runs are handed over as literal `Day.derived()` maps — derived and never
-  stored (INV-8) — and the module is pure (CR-1), so these cases run in the local
-  ExUnit process with no sandbox, fixtures or cleanup.
+  stored — and the module is pure, so these cases run in the local ExUnit process
+  with no sandbox, fixtures or cleanup.
 
-  The focused gate command is deferred to branch review:
-  `mix test test/gtfs_planner/gtfs/runs/tods_export_test.exs`. What it establishes
-  is the row construction: the event sequence, the service, the previous-day
-  shift, the piece expansion, the left-out count and the uncovered count. Whether
-  the ZIP passes the Mobility Data validator, and whether a version's runs are
-  right, are EV-39's and the earlier steps'.
+  These cases cover the row construction: the event sequence, the service, the
+  previous-day shift, the piece expansion, the left-out count and the uncovered
+  count. Whether the ZIP's references resolve is `operations_runs_test.exs`'s
+  subject.
+
+  Run with:
+  `mix test test/gtfs_planner/gtfs/runs/tods_export_test.exs`.
   """
   use ExUnit.Case, async: true
 
@@ -39,9 +39,9 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExportTest do
   @h 3600
   @m 60
 
-  # spec 07's IDs for the movements this file names. They are written here as
-  # plain strings because the point is that this module READS them and never
-  # mints one.
+  # The movement export's IDs for the movements this file names. They are written
+  # here as plain strings because the point is that this module reads them and
+  # never mints one.
   @pull_out_trip "dh-101-aaaaaa-1"
   @pull_back_trip "dh-101-aaaaaa-3"
   @gap0_trip "dh-101-aaaaaa-2"
@@ -687,9 +687,9 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExportTest do
     end
 
     test "a day type with no runs is not asked for a service at all" do
-      # Absent, not present with prev?: false. Asking for a service makes spec 07
-      # mint one and list the day type's dates on it, which is the header-only
-      # `calendar_dates_supplement.txt` spec 07 refuses to write.
+      # Absent, not present with prev?: false. Asking for a service makes the
+      # movement export mint one and list the day type's dates on it, which is the
+      # header-only `calendar_dates_supplement.txt` it otherwise refuses to write.
       assert TodsExport.run_day_types(%{@key => day([])}) == %{}
     end
   end

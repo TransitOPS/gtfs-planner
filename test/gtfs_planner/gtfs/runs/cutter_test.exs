@@ -1,15 +1,15 @@
 defmodule GtfsPlanner.Gtfs.Runs.CutterTest do
   @moduledoc """
-  Merge evidence (EV-9) for CL-7 and CL-8: pairing, scoping and numbering follow
-  domain rules 10 and 11, so FH-11, FH-12 and FH-13 stay rejected.
+  How the cutter pairs pieces into runs, which assignments each scope may change,
+  and how the runs it creates are numbered.
 
   The blocks here are built by the real `Blocking.Movements.build/3` and
   `Blocking.Relief.windows/3` over hand-built `Checks.trip_row` maps, exactly as
-  step 4's and step 7's tests are, so the movements and windows under the
-  cutter's feet are spec 07's own. Results are then read back through
-  `Runs.Day.derive/4` rather than through this module's own return value, which
-  is the independence the gate names: the cutter does not use `Day` for its
-  bookkeeping, so agreeing with it is evidence rather than tautology.
+  `pieces_test.exs` and `day_test.exs` build theirs, so the movements and windows
+  under the cutter's feet are the Blocks page's own. Results are then read back
+  through `Runs.Day.derive/4` rather than through this module's own return value:
+  the cutter does not use `Day` for its bookkeeping, so agreeing with it is
+  evidence rather than tautology.
 
   ## The worked day
 
@@ -22,10 +22,10 @@ defmodule GtfsPlanner.Gtfs.Runs.CutterTest do
 
   A two-piece run signs on 15 minutes early and signs off 5 minutes late, so its
   spread is `last end − first start + 20` minutes. For 101 and 102 that is
-  11 h 40 + 20 = **720 minutes exactly** — the limit, not past it — so they pair,
-  and their 165-minute break is far over the paid maximum, so the run is a
-  **split**. 103 is three hours past 102's end, which puts the pair past 720
-  minutes, so it stays a one-piece run of its own.
+  11 h 40 + 20 = 720 minutes exactly — the limit, not past it — so they pair, and their
+  165-minute break is far over the paid maximum, so the run is a split. 103 is
+  three hours past 102's end, which puts the pair past 720 minutes, so it stays a
+  one-piece run of its own.
 
   Moving 102 one minute later makes the spread 721 and the pair is refused.
   That boundary is the point of the pairing rule, so it is the centre of these
@@ -297,9 +297,9 @@ defmodule GtfsPlanner.Gtfs.Runs.CutterTest do
 
   describe "a version with no relief setup" do
     test "no windows and no limit leaves every block as exactly one piece" do
-      # AC-14: with nothing to cut at, a segment is one piece. That is the cut
-      # rule; whether two such pieces later pair into one run is the pairing
-      # rule's question, and is a separate test below.
+      # With nothing to cut at, a segment is one piece. That is the cut rule;
+      # whether two such pieces later pair into one run is the pairing rule's
+      # question, and is a separate test below.
       blocks = day_blocks()
       bare = Enum.map(blocks, &%{&1 | windows: []})
       result = Cutter.run(:replace_all, bare, %{}, context(marked: []), @crew)

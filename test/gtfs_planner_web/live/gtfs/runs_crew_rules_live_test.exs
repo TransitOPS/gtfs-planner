@@ -1,22 +1,22 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsCrewRulesLiveTest do
   @moduledoc """
-  EV-32: the Crew rules drawer.
+  The Crew rules drawer.
 
-  The claims worth proving here are about what a save DOES, not about what the
+  The claims worth proving here are about what a save does, not about what the
   form looks like. Three of them would pass against a drawer that rendered the
   rules and silently ignored every one of them:
 
-  - a valid save STORES the values, so the test re-reads them from the database
+  - a valid save stores the values, so the test re-reads them from the database
     rather than trusting the toast;
-  - a refused save stores NOTHING, so the stored row is re-read after a bad
+  - a refused save stores nothing, so the stored row is re-read after a bad
     submit and compared with what it was before;
-  - a refused save KEEPS the entries, which is only observable if the box that
+  - a refused save keeps the entries, which is only observable if the box that
     was left alone still holds its value after the one that was rejected.
 
-  The client-side blur check is a courtesy, not a gate, so there is a test that
-  posts an out-of-range value straight at the server and asserts the domain still
-  refuses it. Without that, "validates on blur" and "the server checks" would
-  look like one thing.
+  The client-side blur check is a courtesy, not the validation, so there is a test
+  that posts an out-of-range value straight at the server and asserts the domain
+  still refuses it. Without that, "validates on blur" and "the server checks"
+  would look like one thing.
   """
   use GtfsPlannerWeb.ConnCase, async: true
 
@@ -287,8 +287,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCrewRulesLiveTest do
       view = open(ctx, w)
       show_crew(view)
 
-      # The card's case: raising the paid break rewrites the rule in words while
-      # the drawer is open, before anything is saved.
+      # Raising the paid break rewrites the rule in words while the drawer is
+      # open, before anything is saved.
       change(view, %{paid_break_max_minutes: "60"})
 
       assert text(view, "#crew-rule-text") =~ "a break of 60 minutes or less"
@@ -325,7 +325,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCrewRulesLiveTest do
       view = open(ctx, w)
       show_crew(view)
 
-      # The card's case: 200 minutes of pull-out report.
+      # 200 minutes of pull-out report.
       change(view, %{report_pull_out_minutes: "200"})
 
       assert has_element?(
@@ -467,9 +467,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCrewRulesLiveTest do
         max_spread_minutes: "480"
       })
 
-      # The card's case. Four good values and one bad one: nothing is written at
-      # all, so a later correction does not half-apply a save the reader was told
-      # had failed.
+      # Four good values and one bad one: nothing is written at all, so a later
+      # correction does not half-apply a save the reader was told had failed.
       assert has_element?(
                view,
                "#crew-report_pull_out_minutes-error",
@@ -528,8 +527,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCrewRulesLiveTest do
 
       submit(view, %{report_pull_out_minutes: "200"})
 
-      # Closing on a refusal would throw away the entries the reader typed, which
-      # is the other half of what AC-30 asks.
+      # Closing on a refusal would throw away the entries the reader typed.
       assert attribute(view, "#runs-crew-rules-drawer-overlay", "data-open") == "true"
       refute has_element?(view, "[data-role=toast-text]")
     end
@@ -556,7 +554,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCrewRulesLiveTest do
 
       before = stored(w)
 
-      # The blur check is a courtesy, not the gate. A crafted submit — or a
+      # The blur check is a courtesy, not the validation. A crafted submit — or a
       # reader who never blurred the field — must still be refused by the domain.
       view
       |> element("#crew-rules-form")

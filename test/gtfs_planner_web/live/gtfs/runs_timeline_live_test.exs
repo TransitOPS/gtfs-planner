@@ -1,13 +1,12 @@
 defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
   @moduledoc """
-  EV-21: the Runs duty chart — its table, rows, pieces, axis, sort and zoom
-  (CL-14).
+  The Runs duty chart — its table, rows, pieces, axis, sort and zoom.
 
-  The independence field is **element structure and order**, and that is the
-  whole shape of this gate: the figures in the cells are EV-6 and EV-18's
-  arithmetic, so what is proved here is that each cell carries the run's own
-  value in the right column, that the rows are in the order the sort asked for,
-  and that the pieces sit on the track where the day's axis says they belong.
+  The tests assert element structure and order: the figures in the cells are
+  tested in `day_test.exs` and `derive_version_test.exs`, so what is tested here
+  is that each cell carries the run's own value in the right column, that the rows
+  are in the order the sort asked for, and that the pieces sit on the track where
+  the day's axis says they belong.
 
   Every world is a real `runs_version_fixture/1` with `RunsFixtures.trip_run_fixture/3`
   rows, loaded through the production read path. There is no mock and no stub in
@@ -21,10 +20,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
   style pins the piece to the block it came from. Two decimals is the precision
   `BlocksComponents` uses and it is what makes that comparison possible.
 
-  Measured pixel sizes are NOT proved here and the card says so: row and bar
-  heights live in `assets/css/app.css`, which no Elixir test reads. The CSS
-  declares the prototype's 44 px rows, 28 px bars and column widths, and
-  nothing has rendered them.
+  Measured pixel sizes are not tested here: row and bar heights live in
+  `assets/css/app.css`, which no Elixir test reads. The Playwright journey
+  `assets/e2e/runs.spec.js` measures the 44 px rows and 28 px bars.
 
   Rows are created inside the SQL Sandbox transaction and rolled back.
   """
@@ -40,9 +38,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
 
   setup :editor_setup
 
-  # Only the user is built here. `runs_version_fixture/1` creates its OWN
-  # organization, so the membership goes on THAT one — the step 21 learning's
-  # standing trap.
+  # Only the user is built here. `runs_version_fixture/1` creates its own
+  # organization, so the membership goes on that one, not on a separate
+  # organization fixture.
   defp editor_setup(_context) do
     %{user: user_fixture()}
   end
@@ -215,8 +213,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
                "#{div(second.work.paid_secs, 3600)}:#{pad(rem(div(second.work.paid_secs, 60), 60))}"
              )
 
-      # A row is never blank in its Status cell. The wording is step 24's; the
-      # count is this step's, and it is the run's own findings.
+      # A row is never blank in its Status cell. The wording is the marks tests'
+      # subject; here it is the run's own findings.
       assert has_element?(view, "#run-1001 [data-role=run-status]")
     end
 
@@ -329,7 +327,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
 
       # Two-hourly over a span that starts at the first sign-on. The count is
       # asserted as "more than one and fewer than span/2h + 1" rather than as a
-      # literal, because the span is the fixture's and step 7 owns the axis.
+      # literal, because the span is the fixture's and `Runs.Day` owns the axis.
       span_hours = div(axis.end_secs - axis.start_secs, 3600)
       assert ticks != []
       assert length(ticks) <= div(span_hours, 2)
@@ -513,10 +511,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
       conn = log_in_user(context.conn, context.user, organization: world.organization)
 
       # The version's day type with no runs still has blocks, so the page IS
-      # `:loaded` — and step 35 gave that state a panel of its own. The chart used
-      # to render here with no rows; it no longer does, because an empty chart
-      # reads as a day whose blocks are all covered, which is the opposite of
-      # what is true. The region is still explained, by the first-use panel.
+      # `:loaded` — and that state has a panel of its own. The chart used to
+      # render here with no rows; it no longer does, because an empty chart reads
+      # as a day whose blocks are all covered, which is the opposite of what is
+      # true. The region is still explained, by the first-use panel.
       {:ok, view, _html} = live(conn, "/gtfs/#{world.version.id}/runs")
 
       assert has_element?(view, "#runs-page[data-load-state=loaded]")
