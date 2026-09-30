@@ -18,7 +18,7 @@ defmodule GtfsPlanner.Gtfs.Validator do
 
   @behaviour GtfsPlanner.Gtfs.ValidatorBehaviour
 
-  alias GtfsPlanner.Gtfs.{Export, Validator.Result}
+  alias GtfsPlanner.Gtfs.{Export, ExportDefaults, Validator.Result}
   alias GtfsPlanner.Validations
 
   require Logger
@@ -188,7 +188,9 @@ defmodule GtfsPlanner.Gtfs.Validator do
 
     with :ok <- File.mkdir_p(temp_dir),
          {:ok, zip_binary} <-
-           export_module().export_to_zip(organization_id, gtfs_version_id, export_profile, []) do
+           export_module().export_to_zip(organization_id, gtfs_version_id, export_profile,
+             estimate: estimate_option(organization_id)
+           ) do
       zip_path = Path.join(temp_dir, "gtfs.zip")
 
       case File.write(zip_path, zip_binary) do
@@ -198,6 +200,16 @@ defmodule GtfsPlanner.Gtfs.Validator do
     else
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  # Validation estimates exactly what the current defaults say: unlike an
+  # export run it has no recorded setting to read (INV-3), so current defaults
+  # are the right source. A non-estimating organization passes nil and the
+  # stored rows validate unchanged.
+  defp estimate_option(organization_id) do
+    defaults = ExportDefaults.get(organization_id)
+
+    if defaults.estimate_missing_times, do: defaults.estimate_method, else: nil
   end
 
   @doc false

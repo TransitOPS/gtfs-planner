@@ -167,7 +167,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveFlexTest do
       assert {:error, :validator_path_not_configured} =
                Validator.validate(organization.id, version.id, validation_run_id: run.id)
 
-      assert_received {:exported, organization_id, version_id, :flex, []}
+      assert_received {:exported, organization_id, version_id, :flex, [estimate: :distance]}
       assert organization_id == organization.id
       assert version_id == version.id
     end
@@ -184,7 +184,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveFlexTest do
       assert {:error, :validator_path_not_configured} =
                Validator.validate(organization.id, version.id, validation_run_id: run.id)
 
-      assert_received {:exported, organization_id, version_id, :full, []}
+      assert_received {:exported, organization_id, version_id, :full, [estimate: :distance]}
       assert organization_id == organization.id
       assert version_id == version.id
     end
