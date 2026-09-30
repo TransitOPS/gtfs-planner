@@ -348,6 +348,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
   # order, at the first row of the difference (`R10`). Pin n is the "What's
   # different" item n, so the two numberings agree without a second source; the
   # hook drops a pin whose stop the read left unlocated.
+  # A pair that shares no stops lists no differences, so it gets no pins either.
+  defp map_pins(%{alignment: %{counts: %{shared: 0}}}), do: []
+
   defp map_pins(%{alignment: %{differences: %{items: items}, rows: rows}}) do
     items
     |> Enum.with_index(1)
