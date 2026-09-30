@@ -57,7 +57,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     alignment_save_requested confirm_alignment_save alignment_conflict_keep_local
     alignment_generate_paths alignment_confirm_generate alignment_cancel_generation
     alignment_follow_streets confirm_bulk_generation reactivate_route
-    grouping_submit
+    grouping_submit link_confirm
   )
 
   @grouping_review "group"
@@ -198,6 +198,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:status_message, nil)
      |> assign(:grouping, nil)
      |> assign(:grouped_summary, nil)
+     |> assign(:link_marker, nil)
+     |> assign(:link_offer, nil)
+     |> assign(:link_done, nil)
+     |> assign(:link_dialog, false)
+     |> assign(:link_pending, false)
+     |> assign(:link_error, nil)
      |> stream(:patterns, [])
      |> attach_hook(:editor_write_gate, :handle_event, &editor_write_gate/3)}
   end
@@ -261,6 +267,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       socket
       |> assign(:route_id, params["route_id"])
       |> assign(:pattern_id, pattern_id)
+      |> assign(:link_marker, params["link"])
       |> assign(:task, resolve_task(action, params["task"]))
 
     socket =
@@ -694,7 +701,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
              :info,
              "Pattern created with its first timing. Set its running times next."
            )
-           |> push_navigate(to: pattern_path(socket, pattern.route_pattern_id, "?task=timings"))}
+           |> push_navigate(
+             to:
+               pattern_path(
+                 socket,
+                 pattern.route_pattern_id,
+                 "?task=timings&link=#{pattern.id}"
+               )
+           )}
 
         {:error, reason} ->
           {:noreply, reject_creation(socket, params, reason)}
@@ -1720,6 +1734,103 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     handle_version_switch(socket, version_id)
   end
 
+  # --- link offer ------------------------------------------------------------
+
+  # The offer names one pattern, the one the URL marker points at, so it
+  # survives the `push_navigate` that follows a create and it is the same offer
+  # on the editor and on the Patterns list.
+  @impl true
+  def handle_event("link_open", _params, socket) do
+    {:noreply, assign(socket, :link_dialog, true)}
+  end
+
+  @impl true
+  def handle_event("link_cancel", _params, socket) do
+    {:noreply, socket |> assign(:link_dialog, false) |> assign(:link_error, nil)}
+  end
+
+  # "Not now" writes nothing: it only drops the marker, so the offer is gone
+  # from this page and from any reload of it.
+  @impl true
+  def handle_event("link_dismiss", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:link_offer, nil)
+     |> assign(:link_done, nil)
+     |> push_patch(to: unlinked_path(socket))}
+  end
+
+  @impl true
+  def handle_event("link_confirm", _params, socket) do
+    case socket.assigns.link_offer do
+      nil ->
+        {:noreply, socket}
+
+      offer ->
+        confirm_link(socket, offer)
+    end
+  end
+
+  defp confirm_link(socket, offer) do
+    selections = [%{key: offer.key, direction_id: offer.direction_id, target: offer.pattern_id}]
+
+    review = %{selections: selections, fingerprint: offer.fingerprint}
+
+    socket = socket |> assign(:link_pending, true) |> assign(:link_error, nil)
+
+    case Gtfs.group_left_out_trips(socket.assigns.route_id, review, audit_context(socket)) do
+      {:ok, summary} ->
+        {:noreply,
+         socket
+         |> assign(:link_pending, false)
+         |> assign(:link_dialog, false)
+         |> assign(:link_offer, nil)
+         |> assign(:link_done, Map.put(summary, :pattern_name, offer.pattern_name))
+         # The linked trips are no longer left out, so the screen's own counts and
+         # the offer's group are re-read from one place here.
+         |> load_screen()
+         |> push_patch(to: unlinked_path(socket))}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:link_pending, false)
+         |> assign(
+           :link_error,
+           "Those trips changed, so nothing was linked. #{link_error(reason)}"
+         )}
+    end
+  end
+
+  defp link_error(:stale), do: "Review the offer again before linking."
+
+  defp link_error(:invalid_selection),
+    do: "This pattern no longer holds the stops those trips serve."
+
+  defp link_error(reason), do: "Reload the page and try again. (#{inspect(reason)})"
+
+  # The same page without the marker, which is where a dismiss and a confirmed
+  # link land.
+  defp unlinked_path(socket) do
+    case socket.assigns.live_action do
+      :index ->
+        patterns_path(socket)
+
+      :new ->
+        patterns_path(socket)
+
+      _other ->
+        pattern_path(socket, socket.assigns.pattern_id, "?task=#{socket.assigns.task}")
+    end
+  end
+
+  # The offer and its result are the only link state the editor shows, and only
+  # an editor may see them: both write the route's exported trips.
+  defp link_offer?(assigns) do
+    (assigns.link_offer != nil or assigns.link_done != nil) and
+      assigns.patterns_editable and not assigns.editor_revoked?
+  end
+
   @impl true
   def handle_async(:alignment_generation, result, socket) do
     {:noreply,
@@ -1884,6 +1995,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                 bulk_error={@bulk_error}
                 bulk_pending={@alignment_bulk != nil}
                 grouped_summary={@grouped_summary}
+                link_offer={@link_offer}
+                link_done={@link_done}
+                link_pending={@link_pending}
               />
             <% @load_state == :loading -> %>
               <.skeleton id="patterns-loading" label="Loading patterns" rows={3} aria-busy="true" />
@@ -1957,6 +2071,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                 />
 
                 <RoutePatternComponents.connectivity_banner offline?={@offline?} />
+
+                <div :if={link_offer?(assigns)} id="pattern-link-offer" class="pt-4">
+                  <RoutePatternComponents.link_offer
+                    offer={@link_offer}
+                    done={@link_done}
+                    pending={@link_pending}
+                  />
+                </div>
 
                 <div :if={@details_stale?} class="pt-4">
                   <.message
@@ -2186,6 +2308,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
         <RoutePatternComponents.blocked_dialog dialog={@blocked_dialog} />
 
+        <RoutePatternComponents.link_review_dialog
+          offer={if @link_dialog, do: @link_offer}
+          pending={@link_pending}
+          error={@link_error}
+        />
+
         <.confirm_dialog
           id="details-impact-dialog"
           open={@impact_dialog != nil}
@@ -2387,7 +2515,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
     case Gtfs.load_route_pattern_screen(organization_id, version_id, route_id, opts) do
       {:ok, screen} ->
-        socket |> apply_screen(screen) |> load_headsign_usage() |> load_left_out()
+        socket
+        |> apply_screen(screen)
+        |> load_headsign_usage()
+        |> load_left_out()
+        |> load_link_offer()
 
       {:error, :not_found} ->
         not_found(socket)
@@ -2467,6 +2599,85 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     else
       assign(socket, :headsign_selection, nil)
     end
+  end
+
+  # The offer is offered once per load, from the URL marker, so the create's
+  # navigate, a reload and the list all answer the same way: the marked pattern
+  # is read, and a left-out group that serves exactly its stops in the same
+  # order, with a direction the pattern's, is offered to it.
+  defp load_link_offer(%{assigns: %{link_marker: nil}} = socket),
+    do: socket |> assign(:link_offer, nil) |> assign(:link_dialog, false)
+
+  defp load_link_offer(%{assigns: %{link_marker: _marker}} = socket) do
+    socket
+    |> assign(:link_dialog, false)
+    |> link_offer_target()
+  end
+
+  defp link_offer_target(socket) do
+    marker = socket.assigns.link_marker
+
+    with {:ok, {pattern, occurrences}} <- link_offer_target_pattern(socket, marker),
+         {:ok, preview} <- Gtfs.preview_left_out(socket.assigns.route_id, audit_context(socket)),
+         group when not is_nil(group) <-
+           Enum.find(preview.groups, &link_group?(&1, occurrences, pattern)) do
+      assign(socket, :link_offer, link_offer(pattern, group, preview.fingerprint))
+    else
+      _no_offer ->
+        assign(socket, :link_offer, nil)
+    end
+  end
+
+  # The editor already holds the marked pattern and its stops; the Patterns list
+  # does not, so the list reads them through the same scoped read the editor
+  # uses. The marker is the pattern's UUID, which is what that read names.
+  defp link_offer_target_pattern(%{assigns: %{pattern: pattern}} = socket, marker)
+       when is_map(pattern) do
+    if pattern.id == marker do
+      {:ok, {pattern, socket.assigns.occurrences}}
+    else
+      {:error, :no_offer}
+    end
+  end
+
+  defp link_offer_target_pattern(socket, marker) do
+    case Gtfs.get_pattern(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           socket.assigns.route_id,
+           marker
+         ) do
+      {:ok, %{pattern: pattern, occurrences: occurrences}} -> {:ok, {pattern, occurrences}}
+      {:error, _reason} -> {:error, :no_offer}
+    end
+  end
+
+  # The offer is the same stop order the trips already serve, in a direction the
+  # pattern already has: a group's direction of its own must be the pattern's,
+  # and a group with no direction takes it.
+  defp link_group?(group, occurrences, pattern) do
+    stop_ids = Enum.map(occurrences, & &1.stop_id)
+
+    group.stop_ids == stop_ids and
+      (is_nil(group.direction_id) or group.direction_id == pattern.direction_id)
+  end
+
+  defp link_offer(pattern, group, fingerprint) do
+    %{
+      key: group.key,
+      fingerprint: fingerprint,
+      # The apply takes the pattern's own UUID as its target, so the confirmed
+      # group's trips join this pattern rather than a candidate the preview would
+      # have offered instead.
+      pattern_id: pattern.id,
+      pattern_name: RoutePatternListComponents.pattern_name(pattern),
+      direction_id: pattern.direction_id,
+      trip_count: group.trip_count,
+      stop_count: length(group.stop_ids),
+      stop_names: group.stop_names,
+      services: group.services,
+      timing_names: group.timing_names
+    }
   end
 
   # The Patterns tab names why trips stayed outside patterns; the editor tabs for one

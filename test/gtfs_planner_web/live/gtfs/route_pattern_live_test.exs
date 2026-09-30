@@ -583,9 +583,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLiveTest do
       assert length(rows) == 2
       assert Enum.all?(rows, &(&1.arrival_offset == 0 and &1.departure_offset == 0))
 
+      # The create navigates with the link marker the offer is asked for, so the
+      # offer survives the remount; the marker's value is the pattern's own UUID.
       assert_redirect(
         view,
-        pattern_path(version, route, created, "?task=timings")
+        pattern_path(version, route, created, "?task=timings&link=#{created.id}")
       )
     end
 

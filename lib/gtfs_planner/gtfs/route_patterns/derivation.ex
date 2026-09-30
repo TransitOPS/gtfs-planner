@@ -1104,7 +1104,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
       supplied_ids: supplied_ids,
       supplied: supplied,
       derived: derived,
-      occurrences: occurrence_rows(pattern_ids(supplied, derived)),
+      occurrences: occurrence_rows(pattern_ids(supplied, derived, overrides)),
       representatives: representative_sequences(route, supplied, eligible_stops),
       eligible_stops: eligible_stops,
       names: pattern_names(route),
@@ -1162,9 +1162,19 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
     |> Map.new(&{&1.derivation_key, &1})
   end
 
-  defp pattern_ids(supplied, derived) do
-    Enum.map(Map.values(supplied), & &1.id) ++
-      Enum.map(derived, fn {_key, pattern} -> pattern.id end)
+  # A confirmed override names the pattern to join, and that pattern is often a
+  # hand-made one: it has no derivation key and no pending trips pointing at it,
+  # so `supplied` and `derived` are both blind to it. Without its own occurrences
+  # here, `existing_target/3` would insert a second copy of its stops and trip
+  # over the unique position constraint.
+  defp pattern_ids(supplied, derived, overrides) do
+    targets = Map.get(overrides, :targets) || %{}
+
+    supplied_ids = Enum.map(Map.values(supplied), & &1.id)
+    derived_ids = Enum.map(derived, fn {_key, pattern} -> pattern.id end)
+    target_ids = targets |> Map.values() |> Enum.map(& &1.id)
+
+    supplied_ids ++ derived_ids ++ target_ids
   end
 
   defp occurrence_rows([]), do: %{}
