@@ -254,6 +254,15 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
       {:ok, view, _html} = live(conn, fleet_url(version))
 
       open_edit(view, in_use)
+
+      assert has_element?(view, "#vehicle-type-assigned-vehicles", "Used by 1 vehicle")
+
+      assert has_element?(
+               view,
+               "#vehicle-type-assigned-vehicles",
+               "To delete it, first change those."
+             )
+
       view |> element("#delete-vehicle-type") |> render_click()
 
       assert has_element?(view, "#vehicle-type-in-use-dialog", "Cutaway is used by 1 vehicle")
@@ -265,6 +274,15 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
 
       view |> element("#vehicle-type-drawer-close") |> render_click()
       open_edit(view, unused)
+
+      assert has_element?(view, "#vehicle-type-assigned-vehicles", "Nothing uses this type")
+
+      assert has_element?(
+               view,
+               "#vehicle-type-assigned-vehicles",
+               "You can delete it without changing anything."
+             )
+
       view |> element("#delete-vehicle-type") |> render_click()
 
       assert has_element?(
@@ -301,13 +319,13 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
       in_use = vehicle_type_fixture(organization.id, %{"name" => "Cutaway"})
       vehicle_type_fixture(organization.id, %{"name" => "Spare"})
 
-      block_attribute_fixture(organization.id, version.id, %{
+      live_block_attribute_fixture(organization.id, version.id, %{
         service_id: "weekday",
         block_id: "7",
         vehicle_type_id: in_use.id
       })
 
-      route_operating_setting_fixture(organization.id, version.id, %{
+      live_route_setting_fixture(organization.id, version.id, %{
         route_id: "10",
         required_vehicle_type_id: in_use.id
       })
@@ -315,6 +333,13 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
       {:ok, view, _html} = live(conn, fleet_url(version))
 
       open_edit(view, in_use)
+
+      assert has_element?(
+               view,
+               "#vehicle-type-assigned-vehicles",
+               "Used by 1 block and 1 route"
+             )
+
       view |> element("#delete-vehicle-type") |> render_click()
 
       assert has_element?(
@@ -327,6 +352,71 @@ defmodule GtfsPlannerWeb.Gtfs.VehicleTypesLiveTest do
 
       assert Operations.vehicle_type_in_use_counts(organization.id, in_use.id) ==
                %{vehicles: 0, blocks: 1, routes: 1}
+    end
+
+    test "the drawer names a type only a block or a route requires", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      by_block = vehicle_type_fixture(organization.id, %{"name" => "Block type"})
+      by_route = vehicle_type_fixture(organization.id, %{"name" => "Route type"})
+
+      live_block_attribute_fixture(organization.id, version.id, %{
+        service_id: "weekday",
+        block_id: "7",
+        vehicle_type_id: by_block.id
+      })
+
+      live_route_setting_fixture(organization.id, version.id, %{
+        route_id: "10",
+        required_vehicle_type_id: by_route.id
+      })
+
+      {:ok, view, _html} = live(conn, fleet_url(version))
+
+      open_edit(view, by_block)
+      assert has_element?(view, "#vehicle-type-assigned-vehicles", "Used by 1 block")
+      refute has_element?(view, "#vehicle-type-assigned-vehicles", "Nothing uses this type")
+
+      view |> element("#vehicle-type-drawer-close") |> render_click()
+      open_edit(view, by_route)
+      assert has_element?(view, "#vehicle-type-assigned-vehicles", "Used by 1 route")
+      refute has_element?(view, "#vehicle-type-assigned-vehicles", "Nothing uses this type")
+    end
+
+    test "a type only a missing block or route names is unused and deletes", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+      type = vehicle_type_fixture(organization.id, %{"name" => "Cutaway"})
+
+      block_attribute_fixture(organization.id, version.id, %{
+        service_id: "weekday",
+        block_id: "7",
+        vehicle_type_id: type.id
+      })
+
+      route_operating_setting_fixture(organization.id, version.id, %{
+        route_id: "10",
+        required_vehicle_type_id: type.id
+      })
+
+      {:ok, view, _html} = live(conn, fleet_url(version))
+
+      open_edit(view, type)
+      assert has_element?(view, "#vehicle-type-assigned-vehicles", "Nothing uses this type")
+
+      view |> element("#delete-vehicle-type") |> render_click()
+      view |> element("#vehicle-type-delete-confirm-confirm") |> render_click()
+
+      assert has_element?(view, "#vehicle-type-notice", "Cutaway deleted.")
+      assert Operations.list_vehicle_types(organization.id) == []
     end
   end
 

@@ -174,7 +174,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       assert has_element?(view, "#garage-delete", "Delete garage")
     end
 
-    test "the vehicle note counts one vehicle, several and none in plain words", %{
+    test "the reference note counts one vehicle, several and none in plain words", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -195,7 +195,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       assert has_element?(
                view,
                "#garage-assigned-vehicles",
-               "1 vehicle uses this garage. To delete it, first move that vehicle to another garage in Fleet."
+               "Used by 1 vehicle. To delete it, first change those."
              )
 
       view |> element("#garage-drawer-close") |> render_click()
@@ -204,7 +204,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       assert has_element?(
                view,
                "#garage-assigned-vehicles",
-               "2 vehicles use this garage. To delete it, first move them to another garage in Fleet."
+               "Used by 2 vehicles. To delete it, first change those."
              )
 
       view |> element("#garage-drawer-close") |> render_click()
@@ -213,8 +213,88 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       assert has_element?(
                view,
                "#garage-assigned-vehicles",
-               "No vehicles use this garage, so you can delete it without moving anything."
+               "Nothing uses this garage, so you can delete it without moving anything."
              )
+    end
+
+    test "the reference note names a garage only a block or a route uses", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      by_block =
+        garage_fixture(organization.id, %{"garage_id" => "garage_block", "name" => "Block"})
+
+      by_route =
+        garage_fixture(organization.id, %{"garage_id" => "garage_route", "name" => "Route"})
+
+      live_block_attribute_fixture(organization.id, version.id, %{
+        service_id: "weekday",
+        block_id: "12",
+        garage_id: by_block.id
+      })
+
+      live_route_setting_fixture(organization.id, version.id, %{
+        route_id: "10",
+        garage_id: by_route.id
+      })
+
+      {:ok, view, _html} = open_editor(conn, user, organization, version)
+
+      open_edit(view, by_block)
+
+      assert has_element?(
+               view,
+               "#garage-assigned-vehicles",
+               "Used by 1 block. To delete it, first change those."
+             )
+
+      refute has_element?(view, "#garage-assigned-vehicles", "Nothing uses this garage")
+
+      view |> element("#garage-drawer-close") |> render_click()
+      open_edit(view, by_route)
+
+      assert has_element?(
+               view,
+               "#garage-assigned-vehicles",
+               "Used by 1 route. To delete it, first change those."
+             )
+    end
+
+    test "the reference note ignores a block or route that no longer exists", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      garage = garage_fixture(organization.id, %{"garage_id" => "garage_main", "name" => "Main"})
+
+      block_attribute_fixture(organization.id, version.id, %{
+        service_id: "weekday",
+        block_id: "12",
+        garage_id: garage.id
+      })
+
+      route_operating_setting_fixture(organization.id, version.id, %{
+        route_id: "10",
+        garage_id: garage.id
+      })
+
+      {:ok, view, _html} = open_editor(conn, user, organization, version)
+      open_edit(view, garage)
+
+      assert has_element?(
+               view,
+               "#garage-assigned-vehicles",
+               "Nothing uses this garage, so you can delete it without moving anything."
+             )
+
+      view |> element("#garage-delete") |> render_click()
+      view |> element("#garage-delete-confirm-confirm") |> render_click()
+
+      assert has_element?(view, "#garage-notice", "Main deleted.")
+      assert Operations.list_garages(organization.id) == []
     end
   end
 
@@ -336,7 +416,7 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       {:ok, view, _html} = open_editor(conn, user, organization, version)
       open_edit(view, garage)
 
-      assert has_element?(view, "#garage-assigned-vehicles", "2 vehicles use this garage.")
+      assert has_element?(view, "#garage-assigned-vehicles", "Used by 2 vehicles.")
 
       render_submit(view, "save_garage", %{
         "garage" => %{
@@ -443,13 +523,13 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       unused =
         garage_fixture(organization.id, %{"garage_id" => "garage_river", "name" => "Riverside"})
 
-      block_attribute_fixture(organization.id, version.id, %{
+      live_block_attribute_fixture(organization.id, version.id, %{
         service_id: "weekday",
         block_id: "12",
         garage_id: in_use.id
       })
 
-      route_operating_setting_fixture(organization.id, version.id, %{
+      live_route_setting_fixture(organization.id, version.id, %{
         route_id: "10",
         garage_id: in_use.id
       })
@@ -457,6 +537,13 @@ defmodule GtfsPlannerWeb.Gtfs.GarageEditorLiveTest do
       {:ok, view, _html} = open_editor(conn, user, organization, version)
 
       open_edit(view, in_use)
+
+      assert has_element?(
+               view,
+               "#garage-assigned-vehicles",
+               "Used by 1 block and 1 route. To delete it, first change those."
+             )
+
       view |> element("#garage-delete") |> render_click()
 
       assert has_element?(
