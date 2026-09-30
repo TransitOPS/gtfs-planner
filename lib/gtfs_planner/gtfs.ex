@@ -884,6 +884,28 @@ defmodule GtfsPlanner.Gtfs do
   def create_trips(_route_id, _attrs, _audit_context), do: {:error, :invalid_input}
 
   @doc """
+  Reviews one trip-change command without writing through
+  `Schedules.review_trip_change/3`.
+
+  Returns `{:ok, review}` with the canonical command, its planned change set, the
+  R3 fingerprint an apply must match, the grid preview of every updated trip's
+  occurrence positions, and the counts of changed, created, deleted, excluded and
+  skipped trips. A trip outside this organization, version or route is
+  `{:error, :not_found}` and an unknown target calendar is
+  `{:error, :calendar_not_found}`. Nothing is written and no audit log is
+  recorded.
+  """
+  @spec review_trip_change(String.t(), Schedules.TripChanges.command(), AuditContext.t()) ::
+          {:ok, Schedules.TripChanges.review()}
+          | {:error,
+             :not_found | :invalid_command | :too_many_trips | :calendar_not_found | term()}
+  def review_trip_change(route_id, command, %AuditContext{} = audit_context) do
+    Schedules.review_trip_change(route_id, command, audit_context)
+  end
+
+  def review_trip_change(_route_id, _command, _audit_context), do: {:error, :invalid_input}
+
+  @doc """
   Edits one trip in place through `Schedules.update_trip/5`.
 
   `attrs` is a subset of `:start_time`, `:timed_pattern_id`, `:service_id`,
