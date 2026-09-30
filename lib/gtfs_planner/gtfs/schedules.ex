@@ -43,6 +43,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
+  alias GtfsPlanner.Gtfs.Blocking.DayTypes
+  alias GtfsPlanner.Gtfs.Blocking.Queries
   alias GtfsPlanner.Gtfs.Calendars
   alias GtfsPlanner.Gtfs.Export.MissingTimes
   alias GtfsPlanner.Gtfs.ExportDefaults
@@ -356,6 +358,407 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   def count_trip_transfers(organization_id, version_id, trip_ids) when is_list(trip_ids) do
     trip_transfers_query(organization_id, version_id, trip_ids)
     |> Repo.aggregate(:count)
+  end
+
+  # -- Change review (R3) -----------------------------------------------------
+
+  @doc """
+  Reviews one trip-change command without writing.
+
+  The command is validated first, then one read transaction loads its scoped
+  state: the route, every affected trip with its stop times and frequency rows,
+  the affected patterns with their occurrences and timings, the version's
+  calendars, and the per-command inputs (`block_inputs`, `existing_trip_ids`,
+  `transfer_counts`, `target_service`). `TripChanges.plan/2` turns the command
+  into a change set.
+
+  A trip UUID outside this organization, version or route is
+  `{:error, :not_found}`; a target calendar outside the version is
+  `{:error, :calendar_not_found}`. The review carries the canonical command, the
+  planned change set, the R3 fingerprint an apply must match, the preview of
+  every updated trip's occurrence positions as the seconds the grid shows, and
+  the counts of changed, created, deleted, excluded and skipped trips. Nothing
+  is written and no audit log is recorded.
+  """
+  @spec review_trip_change(String.t(), TripChanges.command(), AuditContext.t()) ::
+          {:ok, TripChanges.review()}
+          | {:error,
+             :not_found | :invalid_command | :too_many_trips | :calendar_not_found | term()}
+  def review_trip_change(route_id, command, %AuditContext{} = audit_context) do
+    case TripChanges.validate(command) do
+      {:ok, command} ->
+        run_read(fn -> do_review_trip_change(route_id, command, audit_context) end)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def review_trip_change(_route_id, _command, _audit_context), do: {:error, :invalid_input}
+
+  defp do_review_trip_change(route_id, command, audit_context) do
+    route =
+      published_route!(audit_context.organization_id, audit_context.gtfs_version_id, route_id)
+
+    state = load_change_state(route, command, audit_context)
+
+    case TripChanges.plan(command, state) do
+      {:ok, change_set} -> change_review(command, state, change_set)
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
+
+  # The review and the apply path share this loader: the review runs it in a
+  # plain read transaction without row locks, and the apply path re-runs it under
+  # the §4.4 lock order before it plans and fences. Every read is scoped to the
+  # organization, version and route, so a foreign UUID can never enter the state.
+  defp load_change_state(route, command, audit_context) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+
+    identities = change_identities!(organization_id, version_id, route, command)
+    calendars = load_calendars!(organization_id, version_id)
+    check_target_service!(command, calendars)
+
+    pattern_ids = change_pattern_ids!(organization_id, version_id, route, command, identities)
+    patterns = change_patterns!(organization_id, version_id, route, pattern_ids)
+    trips = change_trips(organization_id, version_id, route, identities, patterns)
+
+    %{
+      route: route,
+      trips: trips,
+      patterns: patterns,
+      calendars: calendars,
+      service_dates: DayTypes.service_dates(calendars),
+      pattern_trips: change_pattern_trips(trips, patterns),
+      target_service: change_target_service(command)
+    }
+    |> put_block_inputs(command, organization_id, version_id, identities)
+    |> put_existing_trip_ids(command, organization_id, version_id)
+    |> put_transfer_counts(command, organization_id, version_id, identities)
+  end
+
+  # Every trip the command names must be a trip of this organization, version and
+  # route; a miss is a scope failure, never a planner concern.
+  defp change_identities!(organization_id, version_id, route, command) do
+    case cast_change_trip_ids(change_trip_ids(command)) do
+      {:ok, trip_ids} ->
+        identities = Queries.trip_identities(organization_id, version_id, {:uuids, trip_ids})
+
+        if scoped_identities?(identities, trip_ids, route) do
+          identities
+        else
+          Repo.rollback(:not_found)
+        end
+
+      :error ->
+        Repo.rollback(:not_found)
+    end
+  end
+
+  defp scoped_identities?(identities, trip_ids, route) do
+    length(identities) == length(trip_ids) and
+      Enum.all?(identities, &(&1.route_id == route.route_id))
+  end
+
+  defp cast_change_trip_ids(trip_ids) do
+    trip_ids
+    |> Enum.reduce_while({:ok, []}, fn trip_id, {:ok, acc} ->
+      case Ecto.UUID.cast(trip_id) do
+        {:ok, uuid} -> {:cont, {:ok, [uuid | acc]}}
+        :error -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, ids} -> {:ok, ids |> Enum.uniq() |> Enum.sort()}
+      :error -> :error
+    end
+  end
+
+  defp change_trip_ids({:edit_stop, trip_id, _params}), do: [trip_id]
+  defp change_trip_ids({:shift, trip_ids, _delta, _from_position}), do: trip_ids
+  defp change_trip_ids({:set_timing, trip_ids, _timing_id}), do: trip_ids
+  defp change_trip_ids({:move_calendar, trip_ids, _service_id}), do: trip_ids
+  defp change_trip_ids({:copy, trip_ids, _service_id, _offset, _skip_existing}), do: trip_ids
+  defp change_trip_ids({:add_frequency, _attrs}), do: []
+  defp change_trip_ids({:update_frequency, trip_id, _params}), do: [trip_id]
+  defp change_trip_ids({:convert_frequency, trip_id}), do: [trip_id]
+
+  defp change_trip_ids({:restore, payload}) do
+    restored = payload |> attr(:trips) |> List.wrap() |> Enum.map(&attr(&1, :id))
+    created = payload |> attr(:created) |> List.wrap() |> Enum.map(&attr(&1, :id))
+
+    Enum.uniq(restored ++ created)
+  end
+
+  # The affected patterns are the trips' own patterns plus the pattern an
+  # `:add_frequency` command writes to; that pattern must be one of this route's.
+  defp change_pattern_ids!(organization_id, version_id, route, command, identities) do
+    trip_patterns =
+      identities
+      |> Enum.map(& &1.route_pattern_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    case command do
+      {:add_frequency, %{pattern_id: pattern_id}} ->
+        pattern = change_pattern!(organization_id, version_id, route, pattern_id)
+        Enum.uniq([pattern.route_pattern_id | trip_patterns])
+
+      _command ->
+        trip_patterns
+    end
+  end
+
+  defp change_pattern!(organization_id, version_id, route, pattern_id) do
+    query =
+      from(p in RoutePattern,
+        where:
+          p.organization_id == ^organization_id and p.gtfs_version_id == ^version_id and
+            p.route_id == ^route.route_id and p.id == ^pattern_id
+      )
+
+    case Repo.one(query) do
+      %RoutePattern{} = pattern -> pattern
+      nil -> Repo.rollback(:not_found)
+    end
+  end
+
+  # A trip whose stored pattern is gone stays loadable (the reader calls it
+  # unlinked); only the patterns that resolve to this route's rows are keyed.
+  defp change_patterns!(organization_id, version_id, route, pattern_ids) do
+    patterns =
+      from(p in RoutePattern,
+        where:
+          p.organization_id == ^organization_id and p.gtfs_version_id == ^version_id and
+            p.route_id == ^route.route_id and p.route_pattern_id in ^pattern_ids,
+        order_by: [asc: p.route_pattern_id]
+      )
+      |> Repo.all()
+
+    occurrences = load_occurrences(organization_id, version_id, patterns)
+    timings = load_timings(organization_id, version_id, patterns)
+
+    Map.new(patterns, fn pattern ->
+      {pattern.route_pattern_id,
+       %{
+         pattern: pattern,
+         occurrences: Map.get(occurrences, pattern.id, []),
+         timings: Map.get(timings, pattern.id, []) |> Enum.map(&change_timing/1)
+       }}
+    end)
+  end
+
+  defp change_timing(timing),
+    do: %{timing: Map.delete(timing, :rows), rows: Map.get(timing, :rows, [])}
+
+  # Every trip of an affected pattern is loaded, not only the command's own: the
+  # R4 duplicate check and the later copy, calendar and mixing rules read the
+  # pattern's trips from this map.
+  defp change_trips(organization_id, version_id, route, identities, patterns) do
+    pattern_ids = Map.keys(patterns)
+    identity_ids = Enum.map(identities, & &1.id)
+
+    trips =
+      from(t in Trip,
+        where:
+          t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+            t.route_id == ^route.route_id and
+            (t.route_pattern_id in ^pattern_ids or t.id in ^identity_ids),
+        order_by: [asc: t.id]
+      )
+      |> Repo.all()
+
+    stop_times = load_stop_times(organization_id, version_id, trips)
+    frequencies = load_frequencies(organization_id, version_id, trips)
+
+    Map.new(trips, fn trip ->
+      {trip.id,
+       %{
+         trip: trip,
+         stop_times: Map.get(stop_times, trip.trip_id, []),
+         frequencies: Map.get(frequencies, trip.trip_id, [])
+       }}
+    end)
+  end
+
+  defp change_pattern_trips(trips, patterns) do
+    loaded =
+      Enum.reduce(trips, %{}, fn {_trip_uuid, entry}, acc ->
+        trip = entry.trip
+
+        summary = %{
+          id: trip.id,
+          service_id: trip.service_id,
+          frequency?: entry.frequencies != []
+        }
+
+        case trip.route_pattern_id do
+          nil -> acc
+          pattern_id -> Map.update(acc, pattern_id, [summary], &[summary | &1])
+        end
+      end)
+
+    Map.new(patterns, fn {pattern_id, _pattern} ->
+      {pattern_id, loaded |> Map.get(pattern_id, []) |> Enum.sort_by(& &1.id)}
+    end)
+  end
+
+  defp check_target_service!(command, calendars) do
+    case change_target_service(command) do
+      nil ->
+        :ok
+
+      service_id ->
+        unless Enum.any?(calendars, &(&1.service_id == service_id)),
+          do: Repo.rollback(:calendar_not_found)
+    end
+  end
+
+  defp change_target_service({:move_calendar, _trip_ids, service_id}), do: service_id
+
+  defp change_target_service({:copy, _trip_ids, service_id, _offset, _skip_existing}),
+    do: service_id
+
+  defp change_target_service({:add_frequency, attrs}), do: attr(attrs, :service_id)
+  defp change_target_service(_command), do: nil
+
+  defp put_block_inputs(state, command, organization_id, version_id, identities)
+       when elem(command, 0) in [:shift, :move_calendar] do
+    Map.put(
+      state,
+      :block_inputs,
+      block_inputs(organization_id, version_id, state.calendars, identities)
+    )
+  end
+
+  defp put_block_inputs(state, _command, _organization_id, _version_id, _identities), do: state
+
+  defp put_existing_trip_ids(state, command, organization_id, version_id)
+       when elem(command, 0) in [:copy, :add_frequency, :convert_frequency] do
+    Map.put(state, :existing_trip_ids, version_trip_ids(organization_id, version_id))
+  end
+
+  defp put_existing_trip_ids(state, _command, _organization_id, _version_id), do: state
+
+  defp put_transfer_counts(state, command, organization_id, version_id, identities)
+       when elem(command, 0) in [:convert_frequency, :restore] do
+    natural_ids = identities |> Enum.map(& &1.trip_id) |> Enum.uniq()
+    Map.put(state, :transfer_counts, transfer_counts(organization_id, version_id, natural_ids))
+  end
+
+  defp put_transfer_counts(state, _command, _organization_id, _version_id, _identities), do: state
+
+  # The selected trips plus every trip on their blocks anywhere in the version,
+  # with the in-seat records naming them: exactly the inputs
+  # `Blocking.project_trip_changes/2` consumes.
+  defp block_inputs(organization_id, version_id, calendars, identities) do
+    selected_ids = Enum.map(identities, & &1.id)
+
+    block_ids =
+      identities |> Enum.map(& &1.block_id) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+    trips =
+      (Queries.trip_rows(organization_id, version_id, {:uuids, selected_ids}) ++
+         block_trip_rows(organization_id, version_id, block_ids))
+      |> Enum.uniq_by(& &1.id)
+      |> Enum.sort_by(& &1.id)
+
+    %{
+      calendars: calendars,
+      trips: trips,
+      transfers: Queries.in_seat_rows(organization_id, version_id, Enum.map(trips, & &1.trip_id)),
+      settings: Blocking.get_settings(organization_id, version_id)
+    }
+  end
+
+  defp block_trip_rows(_organization_id, _version_id, []), do: []
+
+  defp block_trip_rows(organization_id, version_id, block_ids),
+    do: Queries.trip_rows(organization_id, version_id, {:blocks, block_ids})
+
+  # `%{natural_trip_id => n}` for every given trip, including zero-count trips,
+  # so an undo can require every created trip's count to be zero (R10).
+  defp transfer_counts(_organization_id, _version_id, []), do: %{}
+
+  defp transfer_counts(organization_id, version_id, natural_trip_ids) do
+    counts = Map.new(natural_trip_ids, &{&1, 0})
+
+    from(t in Transfer,
+      where:
+        t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+          (t.from_trip_id in ^natural_trip_ids or t.to_trip_id in ^natural_trip_ids),
+      select: {t.from_trip_id, t.to_trip_id}
+    )
+    |> Repo.all()
+    |> Enum.reduce(counts, &count_transfer/2)
+  end
+
+  defp count_transfer({from_trip_id, to_trip_id}, counts) do
+    [from_trip_id, to_trip_id]
+    |> Enum.uniq()
+    |> Enum.reduce(counts, fn trip_id, acc ->
+      if Map.has_key?(acc, trip_id), do: Map.update!(acc, trip_id, &(&1 + 1)), else: acc
+    end)
+  end
+
+  defp change_review(command, state, change_set) do
+    %{
+      command: command,
+      change_set: change_set,
+      fingerprint: TripChanges.fingerprint(command, state, change_set),
+      preview: change_preview(change_set),
+      counts: change_counts(change_set)
+    }
+  end
+
+  # The grid shows a stop's departure everywhere except the last column, where it
+  # shows the arrival, so every preview cell carries the value that cell will
+  # display; a missing or unreadable time stays nil.
+  defp change_preview(%{updates: updates}) do
+    updates
+    |> Enum.filter(&is_list(&1.stop_times))
+    |> Map.new(fn update -> {update.trip_id, update_preview(update.stop_times)} end)
+  end
+
+  defp update_preview(stop_times) do
+    last = length(stop_times)
+
+    stop_times
+    |> Enum.with_index(1)
+    |> Map.new(fn {row, index} ->
+      {Map.get(row, :position, index), preview_secs(row, index == last)}
+    end)
+  end
+
+  defp preview_secs(row, last?) do
+    value = if last?, do: Map.get(row, :arrival_time), else: Map.get(row, :departure_time)
+
+    case GtfsTime.parse(value) do
+      {:ok, seconds} -> seconds
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp change_counts(change_set) do
+    %{
+      changed: length(change_set.updates),
+      created: length(change_set.inserts),
+      deleted: length(change_set.deletes),
+      excluded: consequence_count(change_set.consequences, :excluded),
+      skipped: consequence_count(change_set.consequences, :skipped_existing)
+    }
+  end
+
+  defp consequence_count(consequences, tag) do
+    Enum.count(consequences, &match?({:note, {^tag, _, _}}, &1))
+  end
+
+  defp run_read(read) do
+    case Repo.transaction(read) do
+      {:ok, result} -> {:ok, result}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @doc """
@@ -1924,7 +2327,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         arrival_time: st.arrival_time,
         departure_time: st.departure_time,
         timepoint: st.timepoint,
-        shape_dist_traveled: st.shape_dist_traveled
+        timepoint: st.timepoint,
+        shape_dist_traveled: st.shape_dist_traveled,
+        pickup_type: st.pickup_type,
+        drop_off_type: st.drop_off_type,
+        stop_headsign: st.stop_headsign
       }
     )
     |> Repo.all()
