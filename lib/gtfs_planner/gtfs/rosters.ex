@@ -192,21 +192,77 @@ defmodule GtfsPlanner.Gtfs.Rosters do
           {:ok, %{id: Ecto.UUID.t(), line_number: pos_integer()}} | {:error, :not_found}
   def create_line(organization_id, gtfs_version_id) do
     with_roster_lock(organization_id, gtfs_version_id, fn ->
-      # The match is the invariant, not a guess: the number was read under the
-      # lock that every other roster writer takes, so `roster_lines`' own unique
-      # index on `(organization_id, gtfs_version_id, line_number)` has nothing
-      # left to refuse and a failure here would be a defect, not a refusal. The
-      # transaction aborts and writes nothing if it ever were one.
-      {:ok, line} =
-        %RosterLine{
-          organization_id: organization_id,
-          gtfs_version_id: gtfs_version_id,
-          line_number: next_line_number(organization_id, gtfs_version_id)
-        }
-        |> RosterLine.changeset(%{})
-        |> Repo.insert()
+      line = insert_line!(organization_id, gtfs_version_id)
 
       {:ok, %{id: line.id, line_number: line.line_number}}
+    end)
+  end
+
+  # The line every "a line is created" writer inserts, numbered by
+  # `next_line_number/2`. Both callers hold the lock, so the number is read and
+  # taken inside it.
+  #
+  # The match is the invariant, not a guess: the number was read under the lock
+  # that every other roster writer takes, so `roster_lines`' own unique index on
+  # `(organization_id, gtfs_version_id, line_number)` has nothing left to refuse
+  # and a failure here would be a defect, not a refusal. The transaction aborts
+  # and writes nothing if it ever were one.
+  defp insert_line!(organization_id, gtfs_version_id) do
+    {:ok, line} =
+      %RosterLine{
+        organization_id: organization_id,
+        gtfs_version_id: gtfs_version_id,
+        line_number: next_line_number(organization_id, gtfs_version_id)
+      }
+      |> RosterLine.changeset(%{})
+      |> Repo.insert()
+
+    line
+  end
+
+  @doc """
+  Creates a new line holding one run on every weekday of that run's own group.
+
+  This is "Create Mon–Fri line": the line is numbered exactly as `create_line/2`
+  numbers it — the version's highest plus one — and the days written are the ones
+  `Rosters.Candidates.new_line_availability/3` returns, which is every weekday
+  based on the run's own day type. Saturday and Sunday get no row when the run's
+  day type is the weekday one, because a day off is the absence of a row.
+
+  Whether the write is allowed is that same availability computation and nothing
+  else: an unknown run, a day type no weekday is based on, a weekday where
+  another line already works the run, and a week the run's own consecutive days
+  would leave under the minimum rest are its refusals, and this writer returns
+  the one it produced without inserting a line at all (domain rule 5, AC-9). The
+  short-rest rule is why the builder refuses what `set_slot/5` reports: a manual
+  per-day edit may leave short rest and says so, a builder never creates one.
+
+  The line and every one of its days are written inside the one transaction
+  `with_roster_lock/3` opens, so a refusal leaves no empty line behind and a day
+  write that fails part-way rolls the whole line back rather than leaving a
+  partial Mon–Fri (the "refusals write nothing" rule).
+
+  Returns `{:error, :not_found}` when the version is unpublished or belongs to
+  another organization, before anything is read or written.
+  """
+  @spec create_line_from_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t()) ::
+          {:ok, %{id: Ecto.UUID.t(), line_number: pos_integer(), weekdays: [1..7]}}
+          | {:error, :not_found | Candidates.refusal()}
+  def create_line_from_run(organization_id, gtfs_version_id, day_type_key, run_id) do
+    with_roster_lock(organization_id, gtfs_version_id, fn ->
+      with {:ok, view} <- compose_read(organization_id, gtfs_version_id),
+           {:ok, weekdays} <- Candidates.new_line_availability(view.roster, day_type_key, run_id),
+           {:ok, key, run} <- weekday_run(view, hd(weekdays), run_id) do
+        # Availability is `:ok`, so the group is not empty, the run resolves and
+        # the key it resolves under is the one the group is based on. This read
+        # restates what `new_line_availability/3` just proved rather than deciding
+        # anything; it is what supplies the run's times the rows store.
+        line = insert_line!(organization_id, gtfs_version_id)
+
+        write_group_days(organization_id, gtfs_version_id, line.id, key, run, weekdays)
+
+        {:ok, %{id: line.id, line_number: line.line_number, weekdays: weekdays}}
+      end
     end)
   end
 

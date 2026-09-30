@@ -5680,6 +5680,29 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Creates a new line holding one run on every weekday of that run's own group.
+
+  This is "Create Mon–Fri line". The line is numbered as `create_roster_line/2`
+  numbers it, and the days written are the ones
+  `Rosters.Candidates.new_line_availability/3` returns — every weekday based on the
+  run's day type — each storing the run's current sign-on and sign-off exactly as
+  `set_roster_slot/5` stores one. Weekdays with no such base get no row at all.
+
+  The write happens only when that same availability computation allows it: an
+  unknown run, a day type no weekday is based on, a weekday another line already
+  works the run on, and a week the run's own consecutive days would leave under
+  the minimum rest are all refused by name, and a refusal writes no line at all —
+  not even an empty one. A foreign or unpublished version is `{:error,
+  :not_found}`.
+  """
+  @spec create_roster_line_from_run(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t()) ::
+          {:ok, %{id: Ecto.UUID.t(), line_number: pos_integer(), weekdays: [1..7]}}
+          | {:error, :not_found | GtfsPlanner.Gtfs.Rosters.Candidates.refusal()}
+  def create_roster_line_from_run(organization_id, gtfs_version_id, day_type_key, run_id) do
+    Rosters.create_line_from_run(organization_id, gtfs_version_id, day_type_key, run_id)
+  end
+
+  @doc """
   Sets one weekday of a line to a run, storing the run's current times.
 
   This is the slot drawer's write. It replaces whatever run that weekday held,
