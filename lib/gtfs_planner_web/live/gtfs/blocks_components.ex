@@ -670,6 +670,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :estimated_pairs, :integer, default: 0
   attr :apply, :map, default: %{status: :none, title: nil, message: nil, reason: nil}
 
+  # How many saved runs contain the trips this proposal moves. Computed once,
+  # where the preview is stored, and never on render.
+  attr :runs_touched, :integer, default: 0
+  attr :version_id, :string, required: true
+
   def suggestion_panel(assigns) do
     assigns =
       assigns
@@ -730,6 +735,29 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         <p id="suggestion-scope-note" class="text-sm">
           {@scope_note}
           <span :if={@facts_note}>{@facts_note}</span>
+        </p>
+
+        <%!-- The runs this proposal reaches, counted ONCE when the preview was
+        built and never on render.
+        It is INFORMATIONAL: it tells a planner that applying will disturb runs
+        they may have built by hand, BEFORE they apply rather than after.
+        Nothing at zero — a proposal that touches no run has nothing to say about
+        runs, and a line reading "0 runs" would be noise on most proposals. --%>
+        <p
+          :if={@runs_touched > 0}
+          id="suggestion-runs-touched"
+          data-role="suggestion-runs-touched"
+          data-runs={@runs_touched}
+          class="text-sm"
+        >
+          These changes move trips in {@runs_touched}
+          {if @runs_touched == 1, do: "run", else: "runs"}. Review them on Runs after applying.
+          <.link
+            navigate={"/gtfs/#{@version_id}/runs?day=#{@day_type.key}"}
+            class={link_class()}
+          >
+            Go to Runs
+          </.link>
         </p>
 
         <details open>
