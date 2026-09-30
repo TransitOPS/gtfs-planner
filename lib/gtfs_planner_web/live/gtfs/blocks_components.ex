@@ -2959,6 +2959,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :turnback?, :boolean, default: false
   attr :short?, :boolean, default: false
   attr :back_block, :string, default: nil
+  attr :version_id, :string, required: true
+  attr :connection_form, :any, required: true
+  attr :connection_draft, :atom, default: nil
+  attr :connection_saved, :atom, default: nil
+  attr :connection_check, :any, default: nil
+  attr :connection_scope, :map, default: nil
+  attr :discard, :map, default: nil
 
   def gap_drawer(assigns) do
     connection = %{
@@ -2980,10 +2987,23 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       |> assign(:places, window_places(assigns.windows, assigns.from, assigns.to))
       |> assign(:pair, drive_pair(assigns.movement, assigns.from, assigns.to))
       |> assign(:hints, RiderOutcomes.hints(connection))
-      |> assign(:rider_rows, RiderOutcomes.rows(connection, assigns.setting))
       |> assign(:rider_footnote, RiderOutcomes.footnote())
       |> assign(:record_note, record_note(assigns.records, assigns.to))
       |> assign(:on_board, on_board_text(assigns.gap, assigns.movement))
+      |> assign(
+        :choices,
+        connection_choices(assigns.connection_saved, assigns.connection_check)
+      )
+      |> assign(:refusal, connection_refusal(assigns.connection_check))
+      |> assign(:scope, connection_scope_sentence(assigns.connection_scope))
+      |> assign(
+        :choice_rows,
+        connection_choice_rows(connection, assigns.connection_draft, assigns.setting)
+      )
+      |> assign(
+        :stay_warnings,
+        connection_stay_warnings(connection, assigns.gap, assigns.connection_draft)
+      )
 
     ~H"""
     <.drawer
@@ -3074,6 +3094,104 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           {@record_note.body}
         </.message>
 
+        <%!-- The three-way choice. The cards are feature-local markup rather than
+        `PlannerComponents.choice_cards/1`: that helper has no per-option disabled
+        state and no content slot, and the R1 pre-check needs both, so the shared
+        API is left alone for its one other consumer. Each card is a whole-card
+        label with a real radio inside it, so the keyboard arrows move between the
+        options and the focus outline follows the card. --%>
+        <.form for={@connection_form} id="connection-form" phx-change="change_connection">
+          <fieldset class="min-w-0">
+            <legend class="text-base font-bold text-strong">Can riders stay on board?</legend>
+            <p :if={@scope} id="connection-scope" class="mt-0.5 text-[13px] text-muted">
+              {@scope}
+            </p>
+            <div class="mt-3 grid gap-2">
+              <label
+                :for={choice <- @choices}
+                data-role="connection-choice"
+                data-choice={choice.value}
+                data-saved={to_string(choice.saved?)}
+                data-disabled={to_string(choice.disabled?)}
+                class={[
+                  "grid min-w-0 cursor-pointer grid-cols-[18px_minmax(0,1fr)] gap-x-3",
+                  "rounded-card border border-control px-3.5 py-3",
+                  "has-[:checked]:border-action has-[:checked]:bg-selection",
+                  "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2",
+                  "has-[:focus-visible]:outline-focus",
+                  choice.disabled? && "cursor-not-allowed bg-canvas"
+                ]}
+              >
+                <input
+                  type="radio"
+                  id={"connection-choice-#{choice.dom}"}
+                  name="connection[choice]"
+                  value={choice.value}
+                  checked={@connection_draft == choice.choice}
+                  disabled={choice.disabled?}
+                  class="mt-0.5 size-[18px] shrink-0 accent-action focus-visible:outline-0"
+                />
+                <span class="min-w-0">
+                  <span class="flex flex-wrap items-center gap-2 text-sm font-semibold text-strong">
+                    {choice.title}
+                    <span
+                      :if={choice.saved?}
+                      data-role="connection-saved-tag"
+                      class="rounded-badge bg-canvas px-1.5 text-[12px] font-semibold text-default"
+                    >
+                      Saved
+                    </span>
+                  </span>
+                  <span class="mt-0.5 block text-[13px] text-default">{choice.description}</span>
+                  <%!-- The two warnings belong inside the stay card, because they
+                  are what choosing stay would cost: the vehicle moving empty
+                  between the stops, and OpenTripPlanner dropping the record where
+                  pickup or drop-off is not allowed. Both are the pair's own facts,
+                  from the block's handoff and from `RiderOutcomes`, and neither
+                  refuses the choice. --%>
+                  <span
+                    :for={warning <- stay_warnings_for(choice.choice, @stay_warnings)}
+                    data-role="connection-choice-warning"
+                    data-warning={warning.kind}
+                    class="mt-2 flex gap-1.5 text-[13px] font-semibold text-warning-fg"
+                  >
+                    <.icon
+                      name="hero-exclamation-triangle-mini"
+                      class="mt-0.5 size-4 shrink-0"
+                    />
+                    <span class="min-w-0">{warning.text}</span>
+                  </span>
+                </span>
+              </label>
+            </div>
+
+            <%!-- The pre-check refusal. Its words are `RiderOutcomes`
+            `refusal_text/1`, the same text a refused save explains itself with, and
+            the link opens the day type that blocks the pair so the editor can fix
+            the blocks there. --%>
+            <div
+              :if={@refusal}
+              id="connection-blocked-reason"
+              data-role="connection-blocked"
+              class="mt-2 flex gap-2 rounded-control bg-canvas px-3.5 py-2.5 text-[13px] text-default"
+            >
+              <.icon name="hero-information-circle" class="mt-0.5 size-4 shrink-0" />
+              <p class="min-w-0">
+                <strong class="text-strong">Only Not stated is available.</strong>
+                {@refusal.text}
+                <.link
+                  :if={@refusal.day}
+                  id="connection-blocked-day-link"
+                  patch={connection_day_path(@version_id, @refusal.day.key, @from, @to)}
+                  class="font-semibold text-action underline underline-offset-4 hover:text-action-hover"
+                >
+                  Open {@refusal.day.label}
+                </.link>
+              </p>
+            </div>
+          </fieldset>
+        </.form>
+
         <p :if={rider_note?(@gap)} id="gap-rider-note" class="text-sm">
           Trip planners such as Google Maps may tell riders they can stay on board.
         </p>
@@ -3113,9 +3231,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             <table class="w-full border-collapse text-left text-[13px]">
               <tbody>
                 <tr
-                  :for={row <- @rider_rows}
+                  :for={row <- @choice_rows}
                   data-role="gap-rider-row"
                   data-app={row.app}
+                  data-changes={to_string(row.changes?)}
                   class="border-t border-subtle align-top"
                 >
                   <th
@@ -3126,6 +3245,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
                   </th>
                   <td class="py-2">
                     <span class="font-semibold text-strong">{row.title}</span>
+                    <span
+                      :if={row.changes?}
+                      data-role="gap-rider-changes"
+                      class="ml-1.5 rounded-badge bg-selection px-1.5 text-[12px] font-semibold text-action"
+                    >
+                      Changes
+                    </span>
                     <br />
                     <span class="text-muted">{row.detail}</span>
                   </td>
@@ -3155,6 +3281,30 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         <.back_to_block :if={@back_block} id="gap-back-to-block" block={@back_block} />
       </.drawer_footer>
     </.drawer>
+
+    <%!-- The discard guard. It is the shared `confirm_dialog` rather than a drawer
+    of its own, because a draft the editor may still want is a question, not a
+    page: "Keep editing" is the cancel action and therefore the focused one, which
+    is the safe default for a dialog that can lose work. The shared dialog owns
+    the `-body` id, so the sentence inside it carries no id of its own and
+    `aria-describedby` points at that shared region. --%>
+    <.confirm_dialog
+      id="connection-discard"
+      chrome="planner"
+      open={not is_nil(@discard)}
+      title="Discard this change?"
+      confirm_label="Discard change"
+      pending_label="Discarding…"
+      on_confirm="discard_connection"
+      on_cancel="keep_connection_editing"
+      cancel_label="Keep editing"
+      described_by="connection-discard-body"
+      return_focus_id="gap-drawer-title"
+    >
+      <p>
+        Your choice for this connection hasn't been saved. Keep editing to go back to it.
+      </p>
+    </.confirm_dialog>
     """
   end
 
@@ -4293,6 +4443,152 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # resolve, a stale or unconfirmed one explains itself in `RiderOutcomes`'
   # words, and a record that matches the block earns only a quiet line naming it,
   # because the rider table below already says what each app will do.
+  # --- the connection choice ------------------------------------------------
+
+  # The three options, in the order the reference lists them, each with what it
+  # writes. `dom` names the radio's DOM id, `value` is the `InSeatTransfers`
+  # choice atom the form and the save share, and `setting` is the
+  # `RiderOutcomes` setting the option's rows are derived for. All three always
+  # render: a refused pair shows the two explicit options greyed out rather than
+  # removing them, so the editor can read what the pre-check took away. "Not
+  # stated" is the one option that is never disabled, because removing a record
+  # writes nothing and the write rule can therefore not refuse it.
+  defp connection_choices(saved, check) do
+    refused? = match?({:refused, _}, check)
+
+    for {dom, value, title, description, setting} <- [
+          {"not-stated", "not_stated", "Not stated",
+           "Apps decide from the block. Writes no transfer record.", :none},
+          {"stay", "stay_on_board", "Riders stay on board",
+           "Writes an in-seat transfer record (type 4).", :stay},
+          {"reboard", "must_reboard", "Riders must re-board",
+           "Writes a no-seat transfer record (type 5).", :reboard}
+        ],
+        into: [] do
+      %{
+        value: value,
+        dom: dom,
+        choice: choice_for(value),
+        title: title,
+        description: description,
+        saved?: not is_nil(saved) and saved == choice_for(value),
+        disabled?: refused? and setting != :none
+      }
+    end
+  end
+
+  # The choice atom one of the three radio values stands for. The *Saved* tag
+  # follows the pair's saved record rather than the current draft, so it moves
+  # only when the pair is saved and stays put while the editor is choosing.
+  defp choice_for("not_stated"), do: :not_stated
+  defp choice_for("stay_on_board"), do: :stay_on_board
+  defp choice_for("must_reboard"), do: :must_reboard
+
+  # The pre-check's own answer, as the drawer's refusal text plus the day type
+  # that blocks the pair when the refusal names one. Only a not-next failure
+  # names a day type, so only that state offers the link; the other refusals are
+  # facts about the pair rather than about a date.
+  defp connection_refusal(:ok), do: nil
+  defp connection_refusal(nil), do: nil
+
+  defp connection_refusal({:refused, {:stale, {:not_next, [failure | _rest]}} = state}) do
+    %{
+      text: "#{RiderOutcomes.refusal_text(state)} ",
+      day: %{key: failure.key, label: failure.label}
+    }
+  end
+
+  defp connection_refusal({:refused, state}) do
+    case RiderOutcomes.refusal_text(state) do
+      nil -> nil
+      text -> %{text: "#{text} ", day: nil}
+    end
+  end
+
+  defp connection_refusal(_other), do: nil
+
+  # The scope line: the dates both trips run on, and the day types that make
+  # them up. The day types are the drawer's own `day_types` list filtered to the
+  # two services, so the count and the names can never disagree.
+  defp connection_scope_sentence(nil), do: nil
+
+  defp connection_scope_sentence(%{day_types: []}), do: "These trips share no service day."
+
+  defp connection_scope_sentence(%{day_types: day_types, date_count: date_count}) do
+    names = Enum.map_join(day_types, " · ", &"#{&1.label} (#{&1.date_count})")
+
+    "Applies on all #{date_count} #{if date_count == 1, do: "date", else: "dates"} both trips run: #{names}."
+  end
+
+  # The warnings the stay option carries, and only while stay is the draft: the
+  # empty move the vehicle makes between two stops, and the pickup or drop-off
+  # that makes OpenTripPlanner drop the record. Both are the pair's own facts,
+  # read from the block's handoff and from `RiderOutcomes`, and neither refuses
+  # the choice — they are what choosing stay would cost.
+  defp connection_stay_warnings(_connection, _gap, draft) when draft != :stay_on_board, do: []
+
+  defp connection_stay_warnings(connection, %{handoff: {:moves, meters}}, :stay_on_board)
+       when is_integer(meters) do
+    [
+      %{
+        kind: :distance,
+        text:
+          "Stops are #{meters} m apart; riders would stay on board while the vehicle moves empty."
+      }
+    ] ++ pickup_warning(connection)
+  end
+
+  defp connection_stay_warnings(connection, _gap, :stay_on_board),
+    do: pickup_warning(connection)
+
+  # The warnings ride inside the stay card, so only that card shows them.
+  defp stay_warnings_for(:stay_on_board, warnings), do: warnings
+  defp stay_warnings_for(_choice, _warnings), do: []
+
+  defp pickup_warning(connection) do
+    case RiderOutcomes.pickup_problem(connection) do
+      nil ->
+        []
+
+      problem ->
+        [
+          %{
+            kind: :pickup,
+            text: "#{problem} OpenTripPlanner drops this record there without warning."
+          }
+        ]
+    end
+  end
+
+  # The rider table for the draft the editor has chosen, each row tagged when the
+  # chosen option's title differs from the title the saved setting produces. The
+  # rows and the tag both come from `RiderOutcomes`, so the table never claims a
+  # consumer does something the copy module does not say (CR-3).
+  defp connection_choice_rows(connection, draft, saved_setting) do
+    saved_rows = RiderOutcomes.rows(connection, saved_setting)
+
+    connection
+    |> RiderOutcomes.rows(setting_for_draft(draft))
+    |> Enum.zip(saved_rows)
+    |> Enum.map(fn {row, saved_row} -> Map.put(row, :changes?, row.title != saved_row.title) end)
+  end
+
+  # A pair with no saved setting — one with no record, or one whose two records
+  # disagree — has no single outcome until the editor picks, so the table shows
+  # the block-derived one, which is what `RiderOutcomes` reads a conflict as.
+  defp setting_for_draft(nil), do: :none
+  defp setting_for_draft(:not_stated), do: :none
+  defp setting_for_draft(:stay_on_board), do: :stay
+  defp setting_for_draft(:must_reboard), do: :reboard
+
+  # The blocking day type's link: the Blocks page for that day type, with the
+  # pair's own `gap=` deep link kept so the drawer the editor came from is still
+  # the one they land on.
+  defp connection_day_path(version_id, day_key, from, to) do
+    "/gtfs/#{version_id}/blocks?" <>
+      URI.encode_query([{"day", day_key}, {"gap", "#{from.id}|#{to.id}"}])
+  end
+
   defp record_note([], _to), do: nil
 
   defp record_note([_one, _two | _rest], _to) do
