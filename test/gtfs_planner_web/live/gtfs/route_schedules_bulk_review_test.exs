@@ -306,7 +306,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
         Gtfs.update_trip(
           @route_id,
           trip.id,
-          %{"start_time" => "07:40"},
+          %{"start_time" => "07:40:00"},
           Repo.get!(Trip, trip.id).updated_at,
           scope.audit
         )
@@ -314,10 +314,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
       retimed = stop_time_clocks(trip)
 
       assert retimed == [
-               {"07:40:00", "07:40:00", nil, nil},
-               {"07:50:00", "07:50:00", nil, nil},
-               {"07:57:00", "07:57:00", nil, nil},
-               {"08:17:00", "08:17:00", nil, nil}
+               {"07:40:00", "07:40:00", 1, nil},
+               {"07:50:00", "07:50:00", 1, nil},
+               {"07:57:00", "07:57:00", 0, nil},
+               {"08:17:00", "08:17:00", 0, nil}
              ]
 
       render_hook(grid(view), "apply_change", %{})
@@ -354,10 +354,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
       render_hook(grid(view), "apply_change", %{})
 
       assert stop_time_clocks(trip) == [
-               {"07:45:00", "07:45:00", nil, nil},
-               {"07:55:00", "07:55:00", nil, nil},
-               {"08:02:00", "08:02:00", nil, nil},
-               {"08:22:00", "08:22:00", nil, nil}
+               {"07:45:00", "07:45:00", 1, nil},
+               {"07:55:00", "07:55:00", 1, nil},
+               {"08:02:00", "08:02:00", 0, nil},
+               {"08:22:00", "08:22:00", 0, nil}
              ]
 
       assigns = assigns(view)
@@ -622,7 +622,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
 
       view |> element("#strip-form") |> render_change(%{"change" => %{"minutes" => "10"}})
       assert assigns(view).change.params == %{direction: -1, minutes: 10, from_position: nil}
-      assert has_element?(view, "#strip-consequences", "07:00 → 06:50, 07:15 → 06:55.")
+      assert has_element?(view, "#strip-consequences", "07:00 → 06:50, 07:15 → 07:05.")
 
       # "Starting at" posts a displayed timepoint; the reviewed command names it
       # and only that stop and the later ones move.
@@ -719,7 +719,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
         Gtfs.update_trip(
           @route_id,
           trip.id,
-          %{"start_time" => "07:40"},
+          %{"start_time" => "07:40:00"},
           Repo.get!(Trip, trip.id).updated_at,
           scope.audit
         )

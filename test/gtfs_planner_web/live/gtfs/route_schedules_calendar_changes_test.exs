@@ -408,7 +408,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesCalendarChangesTest do
 
       # The primary is disabled, and the engine still refuses the command if a
       # client posts the event anyway: no row is written.
-      view |> element("#review-apply") |> render_click()
+      render_click(view, "apply_change", %{})
 
       assert assigns(view).change.refusal == [{:error, {:mixed_service, details}}]
       assert trips_on(scope, daily) == []
@@ -441,7 +441,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesCalendarChangesTest do
         Gtfs.update_trip(
           @route_id,
           trip.id,
-          %{"start_time" => "08:00"},
+          %{"start_time" => "08:00:00"},
           Repo.get!(Trip, trip.id).updated_at,
           scope.audit
         )

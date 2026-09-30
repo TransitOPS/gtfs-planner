@@ -510,16 +510,17 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
                ["16:00:00", "22:00:00"]
     end
 
-    test "a frequency trip disables its departure and timing with visible reasons", context do
+    test "a frequency trip replaces its departure and timing with the windows editor", context do
       scope = editing_scope(context)
       {:ok, view, _html} = live(context.conn, schedules_path(scope))
 
       frequency = trip_row(scope, "EDT_FREQ")
       html = render_click(view, "open_edit_drawer", %{"trip" => frequency.id})
 
-      assert html =~ "Frequency window stays unchanged."
-      assert html =~ "Frequency service has no single departure to edit."
-      assert has_element?(view, "#trip-start[disabled]")
+      # Step 35 replaced the disabled departure/timing and both reference
+      # notices with the windows editor.
+      assert html =~ ~s(id="frequency-windows")
+      refute has_element?(view, "#trip-start")
       refute has_element?(view, "#trip-timing")
 
       # The row menu disables Duplicate with the reason in visible text.

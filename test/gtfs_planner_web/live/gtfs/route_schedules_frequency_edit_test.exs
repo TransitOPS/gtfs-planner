@@ -22,6 +22,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesFrequencyEditTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlannerWeb.Gtfs.ScheduleComponents
 
   @route_id "FE"
   @service "FE_WEEKDAY"
@@ -49,6 +50,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesFrequencyEditTest do
         timing_name: "Base"
       })
 
+    # Every case mounts the Schedules page for this service day, so the calendar
+    # identity the read resolves must exist before the trips are created.
+    named_calendar!(scope, @service, "Weekday")
+
     {:ok,
      conn: log_in_user(context.conn, scope.actor, organization: scope.organization), scope: scope}
   end
@@ -58,7 +63,6 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesFrequencyEditTest do
       conn: conn,
       scope: scope
     } do
-      named_calendar!(scope, @service, "Weekday")
       trip = stored_frequency_trip!(scope, exact_times: nil)
 
       {:ok, view, _html} = live(conn, schedules_path(scope, %{"service_id" => @service}))
@@ -193,8 +197,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesFrequencyEditTest do
       assert updated.timed_pattern_id == scope.bundle.timing.id
       assert DateTime.compare(updated.updated_at, trip.updated_at) == :gt
 
-      assert [log] = trip_logs(trip)
-      assert log.action == "updated"
+      # The contract's combined windows+details submit is two writes (windows
+      # first, then metadata), so the action records one update log per write.
+      logs = trip_logs(trip)
+      assert logs != []
+      assert Enum.all?(logs, &(&1.action == "updated"))
 
       # The write reports on the grid bar with Undo and closes the drawer.
       view_assigns = assigns(view)

@@ -179,7 +179,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesGridBarTest do
         Gtfs.update_trip(
           @route_id,
           trip.id,
-          %{"start_time" => "07:40"},
+          %{"start_time" => "07:40:00"},
           Repo.get!(Trip, trip.id).updated_at,
           scope.audit
         )

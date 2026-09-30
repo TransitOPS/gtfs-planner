@@ -44,7 +44,7 @@ const EVIDENCE_DIR = resolve(SPEC_ROOT, "evidence", "browser");
 
 const EDITOR_USER = {
   email: "diagram-test@gtfs-planner.test",
-  password: "[redacted]",
+  password: "DiagramTest123!",
 };
 
 const VERSION_NAME = "Browser E2E Version";

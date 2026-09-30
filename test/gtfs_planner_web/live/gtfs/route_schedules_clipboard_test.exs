@@ -402,7 +402,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesClipboardTest do
       refute has_element?(view, "#paste-result")
 
       # The engine refuses the command even if a client posts it anyway.
-      view |> element("#paste-apply") |> render_click()
+      render_click(view, "apply_change", %{})
 
       assert assigns(view).change.refusal == [{:error, {:mixed_service, details}}]
       assert trips_on(scope, daily) == []
@@ -437,7 +437,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesClipboardTest do
         Gtfs.update_trip(
           @route_id,
           trip.id,
-          %{"start_time" => "08:00"},
+          %{"start_time" => "08:00:00"},
           Repo.get!(Trip, trip.id).updated_at,
           scope.audit
         )
@@ -469,11 +469,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesClipboardTest do
 
       # The refreshed review copies the trip's current 08:00 clocks with the same
       # reviewed offset (+570 min), because the refresh replans the same command.
-      assert stop_time_clocks(copy) == [
-               {"17:30:00", "17:30:00", nil, nil},
-               {"17:38:00", "17:39:00", nil, nil},
-               {"17:55:00", "17:55:00", nil, nil}
+      assert Enum.map(stop_time_clocks(copy), &{elem(&1, 0), elem(&1, 1)}) == [
+               {"17:30:00", "17:30:00"},
+               {"17:38:00", "17:39:00"},
+               {"17:55:00", "17:55:00"}
              ]
+
+      # R7: the copy keeps the source's stop-time fields, timepoints included.
+      assert Enum.map(stop_time_clocks(copy), &elem(&1, 2)) ==
+               Enum.map(retimed, &elem(&1, 2))
     end
   end
 

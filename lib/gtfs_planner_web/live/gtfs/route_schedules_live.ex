@@ -3664,8 +3664,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     case parse_clock_value(until_text) do
       {:ok, until_secs} ->
         %{
-          from: seconds_to_clock(until_secs),
-          until: seconds_to_clock(until_secs + @window_hours * 3_600),
+          from: clock(until_secs),
+          until: clock(until_secs + @window_hours * 3_600),
           every: window.every
         }
 
