@@ -175,6 +175,9 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   """
   attr :export_type, :atom, required: true
   attr :file_inventory, :list, required: true
+  attr :missing_summary, :any, default: nil
+  attr :defaults, :map, default: nil
+  attr :version_id, :any, default: nil
 
   def contents(assigns) do
     counts = Map.new(assigns.file_inventory)
@@ -208,6 +211,26 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
           </dd>
         </div>
       </dl>
+
+      <div class="mt-3">
+        <%= case @missing_summary do %>
+          <% %{loading: true} -> %>
+            <p
+              id="export-missing-times-loading"
+              class="rounded-card border border-subtle bg-canvas px-4 py-3 text-sm text-muted"
+            >
+              Counting missing stop times…
+            </p>
+          <% %{ok?: true, result: summary} -> %>
+            <.missing_times_line
+              :if={not is_nil(@defaults)}
+              summary={summary}
+              defaults={@defaults}
+              version_id={@version_id}
+            />
+          <% _ -> %>
+        <% end %>
+      </div>
 
       <details
         id="export-files"
@@ -297,6 +320,105 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     """
   end
 
+  attr :summary, :map, required: true
+  attr :defaults, :map, required: true
+  attr :version_id, :any, required: true
+
+  # How the next export treats missing stop times under the current
+  # defaults, with the counts `MissingTimes.summary/2` computed for this
+  # version. Pathways Studio organizations see the same line: the settings
+  # still describe what a full export of their data would do.
+  defp missing_times_line(%{defaults: %{estimate_missing_times: true}} = assigns) do
+    ~H"""
+    <div
+      id="export-missing-times"
+      class="flex flex-wrap items-start gap-x-3 gap-y-1 rounded-card border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-900"
+    >
+      <.icon name="hero-clock" class="mt-0.5 size-4 shrink-0" />
+      <div class="min-w-0 flex-1">
+        <p>
+          <strong>Missing stop times: estimated.</strong>
+          {estimate_sentence(@summary, @defaults)}
+        </p>
+      </div>
+      <.link
+        id="export-missing-times-link"
+        navigate={~p"/gtfs/#{@version_id}/settings/export-defaults"}
+        class="inline-flex min-h-11 items-center self-center text-sm font-[650] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+      >
+        Export defaults
+      </.link>
+    </div>
+    """
+  end
+
+  defp missing_times_line(assigns) do
+    ~H"""
+    <div
+      id="export-missing-times"
+      role="status"
+      class="flex flex-wrap items-start gap-x-3 gap-y-1 rounded-card bg-warning-bg px-4 py-3 text-sm text-warning-fg"
+    >
+      <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4 shrink-0" />
+      <div class="min-w-0 flex-1">
+        <p>
+          <strong>Missing stop times: left blank.</strong>
+          {blank_sentence(@summary)}
+        </p>
+      </div>
+      <.link
+        id="export-missing-times-link"
+        navigate={~p"/gtfs/#{@version_id}/settings/export-defaults"}
+        class="inline-flex min-h-11 items-center self-center text-sm font-[650] underline hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+      >
+        Change in Export defaults
+      </.link>
+    </div>
+    """
+  end
+
+  defp estimate_sentence(%{trips: 0}, _defaults),
+    do: "Every trip has a time at every stop."
+
+  # Every gapped trip is unfillable, so there is no estimate to count;
+  # lead with that instead of "0 times on 0 trips".
+  defp estimate_sentence(%{not_estimable: cant} = summary, _defaults)
+       when length(cant) == summary.trips do
+    "No missing times can be estimated. " <> cant_sentence(summary)
+  end
+
+  defp estimate_sentence(summary, defaults) do
+    estimable = summary.trips - length(summary.not_estimable)
+
+    "#{summary.estimable_times} #{if(summary.estimable_times == 1, do: "time", else: "times")} " <>
+      "on #{pluralize(estimable, "trip")}, by #{estimate_method_label(defaults.estimate_method)}, " <>
+      "marked as approximate. #{cant_sentence(summary)}"
+  end
+
+  defp blank_sentence(%{trips: 0}),
+    do: "Every trip has a time at every stop."
+
+  defp blank_sentence(summary) do
+    "#{summary.missing_times} #{if(summary.missing_times == 1, do: "time", else: "times")} " <>
+      "on #{pluralize(summary.trips, "trip")} go out blank, " <>
+      "so each rider app will guess them its own way."
+  end
+
+  defp cant_sentence(%{not_estimable: []}), do: "Every trip with gaps can be estimated."
+
+  defp cant_sentence(%{not_estimable: cant}) do
+    count = length(cant)
+
+    "#{count} #{if(count == 1, do: "trip", else: "trips")} can't be estimated and " <>
+      "#{if(count == 1, do: "goes", else: "go")} out as #{if(count == 1, do: "it is", else: "they are")}."
+  end
+
+  defp estimate_method_label(:even), do: "equal time per stop"
+  defp estimate_method_label(_method), do: "distance along the path"
+
+  defp pluralize(1, noun), do: "1 #{noun}"
+  defp pluralize(count, noun), do: "#{count} #{noun}s"
+
   defp tiles(:full),
     do: [
       {"Routes", "routes.txt"},
@@ -338,6 +460,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   attr :export_type, :atom, required: true
   attr :version, :map, required: true
   attr :notice, :string, default: nil
+  attr :defaults, :map, default: nil
 
   def run_status(assigns) do
     view = status(assigns.run, assigns.export_type, assigns.version)
@@ -362,6 +485,16 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
     >
       <div :if={@notice} class="mb-5">
         <.message id="export-notice" kind="error" title={@notice} />
+      </div>
+
+      <div :if={stale_missing_times?(@run, @defaults)} class="mb-5">
+        <.message
+          id="export-stale-settings"
+          kind="info"
+          title="Export defaults changed after this file was made."
+        >
+          {stale_detail(@run, @defaults)}
+        </.message>
       </div>
 
       <div class="flex flex-wrap items-start justify-between gap-x-8 gap-y-4">
@@ -405,6 +538,27 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
           />
         </div>
       </div>
+
+      <details
+        :if={@run && @run.state == :ready}
+        id="export-file-details"
+        phx-mounted={JS.ignore_attributes("open")}
+        class="group mt-5 rounded-control border border-subtle"
+      >
+        <summary class="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 rounded-control px-4 text-sm font-semibold text-strong hover:bg-canvas [&::-webkit-details-marker]:hidden">
+          <span>File details</span>
+          <.icon
+            name="hero-chevron-down"
+            class="size-4 shrink-0 text-muted transition-transform group-open:rotate-180 motion-reduce:transition-none"
+          />
+        </summary>
+        <dl class="grid gap-x-6 gap-y-2 border-t border-subtle px-4 py-3 text-sm sm:grid-cols-[12rem_minmax(0,1fr)]">
+          <dt class="text-muted">Missing stop times</dt>
+          <dd id="export-run-missing-times" class="text-strong">
+            {recorded_missing_times(@run)}
+          </dd>
+        </dl>
+      </details>
 
       <div
         :if={@conflicts != []}
@@ -697,6 +851,49 @@ defmodule GtfsPlannerWeb.Gtfs.ExportComponents do
   defp tone_class(:success), do: "bg-soft text-cyan-700"
   defp tone_class(:warning), do: "bg-warning-bg text-warning-fg"
   defp tone_class(:error), do: "bg-error-bg text-error-fg"
+
+  # A finished run's display reads the run's recorded missing-times setting
+  # (INV-3), never the current defaults; only the pre-run line and the
+  # validator read current defaults. A run written before the setting
+  # existed records `false, nil`, which reads as "Left blank" without
+  # inventing a method.
+  defp recorded_missing_times(%Run{estimate_missing_times: true, estimate_method: :even}),
+    do: "Estimated by equal time per stop"
+
+  defp recorded_missing_times(%Run{estimate_missing_times: true}),
+    do: "Estimated by distance along the path"
+
+  defp recorded_missing_times(_run), do: "Left blank"
+
+  defp stale_missing_times?(
+         %Run{estimate_missing_times: true, estimate_method: method},
+         %{estimate_missing_times: true, estimate_method: method}
+       ),
+       do: false
+
+  defp stale_missing_times?(%Run{estimate_missing_times: false}, %{
+         estimate_missing_times: false
+       }),
+       do: false
+
+  defp stale_missing_times?(%Run{}, %{} = _defaults), do: true
+  defp stale_missing_times?(_run, _defaults), do: false
+
+  defp stale_detail(%Run{} = run, defaults) do
+    "This file #{String.downcase(recorded_missing_times(run))}. " <>
+      "Export again to use today's settings (#{current_missing_times_setting(defaults)})."
+  end
+
+  defp current_missing_times_setting(%{
+         estimate_missing_times: true,
+         estimate_method: :even
+       }),
+       do: "estimate by equal time per stop"
+
+  defp current_missing_times_setting(%{estimate_missing_times: true}),
+    do: "estimate by distance along the path"
+
+  defp current_missing_times_setting(_defaults), do: "leave blank"
 
   defp conflict?(%Run{failure_code: code}), do: code == @conflict_code
   defp conflict?(_run), do: false
