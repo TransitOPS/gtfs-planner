@@ -701,6 +701,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   attr :fill_preview, :map, default: nil
   attr :fill_distances, :list, default: []
   attr :fill_coords, :list, default: []
+  attr :fill_sections, :list, default: []
   attr :retime, :map, default: nil
   attr :offline?, :boolean, default: false
 
@@ -892,6 +893,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             rows={@timing_rows}
             distances={@fill_distances}
             coords={@fill_coords}
+            sections={@fill_sections}
             offline?={@offline?}
           />
         </div>
@@ -1206,17 +1208,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   attr :rows, :list, default: []
   attr :distances, :list, default: []
   attr :coords, :list, default: []
+  attr :sections, :list, default: []
   attr :offline?, :boolean, default: false
 
   def fill_panel(assigns) do
+    map_payload =
+      fill_map_payload(assigns.rows, assigns.coords, assigns.preview, assigns[:sections] || [])
+
     assigns =
       assigns
       |> assign(:names, Map.new(assigns.rows, &{&1.position, &1.name}))
       |> assign(:straight_count, straight_preview_spans(assigns.preview))
-      |> assign(
-        :map_json,
-        Jason.encode!(fill_map_payload(assigns.rows, assigns.coords, assigns.preview))
-      )
+      |> assign(:straight_map?, straight_map?(map_payload))
+      |> assign(:map_json, Jason.encode!(map_payload))
 
     ~H"""
     <aside
@@ -1412,10 +1416,25 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         <h3 class="text-sm font-bold text-strong">On the map</h3>
         <div
           id="fill-map"
+          phx-hook="FillPreviewMap"
           phx-update="ignore"
           data-fill-map={@map_json}
           class="mt-2 h-[320px] rounded-card border border-subtle bg-canvas"
         />
+        <p id="fill-map-legend" class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-muted">
+          <span class="inline-flex items-center gap-1.5">
+            <span class="inline-block size-3 rounded-[3px] bg-navy-700"></span>Timepoint
+          </span>
+          <span class="inline-flex items-center gap-1.5">
+            <span class="inline-block size-2.5 rounded-full border-2 border-dashed border-cyan-700 bg-cyan-50"></span>Estimate
+          </span>
+          <span :if={@straight_map?} class="inline-flex items-center gap-1.5">
+            <span class="inline-block w-4 border-t-2 border-dashed border-warning-fg"></span>No path, straight line
+          </span>
+        </p>
+        <p id="fill-map-error" hidden class="mt-2 text-[13px] text-warning-fg">
+          Map preview unavailable. The fill summary above still applies.
+        </p>
         <p class="mt-2 text-[13px] text-muted">
           Estimates are not saved until you save running times.
         </p>
@@ -2193,18 +2212,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
   defp straight_preview_spans(_preview), do: 0
 
-  # The `#fill-map` payload step 14 mounts the Leaflet preview from. Stops
-  # carry `[lon, lat]` pairs (conversion from the estimator's `{lat, lon}`
-  # tuples happens only here, per INV-4); kinds reuse the panel's vocabulary.
-  defp fill_map_payload(rows, coords, preview) do
-    estimated =
-      case preview do
-        %{rows: preview_rows} ->
-          preview_rows |> Enum.filter(& &1.estimated) |> Map.new(&{&1.position, true})
-
-        _ ->
-          %{}
-      end
+  # The `#fill-map` payload the FillPreviewMap hook mounts the Leaflet preview
+  # from. Stops carry `[lon, lat]` pairs (conversion from the estimator's
+  # `{lat, lon}` tuples happens only here, per INV-4); kinds reuse the panel's
+  # vocabulary, with `blocked` for blank stops an error span leaves unfilled.
+  # Sections carry full `[lon, lat]` polylines: saved path geometry where the
+  # alignment has it, else the straight connector between the visits.
+  defp fill_map_payload(rows, coords, preview, sections) do
+    {estimated, labels, blocked} = preview_maps(preview)
+    by_position = Map.new(rows, &{&1.position, Enum.at(coords, &1.position - 1)})
 
     %{
       stops:
@@ -2213,19 +2229,115 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             position: row.position,
             name: Map.get(row, :name),
             coord: lonlat(Enum.at(coords, row.position - 1)),
-            kind: map_stop_kind(row, Map.get(estimated, row.position, false))
+            kind:
+              map_stop_kind(
+                row,
+                Map.get(estimated, row.position, false),
+                MapSet.member?(blocked, row.position)
+              ),
+            label: Map.get(labels, row.position)
           }
-        end)
+        end),
+      sections: fill_map_sections(sections, by_position)
     }
   end
+
+  defp preview_maps(%{rows: preview_rows, spans: spans}) do
+    estimated =
+      preview_rows |> Enum.filter(& &1.estimated) |> Map.new(&{&1.position, true})
+
+    labels =
+      Map.new(preview_rows, fn row ->
+        {row.position, preview_label(row.arrival)}
+      end)
+
+    blocked =
+      spans
+      |> Enum.filter(&(Map.get(&1, :error) != nil))
+      |> Enum.flat_map(&Enum.to_list(&1.from_position..&1.to_position//1))
+      |> MapSet.new()
+
+    {estimated, labels, blocked}
+  end
+
+  defp preview_maps(_preview), do: {%{}, %{}, MapSet.new()}
+
+  defp preview_label(arrival) when is_integer(arrival), do: GtfsTime.format_offset(arrival)
+  defp preview_label(_arrival), do: nil
+
+  # One line per section with known geometry. A section with saved path
+  # points draws from the full polyline; a section without points but with
+  # two known endpoints draws the straight connector; a section with a
+  # missing endpoint (including `:blocked`) or corrupt path points is never
+  # fabricated and stays off the map.
+  defp fill_map_sections(sections, by_position) do
+    Enum.flat_map(sections, fn section ->
+      case section_geometry(
+             section,
+             lonlat(Map.get(by_position, section.from)),
+             lonlat(Map.get(by_position, section.to))
+           ) do
+        nil -> []
+        entry -> [entry]
+      end
+    end)
+  end
+
+  defp section_geometry(_section, nil, _to_coord), do: nil
+  defp section_geometry(_section, _from_coord, nil), do: nil
+
+  defp section_geometry(%{kind: kind} = section, from_coord, to_coord)
+       when kind in [:override, :shared] do
+    case valid_points(section.points) do
+      {:ok, [_ | _] = points} ->
+        %{
+          from: section.from,
+          to: section.to,
+          points: [from_coord] ++ points ++ [to_coord],
+          source: "path"
+        }
+
+      {:ok, []} ->
+        straight_section(section, from_coord, to_coord)
+
+      :corrupt ->
+        nil
+    end
+  end
+
+  defp section_geometry(section, from_coord, to_coord),
+    do: straight_section(section, from_coord, to_coord)
+
+  defp straight_section(section, from_coord, to_coord) do
+    %{from: section.from, to: section.to, points: [from_coord, to_coord], source: "straight"}
+  end
+
+  defp valid_points(points) when is_list(points) do
+    lonlats = Enum.map(points, &lonlat_pair/1)
+    if Enum.all?(lonlats, &(!is_nil(&1))), do: {:ok, lonlats}, else: :corrupt
+  end
+
+  defp valid_points(_points), do: {:ok, []}
+
+  defp lonlat_pair([lon, lat]) when is_number(lon) and is_number(lat), do: [lon, lat]
+  defp lonlat_pair(_point), do: nil
+
+  defp straight_map?(%{sections: sections}) do
+    Enum.any?(sections, &(&1.source == "straight"))
+  end
+
+  defp straight_map?(_payload), do: false
 
   defp lonlat({lat, lon}) when is_number(lat) and is_number(lon), do: [lon, lat]
   defp lonlat(_coord), do: nil
 
-  defp map_stop_kind(_row, true), do: "estimate"
+  defp map_stop_kind(_row, true, _blocked?), do: "estimate"
 
-  defp map_stop_kind(row, false) do
+  defp map_stop_kind(row, false, blocked?) do
     cond do
+      blank_value?(Map.get(row, :arrival)) and blank_value?(Map.get(row, :departure)) and blocked? ->
+        "blocked"
+
       blank_value?(Map.get(row, :arrival)) and blank_value?(Map.get(row, :departure)) ->
         "blank"
 

@@ -125,6 +125,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:fill_preview, nil)
      |> assign(:fill_distances, [])
      |> assign(:fill_coords, [])
+     |> assign(:fill_sections, [])
      |> assign(:fill_method, :distance)
      |> assign(:retime, nil)
      |> assign(:review, nil)
@@ -1704,6 +1705,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                         fill_preview={@fill_preview}
                         fill_distances={@fill_distances}
                         fill_coords={@fill_coords}
+                        fill_sections={@fill_sections}
                         retime={@retime}
                         offline?={@offline?}
                         custom_trip_count={@detail_custom_trip_count}
@@ -2917,6 +2919,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     socket
     |> assign(:fill_distances, [])
     |> assign(:fill_coords, [])
+    |> assign(:fill_sections, [])
     |> assign(:fill_method, :distance)
   end
 
@@ -2926,7 +2929,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     socket
     |> assign(:fill_distances, Alignments.estimate_distances(resolved))
     |> assign(:fill_coords, Enum.map(resolved.visits, &visit_coord/1))
+    |> assign(:fill_sections, fill_sections(resolved))
     |> assign(:fill_method, fill_method(socket))
+  end
+
+  # Section geometry for the fill preview map, paired with the endpoint
+  # visits so positions stay exact even when a visit repeats a stop. Only
+  # JSON-safe geometry crosses to the client; the payload builder decides
+  # what draws (path, straight connector, or nothing).
+  defp fill_sections(%{visits: visits, sections: sections}) do
+    visits
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.zip(sections)
+    |> Enum.map(fn {[from, to], section} ->
+      %{from: from.position, to: to.position, kind: section.kind, points: section.points || []}
+    end)
   end
 
   # Alignment saves reload only the alignment model (not the screen), so the
