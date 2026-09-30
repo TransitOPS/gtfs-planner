@@ -66,7 +66,6 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteNetwork
   alias GtfsPlanner.Gtfs.RoutePattern
-  alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Gtfs.Routes
@@ -80,6 +79,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.StationJournal.Scope
   alias GtfsPlanner.Gtfs.StationNaming
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopReferences
   alias GtfsPlanner.Gtfs.StopArea
   alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Gtfs.StopTime
@@ -7381,22 +7381,6 @@ defmodule GtfsPlanner.Gtfs do
 
   def apply_import_entity(_, _, _, _), do: {:error, :invalid_decision}
 
-  # Tables that hold a stop's or level's GTFS ID as a plain string, as
-  # {kind, schema, column, column already counted}. There are no foreign keys, so a
-  # removal leaves these rows pointing at a missing record. A row naming one stop in
-  # both columns is counted once, by the first column.
-  @stop_references [
-    {:stop_times, StopTime, :stop_id, nil},
-    {:transfers, Transfer, :from_stop_id, nil},
-    {:transfers, Transfer, :to_stop_id, :from_stop_id},
-    {:pathways, Pathway, :from_stop_id, nil},
-    {:pathways, Pathway, :to_stop_id, :from_stop_id},
-    {:child_stops, Stop, :parent_station, nil},
-    {:stop_areas, StopArea, :stop_id, nil},
-    {:route_pattern_stops, RoutePatternStop, :stop_id, nil},
-    {:fare_leg_join_rules, FareLegJoinRule, :from_stop_id, nil},
-    {:fare_leg_join_rules, FareLegJoinRule, :to_stop_id, :from_stop_id}
-  ]
   @level_references [{:stops, Stop, :level_id, nil}]
 
   # Counts the records of one organization and version that still use each of the given
@@ -7407,7 +7391,7 @@ defmodule GtfsPlanner.Gtfs do
   def import_dependent_counts(_entity_type, _organization_id, _gtfs_version_id, []), do: %{}
 
   def import_dependent_counts(:stop, organization_id, gtfs_version_id, natural_keys),
-    do: dependent_counts(@stop_references, organization_id, gtfs_version_id, natural_keys)
+    do: StopReferences.counts(organization_id, gtfs_version_id, natural_keys)
 
   def import_dependent_counts(:level, organization_id, gtfs_version_id, natural_keys),
     do: dependent_counts(@level_references, organization_id, gtfs_version_id, natural_keys)

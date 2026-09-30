@@ -461,6 +461,140 @@ defmodule GtfsPlanner.Gtfs.StopReferences do
 
   defp deadhead_refs(%Stop{stop_id: stop_id}), do: [stop_id, "stop:#{stop_id}"]
 
+  @type counts :: %{String.t() => %{atom() => pos_integer()}}
+
+  @doc """
+  How many rows of each kind still name each of the given stop IDs.
+
+  The import review holds natural keys before any row exists, so this takes stop
+  IDs rather than a `Stop` struct and cannot match the `via: :fk_uuid` entries —
+  those need a `stops.id` UUID that an unimported stop does not have yet. They
+  are absent from the result rather than reported as zero, because nothing is
+  counted for them rather than "nothing was found".
+
+  A stop ID nothing uses is absent from the map, matching
+  `Gtfs.import_dependent_counts/4`. Kinds are reported under the names the
+  import review already renders, so `transfers_from` and `transfers_to` both
+  report as `:transfers` and a row naming one stop in both columns counts once.
+  """
+  @spec counts(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) :: counts()
+  def counts(_organization_id, _gtfs_version_id, []), do: %{}
+
+  def counts(organization_id, gtfs_version_id, stop_ids) do
+    @all
+    |> Enum.filter(&(&1.via != :fk_uuid))
+    |> Enum.reduce(%{}, fn ref, counts ->
+      counted_rows(ref, organization_id, gtfs_version_id, stop_ids)
+      |> Enum.reduce(counts, &add_count(&2, ref, &1))
+    end)
+  end
+
+  # `[stop_id, count]` pairs, one per row that names one of the given stops.
+  defp counted_rows(%{via: :array} = ref, organization_id, gtfs_version_id, stop_ids) do
+    ref.schema
+    |> scope_to_ids(ref, organization_id, gtfs_version_id)
+    # `array <@ column`: does this array hold any of the given IDs? Ecto's `in`
+    # would need a compile-time list on the left of an array column.
+    |> where(
+      [row],
+      fragment("? <@ ?", type(^stop_ids, {:array, :string}), field(row, ^ref.column))
+    )
+    |> select([row], field(row, ^ref.column))
+    |> Repo.all()
+    # One flex service naming the stop twice in its hub array is still one row.
+    |> Enum.flat_map(fn ids ->
+      ids |> Enum.filter(&(&1 in stop_ids)) |> Enum.uniq() |> Enum.map(&{&1, 1})
+    end)
+    |> merge_pairs()
+  end
+
+  defp counted_rows(%{via: :string} = ref, organization_id, gtfs_version_id, stop_ids) do
+    ref.schema
+    |> scope_to_ids(ref, organization_id, gtfs_version_id)
+    |> where([row], field(row, ^ref.column) in ^match_values(ref, stop_ids))
+    |> select([row], field(row, ^ref.column))
+    |> Repo.all()
+    |> Enum.map(&{natural_key(ref, &1), 1})
+    |> merge_pairs()
+  end
+
+  defp scope_to_ids(query, ref, organization_id, gtfs_version_id) do
+    query
+    |> maybe_stop_table(ref)
+    |> where([row], field(row, :organization_id) == ^organization_id)
+    |> where([row], field(row, :gtfs_version_id) == ^gtfs_version_id)
+    |> skip_counted_column(ref)
+  end
+
+  # A translation naming the same GTFS ID on a route is a different row; only the
+  # `stops` table's translations refer to this stop.
+  defp maybe_stop_table(query, %{key: :translations}),
+    do: where(query, [row], row.table_name == "stops")
+
+  defp maybe_stop_table(query, _ref), do: query
+
+  # A row naming one stop as both its from and its to stop is one dependency, so
+  # the second column skips exactly the rows whose two columns are equal.
+  defp skip_counted_column(query, %{key: key})
+       when key in [:transfers_to, :pathways_to, :fare_leg_join_to],
+       do: where(query, [row], field(row, ^counted_in(key)) != field(row, ^ref_column(key)))
+
+  defp skip_counted_column(query, _ref), do: query
+
+  defp merge_pairs(pairs) do
+    pairs
+    |> Enum.reduce(%{}, fn {stop_id, count}, acc ->
+      Map.update(acc, stop_id, count, &(&1 + count))
+    end)
+    |> Enum.map(fn {stop_id, count} -> {stop_id, count} end)
+  end
+
+  # A deadhead row stores `stop:<id>` or a bare `<id>`; both name the same stop, so
+  # the stored value is mapped back to the GTFS ID before it becomes a map key.
+  defp natural_key(%{key: key}, "stop:" <> stop_id) when key in [:deadhead_from, :deadhead_to],
+    do: stop_id
+
+  defp natural_key(_ref, stop_id), do: stop_id
+
+  defp add_count(counts, _ref, {stop_id, _count}) when stop_id in [nil, ""], do: counts
+
+  defp add_count(counts, ref, {stop_id, count}) do
+    key = report_key(ref)
+
+    Map.update(counts, stop_id, %{key => count}, fn kinds ->
+      Map.update(kinds, key, count, &(&1 + count))
+    end)
+  end
+
+  # The names the import review already renders. The shared list splits a two
+  # column table into a from and a to entry; the review says "2 transfers", not
+  # "1 transfer from, 1 transfer to".
+  defp report_key(%{key: key}) when key in [:transfers_from, :transfers_to], do: :transfers
+  defp report_key(%{key: key}) when key in [:pathways_from, :pathways_to], do: :pathways
+
+  defp report_key(%{key: key}) when key in [:fare_leg_join_from, :fare_leg_join_to],
+    do: :fare_leg_join_rules
+
+  defp report_key(ref), do: ref.key
+
+  # The column a "to" entry's paired "from" entry already counted.
+  defp counted_in(:transfers_to), do: :from_stop_id
+  defp counted_in(:pathways_to), do: :from_stop_id
+  defp counted_in(:fare_leg_join_to), do: :from_stop_id
+
+  defp ref_column(:transfers_to), do: :to_stop_id
+  defp ref_column(:pathways_to), do: :to_stop_id
+  defp ref_column(:fare_leg_join_to), do: :to_stop_id
+
+  # A deadhead row's stored value is `stop:<id>` or a bare `<id>`; both name the
+  # same stop, so the comparison matches either.
+  defp match_values(ref, stop_ids), do: deadhead_refs(ref, stop_ids) ++ stop_ids
+
+  defp deadhead_refs(%{key: key}, stop_ids) when key in [:deadhead_from, :deadhead_to],
+    do: Enum.map(stop_ids, &"stop:#{&1}")
+
+  defp deadhead_refs(_ref, _stop_ids), do: []
+
   # Which refs get labelled details rather than a bare count. Every other kind
   # reports its count, which is all the delete confirmation needs.
   @detailed ~w(route_pattern_stops transfers_from transfers_to relief_points flex_hubs flex_first flex_last deadhead_from deadhead_to child_stops stop_areas)a

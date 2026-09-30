@@ -2745,6 +2745,42 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
 
   defp dependent_noun(:stops, count), do: ngettext("stop", "stops", count)
 
+  defp dependent_noun(:relief_points, count), do: ngettext("relief point", "relief points", count)
+
+  defp dependent_noun(:flex_hubs, count),
+    do: ngettext("flex hub service", "flex hub services", count)
+
+  defp dependent_noun(:flex_first, count),
+    do: ngettext("flex service first stop", "flex service first stops", count)
+
+  defp dependent_noun(:flex_last, count),
+    do: ngettext("flex service last stop", "flex service last stops", count)
+
+  defp dependent_noun(:stop_levels, count), do: ngettext("level", "levels", count)
+
+  defp dependent_noun(:journal_entries, count),
+    do: ngettext("journal entry", "journal entries", count)
+
+  defp dependent_noun(:editing_statuses, count),
+    do: ngettext("editing status", "editing statuses", count)
+
+  defp dependent_noun(:walkability_tests, count),
+    do: ngettext("walkability test", "walkability tests", count)
+
+  defp dependent_noun(:deadhead_from, count),
+    do: ngettext("deadhead time from this stop", "deadhead times from this stop", count)
+
+  defp dependent_noun(:deadhead_to, count),
+    do: ngettext("deadhead time to this stop", "deadhead times to this stop", count)
+
+  defp dependent_noun(:translations, count), do: ngettext("translation", "translations", count)
+
+  defp dependent_noun(:segments_from, count),
+    do: ngettext("map line section from", "map line sections from", count)
+
+  defp dependent_noun(:segments_to, count),
+    do: ngettext("map line section to", "map line sections to", count)
+
   defp to_sentence([phrase]), do: phrase
 
   defp to_sentence(phrases) do
