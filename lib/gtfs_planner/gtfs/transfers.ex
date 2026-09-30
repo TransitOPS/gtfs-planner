@@ -74,6 +74,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   import Ecto.Query, warn: false
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
@@ -1757,7 +1758,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   end
 
   defp audit_created_transfer(transfer, audit) do
-    case Gtfs.record_change_in_transaction(audit, :transfer, transfer, "created", %{
+    case Audit.record_change_in_transaction(audit, :transfer, transfer, "created", %{
            before: nil,
            after: Transfer.audit_snapshot(transfer),
            operation_id: Ecto.UUID.generate(),
@@ -1846,7 +1847,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   end
 
   defp audit_updated_transfer(transfer, before_snapshot, audit) do
-    case Gtfs.record_change_in_transaction(audit, :transfer, transfer, "updated", %{
+    case Audit.record_change_in_transaction(audit, :transfer, transfer, "updated", %{
            before: before_snapshot,
            after: Transfer.audit_snapshot(transfer),
            operation_id: Ecto.UUID.generate(),
@@ -1890,7 +1891,7 @@ defmodule GtfsPlanner.Gtfs.Transfers do
   end
 
   defp audit_deleted_transfer(transfer, before_snapshot, affected_ids, operation_id, audit) do
-    case Gtfs.record_change_in_transaction(audit, :transfer, transfer, "deleted", %{
+    case Audit.record_change_in_transaction(audit, :transfer, transfer, "deleted", %{
            before: before_snapshot,
            after: nil,
            operation_id: operation_id,

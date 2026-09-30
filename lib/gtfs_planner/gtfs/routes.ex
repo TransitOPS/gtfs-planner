@@ -84,6 +84,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
   alias GtfsPlanner.Gtfs.Attribution
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ChangeLog
   alias GtfsPlanner.Gtfs.FareRule
@@ -1158,7 +1159,7 @@ defmodule GtfsPlanner.Gtfs.Routes do
   end
 
   defp audit_created!(route, audit, attempt_id, digest) do
-    case Gtfs.record_change_in_transaction(audit, :route, route, "created", %{
+    case Audit.record_change_in_transaction(audit, :route, route, "created", %{
            before: nil,
            creation_attempt_id: attempt_id,
            request_digest: digest
@@ -1405,9 +1406,9 @@ defmodule GtfsPlanner.Gtfs.Routes do
   # edit back. Route diffs are the explicit before/after snapshots in the
   # shared snapshot shape.
   defp audit_updated!(before_route, updated_route, audit) do
-    case Gtfs.record_change_in_transaction(audit, :route, updated_route, "updated", %{
-           before: Gtfs.route_audit_snapshot(before_route),
-           after: Gtfs.route_audit_snapshot(updated_route)
+    case Audit.record_change_in_transaction(audit, :route, updated_route, "updated", %{
+           before: Audit.route_audit_snapshot(before_route),
+           after: Audit.route_audit_snapshot(updated_route)
          }) do
       {:ok, log} -> log
       {:error, _changeset} -> Repo.rollback(:failed_audit)
@@ -2414,8 +2415,8 @@ defmodule GtfsPlanner.Gtfs.Routes do
         {key, category_identities(review, key)}
       end)
 
-    case Gtfs.record_change_in_transaction(audit, :route, route, "deleted", %{
-           before: Gtfs.route_audit_snapshot(route),
+    case Audit.record_change_in_transaction(audit, :route, route, "deleted", %{
+           before: Audit.route_audit_snapshot(route),
            operation_id: operation_id,
            affected_counts: affected_counts,
            affected_identities: affected_identities

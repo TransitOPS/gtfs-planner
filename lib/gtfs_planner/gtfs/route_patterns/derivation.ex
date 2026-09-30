@@ -24,8 +24,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
 
   import Ecto.Query
 
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Alignments
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.CalendarAttribute
   alias GtfsPlanner.Gtfs.GtfsTime
@@ -2468,7 +2468,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Derivation do
           Map.put(attrs, :grouped_trips, grouped)
         end
 
-      case Gtfs.record_change_in_transaction(
+      case Audit.record_change_in_transaction(
              %{audit | station_stop_id: nil},
              :route_pattern_build,
              route,

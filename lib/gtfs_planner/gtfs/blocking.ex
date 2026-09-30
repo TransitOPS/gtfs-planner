@@ -68,6 +68,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
 
   alias GtfsPlanner.Gtfs.Blocking.{
@@ -4518,7 +4519,7 @@ defmodule GtfsPlanner.Gtfs.Blocking do
        ) do
     snapshot = Map.fetch!(snapshots, trip.id)
 
-    case GtfsPlanner.Gtfs.record_change_in_transaction(
+    case Audit.record_change_in_transaction(
            audit,
            :trip,
            %{trip | block_id: destination},

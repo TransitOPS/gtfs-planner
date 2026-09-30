@@ -39,8 +39,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   import Ecto.Query, warn: false
 
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Alignments
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
@@ -3922,7 +3922,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
          affected,
          extra \\ %{}
        ) do
-    case Gtfs.record_change_in_transaction(
+    case Audit.record_change_in_transaction(
            audit_context,
            :trip,
            trip,

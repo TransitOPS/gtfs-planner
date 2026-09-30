@@ -10,6 +10,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
   import Ecto.Query, warn: false
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Import.ChangeArtifactStorage
   alias GtfsPlanner.Gtfs.Import.ChangeDecision
@@ -1222,7 +1223,7 @@ defmodule GtfsPlanner.Gtfs.Import.ChangeRuns do
     }
 
     attrs = Map.merge(decision.uploaded_values, identity_attrs(run, decision))
-    Gtfs.record_change_in_transaction(context, decision.entity_type, current, action, attrs)
+    Audit.record_change_in_transaction(context, decision.entity_type, current, action, attrs)
   end
 
   defp valid_audit_context?(run, %AuditContext{} = context) do

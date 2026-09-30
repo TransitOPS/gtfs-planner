@@ -3,8 +3,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   import Ecto.Query
 
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Alignments
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Headsigns
@@ -3709,7 +3709,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp audit!(audit_context, type, entity, action, attrs) do
     context = %{audit_context | station_stop_id: nil}
 
-    case Gtfs.record_change_in_transaction(context, type, entity, action, attrs) do
+    case Audit.record_change_in_transaction(context, type, entity, action, attrs) do
       {:ok, log} -> log
       {:error, changeset} -> Repo.rollback(changeset)
     end

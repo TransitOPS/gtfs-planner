@@ -26,10 +26,10 @@ defmodule GtfsPlanner.Gtfs.Alignments do
 
   import Ecto.Query
 
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Alignments.Draft
   alias GtfsPlanner.Gtfs.Alignments.Materializer
   alias GtfsPlanner.Gtfs.AlignmentSegment
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
@@ -1025,7 +1025,7 @@ defmodule GtfsPlanner.Gtfs.Alignments do
   defp audit_decimal(other), do: other
 
   defp audit!(audit_context, type, entity, action, attrs) do
-    case Gtfs.record_change_in_transaction(audit_context, type, entity, action, attrs) do
+    case Audit.record_change_in_transaction(audit_context, type, entity, action, attrs) do
       {:ok, log} -> log
       {:error, changeset} -> Repo.rollback(changeset)
     end

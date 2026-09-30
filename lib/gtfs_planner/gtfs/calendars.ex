@@ -27,7 +27,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
 
   Calendar history is audit-only. Writes, anchor creation, child deletion and the
   complete aggregate before/after audit snapshot commit in one transaction through
-  `Gtfs.record_change_in_transaction/5`, and station rollback refuses the
+  `Audit.record_change_in_transaction/5`, and station rollback refuses the
   `calendar` entity. Save, kind conversion, break, exception and multi-calendar date
   commands are planned from the retained source snapshot and applied under one
   version lock and transaction; a bulk date change shares one operation UUID and
@@ -37,8 +37,8 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   import Ecto.Query, warn: false
 
   alias GtfsPlanner.Authorization
-  alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Agency
+  alias GtfsPlanner.Gtfs.Audit
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.Queries
@@ -2328,7 +2328,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
       }
       |> put_envelope(operation, index)
 
-    case Gtfs.record_change_in_transaction(
+    case Audit.record_change_in_transaction(
            audit_context,
            :trip,
            %{trip | service_id: destination_id, block_id: block_id},
@@ -3856,7 +3856,7 @@ defmodule GtfsPlanner.Gtfs.Calendars do
   defp audit!(%AuditContext{} = audit_context, anchor, action, attrs) do
     context = %{audit_context | station_stop_id: nil}
 
-    case Gtfs.record_change_in_transaction(context, :calendar, anchor, action, attrs) do
+    case Audit.record_change_in_transaction(context, :calendar, anchor, action, attrs) do
       {:ok, log} -> log
       {:error, changeset} -> Repo.rollback(changeset)
     end
