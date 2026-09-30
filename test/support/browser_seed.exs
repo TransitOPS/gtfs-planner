@@ -7315,6 +7315,479 @@ case Accounts.register_first_admin(%{
 
     IO.puts("Browser seed: runs version #{runs_version.id}")
 
+    # ── Basic rosters browser journey (rosters.spec.js, rosters_keyboard.spec.js) ──
+    #
+    # A published "Browser Rosters Version" carries a partly built roster over
+    # three day types, isolated from every other scenario by its version and by
+    # its `RS_` names:
+    #
+    #   * three calendars — "Weekday" on weekdays, "Saturday" on Saturday and
+    #     "Sunday" on Sunday — deriving {WKDY}, {SAT} and {SUN}. The base week is
+    #     therefore Mon–Fri / Sat / Sun by the most-dates default, which is what a
+    #     version nobody has configured reads;
+    #   * one date that runs other service. Labor Day, Monday 2026-09-07, drops
+    #     WKDY and adds SUN, so that date belongs to the {SUN} day type while the
+    #     base week's Monday is {WKDY}. `AssignmentsExport` reports it as an
+    #     other-service date, which is how the export's and the page's "one date
+    #     runs different service" state is reachable from the seed;
+    #   * one garage, one marked station (a relief point needs one) and two plain
+    #     terminals every trip runs between, so every block has a real drive out
+    #     of and back to the garage and the derived work times are real ones;
+    #   * the researched crew rules and the 330-minute operator-change limit, so
+    #     the run's own report and paid time come from this version's row;
+    #   * the roster rules — 600 minutes of rest and a warning above 48 hours —
+    #     written explicitly, with no base-week choice, so the page opens on the
+    #     configured default rules and a base week nobody has confirmed.
+    #
+    # The nine runs, one per block, are named by day type the way operators and
+    # GTFS feeds name them: 1001-1005 weekday, 6001-6002 Saturday, 7001-7002
+    # Sunday.
+    #
+    #   * 301/302/303/304/305 → weekday runs 1001 (early), 1002 (shortly after
+    #     1001 signs off), 1003, 1004 and 1005 (afternoon). Each block works one
+    #     block, so each run is a single piece;
+    #   * 401/402 → Saturday runs 6001 and 6002;
+    #   * 501 is the LATE Sunday run: it works 20:00-21:15, so it signs off
+    #     after 21:00 and leaves under the ten hours of rest that 1002's early
+    #     Monday sign-on needs — that pair is the seeded short rest;
+    #   * 502 is an ordinary Sunday morning run.
+    #
+    # The five lines cover the states the page opens on, each isolated from the
+    # others so a fix cannot disturb a second one:
+    #
+    #   * line 1 — Mon-Fri on run 1001 with the pick recorded for E9001: an
+    #     assigned line, and the ordinary case;
+    #   * line 2 — Monday on 1002 and Sunday on 7001: SHORT REST. The Sunday run
+    #     signs off too late for the Monday sign-on, which a manual per-day edit
+    #     is allowed to do;
+    #   * line 3 — Mon-Fri on 1003 plus Saturday on 6001: DAYS OFF APART. Sunday
+    #     is the only day off, so there is no two in a row anywhere in the week;
+    #   * line 4 — Saturday on 6002 and Sunday on 7002: an OPEN line, no pick
+    #     recorded, which is also what the export's "line has no operator"
+    #     warning and the pick drawer both need;
+    #   * line 5 — Mon-Fri on 1004 with Friday's stored times moved ten minutes
+    #     earlier than the run's own: the STALE slot ("Run changed"), written
+    #     straight to the row because every writer stores the run's current
+    #     times, so a re-cut is the only way production reaches this state;
+    #   * weekday run 1005 is on no line at all, so "Create Mon-Fri line" has a
+    #     fully open run to build from.
+    #
+    # Six synthetic operators carry the picks and the seniority column: E9001 to
+    # E9006, four with a seniority number and the last two without, so the
+    # operators drawer's "no seniority number" state is reachable.
+    #
+    # Block IDs are numeric (301-305, 401-402, 501-502) and every name is
+    # `RS_`-prefixed, so this version collides with neither the `BB-`, `AB-` nor
+    # `RN_` names. The version is backdated to 2020-06-01, after the runs version
+    # and long before the `DateTime.utc_now()` defaults, so it never becomes the
+    # organization's latest published default.
+    {:ok, rosters_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Rosters Version"})
+
+    rosters_version =
+      Repo.update!(
+        Ecto.Changeset.change(rosters_version,
+          published_at: ~U[2020-06-01 00:00:00.000000Z]
+        )
+      )
+
+    rosters_week_start = ~D[2026-09-07]
+    rosters_week_end = ~D[2027-06-25]
+
+    for {service_id, name, days} <- [
+          {"WKDY", "Weekday",
+           [monday: 1, tuesday: 1, wednesday: 1, thursday: 1, friday: 1, saturday: 0, sunday: 0]},
+          {"SAT", "Saturday",
+           [monday: 0, tuesday: 0, wednesday: 0, thursday: 0, friday: 0, saturday: 1, sunday: 0]},
+          {"SUN", "Sunday",
+           [monday: 0, tuesday: 0, wednesday: 0, thursday: 0, friday: 0, saturday: 0, sunday: 1]}
+        ] do
+      attrs =
+        Map.merge(
+          %{
+            service_id: service_id,
+            name: name,
+            start_date: rosters_week_start,
+            end_date: rosters_week_end
+          },
+          Map.new(days)
+        )
+
+      GtfsPlanner.BlockingFixtures.calendar_service_fixture(
+        org.id,
+        rosters_version.id,
+        attrs
+      )
+    end
+
+    # Labor Day 2026-09-07 runs the Sunday service: WKDY is dropped for the date
+    # and SUN is added. Removing the weekday service matters as much as adding
+    # the other one — leaving both active would make the date a day type of its
+    # own, and a day type with no run of its own reports nothing at all.
+    GtfsPlanner.GtfsFixtures.calendar_date_fixture(org.id, rosters_version.id, %{
+      service_id: "WKDY",
+      date: ~D[2026-09-07],
+      exception_type: 2
+    })
+
+    GtfsPlanner.GtfsFixtures.calendar_date_fixture(org.id, rosters_version.id, %{
+      service_id: "SUN",
+      date: ~D[2026-09-07],
+      exception_type: 1
+    })
+
+    # One marked station and two plain terminals. Every trip runs between the two
+    # terminals and every block runs out of the garage and back, so a run's
+    # report time, travel and paid time are derived from real distances rather
+    # than assumed.
+    for {stop_id, stop_name, location_type, lat, lon} <- [
+          {"RS_DPT", "Riverside Depot", 1, 40.740000, -74.000000},
+          {"RS_TERM_A", "Riverside Terminal", 0, 40.750000, -74.000000},
+          {"RS_TERM_B", "Valley Terminal", 0, 40.730000, -74.000000}
+        ] do
+      AdvancedBlockingFixtures.stop_with_coordinates_fixture(org.id, rosters_version.id, %{
+        stop_id: stop_id,
+        stop_name: stop_name,
+        location_type: location_type,
+        stop_lat: lat,
+        stop_lon: lon
+      })
+    end
+
+    rosters_routes =
+      [
+        {"RS_R10", "10", "Riverside - Valley", "1F5FBF"},
+        {"RS_R20", "20", "Riverside Crosstown", "267548"}
+      ]
+      |> Map.new(fn {route_id, short_name, long_name, color} ->
+        {:ok, route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: rosters_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3,
+            route_color: color,
+            route_text_color: "FFFFFF"
+          })
+
+        {route_id, route}
+      end)
+
+    rosters_trip = fn attrs ->
+      attrs = Map.new(attrs)
+
+      GtfsPlanner.BlockingFixtures.blocked_trip_fixture(
+        org.id,
+        rosters_version.id,
+        Map.fetch!(rosters_routes, Map.fetch!(attrs, :route_id)).route_id,
+        Map.merge(
+          Map.take(attrs, [
+            :trip_id,
+            :block_id,
+            :trip_headsign,
+            :first_stop,
+            :last_stop,
+            :first_arrival,
+            :last_arrival
+          ]),
+          %{service_id: Map.get(attrs, :service_id, "WKDY")}
+        )
+      )
+    end
+
+    # Two trips per block, alternating direction, so every block is a real one-way
+    # run out and back rather than a single trip with nothing to lay over.
+    # 501's times are the load-bearing row: a block that ends after 21:00 is what
+    # leaves less than ten hours of rest before an early Monday sign-on.
+    for {trip_id, block_id, route_id, service_id, first_stop, last_stop, first_arrival,
+         last_arrival} <- [
+          # 301 — the early weekday run, on line 1 every weekday.
+          {"3101", "301", "RS_R10", "WKDY", "RS_TERM_A", "RS_TERM_B", "05:00:00", "05:30:00"},
+          {"3102", "301", "RS_R10", "WKDY", "RS_TERM_B", "RS_TERM_A", "06:00:00", "06:30:00"},
+          # 302 — the run behind the seeded short rest: it signs on shortly after
+          # 1001 signs off, so line 2 pairs it with Sunday's late run instead.
+          {"3103", "302", "RS_R10", "WKDY", "RS_TERM_A", "RS_TERM_B", "07:00:00", "07:30:00"},
+          {"3104", "302", "RS_R10", "WKDY", "RS_TERM_B", "RS_TERM_A", "07:45:00", "08:15:00"},
+          # 303 — the days-off-apart line's run.
+          {"3105", "303", "RS_R20", "WKDY", "RS_TERM_A", "RS_TERM_B", "09:00:00", "09:30:00"},
+          {"3106", "303", "RS_R20", "WKDY", "RS_TERM_B", "RS_TERM_A", "09:45:00", "10:15:00"},
+          # 304 — the stale line's run. Friday's slot then stores times ten
+          # minutes earlier than these, which is what a re-cut looks like.
+          {"3107", "304", "RS_R20", "WKDY", "RS_TERM_A", "RS_TERM_B", "11:00:00", "11:30:00"},
+          {"3108", "304", "RS_R20", "WKDY", "RS_TERM_B", "RS_TERM_A", "11:45:00", "12:15:00"},
+          # 305 — the afternoon run no line holds: "Create Mon-Fri line" builds
+          # from it.
+          {"3109", "305", "RS_R10", "WKDY", "RS_TERM_A", "RS_TERM_B", "14:00:00", "14:30:00"},
+          {"3110", "305", "RS_R10", "WKDY", "RS_TERM_B", "RS_TERM_A", "14:45:00", "15:15:00"},
+          # 401 — the Saturday run line 3 also works.
+          {"3201", "401", "RS_R10", "SAT", "RS_TERM_A", "RS_TERM_B", "07:00:00", "07:30:00"},
+          {"3202", "401", "RS_R10", "SAT", "RS_TERM_B", "RS_TERM_A", "07:45:00", "08:15:00"},
+          # 402 — the Saturday half of the open weekend line.
+          {"3203", "402", "RS_R20", "SAT", "RS_TERM_A", "RS_TERM_B", "10:00:00", "10:30:00"},
+          {"3204", "402", "RS_R20", "SAT", "RS_TERM_B", "RS_TERM_A", "10:45:00", "11:15:00"},
+          # 501 — the LATE Sunday run that leaves the short rest on line 2.
+          {"3301", "501", "RS_R10", "SUN", "RS_TERM_A", "RS_TERM_B", "20:00:00", "20:30:00"},
+          {"3302", "501", "RS_R10", "SUN", "RS_TERM_B", "RS_TERM_A", "20:45:00", "21:15:00"},
+          # 502 — an ordinary Sunday morning run.
+          {"3303", "502", "RS_R20", "SUN", "RS_TERM_A", "RS_TERM_B", "09:00:00", "09:30:00"},
+          {"3304", "502", "RS_R20", "SUN", "RS_TERM_B", "RS_TERM_A", "09:45:00", "10:15:00"}
+        ] do
+      rosters_trip.(%{
+        trip_id: trip_id,
+        route_id: route_id,
+        block_id: block_id,
+        first_stop: first_stop,
+        last_stop: last_stop,
+        first_arrival: first_arrival,
+        last_arrival: last_arrival,
+        service_id: service_id
+      })
+    end
+
+    rosters_trip_by_id =
+      Ecto.Query.from(t in GtfsPlanner.Gtfs.Trip,
+        where: t.organization_id == ^org.id and t.gtfs_version_id == ^rosters_version.id,
+        select: t
+      )
+      |> GtfsPlanner.Repo.all()
+      |> Map.new(&{&1.trip_id, &1})
+
+    rosters_garage =
+      GtfsPlanner.OperationsFixtures.garage_fixture(org.id, %{
+        garage_id: "RSGB",
+        name: "Riverside Garage",
+        lat: 40.740000,
+        lon: -74.000000
+      })
+
+    for {service_id, block_id} <- [
+          {"WKDY", "301"},
+          {"WKDY", "302"},
+          {"WKDY", "303"},
+          {"WKDY", "304"},
+          {"WKDY", "305"},
+          {"SAT", "401"},
+          {"SAT", "402"},
+          {"SUN", "501"},
+          {"SUN", "502"}
+        ] do
+      AdvancedBlockingFixtures.block_attribute_fixture(org.id, rosters_version.id, %{
+        service_id: service_id,
+        block_id: block_id,
+        garage_id: rosters_garage.id
+      })
+    end
+
+    {:ok, _rosters_blocking} =
+      GtfsPlanner.Gtfs.Blocking.update_settings(org.id, rosters_version.id, %{
+        min_layover_minutes: 5,
+        max_block_minutes: nil,
+        pull_out_buffer_minutes: 0,
+        interlining: :any,
+        deadhead_speed_kmh: 30,
+        deadhead_circuity: Decimal.new("1.3"),
+        max_piece_minutes: 330,
+        default_garage_id: rosters_garage.id
+      })
+
+    AdvancedBlockingFixtures.relief_point_fixture(org.id, rosters_version.id, %{
+      stop_id: "RS_DPT"
+    })
+
+    {:ok, _rosters_crew} =
+      GtfsPlanner.Gtfs.update_crew_settings(org.id, rosters_version.id, %{
+        report_pull_out_minutes: 15,
+        report_relief_minutes: 5,
+        sign_off_minutes: 5,
+        paid_break_max_minutes: 30,
+        max_spread_minutes: 720
+      })
+
+    # The roster rules, written explicitly so the seeded page's rest and
+    # weekly-hours figures come from this version's own row rather than from the
+    # researched defaults by accident. No base-week choice is stored, so the
+    # base week is the computed default and the settings drawer opens on a week
+    # nobody has confirmed.
+    {:ok, _rosters_rules} =
+      GtfsPlanner.Gtfs.Rosters.update_roster_settings(org.id, rosters_version.id, %{
+        min_rest_minutes: 600,
+        weekly_hours_warn_above: 48,
+        roster_day_types: %{}
+      })
+
+    # The day-type keys, read back through the day load and the same key function
+    # the runs section uses, so the `trip_runs` rows name keys this version's own
+    # calendars derive.
+    rosters_weekday_key =
+      case GtfsPlanner.Gtfs.Blocking.load_day(org.id, rosters_version.id, nil) do
+        {:ok, day} -> day.day_type.key
+        {:error, reason} -> raise "rosters browser seed: no default day type (#{inspect(reason)})"
+      end
+
+    rosters_saturday_key = GtfsPlanner.Gtfs.Blocking.DayTypes.key(["SAT"])
+    rosters_sunday_key = GtfsPlanner.Gtfs.Blocking.DayTypes.key(["SUN"])
+
+    # The trip_runs rows, one run per block. The block is checked against the
+    # trip's own row, the way the runs section checks its own, so a trip silently
+    # moved to another block cannot leave a run that does not touch it.
+    for {block_id, trip_names, run_id, day_type_key} <- [
+          {"301", ["3101", "3102"], "1001", rosters_weekday_key},
+          {"302", ["3103", "3104"], "1002", rosters_weekday_key},
+          {"303", ["3105", "3106"], "1003", rosters_weekday_key},
+          {"304", ["3107", "3108"], "1004", rosters_weekday_key},
+          {"305", ["3109", "3110"], "1005", rosters_weekday_key},
+          {"401", ["3201", "3202"], "6001", rosters_saturday_key},
+          {"402", ["3203", "3204"], "6002", rosters_saturday_key},
+          {"501", ["3301", "3302"], "7001", rosters_sunday_key},
+          {"502", ["3303", "3304"], "7002", rosters_sunday_key}
+        ] do
+      for trip_name <- trip_names do
+        trip = Map.fetch!(rosters_trip_by_id, trip_name)
+
+        unless trip.block_id == block_id do
+          raise "rosters browser seed: trip #{trip_name} is on block #{trip.block_id}, " <>
+                  "but the assignment row claims #{block_id}"
+        end
+
+        GtfsPlanner.RunsFixtures.trip_run_fixture(org.id, rosters_version.id, %{
+          trip: trip,
+          day_type_key: day_type_key,
+          run_id: run_id
+        })
+      end
+    end
+
+    # The six synthetic operators. Four carry a seniority number and the last two
+    # deliberately do not, so the operators drawer's seniority ordering and its
+    # "no seniority number" row are both reachable from the seed. The pick is
+    # recorded for three of them below; the rest exist to be offered.
+    rosters_operators =
+      for {employee_id, display_name, seniority_number} <- [
+            {"E9001", "Ana Ferreira", 12},
+            {"E9002", "Bilal Nasser", 7},
+            {"E9003", "Cleo Marchetti", 3},
+            {"E9004", "Devon Okafor", nil},
+            {"E9005", "Esi Halloran", nil},
+            {"E9006", "Femi Adeyemi", 21}
+          ] do
+        {:ok, operator} =
+          GtfsPlanner.Operations.create_operator(org.id, editor, %{
+            employee_id: employee_id,
+            display_name: display_name,
+            seniority_number: seniority_number
+          })
+
+        operator
+      end
+
+    rosters_operator_by_id = Map.new(rosters_operators, &{&1.employee_id, &1})
+
+    # The five lines, every one written through the production roster writers so
+    # the rows are the ones the page's own drawers write: the lock order, the
+    # stored run times and the refusals are all the real ones.
+    {:ok, roster_line_1} = GtfsPlanner.Gtfs.Rosters.create_line(org.id, rosters_version.id)
+
+    {:ok, _line_1_group} =
+      GtfsPlanner.Gtfs.Rosters.set_weekday_group(
+        org.id,
+        rosters_version.id,
+        roster_line_1.id,
+        1,
+        "1001"
+      )
+
+    {:ok, _line_1_pick} =
+      GtfsPlanner.Gtfs.Rosters.assign_operator(
+        org.id,
+        rosters_version.id,
+        roster_line_1.id,
+        Map.fetch!(rosters_operator_by_id, "E9001").id
+      )
+
+    # Line 2 — SHORT REST. Two single-day writes rather than one group write,
+    # because a manual per-day edit is allowed to leave short rest where a
+    # builder would refuse. Sunday's run signs off after 21:00 and Monday's signs
+    # on before 05:30, which is under ten hours apart.
+    {:ok, roster_line_2} = GtfsPlanner.Gtfs.Rosters.create_line(org.id, rosters_version.id)
+
+    {:ok, _line_2_monday} =
+      GtfsPlanner.Gtfs.Rosters.set_slot(org.id, rosters_version.id, roster_line_2.id, 1, "1002")
+
+    {:ok, _line_2_sunday} =
+      GtfsPlanner.Gtfs.Rosters.set_slot(org.id, rosters_version.id, roster_line_2.id, 7, "7001")
+
+    # Line 3 — DAYS OFF APART. Mon-Fri plus Saturday leaves Sunday as the only day
+    # off, so there is no two in a row anywhere in the cyclic week.
+    {:ok, roster_line_3} = GtfsPlanner.Gtfs.Rosters.create_line(org.id, rosters_version.id)
+
+    {:ok, _line_3_group} =
+      GtfsPlanner.Gtfs.Rosters.set_weekday_group(
+        org.id,
+        rosters_version.id,
+        roster_line_3.id,
+        1,
+        "1003"
+      )
+
+    {:ok, _line_3_saturday} =
+      GtfsPlanner.Gtfs.Rosters.set_slot(org.id, rosters_version.id, roster_line_3.id, 6, "6001")
+
+    # Line 4 — an OPEN line: a weekend pair with no pick recorded, which is also
+    # the export's "line has no operator" warning.
+    {:ok, roster_line_4} = GtfsPlanner.Gtfs.Rosters.create_line(org.id, rosters_version.id)
+
+    {:ok, _line_4_saturday} =
+      GtfsPlanner.Gtfs.Rosters.set_slot(org.id, rosters_version.id, roster_line_4.id, 6, "6002")
+
+    {:ok, _line_4_sunday} =
+      GtfsPlanner.Gtfs.Rosters.set_slot(org.id, rosters_version.id, roster_line_4.id, 7, "7002")
+
+    # Line 5 — the STALE slot. The five weekdays are set through the writer, so
+    # every row stores the run's current times; Friday's stored times are then
+    # moved ten minutes earlier directly on the row, which is exactly the state a
+    # re-cut of run 1004 leaves behind and the only way to reach it without
+    # deleting the trip_runs rows (INV-13).
+    {:ok, roster_line_5} = GtfsPlanner.Gtfs.Rosters.create_line(org.id, rosters_version.id)
+
+    {:ok, _line_5_group} =
+      GtfsPlanner.Gtfs.Rosters.set_weekday_group(
+        org.id,
+        rosters_version.id,
+        roster_line_5.id,
+        1,
+        "1004"
+      )
+
+    {:ok, _line_5_pick} =
+      GtfsPlanner.Gtfs.Rosters.assign_operator(
+        org.id,
+        rosters_version.id,
+        roster_line_5.id,
+        Map.fetch!(rosters_operator_by_id, "E9002").id
+      )
+
+    rosters_stale_day =
+      Repo.one!(
+        Ecto.Query.from(d in GtfsPlanner.Gtfs.RosterLineDay,
+          where:
+            d.roster_line_id == ^roster_line_5.id and d.weekday == ^5 and
+              d.organization_id == ^org.id and d.gtfs_version_id == ^rosters_version.id,
+          select: d
+        )
+      )
+
+    rosters_stale_day
+    |> Ecto.Changeset.change(%{run_sign_on_secs: rosters_stale_day.run_sign_on_secs - 600})
+    |> Repo.update!()
+
+    IO.puts(
+      "Browser seed: rosters version #{rosters_version.id} with 9 runs over 3 day types, " <>
+        "6 operators (E9001-E9006) and 5 lines (assigned Mon-Fri, short rest, days off " <>
+        "apart, open, stale slot)"
+    )
+
     {:ok, schedules_version} =
       Versions.create_gtfs_version(org.id, %{name: "Browser Schedules No Calendars"})
 
