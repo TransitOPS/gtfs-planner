@@ -429,7 +429,6 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
     }
   end
 
-  # `is_default_fare_category` is absent: import does not store it.
   def rider_categories_spec do
     %{
       filename: "rider_categories.txt",
@@ -437,6 +436,7 @@ defmodule GtfsPlanner.Gtfs.Export.FileSpec do
       fields: [
         {"rider_category_id", :rider_category_id},
         {"rider_category_name", :rider_category_name},
+        {"is_default_fare_category", :is_default_fare_category},
         {"min_age", :min_age},
         {"max_age", :max_age},
         {"eligibility_url", :eligibility_url}

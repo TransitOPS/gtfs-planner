@@ -22,6 +22,13 @@ landed with `20260930205949_fare_schema_corrections`, and `public/ctran` was
 recorded on that revision. No other entry's bytes changed on it, because the
 migration touches no export code.
 
+`--check` now reports `rider_categories.txt` as different for every fixture that has
+rider categories. That is the difference AC-3 names and is expected: the export
+writes an `is_default_fare_category` column the recorded bytes predate. The
+goldens stay as the pre-change bytes, and
+`test/gtfs_planner/gtfs/export/fares_unmanaged_golden_test.exs` compares the
+export against them with that column inserted.
+
 ## Regenerating and checking
 
 Record the goldens on a revision that does not change export bytes:
