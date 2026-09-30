@@ -4562,3 +4562,105 @@ body:has(#home-page) {
 #runs-timeline-foot #paid-time-note {
   flex: 1 1 22rem;
 }
+
+/* ── Runs list view ──
+   The list is the same runs, the same figures and the same sort as the chart,
+   laid out to be scanned rather than read positionally. `table-row-design.md`
+   governs both: numbers right and tabular, text left, terse headers, full-row
+   hover, and horizontal separators only. A vertical gridline between two
+   numbers a reader is comparing is a line in the way of the comparison. */
+
+#runs-list {
+  font-size: 14px;
+}
+
+#runs-list th,
+#runs-list td {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--color-base-300);
+}
+
+#runs-list thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--color-base-100);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--color-base-400);
+}
+
+#runs-list .runs-list-row:hover td,
+#runs-list .runs-list-row:hover th {
+  background: color-mix(in oklab, var(--color-base-200) 70%, transparent);
+}
+
+/* The figures a reader compares, right and tabular. The header matches its
+   cell, so the column reads as one line rather than as two misaligned ones. */
+#runs-list .runs-fact-spread,
+#runs-list .runs-fact-paid,
+#runs-list .runs-fact-on,
+#runs-list .runs-fact-off {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#runs-list th[aria-sort="ascending"] .runs-sort,
+#runs-list th[aria-sort="descending"] .runs-sort,
+#runs-list th:has(button[aria-sort="ascending"]),
+#runs-list th:has(button[aria-sort="descending"]) {
+  text-align: inherit;
+}
+
+#runs-list th[data-role="list-spread"],
+#runs-list th[data-role="list-paid"],
+#runs-list th[data-role="list-on"],
+#runs-list th[data-role="list-off"] {
+  text-align: right;
+}
+
+/* One piece per line, so a two-piece run is two lines and a reader can count
+   them without reading. The reference spells the block out in full; the card
+   specifies `B <block>`, which is what the track's bar says too. */
+#runs-list .runs-fact-pieces {
+  min-width: 16rem;
+  font-variant-numeric: tabular-nums;
+}
+
+#runs-list .runs-fact-pieces div + div {
+  margin-top: 0.125rem;
+}
+
+/* A run with no pieces has a cell, and a blank one would read as a rendering
+   fault rather than as an absence. */
+#runs-list .runs-fact-pieces:empty::before {
+  content: "No pieces";
+  color: color-mix(in oklab, var(--color-base-content) 55%, transparent);
+}
+
+#runs-list .runs-list-th {
+  text-align: left;
+}
+
+#runs-list .runs-list-th:has(button[phx-value-key="spread"]),
+#runs-list .runs-list-th:has(button[phx-value-key="paid"]),
+#runs-list .runs-list-th:has(button[phx-value-key="sign_on"]),
+#runs-list .runs-list-th:has(button[phx-value-key="sign_off"]) {
+  text-align: right;
+}
+
+#runs-list .runs-list-th:has(button[phx-value-key="spread"]) .runs-sort,
+#runs-list .runs-list-th:has(button[phx-value-key="paid"]) .runs-sort,
+#runs-list .runs-list-th:has(button[phx-value-key="sign_on"]) .runs-sort,
+#runs-list .runs-list-th:has(button[phx-value-key="sign_off"]) .runs-sort {
+  margin-left: auto;
+}
+
+#runs-list :is(a, button, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}

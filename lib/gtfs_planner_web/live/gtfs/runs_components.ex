@@ -903,35 +903,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       data-type={@run.work.type}
       class="runs-row"
     >
-      <td class={["runs-meta", "runs-meta-id"]}>
-        <button
-          type="button"
-          phx-click="open_run"
-          phx-value-run={@run.run_id}
-          class="runs-run-button"
-          title={"Run " <> @run.run_id}
-        >
-          {@run.run_id}
-        </button>
-      </td>
-      <td class={["runs-meta", "runs-meta-type"]} data-role="run-type">
-        {type_label(@run.work.type)}
-      </td>
-      <td class={["runs-meta", "runs-meta-on"]} data-role="run-sign-on">
-        {BlocksComponents.clock(@run.work.sign_on_secs)}
-      </td>
-      <td class={["runs-meta", "runs-meta-off"]} data-role="run-sign-off">
-        {BlocksComponents.clock(@run.work.sign_off_secs)}
-      </td>
-      <td class={["runs-meta", "runs-meta-spread"]} data-role="run-spread">
-        {hm(@run.work.spread_secs)}
-      </td>
-      <td class={["runs-meta", "runs-meta-paid"]} data-role="run-paid">
-        {hm(@run.work.paid_secs)}
-      </td>
-      <td class={["runs-meta", "runs-meta-status"]}>
-        <.status_cell findings={@run.findings} />
-      </td>
+      <.run_facts run={@run} variant={:timeline} />
       <td class="runs-track" style={@track_style}>
         <span class="runs-lane">
           <.segment_mark :for={mark <- @marks} mark={mark} />
@@ -949,6 +921,191 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     </tr>
     """
   end
+
+  @doc """
+  Renders the Runs List view: the same runs, the same figures and the same sort,
+  as a table a reader can scan and compare rather than a chart a reader reads
+  positionally.
+
+  The list is for the questions a timeline cannot answer well. "Which runs are
+  over an hour's spread?" is three seconds of arithmetic in a table and a
+  hunt through a chart; "when do these two runs overlap?" is the reverse. Neither
+  view is the real one and both are one sort state, so switching between them
+  never loses the order the reader chose.
+
+  `docs/design/table-row-design.md` governs this table and the timeline is not
+  exempt from it: numbers right and tabular, text left, terse headers, full-row
+  hover, a link-looking Run, and **no vertical gridlines** — the separators are
+  horizontal because a grid here would put eight lines between every two numbers
+  a reader is meant to compare.
+
+  The seven fact cells are `run_facts/1`, shared with the timeline, so the two
+  views cannot disagree about the same run. The eighth column, Pieces, is the
+  list's own and carries what the track draws as position: block, span and where
+  the piece starts and ends. The row's Run cell is a `<th scope="row">`, the way
+  the reference has it, so a screen reader announces the row by its run rather
+  than by seven bare cells.
+  """
+  attr :run_rows, :any, required: true
+  attr :sort, :atom, required: true
+  attr :dir, :atom, required: true
+  attr :day_label, :string, default: "this day"
+
+  def list(assigns) do
+    ~H"""
+    <div
+      id="runs-list-scroll"
+      class="overflow-auto"
+      style="max-height: var(--runs-timeline-max-height)"
+    >
+      <table id="runs-list" class="w-full border-separate border-spacing-0 text-sm">
+        <caption class="sr-only">Runs for {@day_label}</caption>
+        <thead>
+          <tr>
+            <th
+              :for={column <- list_columns(@sort)}
+              scope="col"
+              aria-sort={aria_sort(@sort, @dir, column.key)}
+              class="runs-list-th"
+            >
+              <button type="button" phx-click="sort" phx-value-key={column.key} class="runs-sort">
+                {column.label}
+                <span :if={Atom.to_string(@sort) == column.key} aria-hidden="true">
+                  {sort_arrow(@dir)}
+                </span>
+              </button>
+            </th>
+          </tr>
+        </thead>
+        <tbody id="runs-list-body" phx-update="stream">
+          <tr
+            :for={{dom_id, %{run: run}} <- @run_rows}
+            id={dom_id}
+            data-run={run.run_id}
+            data-type={run.work.type}
+            class="runs-list-row"
+          >
+            <.run_facts run={run} variant={:list} />
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    """
+  end
+
+  # The timeline's seven columns plus Pieces, in the reference's order: Pieces
+  # sits third, between Type and Sign-on, because a piece is what a run IS and
+  # the clock is only when it happens.
+  defp list_columns(_sort) do
+    (sort_columns() ++ [%{key: "pieces", label: "Pieces"}])
+    |> Enum.sort_by(&column_order/1)
+  end
+
+  defp column_order(%{key: "id"}), do: 0
+  defp column_order(%{key: "type"}), do: 1
+  defp column_order(%{key: "pieces"}), do: 2
+  defp column_order(%{key: "sign_on"}), do: 3
+  defp column_order(%{key: "sign_off"}), do: 4
+  defp column_order(%{key: "spread"}), do: 5
+  defp column_order(%{key: "paid"}), do: 6
+  defp column_order(%{key: "status"}), do: 7
+
+  # One piece in the list's own words: block, then the span it occupies, then
+  # where it starts and ends.
+  #
+  # The card specifies `B <block> <start>–<end>`, which is what this prints. The
+  # reference says `Block <n> · <start>–<end> · <from> → <to>`; the difference is
+  # recorded rather than quietly resolved, because the card is the gate and the
+  # reader gains nothing from the longer spelling in a column this narrow. The
+  # places are not dropped — they are on the piece's `title`, and step 29's drawer
+  # carries them in full.
+  defp piece_line(piece) do
+    "B #{piece.block_id} #{BlocksComponents.clock(piece.start_secs)}–#{BlocksComponents.clock(piece.end_secs)}"
+  end
+
+  @doc """
+  Renders one run's seven fact cells: Run, Type, Sign-on, Sign-off, Spread, Paid
+  and Status.
+
+  **There is one implementation of these cells and both views call it.** The
+  card asks for "the same values as the timeline", and a second copy of seven
+  cells is seven chances to drift - the day a `BlocksComponents.clock/1` is
+  swapped for a bare `fmt/1` on one view only, nothing would fail, and the two
+  tables would quietly disagree about the same run.
+
+  The list's eighth column, Pieces, is rendered HERE rather than passed in as a
+  slot or appended by the caller. The POSITION is part of the contract — it is
+  the third column, after Type — and a caller that supplied the cell could put it
+  anywhere, which would leave the header naming one column and the cells in
+  another. A test that counted columns would not notice; a reader would. So the
+  component owns the whole column order for both views, and `list_columns/0`
+  names the same order in the header.
+
+  `variant` chooses the CLASSES and nothing else. The timeline's cells are sticky
+  and sit at fixed offsets from the left of a scrolling track; the list's are
+  ordinary cells in a table that scrolls once. The values, the `data-role` hooks
+  and the Run button are identical, which is what lets a test compare the two
+  views cell by cell.
+  """
+  attr :run, :map, required: true
+  attr :variant, :atom, required: true, values: [:timeline, :list]
+
+  def run_facts(assigns) do
+    ~H"""
+    <th scope="row" class={fact_class(@variant, "id")} data-role="run-id">
+      <button
+        type="button"
+        phx-click="open_run"
+        phx-value-run={@run.run_id}
+        class="runs-run-button"
+        title={"Run " <> @run.run_id}
+      >
+        {@run.run_id}
+      </button>
+    </th>
+    <td class={fact_class(@variant, "type")} data-role="run-type">
+      {type_label(@run.work.type)}
+    </td>
+    <.list_pieces :if={@variant == :list} run={@run} />
+    <td class={fact_class(@variant, "on")} data-role="run-sign-on">
+      {BlocksComponents.clock(@run.work.sign_on_secs)}
+    </td>
+    <td class={fact_class(@variant, "off")} data-role="run-sign-off">
+      {BlocksComponents.clock(@run.work.sign_off_secs)}
+    </td>
+    <td class={fact_class(@variant, "spread")} data-role="run-spread">
+      {hm(@run.work.spread_secs)}
+    </td>
+    <td class={fact_class(@variant, "paid")} data-role="run-paid">
+      {hm(@run.work.paid_secs)}
+    </td>
+    <td class={fact_class(@variant, "status")}>
+      <.status_cell findings={@run.findings} />
+    </td>
+    """
+  end
+
+  # The list's Pieces cell: one line per piece, `B <block> <start>–<end>`.
+  #
+  # One line per piece so a two-piece run is two lines and a reader can count them
+  # without reading. The card specifies this spelling; the reference spells the
+  # block out in full and adds the places, and the difference is recorded rather
+  # than quietly resolved - the card is the gate, the column is narrow, and the
+  # places are on the piece's `title` and in step 29's drawer.
+  attr :run, :map, required: true
+
+  defp list_pieces(assigns) do
+    ~H"""
+    <td class="runs-fact runs-fact-pieces" data-role="run-pieces">
+      <div :for={{piece, index} <- Enum.with_index(@run.pieces, 1)} data-piece={index}>
+        {piece_line(piece)}
+      </div>
+    </td>
+    """
+  end
+
+  defp fact_class(:timeline, key), do: ["runs-meta", "runs-meta-#{key}"]
+  defp fact_class(:list, key), do: ["runs-fact", "runs-fact-#{key}"]
 
   @doc """
   Renders one piece as a button positioned by the day's axis.

@@ -70,6 +70,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:sort, :sign_on)
      |> assign(:dir, :asc)
      |> assign(:scale, :day)
+     |> assign(:view, :timeline)
      |> assign(:run_axis, nil)
      |> assign(:run_routes, %{})
      |> stream(:run_rows, [], dom_id: &run_dom_id/1)}
@@ -86,6 +87,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     # the socket untouched, and the rows would keep the order they had. So the
     # re-stream is asked for explicitly, here, where the change is known.
     resort? = socket.assigns.sort != sort or socket.assigns.dir != dir
+    view = view_value(params["view"])
+    # A VIEW change moves the same stream into a different `phx-update="stream"`
+    # container — `#runs-timeline-body` and `#runs-list-body` are different
+    # elements — so the rows have to be re-put, for the same reason a sort
+    # re-streams. Without this, switching to the list and back renders an empty
+    # one: the sort survives in the URL while the rows do not survive in the DOM.
+    view_changed? = socket.assigns.view != view
 
     socket =
       socket
@@ -93,10 +101,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       |> assign(:sort, sort)
       |> assign(:dir, dir)
       |> assign(:scale, scale_value(params["scale"]))
+      |> assign(:view, view)
       |> ensure_day_loaded()
 
     socket =
-      if resort? and socket.assigns.runs_day, do: stream_run_rows(socket), else: socket
+      if (resort? or view_changed?) and socket.assigns.runs_day,
+        do: stream_run_rows(socket),
+        else: socket
 
     {:noreply, socket}
   end
@@ -125,6 +136,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   defp scale_value("zoom"), do: :zoom
   defp scale_value(_scale), do: :day
+
+  # The Timeline | List control is a URL param and nothing else, for the reason
+  # `?day=` is: a view a reader cannot share, bookmark or return to with the back
+  # button is not really the reader's. An unknown value is the timeline, so a
+  # stale or hand-edited link lands on the page rather than on an error.
+  defp view_value("list"), do: :list
+  defp view_value(_view), do: :timeline
 
   @count_tile_keys ~w(runs straight_share paid_hours on_vehicles longest_spread uncovered)
 
@@ -166,6 +184,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   end
 
   def handle_event("set_scale", _params, socket), do: {:noreply, socket}
+
+  def handle_event("set_view", %{"view" => "list"}, socket) do
+    {:noreply, push_patch(socket, to: runs_path(socket, socket.assigns.day, %{view: "list"}))}
+  end
+
+  def handle_event("set_view", %{"view" => "timeline"}, socket) do
+    {:noreply, push_patch(socket, to: runs_path(socket, socket.assigns.day, %{view: "timeline"}))}
+  end
+
+  def handle_event("set_view", _params, socket), do: {:noreply, socket}
 
   # Every strip tile opens the same drawer, and the pressed tile is the one the
   # reader pressed. The prototype sends each tile its own `data-act`; only the
@@ -411,13 +439,27 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # A value equal to its default is left OUT rather than written, so the URL a
   # reader copies for the default view is the short one and the address bar does
   # not fill with `sort=sign_on&dir=asc`.
+  #
+  # **Everything except `day` is read off the socket unless the caller names it.**
+  # A patch that named only `sort` and rebuilt the path from each parameter's own
+  # default would take a reader off the List view and back to the Timeline every
+  # time they re-sorted, and would drop the order they had chosen every time they
+  # switched views. That is the same bug as dropping `?day=`, one step along: the
+  # path is a record of the reader's whole state, so a patch that only knows about
+  # one field cannot afford to guess about the rest.
   defp runs_path(socket, day, extra \\ %{}) do
+    sort = to_string(Map.get(extra, :sort) || socket.assigns.sort)
+    dir = Map.get(extra, :dir) || socket.assigns.dir
+    view = to_string(Map.get(extra, :view) || socket.assigns.view)
+    scale = to_string(Map.get(extra, :scale) || socket.assigns.scale)
+
     params =
       [
         {"day", day},
-        {"sort", if(extra[:sort] && extra[:sort] != "sign_on", do: extra[:sort])},
-        {"dir", if(extra[:dir] == :desc, do: "desc")},
-        {"scale", if(extra[:scale] && extra[:scale] != "day", do: extra[:scale])}
+        {"sort", if(sort != "sign_on", do: sort)},
+        {"dir", if(dir == :desc, do: "desc")},
+        {"scale", if(scale != "day", do: scale)},
+        {"view", if(view != "timeline", do: view)}
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
       |> Enum.map_join("&", fn {key, value} -> key <> "=" <> to_string(value) end)
@@ -478,6 +520,20 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
           <div :if={@load_state == :loaded or @load_state == :unavailable} class="mt-4">
             <div class="flex flex-wrap items-end justify-end gap-3 pb-3">
               <.segmented_control
+                id="runs-view"
+                name="view"
+                legend="Runs view"
+                legend_class="sr-only"
+                options={[{"Timeline", "timeline"}, {"List", "list"}]}
+                value={Atom.to_string(@view)}
+                event="set_view"
+                size={:sm}
+                appearance={:joined}
+                emphasis={:quiet}
+              />
+
+              <.segmented_control
+                :if={@view == :timeline}
                 id="runs-scale"
                 name="scale"
                 legend="Chart scale"
@@ -492,16 +548,25 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
             </div>
 
             <RunsComponents.plan_card version_id={@current_gtfs_version.id}>
-              <RunsComponents.chart_key />
-              <RunsComponents.timeline
-                run_rows={@streams.run_rows}
-                axis={@run_axis}
-                routes={@run_routes}
-                sort={@sort}
-                dir={@dir}
-                scale={@scale}
-                crew={runs_crew(@runs_day)}
-              />
+              <%= if @view == :list do %>
+                <RunsComponents.list
+                  run_rows={@streams.run_rows}
+                  sort={@sort}
+                  dir={@dir}
+                  day_label={day_label(@runs_day)}
+                />
+              <% else %>
+                <RunsComponents.chart_key />
+                <RunsComponents.timeline
+                  run_rows={@streams.run_rows}
+                  axis={@run_axis}
+                  routes={@run_routes}
+                  sort={@sort}
+                  dir={@dir}
+                  scale={@scale}
+                  crew={runs_crew(@runs_day)}
+                />
+              <% end %>
             </RunsComponents.plan_card>
           </div>
 
@@ -533,6 +598,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # which is a base64 hash a reader cannot check against anything — and rather
   # than every day type the version has, which would name days the drawer says
   # nothing about.
+  defp day_label(nil), do: "this day"
+
   defp day_label(runs_day) do
     key = runs_day.day.day_type.key
 
