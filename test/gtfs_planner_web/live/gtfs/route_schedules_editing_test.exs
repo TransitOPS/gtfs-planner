@@ -530,7 +530,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       assert has_element?(view, "#trip-EDT_T0600-duplicate")
     end
 
-    test "the headsign hint names the timing's headsign, not the trip's own", context do
+    test "the headsign note names the timing's headsign as the default", context do
       scope = editing_scope(context)
       trip = own_headsign_trip(scope)
       {:ok, view, _html} = live(context.conn, schedules_path(scope))
@@ -538,11 +538,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       render_click(view, "open_edit_drawer", %{"trip" => trip.id})
 
       assert has_element?(view, "#trip-headsign[value='Own sign']")
-      assert has_element?(view, "#trip-headsign-help", "Leave blank to use Editing outbound.")
-      refute has_element?(view, "#trip-headsign-help", "Own sign")
+      assert has_element?(view, "#trip-headsign-note", "Editing outbound")
     end
 
-    test "the headsign hint follows the timing chosen in the drawer", context do
+    test "the headsign note follows the timing chosen in the drawer", context do
       scope = editing_scope(context)
       trip = own_headsign_trip(scope)
       late = late_timing(scope)
@@ -554,7 +553,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
         "drawer" => edit_params(scope, %{"timed_pattern_id" => late.id})
       })
 
-      assert has_element?(view, "#trip-headsign-help", "Leave blank to use Late sign.")
+      assert has_element?(view, "#trip-headsign-note", "Late sign")
     end
 
     test "a blank headsign saves the headsign the hint names", context do
@@ -571,7 +570,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       assert Repo.get!(Trip, trip.id).trip_headsign == "Editing outbound"
     end
 
-    test "a custom trip's headsign hint names the pattern's headsign", context do
+    test "a custom trip's headsign note names the pattern's headsign", context do
       scope = editing_scope(context)
       Repo.update!(Ecto.Changeset.change(scope.long.pattern, headsign: "Pattern sign"))
       {:ok, view, _html} = live(context.conn, schedules_path(scope))
@@ -579,10 +578,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       custom = trip_row(scope, "EDT_CUSTOM_DIFF")
       render_click(view, "open_edit_drawer", %{"trip" => custom.id})
 
-      assert has_element?(view, "#trip-headsign-help", "Leave blank to use Pattern sign.")
+      assert has_element?(view, "#trip-headsign-note", "Pattern sign")
     end
 
-    test "the headsign field shows no hint when the trip has no fallback headsign", context do
+    test "the headsign note shows No headsign when the trip has no fallback headsign", context do
       scope = editing_scope(context)
       {:ok, view, _html} = live(context.conn, schedules_path(scope))
 
@@ -590,7 +589,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       render_click(view, "open_edit_drawer", %{"trip" => custom.id})
 
       assert has_element?(view, "#trip-headsign")
-      refute has_element?(view, "#trip-headsign-help")
+      assert has_element?(view, "#trip-headsign-note", "No headsign")
     end
   end
 
