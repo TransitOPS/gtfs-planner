@@ -14,11 +14,18 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
   while it carries the selection verbs, the prototype's proposed extension over
   the design system's 760 px maximum: four verbs plus Delete and Clear stay on
   one row.
+
+  The module also owns the frequency windows editor the trip drawers render
+  (R8): the From / Until / Every rows with their departures sentences and inline
+  validation, and the "What riders see" choice with its headway note.
   """
   use GtfsPlannerWeb, :html
 
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1, drawer_scroll: 1, drawer_footer: 1]
 
+  alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.Schedules.FrequencyWindows
+  alias GtfsPlanner.Gtfs.Schedules.TimeEntry
   alias GtfsPlannerWeb.Gtfs.ScheduleComponents
 
   @focus_inset "focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-focus"
@@ -1205,6 +1212,421 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
     do: clock_label(first[:departure_time] || first[:arrival_time])
 
   defp insert_departure(_insert), do: nil
+
+  # --- frequency windows editor -----------------------------------------------
+
+  @doc """
+  Renders the frequency windows editor (R8).
+
+  One From / Until / Every row per window with its remove button and, under it,
+  the departures sentence `FrequencyWindows.summary/1` produces or the inline
+  error `FrequencyWindows.validate/1` implies. Rows carry the drawer's raw text,
+  so a typed value renders back exactly as typed, and a row earns its summary
+  sentence only while it passes validation: an overlapping window can never read
+  as one that saves.
+
+  The times are read with the page's one typed-time grammar (`TimeEntry`), which
+  accepts service times past 24:00 (R2). Remove and Add post the drawer's own
+  events (`drawer_remove_window` with the row index, `drawer_add_window`); the
+  row ids are stable, so the drawer can focus the From input of a window it adds.
+  """
+  attr :windows, :list,
+    required: true,
+    doc: "the raw rows to edit, each `%{from:, until:, every:}` of typed text"
+
+  attr :stop_name, :string, default: nil, doc: "the first stop the windows depart from"
+
+  def windows_editor(assigns) do
+    assigns = assign(assigns, :rows, window_rows(assigns.windows))
+
+    ~H"""
+    <fieldset id="frequency-windows" class="grid gap-3">
+      <legend class="mb-1 text-[13px] font-[650] text-default">
+        Windows
+        <span :if={@stop_name} class="font-normal text-muted">· departures from {@stop_name}</span>
+      </legend>
+      <p class="-mt-1 text-[13px] leading-snug text-muted">
+        Until is the first time with no departure. Windows can touch but not overlap.
+      </p>
+      <div class="grid grid-cols-[1fr_1fr_1fr_44px] gap-3 text-[13px] font-[650] text-muted">
+        <span>From</span>
+        <span>Until</span>
+        <span>Every</span>
+        <span></span>
+      </div>
+      <div id="win-rows" class="grid gap-3">
+        <div
+          :for={row <- @rows}
+          id={"windows-row-#{row.index}"}
+          class="grid grid-cols-[1fr_1fr_1fr_44px] items-start gap-3"
+        >
+          <input
+            id={"windows-#{row.index}-from"}
+            name={"drawer[windows][#{row.index}][from]"}
+            type="text"
+            value={row.from}
+            inputmode="numeric"
+            autocomplete="off"
+            spellcheck="false"
+            aria-invalid={to_string(row.errors != [])}
+            class={[control_class(), "text-right"]}
+          />
+          <input
+            id={"windows-#{row.index}-until"}
+            name={"drawer[windows][#{row.index}][until]"}
+            type="text"
+            value={row.until}
+            inputmode="numeric"
+            autocomplete="off"
+            spellcheck="false"
+            aria-invalid={to_string(row.errors != [])}
+            class={[control_class(), "text-right"]}
+          />
+          <span class="relative min-w-0">
+            <input
+              id={"windows-#{row.index}-every"}
+              name={"drawer[windows][#{row.index}][every]"}
+              type="text"
+              value={row.every}
+              inputmode="numeric"
+              autocomplete="off"
+              spellcheck="false"
+              aria-invalid={to_string(row.errors != [])}
+              class={[control_class(), "pr-12 text-right"]}
+            />
+            <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[13px] text-muted">
+              min
+            </span>
+          </span>
+          <button
+            type="button"
+            id={"windows-remove-#{row.index}"}
+            phx-click="drawer_remove_window"
+            phx-value-index={row.index}
+            disabled={length(@rows) == 1}
+            title="Remove window"
+            class={[
+              "inline-flex size-11 items-center justify-center rounded-control text-muted",
+              "hover:bg-canvas hover:text-error-fg disabled:text-subtle",
+              focus_inset()
+            ]}
+          >
+            <.icon name="hero-trash" class="size-4" />
+          </button>
+          <p
+            :if={row.errors != []}
+            class="col-span-4 -mt-1 flex gap-1.5 text-[13px] font-[650] text-error-fg"
+          >
+            <.icon name="hero-exclamation-circle" class="mt-0.5 size-4 shrink-0" />
+            <span>{Enum.join(row.errors, " ")}</span>
+          </p>
+          <p
+            :if={row.errors == [] and row.summary}
+            class="col-span-4 -mt-1 text-[13px] leading-snug text-muted"
+          >
+            {row.summary}
+          </p>
+          <p
+            :if={row.warning}
+            class="col-span-4 -mt-1 flex gap-1.5 text-[13px] font-[650] text-warning-fg"
+          >
+            <.icon name="hero-exclamation-triangle" class="mt-0.5 size-4 shrink-0" />
+            <span>{row.warning}</span>
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        id="win-add"
+        phx-click="drawer_add_window"
+        class={[
+          "inline-flex min-h-11 items-center gap-1.5 justify-self-start text-sm font-[650] text-action hover:underline",
+          focus_inset()
+        ]}
+      >
+        <.icon name="hero-plus" class="size-4" /> Add window
+      </button>
+    </fieldset>
+    """
+  end
+
+  @doc """
+  Renders the "What riders see" choice the frequency editor shares (R8).
+
+  `exact_times` is the drawer's stored value: `"1"` for each departure time,
+  `"0"` for the headway itself, and anything else (a blank stored value) reads
+  as the default choice without writing one. While the headway choice is on, the
+  longest typed gap earns its note above 10 minutes and its warning above 20:
+  riders check a schedule for the first, and trip planners stop showing
+  departure times for the second.
+  """
+  attr :windows, :list, required: true, doc: "the same raw rows the windows editor edits"
+
+  attr :exact_times, :any,
+    default: "1",
+    doc: "the drawer's stored choice: `\"1\"`, `\"0\"` or blank"
+
+  def riders_see(assigns) do
+    exact? = to_string(assigns.exact_times) != "0"
+
+    assigns =
+      assigns
+      |> assign(:exact?, exact?)
+      |> assign(:note, riders_note(not exact?, max_headway_secs(assigns.windows)))
+
+    ~H"""
+    <fieldset id="riders-see" class="grid gap-2">
+      <legend class="mb-1.5 text-[13px] font-[650] text-default">What riders see</legend>
+      <div class="grid gap-2 sm:grid-cols-2">
+        <label class={choice_card_class(@exact?)}>
+          <input
+            type="radio"
+            id="riders-each-departure"
+            name="drawer[exact_times]"
+            value="1"
+            checked={@exact?}
+            class="mt-0.5 size-[18px] shrink-0 accent-[var(--color-action)]"
+          />
+          <span class="min-w-0">
+            <strong class="block text-sm font-[650] text-strong">Each departure time</strong>
+            <small class="mt-0.5 block text-[13px] leading-snug text-default">
+              Timetables and trip planners list every departure, like scheduled trips.
+            </small>
+          </span>
+        </label>
+        <label class={choice_card_class(not @exact?)}>
+          <input
+            type="radio"
+            id="riders-every-n-minutes"
+            name="drawer[exact_times]"
+            value="0"
+            checked={not @exact?}
+            class="mt-0.5 size-[18px] shrink-0 accent-[var(--color-action)]"
+          />
+          <span class="min-w-0">
+            <strong class="block text-sm font-[650] text-strong">Every N minutes</strong>
+            <small class="mt-0.5 block text-[13px] leading-snug text-default">
+              Riders see “every 10 min” instead of times. For frequent service not held to a schedule.
+            </small>
+          </span>
+        </label>
+      </div>
+      <.field_note :if={@note} tone={@note.tone}>{@note.text}</.field_note>
+    </fieldset>
+    """
+  end
+
+  # One row's raw text plus everything the editor decides from it: the parsed
+  # seconds, the inline errors and, only while the row is valid, its departures
+  # sentence and its shorter-than-the-gap warning.
+  defp window_rows(windows) do
+    rows =
+      windows
+      |> Enum.with_index()
+      |> Enum.map(fn {values, index} ->
+        Map.put(window_row(values), :index, index)
+      end)
+
+    r8_errors = r8_errors(rows)
+
+    Enum.map(rows, fn row ->
+      errors = row_errors(row, Map.get(r8_errors, row.index, []))
+
+      case errors do
+        [] ->
+          summary = FrequencyWindows.summary(window(row))
+
+          Map.merge(row, %{
+            errors: [],
+            summary: summary_sentence(summary, row),
+            warning: warning_sentence(summary)
+          })
+
+        errors ->
+          Map.merge(row, %{errors: errors, summary: nil, warning: nil})
+      end
+    end)
+  end
+
+  defp window_row(values) do
+    %{
+      from: Map.get(values, :from),
+      until: Map.get(values, :until),
+      every: Map.get(values, :every),
+      start_secs: parse_clock(Map.get(values, :from)),
+      end_secs: parse_clock(Map.get(values, :until)),
+      headway_secs: parse_headway(Map.get(values, :every))
+    }
+  end
+
+  # `validate/1` reads whole windows only, so a row still missing a time or a gap
+  # stays out of it; that row's own error is already on the row.
+  defp r8_errors(rows) do
+    valid =
+      Enum.filter(rows, fn row ->
+        is_integer(row.start_secs) and is_integer(row.end_secs) and is_integer(row.headway_secs)
+      end)
+
+    case FrequencyWindows.validate(Enum.map(valid, &window/1)) do
+      :ok ->
+        %{}
+
+      {:error, errors} ->
+        ordered = Enum.sort_by(valid, & &1.start_secs)
+
+        Enum.reduce(errors, %{}, fn %{index: index, reason: reason}, acc ->
+          row = Enum.at(valid, index)
+          message = r8_message(reason, row, ordered)
+          Map.update(acc, row.index, [message], &(&1 ++ [message]))
+        end)
+    end
+  end
+
+  defp r8_message(:until_not_after_from, _row, _ordered), do: "Until must be later than From."
+
+  defp r8_message(:invalid_headway, _row, _ordered),
+    do: ScheduleComponents.error_message(:invalid_interval)
+
+  defp r8_message(:overlap, row, ordered) do
+    case previous_window(row, ordered) do
+      nil ->
+        "Windows can touch but not overlap."
+
+      previous ->
+        "Overlaps #{clock(previous.start_secs)}–#{clock(previous.end_secs)}. " <>
+          "Windows can touch but not overlap."
+    end
+  end
+
+  # `validate/1` reports an overlap on the later of two windows in start order.
+  defp previous_window(row, ordered) do
+    ordered
+    |> Enum.reduce_while(nil, fn candidate, previous ->
+      if candidate.index == row.index, do: {:halt, previous}, else: {:cont, candidate}
+    end)
+  end
+
+  defp row_errors(row, r8_errors) do
+    time_errors =
+      if is_integer(row.start_secs) and is_integer(row.end_secs),
+        do: [],
+        else: [ScheduleComponents.error_message(:invalid_time)]
+
+    headway_errors =
+      if is_integer(row.headway_secs),
+        do: [],
+        else: [ScheduleComponents.error_message(:invalid_interval)]
+
+    time_errors ++ headway_errors ++ r8_errors
+  end
+
+  defp summary_sentence(summary, row) do
+    "#{departures_label(summary.count)} · last #{clock(summary.last_secs)}; " <>
+      "the next would be #{clock(summary.next_secs)}#{ends_with_window_clause(row)}."
+  end
+
+  # The next departure lands exactly on Until: it belongs to the next window, if
+  # any, so the sentence says so (the reference's clause).
+  defp ends_with_window_clause(row) do
+    if rem(row.end_secs - row.start_secs, row.headway_secs) == 0,
+      do: ", when this window ends",
+      else: ""
+  end
+
+  defp warning_sentence(%{longer_than_window?: true}),
+    do: "The gap between departures is longer than this window. Raise Until or lower Every."
+
+  defp warning_sentence(_summary), do: nil
+
+  defp departures_label(1), do: "1 departure"
+  defp departures_label(count), do: "#{count} departures"
+
+  defp window(row) do
+    %{start_secs: row.start_secs, end_secs: row.end_secs, headway_secs: row.headway_secs}
+  end
+
+  # The page's one typed-time grammar (R2): a window time accepts the same
+  # readings a grid cell does, including a service time past 24:00.
+  defp parse_clock(text) do
+    case TimeEntry.parse(text) do
+      {:ok, %{secs: secs}} -> secs
+      {:error, _reason} -> nil
+    end
+  end
+
+  # The gap is a whole number of minutes, at least one (R8); anything else is
+  # left to the row's own error, so `validate/1` only ever sees whole windows.
+  defp parse_headway(text) do
+    case text |> to_string() |> String.trim() |> Integer.parse() do
+      {minutes, ""} when minutes > 0 -> minutes * 60
+      _other -> nil
+    end
+  end
+
+  defp max_headway_secs(windows) do
+    windows
+    |> Enum.map(&parse_headway(Map.get(&1, :every)))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max(fn -> nil end)
+  end
+
+  # The note belongs to the headway choice only; the departure-time choice has
+  # nothing to warn about.
+  defp riders_note(false, _max_headway_secs), do: nil
+
+  defp riders_note(true, max_headway_secs)
+       when is_integer(max_headway_secs) and max_headway_secs > 20 * 60 do
+    %{
+      tone: :warning,
+      text:
+        "Gaps over 20 minutes: riders plan around a wait of up to the full gap, and " <>
+          "trip planners show no departure times. Choose Each departure time."
+    }
+  end
+
+  defp riders_note(true, max_headway_secs)
+       when is_integer(max_headway_secs) and max_headway_secs > 10 * 60 do
+    %{
+      tone: :info,
+      text:
+        "Above 10 minutes, many riders check a schedule before leaving. " <>
+          "Each departure time gives them one."
+    }
+  end
+
+  defp riders_note(_choice?, _max_headway_secs), do: nil
+
+  attr :tone, :atom, required: true, values: [:info, :warning]
+  slot :inner_block, required: true
+
+  defp field_note(assigns) do
+    ~H"""
+    <p class={["mt-1.5 flex items-start gap-2 px-3 py-2 text-[13px] leading-snug", note_class(@tone)]}>
+      <.icon name={note_icon(@tone)} class="mt-0.5 size-4 shrink-0" />
+      <span>{render_slot(@inner_block)}</span>
+    </p>
+    """
+  end
+
+  defp note_class(:warning), do: "border-l-4 border-warning-line bg-warning-bg text-warning-fg"
+  defp note_class(:info), do: "rounded-control bg-info-bg text-info-fg"
+
+  defp note_icon(:warning), do: "hero-exclamation-triangle"
+  defp note_icon(:info), do: "hero-information-circle"
+
+  defp control_class do
+    "h-11 w-full min-w-0 rounded-control border border-control bg-white px-3 text-sm text-strong tabular-nums placeholder:text-muted " <>
+      "aria-[invalid=true]:border-2 aria-[invalid=true]:border-error-fg disabled:bg-canvas disabled:text-muted " <>
+      @focus_inset
+  end
+
+  defp clock(secs) do
+    secs
+    |> GtfsTime.format()
+    |> String.split(":")
+    |> Enum.take(2)
+    |> Enum.join(":")
+  end
 
   # The reference's radio choice cards; the chosen card takes the selection tint
   # and the whole card is the radio's label.
