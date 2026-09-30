@@ -81,9 +81,7 @@ defmodule GtfsPlanner.Gtfs.Stop do
     |> base_changeset(attrs)
     |> then(fn changeset ->
       if get_field(changeset, :parent_station) not in [nil, ""] do
-        changeset
-        |> validate_required([:level_id])
-        |> validate_station_has_no_parent()
+        validate_station_has_no_parent(changeset)
       else
         changeset
       end
@@ -93,6 +91,60 @@ defmodule GtfsPlanner.Gtfs.Stop do
   @doc "Creates an import changeset for a stop with permissive parent/level validation."
   def import_changeset(stop, attrs) do
     base_changeset(stop, attrs)
+  end
+
+  # GTFS requires a name and coordinates only where a rider can board: a stop, a
+  # station or an entrance/exit (types 0-2). A node or a boarding area (3, 4) is
+  # positioned by its parent, so the editor leaves those fields optional.
+  @located_types [nil, 0, 1, 2]
+
+  @doc """
+  Creates a changeset for the stop editor (`Stop.changeset/2` plus editor rules).
+
+  Casts the three fields the importer alone used to write — `stop_code`,
+  `tts_stop_name` and `stop_url` — and requires a name and both coordinates for
+  the located location types. `stop_url` accepts only an absolute `http`/`https`
+  address with a host, so `javascript:` and `data:` values get a field error
+  instead of reaching the exported feed.
+
+  `level_id` stays optional here: GTFS needs it only for elevator pathways. The
+  station diagram, whose own form always shows a level for a child stop, adds the
+  requirement to the changeset it builds for that form.
+  """
+  def editor_changeset(stop, attrs) do
+    stop
+    |> base_changeset(attrs)
+    |> cast(attrs, [:stop_code, :tts_stop_name, :stop_url])
+    |> trim_string_fields()
+    |> then(fn changeset ->
+      if get_field(changeset, :location_type) in @located_types do
+        validate_required(changeset, [:stop_name, :stop_lat, :stop_lon])
+      else
+        changeset
+      end
+    end)
+    |> validate_http_url(:stop_url)
+  end
+
+  # GTFS needs level_id only for elevator pathways, so `Stop.changeset/2` leaves it
+  # optional. The station diagram's child-stop form always shows a level picker and
+  # requires one there, so that form builds its changeset through this function.
+  @doc """
+  Adds the station diagram's own rule: a child stop must name a level.
+
+  `Stop.changeset/2` is permissive about `level_id` so the map editor can move a
+  stop between stations and so the importer keeps its permissive rules.
+  """
+  def child_stop_changeset(stop, attrs) do
+    stop
+    |> changeset(attrs)
+    |> then(fn changeset ->
+      if get_field(changeset, :parent_station) not in [nil, ""] do
+        validate_required(changeset, [:level_id])
+      else
+        changeset
+      end
+    end)
   end
 
   # GTFS: a station (location_type=1) must not have a parent_station.

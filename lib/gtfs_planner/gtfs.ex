@@ -3897,6 +3897,29 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Creates a stop from the station diagram, which requires a level for a child stop.
+
+  `Stop.changeset/2` leaves `level_id` optional for the map editor; the diagram's
+  own form always offers a level picker, so it requires one here.
+  """
+  def create_child_stop(attrs \\ %{}) do
+    %Stop{}
+    |> Stop.child_stop_changeset(attrs)
+    |> insert_with_input_write_lock()
+    |> broadcast([:stops, :created])
+  end
+
+  @doc """
+  Updates a stop from the station diagram, which requires a level for a child stop.
+  """
+  def update_child_stop(%Stop{} = stop, attrs) do
+    stop
+    |> Stop.child_stop_changeset(attrs)
+    |> update_with_input_write_lock()
+    |> broadcast([:stops, :updated])
+  end
+
+  @doc """
   Updates a stop.
 
   ## Examples

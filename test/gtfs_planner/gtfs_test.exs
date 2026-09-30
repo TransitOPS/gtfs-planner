@@ -388,21 +388,43 @@ defmodule GtfsPlanner.GtfsTest do
       assert %{stop_id: ["can't be blank"]} = errors_on(changeset)
     end
 
-    test "create_stop/1 requires level_id when parent_station is set", %{
-      organization: org,
-      gtfs_version: version
-    } do
+    test "create_stop/1 allows a child stop with no level, as GTFS only needs one for pathways",
+         %{
+           organization: org,
+           gtfs_version: version
+         } do
       station = stop_fixture(org.id, version.id, %{stop_id: "PARENT_STATION", location_type: 1})
 
       attrs =
         valid_stop_attrs(%{
           stop_id: "CHILD_NO_LEVEL",
           parent_station: station.stop_id,
+          level_id: nil,
           organization_id: org.id,
           gtfs_version_id: version.id
         })
 
-      assert {:error, changeset} = Gtfs.create_stop(attrs)
+      assert {:ok, stop} = Gtfs.create_stop(attrs)
+      assert stop.parent_station == station.stop_id
+      assert stop.level_id == nil
+    end
+
+    test "create_child_stop/1 requires a level for a child stop", %{
+      organization: org,
+      gtfs_version: version
+    } do
+      station = stop_fixture(org.id, version.id, %{stop_id: "DIAGRAM_STATION", location_type: 1})
+
+      attrs =
+        valid_stop_attrs(%{
+          stop_id: "DIAGRAM_CHILD_NO_LEVEL",
+          parent_station: station.stop_id,
+          level_id: nil,
+          organization_id: org.id,
+          gtfs_version_id: version.id
+        })
+
+      assert {:error, changeset} = Gtfs.create_child_stop(attrs)
       assert %{level_id: ["can't be blank"]} = errors_on(changeset)
     end
 

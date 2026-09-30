@@ -2353,7 +2353,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
 
       case socket.assigns.selected_stop_id do
         nil ->
-          case Gtfs.create_stop(stop_attrs) do
+          case Gtfs.create_child_stop(stop_attrs) do
             {:ok, stop} ->
               Gtfs.record_change(
                 socket.assigns.audit_ctx,
@@ -2403,7 +2403,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
               {:error, msg} ->
                 changeset =
                   stop
-                  |> Stop.changeset(stop_attrs)
+                  |> Stop.child_stop_changeset(stop_attrs)
                   |> Ecto.Changeset.add_error(:stop_id, msg)
                   |> Map.put(:action, :validate)
 
@@ -2414,7 +2414,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLive do
                   if resolved_attrs.stop_id != stop.stop_id do
                     Gtfs.update_stop_with_cascade(stop, resolved_attrs)
                   else
-                    Gtfs.update_stop(stop, resolved_attrs)
+                    Gtfs.update_child_stop(stop, resolved_attrs)
                   end
 
                 {update_result, resolved_attrs}
