@@ -253,22 +253,41 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponentsTest do
       assert present?(html, "#patterns-create.btn-primary")
     end
 
-    test "trips that keep imported times explain why nothing can be grouped" do
+    test "trips that keep imported times are listed by reason, not summarised" do
       html =
         render_page(%{
           patterns: [],
           patterns_empty?: true,
           pattern_count: 0,
-          custom_trip_count: 18
+          custom_trip_count: 18,
+          left_out: [
+            %{route_id: "1", reason: "missing_direction", trip_count: 18}
+          ]
         })
 
-      assert text(html, "#patterns-build-blocked") =~ "18 trips on this route keep the stop times"
+      assert text(html, "#patterns-left-out") =~ "18 trips aren\u2019t in a pattern"
+      assert text(html, "#patterns-left-out-missing_direction") =~ "18 trips have no direction"
 
-      assert present?(
-               html,
-               "#patterns-review-schedules[href='/gtfs/version-1/routes/1/schedules']"
-             )
+      # The card carries the reason and its fix, so the blocked message adds
+      # nothing and the first-pattern empty state stays beside it.
+      refute present?(html, "#patterns-build-blocked")
+      assert present?(html, "#patterns-empty-inline #patterns-create-empty")
+    end
 
+    test "a blocked route with nothing outside a pattern says so plainly" do
+      html =
+        render_page(%{
+          patterns: [],
+          patterns_empty?: true,
+          pattern_count: 0,
+          custom_trip_count: 0,
+          build_state: :blocked
+        })
+
+      assert text(html, "#patterns-build-blocked") =~
+               "No trips on this route are waiting to be grouped into patterns."
+
+      refute present?(html, "#patterns-left-out")
       assert present?(html, "#patterns-empty-inline #patterns-create-empty")
     end
 

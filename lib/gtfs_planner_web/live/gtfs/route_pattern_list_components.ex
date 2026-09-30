@@ -52,6 +52,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   attr :route_trip_count, :integer, required: true
   attr :pending_trip_count, :integer, required: true
   attr :custom_trip_count, :integer, required: true
+  attr :left_out, :list, default: [], doc: "counts by derivation reason for this route"
   attr :derivation_error, :string, default: nil
   attr :build_state, :atom, required: true
   attr :build_error, :string, default: nil
@@ -149,6 +150,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
       |> assign(:editable?, assigns.editable? and not assigns.editor_revoked?)
       |> assign(:build_failed?, assigns.derivation_error != nil or assigns.build_error != nil)
       |> assign(:blocked?, blocked?(assigns))
+      |> assign(:left_out_rows, left_out_rows(assigns.left_out))
+      |> then(fn assigns ->
+        assign(assigns, :group_offered?, group_offered?(assigns.left_out_rows))
+      end)
 
     assigns = assign(assigns, :create_mode, create_mode(assigns))
 
@@ -307,6 +312,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
           </.message>
         </div>
 
+        <.left_out_card
+          :if={@left_out_rows != []}
+          rows={@left_out_rows}
+          route={@route}
+          version={@version}
+          editable?={@editable?}
+        />
+
         <div class="mt-4">
           <%= cond do %>
             <% not @patterns_empty? -> %>
@@ -338,18 +351,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
               </.first_use>
             <% @blocked? -> %>
               <div class="grid gap-4">
-                <.message id="patterns-build-blocked" kind="info" title="No trips to group">
-                  <%= if @custom_trip_count > 0 do %>
-                    {custom_trips_sentence(@custom_trip_count)} so nothing can be grouped
-                    automatically. Create a pattern by hand, or <.link
-                      id="patterns-review-schedules"
-                      navigate={~p"/gtfs/#{@version.id}/routes/#{@route.route_id}/schedules"}
-                      class="font-[650] underline"
-                    >
-                      review those trips on the Schedules tab</.link>.
-                  <% else %>
-                    No trips on this route are waiting to be grouped into patterns.
-                  <% end %>
+                <%!-- The left-out card above already says why these trips stayed out. --%>
+                <.message
+                  :if={@left_out_rows == []}
+                  id="patterns-build-blocked"
+                  kind="info"
+                  title="No trips to group"
+                >
+                  No trips on this route are waiting to be grouped into patterns.
                 </.message>
                 <.first_pattern
                   id="patterns-empty-inline"
@@ -393,6 +402,200 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
       </:action>
     </.first_use>
     """
+  end
+
+  attr :rows, :list, required: true, doc: "one row per derivation reason, from `left_out_rows/1`"
+  attr :route, :map, required: true
+  attr :version, :map, required: true
+  attr :editable?, :boolean, required: true
+
+  # The trips import left outside patterns, one row per reason with the fix that
+  # reason can have here. A viewer reads why they are there and takes no action.
+  defp left_out_card(assigns) do
+    assigns =
+      assigns
+      |> assign(:total, left_out_total(assigns.rows))
+      |> then(fn assigns -> assign(assigns, :one?, assigns.total == 1) end)
+
+    ~H"""
+    <section
+      id="patterns-left-out"
+      aria-labelledby="patterns-left-out-title"
+      class="mt-5 overflow-hidden rounded-card border border-subtle bg-white"
+    >
+      <div class="px-5 pb-3 pt-4">
+        <h3
+          id="patterns-left-out-title"
+          class="font-display text-[18px] font-semibold leading-tight tracking-[-0.01em] text-strong"
+        >
+          {left_out_title(@total)}
+        </h3>
+        <p class="mt-0.5 max-w-[86ch] text-[15px] leading-relaxed text-muted">
+          Import left {if @one?, do: "it", else: "them"} out. Until {if @one?,
+            do: "it is",
+            else: "they are"} in a pattern you can’t edit {if @one?,
+            do: "its map line",
+            else: "their map lines"}, and {if @one?, do: "it", else: "they"} still export exactly as imported. Trips with no
+          direction can be grouped here; the rest need a fix in the source feed and a re-import.
+        </p>
+      </div>
+      <ul>
+        <li
+          :for={row <- @rows}
+          id={row.id}
+          class="flex flex-wrap items-start gap-x-4 gap-y-3 border-t border-subtle px-5 py-4"
+        >
+          <span class={[
+            "grid size-9 shrink-0 place-items-center rounded-control",
+            row.tone == :error && "bg-error-bg text-error-fg",
+            row.tone == :warning && "bg-warning-bg text-warning-fg"
+          ]}>
+            <.icon name="hero-exclamation-triangle" class="size-[18px]" />
+          </span>
+          <div class="min-w-0 flex-1 basis-[320px]">
+            <p class="text-[15px] font-bold text-strong">{row.title}</p>
+            <p class="mt-0.5 max-w-[78ch] text-[15px] leading-relaxed text-default">
+              {row.body}
+            </p>
+          </div>
+          <.button
+            :if={@editable? and row.action}
+            id={row.action.id}
+            patch={left_out_action_path(row.action.target, @version, @route)}
+            variant={if(row.action.primary?, do: "primary", else: "secondary")}
+            class="min-h-11 shrink-0"
+          >
+            {row.action.label}
+          </.button>
+        </li>
+      </ul>
+      <details
+        id="patterns-left-out-codes"
+        class="group border-t border-subtle px-5 text-[13px] text-muted"
+      >
+        <summary class="inline-flex min-h-11 cursor-pointer items-center gap-1 font-[650] text-default hover:underline">
+          <.icon name="hero-chevron-right" class="size-4 transition-transform group-open:rotate-90" />
+          Technical details
+        </summary>
+        <p class="pb-3">
+          Derivation reasons:
+          <%= for row <- @rows do %>
+            <code class="font-mono text-[12px] text-strong">{row.code}</code>
+          <% end %>
+        </p>
+      </details>
+    </section>
+    """
+  end
+
+  defp left_out_action_path(:group, version, route),
+    do: ~p"/gtfs/#{version.id}/routes/#{route.route_id}/patterns?review=group"
+
+  defp left_out_action_path(:schedules, version, route),
+    do: ~p"/gtfs/#{version.id}/routes/#{route.route_id}/schedules"
+
+  # One row per derivation reason, worded for the operator; the raw code stays in
+  # Technical details. A code this step does not name still gets a row, so a count
+  # never disappears from the card.
+  defp left_out_rows(left_out) do
+    Enum.map(left_out, fn %{reason: reason, trip_count: count} ->
+      code = left_out_code(reason)
+
+      %{id: "patterns-left-out-#{code}", code: code, count: count}
+      |> Map.merge(left_out_reason(code, count))
+      |> Map.update!(:action, fn
+        nil -> nil
+        action -> Map.put(action, :id, left_out_action_id(action.target, code))
+      end)
+    end)
+  end
+
+  defp left_out_code(nil), do: "unknown"
+  defp left_out_code(reason), do: reason
+
+  defp left_out_total(rows), do: Enum.reduce(rows, 0, &(&1.count + &2))
+
+  defp left_out_title(1), do: "1 trip isn’t in a pattern"
+  defp left_out_title(total), do: "#{total} trips aren’t in a pattern"
+
+  # Only a trip with no direction can be grouped on this page, so it is the one
+  # reason that offers the review and the view's primary action.
+  # One id per action. The grouping review keeps the stable id the criteria name;
+  # the rows that share the Schedules link are addressed by their reason.
+  defp left_out_action_id(:group, _code), do: "patterns-left-out-group"
+  defp left_out_action_id(:schedules, code), do: "patterns-left-out-#{code}-trips"
+
+  defp group_offered?(rows),
+    do: Enum.any?(rows, &match?(%{target: :group}, &1.action))
+
+  defp left_out_reason("missing_direction", count) do
+    %{
+      tone: :warning,
+      title: "#{plural(count, "trip has", "trips have")} no direction",
+      body:
+        "Nothing on this route says which way they run, so there is nothing to group them by. " <>
+          "We find their stop orders and suggest a direction for each, and nothing changes until you confirm it.",
+      action: %{label: "Group #{plural(count, "trip", "trips")}", primary?: true, target: :group}
+    }
+  end
+
+  defp left_out_reason(code, count)
+       when code in ~w(invalid_chronology invalid_time invalid_attribute) do
+    %{
+      tone: :error,
+      title: "#{plural(count, "trip has", "trips have")} times out of order",
+      body:
+        "A stop is served before the trip departs, so its times cannot be read in order. " <>
+          "Fix the times in the source feed and re-import this version; until then these trips stay as imported.",
+      action: %{label: "View trips", primary?: false, target: :schedules}
+    }
+  end
+
+  defp left_out_reason("unusable_stops", count) do
+    %{
+      tone: :error,
+      title: "#{plural(count, "trip serves", "trips serve")} a station, not a boarding stop",
+      body:
+        "A stop on the route is a station, which has no platform to board at. Fix the stop in " <>
+          "the source feed and re-import this version; until then this trip stays as imported.",
+      action: %{label: "View trip", primary?: false, target: :schedules}
+    }
+  end
+
+  defp left_out_reason("missing_times", count) do
+    %{
+      tone: :error,
+      title:
+        "#{plural(count, "trip is", "trips are")} missing a time at the first or last stop, or at a timepoint",
+      body:
+        "Import needs those times before it can read the trip’s running time. Fix them in the " <>
+          "source feed and re-import this version; until then these trips stay as imported.",
+      action: nil
+    }
+  end
+
+  defp left_out_reason(code, count) when code in ~w(scope_mismatch pattern_mismatch) do
+    %{
+      tone: :error,
+      title:
+        "#{plural(count, "trip doesn’t", "trips don’t")} match the route pattern it is labelled with",
+      body:
+        "The feed points these trips at a route pattern for another direction or stop order. " <>
+          "Fix the feed and re-import this version; until then these trips stay as imported.",
+      action: %{label: "View trips", primary?: false, target: :schedules}
+    }
+  end
+
+  defp left_out_reason(_code, count) do
+    %{
+      tone: :error,
+      title: "#{plural(count, "trip wasn’t", "trips weren’t")} grouped into a pattern",
+      body:
+        "Import could not read enough of #{plural(count, "this trip", "these trips")} to place " <>
+          "#{if count == 1, do: "it", else: "them"} in a pattern. Open Technical details for the " <>
+          "reason, fix the source feed and re-import this version.",
+      action: %{label: "View trips", primary?: false, target: :schedules}
+    }
   end
 
   attr :id, :string, required: true
@@ -1083,6 +1286,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   # from trips), and disappears when an empty state already offers it.
   defp create_mode(%{editable?: false}), do: :hidden
 
+  defp create_mode(%{group_offered?: true}), do: :secondary
+
   defp create_mode(%{patterns_empty?: false}), do: :primary
 
   defp create_mode(assigns) do
@@ -1132,12 +1337,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   end
 
   defp blank?(value), do: not is_binary(value) or String.trim(value) == ""
-
-  defp custom_trips_sentence(1),
-    do: "1 trip on this route keeps the stop times it was imported with,"
-
-  defp custom_trips_sentence(count),
-    do: "#{count} trips on this route keep the stop times they were imported with,"
 
   defp build_failed_body(pending) when pending > 0 do
     "#{plural(pending, "trip is", "trips are")} still not in a pattern. Their times are unchanged. " <>
