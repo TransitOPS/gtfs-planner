@@ -129,6 +129,62 @@ defmodule GtfsPlanner.Gtfs.Alignments do
     }
   end
 
+  @doc """
+  Returns cumulative editor distances in metres, one per visit, for
+  `resolve/1` output (spec 23, R13).
+
+  A section with saved points contributes `Materializer.length_m/1` over
+  `[from] ++ points ++ [to]` (`[lon, lat]` wire order, never swapped); a
+  section without points contributes the straight haversine line between
+  its visits; a `:blocked` `:zero_length` section contributes 0 m. A visit
+  without coordinates contributes nil, and later visits continue from the
+  last known cumulative value plus the straight line between the visits on
+  either side of the gap, so spans not touching the gap keep true
+  differences and spans touching a nil visit fall back per R5 downstream.
+  """
+  @spec estimate_distances(resolved()) :: [float() | nil]
+  def estimate_distances(%{visits: visits, sections: sections}) do
+    visits
+    |> Enum.with_index()
+    |> Enum.map_reduce({nil, nil}, fn {visit, index}, {known_index, known_cum} ->
+      if is_nil(visit[:lat]) or is_nil(visit[:lon]) do
+        {nil, {known_index, known_cum}}
+      else
+        dist =
+          cond do
+            is_nil(known_index) ->
+              0.0
+
+            known_index == index - 1 ->
+              known_cum +
+                section_length(
+                  Enum.at(sections, index - 1),
+                  Enum.at(visits, index - 1),
+                  visit
+                )
+
+            true ->
+              known_cum + straight_m(Enum.at(visits, known_index), visit)
+          end
+
+        {dist, {index, dist}}
+      end
+    end)
+    |> elem(0)
+  end
+
+  defp section_length(%{kind: :blocked, blocked_reason: :zero_length}, _from, _to), do: 0.0
+
+  defp section_length(%{points: points}, from, to) when is_list(points) and points != [] do
+    Materializer.length_m([[from[:lon], from[:lat]]] ++ points ++ [[to[:lon], to[:lat]]])
+  end
+
+  defp section_length(_section, from, to), do: straight_m(from, to)
+
+  defp straight_m(from, to) do
+    Materializer.length_m([[from[:lon], from[:lat]], [to[:lon], to[:lat]]])
+  end
+
   @type route_status :: %{
           missing: non_neg_integer(),
           blocked: non_neg_integer(),
