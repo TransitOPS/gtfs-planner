@@ -1574,6 +1574,24 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
+  # The Schedules action opens the paste page in the current scope: the
+  # calendar and direction always travel, the pattern only when one is
+  # selected. The paste page canonicalizes anything stale on arrival.
+  defp paste_path(version_id, route_id, filters) do
+    query =
+      %{}
+      |> put_param("service_id", filters.service_id, nil)
+      |> put_param("direction", direction_param(filters.direction_id), nil)
+      |> put_param("pattern", pattern_param(filters.pattern), "all")
+
+    path = ~p"/gtfs/#{version_id}/routes/#{route_id}/schedules/paste"
+
+    case URI.encode_query(query) do
+      "" -> path
+      encoded -> path <> "?" <> encoded
+    end
+  end
+
   defp schedule_blocks_path(version_id, query) do
     "/gtfs/#{version_id}/blocks?" <> URI.encode_query(query)
   end
@@ -1706,6 +1724,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
               filters={@filters}
               direction_labels={@payload.direction_labels}
               calendars_path={"/gtfs/#{@current_gtfs_version.id}/calendars"}
+              paste_path={paste_path(@current_gtfs_version.id, @route_id, @filters)}
               can_add?={@can_add?}
               add_reason={@add_reason}
               add_primary?={add_primary?(@can_add?, @sections_empty?, @filters)}

@@ -894,6 +894,101 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
     end
   end
 
+  describe "paste timetable action" do
+    setup :editor_scope
+
+    defp paste_href(view) do
+      html = view |> element("#schedules-paste-timetable") |> render()
+      assert html =~ "Paste timetable"
+      [_, href] = Regex.run(~r/href="([^"]+)"/, html)
+      String.replace(href, "&amp;", "&")
+    end
+
+    test "the secondary action sits before Add trips and carries the Weekday outbound scope",
+         %{conn: conn, version: version} = context do
+      rich = rich_route(context)
+
+      {:ok, view, html} = live(conn, schedules_path(version, rich.route))
+
+      assert has_element?(view, "#schedules-paste-timetable.btn-outline", "Paste timetable")
+
+      assert has_element?(view, "#schedules-paste-timetable .hero-clipboard-document")
+
+      {paste_pos, _} = :binary.match(html, "schedules-paste-timetable")
+      {add_pos, _} = :binary.match(html, "schedules-add-trips")
+      assert paste_pos < add_pos
+
+      href = paste_href(view)
+      uri = URI.parse(href)
+
+      assert uri.path == "/gtfs/#{version.id}/routes/#{rich.route.route_id}/schedules/paste"
+
+      assert URI.decode_query(uri.query) == %{
+               "service_id" => rich.weekday,
+               "direction" => "0"
+             }
+    end
+
+    test "a selected pattern travels while :all omits it",
+         %{conn: conn, version: version} = context do
+      rich = rich_route(context)
+
+      scoped =
+        schedules_path(version, rich.route, %{
+          "service_id" => rich.weekday,
+          "pattern" => rich.downtown.pattern.id
+        })
+
+      {:ok, view, _html} = live(conn, scoped)
+
+      href = paste_href(view)
+
+      assert URI.decode_query(URI.parse(href).query)["pattern"] ==
+               rich.downtown.pattern.id
+    end
+
+    test "the action opens the paste page in the same scope",
+         %{conn: conn, version: version} = context do
+      rich = rich_route(context)
+
+      {:ok, view, _html} = live(conn, schedules_path(version, rich.route))
+
+      {:ok, paste_view, _html} = live(conn, paste_href(view))
+
+      assert has_element?(paste_view, "#timetable-paste")
+      assert has_element?(paste_view, "#paste-scope-calendar", "Weekday")
+      assert has_element?(paste_view, "#paste-scope-direction", "Outbound")
+    end
+
+    test "the action is absent when trips cannot be added and the reason explains",
+         %{conn: conn, version: version, organization: organization} do
+      weekly_calendar(organization, version, "SCH_NOTIME_WKD", "Weekday")
+
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "SCH_NOTIME",
+          route_short_name: "NT"
+        })
+
+      route_pattern_fixture(organization.id, version.id, %{
+        route_id: route.route_id,
+        direction_id: 0,
+        route_pattern_id: "SCH_NOTIME-P1",
+        route_pattern_name: "Untimed"
+      })
+
+      {:ok, view, _html} = live(conn, schedules_path(version, route))
+
+      refute has_element?(view, "#schedules-paste-timetable")
+
+      assert has_element?(
+               view,
+               "#schedules-add-blocked",
+               "Add a timing to a pattern before adding trips."
+             )
+    end
+  end
+
   describe "empty states carry one next step" do
     setup :editor_scope
 
