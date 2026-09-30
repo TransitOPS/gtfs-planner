@@ -4,7 +4,10 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
 
   A delete is refused while a vehicle, a `block_attributes` row or a
   `route_operating_settings` row references the parent, and the refusal names
-  all three counts. A garage nothing else references goes with its
+  all three counts. A row only references while its block still has trips or its
+  route still exists; a row left behind by a deleted route, a combined calendar
+  or unassigned trips is cleared of the parent by the delete instead of
+  refusing it. A garage nothing else references goes with its
   `deadhead_times` rows, whose refs hold the garage UUID; a garage used
   only as `blocking_settings.default_garage_id` is a default, not a reference,
   so it deletes and the setting becomes `nil`.
@@ -33,6 +36,7 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
   alias GtfsPlanner.Versions.GtfsVersion
 
   import GtfsPlanner.AdvancedBlockingFixtures
+  import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OperationsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
@@ -50,13 +54,13 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       %{organization: organization, version: version} = ctx
       garage = garage_fixture(organization.id)
 
-      block_attribute_fixture(organization.id, version.id, %{
+      live_block_attribute_fixture(organization.id, version.id, %{
         service_id: "weekday",
         block_id: "12",
         garage_id: garage.id
       })
 
-      route_operating_setting_fixture(organization.id, version.id, %{
+      live_route_setting_fixture(organization.id, version.id, %{
         route_id: "10",
         garage_id: garage.id
       })
@@ -74,7 +78,7 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       garage = garage_fixture(organization.id)
 
       for service_id <- ["weekday", "saturday"] do
-        block_attribute_fixture(organization.id, version.id, %{
+        live_block_attribute_fixture(organization.id, version.id, %{
           service_id: service_id,
           block_id: "12",
           garage_id: garage.id
@@ -161,7 +165,7 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
           minutes: 5
         })
 
-      block_attribute_fixture(organization.id, version.id, %{
+      live_block_attribute_fixture(organization.id, version.id, %{
         service_id: "weekday",
         block_id: "12",
         garage_id: garage.id
@@ -200,7 +204,7 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       %{organization: organization, version: version} = ctx
       vehicle_type = vehicle_type_fixture(organization.id)
 
-      route_operating_setting_fixture(organization.id, version.id, %{
+      live_route_setting_fixture(organization.id, version.id, %{
         route_id: "10",
         required_vehicle_type_id: vehicle_type.id
       })
@@ -216,13 +220,160 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
       %{organization: organization, version: version} = ctx
       vehicle_type = vehicle_type_fixture(organization.id)
 
-      block_attribute_fixture(organization.id, version.id, %{
+      live_block_attribute_fixture(organization.id, version.id, %{
         service_id: "weekday",
         block_id: "7",
         vehicle_type_id: vehicle_type.id
       })
 
       assert {:error, {:in_use, %{vehicles: 0, blocks: 1, routes: 0}}} =
+               Operations.delete_vehicle_type(organization.id, vehicle_type.id)
+
+      assert Repo.get(VehicleType, vehicle_type.id)
+    end
+  end
+
+  describe "references whose block or route is gone" do
+    test "a block attribute whose block has no trips is cleared and the garage deleted", ctx do
+      %{organization: organization, version: version} = ctx
+      garage = garage_fixture(organization.id)
+      vehicle_type = vehicle_type_fixture(organization.id)
+
+      orphan =
+        block_attribute_fixture(organization.id, version.id, %{
+          service_id: "weekday",
+          block_id: "12",
+          garage_id: garage.id,
+          vehicle_type_id: vehicle_type.id
+        })
+
+      assert Operations.garage_in_use_counts(organization.id, garage.id) ==
+               %{vehicles: 0, blocks: 0, routes: 0}
+
+      assert {:ok, %Garage{}} = Operations.delete_garage(organization.id, garage.id)
+
+      assert Repo.get(Garage, garage.id) == nil
+
+      assert %BlockAttribute{garage_id: nil, vehicle_type_id: vehicle_type_id} =
+               Repo.get(BlockAttribute, orphan.id)
+
+      assert vehicle_type_id == vehicle_type.id
+    end
+
+    test "a block attribute whose trips moved to another service does not count", ctx do
+      %{organization: organization, version: version} = ctx
+      vehicle_type = vehicle_type_fixture(organization.id)
+      route = route_fixture(organization.id, version.id)
+
+      trip_fixture(organization.id, version.id, route.route_id, %{
+        service_id: "combined",
+        block_id: "7"
+      })
+
+      block_attribute_fixture(organization.id, version.id, %{
+        service_id: "weekday",
+        block_id: "7",
+        vehicle_type_id: vehicle_type.id
+      })
+
+      assert Operations.vehicle_type_in_use_counts(organization.id, vehicle_type.id) ==
+               %{vehicles: 0, blocks: 0, routes: 0}
+
+      assert {:ok, %VehicleType{}} =
+               Operations.delete_vehicle_type(organization.id, vehicle_type.id)
+    end
+
+    test "a route setting whose route is gone is cleared and the garage deleted", ctx do
+      %{organization: organization, version: version} = ctx
+      garage = garage_fixture(organization.id)
+      vehicle_type = vehicle_type_fixture(organization.id)
+
+      # The route exists in another version only, which does not keep this
+      # version's setting alive.
+      other_version = gtfs_version_fixture(organization.id)
+      route_fixture(organization.id, other_version.id, %{route_id: "10"})
+
+      orphan =
+        route_operating_setting_fixture(organization.id, version.id, %{
+          route_id: "10",
+          garage_id: garage.id,
+          required_vehicle_type_id: vehicle_type.id
+        })
+
+      assert Operations.garage_in_use_counts(organization.id, garage.id) ==
+               %{vehicles: 0, blocks: 0, routes: 0}
+
+      assert {:ok, %Garage{}} = Operations.delete_garage(organization.id, garage.id)
+
+      assert %RouteOperatingSetting{garage_id: nil, required_vehicle_type_id: type_id} =
+               Repo.get(RouteOperatingSetting, orphan.id)
+
+      assert type_id == vehicle_type.id
+    end
+
+    test "a vehicle type required only by a route setting with no route is deleted", ctx do
+      %{organization: organization, version: version} = ctx
+      garage = garage_fixture(organization.id)
+      vehicle_type = vehicle_type_fixture(organization.id)
+
+      orphan =
+        route_operating_setting_fixture(organization.id, version.id, %{
+          route_id: "10",
+          garage_id: garage.id,
+          required_vehicle_type_id: vehicle_type.id
+        })
+
+      assert {:ok, %VehicleType{}} =
+               Operations.delete_vehicle_type(organization.id, vehicle_type.id)
+
+      assert %RouteOperatingSetting{required_vehicle_type_id: nil, garage_id: garage_id} =
+               Repo.get(RouteOperatingSetting, orphan.id)
+
+      assert garage_id == garage.id
+    end
+
+    test "a live reference still refuses and the dead one beside it is left as it was", ctx do
+      %{organization: organization, version: version} = ctx
+      garage = garage_fixture(organization.id)
+
+      live_block_attribute_fixture(organization.id, version.id, %{
+        service_id: "weekday",
+        block_id: "12",
+        garage_id: garage.id
+      })
+
+      orphan =
+        block_attribute_fixture(organization.id, version.id, %{
+          service_id: "weekday",
+          block_id: "13",
+          garage_id: garage.id
+        })
+
+      assert {:error, {:in_use, %{vehicles: 0, blocks: 1, routes: 0}}} =
+               Operations.delete_garage(organization.id, garage.id)
+
+      assert Repo.get(Garage, garage.id)
+      assert %BlockAttribute{garage_id: garage_id} = Repo.get(BlockAttribute, orphan.id)
+      assert garage_id == garage.id
+    end
+
+    test "a live route setting still refuses a vehicle type beside a dead block attribute",
+         ctx do
+      %{organization: organization, version: version} = ctx
+      vehicle_type = vehicle_type_fixture(organization.id)
+
+      live_route_setting_fixture(organization.id, version.id, %{
+        route_id: "10",
+        required_vehicle_type_id: vehicle_type.id
+      })
+
+      block_attribute_fixture(organization.id, version.id, %{
+        service_id: "weekday",
+        block_id: "13",
+        vehicle_type_id: vehicle_type.id
+      })
+
+      assert {:error, {:in_use, %{vehicles: 0, blocks: 0, routes: 1}}} =
                Operations.delete_vehicle_type(organization.id, vehicle_type.id)
 
       assert Repo.get(VehicleType, vehicle_type.id)
@@ -246,13 +397,13 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
 
       vehicle_fixture(organization.id, %{"garage_id" => garage.id})
 
-      block_attribute_fixture(organization.id, version.id, %{
+      live_block_attribute_fixture(organization.id, version.id, %{
         service_id: "weekday",
         block_id: "12",
         garage_id: garage.id
       })
 
-      route_operating_setting_fixture(organization.id, version.id, %{
+      live_route_setting_fixture(organization.id, version.id, %{
         route_id: "10",
         garage_id: garage.id
       })
@@ -273,6 +424,13 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
         organization = organization_fixture(%{alias: "race-#{Ecto.UUID.generate()}"})
         version = gtfs_version_fixture(organization.id)
         garage = garage_fixture(organization.id)
+        route = route_fixture(organization.id, version.id)
+
+        trip_fixture(organization.id, version.id, route.route_id, %{
+          service_id: "weekday",
+          block_id: "99"
+        })
+
         owner = self()
 
         try do
