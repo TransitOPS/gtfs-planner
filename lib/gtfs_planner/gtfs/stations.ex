@@ -50,6 +50,73 @@ defmodule GtfsPlanner.Gtfs.Stations do
     end
   end
 
+  @doc "Returns a pathway and its endpoints only within the selected station."
+  def get_pathway(%AuditContext{} = audit, id) do
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         %Stop{} = station <- station(audit),
+         %Pathway{} = pathway <- pathway_query(audit, station, id) |> Repo.one() do
+      {:ok, load_pathway_stops(audit, pathway)}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  @doc "Creates a station-scoped pathway and its change log in one transaction."
+  def create_pathway(%AuditContext{} = audit, attrs) when is_map(attrs) do
+    run(audit, :share, fn station ->
+      changeset = Pathway.create_changeset(%Pathway{}, attrs, audit)
+
+      write_pathway(
+        audit,
+        validate_pathway_endpoints(changeset, station_scope_ids(audit, station)),
+        "created"
+      )
+    end)
+  end
+
+  @doc "Updates a station-scoped pathway at the expected revision."
+  def update_pathway(%AuditContext{} = audit, id, attrs, expected_revision)
+      when is_map(attrs) do
+    run(audit, :share, fn station ->
+      pathway = lock_pathway!(audit, station, id)
+      stale_pathway!(pathway, expected_revision)
+
+      changeset = Pathway.editor_changeset(pathway, attrs)
+
+      write_pathway(
+        audit,
+        validate_pathway_endpoints(changeset, station_scope_ids(audit, station)),
+        "updated"
+      )
+    end)
+  end
+
+  @doc "Deletes a station-scoped pathway unless a scheduled evolution references it."
+  def delete_pathway(%AuditContext{} = audit, id, expected_revision) do
+    run(audit, :share, fn station ->
+      pathway = lock_pathway!(audit, station, id)
+      stale_pathway!(pathway, expected_revision)
+
+      if Repo.exists?(
+           from(e in PathwayEvolution,
+             where:
+               e.organization_id == ^audit.organization_id and
+                 e.gtfs_version_id == ^audit.gtfs_version_id and
+                 e.pathway_id == ^pathway.pathway_id
+           )
+         ) do
+        Repo.rollback(:pathway_in_use)
+      end
+
+      with {:ok, deleted} <- Repo.delete(pathway),
+           {:ok, _log} <- Audit.record_change_in_transaction(audit, :pathway, pathway, "deleted") do
+        deleted
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
   @doc "Creates a child stop under the selected station and records its history."
   def create_child_stop(%AuditContext{} = audit, attrs) when is_map(attrs) do
     run(audit, :share, fn station ->
@@ -274,6 +341,102 @@ defmodule GtfsPlanner.Gtfs.Stations do
       )
 
     if id, do: where(query, [s], s.id == ^id), else: query
+  end
+
+  defp station_scope_ids(audit, station) do
+    [
+      station.stop_id
+      | Repo.all(
+          descendant_stop_ids_query(audit.organization_id, audit.gtfs_version_id, station.stop_id)
+        )
+    ]
+  end
+
+  defp pathway_query(audit, station, id) do
+    ids = station_scope_ids(audit, station)
+
+    from(p in Pathway,
+      where:
+        p.organization_id == ^audit.organization_id and
+          p.gtfs_version_id == ^audit.gtfs_version_id and p.id == ^id and
+          p.from_stop_id in ^ids and p.to_stop_id in ^ids
+    )
+  end
+
+  defp lock_pathway!(audit, station, id) do
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         %Pathway{} = pathway <-
+           pathway_query(audit, station, id) |> lock("FOR UPDATE") |> Repo.one() do
+      pathway
+    else
+      _ -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp load_pathway_stops(audit, pathway) do
+    stops =
+      from(s in Stop,
+        where:
+          s.organization_id == ^audit.organization_id and
+            s.gtfs_version_id == ^audit.gtfs_version_id and
+            s.stop_id in ^[pathway.from_stop_id, pathway.to_stop_id]
+      )
+      |> Repo.all()
+      |> Map.new(&{&1.stop_id, &1})
+
+    %{
+      pathway
+      | from_stop: Map.fetch!(stops, pathway.from_stop_id),
+        to_stop: Map.fetch!(stops, pathway.to_stop_id)
+    }
+  end
+
+  defp validate_pathway_endpoints(changeset, scoped_ids) do
+    ids = MapSet.new(scoped_ids)
+
+    Enum.reduce([:from_stop_id, :to_stop_id], changeset, fn field, changeset ->
+      value = Ecto.Changeset.get_field(changeset, field)
+
+      if is_binary(value) and not MapSet.member?(ids, value) do
+        Ecto.Changeset.add_error(changeset, field, "is outside this station")
+      else
+        changeset
+      end
+    end)
+  end
+
+  defp stale_pathway!(%Pathway{lock_version: current}, expected) when current == expected,
+    do: :ok
+
+  defp stale_pathway!(%Pathway{lock_version: current}, _expected),
+    do: Repo.rollback({:stale, current})
+
+  defp write_pathway(audit, changeset, action) do
+    original = changeset.data
+    changed_fields = changeset.changes
+
+    changeset =
+      if action == "updated" and changed_fields == %{} do
+        Ecto.Changeset.force_change(changeset, :updated_at, DateTime.utc_now())
+      else
+        changeset
+      end
+
+    result = if action == "created", do: Repo.insert(changeset), else: Repo.update(changeset)
+
+    with {:ok, pathway} <- result,
+         {:ok, _log} <-
+           Audit.record_change_in_transaction(
+             audit,
+             :pathway,
+             if(action == "updated", do: original, else: pathway),
+             action,
+             changed_fields
+           ) do
+      pathway
+    else
+      {:error, reason} -> Repo.rollback(reason)
+    end
   end
 
   defp naming_preview(audit, station, style, selected_ids) do
