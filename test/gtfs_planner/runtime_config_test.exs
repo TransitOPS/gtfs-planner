@@ -7,8 +7,13 @@ defmodule GtfsPlanner.RuntimeConfigTest do
     "SECRET_KEY_BASE" => String.duplicate("a", 64),
     "GEOAPIFY_API_KEY" => "test-geoapify-key",
     "OPENROUTER_API_KEY" => "test-openrouter-key",
-    "OPENROUTER_MODEL" => "test/model-a"
+    "OPENROUTER_MODEL" => "test/model-a",
+    "AWS_SES_REGION" => "test-ses-region",
+    "AWS_ACCESS_KEY_ID" => "test-ses-access-key",
+    "AWS_SECRET_ACCESS_KEY" => "test-ses-secret-key"
   }
+
+  @mailer_env_keys ["AWS_REGION"]
 
   @artifact_env_keys [
     "GTFS_TASK_ARTIFACTS_PATH",
@@ -18,7 +23,7 @@ defmodule GtfsPlanner.RuntimeConfigTest do
   ]
 
   setup do
-    env_keys = Map.keys(@required_prod_env) ++ @artifact_env_keys
+    env_keys = Map.keys(@required_prod_env) ++ @artifact_env_keys ++ @mailer_env_keys
     previous_values = Map.new(env_keys, fn key -> {key, System.get_env(key)} end)
 
     on_exit(fn ->
@@ -78,6 +83,69 @@ defmodule GtfsPlanner.RuntimeConfigTest do
 
     assert_raise RuntimeError, ~r/GTFS_TASK_ARTIFACTS_MAX_RUN_BYTES/, fn ->
       read_prod_app_config!()
+    end
+  end
+
+  describe "production mailer" do
+    test "requires AWS_ACCESS_KEY_ID without exposing configured values" do
+      put_required_prod_env!()
+      System.delete_env("AWS_ACCESS_KEY_ID")
+
+      error =
+        assert_raise RuntimeError, fn ->
+          read_prod_app_config!()
+        end
+
+      assert error.message =~ "AWS_ACCESS_KEY_ID"
+
+      refute Enum.any?(Map.values(@required_prod_env), fn value ->
+               String.contains?(error.message, value)
+             end)
+    end
+
+    test "requires AWS_SECRET_ACCESS_KEY without exposing configured values" do
+      put_required_prod_env!()
+      System.delete_env("AWS_SECRET_ACCESS_KEY")
+
+      error =
+        assert_raise RuntimeError, fn ->
+          read_prod_app_config!()
+        end
+
+      assert error.message =~ "AWS_SECRET_ACCESS_KEY"
+
+      refute Enum.any?(Map.values(@required_prod_env), fn value ->
+               String.contains?(error.message, value)
+             end)
+    end
+
+    test "requires one SES region and names both supported variables" do
+      put_required_prod_env!()
+      System.delete_env("AWS_SES_REGION")
+      System.delete_env("AWS_REGION")
+
+      error =
+        assert_raise RuntimeError, fn ->
+          read_prod_app_config!()
+        end
+
+      assert error.message =~ "AWS_SES_REGION"
+      assert error.message =~ "AWS_REGION"
+
+      refute Enum.any?(Map.values(@required_prod_env), fn value ->
+               String.contains?(error.message, value)
+             end)
+    end
+
+    test "uses Amazon SES and prefers AWS_SES_REGION when both regions are set" do
+      put_required_prod_env!()
+      System.put_env("AWS_REGION", "test-fallback-region")
+
+      app_config = read_prod_app_config!()
+      mailer_config = Keyword.fetch!(app_config, GtfsPlanner.Mailer)
+
+      assert Keyword.fetch!(mailer_config, :adapter) == Swoosh.Adapters.AmazonSES
+      assert Keyword.fetch!(mailer_config, :region) == "test-ses-region"
     end
   end
 
