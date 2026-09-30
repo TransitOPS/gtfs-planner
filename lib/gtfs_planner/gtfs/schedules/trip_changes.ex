@@ -407,30 +407,37 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
   def relink(_new_rows, _occurrences, _timings), do: :custom
 
   @doc """
-  Whether `timing_rows` materialized at the first departure of `rows` reproduces
-  every row's arrival and departure clock.
+  Whether `timing_rows` materialized at the first departure of `rows` still
+  reproduces every row a timing owns: the arrival and departure clocks, the
+  pickup and drop-off types and the stop headsign.
 
-  Unlike `relink/3` it ignores the other row values, because timetable paste
-  links trips whose stored flags differ from their timing's by design; only a
-  timing edit can change the clocks.
+  Unlike `relink/3` it ignores `timepoint`, and reads a blank pickup or drop-off
+  type as 0 (GTFS's default), because timetable paste links trips whose stored
+  values differ from their timing's in exactly those ways by design. A timing
+  edit that changes anything else rematerializes its linked trips, so a
+  difference there means the timing changed.
   """
-  @spec timing_clocks_match?([map()], [map()], [map()]) :: boolean()
-  def timing_clocks_match?(rows, occurrences, timing_rows)
+  @spec timing_rows_match?([map()], [map()], [map()]) :: boolean()
+  def timing_rows_match?(rows, occurrences, timing_rows)
       when is_list(rows) and is_list(occurrences) and is_list(timing_rows) do
     with departure when is_integer(departure) <- first_departure(rows),
          {:ok, materialized} <- Materializer.materialize(departure, occurrences, timing_rows) do
-      clock_pairs(materialized) == clock_pairs(rows)
+      timing_owned(materialized) == timing_owned(rows)
     else
       _no_match -> false
     end
   end
 
-  defp clock_pairs(rows) do
-    Enum.map(
-      rows,
-      &{clock_secs(value(&1, :arrival_time)), clock_secs(value(&1, :departure_time))}
-    )
+  defp timing_owned(rows) do
+    Enum.map(rows, fn row ->
+      {clock_secs(value(row, :arrival_time)), clock_secs(value(row, :departure_time)),
+       value(row, :pickup_type) || 0, value(row, :drop_off_type) || 0,
+       blank_to_nil(value(row, :stop_headsign))}
+    end)
   end
+
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
 
   @doc """
   Allocates one unique `trip_id` per departure start.
