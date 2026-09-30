@@ -418,6 +418,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   attr :plan, :map, required: true
   attr :runs_day, :map, required: true
   attr :day_label, :string, required: true
+  attr :apply_state, :atom, default: :idle, values: [:idle, :pending, :stale, :failed]
 
   def suggestion_panel(assigns) do
     # `changed_run_ids` and `new_run_ids` are DISJOINT halves of one question —
@@ -449,7 +450,21 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
           <.button type="button" id="runs-discard" phx-click="discard_suggestion" variant="secondary">
             Discard
           </.button>
-          <.button type="button" id="runs-apply" phx-click="apply_suggestion" variant="primary">
+
+          <%!-- A STALE suggestion cannot be applied at all, so its Apply is
+                disabled and says why in its title rather than failing when
+                pressed. A PENDING one is disabled too, which is what makes a
+                second click a no-op rather than a second write. --%>
+          <.button
+            type="button"
+            id="runs-apply"
+            phx-click="apply_suggestion"
+            variant="primary"
+            disabled={@apply_state != :idle}
+            phx-disable-with="Applying…"
+            data-state={@apply_state}
+            title={if @apply_state == :stale, do: "This suggestion is out of date", else: nil}
+          >
             Apply suggestion
           </.button>
         </div>
@@ -466,6 +481,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       </div>
 
       <div class="grid gap-3 px-5 py-4">
+        <.apply_notice
+          stale={@apply_state == :stale}
+          failure={@apply_state == :failed}
+          pending={@apply_state == :pending}
+        />
+
         <p id="runs-suggestion-scope" data-role="suggestion-scope" class="text-sm">
           {scope_sentence(@plan)}
         </p>
@@ -552,6 +573,114 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
     "Every block is cut again and every piece paired again. " <>
       "Runs are renumbered in sign-on order, so runs edited by hand may change number. " <>
       "Applying asks you to confirm."
+  end
+
+  @doc """
+  The rebuild confirmation.
+
+  A rebuild is the one apply a reader cannot undo by reading the diff, because it
+  renumbers runs a planner may have tuned by hand. So it asks first, and the
+  sentence names both things that will change: how many trips move, and that the
+  numbering moves with them. The cancel button is "Keep current runs" rather
+  than "Cancel", because that is what it does.
+  """
+  attr :plan, :map, required: true
+  attr :day_label, :string, required: true
+  attr :open, :boolean, default: false
+  attr :pending, :boolean, default: false
+
+  def rebuild_confirm(assigns) do
+    ~H"""
+    <.confirm_dialog
+      id="runs-rebuild-confirm"
+      open={@open}
+      title={"Rebuild #{@day_label}'s runs?"}
+      confirm_label="Rebuild runs"
+      pending_label="Applying…"
+      on_confirm="confirm_rebuild"
+      on_cancel="cancel_rebuild"
+      cancel_label="Keep current runs"
+      pending={@pending}
+      described_by="runs-rebuild-confirm-summary"
+      confirm_variant="primary"
+      return_focus_id="runs-apply"
+      data-initial-focus-id="runs-rebuild-confirm-summary"
+    >
+      <%!-- `confirm_dialog` renders its own `#{id}-body`, so the sentence needs a
+            different id: a duplicate would point `aria-describedby` at the
+            wrapper and send initial focus to an element that cannot take it,
+            leaving the dismiss button focused instead of the sentence a reader
+            must read. Same trap `BlocksComponents.suggestion_replace_dialog/1`
+            records. --%>
+      <p id="runs-rebuild-confirm-summary" tabindex="-1">
+        Every block is cut again and every piece paired again. {length(@plan.moves)}
+        {if length(@plan.moves) == 1, do: "trip changes", else: "trips change"} run, and runs are renumbered in sign-on order, so a run you renamed or
+        tuned may come back under a different number.
+      </p>
+    </.confirm_dialog>
+    """
+  end
+
+  @doc """
+  The callout shown when the runs changed after the suggestion was made.
+
+  The suggestion cannot be applied — the domain's fingerprint check refuses it —
+  so the panel's Apply is disabled and the reader is offered the one thing that
+  can still help: suggest again from what is now saved.
+  """
+  attr :stale, :boolean, default: false
+  attr :failure, :boolean, default: false
+  attr :pending, :boolean, default: false
+
+  def apply_notice(assigns) do
+    ~H"""
+    <.callout
+      :if={@stale}
+      id="runs-stale"
+      kind="warning"
+      title="The runs changed after this suggestion was made"
+      data-role="apply-stale"
+      data-state="stale"
+    >
+      <p id="runs-stale-message">
+        A suggestion can't replace newer changes. Nothing was written. Suggest again from the
+        saved runs.
+      </p>
+      <div class="mt-3 flex flex-wrap gap-3">
+        <.button type="button" id="runs-suggest-again" phx-click="suggest_again" variant="primary">
+          Suggest again
+        </.button>
+      </div>
+    </.callout>
+
+    <.callout
+      :if={@failure}
+      id="runs-apply-failed"
+      kind="error"
+      title="The suggestion couldn't be saved"
+      data-role="apply-failed"
+      data-state="failed"
+    >
+      <p id="runs-apply-failed-message">
+        Your saved runs are unchanged. Try again, or discard the suggestion.
+      </p>
+      <div class="mt-3 flex flex-wrap gap-3">
+        <.button
+          type="button"
+          id="runs-try-again"
+          phx-click="apply_suggestion"
+          variant="primary"
+          disabled={@pending}
+          phx-disable-with="Applying…"
+        >
+          Try again
+        </.button>
+        <.button type="button" id="runs-suggest-again" phx-click="suggest_again" variant="secondary">
+          Suggest again
+        </.button>
+      </div>
+    </.callout>
+    """
   end
 
   @doc """
