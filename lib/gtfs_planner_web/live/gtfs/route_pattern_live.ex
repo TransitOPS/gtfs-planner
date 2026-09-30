@@ -2013,6 +2013,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                         timing_error={@timing_error}
                         timing_blank_note={@timing_blank_note}
                         blank_count={@blank_count}
+                        version_id={@current_gtfs_version.id}
                         fill={@fill}
                         fill_preview={@fill_preview}
                         fill_distances={@fill_distances}

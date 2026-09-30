@@ -730,6 +730,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   loaded timing and pattern; `headsign_usage`, `headsign_box` and
   `headsign_warnings` are the prepared headsign surfaces, nil when they do not
   apply. Copy, hierarchy and states follow the headsign propagation prototype.
+
+  A stop with no scheduled time is absence, not midnight: its cells are empty
+  and carry the legend's dash as their placeholder, its stop line says so, and
+  the legend under the grid names the dash. A blank is never an estimate here,
+  so a blank row never shows the Estimated badge.
   """
   attr :timings, :any, required: true
   attr :selected_timing, :any, required: true
@@ -756,6 +761,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   attr :filling?, :boolean, default: false
   attr :timing_blank_note, :string, default: nil
   attr :blank_count, :integer, default: 0
+  attr :version_id, :any, required: true
   attr :fill, :map, default: nil
   attr :fill_preview, :map, default: nil
   attr :fill_distances, :list, default: []
@@ -1082,6 +1088,22 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
               </tbody>
             </table>
 
+            <p
+              :if={@blank_count > 0}
+              id="timing-blank-legend"
+              class="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-subtle px-4 py-3 text-[13px] text-muted"
+            >
+              <span><span class="font-extrabold text-warning-fg">—</span> no scheduled time</span>
+              <span>Timepoints, the first stop and the last stop always need a time.</span>
+              <.link
+                id="timing-blank-export-defaults"
+                href={~p"/gtfs/#{@version_id}/settings/export-defaults"}
+                class="font-[650] text-strong underline decoration-2 underline-offset-4 hover:decoration-inherit"
+              >
+                Export defaults
+              </.link>
+            </p>
+
             <div class="border-t border-subtle p-4 text-[13px] text-muted">
               <p class="font-[650] text-default">About timepoints and boarding</p>
               <p id="timing-help-timepoint" class="mt-1">
@@ -1155,6 +1177,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         :error?,
         assigns.row.arrival_error == true or assigns.row.departure_error == true
       )
+      |> assign(
+        :no_time?,
+        blank_row?(assigns.row) and not Map.get(assigns.row, :timepoint, false)
+      )
 
     ~H"""
     <tr
@@ -1169,6 +1195,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             <span class="mt-0.5 flex flex-wrap items-center gap-1 text-[13px] font-normal text-muted">
               <span>Stop {@row.stop_id}</span>
               <.badge :if={@estimated?} tone="info">Estimated</.badge>
+              <span :if={@no_time?} id={"timing-no-time-#{@row.position}"} class="whitespace-nowrap">
+                · no scheduled time
+              </span>
               <span
                 :for={chip <- @chips}
                 class="rounded-badge bg-canvas px-1.5 py-0.5 text-xs font-semibold text-muted"
@@ -1212,6 +1241,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             inputmode="numeric"
             autocomplete="off"
             value={@row.arrival}
+            placeholder="—"
             data-estimated={if(Map.get(@row, :estimated), do: "true")}
             aria-invalid={@row.arrival_error && "true"}
             aria-describedby={@row.arrival_error && "timing-error-#{@row.position}"}
@@ -1244,6 +1274,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             inputmode="numeric"
             autocomplete="off"
             value={@row.departure}
+            placeholder="—"
             data-estimated={if(Map.get(@row, :estimated), do: "true")}
             aria-invalid={@row.departure_error && "true"}
             aria-describedby={@row.departure_error && "timing-error-#{@row.position}"}
@@ -1255,7 +1286,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         <span class="pe-cell-label">Sample trip</span>
         <span
           id={"timing-preview-#{@row.position}"}
-          class="block text-sm tabular-nums text-strong"
+          class={[
+            "block text-sm tabular-nums text-strong",
+            @no_time? && "font-extrabold text-warning-fg"
+          ]}
         >
           {sample_trip(@row)}
         </span>
@@ -2310,6 +2344,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   defp time_input_class(invalid?, edited?, estimated?) do
     [
       "h-11 w-[104px] rounded-control border px-3 text-sm tabular-nums",
+      "placeholder:font-extrabold placeholder:text-warning-fg",
       cond do
         invalid? -> "border-2 border-error-fg bg-white text-strong"
         estimated? -> "border-cyan-700 bg-soft text-cyan-800"
@@ -2732,6 +2767,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   # The arrival and departure a sample trip would show, once when they match.
   defp sample_trip(%{preview_arrival: same, preview_departure: same}), do: same
   defp sample_trip(row), do: "#{row.preview_arrival} → #{row.preview_departure}"
+
+  # A stop with no scheduled time is absence, not midnight. The timing rules
+  # already refuse a half pair, so a blank row is only ever a stop between the
+  # ends, and a timepoint is never one of them.
+  defp blank_row?(row),
+    do: blank_time?(Map.get(row, :arrival)) and blank_time?(Map.get(row, :departure))
+
+  defp blank_time?(nil), do: true
+  defp blank_time?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_time?(_value), do: false
 
   defp label_class, do: "text-[13px] font-[650] text-default"
 
