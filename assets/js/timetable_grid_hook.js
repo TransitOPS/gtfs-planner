@@ -95,6 +95,14 @@ const TimetableGrid = {
     this._onKeydown = (event) => this._handleKeydown(event);
     this._onClick = (event) => this._handleClick(event);
     this._onPaste = (event) => this._handlePaste(event);
+    // A write the grid did not send itself (the docked strip's Cancel, Refresh
+    // preview and Apply) keeps the cursor too: the strip dispatches this event
+    // before the server round trip, and this arm sets the flag `_pushEvent`
+    // sets so `updated()` re-applies the cursor after the reset stream dropped
+    // focus to the body.
+    this._onKeepCursor = () => {
+      this._restoreFocus = true;
+    };
     this._onFocusIn = () => this.el.classList.remove("grid-idle");
     this._onFocusOut = (event) => {
       if (!this.el.contains(event.relatedTarget)) this.el.classList.add("grid-idle");
@@ -103,6 +111,7 @@ const TimetableGrid = {
 
     this.el.addEventListener("keydown", this._onKeydown);
     this.el.addEventListener("click", this._onClick);
+    this.el.addEventListener("timetable-grid:keep-cursor", this._onKeepCursor);
     this.el.addEventListener("focusin", this._onFocusIn);
     this.el.addEventListener("focusout", this._onFocusOut);
     this.el.addEventListener("paste", this._onPaste);
@@ -141,6 +150,7 @@ const TimetableGrid = {
   destroyed() {
     this.el.removeEventListener("keydown", this._onKeydown);
     this.el.removeEventListener("click", this._onClick);
+    this.el.removeEventListener("timetable-grid:keep-cursor", this._onKeepCursor);
     this.el.removeEventListener("focusin", this._onFocusIn);
     this.el.removeEventListener("focusout", this._onFocusOut);
     this.el.removeEventListener("paste", this._onPaste);
@@ -150,6 +160,7 @@ const TimetableGrid = {
     this._onKeydown = null;
     this._onClick = null;
     this._onPaste = null;
+    this._onKeepCursor = null;
   },
 
   _cells() {

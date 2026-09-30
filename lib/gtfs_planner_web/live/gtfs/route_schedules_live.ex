@@ -1595,8 +1595,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp merge_shift_direction(params, raw) do
     case raw["direction"] do
-      value when value in ["1", 1] -> %{params | direction: 1}
-      value when value in ["-1", -1] -> %{params | direction: -1}
+      value when value in ["1", 1, "later"] -> %{params | direction: 1}
+      value when value in ["-1", -1, "earlier"] -> %{params | direction: -1}
       _other -> params
     end
   end
@@ -1803,6 +1803,221 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
       nil ->
         socket
+    end
+  end
+
+  # The strip's view data: the who-label, the preview line, the consequence
+  # context (the calendar the after-midnight note names), the Shift "Starting at"
+  # options and the timing select. It reads the loaded sections the review was
+  # planned against; the review itself stays the component's own input, so the
+  # consequence copy has one home.
+  defp change_strip_view(%{change: %{kind: kind} = change} = assigns)
+       when kind in [:shift, :timing] do
+    %{
+      who: change_who(assigns, change),
+      preview_lines: change_preview_lines(assigns, change),
+      blocks_kept?: change_blocks_kept?(assigns, change),
+      calendar_label: calendar_label(assigns.payload.calendars, assigns.filters.service_id),
+      from_options: change_from_options(assigns, change),
+      timing_options: change_timing_options(assigns, change),
+      timing_label: change_timing_label(assigns, change)
+    }
+  end
+
+  defp change_strip_view(_assigns), do: nil
+
+  defp change_who(assigns, %{ids: [trip_id]}) do
+    case strip_row(assigns, trip_id) do
+      %{start_cell: %{text: text}} -> "the #{text} trip"
+      _missing -> trip_count_label(1)
+    end
+  end
+
+  defp change_who(_assigns, %{ids: ids}), do: trip_count_label(length(ids))
+
+  # The reference's first consequence line: the reviewed first departures, the
+  # earliest three shown and the rest counted.
+  defp change_preview_lines(assigns, %{kind: :shift, review: %{preview: preview}} = change) do
+    pairs =
+      change.ids
+      |> Enum.flat_map(fn trip_id ->
+        with %{start_secs: old} when is_integer(old) <- strip_row(assigns, trip_id),
+             %{} = cells <- Map.get(preview, trip_id),
+             new when is_integer(new) <- Map.get(cells, 1) do
+          [{old, new}]
+        else
+          _unreadable -> []
+        end
+      end)
+      |> Enum.sort_by(&elem(&1, 0))
+
+    case pairs do
+      [] -> []
+      pairs -> [shift_preview_line(pairs)]
+    end
+  end
+
+  defp change_preview_lines(
+         assigns,
+         %{kind: :timing, params: %{timing_id: timing_id}, review: %{}} = change
+       ) do
+    with %{name: name, rows: rows} <- strip_timing(assigns, timing_id),
+         {_dom_id, section} <- change_strip_section(assigns, change.ids),
+         [%{stop_name: stop_name} | _rest] <- section.columns do
+      [
+        "Departures from #{stop_name} stay the same. #{name} takes " <>
+          "#{timing_minutes(rows)} min end to end."
+      ]
+    else
+      _missing -> []
+    end
+  end
+
+  defp change_preview_lines(_assigns, _change), do: []
+
+  defp shift_preview_line(pairs) do
+    shown = Enum.take(pairs, 3)
+    more = length(pairs) - length(shown)
+
+    text =
+      Enum.map_join(shown, ", ", fn {old, new} ->
+        "#{clock(old)} → #{clock(new)}"
+      end)
+
+    if more > 0, do: "#{text}, and #{more} more.", else: "#{text}."
+  end
+
+  # A shift keeps every block (R4), so the reference's sentence is true whenever
+  # a shifted trip carries one.
+  defp change_blocks_kept?(assigns, %{kind: :shift, ids: ids}) do
+    Enum.any?(ids, fn trip_id ->
+      match?(%{block_id: block_id} when is_binary(block_id), strip_row(assigns, trip_id))
+    end)
+  end
+
+  defp change_blocks_kept?(_assigns, _change), do: false
+
+  # "Starting at" is offered only when every selected trip is on one pattern (the
+  # reference's onePattern rule); its positions are the displayed timepoints, so
+  # the value the strip posts is one the page actually shows.
+  defp change_from_options(assigns, %{kind: :shift, ids: ids}) do
+    case change_strip_section(assigns, ids) do
+      {_dom_id, section} ->
+        timepoints = section_timepoint_positions(assigns, section)
+
+        [%{value: 0, label: "Whole trip", stop: nil}] ++
+          for column <- section.columns,
+              column.position > 1,
+              MapSet.member?(timepoints, column.position) do
+            %{value: column.position, label: "#{column.stop_name} onward", stop: column.stop_name}
+          end
+
+      nil ->
+        []
+    end
+  end
+
+  defp change_from_options(_assigns, _change), do: []
+
+  # Every displayed timepoint the pattern's timings flag; a pattern whose timings
+  # flag none falls back to the displayed columns, the same timepoint view
+  # `Timetable` builds for it.
+  defp section_timepoint_positions(assigns, section) do
+    flagged =
+      assigns.payload.patterns
+      |> Enum.find(&(&1.route_pattern_id == section.pattern.route_pattern_id))
+      |> case do
+        nil ->
+          []
+
+        pattern ->
+          for timing <- Map.get(pattern, :timings, []),
+              row <- Map.get(timing, :rows, []),
+              Map.get(row, :timepoint) == 1,
+              do: Map.fetch!(row, :position)
+      end
+
+    case flagged do
+      [] -> MapSet.new(section.columns, & &1.position)
+      positions -> MapSet.new(positions)
+    end
+  end
+
+  defp change_timing_options(assigns, %{kind: :timing, ids: ids}) do
+    for timing <- strip_timings(assigns, ids) do
+      {"#{timing.name} · #{timing_minutes(timing.rows)} min", timing.id}
+    end
+  end
+
+  defp change_timing_options(_assigns, _change), do: []
+
+  defp change_timing_label(assigns, %{kind: :timing, ids: [trip_id | _rest]}) do
+    with %{route_pattern_id: pattern_id} <- strip_row(assigns, trip_id),
+         %{name: name} <-
+           Enum.find(assigns.payload.patterns, &(&1.route_pattern_id == pattern_id)) do
+      "Timing for #{name}"
+    else
+      _missing -> "Timing"
+    end
+  end
+
+  defp change_timing_label(_assigns, _change), do: nil
+
+  defp strip_timings(assigns, [trip_id | _rest]) do
+    with %{route_pattern_id: pattern_id} <- strip_row(assigns, trip_id),
+         %{timings: timings} <-
+           Enum.find(assigns.payload.patterns, &(&1.route_pattern_id == pattern_id)) do
+      timings
+    else
+      _missing -> []
+    end
+  end
+
+  defp strip_timings(_assigns, []), do: []
+
+  defp strip_timing(assigns, timing_id) do
+    assigns.payload.patterns
+    |> Enum.flat_map(&Map.get(&1, :timings, []))
+    |> Enum.find(&(&1.id == timing_id))
+  end
+
+  defp timing_minutes(rows) do
+    rows
+    |> Enum.map(fn row ->
+      Map.get(row, :arrival_offset) || Map.get(row, :departure_offset) || 0
+    end)
+    |> Enum.max(fn -> 0 end)
+    |> div(60)
+  end
+
+  # Every selected trip on one section's pattern, or nil when the selection spans
+  # patterns (no "Starting at" and no one-pattern label then).
+  defp change_strip_section(assigns, [trip_id | rest]) do
+    case strip_section(assigns, trip_id) do
+      {dom_id, section} ->
+        if Enum.all?(rest, &match?({^dom_id, _section}, strip_section(assigns, &1))) do
+          {dom_id, section}
+        end
+
+      nil ->
+        nil
+    end
+  end
+
+  defp change_strip_section(_assigns, []), do: nil
+
+  # The assigns-shaped copies of find_section/2 and find_row/2: the strip view is
+  # computed while rendering (the template has assigns, not a socket).
+  defp strip_section(assigns, trip_id) do
+    Enum.find(assigns.section_index, fn {_dom_id, section} ->
+      Enum.any?(section.rows, &(&1.id == trip_id))
+    end)
+  end
+
+  defp strip_row(assigns, trip_id) do
+    case strip_section(assigns, trip_id) do
+      nil -> nil
+      {_dom_id, section} -> Enum.find(section.rows, &(&1.id == trip_id))
     end
   end
 
@@ -2882,7 +3097,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
               paste_path={paste_path(@current_gtfs_version.id, @route_id, @filters)}
               can_add?={@can_add?}
               add_reason={@add_reason}
-              add_primary?={add_primary?(@can_add?, @sections_empty?, @filters, @selected_count)}
+              add_primary?={
+                add_primary?(@can_add?, @sections_empty?, @filters, @selected_count) and
+                  not ScheduleChangeComponents.change_strip?(@change)
+              }
             />
 
             <ScheduleComponents.connectivity_notice />
@@ -2966,10 +3184,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                     <div id="cell-editor" phx-update="ignore"></div>
                   </div>
 
+                  <% strip = change_strip_view(assigns) %>
                   <ScheduleChangeComponents.grid_bar
                     selected_count={@selected_count}
                     outcome={@outcome}
                     undo_stack={@undo_stack}
+                    change={@change}
+                    strip={strip}
+                    version_name={@current_gtfs_version.name}
                   />
               <% end %>
 
