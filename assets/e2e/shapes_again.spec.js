@@ -354,6 +354,136 @@ test.describe("link offer", () => {
   });
 });
 
+// ── labels (step 22) ────────────────────────────────────────────────────────
+//
+// `BROWSER_SHAPES` seeds one supplied label pair: `BROWSER-LABEL-A` carries the
+// ID and `BROWSER-LABEL-X` is labelled with it, which is the grouping the
+// Patterns list draws. Nothing is removed here: the child's label is what the
+// next step's review and export read, and the pair is the seeded scenario's own.
+//
+// This block runs before `grouping review` because that review's apply changes
+// the list it draws. The suite shares one seeded database with `workers: 1`, so
+// the file's order is the run's order.
+// ────────────────────────────────────────────────────────────────────────────
+
+test.describe("labels", () => {
+  for (const viewport of VIEWPORTS) {
+    test(`groups the labelled patterns at ${viewport.width}×${viewport.height}`, async ({
+      page,
+    }, testInfo) => {
+      testInfo.setTimeout(120_000);
+
+      const problems = collectPageErrors(page);
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await stubTiles(page);
+      await logIn(page);
+      const versionId = await getVersionId(page);
+
+      await page.goto(`/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns`);
+      await waitForLiveView(page);
+
+      const group = page.locator("#pattern-label-BROWSER-LABEL-A");
+      await expect(group).toBeVisible();
+      await expect(group).toContainText(
+        "Exported as route pattern BROWSER-LABEL-A",
+      );
+      await expect(group).toContainText("2 stop orders, exported as one");
+      await expect(
+        group.locator("#pattern-label-details-BROWSER-LABEL-A"),
+      ).toHaveText("Label details");
+
+      // The owner and the child are the two rows under that one heading, and the
+      // child says what the label does with its own name.
+      await expect(
+        page.locator(
+          "tr[data-label='BROWSER-LABEL-A'][data-label-role='owner']",
+        ),
+      ).toHaveCount(1);
+      await expect(
+        page.locator(
+          "tr[data-label='BROWSER-LABEL-A'][data-label-role='child']",
+        ),
+      ).toHaveCount(1);
+      await expect(
+        page.locator("#pattern-label-note-BROWSER-LABEL-X"),
+      ).toContainText("its own name isn’t exported");
+
+      // The drawer reads the label; it takes nothing away in this block.
+      await capture(page, `label-group-production-${viewport.label}`);
+      await page.locator("#pattern-label-details-BROWSER-LABEL-A").click();
+      const drawer = page.locator("#label-drawer");
+      await expect(drawer).toBeVisible();
+      await expect(page.locator("#label-drawer-summary")).toContainText(
+        "Exported as one route pattern for 2 stop orders",
+      );
+      await expect(page.locator("#label-owner-name")).toHaveText(
+        "Coast Limited",
+      );
+      await expect(page.locator("#label-owner-details")).toContainText(
+        "BROWSER-LABEL-A",
+      );
+      await expect(page.locator("#label-edit-owner")).toHaveAttribute(
+        "href",
+        `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns/BROWSER-LABEL-A?task=details`,
+      );
+      // A label ID is never edited: there is nothing in the drawer to type into.
+      await expect(drawer.locator("input")).toHaveCount(0);
+      await expect(page.locator("#label-remove-BROWSER-LABEL-X")).toBeVisible();
+      await expect(page.locator("#label-remove-BROWSER-LABEL-A")).toHaveCount(
+        0,
+      );
+
+      await capture(page, `label-drawer-production-${viewport.label}`);
+
+      const referenceCaptured = await captureReference(
+        page,
+        "?state=label-drawer",
+        `label-drawer-reference-${viewport.label}`,
+      );
+
+      testInfo.annotations.push({
+        type: "reference-captured",
+        description: referenceCaptured
+          ? `label-drawer-reference-${viewport.label}.png`
+          : "prototype absent from this checkout",
+      });
+
+      expect(problems).toEqual([]);
+    });
+  }
+
+  test("captures the prototype's grouped list beside the production one", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(120_000);
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.goto(`/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns`);
+    await waitForLiveView(page);
+    await expect(page.locator("#pattern-label-BROWSER-LABEL-A")).toBeVisible();
+
+    const referenceCaptured = await captureReference(
+      page,
+      "?state=labels",
+      "label-group-reference-1440",
+    );
+
+    testInfo.annotations.push({
+      type: "reference-captured",
+      description: referenceCaptured
+        ? "label-group-reference-1440.png"
+        : "prototype absent from this checkout",
+    });
+  });
+});
+
 // ── grouping review ─────────────────────────────────────────────────────────
 
 // `BROWSER_SHAPES` seeds exactly what the review is built for: a saved 13-stop

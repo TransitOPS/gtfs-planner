@@ -57,7 +57,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     alignment_save_requested confirm_alignment_save alignment_conflict_keep_local
     alignment_generate_paths alignment_confirm_generate alignment_cancel_generation
     alignment_follow_streets confirm_bulk_generation reactivate_route
-    grouping_submit link_confirm
+    grouping_submit link_confirm remove_label
   )
 
   @grouping_review "group"
@@ -204,6 +204,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:link_dialog, false)
      |> assign(:link_pending, false)
      |> assign(:link_error, nil)
+     |> assign(:labels, %{})
+     |> assign(:label, nil)
+     |> assign(:label_remove, nil)
+     |> assign(:label_focus_id, nil)
      |> stream(:patterns, [])
      |> attach_hook(:editor_write_gate, :handle_event, &editor_write_gate/3)}
   end
@@ -1639,6 +1643,62 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     guard_navigation(socket, patterns_path(socket))
   end
 
+  # --- route-pattern labels ---------------------------------------------------
+  # A supplied label is read from the same summaries the list streams, so the
+  # drawer and its rows are one view of one load. `open_label` names the label's
+  # own ID, which is its owner's natural ID.
+
+  @impl true
+  def handle_event("open_label", %{"label-id" => label_id}, socket) do
+    case Map.get(socket.assigns[:labels] || %{}, label_id) do
+      nil ->
+        {:noreply, socket}
+
+      label ->
+        {:noreply,
+         socket
+         |> assign(:label, label)
+         |> assign(:label_remove, nil)
+         |> assign(:label_focus_id, nil)}
+    end
+  end
+
+  @impl true
+  def handle_event("close_label", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:label, nil)
+     |> assign(:label_remove, nil)
+     |> assign(:label_focus_id, nil)}
+  end
+
+  @impl true
+  def handle_event("request_remove_label", %{"pattern-id" => pattern_id}, socket) do
+    case label_child(socket, pattern_id) do
+      nil ->
+        {:noreply, socket}
+
+      child ->
+        {:noreply, assign(socket, :label_remove, child)}
+    end
+  end
+
+  @impl true
+  def handle_event("cancel_remove_label", _params, socket) do
+    {:noreply, assign(socket, :label_remove, nil)}
+  end
+
+  @impl true
+  def handle_event("remove_label", _params, socket) do
+    case socket.assigns.label_remove do
+      nil ->
+        {:noreply, socket}
+
+      remove ->
+        remove_label(socket, remove)
+    end
+  end
+
   @impl true
   def handle_event("discard_changes", _params, socket) do
     case socket.assigns.pending_navigation do
@@ -1768,6 +1828,70 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
       offer ->
         confirm_link(socket, offer)
+    end
+  end
+
+  # A confirmed removal clears the child's pointer and nothing else. The group is
+  # re-read from the same load as the list, which is what takes the grouping away
+  # when the last child leaves it, and the row the child kept is where focus
+  # returns to.
+  defp remove_label(socket, remove) do
+    case Gtfs.remove_route_pattern_label(
+           socket.assigns.route_id,
+           remove.uuid,
+           audit_context(socket)
+         ) do
+      {:ok, _pattern} ->
+        {:noreply,
+         socket
+         |> assign(:label_remove, nil)
+         |> assign(:label, nil)
+         |> put_flash(:info, label_removed_message(remove))
+         |> load_screen()
+         |> assign(:label_focus_id, "pattern-open-#{remove.natural_id}")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:label_remove, nil)
+         |> put_flash(:error, label_error(reason))}
+    end
+  end
+
+  defp label_removed_message(remove) do
+    "#{remove.name} now exports its own route pattern ID."
+  end
+
+  defp label_error(:not_labelled),
+    do: "That pattern is not under a label, so nothing was removed."
+
+  defp label_error(:not_found),
+    do: "That pattern is no longer on this route, so nothing was removed."
+
+  defp label_error(_reason),
+    do: "Nothing was removed. Try again in a moment."
+
+  # The child a Remove label confirm is about, read from the group the drawer is
+  # showing rather than from the parameters, so the copy in the dialog and the
+  # pattern that is written are the same one.
+  defp label_child(socket, pattern_id) do
+    label = socket.assigns[:label] || %{}
+
+    with children when is_list(children) <- Map.get(label, :children, []),
+         child when is_map(child) <- Enum.find(children, &(&1.id == pattern_id)) do
+      owner = label.owner
+
+      %{
+        natural_id: child.id,
+        uuid: child.pattern.id,
+        name: RoutePatternListComponents.pattern_name(child.pattern),
+        owner_name: RoutePatternListComponents.pattern_name(owner.pattern),
+        label_id: label.id,
+        stop_count: child.stop_count,
+        trip_count: child.trip_count
+      }
+    else
+      _no_child -> nil
     end
   end
 
@@ -1998,6 +2122,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                 link_offer={@link_offer}
                 link_done={@link_done}
                 link_pending={@link_pending}
+                label={@label}
+                label_remove={@label_remove}
+              />
+              <%!-- A removed child keeps its row, so focus goes back to it. --%>
+              <span
+                :if={@label_focus_id}
+                id="label-focus"
+                phx-mounted={JS.focus(to: "##{@label_focus_id}")}
+                class="hidden"
               />
             <% @load_state == :loading -> %>
               <.skeleton id="patterns-loading" label="Loading patterns" rows={3} aria-busy="true" />
@@ -2731,11 +2864,47 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         |> stream(:patterns, RoutePatternListComponents.stream_items(rows), reset: true)
         |> assign(:bulk_candidates, bulk_candidates(rows))
         |> assign(:patterns_editable, editor_access?(socket))
+        |> assign(:labels, label_groups(rows, socket))
+        |> then(&reconcile_label/1)
         |> preselect_bulk(preselected)
       end)
       |> apply_detail(screen.detail, previous_pattern_id)
 
     assign_dirty(socket)
+  end
+
+  # The label groups the drawer reads, keyed by the owner's natural ID — the ID
+  # the group exports as. An owner with no children is not a label yet, so it
+  # gets no group and its row stays an ordinary one.
+  defp label_groups(rows, socket) do
+    children = Enum.group_by(rows, & &1.pattern.label_pattern_id)
+
+    for row <- rows,
+        row.pattern.label_pattern_id == nil,
+        labelled = Map.get(children, row.pattern.id, []),
+        labelled != [],
+        into: %{} do
+      {row.pattern.route_pattern_id,
+       %{
+         id: row.pattern.route_pattern_id,
+         count: length(labelled) + 1,
+         owner: row,
+         children: labelled,
+         owner_path: pattern_path(socket, row.pattern.route_pattern_id, "?task=details")
+       }}
+    end
+  end
+
+  # A load can take a label away under an open drawer: the last child was removed
+  # elsewhere, or the group was rebuilt. The drawer then closes rather than
+  # showing a group that is no longer there.
+  defp reconcile_label(%{assigns: %{label: nil}} = socket), do: socket
+
+  defp reconcile_label(socket) do
+    case Map.get(socket.assigns.labels, socket.assigns.label.id) do
+      nil -> assign(socket, :label, nil)
+      label -> assign(socket, :label, label)
+    end
   end
 
   # Route › Patterns shows every pattern's alignment status from one batched
