@@ -248,6 +248,342 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   @doc """
+  Renders the Suggest runs drawer: which work to plan, the rules used, and the
+  travel note.
+
+  Nothing here is saved. The drawer's whole job is to make the reader's choice
+  before a preview is drawn, and the preview itself is what asks to be applied.
+  So the only button is Preview, and it is the drawer's one primary.
+  """
+  attr :open, :boolean, default: false
+  attr :runs_day, :map, required: true
+  attr :day_label, :string, required: true
+  attr :scope, :atom, required: true, values: [:uncovered_only, :replace_all]
+  attr :uncovered_trips, :integer, default: 0
+  attr :next_run_id, :string, default: nil
+  attr :max_piece_minutes, :integer, default: nil
+  attr :relief_stop_ids, :list, default: []
+  attr :crew, :map, required: true
+  attr :estimated_travel, :integer, default: 0
+  attr :notice, :any, default: nil
+
+  def suggest_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="runs-suggest-drawer"
+      open={@open}
+      on_close="close_suggest"
+      title="Suggest runs"
+      return_focus_id="runs-suggest"
+    >
+      <p
+        :if={@notice}
+        id="runs-suggest-notice"
+        data-role="suggest-notice"
+        role="status"
+        class="mb-2 rounded-card border border-error-line bg-error-container px-4 py-3 text-sm"
+      >
+        {notice_text(@notice)}
+      </p>
+
+      <p id="runs-suggest-subtitle" class="text-sm text-base-content/70">
+        {@day_label} &middot; not saved
+      </p>
+
+      <p class="mt-2 text-[13px] text-base-content/70">
+        Cut blocks at relief windows and pair the pieces into runs. Nothing is saved until you apply.
+      </p>
+
+      <fieldset class="mt-4 grid gap-2">
+        <legend class="mb-1 text-[13px] font-semibold">Work to plan</legend>
+
+        <label class={[
+          "flex cursor-pointer items-start gap-3 rounded-card border px-4 py-3",
+          @scope == :uncovered_only && "border-action bg-selection",
+          @scope != :uncovered_only && "border-subtle"
+        ]}>
+          <input
+            type="radio"
+            id={scope_id(:uncovered_only)}
+            name="scope"
+            value="uncovered_only"
+            checked={@scope == :uncovered_only}
+            disabled={@uncovered_trips == 0}
+            phx-click="select_scope"
+            class="mt-1 size-5"
+          />
+          <span>
+            <span class="block font-semibold">Uncovered work only</span>
+            <span class="mt-0.5 block text-[13px] text-base-content/70">
+              {uncovered_scope_sentence(@uncovered_trips, @next_run_id)}
+            </span>
+          </span>
+        </label>
+
+        <label class={[
+          "flex cursor-pointer items-start gap-3 rounded-card border px-4 py-3",
+          @scope == :replace_all && "border-action bg-selection",
+          @scope != :replace_all && "border-subtle"
+        ]}>
+          <input
+            type="radio"
+            id={scope_id(:replace_all)}
+            name="scope"
+            value="replace_all"
+            checked={@scope == :replace_all}
+            phx-click="select_scope"
+            class="mt-1 size-5"
+          />
+          <span>
+            <span class="block font-semibold">Rebuild this day&rsquo;s runs</span>
+            <span class="mt-0.5 block text-[13px] text-base-content/70">
+              Cut every block again and pair every piece again. Runs are renumbered in
+              sign-on order, and runs edited by hand may change.
+            </span>
+          </span>
+        </label>
+      </fieldset>
+
+      <h3 class="mt-6 text-base font-bold">Rules used</h3>
+
+      <dl class="mt-2 grid grid-cols-[160px_1fr] gap-x-4 gap-y-1.5 text-sm">
+        <dt class="text-base-content/70">Longest piece</dt>
+        <dd>{piece_limit(@max_piece_minutes)}</dd>
+        <dt class="text-base-content/70">Relief points</dt>
+        <dd>{relief_points(@relief_stop_ids)}</dd>
+        <dt class="text-base-content/70">Paid break</dt>
+        <dd>{@crew.paid_break_max_minutes} min or less</dd>
+        <dt class="text-base-content/70">Longest spread</dt>
+        <dd>{duration(@crew.max_spread_minutes * 60)}, never exceeded</dd>
+        <dt class="text-base-content/70">Report</dt>
+        <dd>
+          {@crew.report_pull_out_minutes} min before a pull-out, {@crew.report_relief_minutes} min before a relief
+        </dd>
+      </dl>
+
+      <p
+        :if={@estimated_travel > 0}
+        id="runs-suggest-travel-note"
+        data-role="suggest-travel-note"
+        class="mt-3 rounded-card border border-info-line bg-info-container px-4 py-3 text-sm"
+      >
+        <strong>
+          {@estimated_travel} travel {if @estimated_travel == 1, do: "time is", else: "times are"} estimated.
+        </strong>
+        They are used to pair pieces, and can be entered in Blocks.
+      </p>
+
+      <div class="mt-4 flex flex-wrap justify-end gap-2">
+        <.button type="button" phx-click="close_suggest" variant="secondary">
+          Cancel
+        </.button>
+        <.button type="button" id="runs-preview" phx-click="preview_suggestion" variant="primary">
+          Preview
+        </.button>
+      </div>
+    </.drawer>
+    """
+  end
+
+  defp notice_text({:error, message}), do: message
+
+  defp word(1, singular, _plural), do: singular
+  defp word(_count, _singular, plural), do: plural
+
+  defp scope_id(:uncovered_only), do: "runs-scope-uncovered"
+  defp scope_id(:replace_all), do: "runs-scope-rebuild"
+
+  # The uncovered scope's own sentence, from the DAY's figures rather than from
+  # the drawer's state: it names how many trips have no operator and the number
+  # new runs start from, and a reader picks a scope by reading those.
+  defp uncovered_scope_sentence(0, _next_run_id),
+    do: "Every blocked trip is already in a run."
+
+  defp uncovered_scope_sentence(trips, next_run_id) do
+    planned = "Plan the #{trips} #{word(trips, "trip", "trips")} with no operator as new runs"
+
+    case next_run_id do
+      nil -> planned <> "."
+      id -> planned <> " from #{id}."
+    end
+  end
+
+  @doc """
+  Renders the inline panel that shows a suggestion over the saved runs.
+
+  The panel is INLINE, above the chart, and not a drawer: the point of a preview
+  is to compare the suggestion against what is on screen, and a drawer would
+  cover the thing being compared.
+  """
+  attr :plan, :map, required: true
+  attr :runs_day, :map, required: true
+  attr :day_label, :string, required: true
+
+  def suggestion_panel(assigns) do
+    # `changed_run_ids` and `new_run_ids` are DISJOINT halves of one question —
+    # which runs does this suggestion alter — so the panel counts and lists their
+    # union. Counting one half would under-report the number a reader relies on
+    # when deciding to apply.
+    assigns =
+      assign(assigns, :changed_runs, assigns.plan.changed_run_ids ++ assigns.plan.new_run_ids)
+
+    ~H"""
+    <section
+      id="runs-suggestion"
+      data-role="suggestion"
+      data-scope={@plan.scope}
+      aria-labelledby="runs-suggestion-title"
+      class="mt-4 rounded-card border border-primary/30 bg-base-100"
+    >
+      <div class="flex flex-wrap items-start justify-between gap-3 border-b border-subtle px-5 py-4">
+        <div>
+          <h2 id="runs-suggestion-title" tabindex="-1" class="text-[24px]">
+            Suggested runs
+          </h2>
+          <p id="runs-suggestion-subtitle" class="mt-1 text-[13px] text-base-content/70">
+            {@day_label} &middot; {scope_name(@plan.scope)} &middot; not saved
+          </p>
+        </div>
+
+        <div class="flex flex-wrap gap-3">
+          <.button type="button" id="runs-discard" phx-click="discard_suggestion" variant="secondary">
+            Discard
+          </.button>
+          <.button type="button" id="runs-apply" phx-click="apply_suggestion" variant="primary">
+            Apply suggestion
+          </.button>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap border-b border-subtle px-1 py-2">
+        <.suggestion_metric
+          :for={metric <- suggestion_metrics(@plan)}
+          id={"runs-suggestion-#{metric.key}"}
+          label={metric.label}
+          before={metric.before}
+          after_value={metric.after}
+        />
+      </div>
+
+      <div class="grid gap-3 px-5 py-4">
+        <p id="runs-suggestion-scope" data-role="suggestion-scope" class="text-sm">
+          {scope_sentence(@plan)}
+        </p>
+
+        <details id="runs-suggestion-changed" class="text-sm">
+          <summary class="inline-flex min-h-11 cursor-pointer items-center gap-2 font-semibold">
+            {length(@plan.moves)} {word(length(@plan.moves), "trip changes", "trips change")} run &middot; {length(
+              @changed_runs
+            )} {word(length(@changed_runs), "run", "runs")} new or changed
+          </summary>
+
+          <ul id="runs-suggestion-changed-list" class="mt-2 grid gap-1">
+            <li
+              :for={run_id <- @changed_runs}
+              data-role="suggestion-changed-run"
+              data-run={run_id}
+              class="rounded-control border border-subtle px-3 py-2"
+            >
+              Run {run_id}
+            </li>
+          </ul>
+        </details>
+      </div>
+    </section>
+    """
+  end
+
+  defp scope_name(:uncovered_only), do: "Uncovered work only"
+  defp scope_name(:replace_all), do: "Rebuild this day&rsquo;s runs"
+
+  # The four figures the card names, each BEFORE → after, read from the plan's
+  # own two stats maps. They are the plan's figures and not a re-derivation, so
+  # the panel cannot claim a number the apply would not produce.
+  defp suggestion_metrics(plan) do
+    before = plan.before
+    # NOT `after = ...`. `after` is a reserved word in Elixir; the domain's own
+    # `Plan.build/1` binds the same pair as `after_stats` and `before_stats` for
+    # this reason.
+    after_stats = plan.after
+
+    [
+      %{key: "runs", label: "Runs", before: before.runs, after: after_stats.runs},
+      %{
+        key: "paid",
+        label: "Paid hours",
+        before: hours_text(before.paid_secs),
+        after: hours_text(after_stats.paid_secs)
+      },
+      %{
+        key: "uncovered",
+        label: "Uncovered trips",
+        before: before.uncovered.trips,
+        after: after_stats.uncovered.trips
+      },
+      %{
+        key: "share",
+        label: "Straight share",
+        before: share_text(before),
+        after: share_text(after_stats)
+      }
+    ]
+  end
+
+  defp share_text(%{runs: 0}), do: "—"
+
+  defp share_text(%{straight_share: nil}), do: "—"
+
+  defp share_text(%{straight_share: share}), do: "#{share}%"
+
+  defp hours_text(secs) when is_integer(secs),
+    do: "#{:erlang.float_to_binary(secs / 3600, decimals: 1)}"
+
+  defp hours_text(_), do: "—"
+
+  # The scope's own sentence. The rebuild one names the renumbering, because a
+  # rebuild can move a hand-made run to a different number and a reader who is
+  # not told that will not expect it.
+  defp scope_sentence(%{scope: :uncovered_only}) do
+    "Current runs keep their numbers, and their problems still need review. " <>
+      "New runs are numbered from the next free number."
+  end
+
+  defp scope_sentence(%{scope: :replace_all}) do
+    "Every block is cut again and every piece paired again. " <>
+      "Runs are renumbered in sign-on order, so runs edited by hand may change number. " <>
+      "Applying asks you to confirm."
+  end
+
+  @doc """
+  One before → after figure in the suggestion panel.
+  """
+  attr :id, :string, required: true
+  attr :label, :string, required: true
+  attr :before, :any, required: true
+  # NOT named `after`: `@after` is the reserved word used as a variable, and a
+  # HEEx expression that reads it fails to compile. `after:` IS fine as a map
+  # key, which is why the plan's own `%{before:, after:}` pair is untouched.
+  attr :after_value, :any, required: true
+
+  def suggestion_metric(assigns) do
+    ~H"""
+    <div
+      id={@id}
+      data-role="suggestion-metric"
+      data-label={@label}
+      class="min-w-[150px] flex-1 border-l border-subtle px-4 py-2 first:border-l-0"
+    >
+      <p class="text-[13px] text-base-content/70">{@label}</p>
+      <p class="mt-0.5 tabular text-[22px] font-semibold">
+        <span data-role="metric-before">{to_string(@before)}</span>
+        <span aria-hidden="true">&rarr;</span>
+        <span data-role="metric-after">{to_string(@after_value)}</span>
+      </p>
+    </div>
+    """
+  end
+
+  @doc """
   Renders the FIRST USE panel: the day has blocks, and nothing has been cut yet.
 
   This is a panel rather than an empty chart because there is nothing to draw.
@@ -869,9 +1205,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
         </thead>
         <tbody id="runs-timeline-body" phx-update="stream">
           <.run_row
-            :for={{dom_id, %{run: run}} <- @run_rows}
+            :for={{dom_id, %{run: run, changed: changed}} <- @run_rows}
             dom={dom_id}
             run={run}
+            changed={changed}
             axis={@axis}
             routes={@routes}
             track_style={@track_style}
@@ -995,6 +1332,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   attr :axis, :map, default: nil
   attr :routes, :map, required: true
   attr :track_style, :string, default: nil
+  attr :changed, :boolean, default: false
 
   def run_row(assigns) do
     assigns =
@@ -1005,9 +1343,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       id={@dom}
       data-run={@run.run_id}
       data-type={@run.work.type}
-      class="runs-row"
+      data-changed={to_string(@changed)}
+      class={["runs-row", @changed && "runs-row-changed"]}
     >
-      <.run_facts run={@run} variant={:timeline} />
+      <.run_facts run={@run} variant={:timeline} changed={@changed} />
       <td class="runs-track" style={@track_style}>
         <span class="runs-lane">
           <.segment_mark :for={mark <- @marks} mark={mark} />
@@ -1083,13 +1422,14 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
         </thead>
         <tbody id="runs-list-body" phx-update="stream">
           <tr
-            :for={{dom_id, %{run: run}} <- @run_rows}
+            :for={{dom_id, %{run: run, changed: changed}} <- @run_rows}
             id={dom_id}
             data-run={run.run_id}
             data-type={run.work.type}
-            class="runs-list-row"
+            data-changed={to_string(changed)}
+            class={["runs-list-row", changed && "runs-list-row-changed"]}
           >
-            <.run_facts run={run} variant={:list} />
+            <.run_facts run={run} variant={:list} changed={changed} />
           </tr>
         </tbody>
       </table>
@@ -1174,6 +1514,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   the button is the page's own statement of the rules in force rather than of a
   draft the reader has not saved. A draft is in the drawer and nowhere else.
   """
+  # `crew` was never declared on this component and the button had no warning
+  # only because an earlier attribute group happened to be in scope. Declaring
+  # it here is what the component has always meant.
+  attr :crew, :map, required: true
+  attr :locked_reason, :string, default: nil
+
   def crew_button(assigns) do
     # `variant` is set EXPLICITLY rather than left to the default. The default is
     # `primary`, and the scope bar already gives its one primary to the Review
@@ -1186,6 +1532,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       phx-click="open_crew"
       variant="secondary"
       data-role="crew-rules-button"
+      disabled={@locked_reason != nil}
+      data-locked={@locked_reason != nil}
+      title={@locked_reason}
       class="min-h-11"
     >
       <.icon name="hero-identification" class="size-4" />
@@ -2158,6 +2507,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   attr :windows, :map, required: true
   attr :routes, :map, default: %{}
   attr :stop_names, :map, default: %{}
+  attr :locked_reason, :string, default: nil
 
   def uncovered(assigns) do
     ~H"""
@@ -2238,6 +2588,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
                   phx-value-index={index}
                   data-role="create-run"
                   data-block={segment.block_id}
+                  disabled={@locked_reason != nil}
+                  data-locked={@locked_reason != nil}
+                  title={
+                    @locked_reason ||
+                      "Create a run for block #{segment.block_id}, #{BlocksComponents.clock(segment.start_secs)}-#{BlocksComponents.clock(segment.end_secs)}"
+                  }
                   title={"Create a run for block #{segment.block_id}, #{BlocksComponents.clock(segment.start_secs)}-#{BlocksComponents.clock(segment.end_secs)}"}
                   class="min-h-11 rounded-control border border-base-content/20 px-3 text-sm font-semibold hover:bg-base-200"
                 >
@@ -2435,6 +2791,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   """
   attr :run, :map, required: true
   attr :variant, :atom, required: true, values: [:timeline, :list]
+  attr :changed, :boolean, default: false
 
   def run_facts(assigns) do
     ~H"""
@@ -2449,6 +2806,13 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       >
         {@run.run_id}
       </button>
+      <span
+        :if={@changed}
+        data-role="changed-label"
+        class="ml-2 inline-flex items-center rounded-badge bg-primary/15 px-1.5 py-0.5 text-[13px] font-semibold"
+      >
+        Changed
+      </span>
     </th>
     <td class={fact_class(@variant, "type")} data-role="run-type">
       {type_label(@run.work.type)}
