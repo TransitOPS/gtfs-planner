@@ -5965,6 +5965,29 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Applies a runs plan: every move it names, or none, and an undo.
+
+  The plan is one `suggest_runs/4` returned. Its fingerprint is recomputed from
+  a fresh read under the version and blocking locks, and a mismatch is refused
+  with `{:error, :stale_plan}` writing nothing — so a plan built before a trip
+  moved, a crew rule changed, a relief point added, a driving time entered or a
+  block attribute set cannot be applied to a day it was not computed for.
+
+  The returned `undo` is the same list of moves reversed, so undoing is
+  `apply_run_moves/4` on it and is refused by the same per-trip rule.
+  """
+  @spec apply_run_plan(Ecto.UUID.t(), Ecto.UUID.t(), GtfsPlanner.Gtfs.Runs.Plan.t()) ::
+          {:ok, %{changed_trips: non_neg_integer(), undo: [GtfsPlanner.Gtfs.Runs.Plan.move()]}}
+          | {:error,
+             :not_found
+             | :stale_plan
+             | {:invalid_trips, [Ecto.UUID.t()]}
+             | :write_failed}
+  def apply_run_plan(organization_id, gtfs_version_id, plan) do
+    Runs.apply_run_plan(organization_id, gtfs_version_id, plan)
+  end
+
+  @doc """
   Returns the current block errors and warnings involving the given trips.
 
   Natural trip IDs name the trips; for each one that runs in a block, every day
