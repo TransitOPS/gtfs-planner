@@ -13,7 +13,9 @@ defmodule GtfsPlanner.Gtfs.Stations do
     PathwayEvolution,
     StationNaming,
     Stop,
-    StopReferences
+    StopLevel,
+    StopReferences,
+    Translation
   }
 
   alias GtfsPlanner.Repo
@@ -144,6 +146,119 @@ defmodule GtfsPlanner.Gtfs.Stations do
       with {:ok, deleted} <- Repo.delete(pathway),
            {:ok, _log} <- Audit.record_change_in_transaction(audit, :pathway, pathway, "deleted") do
         deleted
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc "Creates a level and attaches it to the selected station atomically."
+  def create_station_level(%AuditContext{} = audit, level_attrs, stop_level_attrs)
+      when is_map(level_attrs) and is_map(stop_level_attrs) do
+    run(audit, :share, fn station ->
+      level_changeset =
+        Level.editor_changeset(
+          %Level{organization_id: audit.organization_id, gtfs_version_id: audit.gtfs_version_id},
+          level_attrs
+        )
+
+      with {:ok, level} <- Repo.insert(level_changeset),
+           {:ok, stop_level} <-
+             insert_stop_level(audit, station, level, stop_level_attrs),
+           {:ok, _level_log} <-
+             Audit.record_change_in_transaction(audit, :level, level, "created"),
+           {:ok, _association_log} <-
+             Audit.record_change_in_transaction(audit, :stop_level, stop_level, "created") do
+        %{level: level, stop_level: stop_level}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc "Attaches an existing level from the selected version to this station."
+  def add_existing_level(%AuditContext{} = audit, level_uuid) do
+    run(audit, :share, fn station ->
+      level = scoped_level!(audit, level_uuid)
+
+      with {:ok, stop_level} <- insert_stop_level(audit, station, level, %{}),
+           {:ok, _log} <-
+             Audit.record_change_in_transaction(audit, :stop_level, stop_level, "created") do
+        stop_level
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc "Edits an attached level at its expected revision, cascading a natural ID rename."
+  def update_level(%AuditContext{} = audit, level_uuid, attrs, expected_revision)
+      when is_map(attrs) do
+    rename? = Map.has_key?(attrs, :level_id) or Map.has_key?(attrs, "level_id")
+
+    run(audit, if(rename?, do: :exclusive, else: :share), fn station ->
+      level = lock_attached_level!(audit, station, level_uuid)
+      stale_level!(level, expected_revision)
+      changeset = Level.editor_changeset(level, attrs)
+      changed_fields = changeset.changes
+      new_id = Ecto.Changeset.get_field(changeset, :level_id)
+
+      changeset =
+        if changed_fields == %{} do
+          Ecto.Changeset.force_change(changeset, :updated_at, DateTime.utc_now())
+        else
+          changeset
+        end
+
+      with {:ok, updated} <- Repo.update(changeset) do
+        audit_fields =
+          if new_id != level.level_id do
+            counts = cascade_level_id(audit, level.level_id, new_id)
+
+            Map.merge(changed_fields, %{
+              level_id: [level.level_id, new_id],
+              references: counts
+            })
+          else
+            changed_fields
+          end
+
+        case Audit.record_change_in_transaction(audit, :level, level, "updated", audit_fields) do
+          {:ok, _log} -> updated
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  @doc "Detaches a level at the stop-level revision and clears its station descendants."
+  def remove_level_from_station(%AuditContext{} = audit, level_uuid, expected_revision) do
+    run(audit, :share, fn station ->
+      {stop_level, level} = lock_attached_stop_level!(audit, station, level_uuid)
+      stale_stop_level!(stop_level, expected_revision)
+
+      from(s in child_query(audit, station),
+        where: s.level_id == ^level.level_id,
+        order_by: [asc: s.id],
+        lock: "FOR UPDATE"
+      )
+      |> Repo.all()
+      |> Enum.each(fn stop ->
+        changes = %{level_id: nil, diagram_coordinate: nil}
+        stop |> Ecto.Changeset.change(changes) |> Repo.update!()
+
+        case Audit.record_change_in_transaction(audit, :stop, stop, "updated", changes) do
+          {:ok, _log} -> :ok
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+
+      with {:ok, _deleted} <- Repo.delete(stop_level),
+           {:ok, _log} <-
+             Audit.record_change_in_transaction(audit, :stop_level, stop_level, "deleted") do
+        :removed
       else
         {:error, reason} -> Repo.rollback(reason)
       end
@@ -384,6 +499,109 @@ defmodule GtfsPlanner.Gtfs.Stations do
         )
     ]
   end
+
+  defp scoped_level!(audit, level_uuid) do
+    with {:ok, id} <- Ecto.UUID.cast(level_uuid),
+         %Level{} = level <-
+           Repo.one(
+             from(l in Level,
+               where:
+                 l.id == ^id and l.organization_id == ^audit.organization_id and
+                   l.gtfs_version_id == ^audit.gtfs_version_id
+             )
+           ) do
+      level
+    else
+      _ -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp lock_attached_level!(audit, station, level_uuid) do
+    with {:ok, id} <- Ecto.UUID.cast(level_uuid),
+         %Level{} = level <-
+           Repo.one(
+             from(l in Level,
+               join: sl in StopLevel,
+               on: sl.level_id == l.id,
+               where:
+                 l.id == ^id and l.organization_id == ^audit.organization_id and
+                   l.gtfs_version_id == ^audit.gtfs_version_id and
+                   sl.organization_id == ^audit.organization_id and
+                   sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id,
+               lock: "FOR UPDATE",
+               select: l
+             )
+           ) do
+      level
+    else
+      _ -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp lock_attached_stop_level!(audit, station, level_uuid) do
+    with {:ok, id} <- Ecto.UUID.cast(level_uuid),
+         {%StopLevel{} = stop_level, %Level{} = level} <-
+           Repo.one(
+             from(sl in StopLevel,
+               join: l in Level,
+               on: l.id == sl.level_id,
+               where:
+                 l.id == ^id and l.organization_id == ^audit.organization_id and
+                   l.gtfs_version_id == ^audit.gtfs_version_id and
+                   sl.organization_id == ^audit.organization_id and
+                   sl.gtfs_version_id == ^audit.gtfs_version_id and sl.stop_id == ^station.id,
+               lock: "FOR UPDATE",
+               select: {sl, l}
+             )
+           ) do
+      {stop_level, level}
+    else
+      _ -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp insert_stop_level(audit, station, level, attrs) do
+    %StopLevel{
+      stop_id: station.id,
+      level_id: level.id,
+      organization_id: audit.organization_id,
+      gtfs_version_id: audit.gtfs_version_id
+    }
+    |> StopLevel.editor_changeset(attrs)
+    |> Repo.insert()
+  end
+
+  defp cascade_level_id(audit, old_id, new_id) do
+    now = DateTime.utc_now()
+
+    {stops, _} =
+      from(s in Stop,
+        where:
+          s.organization_id == ^audit.organization_id and
+            s.gtfs_version_id == ^audit.gtfs_version_id and s.level_id == ^old_id
+      )
+      |> Repo.update_all(set: [level_id: new_id, updated_at: now])
+
+    {translations, _} =
+      from(t in Translation,
+        where:
+          t.organization_id == ^audit.organization_id and
+            t.gtfs_version_id == ^audit.gtfs_version_id and
+            t.table_name == "levels" and t.record_id == ^old_id
+      )
+      |> Repo.update_all(set: [record_id: new_id, updated_at: now])
+
+    %{stops: stops, translations: translations}
+  end
+
+  defp stale_level!(%Level{lock_version: current}, expected) when current == expected, do: :ok
+  defp stale_level!(%Level{lock_version: current}, _), do: Repo.rollback({:stale, current})
+
+  defp stale_stop_level!(%StopLevel{lock_version: current}, expected) when current == expected,
+    do: :ok
+
+  defp stale_stop_level!(%StopLevel{lock_version: current}, _),
+    do: Repo.rollback({:stale, current})
 
   defp pathway_query(audit, station, id) do
     ids = station_scope_ids(audit, station)

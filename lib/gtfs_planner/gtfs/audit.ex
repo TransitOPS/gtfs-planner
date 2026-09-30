@@ -16,6 +16,7 @@ defmodule GtfsPlanner.Gtfs.Audit do
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopLevel
   alias GtfsPlanner.Gtfs.Transfer
   alias GtfsPlanner.Gtfs.Trip
 
@@ -33,7 +34,9 @@ defmodule GtfsPlanner.Gtfs.Audit do
     :transfer,
     "transfer",
     :pathway_evolution,
-    "pathway_evolution"
+    "pathway_evolution",
+    :stop_level,
+    "stop_level"
   ]
 
   @doc false
@@ -147,6 +150,12 @@ defmodule GtfsPlanner.Gtfs.Audit do
   def reversible_fields_for(:level), do: reversible_fields_for("level")
   def reversible_fields_for("level"), do: ~w(level_name level_index)
 
+  def reversible_fields_for(:stop_level), do: reversible_fields_for("stop_level")
+
+  def reversible_fields_for("stop_level"),
+    do:
+      ~w(diagram_filename scale_point_a scale_point_b scale_distance_meters scale_meters_per_unit floorplan_center_lat floorplan_center_lon floorplan_scale_mpp floorplan_rotation_deg)
+
   def reversible_fields_for(type)
       when type in [:route_pattern, :timed_pattern, :route_pattern_build],
       do: []
@@ -180,6 +189,7 @@ defmodule GtfsPlanner.Gtfs.Audit do
   defp build_snapshot(:stop, %Stop{} = stop), do: snapshot_stop(stop)
   defp build_snapshot(:pathway, %Pathway{} = pw), do: snapshot_pathway(pw)
   defp build_snapshot(:level, %Level{} = level), do: snapshot_level(level)
+  defp build_snapshot(:stop_level, %StopLevel{} = stop_level), do: snapshot_stop_level(stop_level)
 
   defp build_snapshot(:route_pattern, %RoutePattern{} = pattern),
     do: snapshot_route_pattern(pattern)
@@ -202,6 +212,9 @@ defmodule GtfsPlanner.Gtfs.Audit do
   defp build_snapshot("stop", %Stop{} = stop), do: snapshot_stop(stop)
   defp build_snapshot("pathway", %Pathway{} = pw), do: snapshot_pathway(pw)
   defp build_snapshot("level", %Level{} = level), do: snapshot_level(level)
+
+  defp build_snapshot("stop_level", %StopLevel{} = stop_level),
+    do: snapshot_stop_level(stop_level)
 
   # A calendar's audit identity is its metadata anchor. The complete aggregate
   # before/after snapshots are passed explicitly by Calendars, so the stored
@@ -297,6 +310,22 @@ defmodule GtfsPlanner.Gtfs.Audit do
     %{level_name: level.level_name, level_index: level.level_index}
   end
 
+  defp snapshot_stop_level(stop_level) do
+    %{
+      stop_id: stop_level.stop_id,
+      level_id: stop_level.level_id,
+      diagram_filename: stop_level.diagram_filename,
+      scale_point_a: stop_level.scale_point_a,
+      scale_point_b: stop_level.scale_point_b,
+      scale_distance_meters: jsonify(stop_level.scale_distance_meters),
+      scale_meters_per_unit: jsonify(stop_level.scale_meters_per_unit),
+      floorplan_center_lat: stop_level.floorplan_center_lat,
+      floorplan_center_lon: stop_level.floorplan_center_lon,
+      floorplan_scale_mpp: stop_level.floorplan_scale_mpp,
+      floorplan_rotation_deg: stop_level.floorplan_rotation_deg
+    }
+  end
+
   defp snapshot_route(route) do
     %{
       route_short_name: route.route_short_name,
@@ -351,6 +380,9 @@ defmodule GtfsPlanner.Gtfs.Audit do
   defp entity_external_id_for(:stop, %Stop{} = stop, _attrs), do: stop.stop_id
   defp entity_external_id_for(:pathway, %Pathway{} = pw, _attrs), do: pw.pathway_id
   defp entity_external_id_for(:level, %Level{} = level, _attrs), do: level.level_id
+
+  defp entity_external_id_for(:stop_level, %StopLevel{} = stop_level, _attrs),
+    do: stop_level.level_id
 
   defp entity_external_id_for(:route_pattern, %RoutePattern{} = pattern, _attrs),
     do: pattern.route_pattern_id
@@ -411,6 +443,13 @@ defmodule GtfsPlanner.Gtfs.Audit do
     entity_type
     |> audited_attrs_for(attrs)
     |> Map.merge(Map.take(attrs, [:stop_id, :references]))
+  end
+
+  defp changed_fields_attrs("updated", entity_type, attrs)
+       when entity_type in [:level, "level"] do
+    entity_type
+    |> audited_attrs_for(attrs)
+    |> Map.merge(Map.take(attrs, [:level_id, :references]))
   end
 
   defp changed_fields_attrs("updated", entity_type, attrs),
@@ -592,6 +631,22 @@ defmodule GtfsPlanner.Gtfs.Audit do
       %{stop_id: [old_id, new_id], references: counts} ->
         changed
         |> Map.put("stop_id", [old_id, new_id])
+        |> Map.put("references", stringify_map_keys(counts))
+
+      _ ->
+        changed
+    end
+  end
+
+  defp build_changed_fields(entity_type, "updated", snapshot, attrs)
+       when entity_type in [:level, "level"] and not is_nil(snapshot) do
+    {metadata, fields} = Map.split(attrs, [:level_id, :references])
+    changed = updated_field_diffs(snapshot, fields)
+
+    case metadata do
+      %{level_id: [old_id, new_id], references: counts} ->
+        changed
+        |> Map.put("level_id", [old_id, new_id])
         |> Map.put("references", stringify_map_keys(counts))
 
       _ ->

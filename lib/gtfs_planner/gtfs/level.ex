@@ -51,4 +51,15 @@ defmodule GtfsPlanner.Gtfs.Level do
     )
     |> foreign_key_constraint(:organization_id)
   end
+
+  @doc "Changes editable fields without accepting ownership or revision from a form."
+  def editor_changeset(level, attrs) do
+    level
+    |> cast(attrs, [:level_id, :level_index, :level_name])
+    |> trim_string_fields()
+    |> validate_required([:level_id, :level_index, :organization_id, :gtfs_version_id])
+    |> unique_constraint([:organization_id, :gtfs_version_id, :level_id],
+      name: :levels_organization_id_gtfs_version_id_level_id_index
+    )
+  end
 end

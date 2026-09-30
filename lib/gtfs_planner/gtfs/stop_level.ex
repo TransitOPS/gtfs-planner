@@ -4,6 +4,8 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
   import GtfsPlanner.ChangesetHelpers
   alias GtfsPlanner.Gtfs.Coordinates
 
+  @unique_index_name :stop_levels_organization_id_gtfs_version_id_stop_id_level_id_in
+
   @type t :: %__MODULE__{
           id: Ecto.UUID.t(),
           stop_id: Ecto.UUID.t(),
@@ -79,7 +81,19 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
     ])
     |> trim_string_fields()
     |> validate_required([:stop_id, :level_id, :organization_id, :gtfs_version_id])
-    |> unique_constraint([:organization_id, :gtfs_version_id, :stop_id, :level_id])
+    |> unique_constraint([:organization_id, :gtfs_version_id, :stop_id, :level_id],
+      name: @unique_index_name
+    )
+  end
+
+  @doc "Changes initial scale fields without accepting diagram paths or scope IDs."
+  def editor_changeset(stop_level, attrs) do
+    stop_level
+    |> scale_changeset(attrs)
+    |> validate_required([:stop_id, :level_id, :organization_id, :gtfs_version_id])
+    |> unique_constraint([:organization_id, :gtfs_version_id, :stop_id, :level_id],
+      name: @unique_index_name
+    )
   end
 
   def scale_changeset(stop_level, attrs) do
