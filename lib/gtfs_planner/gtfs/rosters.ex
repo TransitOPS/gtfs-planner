@@ -30,6 +30,11 @@ defmodule GtfsPlanner.Gtfs.Rosters do
 
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.BlockingSetting
+  alias GtfsPlanner.Gtfs.RosterLine
+  alias GtfsPlanner.Gtfs.RosterLineDay
+  alias GtfsPlanner.Gtfs.Rosters.BaseWeek
+  alias GtfsPlanner.Gtfs.Rosters.Roster
+  alias GtfsPlanner.Gtfs.Runs
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
@@ -67,6 +72,20 @@ defmodule GtfsPlanner.Gtfs.Rosters do
           min_rest_minutes: 480..720,
           weekly_hours_warn_above: 40..60,
           roster_day_types: %{optional(String.t()) => String.t()}
+        }
+
+  @typedoc """
+  The page's read: the version's day types, its derived runs, its stored rules
+  and the composition itself.
+
+  `day_types` and `run_days` are the same pair `run_events.txt` is built from, so
+  the page and the export never disagree about which runs a version has.
+  """
+  @type roster_view :: %{
+          day_types: [map()],
+          run_days: %{optional(String.t()) => map()},
+          settings: roster_settings(),
+          roster: Roster.t()
         }
 
   @doc """
@@ -135,6 +154,70 @@ defmodule GtfsPlanner.Gtfs.Rosters do
          end) do
       {:ok, result} -> result
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Loads one organization's whole roster for a published version.
+
+  This is the page's read and it is read-only. It reuses the export's own
+  whole-version composition — `Blocking.export_movements/2` and
+  `Runs.derive_version/3` — so the runs, figures and stale states the page draws
+  are the ones `run_events.txt` and `employee_run_dates.txt` would be built from,
+  and there is no second derivation anywhere (INV-11, INV-15). The derived runs
+  and the roster lines are then handed to `Rosters.Roster.build/1`; nothing here
+  walks `roster_line_days` itself.
+
+  A version that is unpublished or belongs to another organization is
+  `{:error, :not_found}`, and the check comes first so a draft version costs
+  nothing to refuse.
+  """
+  @spec load_roster(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, roster_view()} | {:error, :not_found}
+  def load_roster(organization_id, gtfs_version_id) do
+    if Versions.published_gtfs_version_for_org?(organization_id, gtfs_version_id) do
+      movements = Blocking.export_movements(organization_id, gtfs_version_id)
+
+      # The whole-version runs, exactly as `Export.movement_rows/2` derives them,
+      # so the page, the writers' checks and the export read one snapshot.
+      run_days =
+        Runs.derive_version(
+          movements,
+          Runs.assignments_by_day_type(organization_id, gtfs_version_id),
+          Runs.get_crew_settings(organization_id, gtfs_version_id)
+        )
+
+      {:ok,
+       compose(
+         organization_id,
+         gtfs_version_id,
+         movements,
+         run_days,
+         list_lines(organization_id, gtfs_version_id)
+       )}
+    else
+      {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Composes the roster for an export that already has its movements and runs.
+
+  The export derives the version's runs once and passes them here rather than
+  deriving them a second time, so `employee_run_dates.txt` is written from the
+  same `run_days` as `run_events.txt` (INV-11, INV-15). A version with no roster
+  line has nothing to export and returns `nil`, which is also what keeps the file
+  and its warnings off a version that has never been rostered.
+  """
+  @spec export_roster(
+          Ecto.UUID.t(),
+          Ecto.UUID.t(),
+          Blocking.export_movements_result(),
+          %{optional(String.t()) => map()}
+        ) :: Roster.t() | nil
+  def export_roster(organization_id, gtfs_version_id, movements, run_days) do
+    case list_lines(organization_id, gtfs_version_id) do
+      [] -> nil
+      lines -> compose(organization_id, gtfs_version_id, movements, run_days, lines).roster
     end
   end
 
@@ -232,6 +315,68 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   # the crew rules.
   defp roster_values(setting) do
     Map.new(BlockingSetting.roster_fields(), &{&1, Map.fetch!(setting, &1)})
+  end
+
+  # The one place a roster view is composed. `load_roster/2` and `export_roster/4`
+  # both reach it, and the writers in steps 13–15 call it inside their own
+  # transaction once they have read the lines under the lock, so the base week,
+  # the rules and the composition come from one computation on every path
+  # (INV-15). The base week is resolved here from the same day types the runs
+  # were derived from, never from a second calendar read.
+  defp compose(organization_id, gtfs_version_id, movements, run_days, lines) do
+    day_types = movements.day_types
+    settings = get_roster_settings(organization_id, gtfs_version_id)
+
+    %{
+      day_types: day_types,
+      run_days: run_days,
+      settings: settings,
+      roster:
+        Roster.build(%{
+          base_week: BaseWeek.resolve(day_types, settings.roster_day_types),
+          run_days: run_days,
+          lines: lines,
+          rules: settings
+        })
+    }
+  end
+
+  # The version's lines with their days and operator, scoped by organization and
+  # version on the line query itself: a line of another organization's version or
+  # of a sibling version cannot enter a composition, whichever caller asks.
+  # Days come back in weekday order so the composed grid is the same whatever
+  # order the database returned them in.
+  defp list_lines(organization_id, gtfs_version_id) do
+    RosterLine
+    |> where(
+      [l],
+      l.organization_id == ^organization_id and l.gtfs_version_id == ^gtfs_version_id
+    )
+    |> preload([:operator, days: ^from(d in RosterLineDay, order_by: d.weekday)])
+    |> Repo.all()
+    |> Enum.map(&line_input/1)
+  end
+
+  # A stored line in the shape `Roster.build/1` reads. The days keep the stored
+  # sign-on and sign-off: they are what makes a moved or re-cut run a stale slot
+  # rather than a silently accepted one (INV-13).
+  defp line_input(line) do
+    %{
+      id: line.id,
+      line_number: line.line_number,
+      operator: line.operator,
+      days:
+        Enum.map(
+          line.days,
+          &%{
+            weekday: &1.weekday,
+            day_type_key: &1.day_type_key,
+            run_id: &1.run_id,
+            run_sign_on_secs: &1.run_sign_on_secs,
+            run_sign_off_secs: &1.run_sign_off_secs
+          }
+        )
+    }
   end
 
   # Scoped by organization and version like every other read here, and selecting

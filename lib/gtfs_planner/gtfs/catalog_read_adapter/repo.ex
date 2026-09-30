@@ -20,7 +20,10 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   unwrap its tuple the same way, while its picker read answers with the version's
   entries. A blocking day read delegates to
   `GtfsPlanner.Gtfs.Blocking` and unwraps its transaction tuple the same way, as do the
-  Schedules block warning and the first-day-type key. The calendar screen read
+  Schedules block warning and the first-day-type key. The roster read delegates to
+  `GtfsPlanner.Gtfs.Rosters` and unwraps it the same way, so a lost connection
+  pauses the Rosters page instead of reading as an unpublished version. The
+  calendar screen read
   delegates the same way, so its one protected snapshot carries the summaries, the
   resolved agency-local today and the global horizon and gaps, with `gaps: nil`
   and `complete?: false` when the version holds a retained invalid calendar range.
@@ -49,6 +52,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
     Flex,
     Flex.Checks,
     PatternComparison,
+    Rosters,
     Route,
     RoutePatterns,
     Routes,
@@ -274,6 +278,15 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   def load_runs(organization_id, gtfs_version_id, day_type_key) do
     case run(fn -> Runs.load_runs(organization_id, gtfs_version_id, day_type_key) end) do
       {:ok, {:ok, runs_day}} -> {:ok, runs_day}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def load_roster(organization_id, gtfs_version_id) do
+    case run(fn -> Rosters.load_roster(organization_id, gtfs_version_id) end) do
+      {:ok, {:ok, roster}} -> {:ok, roster}
       {:ok, {:error, reason}} -> {:error, reason}
       {:error, :unavailable} = error -> error
     end

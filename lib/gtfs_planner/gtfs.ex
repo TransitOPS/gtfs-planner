@@ -5644,6 +5644,26 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Loads one organization's whole roster for a published version.
+
+  This is the read every Rosters page step starts from: the version's day types,
+  its derived runs, its stored roster rules and the composition
+  (`Rosters.Roster.build/1`) the grid, the checks and the export all read. It
+  derives the runs exactly as the operations export does, so the page and
+  `run_events.txt` never disagree, and it writes nothing.
+
+  It goes through `catalog_read_adapter()`, so a lost database connection is
+  `{:error, :unavailable}` — the page pauses and offers a retry rather than
+  reporting a version that has no roster. A foreign or unpublished version is
+  `{:error, :not_found}`, the same answers `load_runs/3` gives.
+  """
+  @spec load_roster(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, Rosters.roster_view()} | {:error, :not_found | :unavailable}
+  def load_roster(organization_id, gtfs_version_id) do
+    catalog_read_adapter().load_roster(organization_id, gtfs_version_id)
+  end
+
+  @doc """
   Returns one entry per route of a version, with its stored home garage and
   required vehicle type (`nil` when the planner has set neither).
 

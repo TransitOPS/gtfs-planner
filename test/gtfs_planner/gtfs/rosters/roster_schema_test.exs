@@ -9,6 +9,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSchemaTest do
 
   use GtfsPlanner.DataCase, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias GtfsPlanner.Gtfs.RosterLine
   alias GtfsPlanner.Gtfs.RosterLineDay
   alias GtfsPlanner.Operations.Operator
@@ -29,7 +30,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSchemaTest do
     })
   end
 
-  defp line_changeset(organization_id, version_id, line_number, operator_id \\ nil) do
+  defp line_changeset(organization_id, version_id, line_number, operator_id) do
     RosterLine.changeset(
       %RosterLine{
         organization_id: organization_id,
@@ -104,7 +105,7 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSchemaTest do
       parent = self()
 
       insert = fn line ->
-        Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+        Sandbox.allow(Repo, parent, self())
         insert_day(line, 1, @run_id)
       end
 
@@ -141,10 +142,12 @@ defmodule GtfsPlanner.Gtfs.Rosters.RosterSchemaTest do
       other = gtfs_version_fixture(org.id)
       operator = insert_operator(org.id, "E4101")
 
-      assert %RosterLine{operator_id: ^operator.id} = insert_line(org.id, one.id, 1, operator.id)
+      # `insert_line/4` takes the operator's ID as an argument, so there is no
+      # query here to pin: the assertion reads the value straight back.
+      assert %RosterLine{operator_id: id} = insert_line(org.id, one.id, 1, operator.id)
+      assert id == operator.id
 
-      assert %RosterLine{operator_id: ^operator.id} =
-               insert_line(org.id, other.id, 1, operator.id)
+      assert %RosterLine{operator_id: ^id} = insert_line(org.id, other.id, 1, operator.id)
     end
   end
 

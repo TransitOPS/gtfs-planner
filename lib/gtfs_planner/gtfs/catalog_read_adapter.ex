@@ -56,6 +56,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
     Transfers
   }
 
+  alias GtfsPlanner.Gtfs.Rosters
   alias GtfsPlanner.Gtfs.Runs
 
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
@@ -154,4 +155,6 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   @callback load_runs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil) ::
               {:ok, Runs.runs_day()}
               | {:error, :not_found | {:unknown_day_type, [DayTypes.day_type()]} | :unavailable}
+  @callback load_roster(Ecto.UUID.t(), Ecto.UUID.t()) ::
+              {:ok, Rosters.roster_view()} | {:error, :not_found | :unavailable}
 end
