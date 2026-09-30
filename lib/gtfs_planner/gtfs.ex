@@ -54,6 +54,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
   alias GtfsPlanner.Gtfs.Routes
+  alias GtfsPlanner.Gtfs.Rosters
   alias GtfsPlanner.Gtfs.Runs
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Schedules
@@ -5596,6 +5597,50 @@ defmodule GtfsPlanner.Gtfs do
           {:ok, Runs.crew()} | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
   def update_crew_settings(%AuditContext{} = audit, attrs) do
     Runs.update_crew_settings(audit, attrs)
+  end
+
+  @doc """
+  Returns the three roster rules for an organization's GTFS version.
+
+  A version with no stored roster rules returns the researched defaults (600
+  minutes of minimum rest, a warning above 48 weekly hours and an empty base-week
+  choice); the read never writes a row.
+  """
+  @spec get_roster_settings(Ecto.UUID.t(), Ecto.UUID.t()) :: Rosters.roster_settings()
+  def get_roster_settings(organization_id, gtfs_version_id) do
+    Rosters.get_roster_settings(organization_id, gtfs_version_id)
+  end
+
+  @doc """
+  Returns the changeset rendered by the roster settings form.
+
+  `roster` is a value map from `get_roster_settings/2` and `attrs` are the
+  submitted parameters; a value outside its range or a blank input carries the
+  field error. Whether a chosen day type is still current is checked on save,
+  where the version's calendars are in scope.
+  """
+  @spec change_roster_settings(Rosters.roster_settings(), map()) :: Ecto.Changeset.t()
+  def change_roster_settings(roster, attrs) do
+    Rosters.change_roster_settings(roster, attrs)
+  end
+
+  @doc """
+  Stores the three roster rules of an organization's published version.
+
+  Every value is range-checked, and each chosen day-type key must be a day type
+  the version still derives with a date on that weekday. The save takes the
+  version's `FOR SHARE` lock and then `Blocking.lock_blocking!/1`, so it
+  serializes with every other planning input writer. It replaces only the three
+  roster columns of the version's one settings row, so the Block rules and the
+  crew rules keep their stored values.
+
+  Returns `{:error, :not_found}` when the version is unpublished or belongs to
+  another organization, and `{:error, changeset}` when a value is rejected.
+  """
+  @spec update_roster_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, Rosters.roster_settings()} | {:error, Ecto.Changeset.t() | :not_found}
+  def update_roster_settings(organization_id, gtfs_version_id, attrs) do
+    Rosters.update_roster_settings(organization_id, gtfs_version_id, attrs)
   end
 
   @doc """
