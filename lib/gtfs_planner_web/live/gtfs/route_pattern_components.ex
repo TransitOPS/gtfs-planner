@@ -693,6 +693,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   attr :custom_trip_count, :integer, required: true
   attr :dirty?, :boolean, required: true
   attr :busy?, :boolean, default: false
+  attr :filling?, :boolean, default: false
+  attr :timing_blank_note, :string, default: nil
 
   def timings_task(assigns) do
     assigns =
@@ -712,16 +714,27 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             Each trip uses one timing.
           </p>
         </div>
-        <button
-          id="timing-add"
-          type="button"
-          phx-click="open_timing_dialog"
-          phx-value-mode="add"
-          disabled={@busy?}
-          class={["btn min-h-11", if(@timings == [], do: "btn-primary", else: "btn-outline")]}
-        >
-          <.icon name="hero-plus" class="size-4" /> Add timing
-        </button>
+        <span class="flex gap-2">
+          <button
+            id="timing-fill"
+            type="button"
+            phx-click="open_fill"
+            disabled={@busy? or @filling? or @timing_rows == []}
+            class="btn btn-outline min-h-11"
+          >
+            <.icon name="hero-clock" class="size-4" /> Fill times
+          </button>
+          <button
+            id="timing-add"
+            type="button"
+            phx-click="open_timing_dialog"
+            phx-value-mode="add"
+            disabled={@busy? or @filling?}
+            class={["btn min-h-11", if(@timings == [], do: "btn-primary", else: "btn-outline")]}
+          >
+            <.icon name="hero-plus" class="size-4" /> Add timing
+          </button>
+        </span>
       </div>
 
       <div
@@ -747,6 +760,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             type="select"
             label="Timing"
             options={@timing_options}
+            disabled={@filling?}
           />
         </.form>
 
@@ -780,7 +794,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             type="button"
             phx-click="open_timing_dialog"
             phx-value-mode="rename"
-            disabled={@busy?}
+            disabled={@busy? or @filling?}
             class="btn btn-outline min-h-11"
           >
             Rename timing
@@ -789,7 +803,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             id="timing-delete"
             type="button"
             phx-click="open_delete_timing"
-            disabled={@busy?}
+            disabled={@busy? or @filling?}
             class="btn btn-outline min-h-11"
           >
             Delete timing
@@ -800,6 +814,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           Sample trip times are a preview: 24-hour time such as 08:00, or 25:00 for after
           midnight. Trip start times won’t change.
         </p>
+      </div>
+
+      <div
+        :if={@timing_blank_note}
+        id="timing-blank-note"
+        class="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-subtle bg-canvas px-4 py-3"
+      >
+        <p class="min-w-[180px] flex-1 text-sm text-default">{@timing_blank_note}</p>
+        <button
+          id="timing-blank-fill"
+          type="button"
+          phx-click="open_fill"
+          disabled={@busy? or @filling?}
+          class="btn btn-outline min-h-11"
+        >
+          Fill times
+        </button>
       </div>
 
       <div :if={@timing_rows != []}>
@@ -919,6 +950,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           inputmode="numeric"
           autocomplete="off"
           value={@row.arrival}
+          data-estimated={if(Map.get(@row, :estimated), do: "true")}
           aria-invalid={@row.arrival_error && "true"}
           aria-describedby={@row.arrival_error && "timing-error-#{@row.position}"}
           class={time_input_class(@row.arrival_error, @arrival_edited?)}
@@ -935,6 +967,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
           inputmode="numeric"
           autocomplete="off"
           value={@row.departure}
+          data-estimated={if(Map.get(@row, :estimated), do: "true")}
           aria-invalid={@row.departure_error && "true"}
           aria-describedby={@row.departure_error && "timing-error-#{@row.position}"}
           class={time_input_class(@row.departure_error, @departure_edited?)}

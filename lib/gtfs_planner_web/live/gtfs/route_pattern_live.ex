@@ -22,9 +22,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Accounts.UserOrgMembership
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.AuditContext
+  alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlanner.Gtfs.TimingFill
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Gtfs.RoutePatternAlignmentComponents
@@ -116,6 +119,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:timing_headsign, "")
      |> assign(:preview_time, @default_preview)
      |> assign(:timing_error, nil)
+     |> assign(:timing_blank_note, nil)
+     |> assign(:fill, nil)
+     |> assign(:fill_preview, nil)
+     |> assign(:fill_distances, [])
+     |> assign(:fill_coords, [])
+     |> assign(:fill_method, :distance)
+     |> assign(:retime, nil)
      |> assign(:review, nil)
      |> assign(:timing_dialog, nil)
      |> assign(:blocked_dialog, nil)
@@ -715,6 +725,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     {:noreply,
      socket
      |> RoutePatternAlignmentEvents.confirm_save(params)
+     |> refresh_fill_distances()
      |> assign_dirty()}
   end
 
@@ -725,7 +736,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   @impl true
   def handle_event("alignment_conflict_load_latest", params, socket) do
-    {:noreply, RoutePatternAlignmentEvents.conflict_load_latest(socket, params)}
+    {:noreply,
+     socket
+     |> RoutePatternAlignmentEvents.conflict_load_latest(params)
+     |> refresh_fill_distances()}
   end
 
   @impl true
@@ -735,7 +749,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   @impl true
   def handle_event("alignment_reload", params, socket) do
-    {:noreply, RoutePatternAlignmentEvents.reload(socket, params)}
+    {:noreply,
+     socket
+     |> RoutePatternAlignmentEvents.reload(params)
+     |> refresh_fill_distances()}
   end
 
   @impl true
@@ -801,7 +818,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     if timing_id == socket.assigns.selected_timing_id do
       {:noreply, socket}
     else
-      {:noreply, socket |> load_screen(timing_id) |> put_timing_rows()}
+      {:noreply,
+       socket
+       |> load_screen(timing_id)
+       |> put_timing_rows()
+       |> clear_fill()
+       |> assign(:timing_blank_note, nil)}
     end
   end
 
@@ -839,14 +861,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         {:noreply, annotate(socket, "No changes to save.")}
 
       {:error, rows, message} ->
+        {message, blank_field} = blank_save_message(socket, rows, message)
+
         {:noreply,
          socket
          |> put_timing_rows(rows)
          |> assign(:timing_error, message)
+         |> assign(:timing_blank_note, if(blank_field, do: message, else: nil))
          |> assign(:error_message, message)
          |> push_event("focus_form_error", %{
            form_id: "timing-form",
-           fallback_id: first_invalid_field(rows) || "timing-save"
+           fallback_id: blank_field || first_invalid_field(rows) || "timing-save"
          })}
 
       {:ok, attrs} ->
@@ -916,8 +941,121 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:timing_edits, %{})
      |> assign(:timing_headsign_edits, %{})
      |> assign(:error_message, nil)
+     |> assign(:timing_blank_note, nil)
+     |> clear_fill()
      |> put_timing_rows()
      |> assign_dirty()}
+  end
+
+  # --- stop-time fill (spec 23) --------------------------------------------------
+  #
+  # Fill times between timepoints stages `TimingFill` estimates into the
+  # normal `timing_edits` draft; saving still goes through the existing
+  # timing review and materializes linked trips. These events only stage or
+  # discard, so persistence stays behind the `save_timing` gate.
+  @impl true
+  def handle_event("open_fill", _params, socket) do
+    case fill_staged_rows(socket) do
+      [] ->
+        {:noreply, socket}
+
+      rows ->
+        method = socket.assigns.fill_method
+        scope = TimingFill.default_scope(rows)
+        fill = %{scope: scope, method: method, only_anchor: nil}
+
+        {:noreply,
+         socket
+         |> assign(:fill, fill)
+         |> assign(:retime, nil)
+         |> put_fill_preview(rows, fill)
+         |> push_event("focus_scoped_target", %{id: "fill-title"})}
+    end
+  end
+
+  @impl true
+  def handle_event("change_fill", params, socket) do
+    case socket.assigns.fill do
+      nil ->
+        {:noreply, socket}
+
+      fill ->
+        scope = parse_fill_scope(params["scope"]) || fill.scope
+        method = parse_fill_method(params["method"]) || fill.method
+        only_anchor = if scope == fill.scope, do: fill.only_anchor, else: nil
+        fill = %{scope: scope, method: method, only_anchor: only_anchor}
+
+        {:noreply,
+         socket
+         |> assign(:fill, fill)
+         |> put_fill_preview(fill_staged_rows(socket), fill)}
+    end
+  end
+
+  @impl true
+  def handle_event("apply_fill", _params, socket) do
+    case {socket.assigns.fill, socket.assigns.fill_preview} do
+      {nil, _} ->
+        {:noreply, socket}
+
+      {_, nil} ->
+        {:noreply, socket}
+
+      {_fill, preview} ->
+        case base_timing_rows(socket) do
+          [] ->
+            {:noreply, clear_fill(socket)}
+
+          base_rows ->
+            rows = base_rows |> TimingFill.apply_preview(preview) |> touch_estimated_rows()
+
+            {:noreply,
+             socket
+             |> put_timing_edits(rows)
+             |> put_timing_rows()
+             |> assign(:timing_error, nil)
+             |> assign(:timing_blank_note, nil)
+             |> clear_fill()
+             |> assign_dirty()
+             |> push_event("focus_scoped_target", %{id: "timing-fill"})}
+        end
+    end
+  end
+
+  @impl true
+  def handle_event("cancel_fill", _params, socket) do
+    {:noreply,
+     socket
+     |> clear_fill()
+     |> push_event("focus_scoped_target", %{id: "timing-fill"})}
+  end
+
+  # The re-estimate prompt opens the preview limited to the moved anchor, so
+  # only the spans touching it are recalculated. Positions are 1-indexed in
+  # the grid; `only_anchor` is the estimator's 0-based row index.
+  @impl true
+  def handle_event("reestimate", %{"anchor" => anchor}, socket) do
+    with {position, ""} <- Integer.parse(to_string(anchor)),
+         rows when rows != [] <- fill_staged_rows(socket),
+         true <- Enum.any?(rows, &(&1.position == position)) do
+      fill = %{scope: :between, method: socket.assigns.fill_method, only_anchor: position - 1}
+
+      {:noreply,
+       socket
+       |> assign(:fill, fill)
+       |> assign(:retime, nil)
+       |> put_fill_preview(rows, fill)
+       |> push_event("focus_scoped_target", %{id: "fill-title"})}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("reestimate", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("dismiss_retime", _params, socket) do
+    {:noreply, assign(socket, :retime, nil)}
   end
 
   @impl true
@@ -1299,6 +1437,121 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   # --- render ----------------------------------------------------------------
 
+  # Minimal fill panel for step 12: the state machine, scope/method controls
+  # and apply/cancel with the §4.5 element IDs. Step 13 renders the full
+  # panel, estimated cells, prompts and chart in `RoutePatternComponents`.
+  attr :fill, :map, required: true
+  attr :preview, :map, required: false, default: nil
+
+  defp fill_panel(assigns) do
+    ~H"""
+    <section
+      id="fill-panel"
+      aria-labelledby="fill-title"
+      class="mt-3 rounded-card border border-subtle bg-white px-4 py-3"
+    >
+      <h3 id="fill-title" tabindex="-1" class="text-base font-bold text-strong">
+        Fill times between timepoints
+      </h3>
+      <p :if={@preview} id="fill-summary" class="mt-1 text-sm text-default">
+        {@preview.summary}
+      </p>
+      <.form
+        for={to_form(%{"scope" => to_string(@fill.scope), "method" => to_string(@fill.method)})}
+        id="fill-form"
+        phx-change="change_fill"
+        class="mt-3 grid gap-3 sm:grid-cols-2"
+      >
+        <fieldset>
+          <legend class="text-sm font-[650] text-default">What to fill</legend>
+          <label class="mt-1 flex min-h-11 cursor-pointer items-center gap-2 text-sm">
+            <input
+              id="fill-scope-missing"
+              type="radio"
+              name="scope"
+              value="missing"
+              checked={@fill.scope == :missing}
+              class="radio"
+            /> Only blank stops
+          </label>
+          <label class="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
+            <input
+              id="fill-scope-between"
+              type="radio"
+              name="scope"
+              value="between"
+              checked={@fill.scope == :between}
+              class="radio"
+            /> Recalculate everything between timepoints
+          </label>
+        </fieldset>
+        <fieldset>
+          <legend class="text-sm font-[650] text-default">Estimate method</legend>
+          <label class="mt-1 flex min-h-11 cursor-pointer items-center gap-2 text-sm">
+            <input
+              id="fill-method-distance"
+              type="radio"
+              name="method"
+              value="distance"
+              checked={@fill.method == :distance}
+              class="radio"
+            /> Distance along the route
+          </label>
+          <label class="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
+            <input
+              id="fill-method-even"
+              type="radio"
+              name="method"
+              value="even"
+              checked={@fill.method == :even}
+              class="radio"
+            /> Even spacing
+          </label>
+        </fieldset>
+      </.form>
+      <div :if={@preview && @preview.problems != []} id="fill-problems" class="mt-2">
+        <ul class="list-disc pl-5 text-sm text-default">
+          <li :for={problem <- @preview.problems}>{problem.message}</li>
+        </ul>
+      </div>
+      <div class="mt-3 flex gap-2">
+        <button
+          id="fill-apply"
+          type="button"
+          phx-click="apply_fill"
+          disabled={@preview == nil or @preview.changed == 0}
+          class="btn btn-primary min-h-11"
+        >
+          {fill_apply_label(@preview)}
+        </button>
+        <button
+          id="fill-cancel"
+          type="button"
+          phx-click="cancel_fill"
+          class="btn btn-outline min-h-11"
+        >
+          Cancel
+        </button>
+      </div>
+    </section>
+    """
+  end
+
+  defp fill_apply_label(%{changed: 1}), do: "Fill 1 stop"
+  defp fill_apply_label(%{changed: count}), do: "Fill #{count} stops"
+  defp fill_apply_label(_preview), do: "Nothing to fill"
+
+  defp format_retime_delta(seconds) when is_integer(seconds) and seconds >= 0,
+    do: "#{GtfsTime.format_offset(seconds)} later"
+
+  defp format_retime_delta(seconds) when is_integer(seconds),
+    do: "#{GtfsTime.format_offset(-seconds)} earlier"
+
+  defp format_retime_delta(_seconds), do: "an unknown amount"
+
+  defp retime_stops_text(1), do: "1 stop would move."
+  defp retime_stops_text(count), do: "#{count} stops would move."
+
   @impl true
   def render(assigns) do
     assigns = assign(assigns, :save_bar, save_bar_spec(assigns))
@@ -1536,6 +1789,37 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                         />
                       <% end %>
                     <% true -> %>
+                      <div
+                        :if={@retime != nil}
+                        id="timing-retime"
+                        class="mb-3 rounded-card border border-subtle bg-white px-4 py-3"
+                      >
+                        <p class="text-sm text-default">
+                          Stop {@retime.anchor} moved by {format_retime_delta(@retime.moved_seconds)}. {retime_stops_text(
+                            @retime.stops
+                          )} Select re-estimate to preview only the
+                          stops around it.
+                        </p>
+                        <div class="mt-2 flex gap-2">
+                          <button
+                            id="timing-retime-go"
+                            type="button"
+                            phx-click="reestimate"
+                            phx-value-anchor={@retime.anchor}
+                            class="btn btn-outline min-h-11"
+                          >
+                            Re-estimate around stop {@retime.anchor}
+                          </button>
+                          <button
+                            id="timing-retime-dismiss"
+                            type="button"
+                            phx-click="dismiss_retime"
+                            class="btn btn-ghost min-h-11"
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      </div>
                       <RoutePatternComponents.timings_task
                         timings={@timings}
                         selected_timing={@selected_timing}
@@ -1545,10 +1829,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                         preview_time={@preview_time}
                         timing_headsign={@timing_headsign}
                         timing_error={@timing_error}
+                        timing_blank_note={@timing_blank_note}
                         custom_trip_count={@detail_custom_trip_count}
                         dirty?={@timing_rows != [] and map_size(@timing_edits) > 0}
                         busy?={@applying? or @offline?}
+                        filling?={@fill != nil}
                       />
+                      <.fill_panel :if={@fill != nil} fill={@fill} preview={@fill_preview} />
                   <% end %>
                 </div>
 
@@ -1777,6 +2064,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:source_fingerprint, nil)
     |> assign(:timing_options, [])
     |> reset_editing_state()
+    |> put_fill_context(nil)
   end
 
   defp apply_detail(socket, detail, previous_pattern_id) do
@@ -1803,12 +2091,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
       socket
       |> refresh_selected_timing()
       |> put_timing_rows()
+      |> put_fill_context(pattern)
     else
       params = details_params_from_pattern(pattern)
 
       socket
       |> put_details(params, params)
       |> reset_editing_state()
+      |> put_fill_context(pattern)
     end
   end
 
@@ -1820,8 +2110,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:timing_edits, Map.delete(socket.assigns.timing_edits, timing_id))
     |> assign(:timing_headsign_edits, Map.delete(socket.assigns.timing_headsign_edits, timing_id))
     |> assign(:timing_error, nil)
+    |> assign(:timing_blank_note, nil)
     |> assign(:review, nil)
     |> assign(:applying?, false)
+    |> clear_fill()
     |> put_timing_rows()
   end
 
@@ -1849,6 +2141,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:stops_dirty?, false)
     |> assign(:review, nil)
     |> assign(:applying?, false)
+    |> clear_fill()
     |> put_timing_rows()
   end
 
@@ -1863,6 +2156,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:timing_headsign, timing_headsign(socket))
     |> assign(:preview_time, @default_preview)
     |> assign(:timing_error, nil)
+    |> assign(:timing_blank_note, nil)
     |> assign(:review, nil)
     |> assign(:timing_dialog, nil)
     |> assign(:blocked_dialog, nil)
@@ -1876,6 +2170,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     |> assign(:stop_search_form, stop_search_form())
     |> assign(:insert_after, "")
     |> assign(:insert_form, insert_form(""))
+    |> clear_fill()
     |> put_timing_rows()
   end
 
@@ -2615,6 +2910,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
         stored_arrival: offset_input(row.arrival_offset),
         stored_departure: offset_input(row.departure_offset),
         timepoint: row.timepoint == 1,
+        estimated: false,
         pickup:
           if(is_integer(row.pickup_type), do: Integer.to_string(row.pickup_type), else: "0"),
         drop_off:
@@ -2655,6 +2951,183 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     )
   end
 
+  # --- stop-time fill helpers (spec 23) ----------------------------------------
+
+  defp clear_fill(socket) do
+    socket
+    |> assign(:fill, nil)
+    |> assign(:fill_preview, nil)
+    |> assign(:retime, nil)
+  end
+
+  # Staged rows for the selected timing in the shape `TimingFill` expects.
+  # LiveView rows already carry `:position`, `:arrival`, `:departure`,
+  # `:timepoint` and `:estimated`, so they pass through directly.
+  defp fill_staged_rows(socket) do
+    case socket.assigns.selected_timing_id do
+      nil -> []
+      _ -> base_timing_rows(socket)
+    end
+  end
+
+  defp put_fill_preview(socket, rows, fill) do
+    preview =
+      TimingFill.preview(
+        rows,
+        socket.assigns.fill_distances,
+        socket.assigns.fill_coords,
+        scope: fill.scope,
+        method: fill.method,
+        only_anchor: fill.only_anchor
+      )
+
+    assign(socket, :fill_preview, preview)
+  end
+
+  defp parse_fill_scope("missing"), do: :missing
+  defp parse_fill_scope("between"), do: :between
+  defp parse_fill_scope(_scope), do: nil
+
+  defp parse_fill_method("distance"), do: :distance
+  defp parse_fill_method("even"), do: :even
+  defp parse_fill_method(_method), do: nil
+
+  # Estimates only reach linked trips when the save sees them as edits, so
+  # applied rows mark their arrival and departure touched.
+  defp touch_estimated_rows(rows) do
+    Enum.map(rows, fn row ->
+      if Map.get(row, :estimated) do
+        touched = Map.get(row, :touched) || MapSet.new()
+        %{row | touched: touched |> MapSet.put(:arrival) |> MapSet.put(:departure)}
+      else
+        row
+      end
+    end)
+  end
+
+  # A manual edit replaces any estimate on that row: the staged value is the
+  # operator's own, so the estimated mark goes even when the text matches.
+  defp clear_estimated_on_manual_change(row, index) do
+    if row.position == index, do: %{row | estimated: false}, else: row
+  end
+
+  # While the panel is open the preview follows every keystroke; otherwise a
+  # timepoint move raises the re-estimate prompt. `retime_candidates/5` is
+  # pure, so this costs no query and never reloads distances.
+  defp refresh_fill_after_row_change(socket, base_rows, edited_rows) do
+    case socket.assigns.fill do
+      nil ->
+        candidate =
+          TimingFill.retime_candidates(
+            base_rows,
+            edited_rows,
+            socket.assigns.fill_distances,
+            socket.assigns.fill_coords,
+            method: socket.assigns.fill_method
+          )
+
+        assign(socket, :retime, candidate)
+
+      fill ->
+        put_fill_preview(socket, edited_rows, fill)
+    end
+  end
+
+  # Editor distances load with the Running times task and refresh on the
+  # existing stops and alignment save reloads, never per row change
+  # (criteria "Distances load once"). A pattern without saved alignment
+  # still resolves; missing sections fall back per R5 downstream.
+  defp put_fill_context(socket, nil) do
+    socket
+    |> assign(:fill_distances, [])
+    |> assign(:fill_coords, [])
+    |> assign(:fill_method, :distance)
+  end
+
+  defp put_fill_context(socket, pattern) do
+    resolved = Alignments.resolve(pattern)
+
+    socket
+    |> assign(:fill_distances, Alignments.estimate_distances(resolved))
+    |> assign(:fill_coords, Enum.map(resolved.visits, &visit_coord/1))
+    |> assign(:fill_method, fill_method(socket))
+  end
+
+  # Alignment saves reload only the alignment model (not the screen), so the
+  # LiveView refreshes fill distances there. An open preview is recomputed
+  # from the current staged rows so it never goes stale.
+  defp refresh_fill_distances(socket) do
+    socket = put_fill_context(socket, socket.assigns[:pattern])
+
+    case socket.assigns.fill do
+      nil -> socket
+      fill -> put_fill_preview(socket, fill_staged_rows(socket), fill)
+    end
+  end
+
+  defp visit_coord(%{lat: lat, lon: lon})
+       when is_number(lat) and is_number(lon),
+       do: {lat, lon}
+
+  defp visit_coord(_visit), do: nil
+
+  defp fill_method(socket) do
+    case ExportDefaults.get(socket.assigns.current_organization.id) do
+      %{estimate_method: method} when method in [:distance, :even] -> method
+      _ -> :distance
+    end
+  end
+
+  # A save blocked only by empty stops names the count and offers Fill; any
+  # invalid text keeps the existing field error. Validation halts at the
+  # first bad row, so the flagged row must itself be blank for the message
+  # to apply.
+  defp blank_save_message(socket, marked_rows, fallback_message) do
+    rows = base_timing_rows(socket)
+
+    with true <- failed_on_blank?(marked_rows),
+         blanks when blanks != [] <- Enum.filter(rows, &blank_stop?/1),
+         false <- Enum.any?(rows, &invalid_text_row?/1) do
+      count = length(blanks)
+      first = hd(blanks)
+
+      field =
+        if blank_time?(first.arrival),
+          do: "timing-arrival-#{first.position}",
+          else: "timing-departure-#{first.position}"
+
+      {"#{count} #{blank_stop_noun(count)} times before you can save.", field}
+    else
+      _ -> {fallback_message, nil}
+    end
+  end
+
+  defp failed_on_blank?(rows) do
+    Enum.any?(rows, fn row ->
+      (Map.get(row, :arrival_error) && blank_time?(Map.get(row, :arrival))) ||
+        (Map.get(row, :departure_error) && blank_time?(Map.get(row, :departure)))
+    end)
+  end
+
+  defp blank_stop?(row), do: blank_time?(row.arrival) or blank_time?(row.departure)
+
+  defp blank_time?(nil), do: true
+  defp blank_time?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_time?(_value), do: false
+
+  defp invalid_text_row?(row) do
+    invalid_text?(row.arrival) or invalid_text?(row.departure)
+  end
+
+  defp invalid_text?(value) when is_binary(value) do
+    String.trim(value) != "" and match?({:error, _}, GtfsTime.parse_offset(value))
+  end
+
+  defp invalid_text?(_value), do: false
+
+  defp blank_stop_noun(1), do: "stop needs"
+  defp blank_stop_noun(_count), do: "stops need"
+
   defp change_timing_headsign(socket, params) do
     case params["timing_headsign"] do
       value when is_binary(value) ->
@@ -2679,16 +3152,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     with {index, ""} <- Integer.parse(to_string(position)),
          rows when is_list(rows) <- base_timing_rows(socket),
          true <- Enum.any?(rows, &(&1.position == index)) do
-      rows =
+      edited =
         rows
         |> Enum.map(&merge_row_params(&1, params))
         |> Enum.map(&mark_row_touched(&1, index, field))
+        |> Enum.map(&clear_estimated_on_manual_change(&1, index))
 
       {:noreply,
        socket
-       |> put_timing_edits(rows)
+       |> put_timing_edits(edited)
        |> put_timing_rows()
        |> assign(:timing_error, nil)
+       |> assign(:timing_blank_note, nil)
+       |> refresh_fill_after_row_change(rows, edited)
        |> assign_dirty()}
     else
       _ -> {:noreply, socket}
@@ -3223,10 +3699,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   # The save bar for the current task, or nil when the task has nothing to
   # save: a pattern with no timing to edit, or an alignment still loading.
   defp save_bar_spec(%{load_state: :ready, editor_revoked?: false} = assigns) do
-    if assigns.pattern || assigns.live_action == :new do
-      dirty = tab_dirty(assigns)
-      busy? = assigns.applying? or assigns.offline?
-      bar_for(assigns.task, assigns.live_action == :new, dirty, busy?, assigns)
+    # While the fill panel is open the staged estimates are not yet timing
+    # edits, so no task offers a save bar until the operator applies or cancels.
+    if assigns[:fill] != nil do
+      nil
+    else
+      if assigns.pattern || assigns.live_action == :new do
+        dirty = tab_dirty(assigns)
+        busy? = assigns.applying? or assigns.offline?
+        bar_for(assigns.task, assigns.live_action == :new, dirty, busy?, assigns)
+      end
     end
   end
 
