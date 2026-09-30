@@ -4,6 +4,7 @@ defmodule GtfsPlanner.Gtfs do
   """
 
   import Ecto.Query, warn: false
+  import GtfsPlanner.Gtfs.Stations, only: [descendant_stop_ids_query: 3]
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Gtfs.Agency
@@ -4686,26 +4687,6 @@ defmodule GtfsPlanner.Gtfs do
       select_merge: %{from_stop: from_stop, to_stop: to_stop}
     )
     |> Repo.all()
-  end
-
-  defp descendant_stop_ids_query(organization_id, gtfs_version_id, station_stop_id) do
-    direct_child_ids =
-      from(s in Stop,
-        where:
-          s.organization_id == ^organization_id and
-            s.gtfs_version_id == ^gtfs_version_id and
-            s.parent_station == ^station_stop_id,
-        select: s.stop_id
-      )
-
-    from(s in Stop,
-      where:
-        s.organization_id == ^organization_id and
-          s.gtfs_version_id == ^gtfs_version_id and
-          (s.parent_station == ^station_stop_id or
-             (s.location_type == 4 and s.parent_station in subquery(direct_child_ids))),
-      select: s.stop_id
-    )
   end
 
   @doc """

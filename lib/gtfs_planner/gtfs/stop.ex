@@ -77,19 +77,43 @@ defmodule GtfsPlanner.Gtfs.Stop do
   @type accessibility_status :: :accessible | :not_accessible | :unknown
   @type accessibility_source :: :direct | :inherited | :missing
 
+  @editor_fields [
+    :stop_name,
+    :stop_desc,
+    :stop_lat,
+    :stop_lon,
+    :location_type,
+    :wheelchair_boarding,
+    :platform_code,
+    :diagram_coordinate,
+    :parent_station,
+    :level_id
+  ]
+
+  @doc "Validates fields that a station editor may change."
+  def editor_changeset(stop, attrs) do
+    stop
+    |> cast(attrs, @editor_fields)
+    |> validate_stop_fields()
+    |> validate_parent()
+  end
+
+  @doc "Creates an editor stop with ownership supplied by the server."
+  def create_changeset(%__MODULE__{} = stop, attrs, %{
+        organization_id: org_id,
+        gtfs_version_id: version_id
+      }) do
+    %{stop | organization_id: org_id, gtfs_version_id: version_id}
+    |> cast(attrs, [:stop_id | @editor_fields])
+    |> validate_stop_fields()
+    |> validate_parent()
+  end
+
   @doc "Creates a changeset for a stop."
   def changeset(stop, attrs) do
     stop
     |> base_changeset(attrs)
-    |> then(fn changeset ->
-      if get_field(changeset, :parent_station) not in [nil, ""] do
-        changeset
-        |> validate_required([:level_id])
-        |> validate_station_has_no_parent()
-      else
-        changeset
-      end
-    end)
+    |> validate_parent()
   end
 
   @doc "Creates an import changeset for a stop with permissive parent/level validation."
@@ -127,6 +151,11 @@ defmodule GtfsPlanner.Gtfs.Stop do
       :parent_station,
       :level_id
     ])
+    |> validate_stop_fields()
+  end
+
+  defp validate_stop_fields(changeset) do
+    changeset
     |> trim_string_fields()
     |> validate_required([:stop_id, :organization_id, :gtfs_version_id])
     |> validate_inclusion(:location_type, 0..4)
@@ -135,6 +164,16 @@ defmodule GtfsPlanner.Gtfs.Stop do
     |> validate_number(:stop_lon, greater_than_or_equal_to: -180, less_than_or_equal_to: 180)
     |> unique_constraint([:organization_id, :gtfs_version_id, :stop_id])
     |> foreign_key_constraint(:organization_id)
+  end
+
+  defp validate_parent(changeset) do
+    if get_field(changeset, :parent_station) not in [nil, ""] do
+      changeset
+      |> validate_required([:level_id])
+      |> validate_station_has_no_parent()
+    else
+      changeset
+    end
   end
 
   @doc "Returns human-readable label for location_type."
