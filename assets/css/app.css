@@ -417,6 +417,10 @@ body {
   padding: 0;
   color: var(--color-action);
   font: 700 14px/1 var(--font-ds);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   text-align: left;
   text-decoration: underline;
   text-underline-offset: 3px;
