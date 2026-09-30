@@ -259,13 +259,23 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesSummaryTest do
     stop_fixture(other_org.id, other_version.id, stop_id: "S1")
     route_fixture(other_org.id, other_version.id, route_id: "RB")
     trip_fixture(other_org.id, other_version.id, "RB", %{trip_id: "T_OTHER"})
-    stop_time_fixture(other_org.id, other_version.id, "T_OTHER", "S1", %{stop_sequence: 1})
+
+    stop_time_fixture(other_org.id, other_version.id, "T_OTHER", "S1", %{
+      stop_sequence: 1,
+      arrival_time: nil,
+      departure_time: nil
+    })
 
     v2 = gtfs_version_fixture(org.id)
     stop_fixture(org.id, v2.id, stop_id: "S1")
     route_fixture(org.id, v2.id, route_id: "R1")
     trip_fixture(org.id, v2.id, "R1", %{trip_id: "T_V2"})
-    stop_time_fixture(org.id, v2.id, "T_V2", "S1", %{stop_sequence: 1})
+
+    stop_time_fixture(org.id, v2.id, "T_V2", "S1", %{
+      stop_sequence: 1,
+      arrival_time: nil,
+      departure_time: nil
+    })
 
     assert %{trips: 6, missing_times: 16} = MissingTimes.summary(org.id, v1.id)
     assert %{trips: 1, missing_times: 2} = MissingTimes.summary(org.id, v2.id)
@@ -275,11 +285,13 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesSummaryTest do
   test "excludes trips on inactive routes, matching stream_records/4" do
     {org, v1} = seed_version_one()
 
-    streamed_trip_ids =
-      StreamBuilder.stream_records(Repo, StopTime, org.id, v1.id)
-      |> Enum.map(& &1.trip_id)
-      |> Enum.uniq()
-      |> Enum.sort()
+    {:ok, streamed_trip_ids} =
+      Repo.transaction(fn ->
+        StreamBuilder.stream_records(Repo, StopTime, org.id, v1.id)
+        |> Enum.map(& &1.trip_id)
+        |> Enum.uniq()
+        |> Enum.sort()
+      end)
 
     assert "T_FILL" in streamed_trip_ids
     refute "T_OFF" in streamed_trip_ids

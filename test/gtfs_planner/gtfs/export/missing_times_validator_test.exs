@@ -2,8 +2,9 @@
 #
 # Independent-oracle test (EV-6): a version holding three imported trips with
 # timepoint-only times (one with no last time), exported with
-# `estimate: :distance`, raises no validator ERROR notice naming
-# `stop_times.txt` except `missing_trip_edge` for the one known unfilled trip.
+# `estimate: :distance`, keeps no stop-time ERROR notice beyond the single
+# `missing_trip_edge` ERROR for the known unfilled trip (validator 8.0.1 names
+# it through `tripId` samples without a `stop_times.txt` filename).
 
 defmodule GtfsPlanner.Gtfs.Export.MissingTimesValidatorTest do
   use GtfsPlanner.DataCase, async: false
@@ -60,18 +61,25 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesValidatorTest do
       refute code in codes, "validator reports #{code}: #{inspect(codes)}"
     end
 
-    errors = stop_time_errors(report)
+    # Validator 8.0.1 reports missing_trip_edge for the unfilled trip without
+    # naming stop_times.txt in its samples (tripId/stopSequence/specifiedField
+    # only), so the oracle reads that notice directly: exactly one, an ERROR,
+    # and naming only the known unfilled trip. ETU keeps its blanks (R6 holds
+    # per assert_zip_shapes!/1 above); the oracle never fills it.
+    edge_notices =
+      report
+      |> GtfsValidatorCli.notices()
+      |> Enum.filter(&(&1["code"] == "missing_trip_edge"))
 
-    assert Enum.all?(errors, &(&1["code"] == "missing_trip_edge")),
-           "validator ERRORs name stop_times.txt beyond missing_trip_edge: " <>
-             inspect(Enum.map(errors, & &1["code"]))
+    assert length(edge_notices) == 1,
+           "validator reports no missing_trip_edge notice for the unfilled trip: " <>
+             inspect(codes)
 
-    assert "missing_trip_edge" in codes,
-           "validator reports no missing_trip_edge for the unfilled trip: #{inspect(codes)}"
+    assert GtfsValidatorCli.severity(hd(edge_notices)) == "ERROR"
 
-    assert error_trip_ids(errors) == [@unfilled_trip],
+    assert error_trip_ids(edge_notices) == [@unfilled_trip],
            "missing_trip_edge samples name trips beyond #{@unfilled_trip}: " <>
-             inspect(error_trip_ids(errors))
+             inspect(error_trip_ids(edge_notices))
 
     maybe_write_summary!(report)
     print_observation(report)
@@ -145,32 +153,7 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesValidatorTest do
 
     rows =
       for sequence <- 1..5 do
-        if sequence == 1 do
-          %{
-            stop_sequence: 1,
-            arrival_time: first,
-            departure_time: first,
-            timepoint: nil,
-            shape_dist_traveled: Decimal.new("0")
-          }
-        else
-          if sequence == 5 do
-            %{
-              stop_sequence: 5,
-              arrival_time: last,
-              departure_time: last,
-              timepoint: 1,
-              shape_dist_traveled: Decimal.new("3000")
-            }
-          else
-            %{
-              stop_sequence: sequence,
-              arrival_time: nil,
-              departure_time: nil,
-              shape_dist_traveled: Decimal.new(Enum.at(distances, sequence - 1))
-            }
-          end
-        end
+        distance_row_attrs(sequence, first, last, Enum.at(distances, sequence - 1))
       end
 
     Enum.each(rows, fn attrs ->
@@ -184,28 +167,39 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesValidatorTest do
     end)
   end
 
+  defp distance_row_attrs(1, first, _last, distance) do
+    %{
+      stop_sequence: 1,
+      arrival_time: first,
+      departure_time: first,
+      timepoint: nil,
+      shape_dist_traveled: Decimal.new(distance)
+    }
+  end
+
+  defp distance_row_attrs(5, _first, last, distance) do
+    %{
+      stop_sequence: 5,
+      arrival_time: last,
+      departure_time: last,
+      timepoint: 1,
+      shape_dist_traveled: Decimal.new(distance)
+    }
+  end
+
+  defp distance_row_attrs(sequence, _first, _last, distance) do
+    %{
+      stop_sequence: sequence,
+      arrival_time: nil,
+      departure_time: nil,
+      shape_dist_traveled: Decimal.new(distance)
+    }
+  end
+
   defp seed_coordinate_blanks(organization_id, version_id, trip_id, prefix, first, last) do
     rows =
       for sequence <- 1..5 do
-        if sequence == 1 do
-          %{
-            stop_sequence: 1,
-            arrival_time: first,
-            departure_time: first,
-            timepoint: nil
-          }
-        else
-          if sequence == 5 do
-            %{
-              stop_sequence: 5,
-              arrival_time: last,
-              departure_time: last,
-              timepoint: 1
-            }
-          else
-            %{stop_sequence: sequence, arrival_time: nil, departure_time: nil}
-          end
-        end
+        coordinate_row_attrs(sequence, first, last)
       end
 
     Enum.each(rows, fn attrs ->
@@ -217,6 +211,18 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesValidatorTest do
         attrs
       )
     end)
+  end
+
+  defp coordinate_row_attrs(1, first, _last) do
+    %{stop_sequence: 1, arrival_time: first, departure_time: first, timepoint: nil}
+  end
+
+  defp coordinate_row_attrs(5, _first, last) do
+    %{stop_sequence: 5, arrival_time: last, departure_time: last, timepoint: 1}
+  end
+
+  defp coordinate_row_attrs(sequence, _first, _last) do
+    %{stop_sequence: sequence, arrival_time: nil, departure_time: nil}
   end
 
   defp export_zip!(tmp_dir, organization_id, version_id) do
@@ -296,22 +302,6 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesValidatorTest do
     report |> GtfsValidatorCli.notices() |> Enum.map(& &1["code"])
   end
 
-  defp stop_time_errors(report) do
-    report
-    |> GtfsValidatorCli.notices()
-    |> Enum.filter(fn notice ->
-      GtfsValidatorCli.severity(notice) == "ERROR" and
-        Enum.any?(sample_files(notice), &(&1 in ["stop_times.txt"]))
-    end)
-  end
-
-  defp sample_files(notice) do
-    notice
-    |> Map.get("sampleNotices", [])
-    |> Enum.flat_map(&[&1["filename"], &1["childFilename"]])
-    |> Enum.reject(&is_nil/1)
-  end
-
   # Sample notices name trips under version-dependent keys, so collect every
   # trip-id-like value instead of assuming one key.
   defp error_trip_ids(errors) do
@@ -361,8 +351,13 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimesValidatorTest do
   end
 
   defp print_observation(report) do
+    edge =
+      report
+      |> GtfsValidatorCli.notices()
+      |> Enum.filter(&(&1["code"] == "missing_trip_edge"))
+
     IO.puts(
-      "EV-6 stop_times.txt ERROR notices=#{stop_time_errors(report) |> length()} " <>
+      "EV-6 missing_trip_edge notices=#{length(edge)} " <>
         "notice codes=#{inspect(notice_codes(report))}"
     )
   end

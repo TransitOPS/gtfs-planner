@@ -840,8 +840,12 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
         "entity_type" => "trip"
       }
 
+      ready = mark_export_ready(run)
+
       {:ok, _} =
-        run |> Run.system_changeset(%{state: :ready, warnings: [warning]}) |> Repo.update()
+        ready
+        |> Run.system_changeset(%{warnings: [warning]})
+        |> Repo.update()
 
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
@@ -884,6 +888,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       run
       |> Run.system_changeset(%{
         state: :ready,
+        started_at: DateTime.add(now, -60, :second),
         finished_at: now,
         artifact_key: "exports/#{Ecto.UUID.generate()}.zip",
         artifact_filename: "gtfs.zip",

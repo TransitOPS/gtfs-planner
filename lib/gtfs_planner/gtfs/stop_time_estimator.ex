@@ -78,20 +78,18 @@ defmodule GtfsPlanner.Gtfs.StopTimeEstimator do
     norm = Enum.map(rows, &normalize_row/1)
     count = length(norm)
 
-    cond do
-      count == 0 ->
-        %{rows: [], spans: [], problems: []}
+    if count == 0 do
+      %{rows: [], spans: [], problems: []}
+    else
+      gate_problems =
+        if(timed?(hd(norm)), do: [], else: [{:no_first_time, 0}]) ++
+          if timed?(List.last(norm)), do: [], else: [{:no_last_time, count - 1}]
 
-      true ->
-        gate_problems =
-          if(timed?(hd(norm)), do: [], else: [{:no_first_time, 0}]) ++
-            if timed?(List.last(norm)), do: [], else: [{:no_last_time, count - 1}]
-
-        if gate_problems != [] do
-          %{rows: Enum.map(norm, &out_row_unchanged/1), spans: [], problems: gate_problems}
-        else
-          estimate_spans(norm, scope, method, distances, only_anchor)
-        end
+      if gate_problems != [] do
+        %{rows: Enum.map(norm, &out_row_unchanged/1), spans: [], problems: gate_problems}
+      else
+        estimate_spans(norm, scope, method, distances, only_anchor)
+      end
     end
   end
 
