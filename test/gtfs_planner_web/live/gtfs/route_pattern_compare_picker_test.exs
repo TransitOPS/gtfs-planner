@@ -8,10 +8,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComparePickerTest do
   one, and patches the choice back into the URL without the picker or the
   chosen side's pinned timing.
 
+  Opening or closing the picker patches only the `picker` param, so the loaded
+  pair stays on screen without a reload: the cases in the last group make the
+  pair read fail after the first load and see that a picker toggle neither
+  re-runs it nor replaces the page with the unavailable state, while choosing a
+  pattern still reloads.
+
   Every case enters through ordinary login and the real `CatalogReadAdapter.Repo`
-  on the local test database (`CR-7`); no adapter is substituted because no case
-  renders an outage state. Expected copy, ids and URLs are hand-derived from the
-  fixtures below. The focused gate command is:
+  on the local test database (`CR-7`); `CatalogReadAdapterMock` is substituted
+  only in the outage group, and it delegates every read to the real adapter
+  except the pair read it is asked to fail. Expected copy, ids and URLs are
+  hand-derived from the fixtures below. The focused gate command is:
 
       MIX_ENV=test MIX_TEST_PARTITION=_s19 ELIXIR_ERL_OPTIONS="+S 4" gtimeout --signal=TERM --kill-after=10s 120s mix test test/gtfs_planner_web/live/gtfs/route_pattern_compare_picker_test.exs
   """
@@ -19,12 +26,59 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComparePickerTest do
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Mox
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
   import GtfsPlanner.GtfsFixtures
 
   alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Gtfs.CatalogReadAdapter
+  alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
+
+  @adapter_key :gtfs_catalog_read_adapter
+
+  setup :verify_on_exit!
+
+  # Adapter substitution exists only to simulate a read outage; this helper
+  # restores the previous configuration on exit.
+  defp substitute_read_adapter(_context) do
+    previous = Application.fetch_env(:gtfs_planner, @adapter_key)
+    Application.put_env(:gtfs_planner, @adapter_key, CatalogReadAdapterMock)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(:gtfs_planner, @adapter_key, value)
+        :error -> Application.delete_env(:gtfs_planner, @adapter_key)
+      end
+    end)
+
+    :ok
+  end
+
+  # Every read the compare page makes goes to the real adapter, except the pair
+  # read, which reports an outage once the returned flag is set to 1.
+  defp stub_pair_read_outage do
+    outage = :atomics.new(1, [])
+
+    stub(CatalogReadAdapterMock, :load_pattern_comparison, fn org, ver, params ->
+      if :atomics.get(outage, 1) == 1 do
+        {:error, :unavailable}
+      else
+        CatalogReadAdapter.Repo.load_pattern_comparison(org, ver, params)
+      end
+    end)
+
+    stub(CatalogReadAdapterMock, :load_pattern_compare_map, fn org, ver, a, b ->
+      CatalogReadAdapter.Repo.load_pattern_compare_map(org, ver, a, b)
+    end)
+
+    stub(CatalogReadAdapterMock, :load_pattern_picker, fn org, ver, opts ->
+      CatalogReadAdapter.Repo.load_pattern_picker(org, ver, opts)
+    end)
+
+    outage
+  end
 
   defp editor_scope(%{conn: conn}) do
     organization =
@@ -542,6 +596,133 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComparePickerTest do
       refute has_element?(view, "#picker-list", "Foreign version pattern")
       refute has_element?(view, "#picker-list", "Foreign organization pattern")
       assert has_element?(view, "#picker-pattern-FULL")
+    end
+  end
+
+  describe "picker toggle while the pair read is failing" do
+    setup [:editor_scope, :substitute_read_adapter]
+
+    test "opening the picker keeps the loaded comparison on screen",
+         %{conn: conn, version: version} = context do
+      %{route: route} = comparison_fixtures(context)
+      outage = stub_pair_read_outage()
+
+      {:ok, view, _html} =
+        live(conn, compare_path(version, route, %{"a" => "FULL", "b" => "SHORT"}))
+
+      :atomics.put(outage, 1, 1)
+      view |> element("#slot-b-change") |> render_click()
+
+      assert_patch(
+        view,
+        compare_path(version, route, %{"a" => "FULL", "b" => "SHORT", "picker" => "b"})
+      )
+
+      assert has_element?(view, "#compare-picker", "Choose pattern B")
+      assert has_element?(view, "#picker-pattern-OTHER", "Other route pattern")
+      assert has_element?(view, "#slot-a", "Full")
+      assert has_element?(view, "#slot-b", "Short turn")
+      assert has_element?(view, "#compare-rows #compare-row-0")
+      refute has_element?(view, "#compare-unavailable")
+    end
+
+    test "closing the picker keeps the loaded comparison on screen",
+         %{conn: conn, version: version} = context do
+      %{route: route} = comparison_fixtures(context)
+      outage = stub_pair_read_outage()
+
+      {:ok, view, _html} =
+        live(
+          conn,
+          compare_path(version, route, %{"a" => "FULL", "b" => "SHORT", "picker" => "b"})
+        )
+
+      :atomics.put(outage, 1, 1)
+      view |> element("#picker-keep") |> render_click()
+
+      assert_patch(view, compare_path(version, route, %{"a" => "FULL", "b" => "SHORT"}))
+      refute has_element?(view, "#compare-picker")
+      assert has_element?(view, "#slot-a", "Full")
+      assert has_element?(view, "#slot-b", "Short turn")
+      assert has_element?(view, "#compare-rows #compare-row-0")
+      refute has_element?(view, "#compare-unavailable")
+    end
+
+    test "switching the open picker from B to A keeps the comparison and lists for A",
+         %{conn: conn, version: version} = context do
+      %{route: route} = comparison_fixtures(context)
+      outage = stub_pair_read_outage()
+
+      {:ok, view, _html} =
+        live(
+          conn,
+          compare_path(version, route, %{"a" => "FULL", "b" => "SHORT", "picker" => "b"})
+        )
+
+      :atomics.put(outage, 1, 1)
+
+      render_patch(
+        view,
+        compare_path(version, route, %{"a" => "FULL", "b" => "SHORT", "picker" => "a"})
+      )
+
+      assert has_element?(view, "#compare-picker", "Choose pattern A")
+      assert has_element?(view, "#picker-pattern-SHORT[disabled]", "This is B")
+      assert has_element?(view, "#slot-a", "Full")
+      refute has_element?(view, "#compare-unavailable")
+    end
+
+    test "opening the picker changes the workspace hook's load marker",
+         %{conn: conn, version: version} = context do
+      %{route: route} = comparison_fixtures(context)
+      stub_pair_read_outage()
+
+      {:ok, view, _html} =
+        live(conn, compare_path(version, route, %{"a" => "FULL", "b" => "SHORT"}))
+
+      assert has_element?(view, "#compare-workspace-hook[data-load='1']")
+
+      view |> element("#slot-b-change") |> render_click()
+
+      assert has_element?(view, "#compare-workspace-hook[data-load='2']")
+    end
+
+    test "choosing a pattern still reloads the pair, so an outage shows the unavailable state",
+         %{conn: conn, version: version} = context do
+      %{route: route} = comparison_fixtures(context)
+      outage = stub_pair_read_outage()
+
+      {:ok, view, _html} =
+        live(
+          conn,
+          compare_path(version, route, %{"a" => "FULL", "b" => "SHORT", "picker" => "b"})
+        )
+
+      :atomics.put(outage, 1, 1)
+      view |> element("#picker-pattern-OTHER") |> render_click()
+
+      assert_patch(view, compare_path(version, route, %{"a" => "FULL", "b" => "OTHER"}))
+      assert has_element?(view, "#compare-unavailable", "The comparison didn’t load")
+      refute has_element?(view, "#compare-picker")
+    end
+
+    test "choosing a pattern loads the chosen pair when the read is healthy",
+         %{conn: conn, version: version} = context do
+      %{route: route} = comparison_fixtures(context)
+      stub_pair_read_outage()
+
+      {:ok, view, _html} =
+        live(
+          conn,
+          compare_path(version, route, %{"a" => "FULL", "b" => "SHORT", "picker" => "b"})
+        )
+
+      view |> element("#picker-pattern-OTHER") |> render_click()
+
+      assert_patch(view, compare_path(version, route, %{"a" => "FULL", "b" => "OTHER"}))
+      refute has_element?(view, "#compare-picker")
+      assert has_element?(view, "#slot-b", "Other route pattern")
+      refute has_element?(view, "#compare-unavailable")
     end
   end
 end

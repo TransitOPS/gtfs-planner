@@ -29,7 +29,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
   The pattern picker (`AC-20`) is the `picker` param. It opens with
   `Gtfs.load_pattern_picker/3` loaded once per open; `picker_search` filters that
   list in memory, `choose_pattern` patches the chosen side and drops its pinned
-  timing, and `close_picker` patches the param away.
+  timing, and `close_picker` patches the param away. A patch that changes only
+  `picker` while a pair is on screen loads the picker and re-runs no other read.
 
   The all-patterns view (`view=all`, `AC-21`) loads
   `Gtfs.load_pattern_overview/4` for the URL's direction instead of a pair: every
@@ -73,6 +74,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
     # A crafted query such as `?b[k]=v` decodes to a map; only string values are
     # IDs or flags, so anything else is dropped before it can reach a query.
     params = Map.filter(params, fn {_key, value} -> is_binary(value) end)
+    picker_only? = picker_only_change?(socket, params)
 
     socket =
       socket
@@ -80,12 +82,23 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
       |> assign(:requested, params)
       |> assign(:view, if(params["view"] == "all", do: :all, else: :two))
 
-    if connected?(socket) do
-      load(socket, params)
-    else
+    cond do
       # The first paint is the loading skeleton; the connected visit loads the
       # read (and resolves the entry defaults when the URL has no `a`).
-      {:noreply, assign(socket, :load_state, :loading)}
+      not connected?(socket) ->
+        {:noreply, assign(socket, :load_state, :loading)}
+
+      # Opening or closing the picker leaves the loaded pair as it is: no read
+      # re-runs, so a read outage cannot replace the page.
+      picker_only? ->
+        {:noreply,
+         socket
+         # The ignored workspace hook only runs `updated()` when `data-load` changes.
+         |> update(:load_count, &(&1 + 1))
+         |> load_picker(params, socket.assigns.comparison)}
+
+      true ->
+        load(socket, params)
     end
   end
 
@@ -245,6 +258,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
     </Layouts.app>
     """
   end
+
+  # True when a pair is on screen and the new params differ from the requested
+  # ones in `picker` alone. Any other key changing (`a`, `b`, `service`, the
+  # route) still needs a reload.
+  defp picker_only_change?(
+         %{assigns: %{load_state: :ready, view: :two, comparison: %{}, requested: requested}},
+         params
+       ) do
+    requested["picker"] != params["picker"] and
+      Map.delete(requested, "picker") == Map.delete(params, "picker")
+  end
+
+  defp picker_only_change?(_socket, _params), do: false
 
   # A visit reads the all-patterns overview or the pair, never both: the overview
   # holds every pattern of a direction, so it needs no A and a bare
