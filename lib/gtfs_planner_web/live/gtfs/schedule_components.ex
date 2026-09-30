@@ -1936,6 +1936,12 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
     section = assigns.section
     rows = section.rows
 
+    # An imported pattern keeps its listed and frequency trips editable; the band
+    # names the mix and offers Convert so a planner can retire the frequency
+    # service (R9, AC-20). The button opens the section's first frequency row.
+    first_frequency = Enum.find(rows, & &1.frequency?)
+    mixed? = first_frequency != nil and Enum.any?(rows, &(not &1.frequency?))
+
     {first_stop, stop_columns} =
       case section.columns do
         [first | rest] -> {first, rest}
@@ -1945,6 +1951,8 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
     assigns =
       assigns
       |> assign(:rows, rows)
+      |> assign(:mixed?, mixed?)
+      |> assign(:first_frequency_id, first_frequency && first_frequency.id)
       |> assign(:section_id, section.pattern.route_pattern_id)
       |> assign(:first_stop, first_stop)
       |> assign(:first_position, first_stop && first_stop.position)
@@ -2044,6 +2052,29 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
           </dd>
         </dl>
       </div>
+
+      <.message
+        :if={@mixed?}
+        id="mixed-service-warning"
+        kind="warning"
+        class="rounded-none border-y border-warning-line px-5"
+        title="This pattern runs listed trips and frequency service on the same days."
+      >
+        Trip planners may show only one kind. Convert the frequency service to scheduled trips.
+        <:action>
+          <.button
+            id="mixed-convert"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            phx-click="open_change"
+            phx-value-kind="convert"
+            phx-value-trip={@first_frequency_id}
+          >
+            Convert…
+          </.button>
+        </:action>
+      </.message>
 
       <div :if={@estimate_note} class="px-5 pb-1 pt-3">
         <.message
