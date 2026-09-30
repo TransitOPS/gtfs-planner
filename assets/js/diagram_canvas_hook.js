@@ -5,8 +5,9 @@
 // Overlay elements that open the pathway editor; a click on one while setting
 // scale places a ruler point instead.
 const MEASURE_CLICK_THROUGH = '[data-editable="pathway"], [data-cross-level-pathway-badge]';
+const STOP_HIT_TARGET = "[data-stop-hit-target]";
 // Points that take a click from the saved ruler painted above them.
-const RULER_YIELDS_TO = "[data-stop-hit-target], [data-journal-marker]";
+const RULER_YIELDS_TO = `${STOP_HIT_TARGET}, [data-journal-marker]`;
 
 // Overlay sizes, in CSS pixels. `scaleOverlayElements` converts them to viewBox
 // units at the current window size and zoom, so on-screen size does not depend
@@ -150,6 +151,18 @@ const markerRect = (marker) => {
 
   return Object.values(rect).every(Number.isFinite) ? rect : null;
 };
+
+// Screen-pixel distance from the pointer to the center of a point's hit target,
+// which `scaleOverlayElements` centers on the marker body. Rounded to a
+// thousandth of a pixel so equal distances compare equal.
+const pointerDistance = (hitTarget, x, y) => {
+  const box = hitTarget.getBoundingClientRect();
+
+  return Math.round(Math.hypot(box.left + box.width / 2 - x, box.top + box.height / 2 - y) * 1000);
+};
+
+const isSelectedPoint = (hitTarget) =>
+  hitTarget.closest("[data-stop-state]")?.getAttribute("data-stop-state") === "selected";
 
 // Lower places first: the selected point, then platforms, entrances, boarding
 // areas and other nodes.
@@ -312,7 +325,7 @@ const DiagramCanvasHook = {
       return;
     }
 
-    const hitTarget = this.pointUnderRuler(e, "[data-stop-hit-target]");
+    const hitTarget = this.pointAtPointer(e, STOP_HIT_TARGET);
     if (!hitTarget || !this.overlay.contains(hitTarget)) {
       this.debugDrag("pointer down ignored: not on stop hit target", { type: e.type });
       return;
@@ -500,22 +513,49 @@ const DiagramCanvasHook = {
     }
   },
 
-  // The saved ruler is painted above the points, so a press or click on a point
-  // beneath it lands on the ruler. Returns the point under the pointer instead.
-  // Without elementsFromPoint the ruler keeps the event.
-  pointUnderRuler(e, selector) {
-    const direct = e.target.closest(selector);
+  // The point a press, click or hover at the pointer acts on: a point hit target
+  // or, where `selector` allows, a journal marker. Point hit targets are a fixed
+  // 24px, so in a dense cluster several overlap and the one painted on top is
+  // not always the one aimed at. Of the hit targets under the pointer the one
+  // whose marker center is nearest wins; a tie goes to the selected point, then
+  // to the top-most. A journal marker painted above the points keeps its
+  // clicks. The saved ruler is painted above everything, so a press on it
+  // resolves to the point beneath it. `e` needs `target`, `clientX` and
+  // `clientY`. Without elementsFromPoint the event target is the only candidate.
+  pointAtPointer(e, selector) {
+    const direct = e.target.closest?.(selector);
 
-    if (direct || !e.target.closest('[data-ruler-type="saved"]')) {
-      return direct;
+    if (!direct && !e.target.closest?.('[data-ruler-type="saved"]')) {
+      return null;
     }
 
     const stack = document.elementsFromPoint?.(e.clientX, e.clientY) ?? [];
-    return (
-      stack
-        .map((el) => el.closest(selector))
-        .find((point) => point && this.overlay.contains(point)) ?? null
-    );
+    const candidates = [
+      ...new Set(
+        [direct, ...stack.map((el) => el.closest(selector))].filter(
+          (point) => point && this.overlay.contains(point)
+        )
+      )
+    ];
+    const top = candidates[0] ?? null;
+
+    if (!top?.matches(STOP_HIT_TARGET)) {
+      return top;
+    }
+
+    return candidates
+      .filter((point) => point.matches(STOP_HIT_TARGET))
+      .map((point) => ({
+        point,
+        distance: pointerDistance(point, e.clientX, e.clientY),
+        selected: isSelectedPoint(point)
+      }))
+      .reduce((best, next) =>
+        next.distance < best.distance ||
+        (next.distance === best.distance && next.selected && !best.selected)
+          ? next
+          : best
+      ).point;
   },
 
   handleOverlayClick(e) {
@@ -529,15 +569,20 @@ const DiagramCanvasHook = {
       return;
     }
 
-    if (!e.target.closest('[data-ruler-type="saved"]')) {
+    const overRuler = Boolean(e.target.closest('[data-ruler-type="saved"]'));
+
+    // Detail 0 has no pointer position: keyboard activation, and the click
+    // redirected below, which must not be resolved again.
+    if (!overRuler && (e.detail === 0 || !e.target.closest(RULER_YIELDS_TO))) {
       return;
     }
 
-    // A point under the ruler wins: hand it the click, which LiveView routes
+    // The point at the pointer wins: hand it the click, which LiveView routes
     // through the point's own phx-click.
-    const point = this.pointUnderRuler(e, RULER_YIELDS_TO);
+    const point = this.pointAtPointer(e, RULER_YIELDS_TO);
 
-    if (point) {
+    if (point && point !== e.target.closest(RULER_YIELDS_TO)) {
+      e.stopPropagation();
       point.dispatchEvent(
         new MouseEvent("click", {
           bubbles: true,
@@ -549,7 +594,9 @@ const DiagramCanvasHook = {
       return;
     }
 
-    this.pushEvent("scale_line_click", {});
+    if (!point) {
+      this.pushEvent("scale_line_click", {});
+    }
   },
 
   handleMouseMove(e) {
@@ -990,7 +1037,7 @@ const DiagramCanvasHook = {
         return;
       }
 
-      const target = this.resolvePointerTooltipTarget(event.target);
+      const target = this.resolvePointerTooltipTarget(event.target, event);
 
       if (!target) {
         return;
@@ -1012,8 +1059,18 @@ const DiagramCanvasHook = {
         return;
       }
 
-      const target = this.resolvePointerTooltipTarget(event.target);
+      const target = this.resolvePointerTooltipTarget(event.target, event);
       if (target !== this.tooltipState.activeTarget) {
+        // Inside overlapping hit targets the nearest point changes as the
+        // pointer moves, without the pointer leaving the element it is over.
+        if (target && event.target.closest(STOP_HIT_TARGET)) {
+          this.showTooltip(target, {
+            type: "pointer",
+            clientX: event.clientX,
+            clientY: event.clientY
+          });
+        }
+
         return;
       }
 
@@ -1029,7 +1086,7 @@ const DiagramCanvasHook = {
         return;
       }
 
-      const nextTarget = this.resolvePointerTooltipTarget(event.relatedTarget);
+      const nextTarget = this.resolvePointerTooltipTarget(event.relatedTarget, event);
       if (nextTarget === this.tooltipState.activeTarget) {
         return;
       }
@@ -1106,12 +1163,20 @@ const DiagramCanvasHook = {
     return target;
   },
 
-  resolvePointerTooltipTarget(node) {
+  // `pointer` carries the pointer position: over a point hit target the tooltip
+  // names the point a click there would act on (see `pointAtPointer`).
+  resolvePointerTooltipTarget(node, pointer) {
     if (!(node instanceof Element)) {
       return null;
     }
 
-    const trigger = node.closest("[data-tooltip-trigger]");
+    const isPoint = node.closest(STOP_HIT_TARGET);
+    const trigger = isPoint
+      ? this.pointAtPointer(
+          { target: node, clientX: pointer?.clientX, clientY: pointer?.clientY },
+          STOP_HIT_TARGET
+        )
+      : node.closest("[data-tooltip-trigger]");
 
     if (!trigger || !this.overlay || !this.overlay.contains(trigger)) {
       return null;

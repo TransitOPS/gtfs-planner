@@ -926,6 +926,221 @@ describe("DiagramCanvasHook — saved ruler click priority", () => {
   });
 });
 
+// Two 24px hit targets centered 10px apart, so each covers the other's center.
+// The upper point is painted first, the lower one on top of it.
+describe("DiagramCanvasHook — overlapping point hit targets", () => {
+  const originalElementsFromPoint = document.elementsFromPoint;
+  let container;
+  let overlay;
+  let hook;
+  let upper;
+  let lower;
+
+  function makePoint(name, { centerY, selected = false }) {
+    const { group, hitTarget } = makeStopGroup(overlay, {
+      id: `stop-g-${name}`,
+      stopId: name
+    });
+    group.setAttribute("data-stop-state", selected ? "selected" : "active");
+    group.setAttribute("data-tooltip", "Edit point");
+    group.setAttribute("data-label-text", name);
+    group.appendChild(elSVG("text", { "data-stop-label": "true", display: "none" }));
+    hitTarget.getBoundingClientRect = () => ({
+      left: 88,
+      top: centerY - 12,
+      width: 24,
+      height: 24
+    });
+    return hitTarget;
+  }
+
+  // The pointer is over both targets; `top` is the one painted above.
+  function pointerOver(top, under) {
+    document.elementsFromPoint = vi.fn(() => [top, under]);
+  }
+
+  function mouseEvent(type, target, clientY, init = {}) {
+    target.dispatchEvent(
+      new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        detail: 1,
+        clientX: 100,
+        clientY,
+        ...init
+      })
+    );
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    const canvas = makeCanvas();
+    container = canvas.container;
+    overlay = canvas.overlay;
+    container.appendChild(
+      Object.assign(document.createElement("div"), { id: "diagram-edit-tooltip" })
+    );
+    hook = makeHook(canvas.svg);
+    hook.mounted();
+    hook.clientPointToSvg = () => ({ x: 50, y: 50 });
+  });
+
+  afterEach(() => {
+    hook.cancelDragHold();
+
+    if (originalElementsFromPoint === undefined) {
+      delete document.elementsFromPoint;
+    } else {
+      document.elementsFromPoint = originalElementsFromPoint;
+    }
+
+    vi.restoreAllMocks();
+  });
+
+  describe("with the lower point painted on top", () => {
+    beforeEach(() => {
+      upper = makePoint("UPPER", { centerY: 100 });
+      lower = makePoint("LOWER", { centerY: 110 });
+      pointerOver(lower, upper);
+    });
+
+    it("selects the upper point for a click nearer to it", () => {
+      const routed = recordPhxClicks(container);
+
+      mouseEvent("click", lower, 102);
+
+      expect(routed).toEqual([["stop_clicked", "UPPER"]]);
+    });
+
+    it("selects the lower point for a click nearer to it", () => {
+      const routed = recordPhxClicks(container);
+
+      mouseEvent("click", lower, 108);
+
+      expect(routed).toEqual([["stop_clicked", "LOWER"]]);
+    });
+
+    it("keeps the click on the event target when it is the nearest point", () => {
+      const clickOnLower = vi.fn();
+      lower.addEventListener("click", clickOnLower);
+
+      mouseEvent("click", lower, 108);
+
+      expect(clickOnLower).toHaveBeenCalledTimes(1);
+    });
+
+    it("sends the redirected click once, without resolving it again", () => {
+      const routed = recordPhxClicks(container);
+      const clicksOnUpper = vi.fn();
+      upper.addEventListener("click", clicksOnUpper);
+
+      mouseEvent("click", lower, 102);
+
+      expect(clicksOnUpper).toHaveBeenCalledTimes(1);
+      expect(routed).toHaveLength(1);
+    });
+
+    it("gives an equidistant click to the selected point", () => {
+      upper.closest("g").setAttribute("data-stop-state", "selected");
+      const routed = recordPhxClicks(container);
+
+      mouseEvent("click", lower, 105);
+
+      expect(routed).toEqual([["stop_clicked", "UPPER"]]);
+    });
+
+    it("gives an equidistant click to the top-most point when neither is selected", () => {
+      const routed = recordPhxClicks(container);
+
+      mouseEvent("click", lower, 105);
+
+      expect(routed).toEqual([["stop_clicked", "LOWER"]]);
+    });
+
+    it("leaves keyboard activation on the focused point", () => {
+      const routed = recordPhxClicks(container);
+
+      mouseEvent("click", lower, 102, { detail: 0 });
+
+      expect(routed).toEqual([["stop_clicked", "LOWER"]]);
+    });
+
+    it("starts a drag hold on the point nearer the pointer", () => {
+      mouseEvent("mousedown", lower, 102);
+
+      expect(hook.dragCandidate.stopId).toBe("UPPER");
+    });
+
+    it("names the point nearer the pointer in the hover tooltip", () => {
+      mouseEvent("mouseover", lower, 102);
+
+      expect(hook.tooltipState.activeTarget).toBe(upper.closest("g"));
+      expect(hook.tooltipEl.textContent).toBe("UPPER\nEdit point");
+    });
+
+    it("moves the hover tooltip to the other point when the pointer crosses the midpoint", () => {
+      mouseEvent("mouseover", lower, 108);
+      expect(hook.tooltipState.activeTarget).toBe(lower.closest("g"));
+
+      mouseEvent("mousemove", lower, 102);
+
+      expect(hook.tooltipState.activeTarget).toBe(upper.closest("g"));
+      expect(hook.tooltipEl.textContent).toBe("UPPER\nEdit point");
+    });
+  });
+
+  it("selects the lower point for a click nearer to it when the upper point is painted on top", () => {
+    lower = makePoint("LOWER", { centerY: 110 });
+    upper = makePoint("UPPER", { centerY: 100 });
+    pointerOver(upper, lower);
+    const routed = recordPhxClicks(container);
+
+    mouseEvent("click", upper, 108);
+
+    expect(routed).toEqual([["stop_clicked", "LOWER"]]);
+  });
+
+  it("leaves a click on a journal marker above a point with the marker", () => {
+    upper = makePoint("UPPER", { centerY: 100 });
+    lower = makePoint("LOWER", { centerY: 110 });
+    const marker = makeJournalGroup(overlay);
+    const markerHit = elSVG("rect", { "data-journal-hit-target": "true" });
+    marker.appendChild(markerHit);
+    pointerOver(markerHit, lower);
+    document.elementsFromPoint = vi.fn(() => [markerHit, lower, upper]);
+    const routed = recordPhxClicks(container);
+
+    mouseEvent("click", markerHit, 102);
+
+    expect(routed).toEqual([["journal_marker_clicked", "journal-marker-pin-1"]]);
+  });
+
+  it("still routes a click under the saved ruler to the nearest point", () => {
+    upper = makePoint("UPPER", { centerY: 100 });
+    lower = makePoint("LOWER", { centerY: 110 });
+    const { hitArea } = makeSavedRuler(overlay);
+    document.elementsFromPoint = vi.fn(() => [hitArea, lower, upper]);
+    const routed = recordPhxClicks(container);
+
+    mouseEvent("click", hitArea, 102);
+
+    expect(routed).toEqual([["stop_clicked", "UPPER"]]);
+    expect(hook.pushEvent).not.toHaveBeenCalledWith("scale_line_click", {});
+  });
+
+  it("acts on the event target when the browser cannot list the elements under the pointer", () => {
+    upper = makePoint("UPPER", { centerY: 100 });
+    lower = makePoint("LOWER", { centerY: 110 });
+    delete document.elementsFromPoint;
+    const routed = recordPhxClicks(container);
+
+    mouseEvent("click", lower, 102);
+
+    expect(routed).toEqual([["stop_clicked", "LOWER"]]);
+  });
+});
+
 describe("DiagramCanvasHook — clicking a pathway while setting scale", () => {
   let container;
   let overlay;
