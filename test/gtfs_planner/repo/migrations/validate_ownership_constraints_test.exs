@@ -201,7 +201,8 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
     vehicle_type = GtfsPlanner.OperationsFixtures.vehicle_type_fixture(foreign_org.id)
 
     for {table, column, parent} <- asset_links() do
-      Repo.query!("SAVEPOINT asset_validation_case")
+      # Keep the named savepoint outside the Sandbox's per-query savepoint wrapper.
+      Repo.query!("SAVEPOINT asset_validation_case", [], sandbox_subtransaction: false)
       name = "#{table}_#{column}_owner_fkey"
       Repo.query!("ALTER TABLE #{table} DROP CONSTRAINT #{name}")
       parent_id = if parent == "garages", do: garage.id, else: vehicle_type.id
@@ -217,7 +218,12 @@ defmodule GtfsPlanner.Repo.Migrations.ValidateOwnershipConstraintsTest do
       assert_validation_failure!(name)
       assert row_json(table, id) == before
       assert constraint_validated?(table, name) == false
-      Repo.query!("ROLLBACK TO SAVEPOINT asset_validation_case")
+
+      Repo.query!("ROLLBACK TO SAVEPOINT asset_validation_case", [],
+        sandbox_subtransaction: false
+      )
+
+      Repo.query!("RELEASE SAVEPOINT asset_validation_case", [], sandbox_subtransaction: false)
     end
   end
 

@@ -262,11 +262,13 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
   end
 
   test "trip deletion cascades and populated version deletion still refuses before and after scoped keys" do
-    Repo.query!("SAVEPOINT prior_runs_ownership")
+    # Keep the named savepoint outside the Sandbox's per-query savepoint wrapper.
+    Repo.query!("SAVEPOINT prior_runs_ownership", [], sandbox_subtransaction: false)
     Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_version_owner_fkey")
     Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_trips_owner_fkey")
     assert_trip_and_version_cascades!()
-    Repo.query!("ROLLBACK TO SAVEPOINT prior_runs_ownership")
+    Repo.query!("ROLLBACK TO SAVEPOINT prior_runs_ownership", [], sandbox_subtransaction: false)
+    Repo.query!("RELEASE SAVEPOINT prior_runs_ownership", [], sandbox_subtransaction: false)
 
     assert_trip_and_version_cascades!()
   end
@@ -414,7 +416,8 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
   end
 
   test "organization deletion cascaded trip assignments before the new scoped keys" do
-    Repo.query!("SAVEPOINT prior_runs_organization")
+    # Keep the named savepoint outside the Sandbox's per-query savepoint wrapper.
+    Repo.query!("SAVEPOINT prior_runs_organization", [], sandbox_subtransaction: false)
     Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_version_owner_fkey")
     Repo.query!("ALTER TABLE trip_runs DROP CONSTRAINT trip_runs_trips_owner_fkey")
 
@@ -446,7 +449,11 @@ defmodule GtfsPlanner.Repo.Migrations.AddOwnershipConstraintsTest do
                Ecto.UUID.dump!(log_id)
              ])
 
-    Repo.query!("ROLLBACK TO SAVEPOINT prior_runs_organization")
+    Repo.query!("ROLLBACK TO SAVEPOINT prior_runs_organization", [],
+      sandbox_subtransaction: false
+    )
+
+    Repo.query!("RELEASE SAVEPOINT prior_runs_organization", [], sandbox_subtransaction: false)
     assert Map.has_key?(constraints(), "trip_runs_trips_owner_fkey")
   end
 

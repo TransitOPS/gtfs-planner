@@ -166,7 +166,11 @@ defmodule GtfsPlanner.Integrity.OwnershipAuditTest do
       Repo.query!("ALTER TABLE #{table} DROP CONSTRAINT #{table}_#{column}_owner_fkey")
       parent_id = if parent == "garages", do: foreign_garage.id, else: foreign_type.id
       foreign_id = insert_asset_link!(table, column, org.id, version.id, parent_id)
-      insert_asset_link!(table, column, org.id, version.id, nil)
+
+      nullable_version =
+        if table == "blocking_settings", do: gtfs_version_fixture(org.id), else: version
+
+      insert_asset_link!(table, column, org.id, nullable_version.id, nil)
 
       relationship =
         OwnershipAudit.run().relationships
