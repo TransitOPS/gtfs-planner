@@ -8,7 +8,8 @@ import { resolve } from "node:path";
  *
  * Every journey owns one BROWSER-HS* pattern from `test/support/browser_seed.exs`,
  * so a mutating journey never inherits another's writes: the Details usage line,
- * the read-only review-drawer render, and the read-only Riders see column read
+ * the read-only review-drawer render, the read-only Riders see column and the
+ * read-only Patterns list column read
  * BROWSER-HS1, the inline edit, save
  * and undo drives BROWSER-HS2, the review drawer fixes a typo on BROWSER-HS3,
  * the timing disclosure BROWSER-HS4, and the schedules surface BROWSER-HS5. The
@@ -368,4 +369,34 @@ test("riders see column", async ({ page }) => {
   await expect(page.locator("#timing-riders-3")).toContainText("Lincoln City Transit Center");
   await expect(page.locator("#timing-riders-4")).toContainText("Last stop · none");
   await capture(page, "times-stop-headsign-390");
+});
+
+// The Patterns list column (read-only, BROWSER-HS1): the Headsign header sits
+// after Pattern and the BROWSER-HS1 row shows the pattern default with the
+// differ count and the typo warning. Only BROWSER-HS1 is asserted — the same
+// list also carries HS2–HS5, which the other journeys mutate. Nothing is saved.
+test("patterns list headsign column", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`/gtfs/${versionId}/routes/BROWSER_HEADSIGNS/patterns`);
+  await page.waitForSelector("#pattern-headsign-BROWSER-HS1", { timeout: 15000 });
+  await waitForLiveView(page);
+
+  const header = await page.locator("#patterns-table thead").textContent();
+  expect(header).toMatch(/Pattern\s+Headsign\s+Use on this route/);
+
+  const cell = page.locator("#pattern-headsign-BROWSER-HS1");
+  await expect(cell).toContainText("Lincoln City");
+  await expect(cell).toContainText("2 trips differ · 1 likely typo");
+  await expect(cell.locator(".hero-exclamation-triangle")).toBeVisible();
+
+  await capture(page, "patterns-headsign-1440");
+
+  // At 390 px the cell is a full-width card block with its visible label, so
+  // the value and the count stay readable without horizontal scrolling.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(cell).toBeVisible();
+  await expect(cell).toContainText("Headsign");
+  await expect(cell).toContainText("Lincoln City");
+  await expect(cell).toContainText("2 trips differ · 1 likely typo");
+  await capture(page, "patterns-headsign-390");
 });

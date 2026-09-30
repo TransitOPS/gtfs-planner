@@ -559,6 +559,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
         <thead class="max-md:hidden">
           <tr class="bg-canvas">
             <th scope="col" class={[head_class(), "pl-5"]}>Pattern</th>
+            <th scope="col" class={head_class()}>Headsign</th>
             <th scope="col" class={[head_class(), "w-[150px]"]}>Use on this route</th>
             <th scope="col" class={[head_class(), "w-[84px] text-right"]}>Stops</th>
             <th scope="col" class={[head_class(), "w-[120px] text-right"]}>Trips</th>
@@ -702,7 +703,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
     <tr id={@id} class="border-t border-subtle max-md:block">
       <th
         scope="rowgroup"
-        colspan="6"
+        colspan="7"
         class="pb-2 pl-5 pr-4 pt-4 text-left font-normal max-md:block max-md:px-4 max-md:pb-1"
       >
         <span class="text-[15px] font-[650] text-strong">
@@ -760,6 +761,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
           {service_description(@pattern)} · {plural(@summary.timing_count, "timing", "timings")}
         </p>
       </td>
+      <.headsign_cell summary={@summary} natural_id={@natural_id} />
       <td data-label="Use on this route" class="px-4 align-middle max-md:p-0">
         <.use_chip typicality={@pattern.route_pattern_typicality} />
       </td>
@@ -799,6 +801,55 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
         <.icon name="hero-chevron-right" class="size-4" />
       </td>
     </tr>
+    """
+  end
+
+  attr :summary, :map, required: true
+  attr :natural_id, :string, required: true
+
+  # The pattern's default headsign with how its trips use it underneath. Only
+  # likely typos ask for attention; every other difference is a plain count.
+  # Below `md` the cell is a full-width card block with its own label.
+  defp headsign_cell(assigns) do
+    pattern_headsign = assigns.summary.pattern.headsign
+
+    assigns =
+      assigns
+      |> assign(:value, if(blank?(pattern_headsign), do: "No headsign", else: pattern_headsign))
+      |> assign(
+        :value_class,
+        if(blank?(pattern_headsign), do: "italic text-muted", else: "text-strong")
+      )
+
+    ~H"""
+    <td
+      id={"pattern-headsign-#{@natural_id}"}
+      data-label="Headsign"
+      class="px-4 align-middle max-md:basis-full max-md:p-0"
+    >
+      <p class="flex flex-wrap items-baseline gap-x-2 text-sm">
+        <span class="shrink-0 text-[13px] font-[650] text-muted md:hidden">Headsign</span>
+        <span class={@value_class}>{@value}</span>
+      </p>
+      <p :if={@summary.trip_count > 0} class="mt-0.5 text-[13px]">
+        <%= cond do %>
+          <% @summary.headsign_differ_count == 0 -> %>
+            <span class="text-muted">All {plural(@summary.trip_count, "trip", "trips")}</span>
+          <% @summary.headsign_typo_count > 0 -> %>
+            <span class="inline-flex items-center gap-1 text-warning-fg">
+              <.icon name="hero-exclamation-triangle" class="size-3.5" />{plural(
+                @summary.headsign_differ_count,
+                "trip differs",
+                "trips differ"
+              )} · {plural(@summary.headsign_typo_count, "likely typo", "likely typos")}
+            </span>
+          <% true -> %>
+            <span class="text-muted">
+              {plural(@summary.headsign_differ_count, "trip differs", "trips differ")}
+            </span>
+        <% end %>
+      </p>
+    </td>
     """
   end
 
