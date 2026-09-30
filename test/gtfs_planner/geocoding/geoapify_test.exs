@@ -42,13 +42,13 @@ defmodule GtfsPlanner.Geocoding.GeoapifyTest do
   test "a 503 response is retried once and retains the API error" do
     Req.Test.expect(@owner, 2, fn conn -> Plug.Conn.send_resp(conn, 503, "unavailable") end)
 
-    assert {:error, {:api_error, 503}} = Geoapify.autocomplete("Main Street")
+    assert {:error, {:api_error, 503}} = Geoapify.autocomplete("Main Street", [])
   end
 
   test "a transport timeout maps to the existing network error" do
     Req.Test.expect(@owner, 2, fn conn -> Req.Test.transport_error(conn, :timeout) end)
 
-    assert {:error, :network_error} = Geoapify.autocomplete("Main Street")
+    assert {:error, :network_error} = Geoapify.autocomplete("Main Street", [])
   end
 
   test "the Req transport receives a 5-second timeout" do
@@ -68,7 +68,7 @@ defmodule GtfsPlanner.Geocoding.GeoapifyTest do
     end
 
     with_req_options([retry_delay: 0, finch_request: finch_request], fn ->
-      assert {:ok, []} = Geoapify.autocomplete("Main Street")
+      assert {:ok, []} = Geoapify.autocomplete("Main Street", [])
     end)
 
     assert_received {:request_options, %{receive_timeout: 5_000}}
