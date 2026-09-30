@@ -124,7 +124,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignDetailsTest do
     })
   end
 
-  defp details_path(version, route, pattern, query \\ "") do
+  defp details_path(version, route, pattern, query) do
     "/gtfs/#{version.id}/routes/#{route.route_id}/patterns/#{pattern.route_pattern_id}#{query}"
   end
 
