@@ -681,11 +681,16 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExportTest do
         findings: [%{code: :cannot_reach_piece, severity: :error, run_ids: ["10000"]}]
       }
 
+      # Still listed: the run is not left out of the day, it is left out of the
+      # FILE. What it must not do is ask for a previous-day service.
       assert TodsExport.run_day_types(%{@key => day([broken])}) == %{@key => %{prev?: false}}
     end
 
-    test "a day type with no runs is not asked for a service" do
-      assert TodsExport.run_day_types(%{@key => day([])}) == %{@key => %{prev?: false}}
+    test "a day type with no runs is not asked for a service at all" do
+      # Absent, not present with prev?: false. Asking for a service makes spec 07
+      # mint one and list the day type's dates on it, which is the header-only
+      # `calendar_dates_supplement.txt` spec 07 refuses to write.
+      assert TodsExport.run_day_types(%{@key => day([])}) == %{}
     end
   end
 
