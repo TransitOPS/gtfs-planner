@@ -120,6 +120,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
      |> assign(:preview_time, @default_preview)
      |> assign(:timing_error, nil)
      |> assign(:timing_blank_note, nil)
+     |> assign(:blank_count, 0)
      |> assign(:fill, nil)
      |> assign(:fill_preview, nil)
      |> assign(:fill_distances, [])
@@ -1058,6 +1059,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     {:noreply, assign(socket, :retime, nil)}
   end
 
+  # Fill-panel problem buttons name the stop input to fix; the
+  # FormErrorFocus hook owns the page region and focuses it. This only
+  # pushes a client event, so it stays outside `@editor_write_events`.
+  @impl true
+  def handle_event("focus_form_error", %{"id" => id}, socket) when is_binary(id) do
+    {:noreply,
+     push_event(socket, "focus_form_error", %{
+       form_id: "timing-edit-form",
+       fallback_id: id
+     })}
+  end
+
+  def handle_event("focus_form_error", _params, socket), do: {:noreply, socket}
+
   @impl true
   def handle_event("guard_editor_navigation", %{"path" => path}, socket) do
     if String.starts_with?(path, "/") and not String.starts_with?(path, "//"),
@@ -1437,121 +1452,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
   # --- render ----------------------------------------------------------------
 
-  # Minimal fill panel for step 12: the state machine, scope/method controls
-  # and apply/cancel with the §4.5 element IDs. Step 13 renders the full
-  # panel, estimated cells, prompts and chart in `RoutePatternComponents`.
-  attr :fill, :map, required: true
-  attr :preview, :map, required: false, default: nil
-
-  defp fill_panel(assigns) do
-    ~H"""
-    <section
-      id="fill-panel"
-      aria-labelledby="fill-title"
-      class="mt-3 rounded-card border border-subtle bg-white px-4 py-3"
-    >
-      <h3 id="fill-title" tabindex="-1" class="text-base font-bold text-strong">
-        Fill times between timepoints
-      </h3>
-      <p :if={@preview} id="fill-summary" class="mt-1 text-sm text-default">
-        {@preview.summary}
-      </p>
-      <.form
-        for={to_form(%{"scope" => to_string(@fill.scope), "method" => to_string(@fill.method)})}
-        id="fill-form"
-        phx-change="change_fill"
-        class="mt-3 grid gap-3 sm:grid-cols-2"
-      >
-        <fieldset>
-          <legend class="text-sm font-[650] text-default">What to fill</legend>
-          <label class="mt-1 flex min-h-11 cursor-pointer items-center gap-2 text-sm">
-            <input
-              id="fill-scope-missing"
-              type="radio"
-              name="scope"
-              value="missing"
-              checked={@fill.scope == :missing}
-              class="radio"
-            /> Only blank stops
-          </label>
-          <label class="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
-            <input
-              id="fill-scope-between"
-              type="radio"
-              name="scope"
-              value="between"
-              checked={@fill.scope == :between}
-              class="radio"
-            /> Recalculate everything between timepoints
-          </label>
-        </fieldset>
-        <fieldset>
-          <legend class="text-sm font-[650] text-default">Estimate method</legend>
-          <label class="mt-1 flex min-h-11 cursor-pointer items-center gap-2 text-sm">
-            <input
-              id="fill-method-distance"
-              type="radio"
-              name="method"
-              value="distance"
-              checked={@fill.method == :distance}
-              class="radio"
-            /> Distance along the route
-          </label>
-          <label class="flex min-h-11 cursor-pointer items-center gap-2 text-sm">
-            <input
-              id="fill-method-even"
-              type="radio"
-              name="method"
-              value="even"
-              checked={@fill.method == :even}
-              class="radio"
-            /> Even spacing
-          </label>
-        </fieldset>
-      </.form>
-      <div :if={@preview && @preview.problems != []} id="fill-problems" class="mt-2">
-        <ul class="list-disc pl-5 text-sm text-default">
-          <li :for={problem <- @preview.problems}>{problem.message}</li>
-        </ul>
-      </div>
-      <div class="mt-3 flex gap-2">
-        <button
-          id="fill-apply"
-          type="button"
-          phx-click="apply_fill"
-          disabled={@preview == nil or @preview.changed == 0}
-          class="btn btn-primary min-h-11"
-        >
-          {fill_apply_label(@preview)}
-        </button>
-        <button
-          id="fill-cancel"
-          type="button"
-          phx-click="cancel_fill"
-          class="btn btn-outline min-h-11"
-        >
-          Cancel
-        </button>
-      </div>
-    </section>
-    """
-  end
-
-  defp fill_apply_label(%{changed: 1}), do: "Fill 1 stop"
-  defp fill_apply_label(%{changed: count}), do: "Fill #{count} stops"
-  defp fill_apply_label(_preview), do: "Nothing to fill"
-
-  defp format_retime_delta(seconds) when is_integer(seconds) and seconds >= 0,
-    do: "#{GtfsTime.format_offset(seconds)} later"
-
-  defp format_retime_delta(seconds) when is_integer(seconds),
-    do: "#{GtfsTime.format_offset(-seconds)} earlier"
-
-  defp format_retime_delta(_seconds), do: "an unknown amount"
-
-  defp retime_stops_text(1), do: "1 stop would move."
-  defp retime_stops_text(count), do: "#{count} stops would move."
-
   @impl true
   def render(assigns) do
     assigns = assign(assigns, :save_bar, save_bar_spec(assigns))
@@ -1789,37 +1689,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                         />
                       <% end %>
                     <% true -> %>
-                      <div
-                        :if={@retime != nil}
-                        id="timing-retime"
-                        class="mb-3 rounded-card border border-subtle bg-white px-4 py-3"
-                      >
-                        <p class="text-sm text-default">
-                          Stop {@retime.anchor} moved by {format_retime_delta(@retime.moved_seconds)}. {retime_stops_text(
-                            @retime.stops
-                          )} Select re-estimate to preview only the
-                          stops around it.
-                        </p>
-                        <div class="mt-2 flex gap-2">
-                          <button
-                            id="timing-retime-go"
-                            type="button"
-                            phx-click="reestimate"
-                            phx-value-anchor={@retime.anchor}
-                            class="btn btn-outline min-h-11"
-                          >
-                            Re-estimate around stop {@retime.anchor}
-                          </button>
-                          <button
-                            id="timing-retime-dismiss"
-                            type="button"
-                            phx-click="dismiss_retime"
-                            class="btn btn-ghost min-h-11"
-                          >
-                            Dismiss
-                          </button>
-                        </div>
-                      </div>
                       <RoutePatternComponents.timings_task
                         timings={@timings}
                         selected_timing={@selected_timing}
@@ -1830,12 +1699,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
                         timing_headsign={@timing_headsign}
                         timing_error={@timing_error}
                         timing_blank_note={@timing_blank_note}
+                        blank_count={@blank_count}
+                        fill={@fill}
+                        fill_preview={@fill_preview}
+                        fill_distances={@fill_distances}
+                        fill_coords={@fill_coords}
+                        retime={@retime}
+                        offline?={@offline?}
                         custom_trip_count={@detail_custom_trip_count}
                         dirty?={@timing_rows != [] and map_size(@timing_edits) > 0}
                         busy?={@applying? or @offline?}
                         filling?={@fill != nil}
                       />
-                      <.fill_panel :if={@fill != nil} fill={@fill} preview={@fill_preview} />
                   <% end %>
                 </div>
 
@@ -2944,6 +2819,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
 
     socket
     |> assign(:timing_rows, Enum.map(rows, &with_preview(&1, socket.assigns.preview_time)))
+    |> assign(:blank_count, Enum.count(rows, &blank_row?/1))
     |> assign(
       :timing_headsign,
       Map.get(socket.assigns.timing_headsign_edits, socket.assigns.selected_timing_id) ||
@@ -3109,7 +2985,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
     end)
   end
 
-  defp blank_stop?(row), do: blank_time?(row.arrival) or blank_time?(row.departure)
+  defp blank_row?(row),
+    do: blank_time?(Map.get(row, :arrival)) or blank_time?(Map.get(row, :departure))
+
+  defp blank_stop?(row), do: blank_row?(row)
 
   defp blank_time?(nil), do: true
   defp blank_time?(value) when is_binary(value), do: String.trim(value) == ""

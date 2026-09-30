@@ -13,6 +13,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
   import GtfsPlannerWeb.RouteWorkspace, only: [badge: 1]
 
+  alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlannerWeb.RouteWorkspace
 
@@ -695,10 +696,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   attr :busy?, :boolean, default: false
   attr :filling?, :boolean, default: false
   attr :timing_blank_note, :string, default: nil
+  attr :blank_count, :integer, default: 0
+  attr :fill, :map, default: nil
+  attr :fill_preview, :map, default: nil
+  attr :fill_distances, :list, default: []
+  attr :fill_coords, :list, default: []
+  attr :retime, :map, default: nil
+  attr :offline?, :boolean, default: false
 
   def timings_task(assigns) do
     assigns =
-      assign(assigns, :trip_count, selected_trip_count(assigns.timings, assigns.selected_timing))
+      assigns
+      |> assign(:trip_count, selected_trip_count(assigns.timings, assigns.selected_timing))
+      |> assign(:preview_by_position, preview_by_position(assigns[:fill_preview]))
+      |> assign(:failed_positions, failed_preview_positions(assigns[:fill_preview]))
 
     ~H"""
     <section
@@ -817,11 +828,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
       </div>
 
       <div
-        :if={@timing_blank_note}
+        :if={@timing_blank_note != nil or (@fill == nil and (@blank_count || 0) > 0)}
         id="timing-blank-note"
         class="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-subtle bg-canvas px-4 py-3"
       >
-        <p class="min-w-[180px] flex-1 text-sm text-default">{@timing_blank_note}</p>
+        <p class="min-w-[180px] flex-1 text-sm text-default">
+          {@timing_blank_note || blank_note_text(@blank_count)}
+        </p>
         <button
           id="timing-blank-fill"
           type="button"
@@ -833,71 +846,128 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         </button>
       </div>
 
-      <div :if={@timing_rows != []}>
-        <div class="px-4 py-3">
-          <.message
-            kind="info"
-            id="timing-origin"
-            title="Times are measured from the first departure"
+      <div
+        :if={@retime != nil}
+        id="timing-retime"
+        class="mb-3 rounded-card border border-subtle bg-white px-4 py-3"
+      >
+        <p class="text-sm text-default">
+          Stop {@retime.anchor} moved by {format_retime_delta(@retime.moved_seconds)}. {retime_stops_text(
+            @retime.stops
+          )} Select re-estimate to preview only the
+          stops around it.
+        </p>
+        <div class="mt-2 flex gap-2">
+          <button
+            id="timing-retime-go"
+            type="button"
+            phx-click="reestimate"
+            phx-value-anchor={@retime.anchor}
+            class="btn btn-outline min-h-11"
           >
-            Enter minutes:seconds, for example 04:30. The first arrival is relative to the first
-            departure, so a negative first arrival keeps a terminal arrival that happens before its
-            departure. Departure can be later than arrival to allow waiting.
-          </.message>
+            Re-estimate around stop {@retime.anchor}
+          </button>
+          <button
+            id="timing-retime-dismiss"
+            type="button"
+            phx-click="dismiss_retime"
+            class="btn btn-ghost min-h-11"
+          >
+            Dismiss
+          </button>
         </div>
+      </div>
 
-        <form id="timing-edit-form" phx-change="validate_timing_row">
-          <table id="timing-table" class="pe-times w-full border-collapse text-left">
-            <caption class="sr-only">
-              Running times for {@selected_timing && @selected_timing.name}
-            </caption>
-            <thead>
-              <tr>
-                <th scope="col" class="pl-4">Stop</th>
-                <th scope="col">
-                  Arrive <span class="block text-xs font-normal text-muted">min:sec from start</span>
-                </th>
-                <th scope="col">
-                  Depart <span class="block text-xs font-normal text-muted">min:sec from start</span>
-                </th>
-                <th scope="col">
-                  Sample trip
-                  <span class="block text-xs font-normal text-muted">arrive → depart</span>
-                </th>
-                <th scope="col">Timepoint</th>
-              </tr>
-            </thead>
-            <tbody id="timing-rows">
-              <%= for row <- @timing_rows do %>
-                <.timing_row row={row} timing_error={@timing_error} />
-              <% end %>
-            </tbody>
-          </table>
-
-          <div class="grid gap-4 border-t border-subtle p-4 md:grid-cols-2">
-            <div class="grid content-start gap-2">
-              <.input
-                id="timing-headsign"
-                name="timing_headsign"
-                value={@timing_headsign}
-                type="text"
-                label="Headsign for new trips (optional)"
-                help="The destination shown on the bus for trips you add later. Existing trips keep their own headsigns."
-              />
-            </div>
-            <div class="text-[13px] text-muted">
-              <p class="font-[650] text-default">About timepoints and boarding</p>
-              <p id="timing-help-timepoint" class="mt-1">
-                A timepoint is a stop with a published time. Buses wait there if they’re early.
-                Unchecked stops show estimated times.
-              </p>
-              <p id="timing-help" class="mt-1">
-                Pickup and drop-off options: Regular, Not available, Phone the agency, or Arrange
-                with the driver.
-              </p>
-            </div>
+      <div
+        :if={@timing_rows != []}
+        class={@fill != nil && "grid items-start lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]"}
+      >
+        <div
+          :if={@fill != nil and @fill_preview != nil}
+          class="order-first border-b border-subtle lg:order-last lg:border-b-0 lg:border-l"
+        >
+          <.fill_panel
+            fill={@fill}
+            preview={@fill_preview}
+            rows={@timing_rows}
+            distances={@fill_distances}
+            coords={@fill_coords}
+            offline?={@offline?}
+          />
+        </div>
+        <div class={@fill != nil && "order-last min-w-0 lg:order-first"}>
+          <div class="px-4 py-3">
+            <.message
+              kind="info"
+              id="timing-origin"
+              title="Times are measured from the first departure"
+            >
+              Enter minutes:seconds, for example 04:30. The first arrival is relative to the first
+              departure, so a negative first arrival keeps a terminal arrival that happens before its
+              departure. Departure can be later than arrival to allow waiting.
+            </.message>
           </div>
-        </form>
+
+          <form id="timing-edit-form" phx-change="validate_timing_row">
+            <table id="timing-table" class="pe-times w-full border-collapse text-left">
+              <caption class="sr-only">
+                Running times for {@selected_timing && @selected_timing.name}
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col" class="pl-4">Stop</th>
+                  <th scope="col">
+                    Arrive
+                    <span class="block text-xs font-normal text-muted">min:sec from start</span>
+                  </th>
+                  <th scope="col">
+                    Depart
+                    <span class="block text-xs font-normal text-muted">min:sec from start</span>
+                  </th>
+                  <th scope="col">
+                    Sample trip
+                    <span class="block text-xs font-normal text-muted">arrive → depart</span>
+                  </th>
+                  <th scope="col">Timepoint</th>
+                </tr>
+              </thead>
+              <tbody id="timing-rows">
+                <%= for row <- @timing_rows do %>
+                  <.timing_row
+                    row={row}
+                    timing_error={@timing_error}
+                    preview_row={Map.get(@preview_by_position, row.position)}
+                    failed_preview?={MapSet.member?(@failed_positions, row.position)}
+                  />
+                <% end %>
+              </tbody>
+            </table>
+
+            <div class="grid gap-4 border-t border-subtle p-4 md:grid-cols-2">
+              <div class="grid content-start gap-2">
+                <.input
+                  id="timing-headsign"
+                  name="timing_headsign"
+                  value={@timing_headsign}
+                  type="text"
+                  label="Headsign for new trips (optional)"
+                  help="The destination shown on the bus for trips you add later. Existing trips keep their own headsigns."
+                />
+              </div>
+              <div class="text-[13px] text-muted">
+                <p class="font-[650] text-default">About timepoints and boarding</p>
+                <p id="timing-help-timepoint" class="mt-1">
+                  A timepoint is a stop with a published time. Buses wait there if they’re early.
+                  Unchecked stops show estimated times.
+                </p>
+                <p id="timing-help" class="mt-1">
+                  Pickup and drop-off options: Regular, Not available, Phone the agency, or Arrange
+                  with the driver.
+                </p>
+              </div>
+            </div>
+          </form>
+        </div>
       </div>
     </section>
     """
@@ -905,12 +975,19 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
 
   attr :row, :map, required: true
   attr :timing_error, :string, default: nil
+  attr :preview_row, :map, default: nil
+  attr :failed_preview?, :boolean, default: false
 
   defp timing_row(assigns) do
     assigns =
       assigns
       |> assign(:arrival_edited?, time_edited?(assigns.row, :arrival))
       |> assign(:departure_edited?, time_edited?(assigns.row, :departure))
+      |> assign(:estimated?, Map.get(assigns.row, :estimated, false))
+      |> assign(
+        :preview_estimate?,
+        assigns[:preview_row] != nil and assigns.preview_row.estimated
+      )
       |> assign(:chips, board_chips(assigns.row))
       |> assign(
         :error?,
@@ -918,7 +995,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
       )
 
     ~H"""
-    <tr id={"timing-row-#{@row.position}"} class="pe-row">
+    <tr
+      id={"timing-row-#{@row.position}"}
+      class={["pe-row", (@estimated? or @preview_estimate?) && "bg-soft/60"]}
+    >
       <th scope="row" class="pe-cell-stop">
         <span class="flex items-baseline gap-2">
           <span class="w-5 shrink-0 text-[13px] tabular-nums text-muted">{@row.position}</span>
@@ -926,6 +1006,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
             <span class="block text-sm font-semibold text-strong">{@row.name}</span>
             <span class="mt-0.5 flex flex-wrap items-center gap-1 text-[13px] font-normal text-muted">
               <span>Stop {@row.stop_id}</span>
+              <.badge :if={@estimated?} tone="info">Estimated</.badge>
               <span
                 :for={chip <- @chips}
                 class="rounded-badge bg-canvas px-1.5 py-0.5 text-xs font-semibold text-muted"
@@ -937,41 +1018,76 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         </span>
       </th>
       <td>
-        <label class="pe-cell-label" for={"timing-arrival-#{@row.position}"}>
-          {if @row.position == 1,
-            do: "Arrival relative to first departure",
-            else: "Arrive (min:sec)"}
-          <span class="sr-only">at {@row.name}</span>
-        </label>
-        <input
-          id={"timing-arrival-#{@row.position}"}
-          name={"timing[#{@row.position}][arrival]"}
-          type="text"
-          inputmode="numeric"
-          autocomplete="off"
-          value={@row.arrival}
-          data-estimated={if(Map.get(@row, :estimated), do: "true")}
-          aria-invalid={@row.arrival_error && "true"}
-          aria-describedby={@row.arrival_error && "timing-error-#{@row.position}"}
-          class={time_input_class(@row.arrival_error, @arrival_edited?)}
-        />
+        <%= if @preview_estimate? do %>
+          <div
+            id={"timing-cell-estimate-#{@row.position}"}
+            class="flex h-11 w-[104px] items-center rounded-control border border-dashed border-cyan-700 bg-soft px-3 text-sm font-semibold tabular-nums text-cyan-800"
+            title="Estimate, not saved"
+          >
+            {GtfsTime.format_offset(@preview_row.arrival)}
+          </div>
+          <p class="mt-0.5 text-[12px] tabular-nums text-muted">
+            <%= case was_state(@preview_row.previous, @preview_row.arrival) do %>
+              <% :blank -> %>
+                was blank
+              <% :same -> %>
+                no change
+              <% {:changed, was} -> %>
+                was <s>{GtfsTime.format_offset(was)}</s>
+            <% end %>
+          </p>
+        <% else %>
+          <label class="pe-cell-label" for={"timing-arrival-#{@row.position}"}>
+            {if @row.position == 1,
+              do: "Arrival relative to first departure",
+              else: "Arrive (min:sec)"}
+            <span class="sr-only">at {@row.name}</span>
+          </label>
+          <input
+            id={"timing-arrival-#{@row.position}"}
+            name={"timing[#{@row.position}][arrival]"}
+            type="text"
+            inputmode="numeric"
+            autocomplete="off"
+            value={@row.arrival}
+            data-estimated={if(Map.get(@row, :estimated), do: "true")}
+            aria-invalid={@row.arrival_error && "true"}
+            aria-describedby={@row.arrival_error && "timing-error-#{@row.position}"}
+            class={time_input_class(@row.arrival_error, @arrival_edited?, @estimated?)}
+          />
+          <p
+            :if={@failed_preview? and blank_value?(@row.arrival) and blank_value?(@row.departure)}
+            class="mt-0.5 text-[12px] italic text-muted"
+          >
+            Not filled
+          </p>
+        <% end %>
       </td>
       <td>
-        <label class="pe-cell-label" for={"timing-departure-#{@row.position}"}>
-          Depart (min:sec)<span class="sr-only"> at {@row.name}</span>
-        </label>
-        <input
-          id={"timing-departure-#{@row.position}"}
-          name={"timing[#{@row.position}][departure]"}
-          type="text"
-          inputmode="numeric"
-          autocomplete="off"
-          value={@row.departure}
-          data-estimated={if(Map.get(@row, :estimated), do: "true")}
-          aria-invalid={@row.departure_error && "true"}
-          aria-describedby={@row.departure_error && "timing-error-#{@row.position}"}
-          class={time_input_class(@row.departure_error, @departure_edited?)}
-        />
+        <%= if @preview_estimate? do %>
+          <div
+            class="flex h-11 w-[104px] items-center rounded-control border border-dashed border-cyan-700 bg-soft px-3 text-sm font-semibold tabular-nums text-cyan-800"
+            title="Estimate, not saved"
+          >
+            {GtfsTime.format_offset(@preview_row.departure)}
+          </div>
+        <% else %>
+          <label class="pe-cell-label" for={"timing-departure-#{@row.position}"}>
+            Depart (min:sec)<span class="sr-only"> at {@row.name}</span>
+          </label>
+          <input
+            id={"timing-departure-#{@row.position}"}
+            name={"timing[#{@row.position}][departure]"}
+            type="text"
+            inputmode="numeric"
+            autocomplete="off"
+            value={@row.departure}
+            data-estimated={if(Map.get(@row, :estimated), do: "true")}
+            aria-invalid={@row.departure_error && "true"}
+            aria-describedby={@row.departure_error && "timing-error-#{@row.position}"}
+            class={time_input_class(@row.departure_error, @departure_edited?, @estimated?)}
+          />
+        <% end %>
       </td>
       <td class="pe-cell-sample">
         <span class="pe-cell-label">Sample trip</span>
@@ -1071,6 +1187,397 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
         </details>
       </td>
     </tr>
+    """
+  end
+
+  @doc """
+  Renders the Fill times between timepoints preview panel: the not-saved
+  header, the preview summary, the scope/method options, the problem and pace
+  warnings with buttons that focus the stop to fix, the server-rendered "Time
+  along the route" chart and the `#fill-map` payload container step 14 mounts
+  the Leaflet preview from.
+
+  `preview` is a `GtfsPlanner.Gtfs.TimingFill.preview/4` result, `rows` are
+  the staged timing rows (for stop names), `distances` are cumulative metres
+  per visit and `coords` are `{lat, lon}` tuples or nil per visit.
+  """
+  attr :fill, :map, required: true
+  attr :preview, :map, required: true
+  attr :rows, :list, default: []
+  attr :distances, :list, default: []
+  attr :coords, :list, default: []
+  attr :offline?, :boolean, default: false
+
+  def fill_panel(assigns) do
+    assigns =
+      assigns
+      |> assign(:names, Map.new(assigns.rows, &{&1.position, &1.name}))
+      |> assign(:straight_count, straight_preview_spans(assigns.preview))
+      |> assign(
+        :map_json,
+        Jason.encode!(fill_map_payload(assigns.rows, assigns.coords, assigns.preview))
+      )
+
+    ~H"""
+    <aside
+      id="fill-panel"
+      aria-labelledby="fill-title"
+      phx-window-keydown="cancel_fill"
+      phx-key="escape"
+      class="min-w-0 bg-white"
+    >
+      <div class="flex items-start gap-3 border-b border-subtle bg-soft px-4 py-3">
+        <div class="min-w-0 flex-1">
+          <.badge tone="info">Preview · not saved</.badge>
+          <h2 id="fill-title" tabindex="-1" class="mt-2 text-lg font-bold text-strong">
+            Fill times between timepoints
+          </h2>
+        </div>
+        <button
+          id="fill-close"
+          type="button"
+          phx-click="cancel_fill"
+          aria-label="Cancel filling times"
+          title="Cancel"
+          class="btn btn-ghost min-h-11 px-2"
+        >
+          <.icon name="hero-x-mark" class="size-5" />
+        </button>
+      </div>
+
+      <div class="grid gap-4 px-4 py-3">
+        <p id="fill-summary" role="status" class="text-sm text-strong">{@preview.summary}</p>
+
+        <p
+          :if={@fill.only_anchor != nil}
+          class="rounded-control bg-canvas px-3 py-2 text-[13px] text-default"
+        >
+          Only the sections next to <strong>{Map.get(@names, @fill.only_anchor + 1, "stop #{@fill.only_anchor + 1}")}</strong>.
+        </p>
+
+        <.form
+          for={to_form(%{"scope" => to_string(@fill.scope), "method" => to_string(@fill.method)})}
+          id="fill-form"
+          phx-change="change_fill"
+          class="grid gap-4"
+        >
+          <fieldset>
+            <legend class="text-sm font-[650] text-default">Fill</legend>
+            <div class="mt-1 grid gap-2">
+              <label class="flex cursor-pointer items-center gap-2 rounded-control border border-subtle px-3 py-2 text-sm">
+                <input
+                  id="fill-scope-missing"
+                  type="radio"
+                  name="scope"
+                  value="missing"
+                  checked={@fill.scope == :missing}
+                  class="radio"
+                />
+                <span>
+                  <span class="block font-semibold text-strong">Stops without times</span>
+                  <span class="block text-[13px] text-default">
+                    Keeps every time already entered.
+                  </span>
+                </span>
+              </label>
+              <label class="flex cursor-pointer items-center gap-2 rounded-control border border-subtle px-3 py-2 text-sm">
+                <input
+                  id="fill-scope-between"
+                  type="radio"
+                  name="scope"
+                  value="between"
+                  checked={@fill.scope == :between}
+                  class="radio"
+                />
+                <span>
+                  <span class="block font-semibold text-strong">
+                    Every stop between timepoints
+                  </span>
+                  <span class="block text-[13px] text-default">
+                    Replaces times typed at other stops too. To keep one, make that stop a
+                    timepoint.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend class="text-sm font-[650] text-default">Share the time by</legend>
+            <div class="mt-1 grid gap-2">
+              <label class="flex cursor-pointer items-center gap-2 rounded-control border border-subtle px-3 py-2 text-sm">
+                <input
+                  id="fill-method-distance"
+                  type="radio"
+                  name="method"
+                  value="distance"
+                  checked={@fill.method == :distance}
+                  class="radio"
+                />
+                <span>
+                  <span class="block font-semibold text-strong">Distance along the path</span>
+                  <span class="block text-[13px] text-default">
+                    Stops farther apart get more of the time.
+                  </span>
+                </span>
+              </label>
+              <label class="flex cursor-pointer items-center gap-2 rounded-control border border-subtle px-3 py-2 text-sm">
+                <input
+                  id="fill-method-even"
+                  type="radio"
+                  name="method"
+                  value="even"
+                  checked={@fill.method == :even}
+                  class="radio"
+                />
+                <span>
+                  <span class="block font-semibold text-strong">Equal time per stop</span>
+                  <span class="block text-[13px] text-default">
+                    Same share for every stop, whatever the distance.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+        </.form>
+
+        <div
+          :if={@preview.problems != [] or @preview.fast_spans != [] or @straight_count > 0}
+          id="fill-problems"
+          class="grid gap-2"
+        >
+          <div
+            :for={problem <- @preview.problems}
+            class="rounded-control bg-error-bg px-3 py-2"
+          >
+            <p class="text-sm text-error-fg">{problem.message}</p>
+            <button
+              type="button"
+              phx-click="focus_form_error"
+              phx-value-id={"timing-arrival-#{problem.position}"}
+              class="inline-flex min-h-11 items-center text-sm font-[650] text-error-fg underline underline-offset-4"
+            >
+              Go to stop {problem.position}
+            </button>
+          </div>
+          <div
+            :for={fast <- @preview.fast_spans}
+            class="rounded-control bg-warning-bg px-3 py-2"
+          >
+            <p class="text-sm text-warning-fg">
+              Check the times from {stop_name(@names, fast.from_position)} to {stop_name(
+                @names,
+                fast.to_position
+              )}. The bus would average {round(fast.mph)} mph there. Estimates follow
+              the timepoints, so fix those first.
+            </p>
+            <button
+              type="button"
+              phx-click="focus_form_error"
+              phx-value-id={"timing-arrival-#{fast.to_position}"}
+              class="inline-flex min-h-11 items-center text-sm font-[650] text-warning-fg underline underline-offset-4"
+            >
+              Go to stop {fast.to_position}
+            </button>
+          </div>
+          <div
+            :if={@straight_count > 0 and @fill.method == :distance}
+            class="rounded-control bg-warning-bg px-3 py-2"
+          >
+            <p class="text-sm text-warning-fg">
+              {straight_span_text(@straight_count)} use the straight line between stops,
+              which is shorter than the road. Stops there may get too little time.
+            </p>
+            <button
+              id="fill-use-even"
+              type="button"
+              phx-click="change_fill"
+              phx-value-method="even"
+              class="inline-flex min-h-11 items-center text-sm font-[650] text-warning-fg underline underline-offset-4"
+            >
+              Use equal time per stop
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="border-t border-subtle px-4 pb-3 pt-3">
+        <div class="flex items-baseline justify-between gap-3">
+          <h3 class="text-sm font-bold text-strong">Time along the route</h3>
+          <p class="text-[13px] text-muted">Steeper is slower</p>
+        </div>
+        <.fill_profile preview={@preview} distances={@distances} />
+      </div>
+
+      <div class="border-t border-subtle px-4 pb-4 pt-3">
+        <h3 class="text-sm font-bold text-strong">On the map</h3>
+        <div
+          id="fill-map"
+          phx-update="ignore"
+          data-fill-map={@map_json}
+          class="mt-2 h-[320px] rounded-card border border-subtle bg-canvas"
+        />
+        <p class="mt-2 text-[13px] text-muted">
+          Estimates are not saved until you save running times.
+        </p>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-end gap-2 border-t border-subtle px-4 py-3">
+        <p class="mr-auto min-w-[150px] flex-1 text-[13px] text-muted">
+          {fill_footer_note(@preview.changed, @offline?)}
+        </p>
+        <button
+          id="fill-cancel"
+          type="button"
+          phx-click="cancel_fill"
+          class="btn btn-outline min-h-11"
+        >
+          Cancel
+        </button>
+        <button
+          id="fill-apply"
+          type="button"
+          phx-click="apply_fill"
+          disabled={@preview.changed == 0}
+          class="btn btn-primary min-h-11"
+        >
+          {fill_apply_label(@preview)}
+        </button>
+      </div>
+    </aside>
+    """
+  end
+
+  @doc """
+  Renders the "Time along the route" chart for a fill preview as an inline
+  SVG: distance along the path runs left to right, time from the start runs
+  top to bottom. Timed rows the fill keeps are squares, estimated rows are
+  circles, and every span with a known pace carries a speed label — bold
+  warning text when the span implies more than 60 mph.
+  """
+  attr :preview, :map, required: true
+  attr :distances, :list, default: []
+
+  def fill_profile(assigns) do
+    assigns = assign(assigns, :profile, build_profile(assigns.preview, assigns.distances))
+
+    ~H"""
+    <div id="fill-profile" class="mt-2">
+      <svg
+        viewBox="0 0 480 220"
+        role="img"
+        aria-label="Time along the route"
+        class="block h-auto w-full"
+      >
+        <line
+          :for={grid <- @profile.grid}
+          x1={grid.x1}
+          x2={grid.x2}
+          y1={grid.y}
+          y2={grid.y}
+          class="stroke-subtle"
+          stroke-width="1"
+        />
+        <text
+          :for={grid <- @profile.grid}
+          x={grid.label_x}
+          y={grid.label_y}
+          text-anchor="end"
+          font-size="11"
+          class="fill-muted"
+        >
+          {grid.label}
+        </text>
+        <line
+          :for={hop <- @profile.hops}
+          x1={hop.x1}
+          y1={hop.y1}
+          x2={hop.x2}
+          y2={hop.y2}
+          stroke-width="2.5"
+          stroke-dasharray={hop.straight? && "6 4"}
+          class={if hop.straight?, do: "stroke-warning-fg", else: "stroke-strong"}
+        />
+        <line
+          :for={dwell <- @profile.dwells}
+          x1={dwell.x}
+          x2={dwell.x}
+          y1={dwell.y1}
+          y2={dwell.y2}
+          stroke-width="2.5"
+          class="stroke-strong"
+        />
+        <line
+          :for={tick <- @profile.ticks}
+          x1={tick.x}
+          x2={tick.x}
+          y1={tick.y1}
+          y2={tick.y2}
+          stroke-width="2"
+          class="stroke-error-line"
+        />
+        <rect
+          :for={anchor <- @profile.anchors}
+          x={anchor.x}
+          y={anchor.y}
+          width="9"
+          height="9"
+          rx="1.5"
+          fill="currentColor"
+          class="text-strong"
+        />
+        <circle
+          :for={estimate <- @profile.estimates}
+          cx={estimate.x}
+          cy={estimate.y}
+          r="4.5"
+          fill="currentColor"
+          class="text-cyan-700"
+        />
+        <text
+          :for={label <- @profile.labels}
+          x={label.x}
+          y={label.y}
+          text-anchor="middle"
+          font-size="11"
+          class={if label.fast?, do: "fill-warning-fg font-bold", else: "fill-muted"}
+        >
+          {label.text}
+        </text>
+        <text
+          x={@profile.x_left}
+          y={@profile.x_base}
+          text-anchor="start"
+          font-size="11"
+          class="fill-muted"
+        >
+          0
+        </text>
+        <text
+          x={@profile.x_right}
+          y={@profile.x_base}
+          text-anchor="end"
+          font-size="11"
+          class="fill-muted"
+        >
+          {@profile.x_max_label} along the path
+        </text>
+      </svg>
+      <p class="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-muted">
+        <span class="inline-flex items-center gap-1.5">
+          <span class="inline-block size-2.5 rounded-[2px] bg-strong"></span>Timepoint or kept time
+        </span>
+        <span class="inline-flex items-center gap-1.5">
+          <span class="inline-block size-2.5 rounded-full border-2 border-cyan-700 bg-soft"></span>Estimate
+        </span>
+        <span
+          :if={Enum.any?(@preview.spans, &(&1.source == :straight_line and &1.error == nil))}
+          class="inline-flex items-center gap-1.5"
+        >
+          <span class="inline-block w-4 border-t-2 border-dashed border-warning-fg"></span>No path,
+          straight line
+        </span>
+      </p>
+    </div>
     """
   end
 
@@ -1603,16 +2110,334 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   defp edited?(_value, nil), do: false
   defp edited?(value, stored), do: value != stored
 
-  defp time_input_class(invalid?, edited?) do
+  defp time_input_class(invalid?, edited?, estimated?) do
     [
-      "h-11 w-[104px] rounded-control border px-3 text-sm tabular-nums text-strong",
+      "h-11 w-[104px] rounded-control border px-3 text-sm tabular-nums",
       cond do
-        invalid? -> "border-2 border-error-fg bg-white"
-        edited? -> "border-warning-line bg-warning-bg"
-        true -> "border-control bg-white"
+        invalid? -> "border-2 border-error-fg bg-white text-strong"
+        estimated? -> "border-cyan-700 bg-soft text-cyan-800"
+        edited? -> "border-warning-line bg-warning-bg text-strong"
+        true -> "border-control bg-white text-strong"
       end
     ]
   end
+
+  # Which "was …" line an estimated preview cell shows: the staged value the
+  # estimate replaces, or that there was nothing (or no change) before.
+  defp was_state({nil, _departure}, _estimate), do: :blank
+  defp was_state({previous, _departure}, estimate) when previous == estimate, do: :same
+  defp was_state({previous, _departure}, _estimate), do: {:changed, previous}
+
+  defp blank_value?(nil), do: true
+  defp blank_value?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_value?(_value), do: false
+
+  defp blank_note_text(1),
+    do:
+      "1 stop doesn’t have times yet. Fill it from the timepoints on either side, or type it. Every stop needs a time before you can save."
+
+  defp blank_note_text(count),
+    do:
+      "#{count} stops don’t have times yet. Fill them from the timepoints on either side, or type them. Every stop needs a time before you can save."
+
+  defp preview_by_position(nil), do: %{}
+  defp preview_by_position(%{rows: rows}), do: Map.new(rows, &{&1.position, &1})
+  defp preview_by_position(_preview), do: %{}
+
+  # Positions inside a span the estimator refused to fill, so their blank
+  # cells read "Not filled" instead of looking merely empty.
+  defp failed_preview_positions(nil), do: MapSet.new()
+
+  defp failed_preview_positions(%{spans: spans}) do
+    spans
+    |> Enum.filter(&(&1.error != nil))
+    |> Enum.flat_map(&Enum.to_list((&1.from_position + 1)..&1.to_position))
+    |> MapSet.new()
+  end
+
+  defp failed_preview_positions(_preview), do: MapSet.new()
+
+  defp format_retime_delta(seconds) when is_integer(seconds) and seconds >= 0,
+    do: "#{GtfsTime.format_offset(seconds)} later"
+
+  defp format_retime_delta(seconds) when is_integer(seconds),
+    do: "#{GtfsTime.format_offset(-seconds)} earlier"
+
+  defp format_retime_delta(_seconds), do: "an unknown amount"
+
+  defp retime_stops_text(1), do: "1 stop would move."
+  defp retime_stops_text(count), do: "#{count} stops would move."
+
+  defp fill_apply_label(%{changed: 1}), do: "Fill 1 stop"
+  defp fill_apply_label(%{changed: 0}), do: "Fill stops"
+  defp fill_apply_label(%{changed: count}), do: "Fill #{count} stops"
+  defp fill_apply_label(_preview), do: "Nothing to fill"
+
+  defp fill_footer_note(_changed, true),
+    do: "Connection lost. Filling still works; saving waits until you reconnect."
+
+  defp fill_footer_note(0, _offline?),
+    do: "Nothing to fill with these choices."
+
+  defp fill_footer_note(_changed, _offline?),
+    do: "Nothing is saved until you save running times."
+
+  defp stop_name(names, position), do: Map.get(names, position, "stop #{position}")
+
+  defp straight_span_text(1), do: "1 section has no path on the map and"
+  defp straight_span_text(count), do: "#{count} sections have no path on the map and"
+
+  defp straight_preview_spans(%{spans: spans}) do
+    Enum.count(spans, &(&1.source == :straight_line and &1.error == nil))
+  end
+
+  defp straight_preview_spans(_preview), do: 0
+
+  # The `#fill-map` payload step 14 mounts the Leaflet preview from. Stops
+  # carry `[lon, lat]` pairs (conversion from the estimator's `{lat, lon}`
+  # tuples happens only here, per INV-4); kinds reuse the panel's vocabulary.
+  defp fill_map_payload(rows, coords, preview) do
+    estimated =
+      case preview do
+        %{rows: preview_rows} ->
+          preview_rows |> Enum.filter(& &1.estimated) |> Map.new(&{&1.position, true})
+
+        _ ->
+          %{}
+      end
+
+    %{
+      stops:
+        Enum.map(rows, fn row ->
+          %{
+            position: row.position,
+            name: Map.get(row, :name),
+            coord: lonlat(Enum.at(coords, row.position - 1)),
+            kind: map_stop_kind(row, Map.get(estimated, row.position, false))
+          }
+        end)
+    }
+  end
+
+  defp lonlat({lat, lon}) when is_number(lat) and is_number(lon), do: [lon, lat]
+  defp lonlat(_coord), do: nil
+
+  defp map_stop_kind(_row, true), do: "estimate"
+
+  defp map_stop_kind(row, false) do
+    cond do
+      blank_value?(Map.get(row, :arrival)) and blank_value?(Map.get(row, :departure)) ->
+        "blank"
+
+      Map.get(row, :timepoint) == true ->
+        "timepoint"
+
+      true ->
+        "stop"
+    end
+  end
+
+  # Profile geometry for `fill_profile/1`: x is metres along the path (even
+  # spacing when distances are missing), y is seconds from the start. All
+  # coordinates are pre-rendered strings so the template stays declarative.
+  defp build_profile(preview, distances) do
+    rows = Map.get(preview, :rows, [])
+    spans = Map.get(preview, :spans, [])
+    {by_pos, max_d, max_t, scale_y, frame} = profile_scales(rows, distances)
+    {width, height, left, right, _top, bottom} = frame
+    marks = profile_marks(rows, by_pos, scale_y, height - bottom)
+
+    %{
+      hops: profile_hops(rows, spans, by_pos, scale_y),
+      dwells: profile_dwells(rows, by_pos, scale_y),
+      anchors: marks.anchors,
+      estimates: marks.estimates,
+      ticks: marks.ticks,
+      labels: profile_labels(spans, by_pos, scale_y),
+      grid: profile_grid(frame, max_t, scale_y),
+      x_max_label: distance_label(max_d),
+      x_left: svg_num(left),
+      x_right: svg_num(width - right),
+      x_base: svg_num(height - bottom + 15)
+    }
+  end
+
+  defp profile_frame, do: {480, 220, 40, 10, 10, 28}
+
+  defp profile_scales(rows, distances) do
+    count = length(rows)
+    frame = profile_frame()
+    {_width, height, _left, _right, top, bottom} = frame
+    {xs, max_d} = profile_xs(rows, distances, count)
+    max_t = profile_max_t(rows)
+    scale_y = fn t -> height - bottom - t / max_t * (height - top - bottom) end
+
+    by_pos =
+      Map.new(rows, fn row ->
+        {row.position,
+         %{
+           x: profile_x(Enum.at(xs, row.position - 1) || 0, max_d, frame),
+           arrival: row.arrival,
+           departure: row.departure,
+           estimated: row.estimated
+         }}
+      end)
+
+    {by_pos, max_d, max_t, scale_y, frame}
+  end
+
+  defp profile_x(distance, max_d, {width, _height, left, right, _top, _bottom}) do
+    left + distance / max_d * (width - left - right)
+  end
+
+  defp profile_point_timed?(by_pos, pos) do
+    case Map.get(by_pos, pos) do
+      %{arrival: arrival, departure: departure}
+      when is_integer(arrival) and is_integer(departure) ->
+        true
+
+      _ ->
+        false
+    end
+  end
+
+  defp profile_hops(rows, spans, by_pos, scale_y) do
+    rows
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.filter(fn [previous, current] ->
+      profile_point_timed?(by_pos, previous.position) and
+        profile_point_timed?(by_pos, current.position)
+    end)
+    |> Enum.map(fn [previous, current] ->
+      from = Map.fetch!(by_pos, previous.position)
+      to = Map.fetch!(by_pos, current.position)
+
+      %{
+        x1: svg_num(from.x),
+        y1: svg_num(scale_y.(from.departure)),
+        x2: svg_num(to.x),
+        y2: svg_num(scale_y.(to.arrival)),
+        straight?: hop_straight?(spans, current.position)
+      }
+    end)
+  end
+
+  defp profile_dwells(rows, by_pos, scale_y) do
+    for row <- rows,
+        point = Map.get(by_pos, row.position),
+        is_integer(point.arrival) and is_integer(point.departure) and
+          point.arrival != point.departure do
+      %{
+        x: svg_num(point.x),
+        y1: svg_num(scale_y.(point.arrival)),
+        y2: svg_num(scale_y.(point.departure))
+      }
+    end
+  end
+
+  defp profile_marks(rows, by_pos, scale_y, base_y) do
+    {anchors, estimates, ticks} =
+      Enum.reduce(rows, {[], [], []}, fn row, {anchors, estimates, ticks} ->
+        point = Map.fetch!(by_pos, row.position)
+
+        cond do
+          row.estimated and profile_point_timed?(by_pos, row.position) ->
+            {anchors, [%{x: svg_num(point.x), y: svg_num(scale_y.(row.arrival))} | estimates],
+             ticks}
+
+          profile_point_timed?(by_pos, row.position) ->
+            {[%{x: svg_num(point.x - 4), y: svg_num(scale_y.(row.arrival) - 4)} | anchors],
+             estimates, ticks}
+
+          true ->
+            {anchors, estimates,
+             [%{x: svg_num(point.x), y1: svg_num(base_y - 5), y2: svg_num(base_y)} | ticks]}
+        end
+      end)
+
+    %{anchors: anchors, estimates: estimates, ticks: ticks}
+  end
+
+  defp profile_labels(spans, by_pos, scale_y) do
+    spans
+    |> Enum.filter(&(&1.error == nil and is_number(&1.mph)))
+    |> Enum.map(fn span ->
+      from = Map.get(by_pos, span.from_position)
+      to = Map.get(by_pos, span.to_position)
+
+      if is_nil(from) or is_nil(to) or not profile_point_timed?(by_pos, span.from_position) or
+           not profile_point_timed?(by_pos, span.to_position) do
+        nil
+      else
+        %{
+          x: svg_num((from.x + to.x) / 2),
+          y: svg_num((scale_y.(from.departure) + scale_y.(to.arrival)) / 2 + 14),
+          text: "#{round(span.mph)} mph",
+          fast?: span.mph > 60
+        }
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp profile_grid({width, _height, left, right, _top, _bottom}, max_t, scale_y) do
+    for fraction <- [0, 0.5, 1] do
+      gy = scale_y.(max_t * fraction)
+
+      %{
+        x1: svg_num(left),
+        x2: svg_num(width - right),
+        y: svg_num(gy),
+        label_x: svg_num(left - 5),
+        label_y: svg_num(gy + 4),
+        label: "#{round(max_t * fraction / 60)}"
+      }
+    end
+  end
+
+  defp profile_xs(rows, distances, count) do
+    xs = Enum.map(rows, fn row -> Enum.at(distances, row.position - 1) end)
+    known = Enum.filter(xs, &is_number/1)
+    max_d = if known == [], do: nil, else: Enum.max(known)
+
+    if max_d in [nil, 0] do
+      {Enum.map(rows, fn row -> (row.position - 1) * 1.0 end), max(count - 1, 1) * 1.0}
+    else
+      step = max_d / max(count - 1, 1)
+
+      {Enum.map(rows, fn row ->
+         Enum.at(distances, row.position - 1) || (row.position - 1) * step
+       end), max_d * 1.0}
+    end
+  end
+
+  defp profile_max_t(rows) do
+    times =
+      rows |> Enum.flat_map(&[&1.arrival, &1.departure]) |> Enum.filter(&is_integer/1)
+
+    max(Enum.max(times, fn -> 0 end), 60)
+  end
+
+  defp hop_straight?(spans, to_position) do
+    case Enum.find(
+           spans,
+           &(&1.from_position < to_position and to_position <= &1.to_position)
+         ) do
+      %{source: :straight_line, error: nil} -> true
+      _ -> false
+    end
+  end
+
+  defp distance_label(max_d) when max_d >= 1609.344,
+    do: "#{Float.round(max_d / 1609.344, 1)} mi"
+
+  defp distance_label(max_d), do: "#{round(max_d)} m"
+
+  defp svg_num(value) when is_float(value),
+    do: :erlang.float_to_binary(value, decimals: 1)
+
+  defp svg_num(value) when is_integer(value), do: Integer.to_string(value)
+  defp svg_num(value), do: to_string(value)
 
   # The arrival and departure a sample trip would show, once when they match.
   defp sample_trip(%{preview_arrival: same, preview_departure: same}), do: same
