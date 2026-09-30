@@ -194,13 +194,13 @@ School days           ████ █████│███ ██           
 
 ## 6. Advanced trip editing
 
-**Starting point.** The planned route-schedules work adds:
+**Starting point.** The route-schedules page (#698) has:
 - calendar, direction and pattern filters;
 - row selection with bulk delete;
 - series creation, duplicate and single-trip editing.
 
-Frequency trips are read-only there. The planned basic-blocking work makes `block_id` read-only on
-Schedules and edits it on Blocks:
+Frequency service is authored and edited on Schedules (see the frequencies decision below). Basic
+blocking shipped in #706: `block_id` is read-only on Schedules and edits on Blocks:
 - A duplicated or newly created trip starts without a block and appears in the Blocks pool. A
   copied block would put the trip on a vehicle where Schedules can't show or change it.
 - Retiming a trip keeps its block, and Schedules warns and links to Blocks if the block has an
@@ -212,9 +212,10 @@ Schedules and edits it on Blocks:
 - The block link opens the first day type, in the Blocks list order, that contains the trip, with
   the trip selected. A trip often runs in several day types; its drawer on Blocks lists them.
 
-**Added to Schedules** (no competing place):
+**Added to Schedules** (no competing place; shipped with advanced trip editing):
 - keyboard navigation in the grid;
 - bulk actions: Shift times, Change timing, Change calendar, Copy to calendar;
+- copy and paste of trips on the page, and per-action undo;
 - a "Custom times only" filter.
 
 Filtering by block belongs on Blocks.
@@ -223,8 +224,9 @@ Filtering by block belongs on Blocks.
 answer is to create a calendar. AC-TRIP-038 to AC-TRIP-040 ask for weekday checkboxes on each trip;
 that difference is still open.
 
-**Frequencies decision.** In the Schedules add/edit drawer, choose "Scheduled trips" or "Every N
-minutes". A frequency row opens a windows editor.
+**Frequencies decision.** Shipped with advanced trip editing. In the Schedules add/edit drawer,
+choose "Scheduled trips" or "Every N minutes"; a frequency row opens a windows editor.
+Combining listed trips into frequency service (AC-TRIP-037) is deferred.
 - *Rejected:* a frequency mode on the pattern, as in datatools. Switching modes deletes trips, and
   it hides the service type from the page where service is shown.
 

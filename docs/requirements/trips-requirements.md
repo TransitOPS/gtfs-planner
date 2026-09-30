@@ -490,33 +490,37 @@ As a schedule editor, I want to be warned about overlapping trips on the same bl
 
 ### 4.5 Keyboard Navigation
 
-**AC-TRIP-021: Move trip one minute with arrow keys**
-- Given I have selected a trip in timeline view
-- When I press left or right arrow
-- Then the trip start time shifts by one minute in that direction
+**AC-TRIP-021: Nudge trips one minute with `]` and `[`**
+- Given trips are selected in the timetable grid, or the cursor is on a trip
+- When I press `]` or `[`
+- Then each selected trip, or the cursor's trip, moves one minute later or earlier
+- And the change saves immediately and can be undone
 
-**AC-TRIP-022: Move trip five minutes with Shift+arrow**
-- Given I have selected a trip in timeline view
-- When I press Shift + left or right arrow
-- Then the trip start time shifts by five minutes
+**AC-TRIP-022: Nudge trips five minutes with `}` and `{`**
+- Given trips are selected in the timetable grid, or the cursor is on a trip
+- When I press `}` or `{`
+- Then each selected trip, or the cursor's trip, moves five minutes later or earlier
+- And the change saves immediately and can be undone
 
-**AC-TRIP-023: Move trip one hour with Ctrl+arrow**
-- Given I have selected a trip in timeline view
-- When I press Ctrl + left or right arrow
-- Then the trip start time shifts by one hour
+**AC-TRIP-023: Move trips by a chosen amount with Shift times**
+- Given I have selected trips in the timetable grid
+- When I choose Shift times and set the direction, the number of minutes and, where offered, the timepoint to shift from
+- Then the grid previews every new time in place without saving and lists the consequences
+- And applying shifts every selected trip, or each trip from the chosen timepoint onward
+- And the trips keep their blocks
 
 ### 4.6 Multi-Select Operations
 
-**AC-TRIP-024: Select multiple trips with Shift+click**
-- Given I am viewing the timeline
-- When I hold Shift and click on multiple trips
-- Then all clicked trips are selected
-- And the edit panel shows multi-edit mode
+**AC-TRIP-024: Select multiple trips with Space and checkboxes**
+- Given I am working in the timetable grid
+- When I tick a trip's checkbox, or press Space with the cursor on a trip
+- Then the trip is added to or removed from the selection
+- And the sticky bar shows how many trips are selected and the actions that apply to all of them
 
-**AC-TRIP-025: Select trips with drag selection**
-- Given I am viewing the timeline
-- When I hold Shift and drag to create a selection box
-- Then all trips within the box are selected
+**AC-TRIP-025: Select a range of trips with the keyboard**
+- Given I have started a selection in the timetable grid
+- When I hold Shift and press the up or down arrow, or press Cmd/Ctrl+A
+- Then every trip between the anchor and the cursor, or every trip in view, is selected
 
 **AC-TRIP-026: Edit multiple trips**
 - Given I have multiple trips selected
@@ -532,18 +536,16 @@ As a schedule editor, I want to be warned about overlapping trips on the same bl
 - Then the trips are copied to clipboard
 - And a visual indication confirms the copy
 
-**AC-TRIP-028: Paste trip at specific time**
-- Given I have copied a trip
-- When I click on the timeline at a specific time (with no trip selected)
-- And I press Ctrl+V
-- Then a new trip is created at that time
-- And the trip inherits all properties from the copied trip
+**AC-TRIP-028: Paste trips at a new first departure**
+- Given I have copied trips
+- When I paste them, pick the service day and choose "First departure at a new time"
+- Then each copied trip is created on that service day with its first departure at the entered time
+- And the trips keep their stop spacing
 
-**AC-TRIP-029: Paste trip at original time**
-- Given I have copied a trip
-- When I click in the header area above the timeline (not on a specific time)
-- And I press Ctrl+V
-- Then a new trip is created at the original start time
+**AC-TRIP-029: Paste trips at their original times**
+- Given I have copied trips
+- When I paste them, pick the service day and keep "Same times"
+- Then each copied trip is created at its original time on that service day
 - And this allows duplicating trips to different calendars at the same time
 
 ### 4.8 Trip Deletion
@@ -553,18 +555,18 @@ As a schedule editor, I want to be warned about overlapping trips on the same bl
 - When I click the Delete button
 - Then a confirmation dialog appears
 - And confirming deletes the trip
-- And the trip is removed from timeline/timetable
+- And the trip is removed from the timetable
 
 **AC-TRIP-031: Delete multiple trips**
-- Given I have multiple trips selected
-- When I delete them
-- Then a confirmation indicates how many trips will be deleted
-- And confirming deletes all selected trips
+- Given I have multiple trips selected in the timetable grid
+- When I choose Delete
+- Then a confirmation names the number of trips and the service day
+- And confirming deletes every selected trip
 
 **AC-TRIP-032: Trip deletion confirmation**
 - Given I initiate a trip deletion
 - Then the system shows a confirmation dialog
-- And the dialog indicates what will be deleted
+- And the dialog indicates what will be deleted, including any transfer records that name the trips, and that it can't be undone
 - And I must explicitly confirm to proceed
 
 ### 4.9 Repeated Trips
@@ -581,10 +583,10 @@ As a schedule editor, I want to be warned about overlapping trips on the same bl
 - Then the number of trips updates based on start time and last departure
 - Or the last departure updates if number is fixed
 
-**AC-TRIP-035: Repeated trips display on timeline**
-- Given a trip is configured with repetitions
-- Then all instances appear as separate bars on the timeline
-- And they are visually grouped (e.g., with a connecting line or shared highlight)
+**AC-TRIP-035: Frequency service displays as one row**
+- Given a pattern and service day carry frequency service
+- Then the timetable shows it as one row labelled with its window, for example "Frequency service · Every 20 min, 09:00–12:00"
+- And its stop times are reference times shown in italic, not the departures the window generates
 
 **AC-TRIP-036: Expand repeated trip**
 - Given I am viewing a repeated trip
@@ -592,10 +594,8 @@ As a schedule editor, I want to be warned about overlapping trips on the same bl
 - Then the repeated trip is converted to individual trip records
 - And each can be edited separately
 
-**AC-TRIP-037: Aggregate trips to repeated**
-- Given I have multiple trips with the same pattern and regular headways selected
-- When I select "Combine into repeating trip"
-- Then the trips are aggregated into a single repeated trip definition
+**AC-TRIP-037: Aggregate trips to repeated** — **Deferred**
+- Deferred by the user on 2026-09-28. Frequency service is authored by adding "Every N minutes" service and converted back to listed trips; aggregating listed trips into a frequency definition is not planned.
 
 ### 4.10 Service Days
 

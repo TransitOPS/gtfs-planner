@@ -219,15 +219,16 @@ under the route. The Patterns tab stays current.
   - There is no separate list of headsigns across the version. A headsign belongs to trips and
     defaults from the timing, then the pattern.
 
-**Route › Schedules** (Live since #698; Paste timetable Planned):
+**Route › Schedules** (Live since #698, extended by advanced trip editing; Paste timetable Planned):
 - A calendar and direction picker, with one timetable section per pattern.
 - Add, edit, duplicate and delete trips, plus bulk delete.
 - Planning summaries and **Paste timetable**.
-- After the planned basic-blocking work, `block_id` is read-only here and links to Blocks for the
+- Basic blocking shipped in #706: `block_id` is read-only here and links to Blocks for the
   trip's first day type. Duplicated and new trips start without a block.
-- Proposed additions:
-  - Grid keyboard navigation.
+- Shipped with advanced trip editing:
+  - Grid keyboard navigation and nudges.
   - Bulk actions: Shift times, Change timing, Change calendar, Copy to calendar.
+  - Copy and paste of trips on the page, and per-action undo.
   - A "Custom times only" filter.
   - An add/edit drawer that offers "Scheduled trips" or "Every N minutes", with a windows
     editor for frequency service.
