@@ -98,6 +98,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
      |> assign(:cell_error, nil)
      |> assign(:change, nil)
      |> assign(:clipboard, nil)
+     |> assign(:shortcuts_open?, false)
+     |> assign(:shortcuts_return_focus_id, nil)
      |> assign(:vehicle_change, nil)
      |> assign(:vehicle_change_from, nil)
      |> assign(:keep_vehicle_change, false)
@@ -268,6 +270,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   @impl true
   def handle_event("save_shortcut", _params, socket), do: {:noreply, save_shortcut(socket)}
+
+  @impl true
+  def handle_event("toggle_shortcuts", params, socket) do
+    {:noreply, toggle_shortcuts(socket, params)}
+  end
 
   @impl true
   def handle_event("open_change", %{"kind" => kind} = params, socket) do
@@ -1462,6 +1469,26 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     else
       warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
     end
+  end
+
+  # `?` in the grid and the filter bar's Keyboard shortcuts button both toggle
+  # the sheet. The button names itself on the event, so a sheet it opened
+  # returns focus to it after Close or Escape; a sheet opened from the grid
+  # keeps the dialog's own restore, which hands focus back to the cell the key
+  # was pressed on (the button id is the only value the event may name).
+  defp toggle_shortcuts(socket, params) do
+    open? = not socket.assigns.shortcuts_open?
+
+    return_focus =
+      cond do
+        not open? -> socket.assigns.shortcuts_return_focus_id
+        params["source"] == "button" -> "keyboard-shortcuts-button"
+        true -> nil
+      end
+
+    socket
+    |> assign(:shortcuts_open?, open?)
+    |> assign(:shortcuts_return_focus_id, return_focus)
   end
 
   defp warning_outcome(socket, text) do
@@ -4575,6 +4602,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
               <ScheduleComponents.delete_dialog
                 dialog={@delete_dialog}
                 version_name={@current_gtfs_version.name}
+              />
+
+              <ScheduleChangeComponents.shortcut_sheet
+                open={@shortcuts_open?}
+                return_focus_id={@shortcuts_return_focus_id}
               />
             </div>
         <% end %>

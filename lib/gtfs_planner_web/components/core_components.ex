@@ -2043,7 +2043,8 @@ defmodule GtfsPlannerWeb.CoreComponents do
   reason the caller renders for it. `size="lg"` widens the panel to 600px for a review and bounds its
   body at `max-h-[60vh]`, so the rows scroll and the actions stay in view. `size="xl"`
   is the 680px review whose footer is pinned: the panel is bounded to the viewport and
-  only the body scrolls, for a confirmation that carries a list to read.
+  only the body scrolls, for a confirmation that carries a list to read. `size="2xl"`
+  is the same pinned-footer review at the design system's 720px width.
 
   ## Examples
 
@@ -2095,9 +2096,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
   attr :close_on_backdrop, :boolean, default: false
 
   attr :size, :string,
-    values: ~w(sm lg xl),
+    values: ~w(sm lg xl 2xl),
     default: "sm",
-    doc: ~s|"xl", the pinned-footer review, applies to chrome="planner" only|
+    doc: ~s|"xl"/"2xl", the pinned-footer review, applies to chrome="planner" only|
 
   attr :confirm_variant, :string, values: ~w(primary danger), default: "danger"
   attr :chrome, :string, values: ~w(default planner), default: "default"
@@ -2206,13 +2207,15 @@ defmodule GtfsPlannerWeb.CoreComponents do
   # The class strings for each part of the dialog. The default chrome returns
   # the original strings; the planner chrome is the design system's confirm,
   # whose confirm button is the action colour whatever `confirm_variant` says.
-  # The pinned-footer review: a 680px panel bounded to the viewport, so only the
-  # body scrolls and the actions stay in view.
-  defp confirm_dialog_ui(%{chrome: "planner", size: "xl"} = assigns) do
+  # The pinned-footer review: a panel bounded to the viewport, so only the
+  # body scrolls and the actions stay in view. `xl` is the 680px review,
+  # `2xl` the design system's 720px one.
+  defp confirm_dialog_ui(%{chrome: "planner", size: size} = assigns)
+       when size in ["xl", "2xl"] do
     %{
       confirm_dialog_ui(%{assigns | size: "sm"})
       | panel:
-          "flex max-h-[calc(100dvh-32px)] w-[min(680px,calc(100vw-32px))] flex-col rounded-card border border-subtle bg-white text-default shadow-float",
+          "flex max-h-[calc(100dvh-32px)] #{planner_confirm_width(size)} flex-col rounded-card border border-subtle bg-white text-default shadow-float",
         title:
           "px-6 pt-6 font-display text-[22px] font-semibold leading-tight tracking-[-0.02em] text-strong [overflow-wrap:anywhere]",
         body: "min-h-0 flex-1 overflow-y-auto px-6 pb-4 pt-3 text-sm text-muted",
@@ -2265,11 +2268,14 @@ defmodule GtfsPlannerWeb.CoreComponents do
     }
   end
 
-  # The planner chrome's two widths: the confirm's own 440px, and a 600px review
-  # whose body scrolls inside the dialog so a long list of rows never pushes the
-  # actions off screen.
+  # The planner chrome's widths: the confirm's own 440px, a 600px review whose
+  # body scrolls inside the dialog so a long list of rows never pushes the
+  # actions off screen, and the pinned-footer reviews at the design system's
+  # 680px and 720px review widths.
   defp planner_confirm_width("sm"), do: "w-[min(440px,calc(100vw-32px))]"
   defp planner_confirm_width("lg"), do: "w-[min(600px,calc(100vw-32px))]"
+  defp planner_confirm_width("xl"), do: "w-[min(680px,calc(100vw-32px))]"
+  defp planner_confirm_width("2xl"), do: "w-[min(720px,calc(100vw-32px))]"
 
   defp planner_confirm_body("sm"), do: nil
   defp planner_confirm_body("lg"), do: "max-h-[60vh] overflow-y-auto"

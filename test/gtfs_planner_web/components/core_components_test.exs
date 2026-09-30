@@ -890,6 +890,39 @@ defmodule GtfsPlannerWeb.CoreComponentsTest do
       assert Enum.count(LazyHTML.query(doc, "#test-confirm-confirm")) == 1
     end
 
+    test "planner chrome at 2xl is the 720px review panel whose footer stays in view" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <.confirm_dialog
+          id="test-confirm"
+          chrome="planner"
+          size="2xl"
+          open={true}
+          title="Keyboard shortcuts"
+          confirm_label="Close"
+          pending_label="Closing…"
+          on_confirm="confirm"
+          on_cancel="cancel"
+          single_action
+        >
+          <p>Review</p>
+        </.confirm_dialog>
+        """)
+
+      doc = LazyHTML.from_fragment(html)
+
+      panel =
+        LazyHTML.query(doc, "dialog#test-confirm > div > div") |> LazyHTML.attribute("class")
+
+      body = LazyHTML.query(doc, "#test-confirm-body") |> LazyHTML.attribute("class")
+
+      assert hd(panel) =~ "w-[min(720px,calc(100vw-32px))]"
+      assert hd(body) =~ "overflow-y-auto"
+      assert Enum.empty?(LazyHTML.query(doc, "#test-confirm-confirm"))
+    end
+
     test "a confirm form makes the confirm button submit that form instead of pushing an event" do
       assigns = %{}
 
