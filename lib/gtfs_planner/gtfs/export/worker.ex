@@ -100,9 +100,19 @@ defmodule GtfsPlanner.Gtfs.Export.Worker do
 
   defp build_export(run) do
     export_module().build_zips(run.organization_id, run.gtfs_version_id, run.export_type,
-      include_flex: run.include_flex
+      include_flex: run.include_flex,
+      estimate: estimate_option(run)
     )
   end
+
+  # INV-3: the build uses the run's recorded setting, never the current
+  # defaults; a run that does not estimate passes nil so stored rows export
+  # unchanged.
+  defp estimate_option(%{estimate_missing_times: true, estimate_method: method})
+       when method in [:distance, :even],
+       do: method
+
+  defp estimate_option(_run), do: nil
 
   # Export warnings lead the persisted list inside the 100-entry limit.  An
   # export without warnings keeps the preflight warnings already stored.

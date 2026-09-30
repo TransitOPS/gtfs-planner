@@ -31,7 +31,7 @@ defmodule GtfsPlanner.Gtfs.Export do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.TodsExport
-  alias GtfsPlanner.Gtfs.Export.{CsvWriter, FileSpec, Snapshot, StreamBuilder}
+  alias GtfsPlanner.Gtfs.Export.{CsvWriter, FileSpec, MissingTimes, Snapshot, StreamBuilder}
   alias GtfsPlanner.Gtfs.Extensions
   alias GtfsPlanner.Gtfs.Flex.Export, as: FlexExport
   alias GtfsPlanner.Gtfs.Flex.Export.FileSpecs, as: FlexFileSpecs
@@ -82,16 +82,21 @@ defmodule GtfsPlanner.Gtfs.Export do
   """
   def export_to_zip(organization_id, gtfs_version_id, export_type, opts \\ [])
 
-  def export_to_zip(organization_id, gtfs_version_id, :flex, _opts) do
-    case build_zips(organization_id, gtfs_version_id, :full, include_flex: true) do
+  def export_to_zip(organization_id, gtfs_version_id, :flex, opts) do
+    case build_zips(organization_id, gtfs_version_id, :full,
+           include_flex: true,
+           estimate: Keyword.get(opts, :estimate)
+         ) do
       {:ok, %{flex: flex}, _warnings} when is_binary(flex) -> {:ok, flex}
       {:ok, %{flex: nil}, _warnings} -> {:error, :no_data}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  def export_to_zip(organization_id, gtfs_version_id, export_type, _opts) do
-    case build_zip(organization_id, gtfs_version_id, export_type) do
+  def export_to_zip(organization_id, gtfs_version_id, export_type, opts) do
+    case build_zip(organization_id, gtfs_version_id, export_type,
+           estimate: Keyword.get(opts, :estimate)
+         ) do
       {:ok, zip_binary, _warnings} -> {:ok, zip_binary}
       {:error, reason} -> {:error, reason}
     end
@@ -136,7 +141,24 @@ defmodule GtfsPlanner.Gtfs.Export do
           {:ok, binary(), [warning()]}
           | {:error, :no_data | {:garage_stop_id_conflict, [Operations.conflict()]} | term()}
   def build_zip(organization_id, gtfs_version_id, export_type) do
-    case build_zips(organization_id, gtfs_version_id, export_type, include_flex: false) do
+    build_zip(organization_id, gtfs_version_id, export_type, [])
+  end
+
+  @doc """
+  Builds one ZIP like `build_zip/3` with options.
+
+  `estimate: :distance | :even` fills missing stop times per trip through
+  `MissingTimes.fill_trip/3` before the R3 sequence mapper; any other value
+  (including the default nil) writes stored rows unchanged.
+  """
+  @spec build_zip(Ecto.UUID.t(), Ecto.UUID.t(), :full | :pathways | :operations, keyword()) ::
+          {:ok, binary(), [warning()]}
+          | {:error, :no_data | {:garage_stop_id_conflict, [Operations.conflict()]} | term()}
+  def build_zip(organization_id, gtfs_version_id, export_type, opts) do
+    case build_zips(organization_id, gtfs_version_id, export_type,
+           include_flex: false,
+           estimate: Keyword.get(opts, :estimate)
+         ) do
       {:ok, %{main: main}, warnings} when is_binary(main) -> {:ok, main, warnings}
       {:ok, %{main: nil, flex: flex}, warnings} when is_binary(flex) -> {:ok, flex, warnings}
       {:ok, _zips, _warnings} -> {:error, :no_data}
@@ -163,6 +185,13 @@ defmodule GtfsPlanner.Gtfs.Export do
   `:operations` keeps its TODS files in the main zip only: the flex zip carries
   the main feed's files plus the flex files.
 
+  `estimate: :distance | :even` fills missing stop times per trip (spec
+  23-stop-time-interpolation R8–R9) in every `stop_times.txt` the build writes,
+  before the R3 sequence mapper; the main zip carries one
+  `missing_times_not_estimated` warning per unfilled trip (capped at 100),
+  while the flex zip's fixed rows are estimated silently. Any other estimate
+  value (including the default nil) writes stored rows unchanged.
+
   ## Returns
 
   - `{:ok, %{main: zip | nil, flex: zip | nil}, warnings}` on success
@@ -172,6 +201,7 @@ defmodule GtfsPlanner.Gtfs.Export do
           {:ok, %{main: binary() | nil, flex: binary() | nil}, [warning()]} | {:error, term()}
   def build_zips(organization_id, gtfs_version_id, export_type, opts \\ []) do
     include_flex = Keyword.get(opts, :include_flex, false) and export_type != :pathways
+    estimate = normalize_estimate(Keyword.get(opts, :estimate))
 
     temp_dir = generate_temp_dir()
     flex_dir = generate_temp_dir()
@@ -186,8 +216,25 @@ defmodule GtfsPlanner.Gtfs.Export do
           # writer runs, so the main and flex files share one answer.
           mapper = FlexExport.sequence_mapper(organization_id, gtfs_version_id)
 
+          # Stop coordinates are read once per estimating build inside the
+          # same snapshot, so every trip fills against one revision.
+          coords =
+            if estimate do
+              MissingTimes.stop_coordinates(organization_id, gtfs_version_id)
+            else
+              %{}
+            end
+
           main_result =
-            build_main(temp_dir, organization_id, gtfs_version_id, export_type, mapper)
+            build_main(
+              temp_dir,
+              organization_id,
+              gtfs_version_id,
+              export_type,
+              mapper,
+              estimate,
+              coords
+            )
 
           {flex_zip, flex_entries, flex_warnings} =
             build_flex_result(
@@ -195,7 +242,9 @@ defmodule GtfsPlanner.Gtfs.Export do
               flex_dir,
               organization_id,
               gtfs_version_id,
-              mapper
+              mapper,
+              estimate,
+              coords
             )
 
           main_zip = main_zip(main_result, flex_entries)
@@ -217,6 +266,12 @@ defmodule GtfsPlanner.Gtfs.Export do
       File.rm_rf(flex_dir)
     end
   end
+
+  # An estimate option other than the two known methods writes stored rows
+  # unchanged; this keeps a `false` run flag and an unknown value on one path.
+  defp normalize_estimate(:distance), do: :distance
+  defp normalize_estimate(:even), do: :even
+  defp normalize_estimate(_), do: nil
 
   # R15: a version without routes answers a flex zip and no main zip once at
   # least one service is exported; otherwise a main that could not be built is
@@ -240,15 +295,31 @@ defmodule GtfsPlanner.Gtfs.Export do
   # the snapshot usable; the run then has no flex zip and a `flex_build_failed`
   # warning. The savepoint keeps the outer repeatable-read snapshot, so both
   # zips still read one committed revision.
-  defp build_flex_result(false, _flex_dir, _organization_id, _gtfs_version_id, _mapper) do
+  defp build_flex_result(
+         false,
+         _flex_dir,
+         _organization_id,
+         _gtfs_version_id,
+         _mapper,
+         _estimate,
+         _coords
+       ) do
     {nil, nil, []}
   end
 
-  defp build_flex_result(true, flex_dir, organization_id, gtfs_version_id, mapper) do
+  defp build_flex_result(
+         true,
+         flex_dir,
+         organization_id,
+         gtfs_version_id,
+         mapper,
+         estimate,
+         coords
+       ) do
     Repo.query!("SAVEPOINT gtfs_flex_build")
 
     try do
-      result = build_flex(flex_dir, organization_id, gtfs_version_id, mapper)
+      result = build_flex(flex_dir, organization_id, gtfs_version_id, mapper, estimate, coords)
       Repo.query!("RELEASE SAVEPOINT gtfs_flex_build")
       result
     rescue
@@ -263,10 +334,18 @@ defmodule GtfsPlanner.Gtfs.Export do
     end
   end
 
-  defp build_flex(flex_dir, organization_id, gtfs_version_id, mapper) do
+  defp build_flex(flex_dir, organization_id, gtfs_version_id, mapper, estimate, coords) do
     {:ok, entries, warnings} = FlexExport.build_entries(organization_id, gtfs_version_id)
 
-    case write_flex_zip(flex_dir, organization_id, gtfs_version_id, mapper, entries) do
+    case write_flex_zip(
+           flex_dir,
+           organization_id,
+           gtfs_version_id,
+           mapper,
+           entries,
+           estimate,
+           coords
+         ) do
       {:ok, zip} -> {zip, entries, warnings}
       {:error, :no_data} -> {nil, entries, warnings}
     end
@@ -322,7 +401,7 @@ defmodule GtfsPlanner.Gtfs.Export do
         lookup_maps = build_lookup_maps(organization_id, gtfs_version_id)
 
         case export_files(output_dir, file_specs, organization_id, gtfs_version_id, lookup_maps) do
-          {:ok, {file_paths, _conflicts}} -> file_paths
+          {:ok, {file_paths, _conflicts, _missing_warnings}} -> file_paths
           {:error, reason} -> Repo.rollback(reason)
         end
       end)
@@ -334,8 +413,19 @@ defmodule GtfsPlanner.Gtfs.Export do
   end
 
   # Builds the main zip inside its read snapshot. The operations path keeps the
-  # public files untouched and adds the TODS files beside them.
-  defp build_main(temp_dir, organization_id, gtfs_version_id, :operations, mapper) do
+  # public files untouched and adds the TODS files beside them. An estimating
+  # build fills missing stop times and carries one capped
+  # `missing_times_not_estimated` warning per unfilled trip ahead of the movement
+  # and TODS omission notices.
+  defp build_main(
+         temp_dir,
+         organization_id,
+         gtfs_version_id,
+         :operations,
+         mapper,
+         estimate,
+         coords
+       ) do
     %{garages: garages, vehicles: vehicles} = Operations.tods_export_rows(organization_id)
 
     conflict_rollback(
@@ -344,7 +434,7 @@ defmodule GtfsPlanner.Gtfs.Export do
 
     garage_map = Map.new(garages, &{&1.garage_id, &1.name})
 
-    with {:ok, {file_paths, emitted_conflicts}} <-
+    with {:ok, {file_paths, emitted_conflicts, missing_warnings}} <-
            export_files(
              temp_dir,
              FileSpec.get_specs(:full),
@@ -352,7 +442,10 @@ defmodule GtfsPlanner.Gtfs.Export do
              gtfs_version_id,
              %{},
              garage_map,
-             mapper
+             mapper,
+             %{},
+             estimate,
+             coords
            ) do
       conflict_rollback(emitted_conflicts)
 
@@ -364,7 +457,8 @@ defmodule GtfsPlanner.Gtfs.Export do
           export_movement_files(temp_dir, movements)
 
       warnings =
-        movement_warnings(movements) ++
+        MissingTimes.cap_warnings(missing_warnings) ++
+          movement_warnings(movements) ++
           run_warnings(movements) ++
           tods_omission_warnings(garages, vehicles)
 
@@ -372,8 +466,16 @@ defmodule GtfsPlanner.Gtfs.Export do
     end
   end
 
-  defp build_main(temp_dir, organization_id, gtfs_version_id, export_type, mapper) do
-    with {:ok, {file_paths, _conflicts}} <-
+  defp build_main(
+         temp_dir,
+         organization_id,
+         gtfs_version_id,
+         export_type,
+         mapper,
+         estimate,
+         coords
+       ) do
+    with {:ok, {file_paths, _conflicts, missing_warnings}} <-
            export_files(
              temp_dir,
              FileSpec.get_specs(export_type),
@@ -381,9 +483,13 @@ defmodule GtfsPlanner.Gtfs.Export do
              gtfs_version_id,
              %{},
              %{},
-             mapper
+             mapper,
+             %{},
+             estimate,
+             coords
            ) do
-      {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id), []}
+      {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id),
+       MissingTimes.cap_warnings(missing_warnings)}
     end
   end
 
@@ -393,7 +499,15 @@ defmodule GtfsPlanner.Gtfs.Export do
   # flex files. A spec is written when the version has records for it or the
   # flex row list is not empty, so an area service's generated route reaches a
   # version without fixed routes (R15).
-  defp write_flex_zip(temp_dir, organization_id, gtfs_version_id, mapper, entries) do
+  defp write_flex_zip(
+         temp_dir,
+         organization_id,
+         gtfs_version_id,
+         mapper,
+         entries,
+         estimate,
+         coords
+       ) do
     appended_rows = %{
       "routes.txt" => entries.rows.routes,
       "trips.txt" => entries.rows.trips,
@@ -411,7 +525,7 @@ defmodule GtfsPlanner.Gtfs.Export do
         spec = flex_spec(spec)
         rows = Map.get(appended_rows, spec.filename, [])
 
-        {file_path, _conflicts} =
+        {file_path, _conflicts, _missing_warnings} =
           export_file(
             temp_dir,
             spec,
@@ -420,7 +534,9 @@ defmodule GtfsPlanner.Gtfs.Export do
             %{},
             %{},
             mapper,
-            rows
+            rows,
+            estimate,
+            coords
           )
 
         file_path
@@ -485,11 +601,14 @@ defmodule GtfsPlanner.Gtfs.Export do
     %{}
   end
 
-  # Exports all files for the given specs. Returns the written file paths and the
+  # Exports all files for the given specs. Returns the written file paths, the
   # garage/stop collisions seen in the records actually written, ordered by
-  # garage ID. `garage_map` holds the organization's garage IDs and names; it is
+  # garage ID, and the missing-times warnings from estimated `stop_times.txt`
+  # files in trip order. `garage_map` holds the organization's garage IDs and names; it is
   # empty for exports that check no collisions. `appended_rows` adds flex rows
-  # after the streamed records, keyed by filename. A version with no records for
+  # after the streamed records, keyed by filename. `estimate` fills missing
+  # stop times per trip against `coords`; nil writes stored rows unchanged.
+  # A version with no records for
   # any spec and no appended rows answers `{:error, :no_data}` without rolling
   # the snapshot back, so a caller that still has flex files can keep building.
   defp export_files(
@@ -500,7 +619,9 @@ defmodule GtfsPlanner.Gtfs.Export do
          lookup_maps,
          garage_map \\ %{},
          mapper \\ & &1,
-         appended_rows \\ %{}
+         appended_rows \\ %{},
+         estimate \\ nil,
+         coords \\ %{}
        ) do
     specs =
       Enum.filter(file_specs, fn spec ->
@@ -521,14 +642,17 @@ defmodule GtfsPlanner.Gtfs.Export do
             lookup_maps,
             garage_map,
             mapper,
-            Map.get(appended_rows, spec.filename, [])
+            Map.get(appended_rows, spec.filename, []),
+            estimate,
+            coords
           )
         end)
 
       file_paths = Enum.map(results, &elem(&1, 0))
       conflicts = results |> Enum.flat_map(&elem(&1, 1)) |> Enum.sort_by(& &1.garage_id)
+      missing_warnings = Enum.flat_map(results, &elem(&1, 2))
 
-      {:ok, {file_paths, conflicts}}
+      {:ok, {file_paths, conflicts, missing_warnings}}
     end
   end
 
@@ -542,12 +666,15 @@ defmodule GtfsPlanner.Gtfs.Export do
     |> Repo.exists?()
   end
 
-  # Exports a single GTFS file and returns its path with the garage/stop
-  # collisions among the records it wrote. The garage map is checked against the
+  # Exports a single GTFS file and returns its path, the garage/stop
+  # collisions among the records it wrote, and the missing-times warnings from
+  # estimated stop-time trips in trip order. The garage map is checked against the
   # exact streamed stop records, so a stop ID that changed after the preliminary
   # conflict query is still caught before any ZIP can be returned. The R3 mapper
   # is applied to stop time records only; `appended_rows` follow the streamed
-  # records through the file's own spec.
+  # records through the file's own spec. An estimating `stop_times.txt` chunks
+  # its trip-ordered stream by trip through `MissingTimes.fill_trip/3` before
+  # the mapper, so filled rows on a detour route keep their doubled sequence.
   defp export_file(
          temp_dir,
          spec,
@@ -556,7 +683,9 @@ defmodule GtfsPlanner.Gtfs.Export do
          lookup_maps,
          garage_map,
          mapper,
-         appended_rows
+         appended_rows,
+         estimate,
+         coords
        ) do
     file_path = Path.join(temp_dir, spec.filename)
     file = File.open!(file_path, [:write, :utf8])
@@ -566,19 +695,62 @@ defmodule GtfsPlanner.Gtfs.Export do
       CsvWriter.write_header(file, spec)
 
       # Stream and write records
-      conflicts =
+      {conflicts, missing_warnings} =
         StreamBuilder.stream_records(Repo, spec.schema, organization_id, gtfs_version_id)
-        |> Enum.reduce([], fn record, acc ->
+        |> write_records(file, spec, lookup_maps, garage_map, mapper, estimate, coords)
+
+      Enum.each(appended_rows, &CsvWriter.write_row(file, &1, spec, %{}))
+
+      {file_path, conflicts, missing_warnings}
+    after
+      File.close(file)
+    end
+  end
+
+  # Fills one trip at a time: the stream is ordered by `trip_id, stop_sequence`,
+  # so `chunk_by/2` hands `fill_trip/3` whole trips. Fill runs before the R3
+  # mapper doubles sequences on detour routes.
+  defp write_records(
+         stream,
+         file,
+         %{schema: StopTime} = spec,
+         lookup_maps,
+         garage_map,
+         mapper,
+         estimate,
+         coords
+       )
+       when estimate in [:distance, :even] do
+    stream
+    |> Stream.chunk_by(& &1.trip_id)
+    |> Enum.reduce({[], []}, fn chunk, {conflicts, missing} ->
+      {filled, status} = MissingTimes.fill_trip(chunk, estimate, coords)
+
+      missing =
+        case status do
+          {:not_estimated, warning} -> [warning | missing]
+          _ -> missing
+        end
+
+      conflicts =
+        Enum.reduce(filled, conflicts, fn record, acc ->
           CsvWriter.write_row(file, apply_mapper(spec, mapper, record), spec, lookup_maps)
           collect_garage_conflict(acc, record, garage_map)
         end)
 
-      Enum.each(appended_rows, &CsvWriter.write_row(file, &1, spec, %{}))
+      {conflicts, missing}
+    end)
+    |> then(fn {conflicts, missing} -> {Enum.reverse(conflicts), Enum.reverse(missing)} end)
+  end
 
-      {file_path, conflicts}
-    after
-      File.close(file)
-    end
+  defp write_records(stream, file, spec, lookup_maps, garage_map, mapper, _estimate, _coords) do
+    conflicts =
+      Enum.reduce(stream, [], fn record, acc ->
+        CsvWriter.write_row(file, apply_mapper(spec, mapper, record), spec, lookup_maps)
+        collect_garage_conflict(acc, record, garage_map)
+      end)
+
+    {Enum.reverse(conflicts), []}
   end
 
   # INV-3: only a stop time record carries a sequence the mapper may double; a
