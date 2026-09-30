@@ -156,10 +156,12 @@ defmodule GtfsPlanner.Gtfs.Schedules.Summary do
 
   `timing_rows` are the timing's rows in occurrence order, each carrying its
   `:position` plus its `:arrival_offset` and `:departure_offset`; `columns` are the
-  displayed timetable columns carrying `:position`. A segment is the arrival
-  offset at one column minus the departure offset at the previous one, so a dwell
-  at the earlier column is excluded. The total is the last column's arrival offset
-  minus the first column's departure offset, so it includes dwell.
+  displayed timetable columns carrying `:position`. A row whose offsets are both
+  absent is blank and is skipped, so a segment spans from the timed column before
+  it to the timed column after it. A segment is the arrival offset at one column
+  minus the departure offset at the previous one, so a dwell at the earlier
+  column is excluded. The total is the last timed column's arrival offset minus
+  the first timed column's departure offset, so it includes dwell.
   """
   @spec timing_segments([map()], [map()]) :: segments()
   def timing_segments(timing_rows, columns) when is_list(timing_rows) and is_list(columns) do
@@ -168,7 +170,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.Summary do
     points =
       columns
       |> Enum.map(&Map.get(rows_by_position, Map.fetch!(&1, :position)))
-      |> Enum.reject(&is_nil/1)
+      |> Enum.filter(&timed_point?/1)
 
     segments =
       points
@@ -185,6 +187,14 @@ defmodule GtfsPlanner.Gtfs.Schedules.Summary do
 
     %{segments: segments, total_secs: total_secs}
   end
+
+  # A blank stop carries nil offsets, and a half-timed one is refused upstream, so
+  # only a row with both offsets present can take part in the arithmetic.
+  defp timed_point?(row) when is_map(row) do
+    is_integer(Map.get(row, :arrival_offset)) and is_integer(Map.get(row, :departure_offset))
+  end
+
+  defp timed_point?(_row), do: false
 
   defp expand_span(%{start_secs: start_secs, end_secs: end_secs} = span) do
     case Map.get(span, :headway_secs) do

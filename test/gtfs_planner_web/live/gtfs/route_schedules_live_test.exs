@@ -532,9 +532,12 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLiveTest do
       doc = LazyHTML.from_fragment("<table>#{html}</table>")
       cells = LazyHTML.query(doc, "td")
 
-      # The first stop is the pinned Departs column, so two stop cells and the
-      # empty Block cell read as a dash.
-      assert Enum.count(cells, &(String.trim(LazyHTML.text(&1)) == "—")) == 3
+      # The first stop is the pinned Departs column, so the stop this trip has no
+      # time for reads as the label, the stop it does not visit and the empty
+      # Block cell read as a dash.
+      assert Enum.count(cells, &(String.trim(LazyHTML.text(&1)) == "—")) == 2
+
+      assert Enum.count(cells, &(String.trim(LazyHTML.text(&1)) == "No scheduled time")) == 1
     end
   end
 
