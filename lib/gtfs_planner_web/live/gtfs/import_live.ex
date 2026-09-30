@@ -37,6 +37,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   alias GtfsPlanner.Gtfs.ImportRuns
   alias GtfsPlanner.Versions
   alias GtfsPlanner.Versions.GtfsVersion
+  alias GtfsPlannerWeb.Gtfs.LeftOutWording
   alias GtfsPlannerWeb.ProductSurfaces
 
   on_mount {GtfsPlannerWeb.EnsureRole, :require_gtfs_editor}
@@ -135,6 +136,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      |> assign(:diff_form, to_form(%{}, as: :diff_upload))
      |> assign(:import_result, nil)
      |> assign(:import_agency_health, nil)
+     |> assign(:import_left_out, [])
      |> assign(:import_target, nil)
      |> assign(:published_version, nil)
      |> assign(:version_name_touched, false)
@@ -265,6 +267,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
      socket
      |> assign(:import_result, nil)
      |> assign(:import_agency_health, nil)
+     |> assign(:import_left_out, [])
      |> assign(:import_target, nil)
      |> assign(:published_version, nil)
      |> assign(:version_name_touched, false)
@@ -679,6 +682,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           socket
           |> assign(:import_result, {:ok, published, result})
           |> assign(:import_agency_health, import_agency_findings(organization_id, published))
+          |> assign(:import_left_out, import_left_out(organization_id, published))
           |> assign(:import_target, published)
           |> assign(:published_version, published)
           |> assign(:importing, false)
@@ -694,6 +698,13 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     end
   end
 
+  # One id per action, and one per route: this block reports every route at
+  # once, so the grouping review's id carries the route it opens.
+  defp left_out_action_id(:group, route_id, _code), do: "import-left-out-group-#{route_id}"
+
+  defp left_out_action_id(:schedules, route_id, code),
+    do: "import-left-out-#{route_id}-#{code}-trips"
+
   # The findings the success result shows for the version just published (R11).
   # They are `FeedSettings.agency_health/2`'s own map for that version, read once
   # after publication, so the copy describes the imported version and never the
@@ -701,6 +712,53 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   # no publication state (CR-6).
   defp import_agency_findings(organization_id, published) do
     FeedSettings.agency_health(organization_id, published.id)
+  end
+
+  # The trips this import could not group, grouped by route, for the version it
+  # just published and not the version the page was opened on. Import writes
+  # `trips_custom` with a `pattern_derivation_reason` on each of them, and that
+  # reason is what this reports; the reader is the same `Gtfs.left_out_trips/3`
+  # the route's Patterns tab reads, so both pages say the same thing.
+  #
+  # A feed whose every trip is grouped leaves the list empty and the block out of
+  # the result entirely. Each entry carries the route row when the feed still has
+  # it, so the block can draw the route's own badge and name.
+  defp import_left_out(organization_id, published) do
+    case Gtfs.left_out_trips(organization_id, published.id) do
+      [] ->
+        []
+
+      rows ->
+        routes =
+          organization_id
+          |> Gtfs.list_routes(published.id)
+          |> Map.new(&{&1.route_id, &1})
+
+        rows
+        |> Enum.group_by(& &1.route_id)
+        |> Enum.map(fn {route_id, rows} ->
+          %{
+            route_id: route_id,
+            route: Map.get(routes, route_id),
+            trip_count: Enum.sum(Enum.map(rows, & &1.trip_count)),
+            rows:
+              rows
+              |> LeftOutWording.rows()
+              |> Enum.map(fn row ->
+                row
+                |> Map.put(:id, "import-left-out-#{route_id}-#{row.code}")
+                |> Map.update!(:action, fn
+                  nil ->
+                    nil
+
+                  action ->
+                    Map.put(action, :id, left_out_action_id(action.target, route_id, row.code))
+                end)
+              end)
+          }
+        end)
+        |> Enum.sort_by(& &1.route_id)
+    end
   end
 
   # One finding per agency-health state the import can reach: a version with no
@@ -1155,6 +1213,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
               :if={match?({:ok, _, _}, @import_result)}
               result={@import_result}
               health={@import_agency_health}
+              left_out={@import_left_out}
               version={@current_gtfs_version}
             />
 
@@ -1511,6 +1570,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   # one primary; the agency findings are the only conditional part.
   attr :result, :any, required: true
   attr :health, :any, default: nil
+  attr :left_out, :list, default: []
   attr :version, :any, required: true
 
   defp feed_result(%{result: {:ok, published, %Import.Result{} = result}} = assigns) do
@@ -1575,6 +1635,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
       </p>
 
       <.agency_findings :if={@health} health={@health} version_id={@published.id} />
+
+      <.left_out_block groups={@left_out} version_id={@published.id} />
 
       <div class="flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-subtle bg-canvas px-5 py-3 text-sm">
         <.link
@@ -2493,6 +2555,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
           )
           |> assign(:import_result, nil)
           |> assign(:import_agency_health, nil)
+          |> assign(:import_left_out, [])
 
         socket = push_event(socket, "focus_first_error", %{selector: "#gtfs-import-version-name"})
 
@@ -2516,6 +2579,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
              |> assign(:importing, true)
              |> assign(:import_result, nil)
              |> assign(:import_agency_health, nil)
+             |> assign(:import_left_out, [])
              |> assign(:published_version, nil)
              |> assign(:import_progress, nil)}
 

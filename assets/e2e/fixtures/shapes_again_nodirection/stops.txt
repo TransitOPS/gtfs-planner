@@ -1,0 +1,6 @@
+stop_id,stop_name,stop_lat,stop_lon,location_type
+1_A,Lincoln City Transit Center,44.0000,-124.0000,0
+1_B,Otter Rock,44.1000,-124.1000,0
+1_C,Depoe Bay,44.2000,-124.2000,0
+6_A,Depoe Bay City Hall,44.2000,-124.2000,0
+6_B,Newport Transit Center,44.3000,-124.3000,0
