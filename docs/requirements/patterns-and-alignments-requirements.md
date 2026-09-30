@@ -439,7 +439,8 @@ As a schedule editor, I want to understand that interpolated times appear only i
 - Given I am viewing a stop pattern
 - When I enter a headsign value at the pattern level
 - And I save
-- Then all trips using this pattern inherit this headsign
+- Then new trips use this headsign
+- And existing trips that show the old headsign can be updated after review
 - Unless overridden at the timed pattern level
 
 **AC-PAT-015: Change direction**
@@ -521,7 +522,8 @@ As a schedule editor, I want to understand that interpolated times appear only i
 **AC-PAT-027: Set timed pattern headsign**
 - Given I am editing a timed pattern
 - When I enter a headsign that differs from the stop pattern headsign
-- Then trips using this timed pattern use this headsign
+- Then new trips on this timed pattern use this headsign
+- And existing trips that show the old headsign can be updated after review
 
 **AC-PAT-028: Set mid-trip headsign change**
 - Given I am editing a timed pattern

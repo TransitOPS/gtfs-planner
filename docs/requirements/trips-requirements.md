@@ -151,7 +151,7 @@ When riders can remain on a vehicle between trips (e.g., on a loop route), I wan
 ### 2.4 Trip Information
 
 **JS-TRIP-014: Setting trip headsign**
-When I need to display destination information to riders, I want to set the trip headsign (which can inherit from the pattern or be overridden per trip), so I can ensure accurate signage information in rider-facing applications.
+When I need to display destination information to riders, I want to set the trip headsign (a blank headsign follows the timing or pattern default, and a trip's own value keeps it when the default changes), so I can ensure accurate signage information in rider-facing applications.
 
 **JS-TRIP-015: Setting trip short name**
 When my agency uses train numbers or run identifiers that riders recognize, I want to assign a trip short name, so I can provide familiar identifiers in trip planning results.
@@ -632,8 +632,8 @@ As a schedule editor, I want to be warned about overlapping trips on the same bl
 **AC-TRIP-043: Headsign field**
 - Given I am editing a trip
 - Then I can view and edit the trip headsign
-- And the headsign may inherit from the timed pattern
-- And I can override it for this specific trip
+- And a blank headsign uses the timing's headsign, then the pattern's
+- And a trip that differs from the default keeps its value when the default changes
 
 **AC-TRIP-044: Trip short name field**
 - Given I am editing a trip
