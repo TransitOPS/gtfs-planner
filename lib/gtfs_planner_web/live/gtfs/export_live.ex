@@ -5,6 +5,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   """
   use GtfsPlannerWeb, :live_view
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Export.MissingTimes
   alias GtfsPlanner.Gtfs.Export.Runner, as: ExportRunner
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
@@ -13,6 +14,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
   alias GtfsPlanner.Validations
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.ProductSurfaces
+  alias Phoenix.LiveView.AsyncResult
 
   import GtfsPlannerWeb.Gtfs.ExportComponents,
     only: [
@@ -52,6 +54,8 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:closure_count, 0)
      |> assign(:export_run, nil)
      |> assign(:export_notice, nil)
+     |> assign(:export_defaults, nil)
+     |> assign(:missing_summary, AsyncResult.loading())
      |> assign(:validation_run_id, nil)
      |> assign(:validation_task, nil)
      |> assign(:validating, false)
@@ -77,9 +81,11 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
      |> assign(:export_form, export_form(export_type))
      |> assign(:export_notice, nil)
      |> assign(:include_flex, ExportDefaults.get(organization_id).include_flex)
+     |> assign(:export_defaults, ExportDefaults.get(organization_id))
      |> refresh_export_run()
      |> refresh_file_inventory()
-     |> assign_recent_checks()}
+     |> assign_recent_checks()
+     |> load_missing_summary()}
   end
 
   @impl Phoenix.LiveView
@@ -339,12 +345,19 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
                 count={@closure_count}
               />
               <.operations_note :if={@export_type == :operations} file_inventory={@file_inventory} />
-              <.contents export_type={@export_type} file_inventory={@file_inventory} />
+              <.contents
+                export_type={@export_type}
+                file_inventory={@file_inventory}
+                missing_summary={@missing_summary}
+                defaults={@export_defaults}
+                version_id={@current_gtfs_version.id}
+              />
               <.run_status
                 run={@export_run}
                 export_type={@export_type}
                 version={@current_gtfs_version}
                 notice={@export_notice}
+                defaults={@export_defaults}
               />
             </.result_section>
 
@@ -612,4 +625,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLive do
 
   defp subscribe_export_run(run),
     do: Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ExportRuns.topic(run))
+
+  # The version's missing-times count loads apart from the file list, so a
+  # large version never blocks the page; the pre-run line reads it when ready.
+  defp load_missing_summary(socket) do
+    organization_id = socket.assigns.current_organization.id
+    version_id = socket.assigns.current_gtfs_version.id
+
+    assign_async(socket, :missing_summary, fn ->
+      {:ok, %{missing_summary: MissingTimes.summary(organization_id, version_id)}}
+    end)
+  end
 end

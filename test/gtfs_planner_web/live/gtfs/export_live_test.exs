@@ -12,6 +12,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.Export.Run
   alias GtfsPlanner.Gtfs.Export.RunnerSupervisor
+  alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.ExportRuns
   alias GtfsPlanner.Gtfs.Validator.Result
   alias GtfsPlanner.Gtfs.ValidatorMock
@@ -650,6 +651,207 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
     end
   end
 
+  describe "missing stop times (spec 23)" do
+    test "estimates the missing times with the summary counts and a link to Export defaults",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: version
+         } do
+      seed_estimable_trip(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      render_async(view)
+
+      assert has_element?(view, "#export-missing-times", "Missing stop times: estimated")
+      assert has_element?(view, "#export-missing-times", "2 times on 1 trip")
+      assert has_element?(view, "#export-missing-times", "by distance along the path")
+
+      assert has_element?(
+               view,
+               "#export-missing-times",
+               "Every trip with gaps can be estimated."
+             )
+
+      assert attribute_values(render(view), "#export-missing-times-link", "href") == [
+               "/gtfs/#{version.id}/settings/export-defaults"
+             ]
+
+      assert render(view)
+             |> LazyHTML.from_fragment()
+             |> LazyHTML.query("#export-missing-times")
+             |> LazyHTML.attribute("class")
+             |> hd()
+             |> String.contains?("bg-cyan-50")
+    end
+
+    test "leaves the times blank in a warning tone when the defaults say so",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: version
+         } do
+      seed_estimable_trip(organization, version)
+      assert {:ok, _} = ExportDefaults.update(organization.id, %{estimate_missing_times: false})
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      render_async(view)
+
+      assert has_element?(view, "#export-missing-times", "Missing stop times: left blank")
+      assert has_element?(view, "#export-missing-times", "2 times on 1 trip go out blank")
+
+      assert has_element?(
+               view,
+               "#export-missing-times-link",
+               "Change in Export defaults"
+             )
+
+      assert render(view)
+             |> LazyHTML.from_fragment()
+             |> LazyHTML.query("#export-missing-times")
+             |> LazyHTML.attribute("class")
+             |> hd()
+             |> String.contains?("bg-warning-bg")
+    end
+
+    test "says nothing can be estimated when every gapped trip is unfillable",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: version
+         } do
+      seed_unfillable_trip(organization, version)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      render_async(view)
+
+      assert has_element?(
+               view,
+               "#export-missing-times",
+               "No missing times can be estimated."
+             )
+
+      assert has_element?(
+               view,
+               "#export-missing-times",
+               "1 trip can't be estimated and goes out as it is."
+             )
+    end
+
+    test "a finished run shows its recorded method and names changed defaults",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: version
+         } do
+      seed_estimable_trip(organization, version)
+
+      assert {:ok, run} =
+               ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+
+      assert run.estimate_missing_times == true
+      assert run.estimate_method == :distance
+      mark_export_ready(run)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      render_async(view)
+
+      assert has_element?(
+               view,
+               "#export-run-missing-times",
+               "Estimated by distance along the path"
+             )
+
+      refute has_element?(view, "#export-stale-settings")
+
+      assert {:ok, _} = ExportDefaults.update(organization.id, %{estimate_missing_times: false})
+      {:ok, stale_view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      render_async(stale_view)
+
+      assert has_element?(
+               stale_view,
+               "#export-run-missing-times",
+               "Estimated by distance along the path"
+             )
+
+      assert has_element?(
+               stale_view,
+               "#export-stale-settings",
+               "Export defaults changed after this file was made"
+             )
+    end
+
+    test "a run recorded before the setting reads left blank without inventing a method",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: version
+         } do
+      assert {:ok, _} = ExportDefaults.update(organization.id, %{estimate_missing_times: false})
+
+      assert {:ok, run} =
+               ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+
+      assert run.estimate_missing_times == false
+      assert run.estimate_method == nil
+      mark_export_ready(run)
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      render_async(view)
+
+      assert heading_text(render(view), "#export-run-missing-times") == "Left blank"
+    end
+
+    test "a Pathways Studio organization sees the line", %{conn: conn} do
+      %{organization: organization, member: editor, version: version} =
+        pathways_org_with_version(["pathways_studio_editor"])
+
+      conn = log_in_user(conn, editor, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      render_async(view)
+
+      assert has_element?(view, "#export-missing-times", "Missing stop times: estimated")
+    end
+
+    test "missing_times_not_estimated warnings render through the warnings list",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: version
+         } do
+      assert {:ok, run} =
+               ExportRuns.create_pending(organization.id, version.id, @actor, :full)
+
+      warning = %{
+        "code" => "missing_times_not_estimated",
+        "detail" => "Trip \"EXP_T1\" was left blank: the last stop has no time.",
+        "file" => "stop_times.txt",
+        "entity_type" => "trip"
+      }
+
+      {:ok, _} =
+        run |> Run.system_changeset(%{state: :ready, warnings: [warning]}) |> Repo.update()
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/export")
+      render_async(view)
+
+      assert has_element?(view, "#export-warning-panel", "was left blank")
+      assert has_element?(view, "#export-warning-panel", "missing_times_not_estimated")
+    end
+  end
+
   describe "GTFS area navigation" do
     test "mounts the GTFS tabs with Export current above the unchanged page", %{
       conn: conn,
@@ -669,6 +871,106 @@ defmodule GtfsPlannerWeb.Gtfs.ExportLiveTest do
       assert has_element?(view, "#gtfs-export-form")
       assert has_element?(view, "#export-download-container")
     end
+  end
+
+  # A finished file on the run's recorded settings: created through
+  # `ExportRuns.create_pending/4` (which snapshots the current defaults
+  # per INV-3) and moved to `:ready` with a structurally valid artifact
+  # receipt, the same shape the dashboard tests use for ready runs.
+  defp mark_export_ready(run) do
+    now = DateTime.utc_now()
+
+    {:ok, ready} =
+      run
+      |> Run.system_changeset(%{
+        state: :ready,
+        finished_at: now,
+        artifact_key: "exports/#{Ecto.UUID.generate()}.zip",
+        artifact_filename: "gtfs.zip",
+        artifact_sha256: String.duplicate("a", 64),
+        artifact_size_bytes: 1024,
+        artifact_expires_at: DateTime.add(now, 86_400, :second)
+      })
+      |> Repo.update()
+
+    ready
+  end
+
+  # One trip with a single blank middle row (2 missing cells) over strictly
+  # increasing stored distances, so the summary counts are literal: 1 trip,
+  # 2 missing times, both estimable.
+  defp seed_estimable_trip(organization, version) do
+    stop_fixture(organization.id, version.id, %{stop_id: "EXP_S1"})
+    stop_fixture(organization.id, version.id, %{stop_id: "EXP_S2"})
+    stop_fixture(organization.id, version.id, %{stop_id: "EXP_S3"})
+    route_fixture(organization.id, version.id, %{route_id: "EXP_R1", route_short_name: "10"})
+
+    trip_fixture(organization.id, version.id, "EXP_R1", %{
+      trip_id: "EXP_T1",
+      service_id: "EXP_SV"
+    })
+
+    stop_time_fixture(organization.id, version.id, "EXP_T1", "EXP_S1", %{
+      stop_sequence: 1,
+      arrival_time: "08:00:00",
+      departure_time: "08:00:00",
+      timepoint: 1,
+      shape_dist_traveled: Decimal.new("0")
+    })
+
+    stop_time_fixture(organization.id, version.id, "EXP_T1", "EXP_S2", %{
+      stop_sequence: 2,
+      arrival_time: nil,
+      departure_time: nil,
+      timepoint: nil,
+      shape_dist_traveled: Decimal.new("1500")
+    })
+
+    stop_time_fixture(organization.id, version.id, "EXP_T1", "EXP_S3", %{
+      stop_sequence: 3,
+      arrival_time: "08:10:00",
+      departure_time: "08:10:00",
+      timepoint: 1,
+      shape_dist_traveled: Decimal.new("3000")
+    })
+  end
+
+  # One trip whose first stop has no time, so the export cannot estimate
+  # it: the line leads with that instead of counting estimates.
+  defp seed_unfillable_trip(organization, version) do
+    stop_fixture(organization.id, version.id, %{stop_id: "EXP_U1"})
+    stop_fixture(organization.id, version.id, %{stop_id: "EXP_U2"})
+    stop_fixture(organization.id, version.id, %{stop_id: "EXP_U3"})
+    route_fixture(organization.id, version.id, %{route_id: "EXP_RU", route_short_name: "11"})
+
+    trip_fixture(organization.id, version.id, "EXP_RU", %{
+      trip_id: "EXP_TU",
+      service_id: "EXP_SVU"
+    })
+
+    stop_time_fixture(organization.id, version.id, "EXP_TU", "EXP_U1", %{
+      stop_sequence: 1,
+      arrival_time: nil,
+      departure_time: nil,
+      timepoint: nil,
+      shape_dist_traveled: Decimal.new("0")
+    })
+
+    stop_time_fixture(organization.id, version.id, "EXP_TU", "EXP_U2", %{
+      stop_sequence: 2,
+      arrival_time: "08:05:00",
+      departure_time: "08:05:00",
+      timepoint: nil,
+      shape_dist_traveled: Decimal.new("1500")
+    })
+
+    stop_time_fixture(organization.id, version.id, "EXP_TU", "EXP_U3", %{
+      stop_sequence: 3,
+      arrival_time: "08:10:00",
+      departure_time: "08:10:00",
+      timepoint: 1,
+      shape_dist_traveled: Decimal.new("3000")
+    })
   end
 
   defp heading_text(html, selector) do
