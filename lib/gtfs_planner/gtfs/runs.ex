@@ -48,6 +48,12 @@ defmodule GtfsPlanner.Gtfs.Runs do
   # keeping the round trips few.
   @write_batch 500
 
+  # What a day type with no runs answers: the zeros and the nil share
+  # `Runs.Day.derive/4` gives when both counts are zero.
+  @empty_derived_stats %{
+    stats: %{by_type: %{straight: 0, split: 0}, straight_share: nil}
+  }
+
   @type crew :: %{
           report_pull_out_minutes: 0..30,
           report_relief_minutes: 0..15,
@@ -839,6 +845,127 @@ defmodule GtfsPlanner.Gtfs.Runs do
     moves
     |> Enum.map(&%{trip_id: &1.trip_id, from: &1.to, to: &1.from})
     |> Enum.sort_by(& &1.trip_id)
+  end
+
+  @doc """
+  Derives every day type's runs from the movements export read.
+
+  Takes the `Blocking.export_movements/2` result, an assignment map keyed by day
+  type key, and the crew rules, and answers `%{day_type_key => Day.derived()}`
+  for every day type the export listed.
+
+  **It opens no transaction.** It is called from inside the caller's — the
+  export's one read snapshot — and a nested `Repo.transaction/1` would only take
+  a savepoint, as `Blocking.load_day/3` becoming one inside `load_runs/3`
+  already is. More to the point, this function reads nothing at all: every input
+  is an argument, so a transaction would guard a computation rather than a read.
+
+  What it builds per day type is the same block input `load_runs/3` builds, from
+  the same two places: the export's blocks carry the movements, and the relief
+  windows come from `Blocking.Relief.windows/3` over the export's **context**,
+  which is why that context is returned rather than recomputed. The composition
+  is then `Runs.Day.derive/4` — the only day composition in the system (INV-11),
+  so a day type's runs here and its runs on the page are the same runs.
+  """
+  @spec derive_version(Blocking.export_movements_result(), %{String.t() => map()}, map()) ::
+          %{optional(String.t()) => Day.derived()}
+  def derive_version(export, assignments_by_day_type, crew) do
+    blocks_by_day_type = export.blocks_by_day_type
+    contexts = export.contexts_by_day_type
+
+    for {key, blocks} <- blocks_by_day_type, into: %{} do
+      context = contexts[key]
+
+      inputs =
+        Enum.map(blocks, fn block ->
+          %{
+            block_id: block.block_id,
+            trips: block.trips,
+            movements: block.movements,
+            windows: Blocking.Relief.windows(block.trips, block.movements, context)
+          }
+        end)
+
+      {key, Day.derive(inputs, Map.get(assignments_by_day_type, key, %{}), context, crew)}
+    end
+  end
+
+  @doc """
+  Returns every day type's straight and split counts and the straight share.
+
+  This is the version-wide summary AC-12 asks for: every day type of the
+  version, not just one, so a planner comparing a weekday with a Saturday does
+  not have to load each in turn. A day type with no runs is **listed** with
+  straight 0, split 0 and a share of `nil` — a nil share is the answer
+  `Runs.Day.derive/4` already gives when both counts are zero, and the page must
+  show it rather than omit the day type, or a version with one unworked Saturday
+  would look like a version that does not have one.
+
+  An unpublished or foreign version is `{:error, :not_found}`. The published
+  check comes first, before any day is derived, so a draft version costs
+  nothing to refuse.
+  """
+  @spec day_type_shares(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok,
+           [
+             %{
+               day_type_key: String.t(),
+               label: String.t(),
+               straight: non_neg_integer(),
+               split: non_neg_integer(),
+               share: 0..100 | nil
+             }
+           ]}
+          | {:error, :not_found}
+  def day_type_shares(organization_id, gtfs_version_id) do
+    Repo.transaction(fn ->
+      if Versions.published_gtfs_version_for_org?(organization_id, gtfs_version_id) do
+        export = Blocking.export_movements(organization_id, gtfs_version_id)
+        crew = get_crew_settings(organization_id, gtfs_version_id)
+        assignments = assignments_by_day_type(organization_id, gtfs_version_id)
+        derived = derive_version(export, assignments, crew)
+
+        shares =
+          for day_type <- export.day_types do
+            # A day type the export listed always has an entry, but a default
+            # that answers the question anyway costs one line and removes a
+            # crash from a read that has no other way to fail.
+            stats =
+              derived
+              |> Map.get(day_type.key, @empty_derived_stats)
+              |> Map.fetch!(:stats)
+
+            %{
+              day_type_key: day_type.key,
+              label: day_type.label,
+              straight: stats.by_type.straight,
+              split: stats.by_type.split,
+              share: stats.straight_share
+            }
+          end
+
+        shares
+      else
+        Repo.rollback(:not_found)
+      end
+    end)
+  end
+
+  # Every row of the version, grouped by its day type key. A key no current day
+  # type has is simply absent from `day_type_shares/2`'s answer, because the
+  # answer is built from the day types the export listed.
+  defp assignments_by_day_type(organization_id, gtfs_version_id) do
+    Repo.all(
+      from(row in TripRun,
+        where:
+          row.organization_id == ^organization_id and row.gtfs_version_id == ^gtfs_version_id,
+        select: {row.day_type_key, row.trip_id, row.run_id}
+      )
+    )
+    |> Enum.group_by(fn {key, _trip_id, _run_id} -> key end, fn {_key, trip_id, run_id} ->
+      {trip_id, run_id}
+    end)
+    |> Map.new(fn {key, pairs} -> {key, Map.new(pairs)} end)
   end
 
   @doc """

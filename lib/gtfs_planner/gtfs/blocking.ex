@@ -193,7 +193,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   @type export_movements_result :: %{
           day_types: [DayTypes.day_type()],
           blocks_by_day_type: %{optional(String.t()) => [TodsExport.block()]},
-          garages_by_id: %{optional(Ecto.UUID.t()) => Context.garage()}
+          garages_by_id: %{optional(Ecto.UUID.t()) => Context.garage()},
+          # The context each day type's blocks were built against. It is the
+          # same value the day load would build for that day type, so a consumer
+          # that derives anything else per day type - runs, relief windows - reads
+          # the day load's own inputs rather than recomputing them.
+          contexts_by_day_type: %{optional(String.t()) => Context.t()}
         }
 
   @type problem :: %{
@@ -1449,6 +1454,12 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   rows, peak and bins a day load computes are not read, because a consumer of a
   deadhead file has no use for them and re-deriving them would cost a read per
   day type.
+
+  `contexts_by_day_type` is the other half of that. The context each day type's
+  blocks were built against is returned rather than recomputed, so a consumer
+  that needs it for anything else — `Runs.derive_version/3` builds relief windows
+  from it — reads the value this read already had. Rebuilding it would not only
+  cost another read per day type; the two values would agree only by accident.
   """
   @spec export_movements(Ecto.UUID.t(), Ecto.UUID.t()) :: export_movements_result()
   def export_movements(organization_id, gtfs_version_id) do
@@ -1456,8 +1467,8 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     day_types = DayTypes.derive(calendars)
     settings = get_settings(organization_id, gtfs_version_id)
 
-    {blocks_by_day_type, garages_by_id} =
-      Enum.reduce(day_types, {%{}, %{}}, fn day_type, {blocks, garages} ->
+    {blocks_by_day_type, garages_by_id, contexts_by_day_type} =
+      Enum.reduce(day_types, {%{}, %{}, %{}}, fn day_type, {blocks, garages, contexts} ->
         trips = day_trips(organization_id, gtfs_version_id, day_type)
         context = build_context!(organization_id, gtfs_version_id, settings, trips)
 
@@ -1467,14 +1478,16 @@ defmodule GtfsPlanner.Gtfs.Blocking do
         # there and not a missing read.
         {
           Map.put(blocks, day_type.key, movement_blocks(trips, context)),
-          if(garages == %{}, do: context.garages, else: garages)
+          if(garages == %{}, do: context.garages, else: garages),
+          Map.put(contexts, day_type.key, context)
         }
       end)
 
     %{
       day_types: day_types,
       blocks_by_day_type: blocks_by_day_type,
-      garages_by_id: garages_by_id
+      garages_by_id: garages_by_id,
+      contexts_by_day_type: contexts_by_day_type
     }
   end
 
