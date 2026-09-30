@@ -7,6 +7,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   alias GtfsPlanner.Gtfs.Alignments
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
@@ -76,6 +77,300 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       nil -> {:error, :not_found}
       {:error, _} = error -> error
     end
+  end
+
+  @type scope :: :pattern | {:timing, Ecto.UUID.t()}
+
+  @type usage_trip :: %{
+          id: Ecto.UUID.t(),
+          trip_id: String.t(),
+          headsign: String.t() | nil,
+          service_id: String.t(),
+          departure_secs: integer() | nil,
+          timing_name: String.t() | nil,
+          custom?: boolean(),
+          next_block: nil,
+          mid_trip_change: nil
+        }
+
+  @type usage_group :: %{
+          value: String.t() | nil,
+          kind: Headsigns.kind() | :follows,
+          likely_typo: boolean(),
+          trips: [usage_trip()]
+        }
+
+  @type usage_timing :: %{
+          timing_id: Ecto.UUID.t(),
+          name: String.t(),
+          headsign: String.t(),
+          trip_count: non_neg_integer()
+        }
+
+  @type usage :: %{
+          scope: scope(),
+          default: String.t() | nil,
+          total: non_neg_integer(),
+          same: non_neg_integer(),
+          differ: non_neg_integer(),
+          shielded: [usage_timing()],
+          timings_carry: [usage_timing()],
+          groups: [usage_group()]
+        }
+
+  @doc """
+  Scoped headsign usage read model for one pattern (scope `:pattern`) or one of
+  its timings (scope `{:timing, timing_id}`).
+
+  The pattern scope covers the pattern's organization and version-scoped trips
+  whose timing is absent or has no own headsign; trips on a timing with its own
+  headsign are shielded and reported in `shielded` with their trip counts. The
+  timing scope covers only that timing's trips. `default` is the normalized
+  effective default: the scope's own timing headsign, else the pattern headsign.
+
+  When the pattern headsign is nil, `timings_carry` lists every timing that
+  carries a headsign of its own, so an imported dataset can still show where
+  the headsign lives.
+
+  `opts` requires `:organization_id` and `:gtfs_version_id`. `opts[:from]`
+  (change mode) splits the trips that still follow `from` into a first
+  `:follows` group. Groups otherwise hold only trips that differ from the
+  default, ordered likely typo first, then by trip count descending, then by
+  value. `next_block` and `mid_trip_change` stay nil here; the block and
+  mid-trip facts reader fills them.
+
+  An unknown pattern id, a timing outside the pattern, or an unrecognized scope
+  returns `{:error, :not_found}` so a crafted scope cannot read foreign data.
+  """
+  @spec headsign_usage(Ecto.UUID.t(), scope(), keyword()) :: {:ok, usage()} | {:error, :not_found}
+  def headsign_usage(pattern_id, scope, opts) when is_binary(pattern_id) and is_list(opts) do
+    organization_id = Keyword.fetch!(opts, :organization_id)
+    gtfs_version_id = Keyword.fetch!(opts, :gtfs_version_id)
+
+    case scoped_pattern_by_id(organization_id, gtfs_version_id, pattern_id) do
+      nil -> {:error, :not_found}
+      %RoutePattern{} = pattern -> headsign_usage_for_pattern(pattern, scope, opts)
+    end
+  end
+
+  defp headsign_usage_for_pattern(pattern, :pattern, opts) do
+    timings = pattern_timings(pattern.id)
+    counts = timing_trip_counts(pattern)
+    default = Headsigns.normalize(pattern.headsign)
+
+    # A timing with its own headsign shields its trips from the pattern scope.
+    # When the pattern headsign is nil, those timings carry the headsign
+    # instead, so the editor can offer to adopt one of their values.
+    carrying = Enum.filter(timings, &(Headsigns.normalize(&1.headsign) != nil))
+    carrying_ids = MapSet.new(carrying, & &1.id)
+
+    carrying_rows =
+      Enum.map(carrying, fn timing ->
+        %{
+          timing_id: timing.id,
+          name: timing.name,
+          headsign: Headsigns.normalize(timing.headsign),
+          trip_count: Map.get(counts, timing.id, 0)
+        }
+      end)
+
+    trips = usage_trips(pattern, pattern_scope_query(pattern, carrying_ids), timings)
+    counts_and_groups = usage_counts_and_groups(trips, default, opts)
+
+    {:ok,
+     %{
+       scope: :pattern,
+       default: default,
+       total: counts_and_groups.total,
+       same: counts_and_groups.same,
+       differ: counts_and_groups.differ,
+       shielded: Enum.filter(carrying_rows, &(&1.trip_count > 0)),
+       timings_carry: if(default == nil, do: carrying_rows, else: []),
+       groups: counts_and_groups.groups
+     }}
+  end
+
+  defp headsign_usage_for_pattern(pattern, {:timing, timing_id}, opts) do
+    timings = pattern_timings(pattern.id)
+
+    case Enum.find(timings, &(&1.id == timing_id)) do
+      nil ->
+        {:error, :not_found}
+
+      %TimedPattern{} = timing ->
+        default = Headsigns.effective_default(timing.headsign, pattern.headsign)
+        trips = usage_trips(pattern, timing_scope_query(pattern, timing.id), timings)
+        counts_and_groups = usage_counts_and_groups(trips, default, opts)
+
+        {:ok,
+         %{
+           scope: {:timing, timing.id},
+           default: default,
+           total: counts_and_groups.total,
+           same: counts_and_groups.same,
+           differ: counts_and_groups.differ,
+           shielded: [],
+           timings_carry: [],
+           groups: counts_and_groups.groups
+         }}
+    end
+  end
+
+  defp headsign_usage_for_pattern(_pattern, _scope, _opts), do: {:error, :not_found}
+
+  defp scoped_pattern_by_id(org_id, version_id, pattern_id) do
+    Repo.one(
+      from(pattern in RoutePattern,
+        where:
+          pattern.organization_id == ^org_id and pattern.gtfs_version_id == ^version_id and
+            pattern.id == ^pattern_id
+      )
+    )
+  end
+
+  # Pattern scope: trips of this pattern whose timing is absent or carries no
+  # own headsign. A trip naming a timing outside this pattern has no timing
+  # default, so it stays in the scope under the pattern headsign.
+  defp pattern_scope_query(pattern, carrying_ids) do
+    base =
+      from(trip in Trip,
+        where:
+          trip.organization_id == ^pattern.organization_id and
+            trip.gtfs_version_id == ^pattern.gtfs_version_id and
+            trip.route_pattern_id == ^pattern.route_pattern_id
+      )
+
+    case MapSet.size(carrying_ids) do
+      0 ->
+        base
+
+      _ ->
+        where(
+          base,
+          [trip],
+          is_nil(trip.timed_pattern_id) or
+            trip.timed_pattern_id not in ^MapSet.to_list(carrying_ids)
+        )
+    end
+  end
+
+  defp timing_scope_query(pattern, timing_id) do
+    from(trip in Trip,
+      where:
+        trip.organization_id == ^pattern.organization_id and
+          trip.gtfs_version_id == ^pattern.gtfs_version_id and
+          trip.timed_pattern_id == ^timing_id
+    )
+  end
+
+  defp usage_trips(pattern, query, timings) do
+    rows =
+      from(trip in query,
+        as: :usage_trip,
+        select: %{
+          id: trip.id,
+          trip_id: trip.trip_id,
+          headsign: trip.trip_headsign,
+          service_id: trip.service_id,
+          timed_pattern_id: trip.timed_pattern_id,
+          pattern_derivation_state: trip.pattern_derivation_state,
+          block_id: trip.block_id,
+          route_id: trip.route_id,
+          first_departure:
+            subquery(
+              from(stop_time in StopTime,
+                where:
+                  stop_time.organization_id == ^pattern.organization_id and
+                    stop_time.gtfs_version_id == ^pattern.gtfs_version_id and
+                    stop_time.trip_id == parent_as(:usage_trip).trip_id,
+                select: min(stop_time.departure_time)
+              )
+            )
+        },
+        order_by: [asc: trip.id]
+      )
+      |> Repo.all()
+
+    timings_by_id = Map.new(timings, &{&1.id, &1})
+
+    Enum.map(rows, fn row ->
+      %{
+        id: row.id,
+        trip_id: row.trip_id,
+        headsign: Headsigns.normalize(row.headsign),
+        service_id: row.service_id,
+        departure_secs: departure_secs(row.first_departure),
+        timing_name: timing_name(timings_by_id, row.timed_pattern_id),
+        custom?: row.pattern_derivation_state == "custom",
+        # Block and mid-trip facts stay nil until the facts reader fills them;
+        # counts and groups do not depend on them.
+        next_block: nil,
+        mid_trip_change: nil
+      }
+    end)
+  end
+
+  # The first departure is the SQL min over the trip's scoped stop times,
+  # parsed through the shared GTFS clock parser; absent or unparsable values
+  # stay nil.
+  defp departure_secs(nil), do: nil
+
+  defp departure_secs(value) do
+    case GtfsTime.parse(value) do
+      {:ok, seconds} -> seconds
+      {:error, :invalid_time} -> nil
+    end
+  end
+
+  defp timing_name(timings_by_id, timed_pattern_id) do
+    case Map.get(timings_by_id, timed_pattern_id) do
+      %TimedPattern{name: name} -> name
+      nil -> nil
+    end
+  end
+
+  defp usage_counts_and_groups(trips, default, opts) do
+    total = length(trips)
+    from_value = Headsigns.normalize(Keyword.get(opts, :from))
+
+    {followers, differing} =
+      if from_value do
+        Enum.split_with(trips, &Headsigns.follows?(&1.headsign, from_value))
+      else
+        {[], Enum.reject(trips, &Headsigns.follows?(&1.headsign, default))}
+      end
+
+    groups = value_groups(differing, default)
+
+    groups =
+      case followers do
+        [] ->
+          groups
+
+        followers ->
+          [%{value: from_value, kind: :follows, likely_typo: false, trips: followers} | groups]
+      end
+
+    %{total: total, same: total - length(differing), differ: length(differing), groups: groups}
+  end
+
+  # Trips are grouped by their normalized value, and a group's kind and typo
+  # flag come from the shared Headsigns rule. Order: likely typo first, then
+  # group size descending, then value (term order puts a blank group first).
+  defp value_groups(trips, default) do
+    trips
+    |> Enum.group_by(& &1.headsign)
+    |> Enum.map(fn {value, value_trips} ->
+      %{kind: kind, likely_typo: likely_typo} = Headsigns.difference(value, default, nil)
+
+      %{
+        value: value,
+        kind: kind,
+        likely_typo: likely_typo,
+        trips: Enum.sort_by(value_trips, & &1.id)
+      }
+    end)
+    |> Enum.sort_by(&{not &1.likely_typo, -length(&1.trips), &1.value})
   end
 
   @doc """
