@@ -2128,6 +2128,9 @@ defmodule GtfsPlannerWeb.CoreComponents do
   slot :extra_action,
     doc: "a third action between Cancel and the confirm, such as Discard changes"
 
+  slot :status,
+    doc: "a left-aligned sentence before the actions, such as the commit sentence"
+
   def confirm_dialog(assigns) do
     extra = Map.new(assigns.rest || %{})
 
@@ -2167,6 +2170,7 @@ defmodule GtfsPlannerWeb.CoreComponents do
             {render_slot(@inner_block)}
           </div>
           <div class={@ui.actions}>
+            {render_slot(@status)}
             <button
               id={@cancel_id || "#{@id}-cancel"}
               type="button"

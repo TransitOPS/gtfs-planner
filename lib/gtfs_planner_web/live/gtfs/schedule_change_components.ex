@@ -943,16 +943,20 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
   defp review_apply_label(:move), do: "Moving…"
 
   defp review_status(kind, refusal, _version_name) when is_map(refusal) do
-    verb = if kind == :copy, do: "added", else: "moved"
-
-    "Nothing can be #{verb} while that frequency service runs on these days."
+    "Nothing can be #{refusal_verb(kind)} while that frequency service runs on these days."
   end
 
   defp review_status(kind, nil, version_name) do
-    verb = if kind == :copy, do: "copy", else: "move"
-
-    "Nothing changes until you #{verb}.#{saves_clause(version_name)}"
+    "Nothing changes until you #{commit_verb(kind)}.#{saves_clause(version_name)}"
   end
+
+  defp refusal_verb(:move), do: "moved"
+  defp refusal_verb(_kind), do: "added"
+
+  defp commit_verb(:copy), do: "copy"
+  defp commit_verb(:move), do: "move"
+  defp commit_verb(:paste), do: "paste"
+  defp commit_verb(:duplicate), do: "duplicate"
 
   defp saves_clause(nil), do: ""
   defp saves_clause(version_name), do: " Then it saves to #{version_name} right away."
@@ -968,6 +972,251 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
       1 -> "1 trip already runs at the same time on #{to}."
       count -> "#{count} trips already run at the same time on #{to}."
     end
+  end
+
+  # --- Paste copied trips and Duplicate trips: the change dialog -------------
+
+  @doc """
+  Renders the Paste copied trips and Duplicate trips dialog.
+
+  The reference's `#paste-dialog` and `#duplicate-dialog`: the copied trips'
+  context line, the service-day select (a paste only, because a duplicate stays
+  on the current day, R7), the Times choice — the same times or a new first
+  departure the trips keep their spacing from — the skip choice, one result line
+  naming the departures that will be added, and one primary. The review is the
+  dialog's only behavioral input: its inserts fill the result line and the
+  primary's count, its skipped notes fill the skip help, and its refusal raises
+  the error banner and disables the primary. A stale review turns the primary
+  into Refresh preview (FH-33), and closing the dialog returns focus to the grid.
+  """
+  attr :change, :map, required: true
+  attr :paste, :map, required: true
+  attr :version_name, :string, default: nil
+
+  def paste_dialog(assigns) do
+    change = assigns.change
+    paste = assigns.paste
+    change_set = reviewed_change_set(change)
+    refusal = review_refusal(change, paste.target_name)
+    skip? = Map.get(change.params, :skip_existing, true) != false
+    adding = length(change_set.inserts)
+    duplicate? = paste.duplicate?
+    stale? = change.stale? == true
+    enabled? = refusal == nil and adding > 0
+
+    assigns =
+      assign(assigns,
+        duplicate?: duplicate?,
+        prefix: paste.prefix,
+        title: "#{paste_verb(duplicate?)} #{trip_count(length(change.ids))}",
+        refusal: refusal,
+        skip?: skip?,
+        skip_help: skip_help(change_set, skip?, paste.target_name),
+        result: paste_result(change_set, paste.target_name, refusal),
+        stale?: stale?,
+        status: review_status(change.kind, refusal, assigns.version_name),
+        confirm_id: if(stale?, do: "#{paste.prefix}-refresh", else: "#{paste.prefix}-apply"),
+        confirm_label:
+          if(stale?,
+            do: "Refresh preview",
+            else: "#{paste_verb(duplicate?)} #{trip_count(adding)}"
+          ),
+        pending_label: paste_pending(duplicate?, stale?),
+        on_confirm: if(stale?, do: "refresh_change", else: "apply_change"),
+        confirm_disabled: not stale? and not enabled?
+      )
+
+    ~H"""
+    <.confirm_dialog
+      id={@paste.dialog_id}
+      chrome="planner"
+      size="xl"
+      open
+      title={@title}
+      confirm_id={@confirm_id}
+      confirm_label={@confirm_label}
+      cancel_id={"#{@prefix}-cancel"}
+      cancel_label="Cancel"
+      pending_label={@pending_label}
+      on_confirm={@on_confirm}
+      on_cancel="cancel_change"
+      confirm_disabled={@confirm_disabled}
+      return_focus_id={@paste.return_focus_id}
+      described_by={"#{@prefix}-dialog-body"}
+      data-initial-focus-id={@paste.initial_focus_id}
+    >
+      <p id={"#{@prefix}-context"} class="text-[13px] text-muted">{@paste.context}</p>
+
+      <.form
+        for={%{}}
+        as={:change}
+        id={"#{@prefix}-form"}
+        phx-change="change_params"
+        phx-submit="change_params"
+        class="mt-4 grid gap-4"
+      >
+        <.input
+          :if={not @duplicate?}
+          id={"#{@prefix}-service"}
+          name="change[service_id]"
+          type="select"
+          label="Service day"
+          options={@paste.target_options}
+          value={@change.params[:service_id]}
+          class="w-full select select-lg"
+        />
+
+        <fieldset class="grid gap-2">
+          <legend :if={not @duplicate?} class="text-[13px] font-semibold text-strong">Times</legend>
+
+          <label :if={not @duplicate?} class={choice_card_class(@change.params[:mode] == :same)}>
+            <input
+              type="radio"
+              id={"#{@prefix}-same"}
+              name="change[mode]"
+              value="same"
+              checked={@change.params[:mode] == :same}
+              class="mt-0.5 size-[18px] shrink-0 accent-[var(--color-action)]"
+            />
+            <span class="min-w-0">
+              <strong class="block text-sm font-[650] text-strong">Same times</strong>
+              <small class="mt-0.5 block text-[13px] leading-snug text-default">
+                {@paste.same_help}
+              </small>
+            </span>
+          </label>
+
+          <label :if={not @duplicate?} class={choice_card_class(@change.params[:mode] == :at)}>
+            <input
+              type="radio"
+              id={"#{@prefix}-new-time"}
+              name="change[mode]"
+              value="at"
+              checked={@change.params[:mode] == :at}
+              class="mt-0.5 size-[18px] shrink-0 accent-[var(--color-action)]"
+            />
+            <span class="min-w-0">
+              <strong class="block text-sm font-[650] text-strong">
+                First departure at a new time
+              </strong>
+              <small class="mt-0.5 block text-[13px] leading-snug text-default">
+                The trips keep their spacing.
+              </small>
+            </span>
+          </label>
+
+          <.input
+            :if={@duplicate? or @change.params[:mode] == :at}
+            id={"#{@prefix}-at"}
+            name="change[first_departure]"
+            type="text"
+            label="First departure at"
+            value={@change.params[:first_departure]}
+            placeholder="16:30"
+            inputmode="numeric"
+            autocomplete="off"
+            spellcheck="false"
+            phx-debounce="blur"
+            errors={List.wrap(@paste.time_error)}
+            class="w-[140px] input input-lg text-right tabular-nums"
+          />
+        </fieldset>
+
+        <.input
+          id={"#{@prefix}-skip"}
+          name="change[skip_existing]"
+          type="checkbox"
+          label="Skip trips that already leave at the same time"
+          checked={@skip?}
+          help={@skip_help}
+        />
+
+        <.message
+          :if={@refusal}
+          id={"#{@prefix}-refusal"}
+          kind="error"
+          role="alert"
+          title={@refusal.title}
+        >
+          <%= if @refusal.body do %>
+            {@refusal.body}
+          <% end %>
+        </.message>
+
+        <.message
+          :if={@stale?}
+          id={"#{@prefix}-stale"}
+          kind="warning"
+          role="alert"
+          title="These trips changed after this preview. Nothing was written."
+        >
+          Refresh the preview to see their current times, then apply again.
+        </.message>
+
+        <p
+          :if={@result}
+          id={"#{@prefix}-result"}
+          class="rounded-control bg-canvas px-3 py-2 tabular-nums"
+        >
+          {@result}
+        </p>
+      </.form>
+
+      <:status>
+        <p id={"#{@prefix}-status"} class="mr-auto max-w-[240px] text-[13px] text-muted">
+          {@status}
+        </p>
+      </:status>
+    </.confirm_dialog>
+    """
+  end
+
+  defp paste_verb(true), do: "Duplicate"
+  defp paste_verb(false), do: "Paste"
+
+  defp paste_pending(_duplicate?, true), do: "Refreshing…"
+  defp paste_pending(true, _stale?), do: "Duplicating…"
+  defp paste_pending(false, _stale?), do: "Pasting…"
+
+  # The one result line: the departures the review will add, in clock order. A
+  # review with nothing to add (all skipped, incomplete) or with a refusal
+  # renders no line; the skip help, the refusal banner and the disabled primary
+  # already say why.
+  defp paste_result(_change_set, _to, refusal) when is_map(refusal), do: nil
+
+  defp paste_result(change_set, to, _refusal) do
+    departures =
+      change_set.inserts
+      |> Enum.map(&insert_departure/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.sort()
+
+    case departures do
+      [] ->
+        nil
+
+      departures ->
+        "Adds #{trip_count(length(change_set.inserts))} on #{to}: " <>
+          "#{Enum.join(departures, ", ")}. They start without a block."
+    end
+  end
+
+  defp insert_departure(%{stop_times: [first | _rest]}),
+    do: clock_label(first[:departure_time] || first[:arrival_time])
+
+  defp insert_departure(_insert), do: nil
+
+  # The reference's radio choice cards; the chosen card takes the selection tint
+  # and the whole card is the radio's label.
+  defp choice_card_class(checked?) do
+    [
+      "flex min-h-11 cursor-pointer items-start gap-3 rounded-card border px-3.5 py-3",
+      "has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus",
+      if(checked?,
+        do: "border-action bg-selection",
+        else: "border-control bg-white hover:bg-canvas"
+      )
+    ]
   end
 
   defp chip_class(true), do: "border-action bg-white text-action"

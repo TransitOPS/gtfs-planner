@@ -50,6 +50,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   @drawer_fields ~w(pattern_id timed_pattern_id service_id start_time repeat every until
     trip_headsign trip_short_name wheelchair_accessible bikes_allowed)
   @duplicate_offset_secs 1_800
+  # A `:copy` offset is a whole minute inside ±24 h (TripChanges.validate_offset/1),
+  # so a typed "first departure at" further away is not a time this page can paste.
+  @max_copy_offset_secs 86_400
+  @paste_time_error "Enter the time the first trip leaves, for example 16:30."
   @undo_limit 20
   @nudge_minutes [-5, -1, 1, 5]
   @max_shift_minutes 1_440
@@ -84,6 +88,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
      |> assign(:just_changed, MapSet.new())
      |> assign(:cell_error, nil)
      |> assign(:change, nil)
+     |> assign(:clipboard, nil)
      |> assign(:vehicle_change, nil)
      |> assign(:vehicle_change_from, nil)
      |> assign(:keep_vehicle_change, false)
@@ -108,7 +113,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       |> assign(:selected_count, 0)
       # A review names the trips the page loaded when it opened, so a parameter
       # change closes it (step 27's filter change clears the selection first).
+      # The clipboard names the same rows, so a parameter change drops it too:
+      # pasting is a page-session action, never a cross-view one (§7).
       |> assign(:change, nil)
+      |> assign(:clipboard, nil)
       |> assign(:delete_dialog, nil)
       |> assign(:block_notice, nil)
       |> clear_vehicle_change()
@@ -271,6 +279,23 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   @impl true
   def handle_event("cancel_change", _params, socket), do: {:noreply, cancel_change(socket)}
+
+  # Copy trips keeps the selection's UUIDs in this process (INV-6, §7's
+  # server-held clipboard) and reports the shortcut that pastes them. The paste
+  # events are the grid hook's: `paste_trips` opens the dialog and replies
+  # whether the server clipboard exists, so the hook reports a spreadsheet paste
+  # only when this page has nothing to paste (AC-16).
+  @impl true
+  def handle_event("copy_trips", _params, socket), do: {:noreply, copy_trips(socket)}
+
+  @impl true
+  def handle_event("paste_trips", _params, socket) do
+    {reply, socket} = paste_trips(socket)
+    {:reply, reply, socket}
+  end
+
+  @impl true
+  def handle_event("paste_text", _params, socket), do: {:noreply, paste_text(socket)}
 
   @impl true
   def handle_event("retry", _params, socket) do
@@ -1420,8 +1445,168 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp open_reviewed_change(socket, "copy", _trip_id), do: open_calendar_change(socket, :copy)
   defp open_reviewed_change(socket, "move", _trip_id), do: open_calendar_change(socket, :move)
 
-  # Duplicate, Paste and Convert plug in here with their steps' builders.
+  # Paste copied trips opens on the clipboard's own trips, not the selection: the
+  # clipboard survives clearing the selection (the reference's paste state clears
+  # it before pasting). Duplicate acts on the visible selection and opens on the
+  # current service day with the first departure 30 minutes later (R7).
+  defp open_reviewed_change(socket, "paste", _trip_id) do
+    case socket.assigns.clipboard do
+      %{trip_ids: ids} -> open_paste(socket, ids)
+      _empty -> socket
+    end
+  end
+
+  defp open_reviewed_change(socket, "duplicate", _trip_id) do
+    case visible_ids(socket, MapSet.to_list(socket.assigns.selected_ids)) do
+      [] -> socket
+      ids -> open_duplicate(socket, ids)
+    end
+  end
+
+  # Convert plugs in here with its step's builder; an unknown kind is ignored.
   defp open_reviewed_change(socket, _kind, _trip_id), do: socket
+
+  # Copy trips keeps the visible selection as this process's clipboard. It
+  # writes nothing, so the outcome offers no Undo; the bar names the shortcut
+  # that pastes them (the reference's own "Press ⌘V" copy).
+  defp copy_trips(socket) do
+    if editor_access?(socket) do
+      case visible_ids(socket, MapSet.to_list(socket.assigns.selected_ids)) do
+        [] ->
+          socket
+
+        ids ->
+          socket
+          |> assign(:clipboard, %{
+            trip_ids: Enum.sort(ids),
+            service_id: socket.assigns.filters.service_id
+          })
+          |> assign(:outcome, %{
+            tone: :info,
+            text: "#{trip_count_label(length(ids))} copied. Press ⌘V in the grid to paste.",
+            undo?: false
+          })
+      end
+    else
+      warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
+    end
+  end
+
+  # The hook asks whether this page holds trips to paste. With the clipboard set
+  # the dialog opens on the trips it copied; without it the reply is false and
+  # the hook reports a spreadsheet paste through `paste_text` (AC-16).
+  defp paste_trips(socket) do
+    clipboard? = not is_nil(socket.assigns.clipboard)
+
+    socket =
+      cond do
+        not editor_access?(socket) ->
+          warning_outcome(socket, ScheduleComponents.error_message(:unauthorized))
+
+        clipboard? ->
+          open_paste(socket, socket.assigns.clipboard.trip_ids)
+
+        true ->
+          socket
+      end
+
+    {%{clipboard: clipboard?}, socket}
+  end
+
+  # AC-16: text that did not come from Copy trips creates nothing.
+  defp paste_text(socket) do
+    assign(socket, :outcome, %{
+      tone: :info,
+      text:
+        "Copied trips from this page can be pasted here. " <>
+          "To paste a timetable from a spreadsheet, use Paste timetable.",
+      undo?: false
+    })
+  end
+
+  # The paste's command parameters: the target day, the times choice and anchor,
+  # and the skip choice. The anchor is the clipboard's earliest *displayed* first
+  # departure, because a copy offset is a whole minute (TripChanges.validate_offset/1)
+  # while a stored clock may carry seconds the timetable never shows. With no
+  # clipboard trip loaded any more there is nothing to anchor on, so the dialog
+  # does not open.
+  defp open_paste(socket, ids) do
+    case copy_anchor_secs(socket, ids) do
+      nil ->
+        socket
+
+      anchor ->
+        params = %{
+          service_id: default_paste_target(socket.assigns),
+          mode: :same,
+          first_departure: nil,
+          skip_existing: true,
+          anchor_secs: anchor
+        }
+
+        review_change(socket, :paste, ids, params)
+    end
+  end
+
+  # R7's duplicate: the current service day and the selection's earliest first
+  # departure 30 minutes later, which every selected trip's copy keeps as a
+  # whole-minute offset.
+  defp open_duplicate(socket, ids) do
+    case copy_anchor_secs(socket, ids) do
+      nil ->
+        socket
+
+      anchor ->
+        params = %{
+          service_id: socket.assigns.filters.service_id,
+          mode: :at,
+          first_departure: clock(anchor + @duplicate_offset_secs),
+          skip_existing: true,
+          anchor_secs: anchor
+        }
+
+        review_change(socket, :duplicate, ids, params)
+    end
+  end
+
+  # The trips the paste reads as one set, in the order the review sorts them; the
+  # anchor is the earliest of their displayed first departures.
+  defp copy_anchor_secs(socket, ids) do
+    ids
+    |> Enum.flat_map(fn trip_id ->
+      case find_row(socket, trip_id) do
+        %{start_secs: secs} when is_integer(secs) -> [secs - rem(secs, 60)]
+        _row -> []
+      end
+    end)
+    |> Enum.min(fn -> nil end)
+  end
+
+  # The paste's default target is the page's first other service day, the copy
+  # drawer's own default; a version with one service day pastes onto itself.
+  defp default_paste_target(assigns) do
+    current = assigns.filters.service_id
+
+    case Enum.find(paste_target_options(assigns), &(&1.value != current)) do
+      %{value: value} -> value
+      nil -> current
+    end
+  end
+
+  # Every service day of the version, the page's own included: a paste may stay on
+  # the current day at a new first departure. Labelled the way the scope bar and
+  # the copy drawer label service days.
+  defp paste_target_options(assigns) do
+    for calendar <- assigns.payload.calendars do
+      name = calendar_label(assigns.payload.calendars, calendar.service_id)
+
+      %{
+        value: calendar.service_id,
+        name: name,
+        label: "#{name} · #{trip_count_label(calendar.route_trip_count)}"
+      }
+    end
+  end
 
   # With no other service day there is nowhere to copy or move to, so the bar
   # says so rather than opening a drawer with no target (a one-calendar version
@@ -1572,7 +1757,55 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
+  # Paste and Duplicate are R7 copies: the target day, the times choice and the
+  # skip choice. "Same times" is offset 0; a new first departure is the typed
+  # time minus the clipboard's anchor. A time the engine cannot express as a
+  # whole-minute offset (±24 h) leaves the change without a review, so the dialog
+  # keeps the input and shows its own error instead of a refusal.
+  defp change_command(_socket, %{kind: :paste, ids: ids, params: params}) do
+    copy_command(ids, params)
+  end
+
+  defp change_command(_socket, %{kind: :duplicate, ids: ids, params: params}) do
+    copy_command(ids, params)
+  end
+
   defp change_command(_socket, _change), do: :incomplete
+
+  defp copy_command(ids, params) do
+    case {params[:service_id], copy_offset(params)} do
+      {service_id, {:ok, offset}} when is_binary(service_id) ->
+        {:ok, {:copy, ids, service_id, offset, params[:skip_existing] != false}}
+
+      {_service_id, :invalid} ->
+        :incomplete
+
+      _no_target ->
+        {:error, :calendar_not_found}
+    end
+  end
+
+  # The offset the typed first departure asks for: zero for "Same times", the
+  # reading minus the anchor otherwise. Anything else — an unreadable time, a
+  # seconds-precision reading, an offset beyond the engine's ±24 h — is `:invalid`.
+  defp copy_offset(%{mode: :same}), do: {:ok, 0}
+
+  defp copy_offset(%{mode: :at, first_departure: text, anchor_secs: anchor})
+       when is_integer(anchor) and is_binary(text) do
+    case TimeEntry.parse(text, []) do
+      {:ok, %{secs: secs}} ->
+        offset = secs - anchor
+
+        if rem(offset, 60) == 0 and abs(offset) <= @max_copy_offset_secs,
+          do: {:ok, offset},
+          else: :invalid
+
+      {:error, _reason} ->
+        :invalid
+    end
+  end
+
+  defp copy_offset(_params), do: :invalid
 
   # The strip's default timing: the pattern's first timing that not every
   # selected trip already uses (the prototype's default), falling back to the
@@ -1665,6 +1898,45 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     merge_change_target(change.params, socket, raw["service_id"])
   end
 
+  # The paste dialog's own fields. The target must be a service day the dialog
+  # offered (every service day of the version), the times choice is one of the
+  # two the reference shows, and the typed first departure is kept verbatim so an
+  # unreadable time stays in the input with its error (the command builder
+  # decides whether it is usable).
+  defp merge_change_params(socket, %{kind: :paste} = change, raw) do
+    change.params
+    |> merge_paste_target(socket, raw["service_id"])
+    |> merge_paste_mode(raw["mode"])
+    |> merge_paste_departure(raw["first_departure"])
+    |> merge_change_skip(raw["skip_existing"])
+  end
+
+  # A duplicate is pinned to the current service day (R7), so it has no target
+  # field to merge: only its first departure and skip choice reach the command.
+  defp merge_change_params(_socket, %{kind: :duplicate} = change, raw) do
+    change.params
+    |> merge_paste_departure(raw["first_departure"])
+    |> merge_change_skip(raw["skip_existing"])
+  end
+
+  # Only a service day the paste dialog offered can become the target, so a
+  # forged id never widens the reviewed command (CR-5, FH-30).
+  defp merge_paste_target(params, socket, value) when is_binary(value) do
+    if Enum.any?(paste_target_options(socket.assigns), &(&1.value == value)),
+      do: Map.put(params, :service_id, value),
+      else: params
+  end
+
+  defp merge_paste_target(params, _socket, _value), do: params
+
+  defp merge_paste_mode(params, value) when value in ["same", :same],
+    do: Map.put(params, :mode, :same)
+
+  defp merge_paste_mode(params, value) when value in ["at", :at],
+    do: Map.put(params, :mode, :at)
+
+  defp merge_paste_mode(params, _value), do: params
+
   # Only a service day the drawer offered can become the target, so a forged id
   # never widens the reviewed command (CR-5, FH-30).
   defp merge_change_target(params, socket, value) when is_binary(value) do
@@ -1681,6 +1953,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     do: Map.put(params, :skip_existing, value in ["true", true])
 
   defp merge_change_skip(params, _value), do: params
+
+  # The typed first departure is control text, so it is kept as typed: an
+  # unreadable value must stay in the input with the dialog's own error rather
+  # than snapping back to the previous reading.
+  defp merge_paste_departure(params, value) when is_binary(value),
+    do: Map.put(params, :first_departure, String.trim(value))
+
+  defp merge_paste_departure(params, _value), do: params
 
   defp merge_shift_direction(params, raw) do
     case raw["direction"] do
@@ -1861,6 +2141,22 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       "#{calendar_name(socket, params.service_id)}.#{cleared_block_clause(blocks)}"
   end
 
+  # A paste and a duplicate name the day they added trips to and what the skip
+  # choice left alone, the same shape as a copy's report.
+  defp change_outcome(socket, %{kind: :paste, params: params}, result) do
+    skipped = consequence_count(result.change_set.consequences, :skipped_existing)
+
+    "Pasted #{trip_count_label(length(result.created_trip_ids))} on " <>
+      "#{calendar_name(socket, params.service_id)}.#{skipped_clause(skipped)}"
+  end
+
+  defp change_outcome(socket, %{kind: :duplicate, params: params}, result) do
+    skipped = consequence_count(result.change_set.consequences, :skipped_existing)
+
+    "Duplicated #{trip_count_label(length(result.created_trip_ids))} on " <>
+      "#{calendar_name(socket, params.service_id)}.#{skipped_clause(skipped)}"
+  end
+
   defp skipped_clause(0), do: " They start without a block."
 
   defp skipped_clause(1),
@@ -2005,6 +2301,129 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end)
     |> Enum.sort_by(&{&1.clock, &1.label})
   end
+
+  # The paste and duplicate dialog's loaded view data: the context line (the
+  # service day the trips come from and their departures, or the duplicate's own
+  # day), every service day the target select offers, the typed-time error and
+  # the focus the dialog returns to when it closes. The review stays the
+  # component's own input, so its inserts and skips have one consumer.
+  defp change_paste_view(%{change: %{kind: kind} = change} = assigns)
+       when kind in [:paste, :duplicate] do
+    duplicate? = kind == :duplicate
+    prefix = if duplicate?, do: "duplicate", else: "paste"
+    options = paste_target_options(assigns)
+    target = Enum.find(options, &(&1.value == change.params[:service_id]))
+    rows = paste_rows(assigns, change.ids)
+
+    %{
+      duplicate?: duplicate?,
+      prefix: prefix,
+      dialog_id: "#{prefix}-dialog",
+      context: paste_context(assigns, change, duplicate?, target, rows),
+      target_options: Enum.map(options, &{&1.label, &1.value}),
+      target_name: target && target.name,
+      same_help: paste_same_help(rows),
+      time_error: paste_time_error(change.params),
+      return_focus_id: paste_return_focus(assigns, change.ids),
+      initial_focus_id:
+        if(change.params[:mode] == :at, do: "#{prefix}-at", else: "#{prefix}-apply")
+    }
+  end
+
+  defp change_paste_view(_assigns), do: nil
+
+  # The clipboard's trips as the pages shows them, in either order; a row the
+  # reload dropped contributes nothing here and the engine refuses its command.
+  defp paste_rows(assigns, ids) do
+    Enum.flat_map(ids, fn trip_id ->
+      case strip_row(assigns, trip_id) do
+        nil -> []
+        row -> [row]
+      end
+    end)
+  end
+
+  # The copied departures' span, in the reference's "17:00–17:40" form, or nil
+  # when no copied trip is loaded any more.
+  defp paste_range(rows) do
+    clocks =
+      rows
+      |> Enum.flat_map(fn row ->
+        if is_integer(row.start_secs), do: [clock(row.start_secs)], else: []
+      end)
+      |> Enum.sort()
+
+    case clocks do
+      [] -> nil
+      [single] -> single
+      clocks -> "#{List.first(clocks)}–#{List.last(clocks)}"
+    end
+  end
+
+  defp paste_pattern_names(assigns, rows) do
+    rows
+    |> Enum.map(& &1.route_pattern_id)
+    |> Enum.uniq()
+    |> Enum.flat_map(fn pattern_id ->
+      case Enum.find(assigns.payload.patterns, &(&1.route_pattern_id == pattern_id)) do
+        nil -> []
+        pattern -> [pattern.name]
+      end
+    end)
+    |> Enum.join(", ")
+  end
+
+  # The reference's context line: a paste names the source day and the pattern
+  # the trips run on; a duplicate names the day it copies within (R7's current
+  # service) and its departures.
+  defp paste_context(_assigns, _change, true = _duplicate?, target, rows) do
+    Enum.join(Enum.reject([target && target.name, paste_range(rows)], &is_nil/1), " · ")
+  end
+
+  defp paste_context(assigns, _change, _duplicate?, _target, rows) do
+    source =
+      calendar_label(assigns.payload.calendars, assigns.clipboard && assigns.clipboard.service_id)
+
+    range = paste_range(rows)
+    patterns = paste_pattern_names(assigns, rows)
+
+    case {range, patterns} do
+      {nil, ""} -> "Copied from #{source}"
+      {nil, patterns} -> "Copied from #{source} · #{patterns}"
+      {range, ""} -> "Copied from #{source}: #{range}"
+      {range, patterns} -> "Copied from #{source}: #{range} · #{patterns}"
+    end
+  end
+
+  defp paste_same_help(rows) do
+    case paste_range(rows) do
+      nil -> "As copied"
+      range -> "#{range}, as copied"
+    end
+  end
+
+  # The dialog's own error for a typed first departure the command cannot use.
+  # An empty field is the choice's own "type a time" state, not an error yet.
+  defp paste_time_error(params) do
+    case params[:first_departure] do
+      text when is_binary(text) and text != "" ->
+        if copy_offset(params) == :invalid, do: @paste_time_error, else: nil
+
+      _empty ->
+        nil
+    end
+  end
+
+  # Focus returns to the grid's own scroll region, the nearest stable element to
+  # the row the pasted trips were copied from (the reference returns the cursor).
+  defp paste_return_focus(assigns, [trip_id | _rest]) do
+    case strip_section(assigns, trip_id) do
+      {dom_id, _section} -> "#{dom_id}-table-container"
+      nil -> nil
+    end
+  end
+
+  defp paste_return_focus(_assigns, _ids), do: nil
 
   defp change_who(assigns, %{ids: [trip_id]}) do
     case strip_row(assigns, trip_id) do
@@ -3389,6 +3808,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                 :if={change_drawer}
                 change={@change}
                 drawer={change_drawer}
+                version_name={@current_gtfs_version.name}
+              />
+
+              <% change_paste = change_paste_view(assigns) %>
+              <ScheduleChangeComponents.paste_dialog
+                :if={change_paste}
+                change={@change}
+                paste={change_paste}
                 version_name={@current_gtfs_version.name}
               />
 
