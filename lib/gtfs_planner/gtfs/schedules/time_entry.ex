@@ -2,28 +2,37 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimeEntry do
   @moduledoc """
   Parses typed stop times on the Schedules page (R2).
 
-  This is the page's single time grammar: the grid cells and the trip drawers
-  all read typed text through `parse/2`, so a form accepted in one place is
-  accepted in every place. Times are integer seconds; GTFS service times may
-  pass 24:00, so they never use Elixir's `Time` type.
+  This module owns the application's one time-literal grammar. The grid cells
+  and the trip drawers read typed text through `parse/2`, and timetable paste
+  (`GtfsPlanner.Gtfs.TimetablePaste.TimeToken`) reads each pasted cell through
+  `read_clock/2`, so a clock literal means the same thing everywhere. Times
+  are integer seconds; GTFS service times may pass 24:00, so they never use
+  Elixir's `Time` type.
 
   Accepted forms:
 
-    * `6` / `18` — an hour
+    * `6` / `18` — an hour (not in paste)
     * `605` — `H MM`
     * `0605` / `1805` / `2510` — `HH MM`
     * `6:05` / `06:05` / `6:05:30` / `25:10`
-    * `6:05p` / `6p` / `12:05a` — a 12-hour suffix `a`, `am`, `p`, `pm` (any
-      case, optional space) on an hour of 1–12
-    * `+3` / `-10` — whole minutes relative to `:current`
+    * `6:05p` / `6p` / `12:05a` / `6:05 p.m.` — a 12-hour marker `a`, `am`,
+      `p`, `pm`, `a.m.` or `p.m.` (any case, optional spaces) on an hour of
+      1–12
+    * `+3` / `-10` — whole minutes relative to `:current` (not in paste)
 
-  Minutes and seconds stay below 60. A reading earlier than `:previous` is
-  adjusted onto the next service day when the form allows it: an ambiguous
-  reading (no suffix, no leading-zero hour, hour at most 12) tries +12 h and
-  then +24 h, a suffixed reading tries +24 h, and the first candidate at or
-  after `:previous` wins. A reading with no candidate keeps its literal value
-  and is left for the caller's chronology check to refuse; only a relative
-  reading below zero is refused here.
+  Paste accepts only the clock literals with minutes: an hour on its own and a
+  relative form are refused there, because a stray number in a pasted
+  timetable is more likely a route or footnote number than a time.
+
+  Minutes and seconds stay below 60. Each literal has a kind: `:h12` when it
+  carries a marker, `:h24` when its hour has a leading zero, is 0, or is 13 or
+  more, and `:ambiguous` otherwise. A reading earlier than `:previous` is
+  adjusted onto the next service day when its kind allows it: an ambiguous
+  reading tries +12 h and then +24 h, a marked reading or an hour-0 reading
+  tries +24 h, and the first candidate at or after `:previous` wins. Any other
+  24-hour reading keeps its literal value. A reading with no candidate keeps
+  its literal value and is left for the caller's chronology check to refuse;
+  only a relative reading below zero is refused here.
   """
 
   alias GtfsPlanner.Gtfs.GtfsTime
@@ -31,6 +40,14 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimeEntry do
   @seconds_per_hour 3_600
   @seconds_per_day 86_400
   @max_relative_minutes 999
+
+  # A 12-hour marker: a/am/p/pm, optionally dotted (a.m., p.m.), any case.
+  @meridiem ~r/\A(.*?)\s*([ap])\.?\s*m?\.?\z/i
+  @colon_clock ~r/\A(\d{1,2}):(\d{2})(?::(\d{2}))?\z/
+  @compact_clock ~r/\A(\d{1,2})(\d{2})?\z/
+
+  @typedoc "How a clock literal reads: marked 12-hour, explicit 24-hour, or either."
+  @type clock_kind :: :h24 | :h12 | :ambiguous
 
   @typedoc """
   One accepted reading.
@@ -84,79 +101,81 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimeEntry do
   end
 
   defp parse_clock(text, opts) do
-    with {suffix, clock} <- split_suffix(text),
-         {:ok, {hour, minute, second}} <- parse_parts(clock),
-         true <- hour_in_suffix_range?(hour, suffix) do
-      secs = apply_suffix(hour * @seconds_per_hour + minute * 60 + second, hour, suffix)
-      place(secs, suffix, clock, hour, opts)
-    else
-      _ -> {:error, :invalid_time}
+    case read_clock(text) do
+      {:ok, secs, kind} -> place(secs, kind, opts[:previous])
+      :error -> {:error, :invalid_time}
     end
   end
 
-  defp place(secs, suffix, clock, hour, opts) do
-    previous = opts[:previous]
+  defp place(secs, _kind, previous) when is_nil(previous) or secs >= previous,
+    do: {:ok, reading(secs, nil)}
 
-    cond do
-      not adjustable?(suffix, clock, hour) -> {:ok, reading(secs, nil)}
-      previous == nil -> {:ok, reading(secs, nil)}
-      secs >= previous -> {:ok, reading(secs, nil)}
-      suffixed?(suffix) -> next_day(secs, previous)
-      true -> plus_twelve(secs, previous)
+  defp place(secs, :ambiguous, previous), do: plus_twelve(secs, previous)
+  defp place(secs, :h12, previous), do: next_day(secs, previous)
+  # A 24-hour reading below one hour has hour 0: it can only mean after midnight.
+  defp place(secs, :h24, previous) when secs < @seconds_per_hour, do: next_day(secs, previous)
+  defp place(secs, :h24, _previous), do: {:ok, reading(secs, nil)}
+
+  @doc """
+  Reads one trimmed clock literal into seconds and a kind.
+
+  The kind is `:h12` for a literal with an `a`/`p` marker, `:h24` for one
+  whose hour has a leading zero, is 0, or is 13 or more, and `:ambiguous`
+  otherwise. `hour_only: false` refuses the hour-only forms (`6`, `18`, `6p`);
+  they are accepted by default. Relative forms are not clock literals and are
+  always refused.
+  """
+  @spec read_clock(String.t(), hour_only: boolean()) ::
+          {:ok, non_neg_integer(), clock_kind()} | :error
+  def read_clock(text, opts \\ []) when is_binary(text) do
+    {meridiem, clock} = split_meridiem(text)
+
+    with {:ok, hour_text, hour, minute, second} <-
+           split_clock(clock, Keyword.get(opts, :hour_only, true)) do
+      clock_reading(hour_text, hour, minute * 60 + second, meridiem)
     end
   end
 
-  defp split_suffix(text) do
-    case Regex.run(~r/\A(.*?)\s?(am|pm|a|p)\z/i, text) do
-      [_, clock, suffix] -> {String.downcase(suffix), clock}
+  defp split_meridiem(text) do
+    case Regex.run(@meridiem, text) do
+      [_, clock, letter] when clock != "" -> {String.downcase(letter), clock}
       _ -> {nil, text}
     end
   end
 
-  defp parse_parts(clock) do
-    case Regex.run(~r/\A(\d{1,2}):(\d{2})(?::(\d{2}))?\z/, clock) do
+  defp split_clock(clock, hour_only?) do
+    case Regex.run(@colon_clock, clock) || Regex.run(@compact_clock, clock) do
       [_, hour, minute, second] -> clock_parts(hour, minute, second)
       [_, hour, minute] -> clock_parts(hour, minute, "0")
-      nil -> parse_compact(clock)
+      [_, hour] when hour_only? -> clock_parts(hour, "0", "0")
+      _ -> :error
     end
   end
 
-  defp parse_compact(clock) do
-    case Regex.run(~r/\A(\d{1,2})(\d{2})?\z/, clock) do
-      [_, hour] -> clock_parts(hour, "0", "0")
-      [_, hour, minute] -> clock_parts(hour, minute, "0")
-      nil -> {:error, :invalid_time}
-    end
+  defp clock_parts(hour_text, minute, second) do
+    minute = String.to_integer(minute)
+    second = String.to_integer(second)
+
+    if minute < 60 and second < 60,
+      do: {:ok, hour_text, String.to_integer(hour_text), minute, second},
+      else: :error
   end
 
-  defp clock_parts(hour, minute, second) do
-    with {:ok, hour} <- to_integer(hour),
-         {:ok, minute} <- to_integer(minute),
-         {:ok, second} <- to_integer(second),
-         true <- minute < 60 and second < 60 do
-      {:ok, {hour, minute, second}}
-    else
-      _ -> {:error, :invalid_time}
-    end
+  defp clock_reading(hour_text, hour, rest, nil) do
+    kind =
+      if String.starts_with?(hour_text, "0") or hour >= 13,
+        do: :h24,
+        else: :ambiguous
+
+    {:ok, hour * @seconds_per_hour + rest, kind}
   end
 
-  defp hour_in_suffix_range?(_hour, suffix) when suffix in [nil, ""], do: true
-  defp hour_in_suffix_range?(hour, _suffix), do: hour in 1..12
-
-  defp apply_suffix(secs, hour, suffix) when suffix in ["a", "am"],
-    do: if(hour == 12, do: secs - 12 * @seconds_per_hour, else: secs)
-
-  defp apply_suffix(secs, hour, suffix) when suffix in ["p", "pm"],
-    do: if(hour == 12, do: secs, else: secs + 12 * @seconds_per_hour)
-
-  defp apply_suffix(secs, _hour, _suffix), do: secs
-
-  defp suffixed?(suffix), do: suffix in ["a", "am", "p", "pm"]
-
-  defp adjustable?(suffix, clock, hour) do
-    suffixed?(suffix) or
-      (not String.match?(clock, ~r/\A0\d/) and hour <= 12)
+  defp clock_reading(_hour_text, hour, rest, meridiem) when hour in 1..12 do
+    hour = if meridiem == "p", do: rem(hour, 12) + 12, else: rem(hour, 12)
+    {:ok, hour * @seconds_per_hour + rest, :h12}
   end
+
+  defp clock_reading(_hour_text, _hour, _rest, _meridiem), do: :error
 
   defp plus_twelve(secs, previous) do
     candidate = secs + 12 * @seconds_per_hour
@@ -188,6 +207,4 @@ defmodule GtfsPlanner.Gtfs.Schedules.TimeEntry do
 
   defp sign_value("-"), do: -1
   defp sign_value(_sign), do: 1
-
-  defp to_integer(value), do: {:ok, String.to_integer(value)}
 end
