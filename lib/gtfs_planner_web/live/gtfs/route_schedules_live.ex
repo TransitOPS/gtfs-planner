@@ -69,6 +69,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
      |> assign(:any_trips?, false)
      |> assign(:selected_ids, MapSet.new())
      |> assign(:selected_count, 0)
+     |> assign(:grid_revision, 0)
      |> assign(:vehicle_change, nil)
      |> assign(:vehicle_change_from, nil)
      |> assign(:keep_vehicle_change, false)
@@ -526,7 +527,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       Map.merge(section, %{
         stops: payload.filters.stops,
         columns: columns,
-        timing_lines: timing_lines_for(section.timing_lines, columns, timing_rows)
+        timing_lines: timing_lines_for(section.timing_lines, columns, timing_rows),
+        grid: %{preview: %{}, just_changed: MapSet.new(), cell_error: nil}
       })
     end)
   end
@@ -1791,15 +1793,22 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                     direction_label={direction_label(@payload)}
                   />
 
-                  <div id="schedules-sections" phx-update="stream" class="mt-3 space-y-6">
-                    <div :for={{dom_id, section} <- @streams.sections} id={dom_id}>
-                      <ScheduleComponents.section
-                        section={section}
-                        selected_ids={@selected_ids}
-                        calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
-                        export_defaults_path={"/gtfs/#{@current_gtfs_version.id}/settings/export-defaults"}
-                      />
+                  <div
+                    id="schedules-grid"
+                    phx-hook="TimetableGrid"
+                    data-grid-revision={@grid_revision}
+                  >
+                    <div id="schedules-sections" phx-update="stream" class="mt-3 space-y-6">
+                      <div :for={{dom_id, section} <- @streams.sections} id={dom_id}>
+                        <ScheduleComponents.section
+                          section={section}
+                          selected_ids={@selected_ids}
+                          calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
+                          export_defaults_path={"/gtfs/#{@current_gtfs_version.id}/settings/export-defaults"}
+                        />
+                      </div>
                     </div>
+                    <div id="cell-editor" phx-update="ignore"></div>
                   </div>
 
                   <ScheduleComponents.bulk_toolbar selected_count={@selected_count} />
