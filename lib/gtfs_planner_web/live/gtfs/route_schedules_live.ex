@@ -1799,6 +1799,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                         section={section}
                         selected_ids={@selected_ids}
                         calendar_label={calendar_label(@payload.calendars, @filters.service_id)}
+                        export_defaults_path={"/gtfs/#{@current_gtfs_version.id}/settings/export-defaults"}
                       />
                     </div>
                   </div>

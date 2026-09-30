@@ -127,6 +127,24 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
   end
 
   @doc """
+  Returns the primary not-estimable reason for one trip's stop-time records,
+  or nil when the trip needs no estimate or can be estimated.
+
+  Uses the same shared `classify` verdict behind `fill_trip/3` (criteria
+  "One classifier"), so display callers such as the Schedules timetable name
+  the same reason the export warning reports first. Only reads; never writes
+  `stop_times` (INV-1).
+  """
+  @spec estimate_problem([struct() | map()], :distance | :even, coords()) ::
+          nil | :no_first_time | :no_last_time | :timepoint_without_time | :order
+  def estimate_problem(records, method, coords) do
+    case classify(records, method, coords) do
+      {:not_estimated, problems} -> primary_reason(problems)
+      _ -> nil
+    end
+  end
+
+  @doc """
   Counts a version's missing stop times and classifies trips exactly as the
   export does (spec 23, AC-16).
 
