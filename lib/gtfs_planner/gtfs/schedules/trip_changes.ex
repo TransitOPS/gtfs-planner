@@ -21,6 +21,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.RoutePatterns.Materializer
   alias GtfsPlanner.Gtfs.Schedules.FrequencyWindows
+  alias GtfsPlanner.Gtfs.Schedules.TripChanges.EditStop
   alias GtfsPlanner.Gtfs.Schedules.TripChanges.Restore
   alias GtfsPlanner.Gtfs.Schedules.TripChanges.Shift
 
@@ -307,14 +308,16 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
   @doc """
   Dispatches a validated command to its pure planner.
 
-  `:shift` is planned by `TripChanges.Shift` and `:restore` by
-  `TripChanges.Restore`; every command without a planner clause is
-  `{:error, :invalid_command}` until its planner step adds a clause above the
-  fallback (steps 13–18).
+  `:shift` is planned by `TripChanges.Shift`, `:edit_stop` by
+  `TripChanges.EditStop` and `:restore` by `TripChanges.Restore`; every command
+  without a planner clause is `{:error, :invalid_command}` until its planner step
+  adds a clause above the fallback (steps 14–18).
   """
   @spec plan(command(), state()) :: {:ok, change_set()} | {:error, term()}
   def plan({:shift, _trip_ids, _delta, _from_position} = command, state),
     do: Shift.plan(command, state)
+
+  def plan({:edit_stop, _trip_id, _params} = command, state), do: EditStop.plan(command, state)
 
   def plan({:restore, _payload} = command, state), do: Restore.plan(command, state)
 
