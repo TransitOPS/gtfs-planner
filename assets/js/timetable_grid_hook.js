@@ -9,9 +9,10 @@
  * can leave the grid. Clicking a cell moves the cursor there.
  *
  * LiveView re-streams sections after every write, which replaces the cells the
- * cursor points at, so beforeUpdate() remembers whether the grid held focus
- * and updated() re-applies the cursor to the re-rendered cell and restores
- * that focus (falling back to the same row when the remembered trip is gone).
+ * cursor points at; a `reset: true` stream drops focus to the body before
+ * beforeUpdate() runs, so the hook records focus when it sends an event and
+ * updated() re-applies the cursor to the re-rendered cell and restores that
+ * focus (falling back to the same row when the remembered trip is gone).
  * Movement scrolls with the table region's scroll padding so the sticky grid
  * bar never covers the cursor.
  *
@@ -113,7 +114,11 @@ const TimetableGrid = {
   },
 
   beforeUpdate() {
-    this._restoreFocus = this.el.contains(document.activeElement);
+    // `||`: a `reset: true` stream removes the streamed sections before morphdom
+    // runs, so the browser has already moved focus to the body by the time this
+    // hook's beforeUpdate() sees it. `_pushEvent` records that the grid owned
+    // the focus for the write it sent.
+    this._restoreFocus = this._restoreFocus || this.el.contains(document.activeElement);
   },
 
   updated() {
@@ -172,6 +177,16 @@ const TimetableGrid = {
     return rows;
   },
 
+  // Every event this hook sends comes from a key, click or paste inside the grid,
+  // and the LiveView reload that answers it replaces the focused cell before this
+  // hook's beforeUpdate() runs. Recording the focus here keeps the cursor cell
+  // focused after the write (AC-6) instead of dropping focus to the body, where
+  // the grid's own shortcuts (Cmd/Ctrl+Z included) could no longer reach it.
+  _pushEvent(name, payload, callback) {
+    this._restoreFocus = this.el.contains(document.activeElement);
+    return this.pushEvent(name, payload, callback);
+  },
+
   _handleKeydown(event) {
     if (event.defaultPrevented) return;
 
@@ -188,19 +203,19 @@ const TimetableGrid = {
     // cursor cell. Cmd/Ctrl+S never reaches the browser's Save dialog.
     if (modifier && key.toLowerCase() === "s") {
       event.preventDefault();
-      this.pushEvent("save_shortcut", {});
+      this._pushEvent("save_shortcut", {});
       return;
     }
 
     if (modifier && key.toLowerCase() === "z" && !event.shiftKey && !this._editorOpen()) {
       event.preventDefault();
-      this.pushEvent("undo", {});
+      this._pushEvent("undo", {});
       return;
     }
 
     if ((key === "?" && !modifier) || (modifier && key === "/")) {
       event.preventDefault();
-      this.pushEvent("toggle_shortcuts", {});
+      this._pushEvent("toggle_shortcuts", {});
       return;
     }
 
@@ -230,13 +245,13 @@ const TimetableGrid = {
       event.preventDefault();
 
       if (!cell.dataset.pos) {
-        this.pushEvent("open_change", { kind: "timing", trip: cell.dataset.trip });
+        this._pushEvent("open_change", { kind: "timing", trip: cell.dataset.trip });
         return;
       }
 
       const row = cell.closest("tr");
       if (row && row.querySelector('[id$="-frequency"]')) {
-        this.pushEvent("open_edit_drawer", { trip: cell.dataset.trip });
+        this._pushEvent("open_edit_drawer", { trip: cell.dataset.trip });
         return;
       }
 
@@ -266,13 +281,13 @@ const TimetableGrid = {
 
     if (modifier && key.toLowerCase() === "a") {
       event.preventDefault();
-      this.pushEvent("select_all", {});
+      this._pushEvent("select_all", {});
       return;
     }
 
     if (modifier && key.toLowerCase() === "c") {
       event.preventDefault();
-      this.pushEvent("copy_trips", {});
+      this._pushEvent("copy_trips", {});
       return;
     }
 
@@ -346,7 +361,7 @@ const TimetableGrid = {
     if (!trip) return;
 
     this._selectionAnchor = trip;
-    this.pushEvent("toggle_trip", { trip });
+    this._pushEvent("toggle_trip", { trip });
   },
 
   _extendSelection(cell, delta) {
@@ -357,7 +372,7 @@ const TimetableGrid = {
     this._moveV(cell, delta);
 
     const to = this._cursor && this._cursor.trip;
-    if (to) this.pushEvent("select_range", { from: anchor, to });
+    if (to) this._pushEvent("select_range", { from: anchor, to });
   },
 
   // Nudges act on the selection server-side; `trip` names the cursor row.
@@ -365,7 +380,7 @@ const TimetableGrid = {
     const trip = this._tripFor(cell);
     if (!trip) return;
 
-    this.pushEvent("nudge", { minutes, trip });
+    this._pushEvent("nudge", { minutes, trip });
   },
 
   _tripFor(cell) {
@@ -386,8 +401,8 @@ const TimetableGrid = {
     event.preventDefault();
     const text = event.clipboardData ? event.clipboardData.getData("text") : "";
 
-    this.pushEvent("paste_trips", {}, (reply) => {
-      if (reply && reply.clipboard === false && text) this.pushEvent("paste_text", {});
+    this._pushEvent("paste_trips", {}, (reply) => {
+      if (reply && reply.clipboard === false && text) this._pushEvent("paste_text", {});
     });
   },
 
@@ -573,7 +588,7 @@ const TimetableGrid = {
     if (!editor || editor.sequence !== sequence) return;
 
     editor.timer = null;
-    this.pushEvent(
+    this._pushEvent(
       "cell_preview",
       { trip: editor.trip, position: Number(editor.pos), text: editor.value },
       (reply) => {
@@ -603,7 +618,7 @@ const TimetableGrid = {
     this._hideEditor();
     this._setPending(cell);
 
-    this.pushEvent(
+    this._pushEvent(
       "cell_commit",
       { trip: editor.trip, position: Number(editor.pos), text, mode },
       (reply) => {
@@ -684,7 +699,7 @@ const TimetableGrid = {
     if (!trip || !position) return;
 
     this._setPending(cell);
-    this.pushEvent("cell_clear", { trip, position: Number(position) });
+    this._pushEvent("cell_clear", { trip, position: Number(position) });
   },
 
   _setPending(cell) {
