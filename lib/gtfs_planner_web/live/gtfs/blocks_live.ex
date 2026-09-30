@@ -679,13 +679,19 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   def handle_event("open_drawer", %{"key" => key} = params, socket)
       when key in ["driving_times", "operator_changes", "suggest"] do
-    patch(socket, %{
-      trip: nil,
-      gap: nil,
-      block: nil,
-      drawer: key,
-      pair: blank_to_nil(params["pair"])
-    })
+    case guard_connection_draft(socket, "open_drawer", params) do
+      {:noreply, socket} ->
+        {:noreply, socket}
+
+      :continue ->
+        patch(socket, %{
+          trip: nil,
+          gap: nil,
+          block: nil,
+          drawer: key,
+          pair: blank_to_nil(params["pair"])
+        })
+    end
   end
 
   # The Suggest blocks drawer's “Block rules” link is a navigation, not a panel
@@ -862,24 +868,56 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # parameters as well as the panel-only drawer's own state; the other drawers
   # keep the URL they had. The panel drawers render over the page, so one of them
   # opens alongside whichever URL drawer the page had.
-  def handle_event("close_drawer", _params, socket) do
-    socket = assign(socket, :open_drawer, nil)
-
-    socket =
-      if match?(%{scope: :selection}, socket.assigns.assign),
-        do: assign(socket, :assign, nil),
-        else: socket
-
-    state = socket.assigns.state
-
-    if state.trip || state.gap || state.block || state.drawer || state.pair do
-      patch(socket, %{trip: nil, gap: nil, block: nil, drawer: nil, pair: nil},
-        clear_command: true
-      )
-    else
-      {:noreply, socket}
+  #
+  # A connection choice the editor has not saved is the one thing this event
+  # cannot throw away silently, so a dirty draft opens the discard confirmation
+  # instead and the close happens when the editor confirms it.
+  def handle_event("close_drawer", params, socket) do
+    case guard_connection_draft(socket, "close_drawer", params) do
+      {:noreply, socket} -> {:noreply, socket}
+      :continue -> do_close_drawer(socket)
     end
   end
+
+  # “Keep editing” leaves the draft exactly as it is and the drawer open.
+  def handle_event("keep_connection_editing", _params, socket),
+    do: {:noreply, assign(socket, :connection_discard, nil)}
+
+  # “Discard change” puts the draft back to what is saved and then does what
+  # the editor asked for before the confirmation stood in its way. The action is
+  # replayed through the same `handle_event/3` the editor's own click reached, so
+  # there is one implementation of each action and the confirmation adds no
+  # second path. Restoring the saved choice rather than clearing the draft is
+  # what keeps the guard from standing in the way of the replay: a cleared draft
+  # would still differ from the saved one, and the replayed close would ask again.
+  def handle_event("discard_connection", _params, socket) do
+    case socket.assigns.connection_discard do
+      %{event: event, params: params} ->
+        socket =
+          assign(socket,
+            connection_discard: nil,
+            connection_draft: socket.assigns.connection_saved
+          )
+
+        apply(__MODULE__, :handle_event, [event, params, socket])
+
+      nil ->
+        {:noreply, socket}
+    end
+  end
+
+  # Choosing a setting is a draft, not a write: the event only records the choice
+  # and rebuilds the form, so the rider table and the warnings in the stay card
+  # re-render for the chosen option while the saved record is untouched. A
+  # payload naming anything other than one of the three choices changes nothing.
+  def handle_event("change_connection", %{"connection" => %{"choice" => value}}, socket) do
+    case connection_choice(value) do
+      nil -> {:noreply, socket}
+      choice -> {:noreply, put_connection_draft(socket, choice)}
+    end
+  end
+
+  def handle_event("change_connection", _params, socket), do: {:noreply, socket}
 
   # The two writes in the Block rules drawer. The drawer only
   # exists on a loaded day type, so a submit from another page state is not a
@@ -1038,30 +1076,52 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # marker carries no `block` and drops any the URL held. Every drawer clears the
   # other two, so one URL never holds a stack of two open drawers.
   def handle_event("open_trip", %{"trip" => trip_id} = params, socket) do
-    patch(
-      socket,
-      %{trip: blank_to_nil(trip_id), gap: nil, block: blank_to_nil(params["block"])},
-      close_drawer: true
-    )
+    case guard_connection_draft(socket, "open_trip", params) do
+      {:noreply, socket} ->
+        {:noreply, socket}
+
+      :continue ->
+        patch(
+          socket,
+          %{trip: blank_to_nil(trip_id), gap: nil, block: blank_to_nil(params["block"])},
+          close_drawer: true
+        )
+    end
   end
 
   # The pair is the two trip UUIDs the gap bar or the block drawer's gap note
   # sent; the URL carries them as one `gap=` parameter so the drawer is a deep
   # link too.
   def handle_event("open_gap", params, socket) do
-    patch(
-      socket,
-      %{
-        gap: gap_param(params["from"], params["to"]),
-        trip: nil,
-        block: blank_to_nil(params["block"])
-      },
-      close_drawer: true
-    )
+    case guard_connection_draft(socket, "open_gap", params) do
+      {:noreply, socket} ->
+        {:noreply, socket}
+
+      :continue ->
+        patch(
+          socket,
+          %{
+            gap: gap_param(params["from"], params["to"]),
+            trip: nil,
+            block: blank_to_nil(params["block"])
+          },
+          close_drawer: true
+        )
+    end
   end
 
   def handle_event("open_block", %{"block" => block_id}, socket) do
-    patch(socket, %{block: blank_to_nil(block_id), trip: nil, gap: nil}, close_drawer: true)
+    case guard_connection_draft(socket, "open_block", %{"block" => block_id}) do
+      {:noreply, socket} ->
+        {:noreply, socket}
+
+      :continue ->
+        patch(
+          socket,
+          %{block: blank_to_nil(block_id), trip: nil, gap: nil},
+          close_drawer: true
+        )
+    end
   end
 
   def handle_event("open_block", _params, socket), do: {:noreply, socket}
@@ -1617,10 +1677,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
         {socket, trip} = resolve_trip_view(socket, day, state.trip)
 
+        gap_view = if(is_nil(trip), do: gap)
+
         socket
         |> assign(:trip_view, trip)
-        |> assign(:gap_view, if(is_nil(trip), do: gap))
+        |> assign(:gap_view, gap_view)
         |> assign(:block_view, if(is_nil(trip) and is_nil(gap), do: block))
+        |> resolve_connection(day, gap_view)
         |> assign(:back_block, if(block, do: block.summary.block_id))
         |> assign(:open_drawer, Map.get(@drawers, state.drawer) || socket.assigns.open_drawer)
         |> assign(:block_action, block_action_state(socket.assigns.block_action, block))
@@ -1641,6 +1704,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
           block_action: nil,
           block_attributes: nil
         )
+        |> resolve_connection(nil, nil)
     end
   end
 
@@ -1741,6 +1805,146 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       place: if(group, do: group.place.name, else: ""),
       turnback?: if(group, do: group.turnback?, else: false)
     }
+  end
+
+  # The connection drawer's own state, resolved whenever the drawer resolves: the
+  # three-way form, the draft the editor has chosen (or not), the save rule's own
+  # answer for the pair and the scope line over the day types both trips run in.
+  #
+  # The pre-check is `Gtfs.check_in_seat_connections/3` — R1 through
+  # `Blocking.check_connections/3`, the same rule the save re-evaluates under the
+  # block writers' locks (CR-2) — so the two disabled options and a refused save
+  # can never disagree. It is a read: it writes nothing, and a version it cannot
+  # read leaves the options enabled rather than guessing a refusal.
+  #
+  # The scope line is derived from the loaded day rather than read again: a day
+  # type carries its service IDs and its date count, so the dates both trips run
+  # on are the day types naming both services, counted once each. A drawer with
+  # no day behind it, a version the rule cannot read, or a pair that shares no day
+  # type each keep their own state instead of a number that would be a guess.
+  defp resolve_connection(socket, _day, nil) do
+    assign(socket,
+      connection_check: nil,
+      connection_saved: nil,
+      connection_draft: nil,
+      connection_form: connection_form(nil),
+      connection_scope: nil
+    )
+  end
+
+  defp resolve_connection(socket, day, gap) do
+    pair = {gap.from.trip_id, gap.to.trip_id}
+    saved = connection_saved_choice(gap.setting)
+
+    socket
+    |> assign(:connection_check, check_in_seat_connection(socket, pair))
+    |> assign(:connection_saved, saved)
+    |> assign(:connection_draft, saved)
+    |> assign(:connection_form, connection_form(saved))
+    |> assign(:connection_scope, connection_scope(day, gap.from, gap.to))
+  end
+
+  # R1's own answer for this pair. A version the rule cannot read is `nil`, which
+  # the drawer reads as "no answer", not as a refusal.
+  defp check_in_seat_connection(socket, pair) do
+    %{current_organization: organization, current_gtfs_version: version} = socket.assigns
+
+    case Gtfs.check_in_seat_connections(organization.id, version.id, [pair]) do
+      {:ok, checks} -> Map.get(checks, pair)
+      {:error, _reason} -> nil
+    end
+  end
+
+  # The dates a choice would apply on: the day types that name both trips'
+  # services, each counted once, whatever the order the day's own list has them
+  # in. Two trips whose services never meet have no shared day type, and the
+  # drawer says so rather than printing a scope of zero.
+  defp connection_scope(%{day_types: day_types}, from, to) do
+    day_types =
+      Enum.filter(day_types, fn day_type ->
+        from.service_id in day_type.service_ids and to.service_id in day_type.service_ids
+      end)
+
+    %{
+      day_types: day_types,
+      date_count: Enum.sum(Enum.map(day_types, & &1.date_count))
+    }
+  end
+
+  defp connection_scope(_day, _from, _to), do: nil
+
+  # The saved setting the drawer opens on: a pair with no record is "not stated"
+  # because that is what it is, and a pair of two disagreeing records has no
+  # single saved choice, so nothing is preselected and the editor resolves it.
+  defp connection_saved_choice(:none), do: :not_stated
+  defp connection_saved_choice(:stay), do: :stay_on_board
+  defp connection_saved_choice(:reboard), do: :must_reboard
+  defp connection_saved_choice(_conflict), do: nil
+
+  # The form the three radio cards bind to. It is a plain `to_form/2` over the
+  # draft, so the change event carries only the choice and the form is rebuilt
+  # from the draft the handler accepted.
+  defp connection_form(choice) do
+    to_form(%{"choice" => choice_value(choice)}, as: :connection)
+  end
+
+  # The three values the form carries, and the only ones the handler accepts: the
+  # `InSeatTransfers` choice atoms, as the strings a form parameter arrives in.
+  @connection_choices %{
+    "not_stated" => :not_stated,
+    "stay_on_board" => :stay_on_board,
+    "must_reboard" => :must_reboard
+  }
+
+  defp connection_choice(value) when is_binary(value), do: Map.get(@connection_choices, value)
+  defp connection_choice(_value), do: nil
+
+  defp choice_value(nil), do: ""
+  defp choice_value(choice), do: Atom.to_string(choice)
+
+  defp put_connection_draft(socket, choice) do
+    assign(socket, connection_draft: choice, connection_form: connection_form(choice))
+  end
+
+  # A draft that differs from the saved choice is not thrown away by closing the
+  # drawer or opening another one: the discard confirmation stands in front of
+  # the action, and `discard_connection` replays it once the editor confirms.
+  # Anything else runs the event the caller asked for.
+  defp guard_connection_draft(socket, event, params) do
+    if connection_dirty?(socket.assigns) do
+      {:noreply, assign(socket, :connection_discard, %{event: event, params: params})}
+    else
+      :continue
+    end
+  end
+
+  # A draft is worth a confirmation when it says something the saved record does
+  # not. A pair of two disagreeing records has no saved choice and opens with no
+  # draft, and "nothing chosen yet" is not work to lose; the moment the editor
+  # picks one, that pair has an unsaved choice like any other.
+  defp connection_dirty?(assigns) do
+    assigns.connection_draft != assigns.connection_saved and
+      not (is_nil(assigns.connection_draft) and is_nil(assigns.connection_saved))
+  end
+
+  # The close itself, once no unsaved connection choice stands in its way.
+  defp do_close_drawer(socket) do
+    socket = assign(socket, :open_drawer, nil)
+
+    socket =
+      if match?(%{scope: :selection}, socket.assigns.assign),
+        do: assign(socket, :assign, nil),
+        else: socket
+
+    state = socket.assigns.state
+
+    if state.trip || state.gap || state.block || state.drawer || state.pair do
+      patch(socket, %{trip: nil, gap: nil, block: nil, drawer: nil, pair: nil},
+        clear_command: true
+      )
+    else
+      {:noreply, socket}
+    end
   end
 
   # The block's own movement for the pair and the index its relief windows carry.
@@ -3637,6 +3841,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       connection_settings: %{},
       trip_view: nil,
       gap_view: nil,
+      connection_check: nil,
+      connection_saved: nil,
+      connection_draft: nil,
+      connection_form: connection_form(nil),
+      connection_scope: nil,
+      connection_discard: nil,
       block_view: nil,
       back_block: nil,
       block_action: nil,
@@ -4238,6 +4448,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   turnback?={gap.turnback?}
                   short?={gap.short?}
                   back_block={@back_block}
+                  version_id={@state.version_id}
+                  connection_form={@connection_form}
+                  connection_draft={@connection_draft}
+                  connection_saved={@connection_saved}
+                  connection_check={@connection_check}
+                  connection_scope={@connection_scope}
+                  discard={@connection_discard}
                 />
               <% end %>
 
