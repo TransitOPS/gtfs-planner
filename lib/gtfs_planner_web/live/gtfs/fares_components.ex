@@ -99,6 +99,7 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   import GtfsPlannerWeb.PlannerComponents,
     only: [drawer_footer: 1, drawer_scroll: 1, first_use: 1, form_section: 1, message: 1]
 
+  alias GtfsPlanner.Gtfs.Fares.Money
   alias GtfsPlanner.Gtfs.FareZone
 
   @doc """
@@ -2753,11 +2754,6 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
   defp sibling_platforms_copy(1), do: "1 sibling platform is not selected."
   defp sibling_platforms_copy(count), do: "#{count} sibling platforms are not selected."
 
-  # GTFS `currency_type` is an ISO 4217 code. The symbols an operator reads are
-  # the ones the reference shows; an unmapped code keeps its own code, because a
-  # guessed symbol would misstate the amount.
-  @currency_symbols %{"USD" => "$", "EUR" => "€", "GBP" => "£"}
-
   # The fare's price as the row's price column reads it, or nil when the rule's
   # fare has no `fare_attributes` row: a rule never shows a price no fare in the
   # version has.
@@ -2766,12 +2762,10 @@ defmodule GtfsPlannerWeb.Gtfs.FaresComponents do
 
   defp rule_price_text(_rule), do: nil
 
-  defp rule_price(price, currency_type) do
-    case Map.fetch(@currency_symbols, currency_type) do
-      {:ok, symbol} -> symbol <> Decimal.to_string(price)
-      :error -> currency_type <> " " <> Decimal.to_string(price)
-    end
-  end
+  # Every price an operator reads goes through `Fares.Money.format/2`, so a
+  # rule, a drawer and the grid all round the same way and read the same.
+  defp rule_price(price, currency_type),
+    do: Money.format(price, currency_type)
 
   # The journey line: which end of the journey the rule restricts. Both ends
   # unrestricted is its own sentence rather than two "Any" halves, and a rule
