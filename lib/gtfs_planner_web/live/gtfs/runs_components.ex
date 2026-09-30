@@ -1029,6 +1029,181 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   @doc """
+  Renders the page's Review problems action.
+
+  The count is what the drawer LISTS, so the button and the drawer cannot
+  disagree. The button is PRIMARY while anything needs attention and secondary
+  once nothing does: a day with no problems is a day whose other actions are
+  the ones to reach for.
+  """
+  attr :findings, :list, required: true
+  attr :uncovered, :list, required: true
+  attr :open, :boolean, default: false
+
+  def review_problems_button(assigns) do
+    count = problem_count(group_findings(assigns.findings), assigns.uncovered)
+
+    assigns = assign(assigns, :count, count)
+
+    ~H"""
+    <.button
+      id="runs-review-problems"
+      type="button"
+      phx-click="open_problems"
+      variant={if @count > 0, do: "primary", else: "secondary"}
+      data-role="review-problems"
+      data-count={@count}
+      class="min-h-11"
+    >
+      <.icon name="hero-exclamation-triangle-mini" class="size-4" />
+      Review problems{if @count > 0, do: " · #{@count}"}
+    </.button>
+    """
+  end
+
+  @doc """
+  Renders the problems drawer: every run's findings, the uncovered work, and
+  the orphan notice.
+
+  Findings are grouped by RUN rather than by severity, because a finding is
+  only actionable next to the run it belongs to and that run is what the reader
+  opens. Within a group the worst severity comes first, so the drawer reads in
+  the order the reader has to act.
+
+  The uncovered work is ONE item however many blocks it spans, and it links to
+  the Uncovered tab rather than listing every block here.
+  """
+  attr :open, :boolean, required: true
+  attr :findings, :list, required: true
+  attr :uncovered, :list, required: true
+  attr :uncovered_trips, :integer, required: true
+  attr :orphan_count, :integer, required: true
+  attr :day_label, :string, default: "this day"
+  attr :version_id, :string, required: true
+  attr :day_type_key, :string, default: ""
+
+  def problems_drawer(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :run_findings,
+        assigns.findings
+        |> group_findings()
+        |> Enum.map(fn {id, list} -> {id, sort_findings(list)} end)
+      )
+
+    ~H"""
+    <.drawer
+      id="runs-problems-drawer"
+      open={@open}
+      title="Review problems"
+      on_close="close_problems"
+      return_focus_id="runs-review-problems"
+    >
+      <p id="runs-problems-summary" data-role="problems-summary" class="text-sm text-base-content/70">
+        {problem_count(@run_findings, @uncovered)} to review · {@day_label}
+      </p>
+
+      <div
+        :for={{run_id, list} <- @run_findings}
+        id={"runs-problems-run-#{run_id}"}
+        class="mt-4 border-b border-base-300 pb-3"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h3 class="text-base font-bold">Run {run_id}</h3>
+          <.link
+            href="#"
+            phx-click="open_run"
+            phx-value-run={run_id}
+            data-role="problems-run-link"
+            class="min-h-11 py-2 font-semibold text-action underline underline-offset-4"
+          >
+            Open run {run_id}
+          </.link>
+        </div>
+        <ul class="mt-1 grid gap-1.5">
+          <li
+            :for={finding <- list}
+            data-role="problems-finding"
+            data-code={finding.code}
+            data-severity={finding.severity}
+            class="flex items-start gap-2 text-sm"
+          >
+            <span class="inline-flex shrink-0 items-center gap-1 font-semibold">
+              <.icon name={severity_icon(finding.severity)} class="size-4" />
+              {severity_label(finding.severity)}
+            </span>
+            <span>
+              {finding_label(finding)}
+              <span class="text-base-content/70">{finding_detail(finding)}</span>
+            </span>
+          </li>
+        </ul>
+      </div>
+
+      <div
+        :if={@uncovered != []}
+        id="runs-problems-uncovered"
+        data-role="problems-uncovered"
+        class="mt-4 border-b border-base-300 pb-3"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h3 class="text-base font-bold">Uncovered work</h3>
+          <.link
+            href={"/gtfs/#{@version_id}/runs?day=#{@day_type_key}&panel=uncovered"}
+            data-role="problems-uncovered-link"
+            class="min-h-11 py-2 font-semibold text-action underline underline-offset-4"
+          >
+            Review uncovered work
+          </.link>
+        </div>
+        <p class="mt-1 flex items-start gap-2 text-sm">
+          <span class="inline-flex shrink-0 items-center gap-1 font-semibold">
+            <.icon name="hero-exclamation-triangle" class="size-4" /> Not in a run
+          </span>
+          <span>
+            {count(@uncovered_trips, "trip")} across {count(length(@uncovered), "block")}: {Enum.map_join(
+              @uncovered,
+              " · ",
+              &uncovered_label/1
+            )}
+          </span>
+        </p>
+      </div>
+
+      <div
+        :if={@orphan_count > 0}
+        id="runs-problems-orphans"
+        data-role="problems-orphans"
+        data-count={@orphan_count}
+        class="mt-4 rounded-card border border-base-300 bg-base-200/40 p-4"
+      >
+        <h3 class="text-base font-bold">Old run assignments</h3>
+        <p class="mt-1 text-sm">
+          {count(@orphan_count, "assignment")} {orphan_tail(@orphan_count)}
+        </p>
+        <p class="mt-1 text-[13px] text-base-content/70">
+          They are on no chart and in no run. Removing them deletes the rows and nothing else.
+        </p>
+        <.button
+          id="runs-remove-orphans"
+          type="button"
+          phx-click="remove_orphans"
+          phx-disable-with="Removing…"
+          class="mt-3 min-h-11"
+        >
+          Remove {count(@orphan_count, "assignment")}
+        </.button>
+      </div>
+
+      <p :if={@run_findings == [] and @uncovered == []} class="mt-4 text-sm">
+        Every run passes its checks, and every blocked trip is in a run.
+      </p>
+    </.drawer>
+    """
+  end
+
+  @doc """
   Renders the run drawer: one run, in the order a reader asks about it.
 
   **Problems, then pieces, then paid time, then the rule.** A reader who opens a
@@ -2332,6 +2507,68 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   defp finding_label(%{code: :uncovered_work}), do: "Not in a run"
   defp finding_label(%{code: :orphan_assignments}), do: "Assignment no longer in this day type"
   defp finding_label(%{code: code}), do: Atom.to_string(code)
+
+  # A run's findings, grouped by run, the worst severity first inside each group
+  # and the groups themselves in sign-on order (the caller passes them sorted).
+  #
+  # The `:uncovered_work` finding is EXCLUDED. The drawer lists uncovered work
+  # once, as its own section, and leaving the domain's finding in a run group
+  # would show the same problem twice — in a group titled after a run that is
+  # not involved in it.
+  defp group_findings(findings) do
+    findings
+    |> Enum.filter(&(&1.severity in [:error, :warning]))
+    |> Enum.reject(&(&1.code == :uncovered_work))
+    |> Enum.flat_map(& &1.run_ids)
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.map(fn run_id ->
+      {run_id, for(f <- findings, f.code != :uncovered_work and run_id in f.run_ids, do: f)}
+    end)
+  end
+
+  defp sort_findings(list) do
+    Enum.sort_by(list, fn f -> {severity_rank(f.severity), to_string(f.code)} end)
+  end
+
+  defp severity_rank(:error), do: 0
+  defp severity_rank(:warning), do: 1
+  defp severity_rank(_severity), do: 2
+
+  # What the header button counts: one per run finding, plus ONE for the
+  # uncovered work as a whole.
+  #
+  # The card writes this as "errors + warnings + 1 when uncovered exists". Read
+  # literally that DOUBLE-COUNTS uncovered, because the domain already reports
+  # it as a `:uncovered_work` warning; the seeded day's "· 3" only comes out right
+  # when that one warning is the item the "+1" stands for. The button therefore
+  # counts what the drawer LISTS.
+  defp problem_count(run_findings, uncovered) do
+    total =
+      Enum.reduce(run_findings, 0, fn {_run_id, list}, acc -> acc + length(list) end)
+
+    total + if(uncovered == [], do: 0, else: 1)
+  end
+
+  # The card's own sentence: "N assignments are for trips no longer in this day
+  # type." The COUNT and its noun are rendered just before this, so the tail
+  # carries only the verb and its agreement — printing the noun here as well
+  # gave "2 assignments assignments are for trips…".
+  defp orphan_tail(1), do: "is for a trip no longer in this day type."
+  defp orphan_tail(_count), do: "are for trips no longer in this day type."
+
+  defp uncovered_label(segment) do
+    "block #{segment.block_id} " <>
+      BlocksComponents.clock(segment.start_secs) <>
+      "–" <> BlocksComponents.clock(segment.end_secs)
+  end
+
+  defp count(1, noun), do: "1 #{noun}"
+  defp count(n, noun), do: "#{n} #{noun}s"
+
+  defp severity_label(:error), do: "Problem"
+  defp severity_label(:warning), do: "Warning"
+  defp severity_label(:notice), do: "Notice"
 
   # The house icons `BlocksComponents` already uses for the same three states.
   defp severity_icon(:error), do: "hero-x-circle-mini"

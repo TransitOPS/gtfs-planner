@@ -85,6 +85,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:split_form, to_form(%{"gap" => "", "to" => ""}, as: :split))
      |> assign(:move_runs, [])
      |> assign(:piece_windows, %{})
+     |> assign(:problems_open, false)
      |> assign(:next_run_id, "1")
      |> assign(:run_axis, nil)
      |> assign(:run_routes, %{})
@@ -350,6 +351,55 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       # is not rendered without a loaded day, so the first case is unreachable
       # from the page — and a no-op is still better than a drawer of zeros.
       {:noreply, socket}
+    end
+  end
+
+  # The problems drawer, and the orphan removal inside it.
+  #
+  # The drawer is NOT URL state. Every other panel on this page is, because each
+  # of them is a different LENS on the same day; the problems drawer is a reading
+  # of what the other three already show, and adding `?problems=` would give the
+  # page a fourth address for a thing the reader can reach from the count strip
+  # in one click.
+  def handle_event("open_problems", _params, socket) do
+    # Opening the problems drawer closes the run drawer: two drawers at once
+    # would stack, and the problems list is the way to REACH a run rather than
+    # a place to read one.
+    {:noreply, assign(socket, :problems_open, true)}
+  end
+
+  def handle_event("close_problems", _params, socket) do
+    {:noreply, assign(socket, :problems_open, false)}
+  end
+
+  # Remove run assignments whose trips are no longer in this day type.
+  #
+  # These rows are already unusable: `Runs.load_runs/3` EXCLUDES them from every
+  # run it derives, so they are on no chart, in no pay table and in no export.
+  # They are what is left after a service group is removed. The drawer says how
+  # many it will delete before the reader presses, and the count is the domain's
+  # own, not a count taken from the list.
+  def handle_event("remove_orphans", _params, socket) do
+    %{day: day, current_organization: organization, current_gtfs_version: version} =
+      socket.assigns
+
+    case Gtfs.remove_run_orphans(organization.id, version.id, day) do
+      # A COUNT, not `:ok`: the drawer says how many rows it deleted, and the
+      # domain counts the rows it actually removed rather than the rows it
+      # believed were there.
+      {:ok, removed} when is_integer(removed) ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast("#{removed} old run assignments removed.", :done)
+         |> load_day()
+         |> assign(:problems_open, true)}
+
+      {:error, _reason} ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast("Could not remove the old assignments. Reload and try again.", :refused)}
     end
   end
 
@@ -650,6 +700,18 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
           block = Enum.find(day.day.blocks, &(&1.summary.block_id == block_id))
           {block_id, (block && block.windows) || []}
         end)
+    end
+  end
+
+  # How many run assignments name trips that are no longer in this day type.
+  #
+  # Read from the domain's `:orphan_assignments` notice rather than counted from
+  # anything on the page: the notice carries the count `Runs.load_runs/3`
+  # already computed, and a second count here could disagree with it.
+  defp orphan_count(findings) do
+    case Enum.find(findings, &(&1.code == :orphan_assignments)) do
+      %{detail: %{count: count}} -> count
+      _none -> 0
     end
   end
 
@@ -1171,7 +1233,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
       <div id="runs-page" data-load-state={@load_state}>
         <div class="w-full space-y-4">
-          <RunsComponents.page_head />
+          <RunsComponents.page_head>
+            <:actions>
+              <RunsComponents.review_problems_button
+                :if={@runs_day}
+                findings={@runs_day.derived.findings}
+                uncovered={@runs_day.derived.uncovered}
+                open={@problems_open}
+              />
+            </:actions>
+          </RunsComponents.page_head>
 
           <RunsComponents.unavailable_callout :if={@load_state == :unavailable} />
 
@@ -1281,6 +1352,18 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
           <RunsComponents.page_footnote :if={@load_state == :loaded} />
         </div>
       </div>
+
+      <RunsComponents.problems_drawer
+        :if={@runs_day}
+        open={@problems_open}
+        findings={@runs_day.derived.findings}
+        uncovered={@runs_day.derived.uncovered}
+        uncovered_trips={@runs_day.derived.stats.uncovered.trips}
+        orphan_count={orphan_count(@runs_day.derived.findings)}
+        version_id={@current_gtfs_version.id}
+        day_type_key={@day || ""}
+        day_label={day_label(@runs_day)}
+      />
 
       <RunsComponents.run_drawer
         :if={is_map(@runs_day) and selected_run(@runs_day, @drawer)}
