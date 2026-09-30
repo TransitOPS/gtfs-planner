@@ -8,55 +8,74 @@ const MEASURE_CLICK_THROUGH = '[data-editable="pathway"], [data-cross-level-path
 // Points that take a click from the saved ruler painted above them.
 const RULER_YIELDS_TO = "[data-stop-hit-target], [data-journal-marker]";
 
+// Overlay sizes, in CSS pixels. `scaleOverlayElements` converts them to viewBox
+// units at the current window size and zoom, so on-screen size does not depend
+// on how large the plan happens to be fitted. Server-rendered `data-base-*`
+// attributes are in the same pixels and take precedence where present.
 const OVERLAY_BASE = {
-  circleR: 0.6,
-  hitTargetSize: 3.5,
-  rectUprightW: 1.0,
-  rectUprightH: 2.0,
-  rectSquareSize: 1.2,
+  // Point markers: 12px circle, 12x20px upright rect, 12px square.
+  circleR: 6,
+  rectUprightW: 12,
+  rectUprightH: 20,
+  rectSquareSize: 12,
   rectBottomAnchorRatio: 0.8,
-  rectStroke: 0.12,
-  entranceStroke: 0.16,
-  rectRx: 0.2,
-  stopLabelFontSize: 0.72,
-  stopLabelStrokeWidth: 0.17,
+  rectRx: 2,
+  // Painted under the fill, so half of it (2px) shows as the white ring.
+  markerRingStroke: 4,
+  entranceStroke: 2,
+  hitTargetSize: 24,
+  // Point names.
+  stopLabelFontSize: 12,
+  stopLabelStrokeWidth: 3,
+  stopLabelLineHeight: 14,
   stopLabelMinScale: 0.85,
   stopLabelSmallPlanMinScale: 1.4,
   stopLabelSmallPlanWidth: 600,
+  // Pathways.
   pathwayLabelMinScale: 1.1,
-  crossLevelStairsSize: 0.9,
-  crossLevelStairsStepUnit: 0.3,
-  crossLevelElevatorHalfHeight: 0.45,
-  crossLevelElevatorHalfWidth: 0.35,
-  crossLevelElevatorGap: 0.05,
-  pathwayStroke: 0.30,
-  pathwayHitStroke: 2,
-  pathwayTickStroke: 0.26,
-  pathwayBarStroke: 0.5,
-  pathwayConnectorStroke: 0.26,
-  pathwayLabelFontSize: 0.78,
-  pathwayLabelStrokeWidth: 0.2,
-  pathwayMarkerSize: 1.5,
-  pathwayElevatorBoxWidth: 1,
-  pathwayElevatorBoxHeight: 1,
-  pathwayElevatorBoxStroke: 0.30,
-  pathwayElevatorTextSize: 0.275,
-  rulerLineStroke: 0.25,
-  rulerEndpointRadius: 0.35,
-  rulerEndpointStroke: 0.13,
-  rulerLabelFontSize: 0.72,
-  rulerLabelStroke: 0.16,
+  pathwayLabelFontSize: 11,
+  pathwayLabelStrokeWidth: 3,
+  pathwayHitStroke: 14,
+  pathwayTooltipHitStroke: 6,
+  pathwayMarkerSize: 8,
+  pathwayElevatorBoxSize: 16,
+  pathwayElevatorBoxStroke: 2.5,
+  pathwayElevatorTextSize: 11,
+  // Cross-level badges.
+  crossLevelStairsSize: 15,
+  crossLevelStairsStep: 5,
+  crossLevelElevatorHalfHeight: 8,
+  crossLevelElevatorHalfWidth: 6,
+  crossLevelElevatorGap: 1,
+  crossLevelBadgeHitSize: 20,
+  // Journal markers. The pin path is drawn in its own ~2-unit-tall units.
+  journalPinPxPerUnit: 11,
+  journalPinHitTop: 22,
+  journalRingR: 13,
+  journalRingDash: 4,
+  journalRingGap: 3,
+  journalStroke: 2,
+  // Ruler.
+  rulerLineStroke: 2,
+  rulerHitStroke: 12,
+  rulerEndpointRadius: 4,
+  rulerEndpointStroke: 2,
+  rulerLabelFontSize: 11,
+  rulerLabelStroke: 3,
   rulerLabelMinScale: 0.85,
   savedRulerLabelMinScale: 2,
   rulerEndpointHideNearOneMinScale: 0.9,
   rulerEndpointHideNearOneMaxScale: 1.1,
-  pathwayVisualThinFactor: 1.8,
-  iconVisualThinFactor: 1.2,
-  pendingOffsetY: 1,
-  pendingOffsetX: 0.75,
-  pendingOffsetBottomY: 0.5,
-  pendingStroke: 0.15
+  // Pending marker triangle.
+  pendingHalfWidth: 8,
+  pendingHeightAbove: 10,
+  pendingHeightBelow: 6,
+  pendingStroke: 1.5
 };
+
+// Below 100% zoom markers shrink, to this fraction at the minimum zoom.
+const MARKER_MIN_SHRINK = 0.75;
+const MIN_ZOOM = 0.5;
 
 const TOOLTIP_POINTER_OFFSET = 12;
 const TOOLTIP_VIEWPORT_PADDING = 8;
@@ -116,64 +135,25 @@ function trimSegmentEnds(x1, y1, x2, y2, trimStart, trimEnd) {
 }
 
 const DiagramCanvasHook = {
-  rulerEndpointVisualScale(scale) {
+  // CSS pixels to overlay viewBox units, or 0 while the overlay has no layout.
+  // The overlay fits its viewBox with `meet`, so the plan can be width- or
+  // height-bound; the screen CTM already accounts for both.
+  unitsPerPx(overlay) {
+    const pxPerUnit = overlay.getScreenCTM?.()?.a;
+
+    return Number.isFinite(pxPerUnit) && pxPerUnit > 0 ? 1 / pxPerUnit : 0;
+  },
+
+  // Markers hold their size from 100% zoom up; below it they ease down to 75%
+  // at the minimum zoom. Text never shrinks.
+  markerShrink(scale) {
     const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
 
     if (safeScale >= 1) {
-      // Slightly slim endpoints when zoomed in, especially around ~2x.
-      const zoomInBoost = Math.min(safeScale - 1, 1) * 0.4;
-      return safeScale + zoomInBoost;
+      return 1;
     }
 
-    // Keep scale endpoints smaller when zoomed out, with extra slimming in
-    // the mid-zoom range where markers otherwise appear visually heavy.
-    const baseShrink = 1 + (1 - safeScale) * 0.8;
-    const midZoomBoost = safeScale >= 0.65 ? (1 - safeScale) * 0.6 : 0;
-
-    return baseShrink + midZoomBoost;
-  },
-
-  iconVisualScale(scale) {
-    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-
-    if (safeScale >= 1) {
-      return safeScale;
-    }
-
-    const zoomAdjusted = 1 - (1 - safeScale) * 0.3;
-
-    // Keep icons from becoming visually chunky when zoomed out.
-    return zoomAdjusted * OVERLAY_BASE.iconVisualThinFactor;
-  },
-
-  pathwayVisualScale(scale) {
-    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-
-    // Keep pathway stroke rendering fixed on-screen instead of varying with zoom.
-    // Apply a constant thin factor so lines are consistently lighter.
-    return safeScale * OVERLAY_BASE.pathwayVisualThinFactor;
-  },
-
-  pathwayLabelVisualScale(scale) {
-    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-
-    if (safeScale >= 1) {
-      return safeScale;
-    }
-
-    // When zoomed out, keep labels a bit tighter and smaller than strict 1/scale.
-    return safeScale + (1 - safeScale) * 0.4;
-  },
-
-  pathwayLabelOffsetScale(scale) {
-    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-
-    if (safeScale >= 1) {
-      return safeScale;
-    }
-
-    // Keep label offsets tighter to pathway lines when zoomed out.
-    return safeScale + (1 - safeScale) * 0.7;
+    return 1 - (1 - Math.max(safeScale, MIN_ZOOM)) * ((1 - MARKER_MIN_SHRINK) / (1 - MIN_ZOOM));
   },
 
   isViewMode() {
@@ -843,7 +823,7 @@ const DiagramCanvasHook = {
     this.baseH = 100;
     this.viewBox = { x: 0, y: 0, w: 100, h: 100 };
     this.scale = 1;
-    this.minScale = 0.5;
+    this.minScale = MIN_ZOOM;
     this.maxScale = 10;
     this.isPanning = false;
     this.panStart = { x: 0, y: 0 };
@@ -892,6 +872,13 @@ const DiagramCanvasHook = {
 
     // Set up MutationObserver to detect when overlay viewBox gets reset
     this.setupOverlayObserver();
+
+    // The pixel-to-unit conversion depends on the canvas size, which changes
+    // with the window and with the panels around the plan.
+    if (typeof ResizeObserver === "function" && svg.parentElement) {
+      this.resizeObserver = new ResizeObserver(() => this.scaleOverlayElements());
+      this.resizeObserver.observe(svg.parentElement);
+    }
 
     this.syncImageDimensions(true);
     this.scaleOverlayElements();
@@ -1279,10 +1266,22 @@ const DiagramCanvasHook = {
       return;
     }
 
+    // Not laid out yet (or hidden): a resize or the next update reruns this.
+    const unitsPerPx = this.unitsPerPx(overlay);
+
+    if (!unitsPerPx) {
+      return;
+    }
+
     const scale = this.scale || 1;
-    const iconScale = this.iconVisualScale(scale);
-    const pathwayScale = this.pathwayVisualScale(scale);
-    const rulerEndpointScale = this.rulerEndpointVisualScale(scale);
+    // CSS px to viewBox units. `px` is for text, hit targets and other sizes
+    // that hold at every zoom; `mk` also shrinks with markers below 100% zoom.
+    const px = (value) => value * unitsPerPx;
+    const shrink = this.markerShrink(scale);
+    const mk = (value) => value * unitsPerPx * shrink;
+
+    // Hand the conversion to CSS so stroke widths there stay in screen px too.
+    overlay.style.setProperty("--diagram-px", `${unitsPerPx}px`);
 
     overlay.querySelectorAll("[data-stop-hit-target]").forEach((hitTarget) => {
       const cx = parseFloat(hitTarget.getAttribute("data-center-x"));
@@ -1293,54 +1292,23 @@ const DiagramCanvasHook = {
         return;
       }
 
-      // Compute the marker's visual center so the hit target is aligned with the dot.
+      // Center the target on the marker body, not on the stop coordinate.
       let markerCenterY = cy;
 
       if (locationType === "0" || locationType === "2") {
-        const markerH = OVERLAY_BASE.rectUprightH / iconScale;
+        const markerH = mk(OVERLAY_BASE.rectUprightH);
         markerCenterY = cy - markerH * OVERLAY_BASE.rectBottomAnchorRatio + markerH / 2;
       } else if (locationType === "4") {
-        const markerSize = OVERLAY_BASE.rectSquareSize / iconScale;
+        const markerSize = mk(OVERLAY_BASE.rectSquareSize);
         markerCenterY = cy - markerSize * OVERLAY_BASE.rectBottomAnchorRatio + markerSize / 2;
       }
 
-      // Compute the marker's bounding box so we can clamp the hit target inside it.
-      let markerTop, markerBottom, markerLeft, markerRight;
+      const size = px(OVERLAY_BASE.hitTargetSize);
 
-      if (locationType === "0" || locationType === "2") {
-        const mw = OVERLAY_BASE.rectUprightW / iconScale;
-        const mh = OVERLAY_BASE.rectUprightH / iconScale;
-        markerLeft = cx - mw / 2;
-        markerRight = cx + mw / 2;
-        markerTop = cy - mh * OVERLAY_BASE.rectBottomAnchorRatio;
-        markerBottom = markerTop + mh;
-      } else if (locationType === "4") {
-        const ms = OVERLAY_BASE.rectSquareSize / iconScale;
-        markerLeft = cx - ms / 2;
-        markerRight = cx + ms / 2;
-        markerTop = cy - ms * OVERLAY_BASE.rectBottomAnchorRatio;
-        markerBottom = markerTop + ms;
-      } else {
-        const mr = OVERLAY_BASE.circleR / iconScale;
-        markerLeft = cx - mr;
-        markerRight = cx + mr;
-        markerTop = cy - mr;
-        markerBottom = cy + mr;
-      }
-
-      // Start from hitTargetSize centered on the marker, then clamp to marker bounds.
-      const rawSize = OVERLAY_BASE.hitTargetSize / scale;
-      const halfRaw = rawSize / 2;
-
-      const clampedLeft = Math.max(markerLeft, cx - halfRaw);
-      const clampedRight = Math.min(markerRight, cx + halfRaw);
-      const clampedTop = Math.max(markerTop, markerCenterY - halfRaw);
-      const clampedBottom = Math.min(markerBottom, markerCenterY + halfRaw);
-
-      hitTarget.setAttribute("x", `${clampedLeft}`);
-      hitTarget.setAttribute("y", `${clampedTop}`);
-      hitTarget.setAttribute("width", `${clampedRight - clampedLeft}`);
-      hitTarget.setAttribute("height", `${clampedBottom - clampedTop}`);
+      hitTarget.setAttribute("x", `${cx - size / 2}`);
+      hitTarget.setAttribute("y", `${markerCenterY - size / 2}`);
+      hitTarget.setAttribute("width", `${size}`);
+      hitTarget.setAttribute("height", `${size}`);
     });
 
     overlay.querySelectorAll("[data-stop-marker]").forEach((marker) => {
@@ -1353,34 +1321,34 @@ const DiagramCanvasHook = {
       }
 
       if (locationType === "0" || locationType === "2") {
-        const width = OVERLAY_BASE.rectUprightW / iconScale;
-        const height = OVERLAY_BASE.rectUprightH / iconScale;
+        const width = mk(OVERLAY_BASE.rectUprightW);
+        const height = mk(OVERLAY_BASE.rectUprightH);
         marker.setAttribute("x", `${cx - width / 2}`);
         marker.setAttribute("y", `${cy - height * OVERLAY_BASE.rectBottomAnchorRatio}`);
         marker.setAttribute("width", `${width}`);
         marker.setAttribute("height", `${height}`);
-        marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / iconScale}`);
+        marker.setAttribute("rx", `${mk(OVERLAY_BASE.rectRx)}`);
         const strokeWidth =
-          locationType === "2" ? OVERLAY_BASE.entranceStroke : OVERLAY_BASE.rectStroke;
-        marker.setAttribute("stroke-width", `${strokeWidth / iconScale}`);
+          locationType === "2" ? OVERLAY_BASE.entranceStroke : OVERLAY_BASE.markerRingStroke;
+        marker.setAttribute("stroke-width", `${mk(strokeWidth)}`);
         return;
       }
 
       if (locationType === "4") {
-        const size = OVERLAY_BASE.rectSquareSize / iconScale;
+        const size = mk(OVERLAY_BASE.rectSquareSize);
         marker.setAttribute("x", `${cx - size / 2}`);
         marker.setAttribute("y", `${cy - size * OVERLAY_BASE.rectBottomAnchorRatio}`);
         marker.setAttribute("width", `${size}`);
         marker.setAttribute("height", `${size}`);
-        marker.setAttribute("rx", `${OVERLAY_BASE.rectRx / iconScale}`);
-        marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / iconScale}`);
+        marker.setAttribute("rx", `${mk(OVERLAY_BASE.rectRx)}`);
+        marker.setAttribute("stroke-width", `${mk(OVERLAY_BASE.markerRingStroke)}`);
         return;
       }
 
       marker.setAttribute("cx", `${cx}`);
       marker.setAttribute("cy", `${cy}`);
-      marker.setAttribute("r", `${OVERLAY_BASE.circleR / iconScale}`);
-      marker.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / iconScale}`);
+      marker.setAttribute("r", `${mk(OVERLAY_BASE.circleR)}`);
+      marker.setAttribute("stroke-width", `${mk(OVERLAY_BASE.markerRingStroke)}`);
     });
 
     overlay.querySelectorAll("[data-journal-pin]").forEach((pin) => {
@@ -1391,7 +1359,11 @@ const DiagramCanvasHook = {
         return;
       }
 
-      pin.setAttribute("transform", `translate(${cx}, ${cy}) scale(${1 / iconScale})`);
+      // The pin path is drawn in its own units; this is how many px each covers.
+      pin.setAttribute(
+        "transform",
+        `translate(${cx}, ${cy}) scale(${mk(OVERLAY_BASE.journalPinPxPerUnit)})`
+      );
     });
 
     overlay.querySelectorAll("[data-journal-dot]").forEach((dot) => {
@@ -1404,8 +1376,8 @@ const DiagramCanvasHook = {
 
       dot.setAttribute("cx", `${cx}`);
       dot.setAttribute("cy", `${cy}`);
-      dot.setAttribute("r", `${OVERLAY_BASE.circleR / iconScale}`);
-      dot.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / iconScale}`);
+      dot.setAttribute("r", `${mk(OVERLAY_BASE.circleR)}`);
+      dot.setAttribute("stroke-width", `${mk(OVERLAY_BASE.journalStroke)}`);
     });
 
     overlay.querySelectorAll("[data-journal-ring]").forEach((ring) => {
@@ -1418,11 +1390,11 @@ const DiagramCanvasHook = {
 
       ring.setAttribute("cx", `${cx}`);
       ring.setAttribute("cy", `${cy}`);
-      ring.setAttribute("r", `${(OVERLAY_BASE.circleR * 2.2) / iconScale}`);
-      ring.setAttribute("stroke-width", `${OVERLAY_BASE.rectStroke / iconScale}`);
+      ring.setAttribute("r", `${mk(OVERLAY_BASE.journalRingR)}`);
+      ring.setAttribute("stroke-width", `${mk(OVERLAY_BASE.journalStroke)}`);
       ring.setAttribute(
         "stroke-dasharray",
-        `${0.4 / iconScale} ${0.3 / iconScale}`
+        `${mk(OVERLAY_BASE.journalRingDash)} ${mk(OVERLAY_BASE.journalRingGap)}`
       );
     });
 
@@ -1435,16 +1407,16 @@ const DiagramCanvasHook = {
         return;
       }
 
-      const rawSize = OVERLAY_BASE.hitTargetSize / scale;
-      const halfRaw = rawSize / 2;
+      const size = px(OVERLAY_BASE.hitTargetSize);
 
-      const x = cx - halfRaw;
-      const y = kind === "pin" ? cy - halfRaw * 1.5 : cy - halfRaw;
-
-      hitTarget.setAttribute("x", `${x}`);
-      hitTarget.setAttribute("y", `${y}`);
-      hitTarget.setAttribute("width", `${rawSize}`);
-      hitTarget.setAttribute("height", `${rawSize}`);
+      // A pin's body sits above its tip, which is the coordinate.
+      hitTarget.setAttribute("x", `${cx - size / 2}`);
+      hitTarget.setAttribute(
+        "y",
+        `${kind === "pin" ? cy - px(OVERLAY_BASE.journalPinHitTop) : cy - size / 2}`
+      );
+      hitTarget.setAttribute("width", `${size}`);
+      hitTarget.setAttribute("height", `${size}`);
     });
 
     // Point names are how a mapper identifies a point, so they show from 85%
@@ -1468,7 +1440,7 @@ const DiagramCanvasHook = {
         label.getAttribute("data-base-stroke") ?? `${OVERLAY_BASE.stopLabelStrokeWidth}`
       );
       const baseLineHeight = parseFloat(
-        label.getAttribute("data-base-line-height") ?? `${OVERLAY_BASE.stopLabelFontSize * 1.16}`
+        label.getAttribute("data-base-line-height") ?? `${OVERLAY_BASE.stopLabelLineHeight}`
       );
       const labelBox = label.parentElement?.querySelector("[data-stop-label-box]");
 
@@ -1496,17 +1468,17 @@ const DiagramCanvasHook = {
       if (labelBox) {
         labelBox.removeAttribute("display");
       }
-      const newLabelX = cx + offsetX / iconScale;
-      const newLabelY = cy + offsetY / iconScale;
+      const newLabelX = cx + mk(offsetX);
+      const newLabelY = cy + mk(offsetY);
 
       label.setAttribute("x", `${newLabelX}`);
       label.setAttribute("y", `${newLabelY}`);
-      label.setAttribute("font-size", `${baseFontSize / iconScale}`);
-      label.setAttribute("stroke-width", `${baseStroke / iconScale}`);
+      label.setAttribute("font-size", `${px(baseFontSize)}`);
+      label.setAttribute("stroke-width", `${px(baseStroke)}`);
 
       label.querySelectorAll("tspan").forEach((tspan, index) => {
         tspan.setAttribute("x", `${newLabelX}`);
-        tspan.setAttribute("dy", `${index === 0 ? 0 : baseLineHeight / iconScale}`);
+        tspan.setAttribute("dy", `${index === 0 ? 0 : px(baseLineHeight)}`);
       });
 
       if (!labelBox) {
@@ -1529,16 +1501,11 @@ const DiagramCanvasHook = {
         return;
       }
 
-      const scaledWidth = baseWidth / iconScale;
-      const scaledHeight = baseHeight / iconScale;
-      const scaledPaddingX = basePaddingX / iconScale;
-      const scaledPaddingY = basePaddingY / iconScale;
-
-      labelBox.setAttribute("x", `${newLabelX - scaledPaddingX}`);
-      labelBox.setAttribute("y", `${newLabelY - scaledPaddingY}`);
-      labelBox.setAttribute("width", `${scaledWidth}`);
-      labelBox.setAttribute("height", `${scaledHeight}`);
-      labelBox.setAttribute("stroke-width", `${baseBoxStroke / iconScale}`);
+      labelBox.setAttribute("x", `${newLabelX - px(basePaddingX)}`);
+      labelBox.setAttribute("y", `${newLabelY - px(basePaddingY)}`);
+      labelBox.setAttribute("width", `${px(baseWidth)}`);
+      labelBox.setAttribute("height", `${px(baseHeight)}`);
+      labelBox.setAttribute("stroke-width", `${px(baseBoxStroke)}`);
     });
 
     overlay.querySelectorAll("[data-cross-level-badge-stairs]").forEach((stairsPath) => {
@@ -1550,9 +1517,9 @@ const DiagramCanvasHook = {
         return;
       }
 
-      const s = OVERLAY_BASE.crossLevelStairsStepUnit / iconScale;
-      const size = OVERLAY_BASE.crossLevelStairsSize / iconScale;
-      const x0 = cx + offsetX / iconScale - size / 2;
+      const s = mk(OVERLAY_BASE.crossLevelStairsStep);
+      const size = mk(OVERLAY_BASE.crossLevelStairsSize);
+      const x0 = cx + mk(offsetX) - size / 2;
       const y0 = cy - size / 2;
 
       stairsPath.setAttribute(
@@ -1570,10 +1537,10 @@ const DiagramCanvasHook = {
         return;
       }
 
-      const iconCx = cx + offsetX / iconScale;
-      const halfH = OVERLAY_BASE.crossLevelElevatorHalfHeight / iconScale;
-      const halfW = OVERLAY_BASE.crossLevelElevatorHalfWidth / iconScale;
-      const gap = OVERLAY_BASE.crossLevelElevatorGap / iconScale;
+      const iconCx = cx + mk(offsetX);
+      const halfH = mk(OVERLAY_BASE.crossLevelElevatorHalfHeight);
+      const halfW = mk(OVERLAY_BASE.crossLevelElevatorHalfWidth);
+      const gap = mk(OVERLAY_BASE.crossLevelElevatorGap);
 
       elevPath.setAttribute(
         "d",
@@ -1585,14 +1552,16 @@ const DiagramCanvasHook = {
       const cx = parseFloat(hitTarget.getAttribute("data-center-x"));
       const cy = parseFloat(hitTarget.getAttribute("data-center-y"));
       const offsetX = parseFloat(hitTarget.getAttribute("data-badge-offset-x"));
-      const base = parseFloat(hitTarget.getAttribute("data-base-size") ?? "0.9");
+      const base = parseFloat(
+        hitTarget.getAttribute("data-base-size") ?? `${OVERLAY_BASE.crossLevelBadgeHitSize}`
+      );
 
       if (![cx, cy, offsetX, base].every(Number.isFinite)) {
         return;
       }
 
-      const iconCx = cx + offsetX / iconScale;
-      const size = base / iconScale;
+      const iconCx = cx + mk(offsetX);
+      const size = px(base);
 
       hitTarget.setAttribute("x", `${iconCx - size / 2}`);
       hitTarget.setAttribute("y", `${cy - size / 2}`);
@@ -1609,17 +1578,19 @@ const DiagramCanvasHook = {
         return;
       }
 
-      hitTarget.setAttribute("stroke-width", `${baseStroke / scale}`);
+      hitTarget.setAttribute("stroke-width", `${px(baseStroke)}`);
     });
 
     overlay.querySelectorAll("#pathways-svg [data-pathway-tooltip-hit]").forEach((hitTarget) => {
-      const baseStroke = parseFloat(hitTarget.getAttribute("data-base-stroke") ?? "0.8");
+      const baseStroke = parseFloat(
+        hitTarget.getAttribute("data-base-stroke") ?? `${OVERLAY_BASE.pathwayTooltipHitStroke}`
+      );
 
       if (!Number.isFinite(baseStroke)) {
         return;
       }
 
-      hitTarget.setAttribute("stroke-width", `${baseStroke / scale}`);
+      hitTarget.setAttribute("stroke-width", `${px(baseStroke)}`);
     });
 
     overlay.querySelectorAll("#pathways-svg [data-base-stroke]").forEach((element) => {
@@ -1636,7 +1607,7 @@ const DiagramCanvasHook = {
         return;
       }
 
-      element.setAttribute("stroke-width", `${baseStroke / pathwayScale}`);
+      element.setAttribute("stroke-width", `${mk(baseStroke)}`);
     });
 
     overlay.querySelectorAll("#pathways-svg [data-base-dash]").forEach((element) => {
@@ -1650,7 +1621,7 @@ const DiagramCanvasHook = {
         .split(",")
         .map((part) => parseFloat(part.trim()))
         .filter((value) => Number.isFinite(value))
-        .map((value) => value / pathwayScale);
+        .map((value) => mk(value));
 
       if (scaled.length === 0) {
         return;
@@ -1661,8 +1632,8 @@ const DiagramCanvasHook = {
 
     const pathwayMarker = overlay.querySelector("#pathway-arrow");
     if (pathwayMarker) {
-      pathwayMarker.setAttribute("markerWidth", `${OVERLAY_BASE.pathwayMarkerSize / pathwayScale}`);
-      pathwayMarker.setAttribute("markerHeight", `${OVERLAY_BASE.pathwayMarkerSize / pathwayScale}`);
+      pathwayMarker.setAttribute("markerWidth", `${mk(OVERLAY_BASE.pathwayMarkerSize)}`);
+      pathwayMarker.setAttribute("markerHeight", `${mk(OVERLAY_BASE.pathwayMarkerSize)}`);
     }
 
     overlay
@@ -1698,15 +1669,49 @@ const DiagramCanvasHook = {
         const endTrimBase = Number.isFinite(defaultTrim)
           ? defaultTrim
           : parseFloat(element.getAttribute("data-pathway-end-trim-end")) || 0;
-        const startTrim = startTrimBase / pathwayScale;
-        const endTrim = endTrimBase / pathwayScale;
-        const trimmed = trimSegmentEnds(baseX1, baseY1, baseX2, baseY2, startTrim, endTrim);
+        const trimmed = trimSegmentEnds(
+          baseX1,
+          baseY1,
+          baseX2,
+          baseY2,
+          mk(startTrimBase),
+          mk(endTrimBase)
+        );
 
         element.setAttribute("x1", `${trimmed.x1}`);
         element.setAttribute("y1", `${trimmed.y1}`);
         element.setAttribute("x2", `${trimmed.x2}`);
         element.setAttribute("y2", `${trimmed.y2}`);
       });
+
+    // Mode glyphs (stairs bar, escalator bars, moving-walkway cross) are strokes
+    // laid out along the pathway in px from its midpoint.
+    overlay.querySelectorAll("#pathways-svg [data-glyph-mid-x]").forEach((stroke) => {
+      const midX = parseFloat(stroke.getAttribute("data-glyph-mid-x"));
+      const midY = parseFloat(stroke.getAttribute("data-glyph-mid-y"));
+      const dirX = parseFloat(stroke.getAttribute("data-glyph-dir-x"));
+      const dirY = parseFloat(stroke.getAttribute("data-glyph-dir-y"));
+      const along = parseFloat(stroke.getAttribute("data-glyph-along"));
+      const halfAlong = parseFloat(stroke.getAttribute("data-glyph-half-along"));
+      const halfPerp = parseFloat(stroke.getAttribute("data-glyph-half-perp"));
+
+      if (![midX, midY, dirX, dirY, along, halfAlong, halfPerp].every(Number.isFinite)) {
+        return;
+      }
+
+      // Perpendicular to the direction, matching the server's label side.
+      const perpX = -dirY;
+      const perpY = dirX;
+      const centerX = midX + dirX * mk(along);
+      const centerY = midY + dirY * mk(along);
+      const halfX = dirX * mk(halfAlong) + perpX * mk(halfPerp);
+      const halfY = dirY * mk(halfAlong) + perpY * mk(halfPerp);
+
+      stroke.setAttribute("x1", `${centerX - halfX}`);
+      stroke.setAttribute("y1", `${centerY - halfY}`);
+      stroke.setAttribute("x2", `${centerX + halfX}`);
+      stroke.setAttribute("y2", `${centerY + halfY}`);
+    });
 
     overlay.querySelectorAll("#pathways-svg [data-pathway-arrow-guide]").forEach((guide) => {
       const x1 = parseFloat(guide.getAttribute("x1"));
@@ -1725,16 +1730,12 @@ const DiagramCanvasHook = {
 
       pathwayGroup.querySelectorAll("[data-pathway-rail][data-rail-base-offset]").forEach((rail) => {
         const baseOffset = parseFloat(rail.getAttribute("data-rail-base-offset"));
-        const baseStroke = parseFloat(rail.getAttribute("data-rail-base-stroke") ?? "0.35");
 
-        if (!Number.isFinite(baseOffset) || !Number.isFinite(baseStroke)) {
+        if (!Number.isFinite(baseOffset)) {
           return;
         }
 
-        const minCenterOffset = (baseStroke * 0.6) / pathwayScale;
-        const scaledOffset = Math.abs(baseOffset) / pathwayScale;
-        const dynamicOffset = Math.sign(baseOffset) * Math.max(scaledOffset, minCenterOffset);
-        const adjusted = parallelOffsetFromSegment(x1, y1, x2, y2, dynamicOffset);
+        const adjusted = parallelOffsetFromSegment(x1, y1, x2, y2, mk(baseOffset));
 
         rail.setAttribute("x1", `${adjusted.x1}`);
         rail.setAttribute("y1", `${adjusted.y1}`);
@@ -1747,10 +1748,10 @@ const DiagramCanvasHook = {
       const cx = parseFloat(box.getAttribute("data-center-x"));
       const cy = parseFloat(box.getAttribute("data-center-y"));
       const baseWidth = parseFloat(
-        box.getAttribute("data-base-width") ?? `${OVERLAY_BASE.pathwayElevatorBoxWidth}`
+        box.getAttribute("data-base-width") ?? `${OVERLAY_BASE.pathwayElevatorBoxSize}`
       );
       const baseHeight = parseFloat(
-        box.getAttribute("data-base-height") ?? `${OVERLAY_BASE.pathwayElevatorBoxHeight}`
+        box.getAttribute("data-base-height") ?? `${OVERLAY_BASE.pathwayElevatorBoxSize}`
       );
       const baseStroke = parseFloat(
         box.getAttribute("data-base-stroke") ?? `${OVERLAY_BASE.pathwayElevatorBoxStroke}`
@@ -1766,13 +1767,14 @@ const DiagramCanvasHook = {
         return;
       }
 
-      const width = baseWidth;
-      const height = baseHeight;
+      // The box holds 11px text, so it does not shrink with the markers.
+      const width = px(baseWidth);
+      const height = px(baseHeight);
       box.setAttribute("x", `${cx - width / 2}`);
       box.setAttribute("y", `${cy - height / 2}`);
       box.setAttribute("width", `${width}`);
       box.setAttribute("height", `${height}`);
-      box.setAttribute("stroke-width", `${baseStroke / pathwayScale}`);
+      box.setAttribute("stroke-width", `${px(baseStroke)}`);
     });
 
     overlay.querySelectorAll("#pathways-svg [data-pathway-elevator-text]").forEach((label) => {
@@ -1788,7 +1790,7 @@ const DiagramCanvasHook = {
 
       label.setAttribute("x", `${cx}`);
       label.setAttribute("y", `${cy}`);
-      label.setAttribute("font-size", `${baseFontSize}`);
+      label.setAttribute("font-size", `${px(baseFontSize)}`);
     });
 
     overlay.querySelectorAll("#pathways-svg [data-pathway-label]").forEach((label) => {
@@ -1822,14 +1824,24 @@ const DiagramCanvasHook = {
       }
 
       label.removeAttribute("display");
-      const x = midpointX + offsetX / iconScale;
-      const y = midpointY + offsetY / iconScale;
+      const x = midpointX + px(offsetX);
+      const y = midpointY + px(offsetY);
 
       label.setAttribute("x", `${x}`);
       label.setAttribute("y", `${y}`);
-      label.setAttribute("font-size", `${baseFontSize / iconScale}`);
-      label.setAttribute("stroke-width", `${baseStroke / iconScale}`);
+      label.setAttribute("font-size", `${px(baseFontSize)}`);
+      label.setAttribute("stroke-width", `${px(baseStroke)}`);
       label.setAttribute("transform", `rotate(${rotation}, ${x}, ${y})`);
+    });
+
+    overlay.querySelectorAll("[data-ruler-hit-area]").forEach((hitArea) => {
+      const baseStroke = parseFloat(
+        hitArea.getAttribute("data-base-stroke") ?? `${OVERLAY_BASE.rulerHitStroke}`
+      );
+
+      if (Number.isFinite(baseStroke)) {
+        hitArea.setAttribute("stroke-width", `${px(baseStroke)}`);
+      }
     });
 
     overlay.querySelectorAll("[data-ruler-line]").forEach((line) => {
@@ -1841,7 +1853,7 @@ const DiagramCanvasHook = {
         return;
       }
 
-      line.setAttribute("stroke-width", `${baseStroke / scale}`);
+      line.setAttribute("stroke-width", `${px(baseStroke)}`);
 
       const baseDash = line.getAttribute("data-base-dash");
       if (baseDash) {
@@ -1849,7 +1861,7 @@ const DiagramCanvasHook = {
           .split(",")
           .map((part) => parseFloat(part.trim()))
           .filter((value) => Number.isFinite(value))
-          .map((value) => value / scale);
+          .map((value) => px(value));
 
         if (scaled.length > 0) {
           line.setAttribute("stroke-dasharray", scaled.join(" "));
@@ -1887,8 +1899,8 @@ const DiagramCanvasHook = {
       endpoint.removeAttribute("display");
       endpoint.setAttribute("cx", `${cx}`);
       endpoint.setAttribute("cy", `${cy}`);
-      endpoint.setAttribute("r", `${baseRadius / rulerEndpointScale}`);
-      endpoint.setAttribute("stroke-width", `${baseStroke / rulerEndpointScale}`);
+      endpoint.setAttribute("r", `${px(baseRadius)}`);
+      endpoint.setAttribute("stroke-width", `${px(baseStroke)}`);
     });
 
     overlay.querySelectorAll("[data-ruler-label]").forEach((label) => {
@@ -1926,13 +1938,13 @@ const DiagramCanvasHook = {
       }
 
       label.removeAttribute("display");
-      const labelX = hasSavedAnchor ? anchorX + offsetX / scale : midpointX;
-      const labelY = hasSavedAnchor ? anchorY + offsetY / scale : midpointY + offsetY / scale;
+      const labelX = hasSavedAnchor ? anchorX + px(offsetX) : midpointX;
+      const labelY = hasSavedAnchor ? anchorY + px(offsetY) : midpointY + px(offsetY);
 
       label.setAttribute("x", `${labelX}`);
       label.setAttribute("y", `${labelY}`);
-      label.setAttribute("font-size", `${baseFontSize / scale}`);
-      label.setAttribute("stroke-width", `${baseStroke / scale}`);
+      label.setAttribute("font-size", `${px(baseFontSize)}`);
+      label.setAttribute("stroke-width", `${px(baseStroke)}`);
     });
 
     const pending = overlay.querySelector("polygon[data-cx][data-cy]");
@@ -1948,15 +1960,15 @@ const DiagramCanvasHook = {
       return;
     }
 
-    const offX = OVERLAY_BASE.pendingOffsetX / scale;
-    const offY = OVERLAY_BASE.pendingOffsetY / scale;
-    const bottomOffsetY = OVERLAY_BASE.pendingOffsetBottomY / scale;
+    const offX = mk(OVERLAY_BASE.pendingHalfWidth);
+    const offY = mk(OVERLAY_BASE.pendingHeightAbove);
+    const bottomOffsetY = mk(OVERLAY_BASE.pendingHeightBelow);
 
     pending.setAttribute(
       "points",
       `${cx},${cy - offY} ${cx - offX},${cy + bottomOffsetY} ${cx + offX},${cy + bottomOffsetY}`
     );
-    pending.setAttribute("stroke-width", `${OVERLAY_BASE.pendingStroke / scale}`);
+    pending.setAttribute("stroke-width", `${mk(OVERLAY_BASE.pendingStroke)}`);
   },
 
   updateViewBox() {
@@ -2081,6 +2093,8 @@ const DiagramCanvasHook = {
       imageEl.setAttribute("height", this.baseH);
 
       this.syncOverlayViewBox();
+      // The plan's aspect ratio sets how the overlay fits, hence the px scale.
+      this.scaleOverlayElements();
       this._imageLoadInProgress = false;
       this.applyPendingCenter();
     };
@@ -2099,6 +2113,10 @@ const DiagramCanvasHook = {
     // Clean up observer
     if (this.overlayObserver) {
       this.overlayObserver.disconnect();
+    }
+
+    if (this.resizeObserver) {
+      this.resizeObserver.disconnect();
     }
 
     // Clean up pan/zoom button listener

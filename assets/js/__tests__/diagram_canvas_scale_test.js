@@ -2,6 +2,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import DiagramCanvasHook from "../diagram_canvas_hook";
 
+// The overlay draws in viewBox units. On screen, one unit is `pxPerUnit` CSS
+// pixels: the plan's fitted size (px per unit at 100% zoom) times the zoom.
+// Tests stub that conversion the way the browser reports it (the overlay's
+// screen CTM) and read sizes back in screen pixels.
+const FITTED_PX_PER_UNIT = 6.5;
+
 describe("DiagramCanvasHook.scaleOverlayElements", () => {
   beforeEach(() => {
     document.body.innerHTML = `
@@ -39,6 +45,13 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               data-center-x="10"
               data-center-y="20"
             ></rect>
+            <rect
+              id="platform-hit"
+              data-stop-hit-target="true"
+              data-location-type="0"
+              data-center-x="14"
+              data-center-y="24"
+            ></rect>
             <circle
               id="stop-marker"
               data-stop-marker="true"
@@ -67,43 +80,60 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               data-center-x="20"
               data-center-y="30"
             ></rect>
+            <rect
+              id="stop-label-box"
+              data-stop-label-box="true"
+              data-center-x="10"
+              data-center-y="20"
+              data-base-width="80"
+              data-base-height="32"
+              data-base-padding-x="6"
+              data-base-padding-y="2"
+              data-base-stroke="1"
+            ></rect>
             <text
               id="stop-label"
               data-stop-label="true"
               data-center-x="10"
               data-center-y="20"
-              data-label-offset-x="-0.5"
-              data-label-offset-y="1"
-            ></text>
+              data-label-offset-x="2"
+              data-label-offset-y="10"
+              data-base-font-size="12"
+              data-base-stroke="3"
+              data-base-line-height="14"
+            >
+              <tspan id="stop-label-line-1">Line one</tspan>
+              <tspan id="stop-label-line-2">Line two</tspan>
+            </text>
             <path
               id="cross-level-stairs"
               data-cross-level-badge-stairs="true"
               data-center-x="10"
               data-center-y="20"
-              data-badge-offset-x="1.1"
+              data-badge-offset-x="22"
             ></path>
             <rect
               id="cross-level-stairs-hit"
               data-cross-level-badge-hit="true"
-              data-base-size="0.9"
+              data-base-size="20"
               data-center-x="10"
               data-center-y="20"
-              data-badge-offset-x="1.1"
+              data-badge-offset-x="22"
             ></rect>
             <path
               id="cross-level-elevator"
               data-cross-level-badge-elevator="true"
               data-center-x="10"
               data-center-y="20"
-              data-badge-offset-x="1.1"
+              data-badge-offset-x="22"
             ></path>
             <rect
               id="cross-level-elevator-hit"
               data-cross-level-badge-hit="true"
-              data-base-size="0.9"
+              data-base-size="20"
               data-center-x="10"
               data-center-y="20"
-              data-badge-offset-x="1.1"
+              data-badge-offset-x="22"
             ></rect>
           </g>
           <g id="journal-markers-svg" phx-update="stream">
@@ -111,6 +141,7 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
             <circle id="journal-dot" data-journal-dot="true" data-center-x="25" data-center-y="35"></circle>
             <circle id="journal-ring" data-journal-ring="true" data-center-x="40" data-center-y="50"></circle>
             <rect id="journal-hit" data-journal-hit-target="true" data-journal-kind="pin" data-center-x="40" data-center-y="50"></rect>
+            <rect id="journal-node-hit" data-journal-hit-target="true" data-journal-kind="node" data-center-x="25" data-center-y="35"></rect>
             <rect id="journal-invalid-hit" data-journal-hit-target="true" data-journal-kind="pin" data-center-x="invalid" data-center-y="50"></rect>
           </g>
           <g id="pathways-svg">
@@ -131,18 +162,19 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
                 data-tooltip-trigger="true"
               ></line>
             </g>
-            <line id="path-hit" data-pathway-hit="true" data-base-stroke="2"></line>
-            <line id="path-line" data-pathway-line="true" data-base-stroke="0.5"></line>
+            <line id="path-hit" data-pathway-hit="true" data-base-stroke="14"></line>
+            <line id="path-tooltip-hit" data-pathway-tooltip-hit="true" data-base-stroke="6"></line>
+            <line id="path-line" data-pathway-line="true" data-base-stroke="2.5"></line>
             <line
               id="path-line-paired"
               data-pathway-line="true"
-              data-base-stroke="0.54"
+              data-base-stroke="4.5"
             ></line>
             <line
               id="path-dashed"
               data-pathway-line="true"
-              data-base-stroke="0.5"
-              data-base-dash="2,1"
+              data-base-stroke="2.5"
+              data-base-dash="6,3"
             ></line>
             <line
               id="path-arrow-trim"
@@ -151,43 +183,81 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               x2="20"
               y2="10"
               marker-end="url(#pathway-arrow)"
-              data-pathway-end-trim="0.9"
-              data-base-stroke="0.3"
+              data-pathway-end-trim="10"
+              data-base-stroke="2.5"
+            ></line>
+            <line
+              id="stairs-bar"
+              x1="40"
+              y1="40"
+              x2="40"
+              y2="40"
+              data-glyph-mid-x="40"
+              data-glyph-mid-y="40"
+              data-glyph-dir-x="1"
+              data-glyph-dir-y="0"
+              data-glyph-along="5"
+              data-glyph-half-along="0"
+              data-glyph-half-perp="5"
+              data-base-stroke="2"
+            ></line>
+            <line
+              id="gate-guide"
+              x1="10"
+              y1="70"
+              x2="30"
+              y2="70"
+              data-pathway-arrow-guide="true"
+            ></line>
+            <line
+              id="gate-rail"
+              data-pathway-rail="true"
+              data-rail-base-offset="3.5"
+              data-base-stroke="2.5"
             ></line>
             <rect
               id="elevator-box"
               data-pathway-elevator-box="true"
               data-center-x="30"
               data-center-y="40"
-              data-base-width="2"
-              data-base-height="2"
-              data-base-stroke="0.4"
+              data-base-width="16"
+              data-base-height="16"
+              data-base-stroke="2.5"
             ></rect>
             <text
               id="elevator-text"
               data-pathway-elevator-text="true"
               data-center-x="30"
               data-center-y="40"
-              data-base-font-size="1.2"
+              data-base-font-size="11"
             ></text>
             <text
               id="path-label"
               data-pathway-label="true"
               data-midpoint-x="50"
               data-midpoint-y="60"
-              data-offset-x="1.4"
-              data-offset-y="-1.4"
+              data-offset-x="10"
+              data-offset-y="-10"
               data-rotation="15"
-              data-base-font-size="0.9"
-              data-base-stroke="0.2"
+              data-base-font-size="11"
+              data-base-stroke="3"
             ></text>
           </g>
           <g id="ruler-layer">
             <line
+              id="ruler-hit-area"
+              data-ruler-hit-area="true"
+              data-base-stroke="12"
+              x1="10"
+              y1="10"
+              x2="20"
+              y2="20"
+            ></line>
+            <line
               id="ruler-line"
               data-ruler-line="true"
-              data-base-stroke="0.25"
-              data-base-dash="0.8,0.5"
+              data-base-stroke="2"
+              data-base-dash="6,4"
               x1="10"
               y1="10"
               x2="20"
@@ -198,27 +268,27 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
               data-ruler-endpoint="true"
               data-center-x="10"
               data-center-y="10"
-              data-base-radius="0.35"
-              data-base-stroke="0.13"
+              data-base-radius="4"
+              data-base-stroke="2"
             ></circle>
             <text
               id="ruler-label"
               data-ruler-label="true"
               data-midpoint-x="15"
               data-midpoint-y="15"
-              data-label-offset-y="-0.9"
-              data-base-font-size="0.72"
-              data-base-stroke="0.16"
+              data-label-offset-y="-12"
+              data-base-font-size="11"
+              data-base-stroke="3"
             ></text>
             <text
               id="ruler-label-saved"
               data-ruler-label="true"
               data-label-anchor-x="10"
               data-label-anchor-y="10"
-              data-label-offset-x="0.5"
+              data-label-offset-x="8"
               data-label-offset-y="0"
-              data-base-font-size="0.72"
-              data-base-stroke="0.16"
+              data-base-font-size="11"
+              data-base-stroke="3"
             ></text>
           </g>
           <polygon
@@ -233,6 +303,26 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
       </div>
     `;
   });
+
+  const overlay = () => document.querySelector("#diagram-overlay");
+  const attr = (selector, name) => parseFloat(document.querySelector(selector).getAttribute(name));
+
+  // Lays the overlay out at `fitted` px per unit and applies `zoom`, then runs
+  // the hook. Returns the px-per-unit so tests can convert attributes to pixels.
+  const render = ({ fitted = FITTED_PX_PER_UNIT, zoom = 1 } = {}) => {
+    const pxPerUnit = fitted * zoom;
+    overlay().getScreenCTM = () => ({ a: pxPerUnit });
+
+    const hook = {
+      ...DiagramCanvasHook,
+      el: document.querySelector("#canvas"),
+    };
+
+    hook.scale = zoom;
+    hook.scaleOverlayElements();
+
+    return { hook, pxPerUnit };
+  };
 
   const buildTooltipHook = () => {
     const hook = {
@@ -250,464 +340,467 @@ describe("DiagramCanvasHook.scaleOverlayElements", () => {
     return hook;
   };
 
-  it("scales stop and pathway overlay elements from base data attributes", () => {
-    const hook = {
-      ...DiagramCanvasHook,
-      el: document.querySelector("#canvas"),
-    };
+  describe("text", () => {
+    it.each([
+      ["a wide canvas at 100% zoom", 13, 1],
+      ["a narrow canvas at 100% zoom", 3.2, 1],
+      ["a wide canvas at 250% zoom", 13, 2.5],
+      ["a narrow canvas at 250% zoom", 3.2, 2.5],
+    ])("renders a point label 12px with a 3px halo on %s", (_name, fitted, zoom) => {
+      const { pxPerUnit } = render({ fitted, zoom });
 
-    hook.scale = 2;
-    hook.scaleOverlayElements();
+      expect(attr("#stop-label", "font-size") * pxPerUnit).toBeCloseTo(12, 6);
+      expect(attr("#stop-label", "stroke-width") * pxPerUnit).toBeCloseTo(3, 6);
+    });
 
-    expect(parseFloat(document.querySelector("#stop-hit").getAttribute("width"))).toBeCloseTo(0.6, 10);
-    expect(parseFloat(document.querySelector("#stop-hit").getAttribute("height"))).toBeCloseTo(0.6, 10);
-    expect(document.querySelector("#stop-marker").getAttribute("r")).toBe(
-      "0.3",
-    );
-    expect(document.querySelector("#stop-platform").getAttribute("width")).toBe(
-      "0.5",
-    );
-    expect(
-      document.querySelector("#stop-platform").getAttribute("height"),
-    ).toBe("1");
-    expect(document.querySelector("#stop-platform").getAttribute("y")).toBe(
-      "23.2",
-    );
-    expect(document.querySelector("#stop-entrance").getAttribute("width")).toBe(
-      "0.5",
-    );
-    expect(
-      document.querySelector("#stop-entrance").getAttribute("height"),
-    ).toBe("1");
-    expect(document.querySelector("#stop-entrance").getAttribute("y")).toBe(
-      "25.2",
-    );
-    expect(
-      document.querySelector("#stop-boarding-area").getAttribute("x"),
-    ).toBe("19.7");
-    expect(
-      document.querySelector("#stop-boarding-area").getAttribute("y"),
-    ).toBe("29.52");
-    expect(
-      document.querySelector("#stop-boarding-area").getAttribute("width"),
-    ).toBe("0.6");
-    expect(
-      document.querySelector("#stop-boarding-area").getAttribute("height"),
-    ).toBe("0.6");
-    expect(document.querySelector("#stop-label").getAttribute("x")).toBe(
-      "9.75",
-    );
-    expect(document.querySelector("#stop-label").getAttribute("y")).toBe(
-      "20.5",
-    );
-    expect(
-      document.querySelector("#stop-label").getAttribute("font-size"),
-    ).toBe("0.36");
-    expect(
-      document.querySelector("#cross-level-stairs").getAttribute("d"),
-    ).toBe(
-      "M 10.325000000000001 20.224999999999998 L 10.325000000000001 20.075 L 10.475000000000001 20.075 L 10.475000000000001 19.924999999999997 L 10.625 19.924999999999997 L 10.625 19.775 L 10.775 19.775 L 10.775 20.224999999999998 Z",
-    );
-    expect(
-      document.querySelector("#cross-level-elevator").getAttribute("d"),
-    ).toBe(
-      "M 10.55 19.775 L 10.725000000000001 19.975 L 10.375 19.975 Z M 10.55 20.225 L 10.725000000000001 20.025 L 10.375 20.025 Z",
-    );
+    it.each([
+      ["100%", 1],
+      ["250%", 2.5],
+    ])("spaces point label lines 14px apart at %s zoom", (_name, zoom) => {
+      const { pxPerUnit } = render({ zoom });
 
-    expect(
-      document.querySelector("#path-hit").getAttribute("stroke-width"),
-    ).toBe("1");
-    expect(
-      document.querySelector("#path-line").getAttribute("stroke-width"),
-    ).toBe("0.1388888888888889");
-    expect(
-      document.querySelector("#path-line-paired").getAttribute("stroke-width"),
-    ).toBe("0.15");
-    expect(
-      document.querySelector("#path-dashed").getAttribute("stroke-width"),
-    ).toBe("0.1388888888888889");
-    expect(
-      document.querySelector("#path-dashed").getAttribute("stroke-dasharray"),
-    ).toBe("0.5555555555555556 0.2777777777777778");
-    expect(
-      parseFloat(document.querySelector("#path-arrow-trim").getAttribute("x1")),
-    ).toBeCloseTo(10.25, 5);
-    expect(
-      parseFloat(document.querySelector("#path-arrow-trim").getAttribute("x2")),
-    ).toBeCloseTo(19.75, 5);
+      expect(attr("#stop-label-line-1", "dy")).toBe(0);
+      expect(attr("#stop-label-line-2", "dy") * pxPerUnit).toBeCloseTo(14, 6);
+    });
 
-    expect(
-      document.querySelector("#pathway-arrow").getAttribute("markerWidth"),
-    ).toBe("0.41666666666666663");
-    expect(
-      document.querySelector("#pathway-arrow").getAttribute("markerHeight"),
-    ).toBe("0.41666666666666663");
+    it("places a point label 2px right of and 10px below its marker at any zoom", () => {
+      const { pxPerUnit } = render({ zoom: 2.5 });
 
-    expect(document.querySelector("#elevator-box").getAttribute("x")).toBe(
-      "29",
-    );
-    expect(document.querySelector("#elevator-box").getAttribute("y")).toBe(
-      "39",
-    );
-    expect(document.querySelector("#elevator-box").getAttribute("width")).toBe(
-      "2",
-    );
-    expect(document.querySelector("#elevator-box").getAttribute("height")).toBe(
-      "2",
-    );
-    expect(
-      document.querySelector("#elevator-box").getAttribute("stroke-width"),
-    ).toBe("0.11111111111111112");
+      expect((attr("#stop-label", "x") - 10) * pxPerUnit).toBeCloseTo(2, 6);
+      expect((attr("#stop-label", "y") - 20) * pxPerUnit).toBeCloseTo(10, 6);
+      expect(attr("#stop-label-line-2", "x")).toBe(attr("#stop-label", "x"));
+    });
 
-    expect(
-      document.querySelector("#elevator-text").getAttribute("font-size"),
-    ).toBe("1.2");
-    expect(document.querySelector("#path-label").getAttribute("x")).toBe(
-      "50.7",
-    );
-    expect(document.querySelector("#path-label").getAttribute("y")).toBe(
-      "59.3",
-    );
-    expect(
-      document.querySelector("#path-label").getAttribute("font-size"),
-    ).toBe("0.45");
-    expect(
-      document.querySelector("#path-label").getAttribute("stroke-width"),
-    ).toBe("0.1");
-    expect(document.querySelector("#path-label").getAttribute("transform")).toBe(
-      "rotate(15, 50.7, 59.3)",
-    );
+    it("sizes the point label box in px around the label", () => {
+      const { pxPerUnit } = render();
 
-    expect(document.querySelector("#ruler-line").getAttribute("stroke-width")).toBe(
-      "0.125",
-    );
-    expect(document.querySelector("#ruler-line").getAttribute("stroke-dasharray")).toBe(
-      "0.4 0.25",
-    );
-    expect(document.querySelector("#ruler-endpoint-a").getAttribute("r")).toBe(
-      "0.14583333333333334",
-    );
-    expect(
-      document.querySelector("#ruler-endpoint-a").getAttribute("stroke-width"),
-    ).toBe("0.05416666666666667");
-    expect(document.querySelector("#ruler-label").getAttribute("x")).toBe("15");
-    expect(document.querySelector("#ruler-label").getAttribute("y")).toBe("14.55");
-    expect(document.querySelector("#ruler-label").getAttribute("font-size")).toBe(
-      "0.36",
-    );
-    expect(
-      document.querySelector("#ruler-label").getAttribute("stroke-width"),
-    ).toBe("0.08");
-    expect(document.querySelector("#ruler-label-saved").getAttribute("x")).toBe(
-      "10.25",
-    );
-    expect(document.querySelector("#ruler-label-saved").getAttribute("y")).toBe(
-      "10",
-    );
+      expect(attr("#stop-label-box", "width") * pxPerUnit).toBeCloseTo(80, 6);
+      expect(attr("#stop-label-box", "height") * pxPerUnit).toBeCloseTo(32, 6);
+      expect((attr("#stop-label", "x") - attr("#stop-label-box", "x")) * pxPerUnit).toBeCloseTo(6, 6);
+    });
 
-    expect(
-      document.querySelector("#pending").getAttribute("stroke-width"),
-    ).toBe("0.075");
-    expect(document.querySelector("#pending").getAttribute("points")).toBe(
-      "10,19.5 9.625,20.25 10.375,20.25",
-    );
+    it.each([
+      ["200%", 2],
+      ["250%", 2.5],
+    ])("renders pathway sign, elevator and ruler text 11px at %s zoom", (_name, zoom) => {
+      const { pxPerUnit } = render({ zoom });
+
+      expect(attr("#path-label", "font-size") * pxPerUnit).toBeCloseTo(11, 6);
+      expect(attr("#elevator-text", "font-size") * pxPerUnit).toBeCloseTo(11, 6);
+      expect(attr("#ruler-label", "font-size") * pxPerUnit).toBeCloseTo(11, 6);
+      expect(attr("#ruler-label-saved", "font-size") * pxPerUnit).toBeCloseTo(11, 6);
+    });
+
+    it("keeps ruler text 11px where the label first shows, at 90% zoom", () => {
+      const { pxPerUnit } = render({ zoom: 0.9 });
+
+      expect(attr("#ruler-label", "font-size") * pxPerUnit).toBeCloseTo(11, 6);
+    });
+
+    it("keeps point label text at 12px where labels first show, at 85% zoom", () => {
+      const { pxPerUnit } = render({ fitted: 13, zoom: 0.85 });
+
+      expect(attr("#stop-label", "font-size") * pxPerUnit).toBeCloseTo(12, 6);
+    });
+
+    it("offsets pathway signs 10px from the line and rotates them about the text", () => {
+      const { pxPerUnit } = render({ zoom: 1.2 });
+      const x = attr("#path-label", "x");
+      const y = attr("#path-label", "y");
+
+      expect((x - 50) * pxPerUnit).toBeCloseTo(10, 6);
+      expect((y - 60) * pxPerUnit).toBeCloseTo(-10, 6);
+      expect(document.querySelector("#path-label").getAttribute("transform")).toBe(
+        `rotate(15, ${x}, ${y})`,
+      );
+    });
   });
 
-  it("keeps pathway visuals less chunky when zoomed out while preserving hit targets", () => {
-    const hook = {
-      ...DiagramCanvasHook,
-      el: document.querySelector("#canvas"),
-    };
+  describe("markers", () => {
+    it.each([
+      ["a wide canvas", 13],
+      ["a narrow canvas", 3.2],
+    ])("draws a node circle 12px across with a 2px ring on %s", (_name, fitted) => {
+      const { pxPerUnit } = render({ fitted });
 
-    hook.scale = 0.5;
-    hook.scaleOverlayElements();
+      expect(attr("#stop-marker", "r") * pxPerUnit * 2).toBeCloseTo(12, 6);
+      // The ring is painted under the fill, so half its stroke shows.
+      expect((attr("#stop-marker", "stroke-width") * pxPerUnit) / 2).toBeCloseTo(2, 6);
+    });
 
-    const hitStroke = parseFloat(
-      document.querySelector("#path-hit").getAttribute("stroke-width"),
-    );
-    const lineStroke = parseFloat(
-      document.querySelector("#path-line").getAttribute("stroke-width"),
-    );
-    const markerWidth = parseFloat(
-      document.querySelector("#pathway-arrow").getAttribute("markerWidth"),
-    );
-    const dashed = document
-      .querySelector("#path-dashed")
-      .getAttribute("stroke-dasharray")
-      .split(" ")
-      .map((value) => parseFloat(value));
+    it.each([
+      ["100%", 1],
+      ["250%", 2.5],
+    ])("draws platforms and entrances 12x20px and boarding areas 12px at %s zoom", (_name, zoom) => {
+      const { pxPerUnit } = render({ zoom });
 
-    expect(hitStroke).toBeCloseTo(4, 5);
-    expect(lineStroke).toBeCloseTo(0.5555555556, 5);
-    expect(markerWidth).toBeCloseTo(1.6666666667, 5);
-    expect(dashed[0]).toBeCloseTo(2.2222222222, 5);
-    expect(dashed[1]).toBeCloseTo(1.1111111111, 5);
+      expect(attr("#stop-platform", "width") * pxPerUnit).toBeCloseTo(12, 6);
+      expect(attr("#stop-platform", "height") * pxPerUnit).toBeCloseTo(20, 6);
+      expect(attr("#stop-entrance", "width") * pxPerUnit).toBeCloseTo(12, 6);
+      expect(attr("#stop-entrance", "height") * pxPerUnit).toBeCloseTo(20, 6);
+      expect(attr("#stop-boarding-area", "width") * pxPerUnit).toBeCloseTo(12, 6);
+      expect(attr("#stop-boarding-area", "height") * pxPerUnit).toBeCloseTo(12, 6);
+    });
 
-    const iconRadius = parseFloat(
-      document.querySelector("#stop-marker").getAttribute("r"),
-    );
-    const platformHeight = parseFloat(
-      document.querySelector("#stop-platform").getAttribute("height"),
-    );
-    const entranceHeight = parseFloat(
-      document.querySelector("#stop-entrance").getAttribute("height"),
-    );
-    const boardingWidth = parseFloat(
-      document.querySelector("#stop-boarding-area").getAttribute("width"),
-    );
+    it("anchors upright markers so 80% of their height sits above the stop coordinate", () => {
+      const { pxPerUnit } = render({ zoom: 2.5 });
 
-    // Icon visuals should scale down slightly when zoomed out to avoid chunky markers.
-    expect(iconRadius).toBeCloseTo(0.5882352941, 5);
-    expect(platformHeight).toBeCloseTo(1.9607843137, 5);
-    expect(entranceHeight).toBeCloseTo(1.9607843137, 5);
-    expect(boardingWidth).toBeCloseTo(1.1764705882, 5);
-    expect(document.querySelector("#stop-label").getAttribute("display")).toBe(
-      "none",
-    );
-    expect(document.querySelector("#path-label").getAttribute("display")).toBe(
-      "none",
-    );
-    expect(
-      document.querySelector("#ruler-endpoint-a").getAttribute("r"),
-    ).toBe("0.25");
-    expect(
-      document.querySelector("#ruler-endpoint-a").getAttribute("stroke-width"),
-    ).toBe("0.09285714285714286");
+      expect((24 - attr("#stop-platform", "y")) * pxPerUnit).toBeCloseTo(16, 6);
+      expect(attr("#stop-platform", "x") + attr("#stop-platform", "width") / 2).toBeCloseTo(14, 6);
+    });
+
+    it("shrinks markers to 75% at 50% zoom while text keeps its size", () => {
+      const { pxPerUnit } = render({ fitted: 13, zoom: 0.5 });
+
+      expect(attr("#stop-platform", "height") * pxPerUnit).toBeCloseTo(15, 6);
+      expect(attr("#stop-platform", "width") * pxPerUnit).toBeCloseTo(9, 6);
+      expect(attr("#stop-marker", "r") * pxPerUnit * 2).toBeCloseTo(9, 6);
+      expect(attr("#ruler-endpoint-a", "r") * pxPerUnit).toBeCloseTo(4, 6);
+    });
+
+    it("keeps markers full size at 100% zoom and above", () => {
+      const { pxPerUnit } = render({ zoom: 1 });
+
+      expect(attr("#stop-platform", "height") * pxPerUnit).toBeCloseTo(20, 6);
+    });
+
+    it.each([
+      ["a wide canvas", 13, 1],
+      ["a narrow canvas", 3.2, 1],
+      ["50% zoom", 6.5, 0.5],
+      ["250% zoom", 6.5, 2.5],
+    ])("gives every stop a hit target at least 24px square on %s", (_name, fitted, zoom) => {
+      const { pxPerUnit } = render({ fitted, zoom });
+
+      expect(attr("#stop-hit", "width") * pxPerUnit).toBeGreaterThanOrEqual(24 - 1e-9);
+      expect(attr("#stop-hit", "height") * pxPerUnit).toBeGreaterThanOrEqual(24 - 1e-9);
+      expect(attr("#platform-hit", "width") * pxPerUnit).toBeGreaterThanOrEqual(24 - 1e-9);
+      expect(attr("#platform-hit", "height") * pxPerUnit).toBeGreaterThanOrEqual(24 - 1e-9);
+    });
+
+    it("centers the hit target on the marker body", () => {
+      const { pxPerUnit } = render();
+
+      // A circle sits on the coordinate; an upright marker's body center is 6px above it.
+      expect(attr("#stop-hit", "x") + attr("#stop-hit", "width") / 2).toBeCloseTo(10, 6);
+      expect(attr("#stop-hit", "y") + attr("#stop-hit", "height") / 2).toBeCloseTo(20, 6);
+      expect(attr("#platform-hit", "x") + attr("#platform-hit", "width") / 2).toBeCloseTo(14, 6);
+      expect(24 - (attr("#platform-hit", "y") + attr("#platform-hit", "height") / 2)).toBeCloseTo(
+        6 / pxPerUnit,
+        6,
+      );
+    });
+
+    it("draws the pending marker as a 16px-wide triangle", () => {
+      const { pxPerUnit } = render({ zoom: 2 });
+      const points = document
+        .querySelector("#pending")
+        .getAttribute("points")
+        .split(" ")
+        .map((pair) => pair.split(",").map(parseFloat));
+
+      expect((points[2][0] - points[1][0]) * pxPerUnit).toBeCloseTo(16, 6);
+      expect((points[1][1] - points[0][1]) * pxPerUnit).toBeCloseTo(16, 6);
+    });
   });
 
-  it("keeps ruler elements anchored while scaling with zoom", () => {
-    const hook = {
-      ...DiagramCanvasHook,
-      el: document.querySelector("#canvas"),
-    };
+  describe("pathways", () => {
+    it.each([
+      ["100%", 1],
+      ["250%", 2.5],
+    ])("draws pathway lines 2.5px, and 4.5px when paired, at %s zoom", (_name, zoom) => {
+      const { pxPerUnit } = render({ zoom });
 
-    hook.scale = 1;
-    hook.scaleOverlayElements();
-    const initialY = document.querySelector("#ruler-label").getAttribute("y");
+      expect(attr("#path-line", "stroke-width") * pxPerUnit).toBeCloseTo(2.5, 6);
+      expect(attr("#path-dashed", "stroke-width") * pxPerUnit).toBeCloseTo(2.5, 6);
+      expect(attr("#path-line-paired", "stroke-width") * pxPerUnit).toBeCloseTo(4.5, 6);
+    });
 
-    hook.scale = 3;
-    hook.scaleOverlayElements();
+    it("scales dashes with the pathway line", () => {
+      const { pxPerUnit } = render({ zoom: 2 });
+      const dashes = document
+        .querySelector("#path-dashed")
+        .getAttribute("stroke-dasharray")
+        .split(" ")
+        .map((value) => parseFloat(value) * pxPerUnit);
 
-    expect(document.querySelector("#ruler-endpoint-a").getAttribute("cx")).toBe("10");
-    expect(document.querySelector("#ruler-endpoint-a").getAttribute("cy")).toBe("10");
-    expect(document.querySelector("#ruler-label").getAttribute("x")).toBe("15");
-    expect(document.querySelector("#ruler-label").getAttribute("y")).not.toBe(initialY);
+      expect(dashes[0]).toBeCloseTo(6, 6);
+      expect(dashes[1]).toBeCloseTo(3, 6);
+    });
+
+    it("draws the arrowhead 8px", () => {
+      const { pxPerUnit } = render({ zoom: 2 });
+
+      expect(attr("#pathway-arrow", "markerWidth") * pxPerUnit).toBeCloseTo(8, 6);
+      expect(attr("#pathway-arrow", "markerHeight") * pxPerUnit).toBeCloseTo(8, 6);
+    });
+
+    it("ends an arrow line 10px short of each stop", () => {
+      const { pxPerUnit } = render({ zoom: 2 });
+
+      expect((attr("#path-arrow-trim", "x1") - 10) * pxPerUnit).toBeCloseTo(10, 6);
+      expect((20 - attr("#path-arrow-trim", "x2")) * pxPerUnit).toBeCloseTo(10, 6);
+    });
+
+    it("keeps the pathway click target 14px wide at any zoom", () => {
+      const { pxPerUnit } = render({ zoom: 0.5 });
+
+      expect(attr("#path-hit", "stroke-width") * pxPerUnit).toBeCloseTo(14, 6);
+      expect(attr("#path-tooltip-hit", "stroke-width") * pxPerUnit).toBeCloseTo(6, 6);
+    });
+
+    it("lays a stairs bar 10px across, centered 5px along the pathway from its midpoint", () => {
+      const { pxPerUnit } = render({ zoom: 2 });
+      const x1 = attr("#stairs-bar", "x1");
+      const y1 = attr("#stairs-bar", "y1");
+      const x2 = attr("#stairs-bar", "x2");
+      const y2 = attr("#stairs-bar", "y2");
+
+      expect(Math.hypot(x2 - x1, y2 - y1) * pxPerUnit).toBeCloseTo(10, 6);
+      expect(((x1 + x2) / 2 - 40) * pxPerUnit).toBeCloseTo(5, 6);
+      expect(x1).toBeCloseTo(x2, 9);
+    });
+
+    it("offsets gate rails 3.5px from the pathway line", () => {
+      const { pxPerUnit } = render({ zoom: 2 });
+
+      expect((attr("#gate-rail", "y1") - 70) * pxPerUnit).toBeCloseTo(3.5, 6);
+      expect(attr("#gate-rail", "y2")).toBeCloseTo(attr("#gate-rail", "y1"), 9);
+    });
+
+    it("draws the elevator box 16px square with a 2.5px outline that does not shrink", () => {
+      const { pxPerUnit } = render({ fitted: 13, zoom: 0.5 });
+
+      expect(attr("#elevator-box", "width") * pxPerUnit).toBeCloseTo(16, 6);
+      expect(attr("#elevator-box", "height") * pxPerUnit).toBeCloseTo(16, 6);
+      expect(attr("#elevator-box", "stroke-width") * pxPerUnit).toBeCloseTo(2.5, 6);
+      expect(attr("#elevator-box", "x") + attr("#elevator-box", "width") / 2).toBeCloseTo(30, 6);
+    });
   });
 
-  it("skips pathway label transform updates when rotation is non-numeric", () => {
-    const hook = {
-      ...DiagramCanvasHook,
-      el: document.querySelector("#canvas"),
-    };
+  describe("cross-level badges and journal markers", () => {
+    it("draws stairs and elevator badges 15px and 16px tall, 22px right of the stop", () => {
+      const { pxPerUnit } = render({ zoom: 2 });
+      const stairs = document.querySelector("#cross-level-stairs").getAttribute("d");
+      const stairsXs = [...stairs.matchAll(/[ML] ([-\d.e]+) ([-\d.e]+)/g)].map((m) => parseFloat(m[1]));
+      const stairsYs = [...stairs.matchAll(/[ML] ([-\d.e]+) ([-\d.e]+)/g)].map((m) => parseFloat(m[2]));
+      const elevator = document.querySelector("#cross-level-elevator").getAttribute("d");
+      const elevatorYs = [...elevator.matchAll(/[ML] ([-\d.e]+) ([-\d.e]+)/g)].map((m) => parseFloat(m[2]));
 
-    const pathLabel = document.querySelector("#path-label");
-    pathLabel.setAttribute("data-rotation", "invalid");
-    pathLabel.setAttribute("transform", "rotate(45, 1, 1)");
+      expect((Math.max(...stairsXs) - Math.min(...stairsXs)) * pxPerUnit).toBeCloseTo(15, 6);
+      expect((Math.max(...stairsYs) - Math.min(...stairsYs)) * pxPerUnit).toBeCloseTo(15, 6);
+      expect(((Math.max(...stairsXs) + Math.min(...stairsXs)) / 2 - 10) * pxPerUnit).toBeCloseTo(22, 6);
+      expect((Math.max(...elevatorYs) - Math.min(...elevatorYs)) * pxPerUnit).toBeCloseTo(16, 6);
+    });
 
-    hook.scale = 2;
-    hook.scaleOverlayElements();
+    it.each([
+      ["100%", 1],
+      ["250%", 2.5],
+    ])("gives badges a 20px hit target at %s zoom", (_name, zoom) => {
+      const { pxPerUnit } = render({ zoom });
 
-    expect(pathLabel.getAttribute("transform")).toBe("rotate(45, 1, 1)");
+      for (const id of ["#cross-level-stairs-hit", "#cross-level-elevator-hit"]) {
+        expect(attr(id, "width") * pxPerUnit).toBeCloseTo(20, 6);
+        expect(attr(id, "height") * pxPerUnit).toBeCloseTo(20, 6);
+        expect((attr(id, "x") + attr(id, "width") / 2 - 10) * pxPerUnit).toBeCloseTo(22, 6);
+      }
+    });
+
+    it("defaults the badge hit target to 20px when the server sends no size", () => {
+      document.querySelector("#cross-level-stairs-hit").removeAttribute("data-base-size");
+      const { pxPerUnit } = render();
+
+      expect(attr("#cross-level-stairs-hit", "width") * pxPerUnit).toBeCloseTo(20, 6);
+    });
+
+    it("leaves a badge hit target unchanged when its center is not a number", () => {
+      const stairsHit = document.querySelector("#cross-level-stairs-hit");
+      stairsHit.setAttribute("data-center-x", "not-a-number");
+      stairsHit.setAttribute("width", "1.23");
+      stairsHit.setAttribute("height", "4.56");
+
+      expect(() => render({ zoom: 2 })).not.toThrow();
+      expect(stairsHit.getAttribute("width")).toBe("1.23");
+      expect(stairsHit.getAttribute("height")).toBe("4.56");
+    });
+
+    it("draws journal dots, rings, pins and hit targets in px and skips malformed geometry", () => {
+      const { pxPerUnit } = render({ zoom: 2 });
+      const invalidHit = document.querySelector("#journal-invalid-hit");
+
+      expect(attr("#journal-dot", "cx")).toBe(25);
+      expect(attr("#journal-dot", "cy")).toBe(35);
+      expect(attr("#journal-dot", "r") * pxPerUnit).toBeCloseTo(6, 6);
+      expect(attr("#journal-ring", "cx")).toBe(40);
+      expect(attr("#journal-ring", "r") * pxPerUnit).toBeCloseTo(13, 6);
+      const pinTransform = document.querySelector("#journal-pin-g").getAttribute("transform");
+      const [, pinScale] = pinTransform.match(/^translate\(40, 50\) scale\(([-\d.e]+)\)$/);
+      // The pin path is drawn in its own units; each covers 11px.
+      expect(parseFloat(pinScale) * pxPerUnit).toBeCloseTo(11, 6);
+      expect(attr("#journal-hit", "width") * pxPerUnit).toBeCloseTo(24, 6);
+      expect(attr("#journal-hit", "height") * pxPerUnit).toBeCloseTo(24, 6);
+      expect(attr("#journal-node-hit", "width") * pxPerUnit).toBeCloseTo(24, 6);
+      expect(invalidHit.getAttribute("x")).toBe(null);
+    });
+
+    it("puts a pin's hit target over its body, above the tip", () => {
+      const { pxPerUnit } = render();
+
+      expect((50 - attr("#journal-hit", "y")) * pxPerUnit).toBeCloseTo(22, 6);
+      expect((attr("#journal-hit", "y") + attr("#journal-hit", "height") - 50) * pxPerUnit).toBeCloseTo(2, 6);
+    });
   });
 
-  it("hides pathway labels at baseline scale and restores above threshold", () => {
-    const hook = {
-      ...DiagramCanvasHook,
-      el: document.querySelector("#canvas"),
-    };
+  describe("ruler", () => {
+    it.each([
+      ["80%", 0.8],
+      ["250%", 2.5],
+    ])("draws the ruler line 2px with 4px-radius endpoints at %s zoom", (_name, zoom) => {
+      const { pxPerUnit } = render({ zoom });
 
-    const pathLabel = document.querySelector("#path-label");
+      expect(attr("#ruler-line", "stroke-width") * pxPerUnit).toBeCloseTo(2, 6);
+      expect(attr("#ruler-hit-area", "stroke-width") * pxPerUnit).toBeCloseTo(12, 6);
+      expect(attr("#ruler-endpoint-a", "r") * pxPerUnit).toBeCloseTo(4, 6);
+      expect(attr("#ruler-endpoint-a", "stroke-width") * pxPerUnit).toBeCloseTo(2, 6);
+    });
 
-    hook.scale = 1;
-    hook.scaleOverlayElements();
-    expect(pathLabel.getAttribute("display")).toBe("none");
+    it("scales ruler dashes in px", () => {
+      const { pxPerUnit } = render({ zoom: 2 });
+      const dashes = document
+        .querySelector("#ruler-line")
+        .getAttribute("stroke-dasharray")
+        .split(" ")
+        .map((value) => parseFloat(value) * pxPerUnit);
 
-    hook.scale = 1.2;
-    hook.scaleOverlayElements();
-    expect(pathLabel.getAttribute("display")).toBe(null);
+      expect(dashes[0]).toBeCloseTo(6, 6);
+      expect(dashes[1]).toBeCloseTo(4, 6);
+    });
 
-    expect(parseFloat(pathLabel.getAttribute("x"))).toBeCloseTo(51.1666666667, 5);
-    expect(parseFloat(pathLabel.getAttribute("y"))).toBeCloseTo(58.8333333333, 5);
-    expect(parseFloat(pathLabel.getAttribute("font-size"))).toBeCloseTo(0.75, 5);
-    expect(parseFloat(pathLabel.getAttribute("stroke-width"))).toBeCloseTo(
-      0.16666666666666669,
-      5,
-    );
+    it("keeps ruler elements anchored while zooming", () => {
+      const { hook } = render({ zoom: 1 });
+      const initialY = document.querySelector("#ruler-label").getAttribute("y");
+
+      overlay().getScreenCTM = () => ({ a: FITTED_PX_PER_UNIT * 3 });
+      hook.scale = 3;
+      hook.scaleOverlayElements();
+
+      expect(document.querySelector("#ruler-endpoint-a").getAttribute("cx")).toBe("10");
+      expect(document.querySelector("#ruler-endpoint-a").getAttribute("cy")).toBe("10");
+      expect(document.querySelector("#ruler-label").getAttribute("x")).toBe("15");
+      expect(document.querySelector("#ruler-label").getAttribute("y")).not.toBe(initialY);
+    });
+
+    it("offsets the measure label 12px above the midpoint and the saved label 8px right of its anchor", () => {
+      const { pxPerUnit } = render({ zoom: 2 });
+
+      expect((15 - attr("#ruler-label", "y")) * pxPerUnit).toBeCloseTo(12, 6);
+      expect((attr("#ruler-label-saved", "x") - 10) * pxPerUnit).toBeCloseTo(8, 6);
+    });
   });
 
-  it("hides ruler labels when zoomed out below threshold and restores above threshold", () => {
-    const hook = {
-      ...DiagramCanvasHook,
-      el: document.querySelector("#canvas"),
-    };
+  describe("visibility thresholds", () => {
+    it("hides point labels below 85% zoom and shows them from 85%", () => {
+      const label = () => document.querySelector("#stop-label");
 
-    hook.scale = 0.8;
-    hook.scaleOverlayElements();
-    expect(document.querySelector("#ruler-label").getAttribute("display")).toBe(
-      "none",
-    );
-    expect(
-      document.querySelector("#ruler-label-saved").getAttribute("display"),
-    ).toBe("none");
+      const { hook } = render({ fitted: 13, zoom: 0.8 });
+      expect(label().getAttribute("display")).toBe("none");
+      expect(document.querySelector("#stop-label-box").getAttribute("display")).toBe("none");
 
-    hook.scale = 1;
-    hook.scaleOverlayElements();
-    expect(document.querySelector("#ruler-label").getAttribute("display")).toBe(
-      null,
-    );
-    expect(
-      document.querySelector("#ruler-label-saved").getAttribute("display"),
-    ).toBe("none");
+      overlay().getScreenCTM = () => ({ a: 13 * 0.85 });
+      hook.scale = 0.85;
+      hook.scaleOverlayElements();
+      expect(label().getAttribute("display")).toBe(null);
+    });
 
-    hook.scale = 2;
-    hook.scaleOverlayElements();
-    expect(
-      document.querySelector("#ruler-label-saved").getAttribute("display"),
-    ).toBe(null);
+    it("hides pathway labels at 100% zoom and shows them above 110%", () => {
+      const pathLabel = document.querySelector("#path-label");
+
+      const { hook } = render({ zoom: 1 });
+      expect(pathLabel.getAttribute("display")).toBe("none");
+
+      overlay().getScreenCTM = () => ({ a: FITTED_PX_PER_UNIT * 1.2 });
+      hook.scale = 1.2;
+      hook.scaleOverlayElements();
+      expect(pathLabel.getAttribute("display")).toBe(null);
+    });
+
+    it("skips pathway label updates when rotation is non-numeric", () => {
+      const pathLabel = document.querySelector("#path-label");
+      pathLabel.setAttribute("data-rotation", "invalid");
+      pathLabel.setAttribute("transform", "rotate(45, 1, 1)");
+
+      render({ zoom: 2 });
+
+      expect(pathLabel.getAttribute("transform")).toBe("rotate(45, 1, 1)");
+    });
+
+    it("hides ruler labels below their zoom thresholds and shows them above", () => {
+      const measure = () => document.querySelector("#ruler-label").getAttribute("display");
+      const saved = () => document.querySelector("#ruler-label-saved").getAttribute("display");
+
+      const { hook } = render({ zoom: 0.8 });
+      expect([measure(), saved()]).toEqual(["none", "none"]);
+
+      overlay().getScreenCTM = () => ({ a: FITTED_PX_PER_UNIT });
+      hook.scale = 1;
+      hook.scaleOverlayElements();
+      expect([measure(), saved()]).toEqual([null, "none"]);
+
+      overlay().getScreenCTM = () => ({ a: FITTED_PX_PER_UNIT * 2 });
+      hook.scale = 2;
+      hook.scaleOverlayElements();
+      expect([measure(), saved()]).toEqual([null, null]);
+    });
+
+    it("hides ruler endpoints at or near 100% zoom and shows them outside that range", () => {
+      const endpoint = () => document.querySelector("#ruler-endpoint-a").getAttribute("display");
+
+      const { hook } = render({ zoom: 1 });
+      expect(endpoint()).toBe("none");
+
+      overlay().getScreenCTM = () => ({ a: FITTED_PX_PER_UNIT * 1.05 });
+      hook.scale = 1.05;
+      hook.scaleOverlayElements();
+      expect(endpoint()).toBe("none");
+
+      overlay().getScreenCTM = () => ({ a: FITTED_PX_PER_UNIT * 0.8 });
+      hook.scale = 0.8;
+      hook.scaleOverlayElements();
+      expect(endpoint()).toBe(null);
+
+      overlay().getScreenCTM = () => ({ a: FITTED_PX_PER_UNIT * 2 });
+      hook.scale = 2;
+      hook.scaleOverlayElements();
+      expect(endpoint()).toBe(null);
+    });
   });
 
-  it("hides ruler endpoints at or near 1x zoom and shows them outside that range", () => {
-    const hook = {
-      ...DiagramCanvasHook,
-      el: document.querySelector("#canvas"),
-    };
+  describe("layout", () => {
+    it("leaves sizes untouched while the overlay has no layout", () => {
+      overlay().getScreenCTM = () => null;
+      const hook = { ...DiagramCanvasHook, el: document.querySelector("#canvas"), scale: 1 };
 
-    hook.scale = 1;
-    hook.scaleOverlayElements();
-    expect(
-      document.querySelector("#ruler-endpoint-a").getAttribute("display"),
-    ).toBe("none");
+      expect(() => hook.scaleOverlayElements()).not.toThrow();
+      expect(document.querySelector("#stop-label").getAttribute("font-size")).toBe(null);
+      expect(document.querySelector("#stop-marker").getAttribute("r")).toBe(null);
+    });
 
-    hook.scale = 1.05;
-    hook.scaleOverlayElements();
-    expect(
-      document.querySelector("#ruler-endpoint-a").getAttribute("display"),
-    ).toBe("none");
+    it("resizes to the new canvas when the window changes", () => {
+      const { hook } = render({ fitted: 13 });
+      const before = attr("#stop-label", "font-size");
 
-    hook.scale = 0.8;
-    hook.scaleOverlayElements();
-    expect(
-      document.querySelector("#ruler-endpoint-a").getAttribute("display"),
-    ).toBe(null);
+      overlay().getScreenCTM = () => ({ a: 3.2 });
+      hook.scaleOverlayElements();
 
-    hook.scale = 2;
-    hook.scaleOverlayElements();
-    expect(
-      document.querySelector("#ruler-endpoint-a").getAttribute("display"),
-    ).toBe(null);
-  });
+      expect(attr("#stop-label", "font-size") * 3.2).toBeCloseTo(12, 6);
+      expect(attr("#stop-label", "font-size")).not.toBe(before);
+    });
 
-  it("slims ruler endpoints in mid-level zoom", () => {
-    const hook = {
-      ...DiagramCanvasHook,
-      el: document.querySelector("#canvas"),
-    };
+    it("exposes one screen pixel in overlay units to stylesheets", () => {
+      const { pxPerUnit } = render({ zoom: 2 });
 
-    hook.scale = 0.8;
-    hook.scaleOverlayElements();
-
-    expect(parseFloat(document.querySelector("#ruler-endpoint-a").getAttribute("r"))).toBeCloseTo(0.2734375, 10);
-    expect(
-      parseFloat(document.querySelector("#ruler-endpoint-a").getAttribute("stroke-width")),
-    ).toBeCloseTo(0.1015625, 10);
-  });
-
-  it("rescales cross-level badge hit rects using data-base-size at iconScale 2", () => {
-    const hook = {
-      ...DiagramCanvasHook,
-      el: document.querySelector("#canvas"),
-    };
-
-    hook.scale = 2;
-    hook.scaleOverlayElements();
-
-    const stairsHit = document.querySelector("#cross-level-stairs-hit");
-    const elevatorHit = document.querySelector("#cross-level-elevator-hit");
-
-    expect(stairsHit.getAttribute("width")).toBe("0.45");
-    expect(stairsHit.getAttribute("height")).toBe("0.45");
-    expect(elevatorHit.getAttribute("width")).toBe("0.45");
-    expect(elevatorHit.getAttribute("height")).toBe("0.45");
-  });
-
-  it("rescales cross-level badge hit rects to base size at iconScale 1", () => {
-    const hook = {
-      ...DiagramCanvasHook,
-      el: document.querySelector("#canvas"),
-    };
-
-    hook.scale = 1;
-    hook.scaleOverlayElements();
-
-    const stairsHit = document.querySelector("#cross-level-stairs-hit");
-    const elevatorHit = document.querySelector("#cross-level-elevator-hit");
-
-    expect(stairsHit.getAttribute("width")).toBe("0.9");
-    expect(stairsHit.getAttribute("height")).toBe("0.9");
-    expect(elevatorHit.getAttribute("width")).toBe("0.9");
-    expect(elevatorHit.getAttribute("height")).toBe("0.9");
-  });
-
-  it("defaults cross-level badge hit rect base size to 0.9 when data-base-size is missing", () => {
-    const hook = {
-      ...DiagramCanvasHook,
-      el: document.querySelector("#canvas"),
-    };
-
-    const stairsHit = document.querySelector("#cross-level-stairs-hit");
-    stairsHit.removeAttribute("data-base-size");
-
-    hook.scale = 1;
-    hook.scaleOverlayElements();
-
-    expect(stairsHit.getAttribute("width")).toBe("0.9");
-    expect(stairsHit.getAttribute("height")).toBe("0.9");
-  });
-
-  it("leaves cross-level badge hit rect unchanged when data-center-x is not a number", () => {
-    const hook = {
-      ...DiagramCanvasHook,
-      el: document.querySelector("#canvas"),
-    };
-
-    const stairsHit = document.querySelector("#cross-level-stairs-hit");
-    stairsHit.setAttribute("data-center-x", "not-a-number");
-    stairsHit.setAttribute("width", "1.23");
-    stairsHit.setAttribute("height", "4.56");
-
-    hook.scale = 2;
-
-    expect(() => hook.scaleOverlayElements()).not.toThrow();
-    expect(stairsHit.getAttribute("width")).toBe("1.23");
-    expect(stairsHit.getAttribute("height")).toBe("4.56");
-  });
-
-  it("rescales finite journal markers, dots, rings, and hit targets while ignoring malformed geometry", () => {
-    const hook = {
-      ...DiagramCanvasHook,
-      el: document.querySelector("#canvas"),
-    };
-
-    hook.scale = 2;
-    hook.scaleOverlayElements();
-
-    const pin = document.querySelector("#journal-pin-g");
-    const dot = document.querySelector("#journal-dot");
-    const ring = document.querySelector("#journal-ring");
-    const hit = document.querySelector("#journal-hit");
-    const invalidHit = document.querySelector("#journal-invalid-hit");
-
-    expect(pin.getAttribute("transform")).toBe("translate(40, 50) scale(0.5)");
-    expect(dot.getAttribute("cx")).toBe("25");
-    expect(dot.getAttribute("cy")).toBe("35");
-    expect(parseFloat(dot.getAttribute("r"))).toBeCloseTo(0.3, 3);
-    expect(ring.getAttribute("cx")).toBe("40");
-    expect(ring.getAttribute("cy")).toBe("50");
-    expect(hit.getAttribute("x")).toBe("39.125");
-    expect(hit.getAttribute("y")).toBe("48.6875");
-    expect(hit.getAttribute("width")).toBe("1.75");
-    expect(hit.getAttribute("height")).toBe("1.75");
-    expect(invalidHit.getAttribute("x")).toBe(null);
+      expect(parseFloat(overlay().style.getPropertyValue("--diagram-px")) * pxPerUnit).toBeCloseTo(1, 6);
+    });
   });
 
   it("shows and hides tooltip on hover for stop and pathway targets", () => {
