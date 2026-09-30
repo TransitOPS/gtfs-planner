@@ -354,7 +354,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsDrawerLiveTest do
       [run | _] = day.derived.runs
       [unpaid | _] = Enum.filter(run.work.breaks, &(not &1.paid?))
 
-      index = index_of(view, :break, %{end_secs: unpaid.secs + 24600, start_secs: 24600})
+      index = index_of(view, :break, %{end_secs: unpaid.secs + 24_600, start_secs: 24_600})
       label = text(view, "tr[data-index='#{index}'] [data-role=pay-label]")
       value = text(view, "tr[data-index='#{index}'] [data-role=pay-value]")
 

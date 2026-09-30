@@ -28,6 +28,7 @@ defmodule GtfsPlanner.Gtfs.Runs.DeriveVersionTest do
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
+  alias GtfsPlanner.Gtfs.Runs
 
   import GtfsPlanner.BlockingFixtures
   import GtfsPlanner.RunsFixtures
@@ -218,8 +219,8 @@ defmodule GtfsPlanner.Gtfs.Runs.DeriveVersionTest do
       # The real stored crew, not a hand-built one: `derive_version/3` is given
       # the same value `load_runs/3` reads, so the comparison is between the two
       # derivation paths and not between two different rule sets.
-      crew = GtfsPlanner.Gtfs.Runs.get_crew_settings(world.organization.id, world.version.id)
-      derived = GtfsPlanner.Gtfs.Runs.derive_version(export, assignments, crew)
+      crew = Runs.get_crew_settings(world.organization.id, world.version.id)
+      derived = Runs.derive_version(export, assignments, crew)
 
       for {key, _} <- export.day_types do
         {:ok, runs_day} = Gtfs.load_runs(world.organization.id, world.version.id, key)
@@ -233,8 +234,8 @@ defmodule GtfsPlanner.Gtfs.Runs.DeriveVersionTest do
 
     test "derive_version answers a key for every day type the export listed", %{world: world} do
       export = Blocking.export_movements(world.organization.id, world.version.id)
-      crew = GtfsPlanner.Gtfs.Runs.get_crew_settings(world.organization.id, world.version.id)
-      derived = GtfsPlanner.Gtfs.Runs.derive_version(export, %{}, crew)
+      crew = Runs.get_crew_settings(world.organization.id, world.version.id)
+      derived = Runs.derive_version(export, %{}, crew)
 
       assert Enum.sort(Map.keys(derived)) == Enum.sort(Enum.map(export.day_types, & &1.key))
     end

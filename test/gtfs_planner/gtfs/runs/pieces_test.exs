@@ -38,6 +38,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
   """
   use ExUnit.Case, async: true
 
+  alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Gtfs.Blocking.Context
   alias GtfsPlanner.Gtfs.Blocking.Movements
   alias GtfsPlanner.Gtfs.Blocking.Relief
@@ -427,7 +428,7 @@ defmodule GtfsPlanner.Gtfs.Runs.PiecesTest do
   # A block built the way `Blocking.load_day/3` builds one: the trips, the
   # movements over them, and the relief windows over those movements.
   defp block(trips, context, block_id \\ "101") do
-    sequence = GtfsPlanner.Gtfs.Blocking.Checks.sequence(trips)
+    sequence = Checks.sequence(trips)
     movements = Movements.build(trips, resolved(context), context)
     windows = Relief.windows(trips, movements, context)
 

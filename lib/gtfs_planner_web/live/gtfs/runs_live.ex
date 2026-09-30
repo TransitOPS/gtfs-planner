@@ -496,24 +496,22 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     entries = crew_entries(params, socket.assigns.crew_entries)
     errors = crew_validate(entries)
 
-    cond do
-      errors != %{} ->
-        # Keep every entry and mark the fields. Focus is NOT named here: the
-        # `focus_form_error` hook lands on the first control the form marks
-        # `aria-invalid`, and a payload naming one field would be a second place
-        # the order of the form is written down.
-        {:noreply,
-         socket
-         |> assign(:crew_entries, entries)
-         |> assign(:crew_errors, errors)
-         |> assign(:crew_notice, nil)
-         |> push_event("focus_form_error", %{
-           form_id: "crew-rules-form",
-           fallback_id: "crew-rules-notice"
-         })}
-
-      true ->
-        save_crew_settings(socket, entries)
+    if errors != %{} do
+      # Keep every entry and mark the fields. Focus is NOT named here: the
+      # `focus_form_error` hook lands on the first control the form marks
+      # `aria-invalid`, and a payload naming one field would be a second place
+      # the order of the form is written down.
+      {:noreply,
+       socket
+       |> assign(:crew_entries, entries)
+       |> assign(:crew_errors, errors)
+       |> assign(:crew_notice, nil)
+       |> push_event("focus_form_error", %{
+         form_id: "crew-rules-form",
+         fallback_id: "crew-rules-notice"
+       })}
+    else
+      save_crew_settings(socket, entries)
     end
   end
 
@@ -1654,17 +1652,22 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     case Map.get(assigns, :runs_day) do
       %{day: %{blocks: blocks}} ->
         blocks
-        |> Enum.flat_map(fn block ->
-          case block do
-            %{windows: windows} when is_list(windows) -> Enum.map(windows, & &1.stop_id)
-            _ -> []
-          end
-        end)
+        |> Enum.flat_map(&window_stop_ids/1)
         |> Enum.uniq()
         |> Enum.sort()
 
       _ ->
         []
+    end
+  end
+
+  # One block's relief stops, in the order the block names them. A block that
+  # carries no window list contributes nothing rather than raising, because the
+  # day load only ever sets `windows` on a derived block.
+  defp window_stop_ids(block) do
+    case block do
+      %{windows: windows} when is_list(windows) -> Enum.map(windows, & &1.stop_id)
+      _ -> []
     end
   end
 
@@ -1797,12 +1800,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     params =
       [
         {"day", day},
-        {"sort", if(sort != "sign_on", do: sort)},
-        {"dir", if(dir == :desc, do: "desc")},
-        {"scale", if(scale != "day", do: scale)},
-        {"view", if(view != "timeline", do: view)},
-        {"panel", if(panel != "runs", do: panel)},
-        {"run", if(run != "", do: run)}
+        {"sort", not_the_default(sort, "sign_on")},
+        {"dir", not_the_default(dir, :asc)},
+        {"scale", not_the_default(scale, "day")},
+        {"view", not_the_default(view, "timeline")},
+        {"panel", not_the_default(panel, "runs")},
+        {"run", not_the_default(run, "")}
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
       |> Enum.map_join("&", fn {key, value} -> key <> "=" <> to_string(value) end)
@@ -1810,6 +1813,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     base = "/gtfs/#{socket.assigns.current_gtfs_version.id}/runs"
     if params == "", do: base, else: base <> "?" <> params
   end
+
+  # The value unless it is the default, so the default never appears in the URL.
+  # One rule for all seven fields rather than seven inline `if`s, so "the default
+  # is omitted" is stated once.
+  defp not_the_default(value, default), do: if(value == default, do: nil, else: value)
 
   @impl true
   def render(assigns) do

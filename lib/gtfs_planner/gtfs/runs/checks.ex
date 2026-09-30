@@ -94,8 +94,7 @@ defmodule GtfsPlanner.Gtfs.Runs.Checks do
   @spec boundary_findings([map()]) :: [finding()]
   def boundary_findings(boundaries) do
     boundaries
-    |> Enum.filter(&(not &1.at_relief?))
-    |> Enum.filter(&change_of_run?/1)
+    |> Enum.filter(&(not &1.at_relief? and change_of_run?(&1)))
     |> Enum.map(&not_at_relief/1)
   end
 

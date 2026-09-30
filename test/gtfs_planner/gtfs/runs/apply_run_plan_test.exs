@@ -30,6 +30,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.DayTypes
+  alias GtfsPlanner.Gtfs.Runs
   alias GtfsPlanner.Gtfs.TripRun
 
   import GtfsPlanner.AccountsFixtures
@@ -167,7 +168,7 @@ defmodule GtfsPlanner.Gtfs.Runs.ApplyRunPlanTest do
       before = all_rows(world)
 
       assert {:ok, _} =
-               GtfsPlanner.Gtfs.Runs.update_crew_settings(
+               Runs.update_crew_settings(
                  world.organization.id,
                  world.version.id,
                  %{max_spread_minutes: 600}

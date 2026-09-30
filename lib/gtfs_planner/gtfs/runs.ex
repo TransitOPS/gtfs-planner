@@ -993,30 +993,34 @@ defmodule GtfsPlanner.Gtfs.Runs do
         assignments = assignments_by_day_type(organization_id, gtfs_version_id)
         derived = derive_version(export, assignments, crew)
 
-        shares =
-          for day_type <- export.day_types do
-            # A day type the export listed always has an entry, but a default
-            # that answers the question anyway costs one line and removes a
-            # crash from a read that has no other way to fail.
-            stats =
-              derived
-              |> Map.get(day_type.key, @empty_derived_stats)
-              |> Map.fetch!(:stats)
-
-            %{
-              day_type_key: day_type.key,
-              label: day_type.label,
-              straight: stats.by_type.straight,
-              split: stats.by_type.split,
-              share: stats.straight_share
-            }
-          end
-
-        shares
+        shares(export.day_types, derived)
       else
         Repo.rollback(:not_found)
       end
     end)
+  end
+
+  # One row per day type the export listed. Its own function so this read is
+  # `transaction -> if`, and the row shape is stated once rather than inside the
+  # published check.
+  defp shares(day_types, derived) do
+    for day_type <- day_types do
+      # A day type the export listed always has an entry, but a default
+      # that answers the question anyway costs one line and removes a
+      # crash from a read that has no other way to fail.
+      stats =
+        derived
+        |> Map.get(day_type.key, @empty_derived_stats)
+        |> Map.fetch!(:stats)
+
+      %{
+        day_type_key: day_type.key,
+        label: day_type.label,
+        straight: stats.by_type.straight,
+        split: stats.by_type.split,
+        share: stats.straight_share
+      }
+    end
   end
 
   @doc """

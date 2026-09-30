@@ -24,6 +24,7 @@ defmodule GtfsPlanner.Gtfs.Runs.LoadRunsTest do
 
   alias GtfsPlanner.Gtfs
   alias GtfsPlanner.Gtfs.Blocking
+  alias GtfsPlanner.Gtfs.Blocking.DayTypes
   alias GtfsPlanner.Gtfs.Runs
 
   import GtfsPlanner.BlockingFixtures
@@ -371,7 +372,7 @@ defmodule GtfsPlanner.Gtfs.Runs.LoadRunsTest do
         sunday: 0
       })
 
-      saturday_key = GtfsPlanner.Gtfs.Blocking.DayTypes.key(["SAT"])
+      saturday_key = DayTypes.key(["SAT"])
 
       saturday_trip =
         blocked_trip_fixture(

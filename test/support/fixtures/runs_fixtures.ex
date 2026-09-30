@@ -206,45 +206,25 @@ defmodule GtfsPlanner.RunsFixtures do
         organization,
         version,
         route,
-        "a",
-        "101",
-        stops.bay_a,
-        stops.bay_a,
-        "05:50:00",
-        "06:50:00"
+        {"a", "101", stops.bay_a, stops.bay_a, "05:50:00", "06:50:00"}
       ),
       trip(
         organization,
         version,
         route,
-        "b",
-        "101",
-        stops.bay_b,
-        stops.bay_b,
-        "07:00:00",
-        "08:00:00"
+        {"b", "101", stops.bay_b, stops.bay_b, "07:00:00", "08:00:00"}
       ),
       trip(
         organization,
         version,
         route,
-        "c",
-        "101",
-        stops.valley_college,
-        stops.valley_college,
-        "09:00:00",
-        "09:30:00"
+        {"c", "101", stops.valley_college, stops.valley_college, "09:00:00", "09:30:00"}
       ),
       trip(
         organization,
         version,
         route,
-        "d",
-        "101",
-        stops.market_square,
-        stops.market_square,
-        "10:00:00",
-        "10:30:00"
+        {"d", "101", stops.market_square, stops.market_square, "10:00:00", "10:30:00"}
       )
     ]
   end
@@ -255,23 +235,13 @@ defmodule GtfsPlanner.RunsFixtures do
         organization,
         version,
         route,
-        "e",
-        "102",
-        stops.bay_a,
-        stops.bay_a,
-        "12:00:00",
-        "12:30:00"
+        {"e", "102", stops.bay_a, stops.bay_a, "12:00:00", "12:30:00"}
       ),
       trip(
         organization,
         version,
         route,
-        "f",
-        "102",
-        stops.bay_b,
-        stops.bay_b,
-        "12:40:00",
-        "13:10:00"
+        {"f", "102", stops.bay_b, stops.bay_b, "12:40:00", "13:10:00"}
       )
     ]
   end
@@ -279,7 +249,7 @@ defmodule GtfsPlanner.RunsFixtures do
   # One plottable, non-frequency trip with a first and a last stop time, built by
   # `BlockingFixtures` so it is the same trip shape the blocking tests derive their
   # days from, and so `Checks.sequence/1` accepts it as a run's sequence trip.
-  defp trip(organization, version, route, trip_id, block_id, first_stop, last_stop, first, last) do
+  defp trip(organization, version, route, {trip_id, block_id, first_stop, last_stop, first, last}) do
     blocked_trip_fixture(organization.id, version.id, route.route_id, %{
       trip_id: trip_id,
       service_id: "WK",

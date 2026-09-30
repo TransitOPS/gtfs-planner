@@ -147,14 +147,19 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
         {[], 0}
 
       services ->
-        Enum.reduce(day.runs, {[], 0}, fn run, {events, left_out} ->
-          if error_run?(run) do
-            {events, left_out + 1}
-          else
-            {[run_events(key, run, services, ids, garages_by_id) | events], left_out}
-          end
-        end)
+        Enum.reduce(day.runs, {[], 0}, &day_run_events(&1, &2, key, services, ids, garages_by_id))
         |> then(fn {events, left_out} -> {Enum.reverse(events) |> List.flatten(), left_out} end)
+    end
+  end
+
+  # One run's contribution to the day. A run with an error finding contributes
+  # nothing and is counted, so the day's count is the number of runs that did not
+  # reach the file.
+  defp day_run_events(run, {events, left_out}, key, services, ids, garages_by_id) do
+    if error_run?(run) do
+      {events, left_out + 1}
+    else
+      {[run_events(key, run, services, ids, garages_by_id) | events], left_out}
     end
   end
 
@@ -180,7 +185,16 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
     events =
       run.work.segments
       |> annotate_segments()
-      |> Enum.flat_map(&segment_event(&1, key, run, service_id, ids, garages_by_id, shift))
+      |> Enum.flat_map(
+        &segment_event(&1, %{
+          key: key,
+          run: run,
+          service_id: service_id,
+          ids: ids,
+          garages_by_id: garages_by_id,
+          shift: shift
+        })
+      )
       |> Enum.sort_by(& &1.start_secs)
       # 10, 20, 30 … rather than 0, 1, 2: a consumer reads a run's events off
       # these numbers, and the gaps leave room to insert one later.
@@ -235,23 +249,18 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
 
   defp segment_event(
          %{kind: :piece, piece_index: index} = segment,
-         key,
-         run,
-         service_id,
-         ids,
-         garages_by_id,
-         shift
+         %{run: run} = day
        ) do
     case Enum.at(run.pieces, index - 1) do
       nil ->
         []
 
       piece ->
-        piece_events(piece, index, key, run, service_id, segment, ids, garages_by_id, shift)
+        piece_events(piece, index, day, segment)
     end
   end
 
-  defp segment_event(segment, _key, run, service_id, _ids, garages_by_id, shift) do
+  defp segment_event(segment, %{run: run, service_id: service_id, shift: shift} = day) do
     {piece_id, block_id} =
       case piece_for(run, segment._piece_index) do
         nil ->
@@ -273,9 +282,9 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
         block_id: block_id,
         event_type: simple_event_type(segment.kind),
         trip_id: "",
-        start_location: location(segment.from, garages_by_id),
+        start_location: location(segment.from, day.garages_by_id),
         start_time: clock(segment.start_secs, shift),
-        end_location: location(segment.to, garages_by_id),
+        end_location: location(segment.to, day.garages_by_id),
         end_time: clock(segment.end_secs, shift),
         start_mid_trip: nil,
         end_mid_trip: nil
@@ -294,10 +303,15 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
   # A piece expanded into the movements and trips it covers, each carrying the
   # piece's own ID and block. The report and the travel around a relief start are
   # separate segments; what is left inside a piece is its own work.
-  defp piece_events(piece, index, key, run, service_id, _segment, ids, garages_by_id, shift) do
+  defp piece_events(
+         piece,
+         index,
+         %{key: key, run: run, service_id: service_id, shift: shift} = day,
+         _segment
+       ) do
     trips = piece.trips
     piece_id = "#{run.run_id}-#{index}"
-    ctx = {key, run, service_id, piece_id, piece, garages_by_id, shift}
+    ctx = {key, run, service_id, piece_id, piece, day.garages_by_id, shift}
 
     pull_out =
       if pull?(piece.start_ref) do
@@ -307,7 +321,7 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
             @event_pull_out,
             {piece.start_secs, first_departure(trips)},
             {piece.start_ref, {:stop, hd(trips).first_stop.stop_id}},
-            movement_trip_id(ids, key, piece, :pull_out)
+            movement_trip_id(day.ids, key, piece, :pull_out)
           )
         ]
       else
@@ -325,7 +339,7 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
         )
       end
 
-    deadheads = deadhead_events(ctx, ids, trips)
+    deadheads = deadhead_events(ctx, day.ids, trips)
 
     pull_back =
       if pull?(piece.end_ref) do
@@ -335,7 +349,7 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
             @event_pull_back,
             {last_arrival(trips), piece.end_secs},
             {{:stop, List.last(trips).last_stop.stop_id}, piece.end_ref},
-            movement_trip_id(ids, key, piece, :pull_back)
+            movement_trip_id(day.ids, key, piece, :pull_back)
           )
         ]
       else

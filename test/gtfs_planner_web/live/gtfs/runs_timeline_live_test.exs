@@ -331,7 +331,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
       # asserted as "more than one and fewer than span/2h + 1" rather than as a
       # literal, because the span is the fixture's and step 7 owns the axis.
       span_hours = div(axis.end_secs - axis.start_secs, 3600)
-      assert length(ticks) >= 1
+      assert ticks != []
       assert length(ticks) <= div(span_hours, 2)
 
       # The first tick is the start of the axis, and its label is that instant on

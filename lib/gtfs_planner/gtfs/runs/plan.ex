@@ -72,9 +72,11 @@ defmodule GtfsPlanner.Gtfs.Runs.Plan do
   """
   @spec fingerprint(%{context: map(), trips: [map()], assignments: map(), crew: map()}) ::
           String.t()
+  alias GtfsPlanner.Gtfs.Blocking.Context
+
   def fingerprint(%{context: context, trips: trips, assignments: assignments, crew: crew}) do
     %{
-      context: GtfsPlanner.Gtfs.Blocking.Context.digest(context),
+      context: Context.digest(context),
       trips: Enum.map(trips, &trip_term/1) |> Enum.sort(),
       assignments: assignments |> Enum.sort(),
       crew: Map.to_list(crew) |> Enum.sort()

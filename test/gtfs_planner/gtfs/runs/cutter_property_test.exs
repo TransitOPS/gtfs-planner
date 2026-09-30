@@ -28,6 +28,7 @@ defmodule GtfsPlanner.Gtfs.Runs.CutterPropertyTest do
   """
   use ExUnit.Case, async: true
 
+  alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Gtfs.Blocking.Context
   alias GtfsPlanner.Gtfs.Blocking.Movements
   alias GtfsPlanner.Gtfs.Blocking.Relief
@@ -169,7 +170,7 @@ defmodule GtfsPlanner.Gtfs.Runs.CutterPropertyTest do
   defp build_block(block_id, context, base) do
     trip_count = :rand.uniform(8)
     trips = Enum.map(1..trip_count, fn n -> build_trip(block_id, n, base + (n - 1) * 1800) end)
-    sequence = GtfsPlanner.Gtfs.Blocking.Checks.sequence(trips)
+    sequence = Checks.sequence(trips)
     movements = Movements.build(trips, resolution(), context)
 
     %{

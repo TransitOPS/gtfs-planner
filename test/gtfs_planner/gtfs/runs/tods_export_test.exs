@@ -786,8 +786,7 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExportTest do
         for run_id <- written |> Enum.map(& &1.run_id) |> Enum.uniq() do
           trip_events =
             written
-            |> Enum.filter(&(&1.run_id == run_id))
-            |> Enum.filter(&(not is_nil(&1.start_mid_trip)))
+            |> Enum.filter(&(&1.run_id == run_id and not is_nil(&1.start_mid_trip)))
 
           ordered = Enum.sort_by(trip_events, &to_secs(&1.start_time))
 
