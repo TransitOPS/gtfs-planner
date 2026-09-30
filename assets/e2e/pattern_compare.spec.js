@@ -210,3 +210,44 @@ test.describe("compare relation (step 14)", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 });
+
+// ── Summary captures (step 15) ──────────────────────────────────────────────
+//
+// The "What's different" card and its metric strip: the replacement pair (B
+// adds two stops where A has one, 12 minutes longer over the stretch), the
+// same pair read the other way (B skips them, 12 minutes less), the short turn
+// (B ends where A continues) and the choose-B card's suggested comparisons.
+// Every state waits on the part it adds.
+
+test.describe("compare summary (step 15)", () => {
+  test("capture: summary", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    const states = [
+      ["ideal", "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-DEV", "#summary-diff-1"],
+      ["express", "?a=BROWSER-CMP-DEV&b=BROWSER-CMP-FULL", "#summary-diff-1"],
+      ["short-turn", "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-SHORT", "#summary-diff-1"],
+      ["choose-b", "?a=BROWSER-CMP-FULL", "#summary-suggestions"],
+    ];
+
+    for (const [name, query, selector] of states) {
+      for (const [width, height] of [
+        [1440, 900],
+        [390, 844],
+      ]) {
+        await page.setViewportSize({ width, height });
+        await page.goto(compareUrl(versionId, query));
+        await page.waitForSelector(selector);
+        await capture(page, `summary-${name}-${width}`);
+      }
+    }
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+});
