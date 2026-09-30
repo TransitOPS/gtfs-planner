@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.PatternComparison do
   @moduledoc """
-  Scoped read models for the pattern comparison page (spec 19, `R6`-`R9`).
+  Scoped read models for the pattern comparison page (spec 19, `R6`-`R10`).
 
   `compare/2` composes one two-pattern comparison: the URL route's pattern A, an
   optional pattern B resolved through `RoutePatterns.get_scoped_pattern/3`, the
@@ -34,6 +34,16 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
   - With `b: nil`, up to three same-direction suggestions of the route are
     returned, ordered by trips on the chosen calendar then stops in common; a
     pattern with an identical stop list is excluded.
+  - `AC-22` Map. `map_payload/3` resolves A and B with `Alignments.resolve/1`
+    and returns the drawable stops and sections per `R10`: saved geometry
+    through its anchors and interior points, everything else as the two-anchor
+    connector, sections equal on both sides once as `series: :both` and stops
+    with `served`. A `b` outside the scope is treated as absent, so the payload
+    carries A alone and never foreign geometry.
+  - `AC-20` Picker. `picker_patterns/3` lists every pattern of the version that
+    sits on a published route with its route names, direction, service
+    description, stop IDs and stop names, and ranks them by stops in common
+    with the other side, then trips on the calendar.
 
   When B is shown in reverse the alignment runs against B's reversed stop list
   and running times are not compared; `opposite?` is then false because it
@@ -42,23 +52,29 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
   it as one (`TimedPatternStop.timepoint == 1`). `stops` on a side is its
   ordered stop IDs; stop names, codes and coordinates live in `stops_by_id`.
 
-  Assumed ceilings: stop visits are bounded as `Alignment` documents, and the
-  suggestion scan reads this route's patterns only.
+  Assumed ceilings: stop visits are bounded as `Alignment` documents, the
+  suggestion scan reads this route's patterns only, and the picker reads one
+  version's patterns and stops (about 200 × 40) in memory.
   """
 
   import Ecto.Query, warn: false
 
+  alias GtfsPlanner.Gtfs.Alignments
+  alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.PatternComparison.Alignment
   alias GtfsPlanner.Gtfs.PatternComparison.Usage
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatternStop
+  alias GtfsPlanner.Gtfs.Schedules
+  alias GtfsPlanner.Gtfs.Schedules.Summary
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.TimedPattern
   alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions.GtfsVersion
 
   @suggestion_limit 3
 
@@ -254,6 +270,424 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
              direction_timepoints(scope, Enum.map(ordered, & &1.id))
            )
        }}
+    end
+  end
+
+  @typedoc "One drawable stop of the comparison map (AC-22), `[lon, lat]` as the Leaflet boundary reads it."
+  @type map_stop :: %{
+          stop_id: String.t(),
+          name: String.t(),
+          coordinates: [float()],
+          served: :a | :b | :both
+        }
+
+  @typedoc "One drawable section of the comparison map (R10)."
+  @type map_section :: %{
+          from_stop_id: String.t(),
+          to_stop_id: String.t(),
+          series: :a | :b | :both,
+          style: :path | :connector,
+          points: [[float()]]
+        }
+
+  @typedoc "One pattern's first and last visited stop, for the map's end chips (step 20)."
+  @type map_end :: %{first_stop_id: String.t() | nil, last_stop_id: String.t() | nil}
+
+  @typedoc "The comparison map payload; the LiveView fills `pins` from the differences (step 21)."
+  @type map_payload :: %{
+          stops: [map_stop()],
+          sections: [map_section()],
+          ends: %{a: map_end(), b: map_end() | nil},
+          pins: list()
+        }
+
+  @typedoc "One row of the pattern picker (AC-20)."
+  @type picker_entry :: %{
+          route_pattern_id: String.t(),
+          name: String.t() | nil,
+          route_id: String.t(),
+          route_short_name: String.t() | nil,
+          route_long_name: String.t() | nil,
+          direction_id: integer() | nil,
+          service_description: String.t() | nil,
+          stop_ids: [String.t()],
+          stop_names: %{String.t() => String.t() | nil},
+          shared: non_neg_integer(),
+          trips: non_neg_integer()
+        }
+
+  @doc """
+  Builds the map payload for the two compared patterns (AC-22, `R10`).
+
+  Each side is resolved with `Alignments.resolve/1`. A saved section
+  (`:override` or `:shared`) is drawn as a path through its two visit anchors
+  and its stored interior points; every other kind falls back to the straight
+  dashed `:connector` between the two visits, and a section with an unlocated
+  visit at either end is omitted because it cannot reach two points. Sections
+  whose `{from_stop_id, to_stop_id, style, points}` are equal on both sides are
+  emitted once as `series: :both`, so a shared stretch is drawn once; the rest
+  keep `:a` or `:b`. `stops` carries every stop either side serves with
+  `served: :a | :b | :both` and its coordinates; an unlocated stop is left out
+  because it cannot be a marker. Coordinates are JSON numbers in `[lon, lat]`
+  order, as `route_details_map.js` reads them. `ends` names each pattern's first
+  and last visited stop for the hook's end chips, and `pins` stays empty: the
+  LiveView fills it from the differences (step 21).
+
+  `a` is the URL route's A, which `compare/2` has already bound to the route; it
+  must resolve inside the organization, the version and a published route
+  (`RoutePatterns.get_scoped_pattern/3`), otherwise the result is
+  `{:error, :not_found}`. A `b` that does not resolve there (missing, foreign or
+  unpublished) is treated as absent, so the payload carries A alone and never
+  another tenant's or version's geometry (`R9`).
+  """
+  @spec map_payload(scope(), String.t(), String.t() | nil) ::
+          {:ok, map_payload()} | {:error, :not_found}
+  def map_payload(scope, a, b) do
+    with {:ok, a_pattern} <- scoped_pattern(scope, a) do
+      {:ok, build_map_payload(Alignments.resolve(a_pattern), resolve_map_b(scope, b))}
+    end
+  end
+
+  @doc """
+  Lists every pattern of the version on a published route, for the picker (AC-20).
+
+  Each entry carries the pattern's own facts (natural ID, name, direction, the
+  service description it was imported with, its ordered stop IDs with their stop
+  names) and its route's short and long names, so the LiveView can group this
+  route by direction, then "Other routes", and search names and served stops in
+  memory. `shared` is the size of the `MapSet` intersection of stop IDs with
+  `other`, the pattern on the other side of the comparison; it is 0 when `other`
+  is nil or is not one of the version's published patterns, so a foreign or
+  unpublished ID shares nothing and leaks nothing. `trips` is the pattern's
+  departures on the `service_id` calendar under `R7`: one count per trip, a
+  frequency trip as its expanded departures only, and 0 when no calendar is
+  selected.
+
+  Entries are ordered by stops in common descending, then trips descending, then
+  the deterministic read order (route ID, direction, sort order, natural ID), so
+  the picker shows the order the prototype ranks and needs no second sort. A
+  foreign or unpublished scope has no patterns: `{:ok, []}`.
+
+  Ceiling: one query joins the version's patterns, routes, occurrences and stops
+  (about 200 patterns × 40 stops, so about 8,000 rows), plus one row per trip on
+  the calendar and its frequency rows. When a version grows past that, search
+  stops on the server and return matches with a per-pattern count instead of the
+  whole list (PM-6); the in-memory filter is the current upgrade path.
+  """
+  @spec picker_patterns(scope(), String.t() | nil, String.t()) :: {:ok, [picker_entry()]}
+  def picker_patterns(scope, other, service_id) do
+    rows = picker_rows(scope)
+    groups = Enum.chunk_by(rows, & &1.pattern.id)
+    patterns = Enum.map(groups, fn [row | _] -> row.pattern end)
+    trips = picker_trip_counts(scope, patterns, service_id)
+    other_stops = picker_other_stops(rows, other)
+
+    entries =
+      groups
+      |> Enum.map(&picker_entry(&1, trips, other_stops))
+      |> Enum.sort_by(&{-&1.shared, -&1.trips})
+
+    {:ok, entries}
+  end
+
+  defp scoped_pattern(scope, route_pattern_id) do
+    RoutePatterns.get_scoped_pattern(
+      scope.organization_id,
+      scope.gtfs_version_id,
+      route_pattern_id
+    )
+  end
+
+  # B is drawn only when it resolves inside the scope and on a published route,
+  # exactly as compare/2 resolves it; anything else stays absent (R9).
+  defp resolve_map_b(_scope, nil), do: nil
+
+  defp resolve_map_b(scope, route_pattern_id) do
+    case scoped_pattern(scope, route_pattern_id) do
+      {:ok, pattern} -> Alignments.resolve(pattern)
+      {:error, :not_found} -> nil
+    end
+  end
+
+  defp build_map_payload(a_resolved, b_resolved) do
+    {b_visits, b_sections} =
+      case b_resolved do
+        nil -> {[], []}
+        %{visits: visits, sections: sections} -> {visits, sections}
+      end
+
+    %{
+      stops: map_stops(a_resolved.visits, b_visits),
+      sections:
+        merge_series(
+          map_sections(a_resolved.visits, a_resolved.sections),
+          map_sections(b_visits, b_sections)
+        ),
+      ends: %{a: pattern_ends(a_resolved.visits), b: b_resolved && pattern_ends(b_visits)},
+      pins: []
+    }
+  end
+
+  # Saved geometry is drawn through its two anchors and its interior points, as
+  # the alignment editor draws it; a missing or blocked section is the straight
+  # connector between the anchors, and a section with an unlocated anchor is
+  # dropped because it cannot reach two points (R10).
+  defp map_sections(visits, sections) do
+    anchors = Map.new(visits, &{&1.position, &1})
+
+    Enum.flat_map(sections, fn section ->
+      from = Map.get(anchors, section.position)
+      to = Map.get(anchors, section.position + 1)
+
+      case {coordinate(from), coordinate(to)} do
+        {{:ok, from_coordinates}, {:ok, to_coordinates}} ->
+          [map_section(section, from_coordinates, to_coordinates)]
+
+        _unlocated ->
+          []
+      end
+    end)
+  end
+
+  defp map_section(section, from_coordinates, to_coordinates) do
+    base = %{from_stop_id: section.from_stop_id, to_stop_id: section.to_stop_id}
+
+    if section.kind in [:override, :shared] do
+      Map.merge(base, %{
+        style: :path,
+        points: [from_coordinates | section.points] ++ [to_coordinates]
+      })
+    else
+      Map.merge(base, %{style: :connector, points: [from_coordinates, to_coordinates]})
+    end
+  end
+
+  # A section that is identical on both sides is one shared line (Leaflet cannot
+  # offset lines): the first traversal carries it as :both, and a later traversal
+  # of the same identity is already drawn. Every other section keeps its side,
+  # and B's own sections follow A's in B's order (R10).
+  defp merge_series(a_sections, b_sections) do
+    shared =
+      MapSet.intersection(
+        MapSet.new(a_sections, &section_identity/1),
+        MapSet.new(b_sections, &section_identity/1)
+      )
+
+    {a_series, _emitted} =
+      Enum.map_reduce(a_sections, shared, fn section, remaining ->
+        identity = section_identity(section)
+
+        cond do
+          MapSet.member?(remaining, identity) ->
+            {Map.put(section, :series, :both), MapSet.delete(remaining, identity)}
+
+          MapSet.member?(shared, identity) ->
+            {nil, remaining}
+
+          true ->
+            {Map.put(section, :series, :a), remaining}
+        end
+      end)
+
+    b_series =
+      for section <- b_sections,
+          not MapSet.member?(shared, section_identity(section)) do
+        Map.put(section, :series, :b)
+      end
+
+    Enum.reject(a_series, &is_nil/1) ++ b_series
+  end
+
+  defp section_identity(section) do
+    {section.from_stop_id, section.to_stop_id, section.style, section.points}
+  end
+
+  defp map_stops(a_visits, b_visits) do
+    a_stops = located_stops(a_visits)
+    b_stops = located_stops(b_visits)
+
+    (Map.keys(a_stops) ++ Map.keys(b_stops))
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.map(fn stop_id ->
+      a_stop = Map.get(a_stops, stop_id)
+      b_stop = Map.get(b_stops, stop_id)
+
+      Map.merge(a_stop || b_stop, %{stop_id: stop_id, served: served(a_stop, b_stop)})
+    end)
+  end
+
+  defp served(nil, _b_stop), do: :b
+  defp served(_a_stop, nil), do: :a
+  defp served(_a_stop, _b_stop), do: :both
+
+  # A stop without coordinates cannot be a marker, so it is left out; put_new
+  # keeps a loop's repeated visit as one entry per side.
+  defp located_stops(visits) do
+    Enum.reduce(visits, %{}, fn visit, stops ->
+      case coordinate(visit) do
+        {:ok, coordinates} ->
+          Map.put_new(stops, visit.stop_id, %{name: visit.name, coordinates: coordinates})
+
+        :error ->
+          stops
+      end
+    end)
+  end
+
+  defp coordinate(%{lat: lat, lon: lon}) when is_number(lat) and is_number(lon) do
+    {:ok, [lon * 1.0, lat * 1.0]}
+  end
+
+  defp coordinate(_visit), do: :error
+
+  defp pattern_ends([]), do: %{first_stop_id: nil, last_stop_id: nil}
+
+  defp pattern_ends(visits) do
+    %{first_stop_id: hd(visits).stop_id, last_stop_id: List.last(visits).stop_id}
+  end
+
+  # One query reads the version's patterns with their routes, occurrences and
+  # stops, so the picker never reads per pattern. The ceiling and the upgrade
+  # path are on picker_patterns/3.
+  defp picker_rows(scope) do
+    from([pattern, _version, route] in picker_pattern_base(scope),
+      left_join: occurrence in RoutePatternStop,
+      on:
+        occurrence.organization_id == pattern.organization_id and
+          occurrence.gtfs_version_id == pattern.gtfs_version_id and
+          occurrence.route_pattern_id == pattern.id,
+      left_join: stop in Stop,
+      on:
+        stop.organization_id == occurrence.organization_id and
+          stop.gtfs_version_id == occurrence.gtfs_version_id and
+          stop.stop_id == occurrence.stop_id,
+      order_by: [
+        asc: pattern.route_id,
+        asc: pattern.direction_id,
+        asc: pattern.route_pattern_sort_order,
+        asc: pattern.route_pattern_id,
+        asc: pattern.id,
+        asc: occurrence.position
+      ],
+      select: %{
+        pattern: pattern,
+        route: route,
+        stop_id: occurrence.stop_id,
+        stop_name: stop.stop_name
+      }
+    )
+    |> Repo.all()
+  end
+
+  # The published version's patterns with their routes: the version join is what
+  # keeps an unpublished version, another organization or another version out of
+  # the picker (R9, INV-1).
+  defp picker_pattern_base(scope) do
+    from(pattern in RoutePattern,
+      join: version in GtfsVersion,
+      on:
+        version.id == pattern.gtfs_version_id and
+          version.organization_id == pattern.organization_id,
+      join: route in Route,
+      on:
+        route.organization_id == pattern.organization_id and
+          route.gtfs_version_id == pattern.gtfs_version_id and
+          route.route_id == pattern.route_id,
+      where:
+        pattern.organization_id == ^scope.organization_id and
+          pattern.gtfs_version_id == ^scope.gtfs_version_id and
+          version.publication_status == "published"
+    )
+  end
+
+  # The other side's stops come from the same read, so an `other` outside the
+  # version's published patterns shares nothing instead of leaking a count.
+  defp picker_other_stops(_rows, nil), do: MapSet.new()
+
+  defp picker_other_stops(rows, other) do
+    for row <- rows,
+        row.pattern.route_pattern_id == other,
+        is_binary(row.stop_id),
+        into: MapSet.new(),
+        do: row.stop_id
+  end
+
+  defp picker_entry([first | _] = rows, trips, other_stops) do
+    stop_ids = Enum.flat_map(rows, &List.wrap(&1.stop_id))
+    pattern = first.pattern
+
+    %{
+      route_pattern_id: pattern.route_pattern_id,
+      name: pattern.route_pattern_name,
+      route_id: first.route.route_id,
+      route_short_name: first.route.route_short_name,
+      route_long_name: first.route.route_long_name,
+      direction_id: pattern.direction_id,
+      service_description: pattern.route_pattern_time_desc,
+      stop_ids: stop_ids,
+      stop_names: Map.new(rows, &{&1.stop_id, &1.stop_name}) |> Map.delete(nil),
+      shared: MapSet.intersection(MapSet.new(stop_ids), other_stops) |> MapSet.size(),
+      trips: Map.get(trips, pattern.route_pattern_id, 0)
+    }
+  end
+
+  # A pattern's trips on the calendar under R7, without Usage's departure
+  # histogram: the picker ranks the whole version, so it must not scan every
+  # trip's stop times. `service_id: nil` counts nothing, as an unresolved
+  # calendar leaves Usage empty.
+  defp picker_trip_counts(_scope, [], _service_id), do: %{}
+
+  defp picker_trip_counts(_scope, _patterns, nil), do: %{}
+
+  defp picker_trip_counts(scope, patterns, service_id) do
+    route_pattern_ids = Enum.map(patterns, & &1.route_pattern_id)
+
+    trips =
+      from(trip in Trip,
+        where:
+          trip.organization_id == ^scope.organization_id and
+            trip.gtfs_version_id == ^scope.gtfs_version_id and
+            trip.route_pattern_id in ^route_pattern_ids and trip.service_id == ^service_id,
+        order_by: [asc: trip.trip_id, asc: trip.id],
+        select: %{trip_id: trip.trip_id, route_pattern_id: trip.route_pattern_id}
+      )
+      |> Repo.all()
+
+    frequencies = picker_frequencies(scope, Enum.map(trips, & &1.trip_id))
+
+    Enum.reduce(trips, %{}, fn trip, counts ->
+      count = picker_departures(Map.get(frequencies, trip.trip_id, []))
+      Map.update(counts, trip.route_pattern_id, count, &(&1 + count))
+    end)
+  end
+
+  defp picker_frequencies(_scope, []), do: %{}
+
+  defp picker_frequencies(scope, trip_ids) do
+    from(frequency in Frequency,
+      where:
+        frequency.organization_id == ^scope.organization_id and
+          frequency.gtfs_version_id == ^scope.gtfs_version_id and
+          frequency.trip_id in ^trip_ids,
+      order_by: [asc: frequency.trip_id, asc: frequency.start_time]
+    )
+    |> Repo.all()
+    |> Enum.group_by(& &1.trip_id)
+  end
+
+  # R7: a trip with usable frequency windows counts as its expanded departures
+  # only, never as its template row; any other trip counts as one departure. The
+  # exclusive window end follows Schedules.frequency_windows/1, so the picker
+  # shows the count the comparison and the Schedules tab show.
+  defp picker_departures(frequencies) do
+    case Schedules.frequency_windows(frequencies) do
+      [] ->
+        1
+
+      windows ->
+        Summary.trips_per_hour([], windows)
+        |> Enum.sum_by(fn {_hour, count, _approximate?} -> count end)
     end
   end
 
