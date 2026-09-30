@@ -24,7 +24,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   @doc """
   Renders the pattern detail header: the location trail, the pattern name and
   its figures, the saved-state badge, the Pattern actions menu and the task
-  tabs.
+  tabs. A saved pattern also offers "Compare with another pattern", which opens
+  the comparison page with this pattern as A.
 
   Each tab may carry one chip, given in `tab_chips` by task: `{:count, n}`,
   `:unsaved`, `:started`, `{:missing, n}` or `:blocked`. The trail's Patterns
@@ -44,6 +45,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
   attr :tab_chips, :map, default: %{}
   attr :dirty?, :boolean, required: true
   attr :show_actions, :boolean, default: false
+
+  attr :compare_path, :string,
+    default: nil,
+    doc: "the compare page with this pattern as A; nil while creating one"
 
   def pattern_detail_header(assigns) do
     ~H"""
@@ -91,6 +96,15 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternComponents do
               <strong class="font-[650] tabular-nums text-strong">{@timing_count}</strong>
               {if @timing_count == 1, do: "timing", else: "timings"}
             </span>
+            <span :if={@compare_path} aria-hidden="true">·</span>
+            <.link
+              :if={@compare_path}
+              id="pattern-compare"
+              navigate={@compare_path}
+              class="inline-flex min-h-11 items-center font-[650] text-action underline hover:text-action-hover"
+            >
+              Compare with another pattern
+            </.link>
           </p>
         </div>
 

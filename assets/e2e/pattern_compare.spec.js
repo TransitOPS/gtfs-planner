@@ -501,3 +501,99 @@ test.describe("compare map (step 21)", () => {
     ).toEqual([]);
   });
 });
+
+// ── Entry captures (step 22) ────────────────────────────────────────────────
+//
+// The two entry points this step adds: the Patterns tab's secondary "Compare
+// patterns" action beside Create pattern, and the pattern editor's "Compare
+// with another pattern" link in the header's meta line. Each is followed in the
+// browser, so the navigation itself is observed: the Patterns tab entry lands on
+// the compare page and the mounted page patches in R8's default pair (FULL
+// against SHORT on the seeded weekday calendar), and the editor link lands on
+// the choose-B state with A alone, its suggestions and A's stops.
+
+test.describe("compare entry (step 22)", () => {
+  test("capture: entry", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    const patternsUrl = `/gtfs/${versionId}/routes/${COMPARE_ROUTE}/patterns`;
+    const editorUrl = `${patternsUrl}/BROWSER-CMP-FULL`;
+
+    for (const [name, width, height] of [
+      ["entry-1440", 1440, 900],
+      ["entry-390", 390, 844],
+    ]) {
+      await page.setViewportSize({ width, height });
+      await page.goto(patternsUrl);
+      await page.waitForSelector("#patterns-compare");
+      await expect(page.locator("#patterns-compare")).toContainText("Compare patterns");
+      await expect(page.locator("#patterns-create")).toContainText("Create pattern");
+
+      // The secondary entry and the primary beside it are both 44 px targets
+      // (AC-24's floor); the route's one primary stays Create pattern.
+      for (const selector of ["#patterns-compare", "#patterns-create"]) {
+        const box = await page.locator(selector).boundingBox();
+        expect(Math.round(box.height), `${selector} height`).toBeGreaterThanOrEqual(44);
+      }
+
+      await capture(page, name);
+    }
+
+    // The entry navigates to the compare page, which resolves R8's entry pair
+    // from the seeded trips and patches it into the URL.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(patternsUrl);
+    await page.locator("#patterns-compare").click();
+    await page.waitForURL(
+      (url) =>
+        `${url.pathname}${url.search}` ===
+        compareUrl(versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-SHORT"),
+    );
+    await page.waitForSelector("#slot-b");
+
+    for (const [name, width, height] of [
+      ["pattern-editor-1440", 1440, 900],
+      ["pattern-editor-390", 390, 844],
+    ]) {
+      await page.setViewportSize({ width, height });
+      await page.goto(editorUrl);
+      await page.waitForSelector("#pattern-compare");
+      await expect(page.locator("#pattern-compare")).toContainText(
+        "Compare with another pattern",
+      );
+
+      const linkBox = await page.locator("#pattern-compare").boundingBox();
+      expect(Math.round(linkBox.height), "#pattern-compare height").toBeGreaterThanOrEqual(44);
+
+      await capture(page, name);
+    }
+
+    // The editor link opens the comparison with this pattern as A and no B.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(editorUrl);
+    await page.locator("#pattern-compare").click();
+    await page.waitForURL(
+      (url) => `${url.pathname}${url.search}` === compareUrl(versionId, "?a=BROWSER-CMP-FULL"),
+    );
+    await page.waitForSelector("#summary-suggestions");
+
+    for (const [name, width, height] of [
+      ["choose-b-1440", 1440, 900],
+      ["choose-b-390", 390, 844],
+    ]) {
+      await page.setViewportSize({ width, height });
+      await page.goto(compareUrl(versionId, "?a=BROWSER-CMP-FULL"));
+      await page.waitForSelector("#summary-suggestions");
+      await expect(page.locator("#slot-b-empty")).toContainText("Choose a pattern to compare");
+      await capture(page, name);
+    }
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+});
