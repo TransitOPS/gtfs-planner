@@ -285,17 +285,23 @@ describe("TimetableGrid in-cell editor", () => {
     );
   });
 
-  it("opens no editor on the timing cell or a frequency row's cells", () => {
+  it("opens no editor on the timing cell or a frequency row's cells; Enter opens their surfaces", () => {
     const { hook, editor } = grid();
 
     keydown(cursor("cell-A1-timing"), "Enter");
     keydown(document.getElementById("cell-A1-timing"), "7");
     expect(editor.classList.contains("is-open")).toBe(false);
+    expect(hook.pushEvent).toHaveBeenCalledTimes(1);
+    expect(hook.pushEvent).toHaveBeenLastCalledWith("open_change", {
+      kind: "timing",
+      trip: "trip-a1",
+    });
 
     keydown(cursor("cell-F1-2"), "Enter");
     keydown(document.getElementById("cell-F1-2"), "7");
     expect(editor.classList.contains("is-open")).toBe(false);
-    expect(hook.pushEvent).not.toHaveBeenCalled();
+    expect(hook.pushEvent).toHaveBeenCalledTimes(2);
+    expect(hook.pushEvent).toHaveBeenLastCalledWith("open_edit_drawer", { trip: "trip-f1" });
   });
 
   it("Delete outside editing pushes cell_clear with the trip and position and marks the cell pending", () => {
