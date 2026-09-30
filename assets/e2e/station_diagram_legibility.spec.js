@@ -181,6 +181,28 @@ test.describe("Station diagram legibility", () => {
     });
   }
 
+  test("paints an entrance's name and hit target like any other point's", async ({
+    page,
+  }) => {
+    await openDiagram(page, VIEWPORTS[0]);
+
+    const paint = await page.evaluate(() => {
+      const fill = (selector) =>
+        getComputedStyle(document.querySelector(selector)).fill;
+      const group = (type) =>
+        `#diagram-overlay g[data-stop-id]:has([data-stop-marker][data-location-type="${type}"])`;
+
+      return {
+        platformLabel: fill(`${group(0)} [data-stop-label]`),
+        entranceLabel: fill(`${group(2)} [data-stop-label]`),
+        entranceHitTarget: fill(`${group(2)} [data-stop-hit-target]`),
+      };
+    });
+
+    expect(paint.entranceLabel).toBe(paint.platformLabel);
+    expect(paint.entranceHitTarget).toBe("rgba(0, 0, 0, 0)");
+  });
+
   test("keeps the names of two nearby points from overlapping", async ({ page }) => {
     const nearby = [
       { name: "Legibility Point North", x: 12, y: 12 },
