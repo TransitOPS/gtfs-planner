@@ -1547,6 +1547,10 @@ defmodule GtfsPlanner.Gtfs do
     do:
       RoutePatterns.get_pattern(organization_id, gtfs_version_id, route_id, pattern_id, timing_id)
 
+  @doc "Counts trips left outside patterns in the scope, grouped by route and reason."
+  def left_out_trips(organization_id, gtfs_version_id, route_id \\ nil),
+    do: RoutePatterns.left_out(organization_id, gtfs_version_id, route_id)
+
   @doc "Loads the alignment editor read model for one pattern in its published route scope."
   def alignment_editor(organization_id, gtfs_version_id, route_id, route_pattern_id),
     do: Alignments.editor(organization_id, gtfs_version_id, route_id, route_pattern_id)
