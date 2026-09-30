@@ -1,26 +1,25 @@
-// Advanced Blocks browser journey (EV-9, step 47).
+// Advanced Blocks browser journey.
 //
-// The journey exercises the advanced Blocks page end to end in Chromium at
-// 1440x1000 and the List view at 375x812 against the seeded
-// "Browser Advanced Blocks Version" in `test/support/browser_seed.exs` — the
-// version that carries the reference prototype's "Plan with problems" state —
-// and compares what it captures with `.specs/07-advanced-blocking/references/
-// advanced-blocking-prototype.html` (`problems`, `summary`, `relief`,
-// `driving-entered`, `selected`, `preview-selected`, `preview-pool`,
-// `confirm-replace`, `stale` and `list`).
+// The journey exercises the Blocks page's planning features end to end in
+// Chromium at 1440x1000 and the List view at 375x812 against the seeded
+// "Browser Advanced Blocks Version" in `test/support/browser_seed.exs`, which
+// carries a plan with two problems. It renders the reference prototype's
+// `problems`, `summary`, `relief`, `driving`, `selected`, `preview-selected`,
+// `preview-pool`, `confirm-replace`, `stale` and `list` states beside the
+// page's captures when the gitignored prototype file is present.
 //
-// Every expectation is a literal value from that seed or from an acceptance
-// criterion, never a value read back from the surface under test: the four
-// blocks 101-104 with the two problems the state is named for (101 cannot
-// reach Market Square — 14 min of drive into an 8-minute gap — and 104 runs
-// route 30, which requires a 35-ft diesel, on a Cutaway), the three day types
-// derived from {WKDY, SCHOOL}, {WKDY} and {SAT}, the 12 Cutaways and 8 diesels
-// at Main with 6 Cutaways at North, and the one relief point at Market Square.
+// Every expectation is a literal value from that seed, never a value read back
+// from the surface under test: the four blocks 101-104 with the two problems
+// the plan is named for (101 cannot reach Market Square — 14 min of drive into
+// an 8-minute gap — and 104 runs route 30, which requires a 35-ft diesel, on a
+// Cutaway), the three service days derived from {WKDY, SCHOOL}, {WKDY} and
+// {SAT}, the 12 Cutaways and 8 diesels at Main with 6 Cutaways at North, and the
+// one relief point at Market Square.
 //
 // The journeys share one reset-and-seeded database, so they are serial and run
-// in the order the card lists them: each one leaves the day the next reads. A
-// reader who re-runs a single journey after the others have written sees
-// mutated state, exactly as the repository's own `blocks.spec.js` does.
+// in the order below: each one leaves the day the next reads. A reader who
+// re-runs a single journey after the others have written sees mutated state,
+// exactly as the repository's own `blocks.spec.js` does.
 //
 // Captures are written under `testInfo.outputPath` and copied to
 // `.specs/07-advanced-blocking/evidence/browser/`; the last journey writes
@@ -55,7 +54,7 @@ const EDITOR = {
 
 const VERSION_NAME = "Browser Advanced Blocks Version";
 
-// The seeded day types, largest first: {WKDY, SCHOOL} is the page's default.
+// The seeded service days, largest first: {WKDY, SCHOOL} is the page's default.
 const DAY_LARGEST = "School days + Weekday";
 const DAY_WEEKDAY = "Weekday";
 
@@ -70,8 +69,12 @@ const PAIR_VC_MS = "stop:AB_VALLEY|stop:AB_MKT"; // Valley College → Market Sq
 const PAIR_RS_GARAGE_PREFIX = "minutes[stop:AB_RS_B|garage:";
 const STATION_INPUT = "#operator-candidate-0"; // Riverside Station, the first row
 
-// The card's named figures, read from the seed rather than from the page.
-const TRACK_MIN_PX = 760; // the reference's wide frame: 769 px at 1440
+// The seed's figures, written here rather than read from the page.
+// The wide frame's timeline track at 1440 px. The fixed block columns are sized
+// to their widest content plus the cell padding (Select 44, Block 72, Garage ·
+// type 126, Time out 154, Hours 75, Status 192), which leaves about 711 px; the
+// restyled page before the planning columns left about 680.
+const TRACK_MIN_PX = 700;
 const FLEET_NEEDED = 4;
 const FLEET_LISTED = 12;
 const DRIVING_ESTIMATED = 6;
@@ -141,8 +144,8 @@ async function openBlocks(page, versionId, query = "", expected) {
   }
 }
 
-// The day's four rows, as the page prints them: the block, its R4 garage and
-// type resolution, its status and whether the previewed plan changes it.
+// The day's four rows, as the page prints them: the block, its garage and
+// type, its status and whether the previewed plan changes it.
 async function blockRows(page) {
   return page.evaluate(() =>
     [...document.querySelectorAll("#blocks-timeline-body tr")].map((row) => ({
@@ -164,7 +167,7 @@ function statusOf(rows, block) {
 }
 
 // Saves a capture under the test's own output directory, then copies it into
-// the spec package's browser-evidence folder (the card's capture artifact).
+// the gitignored `.specs/07-advanced-blocking/evidence/browser/` folder.
 async function capture(page, testInfo, name, { fullPage = false } = {}) {
   const outputPath = testInfo.outputPath(`${name}.png`);
   mkdirSync(dirname(outputPath), { recursive: true });
@@ -193,7 +196,7 @@ async function closeDrawer(page, overlayId) {
 }
 
 // The suggested-blocks panel's own numbers: the four metrics, the moves it
-// lists, the day types it names and the state of the apply control.
+// lists, the service days it names and the state of the apply control.
 async function panelState(page) {
   await expect(page.locator("#suggestion")).toBeVisible();
   return page.evaluate(() => ({
@@ -203,8 +206,8 @@ async function panelState(page) {
     metrics: [...document.querySelectorAll("[data-role='suggestion-metric']")].map(
       (metric) => metric.textContent.replace(/\s+/g, " ").trim(),
     ),
-    moveCount: document.querySelectorAll("#suggestion-moves-table tr").length,
-    moves: [...document.querySelectorAll("#suggestion-moves-table tr")].map((row) => ({
+    moveCount: document.querySelectorAll("#suggestion-moves-table tbody tr").length,
+    moves: [...document.querySelectorAll("#suggestion-moves-table tbody tr")].map((row) => ({
       trip: row.querySelector("td")?.textContent.trim(),
       current: row.querySelectorAll("td")[2]?.textContent.trim(),
       proposed: row
@@ -215,7 +218,7 @@ async function panelState(page) {
     effects: [...document.querySelectorAll("#suggestion [data-role='review-effect']")].map(
       (effect) => ({
         selected: effect.dataset.selected === "true",
-        heading: effect.querySelector("strong")?.textContent.trim(),
+        heading: effect.querySelector("p")?.textContent.replace(/\s+/g, " ").trim(),
       }),
     ),
     scopeNote: document.querySelector("#suggestion-scope-note")?.textContent.trim(),
@@ -268,67 +271,86 @@ async function previewSuggestion(page) {
   );
 }
 
+// The timeline's widths, measured on the loaded page: the track beside the
+// sticky block columns, and whether the table stays inside its scroll container.
+async function timelineGeometry(page) {
+  return page.evaluate(() => {
+    const container = document.querySelector("#blocks-timeline-scroll");
+    const track = document.querySelector("#blocks-timeline-body tr .blocks-track");
+    return {
+      trackWidth: Math.round(track.getBoundingClientRect().width),
+      containerWidth: container.clientWidth,
+      tableWidth: container.scrollWidth,
+      bodyScrollWidth: document.body.scrollWidth,
+      innerWidth: window.innerWidth,
+    };
+  });
+}
+
+// The track's width is its own journey, ahead of the serial ones: the wide
+// frame exists so the timeline gets room, and a track that falls short must
+// not stop the journeys that follow from running.
+test.describe("advanced Blocks timeline track at 1440x1000", () => {
+  test.use({ viewport: DESKTOP });
+
+  test("the wide frame leaves the track at least 700 px", async ({ page }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page);
+    await openBlocks(page, versionId);
+
+    const geometry = await timelineGeometry(page);
+    expect(geometry.trackWidth).toBeGreaterThanOrEqual(TRACK_MIN_PX);
+  });
+});
+
 test.describe("advanced Blocks page at 1440x1000", () => {
   test.use({ viewport: DESKTOP });
   // The journeys share one seeded database and each writes; running them out of
   // order would read a day the previous one had already changed.
   test.describe.configure({ mode: "serial" });
 
-  test("the default day type shows both seeded problems and the wide track", async ({
+  test("the default service day shows both seeded problems and does not scroll sideways", async ({
     page,
   }, testInfo) => {
     await logIn(page);
     const versionId = await versionIdFor(page);
     await openBlocks(page, versionId, "", BLOCKS.length);
 
-    // The largest day type is the default, and it is the one that derives
-    // {WKDY, SCHOOL} — 126 dates over the seeded term. The select's own value
+    // The largest service day is the default, and it is the one that derives
+    // {WKDY, SCHOOL} — 126 days over the seeded term. The select's own value
     // is the derived key, so the option's label is what a reader reads.
     const day = await page
       .locator("#blocks-day")
       .evaluate((el) => el.selectedOptions[0].textContent.trim());
-    expect(day).toBe(`${DAY_LARGEST} · 126 dates`);
+    expect(day).toBe(`${DAY_LARGEST} · 126 days`);
 
-    const dayTypes = await page.evaluate(() =>
+    const serviceDays = await page.evaluate(() =>
       [...document.querySelectorAll("#blocks-day option")].map((o) =>
         o.textContent.trim(),
       ),
     );
-    expect(dayTypes).toEqual([
-      `${DAY_LARGEST} · 126 dates`,
-      `${DAY_WEEKDAY} · 84 dates`,
-      "Saturday · 41 dates",
+    expect(serviceDays).toEqual([
+      `${DAY_LARGEST} · 126 days`,
+      `${DAY_WEEKDAY} · 84 days`,
+      "Saturday · 41 days",
     ]);
 
     const rows = await blockRows(page);
     expect(rows.map((row) => row.block)).toEqual(BLOCKS);
-    // Every weekday block resolves to Main and a Cutaway (INV-9 / R4).
+    // Every weekday block resolves to Main and a Cutaway.
     for (const row of rows) {
       expect(row.garage).toBe("Main · Cutaway");
     }
-    // The two problems the state is named for: 101 cannot reach Market Square
+    // The two problems the plan is named for: 101 cannot reach Market Square
     // and 104 runs route 30, which needs the 35-ft diesel, on a Cutaway.
     expect(statusOf(rows, BLOCK_CANNOT_REACH)).toBe("Can't reach");
     expect(statusOf(rows, BLOCK_WRONG_TYPE)).toBe("Wrong type");
     expect(statusOf(rows, BLOCK_OPERATOR_CHANGE)).toBe("No operator change");
     expect(statusOf(rows, "103")).toBe("No problems");
 
-    // The wide workspace frame: the track is at least the reference's 769 px at
-    // 1440, and neither the container nor the page scrolls sideways.
-    const geometry = await page.evaluate(() => {
-      const container = document.querySelector("#blocks-timeline-scroll");
-      const track = document.querySelector(
-        "#blocks-timeline-body tr .blocks-track",
-      );
-      return {
-        trackWidth: Math.round(track.getBoundingClientRect().width),
-        containerWidth: container.clientWidth,
-        tableWidth: container.scrollWidth,
-        bodyScrollWidth: document.body.scrollWidth,
-        innerWidth: window.innerWidth,
-      };
-    });
-    expect(geometry.trackWidth).toBeGreaterThanOrEqual(TRACK_MIN_PX);
+    // Neither the scroll container nor the page scrolls sideways at the default
+    // scale.
+    const geometry = await timelineGeometry(page);
     expect(geometry.containerWidth).toBe(geometry.tableWidth);
     expect(await bodyFitsViewport(page)).toBe(true);
 
@@ -340,8 +362,8 @@ test.describe("advanced Blocks page at 1440x1000", () => {
     ).toContainText("Vehicles");
 
     tour.default = {
-      dayType: day,
-      dayTypes: dayTypes.length,
+      serviceDay: day,
+      serviceDays: serviceDays.length,
       blocks: rows.length,
       cannotReach: statusOf(rows, BLOCK_CANNOT_REACH),
       wrongType: statusOf(rows, BLOCK_WRONG_TYPE),
@@ -560,7 +582,7 @@ test.describe("advanced Blocks page at 1440x1000", () => {
     await openBlocks(page, versionId);
 
     // The Blocks tab's own checkboxes, separate from the Unassigned panel's
-    // trip selection (AC-42), and a selection that names blocks only.
+    // trip selection, and a selection that names blocks only.
     await page.locator("[data-role='select-block'][data-block='101']").click();
     await expect(page.locator("#block-selection-bar")).toBeVisible();
     await page.locator("[data-role='select-block'][data-block='102']").click();
@@ -599,13 +621,14 @@ test.describe("advanced Blocks page at 1440x1000", () => {
       expect(selected.has(move.current)).toBe(true);
       expect(move.change).toBe("moved");
     }
-    // R11: a generated block continues after the highest number in use, so the
+    // A generated block continues after the highest number in use, so the
     // proposal introduces 105 rather than reusing a free low number.
     const proposed = preview.moves.map((move) => move.proposed);
     expect(proposed.every((block) => Number(block) > 104)).toBe(true);
     expect(proposed).toContain("105");
 
-    // The two weekday day types are both named, and the current one is marked.
+    // The two weekday service days are both named, and the current one is
+    // marked.
     expect(preview.effects).toHaveLength(2);
     expect(preview.effects.filter((effect) => effect.selected)).toHaveLength(1);
     expect(preview.effects[0].heading).toContain("Current view");
@@ -636,7 +659,7 @@ test.describe("advanced Blocks page at 1440x1000", () => {
     const applied = await page.locator("[data-role='suggestion-applied']").innerText();
     expect(applied).toContain("Suggestion applied.");
     expect(applied).toContain(`${preview.moveCount} trips changed block`);
-    // The message names every day type the write reached.
+    // The message names every service day the write reached.
     expect(applied).toContain(DAY_LARGEST);
     expect(applied).toContain(DAY_WEEKDAY);
 
@@ -657,13 +680,13 @@ test.describe("advanced Blocks page at 1440x1000", () => {
       scope: "Selected blocks",
       moves: preview.moveCount,
       proposedBlocks: [...new Set(proposed)].sort(),
-      dayTypes: preview.effects.length,
+      serviceDays: preview.effects.length,
       applied: applied.replace(/\s+/g, " ").trim().slice(0, 140),
       blocksAfter: saved.map((row) => row.block),
     };
   });
 
-  test("a preview of the unassigned trips names both weekday day types and applies", async ({
+  test("a preview of the unassigned trips names both weekday service days and applies", async ({
     page,
   }, testInfo) => {
     await logIn(page);
@@ -699,7 +722,7 @@ test.describe("advanced Blocks page at 1440x1000", () => {
     expect(preview.scopeNote).toContain("F30 repeats without individual departures");
     expect(preview.moves.map((move) => move.trip)).not.toContain("F30");
 
-    // Both weekday day types are listed, because the pool's trips run on the
+    // Both weekday service days are listed, because the pool's trips run on the
     // shared Weekday calendar.
     expect(preview.effects).toHaveLength(2);
     expect(preview.effects[0].heading).toContain(DAY_LARGEST);
@@ -720,19 +743,19 @@ test.describe("advanced Blocks page at 1440x1000", () => {
     expect(applied).toContain(DAY_WEEKDAY);
 
     // The pool is one shorter per applied trip.
-    await expect(page.locator("#panel-pool")).toContainText("Unassigned · 1");
+    await expect(page.locator("#panel-pool")).toContainText(/Unassigned trips\s+1\b/);
 
     tour.pool = {
       poolTrips: 3,
       frequencyTrip: "F30 stays unassigned",
       moves: preview.moves,
-      dayTypes: preview.effects.map((effect) => effect.heading),
+      serviceDays: preview.effects.map((effect) => effect.heading),
       newProblems,
       applied: applied.replace(/\s+/g, " ").trim().slice(0, 140),
     };
   });
 
-  test("rebuilding the day type asks before replacing hand-tuned blocks", async ({
+  test("rebuilding the service day asks before replacing hand-tuned blocks", async ({
     page,
   }, testInfo) => {
     await logIn(page);
@@ -744,9 +767,9 @@ test.describe("advanced Blocks page at 1440x1000", () => {
     await previewSuggestion(page);
     const preview = await panelState(page);
 
-    expect(preview.scopeLine).toBe(`${DAY_LARGEST} · Rebuild the day type`);
+    expect(preview.scopeLine).toBe(`${DAY_LARGEST} · Rebuild the service day`);
     expect(preview.moveCount).toBeGreaterThan(0);
-    expect(preview.scopeNote).toContain("Every scheduled trip in this day type");
+    expect(preview.scopeNote).toContain("Every scheduled trip in this service day");
     expect(preview.applyLabel).toBe("Apply suggestion");
     await capture(page, testInfo, "advanced-preview-replace-1440", {
       fullPage: true,
@@ -764,7 +787,7 @@ test.describe("advanced Blocks page at 1440x1000", () => {
     expect(title).toBe(`Replace blocks for ${preview.moveCount} trips?`);
     expect(confirmLabel).toBe(`Replace blocks for ${preview.moveCount} trips`);
     expect(cancelLabel).toBe("Keep current blocks");
-    // The body names the day types the write reaches.
+    // The body names the service days the write reaches.
     const body = await page.locator("#suggestion-replace-summary").innerText();
     expect(body).toContain(DAY_LARGEST);
     expect(body).toContain(DAY_WEEKDAY);
@@ -784,7 +807,7 @@ test.describe("advanced Blocks page at 1440x1000", () => {
     await expect(page.locator("#blocks-summary-counts")).toContainText("Blocks");
 
     tour.replace = {
-      scope: "Rebuild the day type",
+      scope: "Rebuild the service day",
       moves: preview.moveCount,
       title,
       confirmLabel,
@@ -809,7 +832,8 @@ test.describe("advanced Blocks page at 1440x1000", () => {
     expect(before.applyDisabled).toBe(false);
 
     // A second session, logged in as the same editor, changes a driving time
-    // the preview was built on. INV-7's fingerprint is what notices.
+    // the preview was built on. The plan's fingerprint of its inputs is what
+    // notices.
     const secondContext = await browser.newContext({ viewport: DESKTOP });
     const second = await secondContext.newPage();
     await logIn(second);
@@ -857,7 +881,7 @@ test.describe("advanced Blocks page at 1440x1000", () => {
     await expect(page.locator("#discard-suggestion")).toBeEnabled();
     // The preview is kept, so the reader can still read what it proposed.
     expect(after.moveCount).toBe(before.moveCount);
-    await expect(page.locator("#suggestion-moves-table tr")).toHaveCount(
+    await expect(page.locator("#suggestion-moves-table tbody tr")).toHaveCount(
       before.moveCount,
     );
     await expect(page.locator("[data-role='suggestion-applied']")).toHaveCount(0);
@@ -925,7 +949,7 @@ test.describe("advanced Blocks List view at 375x812", () => {
       expect(entry.text).toBe(`${entry.km.toFixed(1)} km with riders`);
     }
 
-    // The day type and the count strip survive the narrow frame, and the page
+    // The service day and the count strip survive the narrow frame, and the page
     // does not scroll sideways.
     await expect(page.locator("#blocks-day")).toBeVisible();
     await expect(page.locator("#blocks-summary-counts")).toContainText("Blocks");
@@ -950,10 +974,10 @@ test.describe("advanced Blocks List view at 375x812", () => {
 });
 
 // The reference prototype, rendered from its own file beside production for the
-// states the journey reproduces. The assertions come from the acceptance
-// criteria and the seed, not from the prototype's pixels, so this journey
-// records the side-by-side captures only; it is skipped when the gitignored
-// `.specs/` workspace is not linked into the worktree.
+// states the journey reproduces. The assertions come from the seed, not from
+// the prototype's pixels, so this journey records the side-by-side captures
+// only; it is skipped when the gitignored `.specs/` workspace is not linked into
+// the worktree.
 test.describe("reference prototype captures", () => {
   test.skip(
     () => !existsSync(REFERENCE_PROTOTYPE),
@@ -996,7 +1020,7 @@ test.describe("reference prototype captures", () => {
 test.describe("qa tour", () => {
   test.skip(
     () => !existsSync(SPEC_PACKAGE),
-    "spec package not present",
+    ".specs workspace not present",
   );
   test.use({ viewport: DESKTOP });
 
@@ -1005,32 +1029,31 @@ test.describe("qa tour", () => {
       tour[key] === undefined ? "(not measured)" : JSON.stringify(tour[key]);
 
     const markdown = [
-      "# Advanced Blocks browser QA tour (EV-9, step 47)",
+      "# Advanced Blocks browser QA tour",
       "",
       "Entrypoint: `/gtfs/<version>/blocks` for the published **Browser Advanced",
       `Blocks Version** seeded by \`test/support/browser_seed.exs\` (blocks 101–104`,
-      "on the {WKDY, SCHOOL} day type, a two-trip pool plus the frequency trip",
+      "on the {WKDY, SCHOOL} service day, a two-trip pool plus the frequency trip",
       "F30, two garages, two vehicle types and one relief point at Market",
       "Square).",
       "",
       "## Setup",
       "",
       "```sh",
-      "MIX_TEST_PARTITION=_adv07_browser mise run prepare:browser",
-      "CI=true npm --prefix assets run test:browser -- e2e/blocks_advanced.spec.js",
+      "bin/test-browser e2e/blocks_advanced.spec.js",
       "```",
       "",
-      "The journey runs Chromium against a local test Phoenix server on port 4002",
-      "(`BROWSER_E2E=true`), one worker and no retries, against the database reset",
-      "and seeded by `mise run prepare:browser` in this lane's own",
-      "`MIX_TEST_PARTITION`. The journeys are serial and run in the order below,",
-      "because each one writes and the next reads the day it left.",
+      "The journey runs Chromium against a local test Phoenix server on a free port",
+      "(`BROWSER_E2E=true`), one worker and no retries, against a throwaway Postgres",
+      "that `bin/test-browser` creates, migrates and seeds for the run. The",
+      "journeys are serial and run in the order below, because each one writes and",
+      "the next reads the day it left.",
       "",
       "## Scenarios and expected outcomes",
       "",
       "| Scenario | Expected outcome | Measured |",
       "|---|---|---|",
-      "| Default day type (Weekday + School days) | Block 101 reads Can’t reach, block 104 Wrong type, block 102 No operator change, and the timeline track is at least 760 px wide at 1440 | " +
+      "| Default service day (School days + Weekday) | Block 101 reads Can’t reach, block 104 Wrong type and block 102 No operator change; neither the timeline nor the page scrolls sideways, and the track is at least 700 px wide | " +
         value("default"),
       " |",
       "| Plan summary | The fleet table reads Main · Cutaway, needed 4, listed 12, and the operator-change section names block 102 | " +
@@ -1042,13 +1065,13 @@ test.describe("qa tour", () => {
       "| Enter 9 min for Valley College → Market Square | The row’s source reads Entered, the estimated count drops by one, and block 101 still reads Can’t reach because 9 exceeds the 8-minute gap | " +
         value("driving"),
       " |",
-      "| Select blocks 101 and 102, then Rebuild selected blocks | The preview moves only their trips, proposes block 105, names both weekday day types, and applies | " +
+      "| Select blocks 101 and 102, then Rebuild selected blocks | The preview moves only their trips, proposes block 105, names both weekday service days, and applies | " +
         value("selected"),
       " |",
-      "| Preview the unassigned trips | Two moves, both added, F30 left out, both weekday day types named, and the apply succeeds | " +
+      "| Preview the unassigned trips | Two moves, both added, F30 left out, both weekday service days named, and the apply succeeds | " +
         value("pool"),
       " |",
-      "| Rebuild the day type | Apply asks “Replace blocks for N trips?” with “Keep current blocks” as the cancel action, and the confirmed apply succeeds | " +
+      "| Rebuild the service day | Apply asks “Replace blocks for N trips?” with “Keep current blocks” as the cancel action, and the confirmed apply succeeds | " +
         value("replace"),
       " |",
       "| A second editor enters a driving time with a preview open | Apply reports the preview is out of date, disables itself with a printed reason, and keeps the preview | " +
@@ -1061,13 +1084,13 @@ test.describe("qa tour", () => {
       "## Automated coverage",
       "",
       "- `assets/e2e/blocks_advanced.spec.js` — the journeys above, the measured",
-      "  layout and the reference captures.",
-      "- `assets/playwright.config.js` — Chromium, one worker, no retries, and the",
-      "  local test server on port 4002.",
+      "  layout, the timeline track width and the reference captures.",
+      "- `assets/playwright.config.js` — Chromium, one worker, no retries, and a",
+      "  local test server.",
       "- `test/support/browser_seed.exs` — the “Browser Advanced Blocks Version”",
       "  fixture the journey reads.",
-      "- `assets/e2e/blocks.spec.js` — unchanged: the basic Blocks journey on the",
-      "  separate “Browser Blocks Version”.",
+      "- `assets/e2e/blocks.spec.js` — the basic Blocks journey on the separate",
+      "  “Browser Blocks Version”.",
       "",
       "## Prototype reference",
       "",
@@ -1089,10 +1112,8 @@ test.describe("qa tour", () => {
     expect(readFileSync(evidencePath, "utf8")).toContain(
       "Advanced Blocks browser QA tour",
     );
-    expect(readFileSync(evidencePath, "utf8")).toContain(
-      "mise run prepare:browser",
-    );
-    // Every journey the card names contributed its own measurements.
+    expect(readFileSync(evidencePath, "utf8")).toContain("bin/test-browser");
+    // Every journey contributed its own measurements.
     for (const key of [
       "default",
       "planSummary",
