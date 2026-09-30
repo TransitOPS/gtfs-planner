@@ -650,7 +650,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   `:busy`). Inside, in the Schedules lock order:
   `Calendars.lock_service_for_reference!/3` → `lock_published_route!/2` →
   `lock_pattern!/2` for every pattern of the route in the direction, ascending
-  UUID → `Blocking.lock_blocking!/1` when the input maps a Block column →
+  UUID → `Blocking.lock_blocking!/1` →
   trips of the route, calendar and direction `FOR UPDATE` ascending UUID.
   The scope then reloads from locked state (`read_paste_scope/4`) and the
   review rebuilds from it (`TimetablePaste.review/2`): a fingerprint mismatch
@@ -714,7 +714,11 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
     lock_direction_patterns!(route, direction)
 
-    if paste_maps_block_column?(input), do: Blocking.lock_blocking!(version_id)
+    # Every paste joins spec 05's block guarantee (R16), whether or not its
+    # input maps a Block column: deciding from the raw text would have to
+    # repeat the column matcher's header rules, and the lock only contends
+    # with a concurrent Blocks writer on this version.
+    Blocking.lock_blocking!(version_id)
 
     locked_trips =
       lock_direction_trips!(organization_id, version_id, route.route_id, service_id, direction)
@@ -1304,48 +1308,6 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   defp paste_timing_entries(plan), do: attr(plan, :new_timings) || []
 
   defp paste_timing_names(plan), do: Enum.map(paste_timing_entries(plan), &attr(&1, :name))
-
-  # The blocking advisory lock joins spec 05's block guarantee (R16): any paste
-  # whose input maps a Block column — an explicit "block_id" override, carried
-  # block rows from prepare, or a Block header cell in either orientation —
-  # takes Blocking.lock_blocking!/1 before the trip row locks. Conservative
-  # over-locking only contends briefly with a concurrent Blocks writer.
-  defp paste_maps_block_column?(input) when is_map(input) do
-    overrides = attr(input, :overrides)
-    block_rows = attr(input, :block_rows)
-
-    override? =
-      is_map(overrides) and
-        Enum.any?(Map.values(overrides), &(&1 == :block_id or &1 == "block_id"))
-
-    rows? = is_list(block_rows) and block_rows != []
-
-    override? or rows? or paste_block_header?(attr(input, :text))
-  end
-
-  defp paste_maps_block_column?(_input), do: false
-
-  defp paste_block_header?(text) when is_binary(text) do
-    lines = text |> String.split(~r/\r\n|\n|\r/, trim: true) |> Enum.take(51)
-
-    first_row = lines |> List.first("") |> split_paste_cells()
-    first_column = Enum.map(lines, &(split_paste_cells(&1) |> List.first("")))
-
-    Enum.any?(first_row ++ first_column, &paste_block_keyword?/1)
-  end
-
-  defp paste_block_header?(_text), do: false
-
-  defp split_paste_cells(line) do
-    if String.contains?(line, "\t"), do: String.split(line, "\t"), else: String.split(line, ",")
-  end
-
-  defp paste_block_keyword?(cell) when is_binary(cell) do
-    normalized = cell |> String.trim() |> String.trim("\"") |> String.downcase()
-    normalized in ["block", "block #", "block id"]
-  end
-
-  defp paste_block_keyword?(_cell), do: false
 
   defp read_route_schedule(organization_id, version_id, route_id, filters) do
     route = published_route!(organization_id, version_id, route_id)
