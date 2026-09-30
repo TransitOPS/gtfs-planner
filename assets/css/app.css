@@ -2185,6 +2185,20 @@ dialog[role="alertdialog"][open] > div > div {
   }
 }
 
+/* The operator's plan is background to the points and pathways drawn over it, so
+   it is faded to 60% and sits on a gray ground that shows where the sheet ends.
+   The overlay is a separate SVG and stays at full strength. The value is fixed:
+   a faint scan may need a stronger one, and the fix for that is a per-plan or
+   user control, not a different constant. The ground is halfway between the
+   page canvas and base-300, so a white sheet reads as lighter than it. */
+#diagram-page svg[data-canvas-key] {
+  background-color: color-mix(in oklab, var(--color-base-300) 50%, var(--color-canvas));
+}
+
+#diagram-page svg[data-canvas-key] > image {
+  opacity: 0.6;
+}
+
 /* The pan buttons exist for keyboard operators: they appear once focus is inside
    the plan, and mouse users pan with Shift-drag or the middle button. */
 #diagram-page #pan-cluster {
