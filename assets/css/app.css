@@ -695,6 +695,32 @@ body {
   border-color: var(--color-warning-line);
 }
 
+/* The Connections list's setting marks. They are the same three states the gap
+   chips and the chart key name, in the same order, in the same three grounds — a
+   mark in the list and a chip on the chart mean one thing. Each mark is an icon
+   beside its count with the state's words for assistive technology, so colour is
+   never the only difference between them. */
+#blocks-page .connections-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 0.25rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+#blocks-page .connections-mark-stay {
+  color: var(--color-cyan-800);
+}
+
+#blocks-page .connections-mark-reboard {
+  color: var(--color-navy-700);
+}
+
+#blocks-page .connections-mark-review {
+  color: var(--color-warning-fg);
+}
+
 /* The minutes print only when the gap's own bar is at least 26px wide. */
 #blocks-page .blocks-gap-label {
   display: none;

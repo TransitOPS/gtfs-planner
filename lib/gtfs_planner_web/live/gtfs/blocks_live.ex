@@ -293,15 +293,21 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # is readable without paging, and one chip is built per active filter.
   @connections_page_size 50
 
-  # The four values the view's Show filter carries. `review` keeps every
-  # connection needing review whatever its setting, which is why it is one of the
-  # four and not a fifth setting.
-  @connection_settings %{
-    "none" => "Not stated",
-    "stay" => "Riders stay on board",
-    "reboard" => "Riders must re-board",
-    "review" => "Needs review"
-  }
+  # The four values the view's Show filter carries, in the order its control
+  # reads them. `review` keeps every connection needing review whatever its
+  # setting, which is why it is one of the four and not a fifth setting. The
+  # whitelist is the same list keyed by value, so the control, the URL and the
+  # chips cannot name a filter the handler would not accept.
+  @connection_setting_options [
+    {"Not stated", "none"},
+    {"Riders stay on board", "stay"},
+    {"Riders must re-board", "reboard"},
+    {"Needs review", "review"}
+  ]
+
+  @connection_settings Map.new(@connection_setting_options, fn {label, value} ->
+                         {value, label}
+                       end)
 
   # The Plan summary's chart counts the same 15-minute bins as the day load's own
   # `bins`, so the width is one constant rather than two that could drift.
@@ -454,6 +460,29 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       gpage: 1
     })
   end
+
+  # One chip's remove control. It drops only the filter the chip names and
+  # returns to the first page, which is the same shape a change to that control
+  # has: the open group may be one the remaining filters do not carry. A kind the
+  # view does not own removes nothing.
+  def handle_event("remove_connection_filter", %{"filter" => kind}, socket) do
+    case cleared_filter(kind) do
+      nil -> {:noreply, socket}
+      overrides -> patch(socket, overrides)
+    end
+  end
+
+  def handle_event("remove_connection_filter", _params, socket), do: {:noreply, socket}
+
+  def handle_event("clear_connection_filters", _params, socket) do
+    patch(socket, %{setting: nil, cq: nil, route: nil, group: nil, gpage: 1})
+  end
+
+  def handle_event("paginate_groups", %{"page" => page}, socket) do
+    patch(socket, %{gpage: page_number(page)})
+  end
+
+  def handle_event("paginate_groups", _params, socket), do: {:noreply, socket}
 
   def handle_event("open_group", %{"group" => group}, socket) do
     patch(socket, %{group: blank_to_nil(group)})
@@ -1470,6 +1499,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   defp connection_setting(_value), do: nil
 
+  # The one filter a chip's kind names, plus the group and the page a narrower
+  # list would leave behind. A kind the view does not own clears nothing: a
+  # crafted `remove_connection_filter` must not be able to drop a filter the
+  # chips never offered.
+  defp cleared_filter("setting"), do: %{setting: nil, group: nil, gpage: 1}
+  defp cleared_filter("route"), do: %{route: nil, group: nil, gpage: 1}
+  defp cleared_filter("q"), do: %{cq: nil, group: nil, gpage: 1}
+  defp cleared_filter(_kind), do: nil
+
   defp toggled_dir(%{sort: sort, dir: :asc}, sort), do: :desc
   defp toggled_dir(_state, _sort), do: :asc
 
@@ -1727,11 +1765,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # (CR-1, CR-4).
   #
   # `groups` is the page of filtered groups, `page`/`pages` the pager's own
-  # numbers, `count` how many connections survived the filters and `total` how
-  # many the day holds, `places` the places those groups are decided at, and
-  # `group` the selected group found by token. A token the filtered list does not
-  # carry — a stale link, a group the filter dropped, a crafted value — selects
-  # nothing, so the list renders rather than an empty group panel.
+  # numbers, `page_size` the size it paged at, `group_count` how many groups the
+  # filters kept before paging, `count` how many connections survived the filters
+  # and `total` how many the day holds, `places` the places those groups are
+  # decided at, and `group` the selected group found by token. A token the
+  # filtered list does not carry — a stale link, a group the filter dropped, a
+  # crafted value — selects nothing, so the list renders rather than an empty
+  # group panel.
   defp connections_view(%{day: nil}), do: nil
 
   defp connections_view(assigns) do
@@ -1745,29 +1785,47 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       groups: paged.groups,
       page: paged.page,
       pages: paged.pages,
+      page_size: @connections_page_size,
+      group_count: length(filtered),
       count: Enum.sum(Enum.map(filtered, &length(&1.connections))),
       total: length(connections),
       places: Connections.places(filtered),
       group: Enum.find(filtered, &(&1.token == state.group)),
-      chips: connections_chips(filter)
+      chips: connections_chips(state)
     }
   end
 
   # The filters the view applies, in the shape `Blocking.Connections.filter/2`
   # reads. An absent filter is `nil` rather than a blank string, which is what
-  # keeps the URL quiet and the filter wide.
+  # keeps the URL quiet and the filter wide. The Show control and the URL both
+  # carry the setting as one of `@connection_settings`' four strings, so it is
+  # named here as the atom `filter/2` matches on — a filter that never narrows
+  # because it compared a string with an atom is the one thing the control must
+  # not be able to do.
   defp connections_filter(state) do
-    %{setting: state.setting, route: state.route, q: state.cq}
+    %{setting: connection_setting_atom(state.setting), route: state.route, q: state.cq}
   end
+
+  defp connection_setting_atom(nil), do: nil
+  defp connection_setting_atom("none"), do: :none
+  defp connection_setting_atom("stay"), do: :stay
+  defp connection_setting_atom("reboard"), do: :reboard
+  defp connection_setting_atom("review"), do: :review
+  defp connection_setting_atom(_value), do: nil
 
   # One chip per active filter, in the order the Show, Route and Find controls
   # read. Each carries the value that would clear it, so the panel's remove
   # control has one source for both.
-  defp connections_chips(filter) do
+  #
+  # The chips read the URL state rather than the filter map `connections_filter/1`
+  # built, because a chip names what the reader chose — "Needs review" is the
+  # control's own label for the `"review"` the URL carries, not the atom
+  # `Blocking.Connections` matches on.
+  defp connections_chips(state) do
     [
-      connection_chip(:setting, filter.setting, Map.get(@connection_settings, filter.setting)),
-      connection_chip(:route, filter.route, "Route #{filter.route}"),
-      connection_chip(:q, filter.q, filter.q)
+      connection_chip(:setting, state.setting, Map.get(@connection_settings, state.setting)),
+      connection_chip(:route, state.route, "Route #{state.route}"),
+      connection_chip(:q, state.cq, state.cq)
     ]
     |> Enum.reject(&is_nil/1)
   end
@@ -4063,6 +4121,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       # per-connection setting entry reaches the timeline.
       connections_all: connections,
       connection_settings: connection_settings(connections),
+      # The Show filter's four values in control order, so the Connections
+      # toolbar names the same filters the URL whitelist and the chips do.
+      connection_setting_options: @connection_setting_options,
       min_layover_minutes: day.settings.min_layover_minutes,
       # The whole settings row, so the Block rules drawer renders every
       # field from the day load rather than a second read.
@@ -4163,6 +4224,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       in_seat: %{},
       connections_all: @empty_connections,
       connection_settings: %{},
+      connection_setting_options: @connection_setting_options,
       trip_view: nil,
       gap_view: nil,
       connection_check: nil,
@@ -4809,6 +4871,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 max_piece_minutes={@max_piece_minutes}
                 routes={@routes}
                 connection_settings={@connection_settings}
+                connection_setting_options={@connection_setting_options}
                 connections={@connections}
                 selected_ids={@selection}
                 selected_block_ids={@block_selection}
