@@ -5664,6 +5664,53 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Creates an empty line on a published version, numbered one above the version's
+  highest line number (1 when it has none).
+
+  A new line has no days: a day off is the absence of a row, so this writes one
+  line and nothing else. The number is read and taken inside the version and
+  blocking locks, so two sessions adding a line at once get two different
+  numbers rather than one line and a refusal. A foreign or unpublished version
+  is `{:error, :not_found}` with nothing written.
+  """
+  @spec create_roster_line(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, %{id: Ecto.UUID.t(), line_number: pos_integer()}} | {:error, :not_found}
+  def create_roster_line(organization_id, gtfs_version_id) do
+    Rosters.create_line(organization_id, gtfs_version_id)
+  end
+
+  @doc """
+  Clears one weekday of a line, returning its run to open work.
+
+  Clearing deletes the `(line, weekday)` row and touches nothing else, so the
+  run it held is no longer held and the composition reports it open again. A day
+  that already holds nothing is `{:ok, :already_off}`. A line id from another
+  version, another organization, or a malformed one is `{:error, :not_found}`
+  and clears nothing.
+  """
+  @spec clear_roster_slot(Ecto.UUID.t(), Ecto.UUID.t(), term(), 1..7) ::
+          {:ok, :cleared | :already_off} | {:error, :not_found}
+  def clear_roster_slot(organization_id, gtfs_version_id, line_id, weekday) do
+    Rosters.clear_slot(organization_id, gtfs_version_id, line_id, weekday)
+  end
+
+  @doc """
+  Deletes a line with all of its days and its recorded pick.
+
+  The days go with the line through the foreign key, so every run it held returns
+  to open work and the operator is left holding nothing. `run_days` is how many
+  days the line had, read inside the lock, which is what the confirmation names.
+  A foreign or malformed line id, or an unpublished version, is
+  `{:error, :not_found}` and deletes nothing.
+  """
+  @spec delete_roster_line(Ecto.UUID.t(), Ecto.UUID.t(), term()) ::
+          {:ok, %{line_number: pos_integer(), run_days: non_neg_integer()}}
+          | {:error, :not_found}
+  def delete_roster_line(organization_id, gtfs_version_id, line_id) do
+    Rosters.delete_line(organization_id, gtfs_version_id, line_id)
+  end
+
+  @doc """
   Returns one entry per route of a version, with its stored home garage and
   required vehicle type (`nil` when the planner has set neither).
 

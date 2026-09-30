@@ -149,12 +149,128 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   @spec update_roster_settings(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
           {:ok, roster_settings()} | {:error, Ecto.Changeset.t() | :not_found}
   def update_roster_settings(organization_id, gtfs_version_id, attrs) do
-    case Repo.transaction(fn ->
-           write_roster_settings!(organization_id, gtfs_version_id, attrs)
-         end) do
-      {:ok, result} -> result
-      {:error, reason} -> {:error, reason}
+    with_roster_lock(organization_id, gtfs_version_id, fn ->
+      write_roster_settings!(organization_id, gtfs_version_id, attrs)
+    end)
+  end
+
+  @doc """
+  Creates an empty line on a published version.
+
+  The new line has no days: a day off is the absence of a `roster_line_days` row,
+  so there is nothing to write for one and an "Add line" click costs one row. The
+  number is the version's highest plus one, and 1 when the version has no line —
+  numbering follows the lines that exist, so deleting the last line leaves a gap
+  that is never reused within the version's life.
+
+  The number is read inside the lock, alongside the insert that takes it, so two
+  sessions adding a line at the same time get two different numbers rather than
+  one line and a unique-index refusal (INV-1).
+
+  Returns `{:error, :not_found}` when the version is unpublished or belongs to
+  another organization, in which case nothing is written.
+  """
+  @spec create_line(Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, %{id: Ecto.UUID.t(), line_number: pos_integer()}} | {:error, :not_found}
+  def create_line(organization_id, gtfs_version_id) do
+    with_roster_lock(organization_id, gtfs_version_id, fn ->
+      # The match is the invariant, not a guess: the number was read under the
+      # lock that every other roster writer takes, so `roster_lines`' own unique
+      # index on `(organization_id, gtfs_version_id, line_number)` has nothing
+      # left to refuse and a failure here would be a defect, not a refusal. The
+      # transaction aborts and writes nothing if it ever were one.
+      {:ok, line} =
+        %RosterLine{
+          organization_id: organization_id,
+          gtfs_version_id: gtfs_version_id,
+          line_number: next_line_number(organization_id, gtfs_version_id)
+        }
+        |> RosterLine.changeset(%{})
+        |> Repo.insert()
+
+      {:ok, %{id: line.id, line_number: line.line_number}}
+    end)
+  end
+
+  @doc """
+  Clears one weekday of a line, returning its run to open work.
+
+  A day off is the absence of a row, so clearing is a delete of the
+  `(line, weekday)` row and nothing else: no run, no derived state and no other
+  line is touched. The run the day held stops being held and reappears in the
+  composition's open work, which is what the page redraws from.
+
+  A weekday that already holds no row is `{:ok, :already_off}` rather than an
+  error — clearing an empty day reaches the state it was asked for, and the
+  drawer can answer a second click without inventing a failure.
+
+  Returns `{:error, :not_found}` when the version is unpublished, belongs to
+  another organization, or names no line of that version under the given
+  organization. A line id from another version, another organization or a
+  malformed one is `:not_found` too, never a cross-tenant write.
+  """
+  @spec clear_slot(Ecto.UUID.t(), Ecto.UUID.t(), term(), 1..7) ::
+          {:ok, :cleared | :already_off} | {:error, :not_found}
+  def clear_slot(organization_id, gtfs_version_id, line_id, weekday) do
+    with_roster_lock(organization_id, gtfs_version_id, fn ->
+      with {:ok, line} <- fetch_line(organization_id, gtfs_version_id, line_id) do
+        clear_weekday(line, weekday)
+      end
+    end)
+  end
+
+  # Scoped by the line the caller's organization and version own, and by the
+  # weekday: no other line's row is reachable from here, and the count is what
+  # distinguishes a cleared day from one that was already off.
+  defp clear_weekday(line, weekday) do
+    case Repo.delete_all(
+           from(d in RosterLineDay,
+             where: d.roster_line_id == ^line.id and d.weekday == ^weekday
+           )
+         ) do
+      {1, _deleted} -> {:ok, :cleared}
+      {0, _deleted} -> {:ok, :already_off}
     end
+  end
+
+  @doc """
+  Deletes a line with all of its days and its recorded pick.
+
+  The days go with the line through the foreign key, so one delete is the whole
+  removal: every run the line held returns to open work, and the pick goes with
+  the row, which is what "deleting a line also removes its recorded pick" means —
+  the operator is left holding nothing and can be given another line.
+
+  `run_days` is the number of `roster_line_days` rows removed, read inside the
+  lock before the delete. The confirm dialog names what is about to go, and a
+  line with no days reports 0 rather than a missing figure.
+
+  Returns `{:error, :not_found}` when the version is unpublished, belongs to
+  another organization, or names no line of that version under the given
+  organization. A foreign or malformed line id is `:not_found` and deletes
+  nothing.
+  """
+  @spec delete_line(Ecto.UUID.t(), Ecto.UUID.t(), term()) ::
+          {:ok, %{line_number: pos_integer(), run_days: non_neg_integer()}}
+          | {:error, :not_found}
+  def delete_line(organization_id, gtfs_version_id, line_id) do
+    with_roster_lock(organization_id, gtfs_version_id, fn ->
+      with {:ok, line} <- fetch_line(organization_id, gtfs_version_id, line_id) do
+        run_days =
+          Repo.one(
+            from(d in RosterLineDay,
+              where: d.roster_line_id == ^line.id,
+              select: count(d.id)
+            )
+          )
+
+        # The days cascade from this one delete, so the count and the removal are
+        # the same statement's worth of work and cannot disagree.
+        {:ok, _deleted} = Repo.delete(line)
+
+        {:ok, %{line_number: line.line_number, run_days: run_days}}
+      end
+    end)
   end
 
   @doc """
@@ -221,42 +337,108 @@ defmodule GtfsPlanner.Gtfs.Rosters do
     end
   end
 
-  # The version share lock is the first statement of the write transaction, before
-  # the published check, the day-type read and the upsert, and `lock_blocking!/1`
-  # follows it and nothing else, in the blocking writers' order, so this writer
-  # joins the same serialization point as the block writers.
-  defp write_roster_settings!(organization_id, gtfs_version_id, attrs) do
+  # The one lock order every roster writer runs under (INV-1, domain rule 16):
+  # `Versions.lock_for_input_write!/2` takes the published version `FOR SHARE`
+  # before anything else, the publication check follows it, and
+  # `Blocking.lock_blocking!/1` follows that — in the block writers' order, so a
+  # roster write serializes with every other planning-input writer and cannot
+  # slip between a runs rebuild's review and its apply. No second lock is taken.
+  #
+  # Every writer here reads and writes only after these three statements, which is
+  # why the readers and writers below take no lock of their own: the fun is called
+  # with both locks already held. Steps 13 to 16 reach the same helper, so a
+  # fourth writer cannot take the locks in a different order by accident.
+  defp with_roster_lock(organization_id, gtfs_version_id, fun) do
+    case Repo.transaction(fn -> lock_and_run(organization_id, gtfs_version_id, fun) end) do
+      {:ok, result} -> result
+      # `lock_for_input_write!/2` rolls back with `:not_found` for a version of
+      # another organization or one that does not exist, so a foreign version
+      # never reaches the fun and never takes the blocking lock.
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp lock_and_run(organization_id, gtfs_version_id, fun) do
     version = Versions.lock_for_input_write!(organization_id, gtfs_version_id)
 
     if version.publication_status == @published_status do
       :ok = Blocking.lock_blocking!(gtfs_version_id)
-
-      # The stored row is the base rather than a bare struct, so the columns this
-      # writer does not own are present and satisfy the insert of the version's
-      # first row; the upsert then replaces only the roster columns, so writing a
-      # roster rule cannot blank a stored layover, interlining rule or crew rule.
-      stored = Blocking.get_settings(organization_id, gtfs_version_id)
-
-      changeset =
-        %BlockingSetting{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
-        |> Ecto.Changeset.change(Map.take(stored, BlockingSetting.settings_fields()))
-        |> BlockingSetting.roster_changeset(attrs)
-        |> check_day_types(Blocking.list_day_types(organization_id, gtfs_version_id))
-
-      case Repo.insert(changeset,
-             on_conflict: {:replace, @replace_roster_columns},
-             conflict_target: [:organization_id, :gtfs_version_id]
-           ) do
-        {:ok, saved} -> {:ok, roster_values(saved)}
-        # Nothing has been written yet, so the transaction commits this result and
-        # still leaves the stored row exactly as the previous save left it.
-        {:error, invalid} -> {:error, invalid}
-      end
+      fun.()
     else
       # The shared lock takes no publication stance, so the published requirement
-      # stays here, exactly as `Blocking`'s and `Runs`' own settings writers apply
-      # it.
+      # stays here, exactly as `Blocking`'s and `Runs`' own writers apply it.
+      # Nothing has been read or written yet.
       {:error, :not_found}
+    end
+  end
+
+  # The version's highest line number plus one, read inside the lock, or 1 when
+  # the version has no line. Scoped by organization and version on the query, so
+  # a sibling version's numbering cannot push this version's first line to 2.
+  defp next_line_number(organization_id, gtfs_version_id) do
+    highest =
+      Repo.one(
+        from(l in RosterLine,
+          where: l.organization_id == ^organization_id and l.gtfs_version_id == ^gtfs_version_id,
+          select: max(l.line_number)
+        )
+      )
+
+    case highest do
+      nil -> 1
+      number -> number + 1
+    end
+  end
+
+  # The caller's own line, found through the organization and version arguments
+  # rather than a submitted scope. A line id that is malformed, names no row, or
+  # names a line of another version or organization is `:not_found`, so no writer
+  # can reach across a tenant boundary with a well-formed UUID.
+  defp fetch_line(organization_id, gtfs_version_id, line_id) do
+    # `Ecto.UUID.cast/1` answers `:error` for a malformed id, which is the same
+    # refusal as a missing row: never a crash, never a guess.
+    case Ecto.UUID.cast(line_id) do
+      {:ok, cast_id} -> read_line(organization_id, gtfs_version_id, cast_id)
+      :error -> {:error, :not_found}
+    end
+  end
+
+  defp read_line(organization_id, gtfs_version_id, cast_id) do
+    case Repo.one(
+           from(l in RosterLine,
+             where:
+               l.id == ^cast_id and l.organization_id == ^organization_id and
+                 l.gtfs_version_id == ^gtfs_version_id
+           )
+         ) do
+      nil -> {:error, :not_found}
+      line -> {:ok, line}
+    end
+  end
+
+  # The roster settings write, called with both locks already held by
+  # `with_roster_lock/3`.
+  defp write_roster_settings!(organization_id, gtfs_version_id, attrs) do
+    # The stored row is the base rather than a bare struct, so the columns this
+    # writer does not own are present and satisfy the insert of the version's
+    # first row; the upsert then replaces only the roster columns, so writing a
+    # roster rule cannot blank a stored layover, interlining rule or crew rule.
+    stored = Blocking.get_settings(organization_id, gtfs_version_id)
+
+    changeset =
+      %BlockingSetting{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
+      |> Ecto.Changeset.change(Map.take(stored, BlockingSetting.settings_fields()))
+      |> BlockingSetting.roster_changeset(attrs)
+      |> check_day_types(Blocking.list_day_types(organization_id, gtfs_version_id))
+
+    case Repo.insert(changeset,
+           on_conflict: {:replace, @replace_roster_columns},
+           conflict_target: [:organization_id, :gtfs_version_id]
+         ) do
+      {:ok, saved} -> {:ok, roster_values(saved)}
+      # Nothing has been written yet, so the transaction commits this result and
+      # still leaves the stored row exactly as the previous save left it.
+      {:error, invalid} -> {:error, invalid}
     end
   end
 
