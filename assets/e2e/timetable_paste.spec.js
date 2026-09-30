@@ -170,3 +170,55 @@ test.describe("timetable step", () => {
     await expect(page.locator("#paste-source")).toHaveValue(/6:00/);
   });
 });
+
+test.describe("columns step", () => {
+  // Step 24: the pasted grid with a Use-as select per column, status
+  // badges, Confirm match, the Review-trips error summary and the pattern
+  // stop strip. The run is deferred to branch review with the browser
+  // partition, like the timetable-step cases above.
+  const UNMATCHED_PASTE = [
+    "Run\tDowntown\tMill & 5th\tEnd of line",
+    "1215\t9:30\t9:40\t9:58",
+    "1217\t10:00\t10:10\t10:28",
+  ].join("\n");
+
+  const CLOSE_PASTE = [
+    "Trip\tCentrl Station\tMarket Street\tMill Street",
+    "1201\t6:00\t6:04\t6:10",
+    "1203\t7:00\t7:04\t7:10",
+  ].join("\n");
+
+  test("a mismatched paste shows the grid, the strip and the error summary", async ({
+    page,
+  }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", UNMATCHED_PASTE);
+    await page.click("#paste-read");
+    await expect(page.locator("#paste-columns")).toBeVisible();
+    await expect(page.locator("#paste-map-1")).toBeVisible();
+    await expect(page.locator("#paste-columns")).toContainText("No match");
+    await expect(page.locator("#paste-pattern-strip")).toContainText("no column");
+
+    await page.click("#paste-to-review");
+    await expect(page.locator("#paste-column-errors")).toBeVisible();
+    await expect(page.locator("#paste-column-errors")).toContainText(
+      "a decision before review",
+    );
+    await expect(page.locator("#paste-column-errors")).toBeFocused();
+  });
+
+  test("confirming the close match reaches the review", async ({ page }) => {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", CLOSE_PASTE);
+    await page.click("#paste-read");
+    await expect(page.locator("#paste-columns")).toContainText("Close match");
+    await page.click("#paste-confirm-1");
+    await expect(page.locator("#paste-review")).toBeVisible();
+  });
+});

@@ -738,4 +738,196 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       assert view |> element("#paste-source") |> render() =~ "06:00"
     end
   end
+
+  describe "columns step" do
+    # Step 24: the pasted grid with a Use-as select per column, status
+    # badges with one-line reasons, Confirm match for close matches, the
+    # Review-trips error summary, the all-unmatched layout hint and the
+    # pattern stop strip. Select changes diff against the review's
+    # effective values and recompute the review purely from the loaded
+    # scope; confirming or mapping the last issue advances to the review
+    # placeholder.
+    setup :editor_scope
+
+    defp columns_read_params(text) do
+      %{"paste" => %{"text" => text, "layout" => "auto", "header" => "true"}}
+    end
+
+    defp columns_read(view, text) do
+      render_submit(view, "read", columns_read_params(text))
+    end
+
+    defp close_text do
+      "Trip\tPaste Stopp 1\tPaste Stop 2\tPaste Stop 3\n101\t06:00\t06:05\t06:10"
+    end
+
+    defp strip_text do
+      "Trip\tPaste Stop 1\tMystery\tPaste Stop 3\n101\t06:00\t06:05\t06:10"
+    end
+
+    test "a close match shows Confirm match and blocks Review trips until confirmed",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      columns_read(view, close_text())
+
+      assert has_element?(view, "#paste-columns")
+      assert has_element?(view, "#paste-map-1")
+      assert has_element?(view, "#paste-map-1[aria-invalid='true']")
+      assert has_element?(view, "#paste-columns", "Column B")
+      assert has_element?(view, "#paste-columns", "Close match")
+      assert has_element?(view, "#paste-confirm-1", "Confirm match")
+      assert has_element?(view, "#paste-columns", "Check that")
+      assert has_element?(view, "#paste-to-review", "Review trips")
+      # The error summary stays hidden until Review trips is pressed.
+      refute has_element?(view, "#paste-column-errors")
+
+      render_click(view, "to_review")
+
+      assert has_element?(view, "#paste-column-errors", "1 column needs a decision")
+      assert has_element?(view, "#paste-column-errors a[href='#paste-map-1']", "Column B")
+      assert_push_event(view, "focus_scoped_target", %{id: "paste-column-errors"})
+
+      # Confirming the close match clears the last issue and advances.
+      render_click(view, "confirm_column", %{"col" => "1"})
+
+      assert has_element?(view, "#paste-review")
+      refute has_element?(view, "#paste-columns")
+      refute has_element?(view, "#paste-column-errors")
+    end
+
+    test "an out-of-order paste focuses the error summary on Review trips",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      columns_read(view, "Trip\tPaste Stop 2\tPaste Stop 1\n101\t06:00\t06:05")
+
+      assert has_element?(view, "#paste-columns", "Out of order")
+      assert has_element?(view, "#paste-columns", "comes before")
+      assert has_element?(view, "#paste-map-2[aria-invalid='true']")
+
+      render_click(view, "to_review")
+
+      assert has_element?(view, "#paste-column-errors", "out of order")
+      assert_push_event(view, "focus_scoped_target", %{id: "paste-column-errors"})
+      # The columns stay until the order is fixed.
+      assert has_element?(view, "#paste-columns")
+      refute has_element?(view, "#paste-review")
+    end
+
+    test "the strip marks pasted, filled-in and missing-column stops",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      columns_read(view, strip_text())
+
+      assert has_element?(view, "#paste-columns", "No match")
+      assert has_element?(view, "#paste-pattern-strip", "Main · where each column goes")
+      # B maps Paste Stop 1, D maps Paste Stop 3, the middle stop is filled in.
+      assert has_element?(view, "#paste-pattern-strip", "filled in")
+      assert has_element?(view, "#paste-pattern-strip", "Paste Stop 2")
+      assert has_element?(view, "#paste-pattern-strip [title='Column B']", "B")
+      assert has_element?(view, "#paste-pattern-strip [title='Column D']", "D")
+      # The grid shows the pasted header and a sample row.
+      assert has_element?(view, "#columns-table", "Mystery")
+      assert has_element?(view, "#columns-table", "06:05")
+      # The selects offer the pattern stops in order, the trip fields and Not used.
+      assert has_element?(view, "#paste-map-2", "Trip number")
+      assert has_element?(view, "#paste-map-2", "Not used")
+      assert has_element?(view, "#paste-map-2", "1 · Paste Stop 1")
+    end
+
+    test "choosing an earlier occurrence than its neighbour marks Out of order",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+      first_id = Enum.at(paste.main.occurrences, 0).id
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      columns_read(view, strip_text())
+      assert has_element?(view, "#paste-columns", "No match")
+
+      # Mapping column D back onto the first occurrence breaks the order:
+      # B already holds Paste Stop 1.
+      render_change(view, "input", %{
+        "paste" => %{
+          "text" => strip_text(),
+          "layout" => "auto",
+          "header" => "true",
+          "overrides" => %{"3" => "occ:#{first_id}"}
+        }
+      })
+
+      assert has_element?(view, "#paste-columns", "Out of order")
+      assert has_element?(view, "#paste-columns", "comes before")
+      # The untouched selects never pinned their automatic picks: B still
+      # reads Exact, not Chosen.
+      assert has_element?(view, "#paste-columns", "Exact")
+      # The columns stay until every issue is fixed.
+      assert has_element?(view, "#paste-columns")
+      refute has_element?(view, "#paste-review")
+    end
+
+    test "mapping the mystery column to its stop reaches the review",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+      second_id = Enum.at(paste.main.occurrences, 1).id
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      columns_read(view, strip_text())
+      assert has_element?(view, "#paste-columns")
+
+      render_change(view, "input", %{
+        "paste" => %{
+          "text" => strip_text(),
+          "layout" => "auto",
+          "header" => "true",
+          "overrides" => %{"2" => "occ:#{second_id}"}
+        }
+      })
+
+      assert has_element?(view, "#paste-review")
+      refute has_element?(view, "#paste-columns")
+    end
+
+    test "every time-bearing column unmatched shows the layout hint and no-column strip",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      columns_read(view, "Run\tDowntown\tMill & 5th\n1215\t09:30\t09:40")
+
+      assert has_element?(view, "#paste-columns", "No match")
+      assert has_element?(view, "#paste-layout-hint", "Stops down the side?")
+
+      assert has_element?(
+               view,
+               "#paste-layout-hint a[href='#paste-layout']",
+               "Change the layout."
+             )
+
+      # Nothing is mapped, so every endpoint reads no column.
+      assert has_element?(view, "#paste-pattern-strip", "no column")
+
+      render_click(view, "to_review")
+
+      assert has_element?(view, "#paste-column-errors", "columns need a decision")
+      assert has_element?(view, "#paste-column-errors", "Match at least two columns to stops.")
+      assert_push_event(view, "focus_scoped_target", %{id: "paste-column-errors"})
+    end
+  end
 end
