@@ -2687,28 +2687,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
+  # A frequency trip's Edit drawer replaces the frequency notice with the windows
+  # editor (step 35): a submit that moved a window or the riders-see choice writes
+  # `:update_frequency`; a submit that left both as stored keeps today's metadata
+  # edit, and a combined submit writes the windows first, then the details.
   defp apply_drawer(socket, %{mode: :edit} = drawer) do
-    case update_attrs(drawer) do
-      {:ok, attrs} ->
-        case Gtfs.update_trip(
-               socket.assigns.route_id,
-               drawer.trip.id,
-               attrs,
-               drawer.trip.updated_at,
-               audit_context(socket)
-             ) do
-          {:ok, trip} ->
-            {:noreply, saved_trip(socket, drawer, trip, attrs)}
-
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply, drawer_changeset_error(socket, drawer, changeset)}
-
-          {:error, reason} ->
-            {:noreply, drawer_problem(socket, drawer, reason)}
-        end
-
-      {:error, field, message} ->
-        {:noreply, drawer_field_error(socket, drawer, field, message)}
+    if drawer.frequency? do
+      update_frequency(socket, drawer)
+    else
+      update_metadata(socket, drawer)
     end
   end
 
@@ -2733,6 +2720,52 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
       {:error, field, message} ->
         {:noreply, drawer_field_error(socket, drawer, field, message)}
+    end
+  end
+
+  # The Edit drawer's metadata save, unchanged from the page's own edit path,
+  # fenced by the `updated_at` the drawer opened.
+  defp update_metadata(socket, drawer) do
+    case update_attrs(drawer) do
+      {:ok, attrs} ->
+        case Gtfs.update_trip(
+               socket.assigns.route_id,
+               drawer.trip.id,
+               attrs,
+               drawer.trip.updated_at,
+               audit_context(socket)
+             ) do
+          {:ok, trip} ->
+            {:noreply, saved_trip(socket, drawer, trip, attrs)}
+
+          {:error, %Ecto.Changeset{} = changeset} ->
+            {:noreply, drawer_changeset_error(socket, drawer, changeset)}
+
+          {:error, reason} ->
+            {:noreply, drawer_problem(socket, drawer, reason)}
+        end
+
+      {:error, field, message} ->
+        {:noreply, drawer_field_error(socket, drawer, field, message)}
+    end
+  end
+
+  defp update_frequency(socket, drawer) do
+    case frequency_edit_command(drawer) do
+      {:ok, command} ->
+        apply_frequency_edit(socket, drawer, command)
+
+      :unchanged ->
+        update_metadata(socket, drawer)
+
+      :error ->
+        {:noreply,
+         drawer_field_error(
+           socket,
+           drawer,
+           :windows,
+           ScheduleComponents.frequency_preview_error()
+         )}
     end
   end
 
@@ -2811,6 +2844,131 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       _other ->
         drawer_problem(socket, drawer, {:refused, errors})
     end
+  end
+
+  # A frequency trip's window edit writes `:update_frequency` behind the row the
+  # drawer opened (INV-2, R3): a stale page or a changed row writes nothing. The
+  # trip's details save through the page's own `update_trip/5` path after the
+  # windows, because the window write forces a new `updated_at` the details request
+  # fences on (`update_trip/5` has no unfenced form).
+  defp apply_frequency_edit(socket, drawer, command) do
+    fence = {:expected, %{drawer.trip.id => drawer.trip.updated_at}}
+
+    case Gtfs.apply_trip_change(socket.assigns.route_id, command, fence, audit_context(socket)) do
+      {:ok, result} ->
+        case write_frequency_details(socket, drawer, result) do
+          {:ok, result} -> {:noreply, frequency_saved(socket, command, result)}
+          {:error, socket} -> {:noreply, socket}
+        end
+
+      {:error, {:refused, errors}} ->
+        {:noreply, drawer_problem(socket, drawer, {:refused, errors})}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply, drawer_changeset_error(socket, drawer, changeset)}
+
+      {:error, reason} ->
+        {:noreply, drawer_problem(socket, drawer, reason)}
+    end
+  end
+
+  # The details request is the same one the unchanged path sends, so a submit that
+  # changed only a window writes the details as a no-op (the context writes nothing
+  # when they did not move). Its fence is the timestamp the engine captured for the
+  # window write, since the row the drawer loaded is already stale. A details write
+  # that really moved something forced a newer `updated_at`, so the result's
+  # restore payload is re-fenced on it: Undo still restores the windows and
+  # template the window write replaced, and the details are never part of its
+  # capture either way (R10).
+  defp write_frequency_details(socket, drawer, result) do
+    case {update_attrs(drawer), written_updated_at(result, drawer.trip.id)} do
+      {{:ok, attrs}, %DateTime{} = updated_at} ->
+        case Gtfs.update_trip(
+               socket.assigns.route_id,
+               drawer.trip.id,
+               attrs,
+               updated_at,
+               audit_context(socket)
+             ) do
+          {:ok, trip} ->
+            {:ok, refence_restore(result, drawer.trip.id, trip.updated_at)}
+
+          {:error, %Ecto.Changeset{} = changeset} ->
+            {:error, frequency_details_failed(socket, drawer, changeset)}
+
+          {:error, reason} ->
+            {:error, frequency_details_failed(socket, drawer, reason)}
+        end
+
+      # `:update_frequency` is undoable, so the engine always captures the trip it
+      # wrote and this branch is unreachable; a missing capture must not fence the
+      # details on a guessed timestamp.
+      {_attrs, _missing} ->
+        {:error, drawer_problem(socket, drawer, :busy)}
+    end
+  end
+
+  # The restore payload's fence is the `updated_at` the original write forced; a
+  # later write in the same submit moves it, so the payload's entry is re-fenced on
+  # the timestamp that write made.
+  defp refence_restore(%{restore: %{trips: trips} = restore} = result, trip_id, updated_at) do
+    trips =
+      Enum.map(trips, fn
+        %{id: ^trip_id} = entry -> %{entry | written_updated_at: updated_at}
+        entry -> entry
+      end)
+
+    %{result | restore: %{restore | trips: trips}}
+  end
+
+  defp refence_restore(result, _trip_id, _updated_at), do: result
+
+  # The windows are already saved when the details fail, so the row the drawer
+  # still holds is stale: re-read the page so a retry fences on what was written
+  # (and reads the windows the write stored) while the typed details stay.
+  defp frequency_details_failed(socket, drawer, reason) do
+    socket = reload_or_fail(socket)
+    drawer = %{drawer | trip: find_row(socket, drawer.trip.id) || drawer.trip}
+
+    case reason do
+      %Ecto.Changeset{} = changeset ->
+        drawer_changeset_error(socket, drawer, changeset)
+
+      reason ->
+        drawer_problem(socket, drawer, reason)
+    end
+  end
+
+  # A window edit is undoable (R10): the bar names the saved span with Undo and the
+  # drawer closes on the reloaded page.
+  defp frequency_saved(socket, command, result) do
+    message = frequency_update_outcome(command)
+
+    socket
+    |> assign(:drawer, nil)
+    |> assign(:cell_error, nil)
+    |> assign(:just_changed, MapSet.new(result.changed_trip_ids))
+    |> assign(:outcome, %{tone: :info, text: message, undo?: not is_nil(result.restore)})
+    |> push_undo(result.restore, message)
+    |> reload_cell()
+  end
+
+  defp frequency_update_outcome({:update_frequency, _trip_id, %{windows: windows}}) do
+    first = List.first(windows)
+    last = List.last(windows)
+
+    "Saved the frequency service #{clock(first.start_secs)}–#{clock(last.end_secs)}."
+  end
+
+  # The timestamp the engine forced on the changed trip, read from the restore
+  # capture it also uses for Undo.
+  defp written_updated_at(result, trip_id) do
+    (result.restore || %{})
+    |> Map.get(:trips, [])
+    |> Enum.find_value(fn
+      %{id: ^trip_id, written_updated_at: updated_at} -> updated_at
+      _entry -> nil
+    end)
   end
 
   defp add_trips(socket, drawer) do
@@ -3361,7 +3519,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp next_window(_window), do: @default_window
 
   defp edit_values(socket, row) do
-    %{
+    values = %{
       "pattern_id" => row_pattern_uuid(socket, row),
       "timed_pattern_id" => row.timed_pattern_id || "custom",
       "service_id" => row.service_id,
@@ -3371,6 +3529,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       "wheelchair_accessible" => integer_string(row.wheelchair_accessible),
       "bikes_allowed" => integer_string(row.bikes_allowed)
     }
+
+    if row.frequency? do
+      Map.merge(values, %{
+        "windows" => stored_windows(row),
+        "exact_times" => stored_exact_times_choice(row)
+      })
+    else
+      values
+    end
   end
 
   defp duplicate_values(socket, row) do
@@ -3434,16 +3601,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
     cond do
       drawer.frequency? ->
-        %{
-          error: nil,
-          target: nil,
-          label: "Save trip",
-          meta: nil,
-          range: drawer.frequency_label,
-          total_minutes: nil,
-          sentence: "Frequency window stays unchanged.",
-          hint: nil
-        }
+        frequency_edit_preview(drawer, meta)
 
       drawer.custom? and values["timed_pattern_id"] in [nil, "custom"] ->
         %{
@@ -3499,6 +3657,17 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
       _ ->
         error_preview(:start_time, ScheduleComponents.error_message(:invalid_time), drawer)
+    end
+  end
+
+  # The Edit drawer's card for a frequency trip: the same span and departures the
+  # windows editor reads (the reference's result card), or the pointer at the row
+  # that does not read, so the card never claims a preview the save could not
+  # produce (AC-18).
+  defp frequency_edit_preview(drawer, meta) do
+    case read_windows(windows(drawer.values)) do
+      {:ok, windows} -> frequency_preview(windows, meta, preview_label(drawer))
+      :error -> error_preview(:windows, ScheduleComponents.frequency_preview_error(), drawer)
     end
   end
 
@@ -3598,6 +3767,99 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
           windows: parsed,
           exact_times: exact_times(values)
         }}}
+    end
+  end
+
+  # The `:update_frequency` command the Edit drawer submits, built from the drawer's
+  # own text and the stored rows it loaded (CR-5). The windows read and validate
+  # with the page's one grammar (CR-4), and a typed list that still reads as the
+  # stored one - with the riders-see choice still showing the stored choice - is
+  # `:unchanged`, so an unrelated details edit submits through `update_trip/5`
+  # alone and never rewrites the frequency rows (FH-9, AC-18).
+  defp frequency_edit_command(drawer) do
+    case read_windows(windows(drawer.values)) do
+      {:ok, windows} ->
+        choice = frequency_choice(drawer)
+
+        if choice == :keep and windows == stored_parsed_windows(drawer.trip) do
+          :unchanged
+        else
+          {:ok, {:update_frequency, drawer.trip.id, %{windows: windows, exact_times: choice}}}
+        end
+
+      :error ->
+        :error
+    end
+  end
+
+  # The riders-see choice is `:keep` while it still reads as the choice the stored
+  # rows show, so an unrelated window edit leaves every stored per-row value -
+  # including blank - unchanged (FH-9). A blank stored choice displays the default
+  # (`1`) but never writes one.
+  defp frequency_choice(drawer) do
+    case drawer.values["exact_times"] do
+      choice when choice in ["0", "1"] ->
+        if choice == stored_exact_times_choice(drawer.trip),
+          do: :keep,
+          else: String.to_integer(choice)
+
+      _other ->
+        :keep
+    end
+  end
+
+  # The choice the stored rows display: the headway choice only when every row
+  # stored it, anything else (including a blank row) reads as the default.
+  defp stored_exact_times_choice(row) do
+    rows = row |> Map.get(:frequencies, []) |> List.wrap()
+
+    if rows != [] and Enum.all?(rows, &(Map.get(&1, :exact_times) == 0)), do: "0", else: "1"
+  end
+
+  # The trip's stored rows in the editor's typed text, earliest first. A clock
+  # that does not read stays as the raw stored text so the row shows its own
+  # error rather than silently dropping a window, and a headway that is not a
+  # whole number of minutes has no editor reading and shows the row's error.
+  defp stored_windows(row) do
+    row
+    |> Map.get(:frequencies, [])
+    |> List.wrap()
+    |> Enum.sort_by(&stored_start_sort_key/1)
+    |> Enum.map(fn frequency ->
+      %{
+        from: stored_clock_text(Map.get(frequency, :start_time)),
+        until: stored_clock_text(Map.get(frequency, :end_time)),
+        every: stored_headway_text(Map.get(frequency, :headway_secs))
+      }
+    end)
+  end
+
+  defp stored_start_sort_key(frequency) do
+    case GtfsTime.parse(Map.get(frequency, :start_time)) do
+      {:ok, secs} -> {0, secs}
+      {:error, _reason} -> {1, to_string(Map.get(frequency, :start_time))}
+    end
+  end
+
+  defp stored_clock_text(value) do
+    case GtfsTime.parse(value) do
+      {:ok, secs} -> clock(secs)
+      {:error, _reason} -> if(is_binary(value), do: value, else: "")
+    end
+  end
+
+  defp stored_headway_text(value)
+       when is_integer(value) and value > 0 and rem(value, 60) == 0,
+       do: to_string(div(value, 60))
+
+  defp stored_headway_text(_value), do: ""
+
+  # The stored rows read through the same grammar and order as the editor's own
+  # `read_windows/1`, so an untouched form compares equal.
+  defp stored_parsed_windows(row) do
+    case parsed_windows(stored_windows(row)) do
+      {:ok, windows} -> Enum.sort_by(windows, & &1.start_secs)
+      :error -> :error
     end
   end
 

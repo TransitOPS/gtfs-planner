@@ -97,6 +97,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
           bikes_allowed: integer() | nil,
           frequency_label: String.t() | nil,
           frequency?: boolean(),
+          frequencies: [map()],
           custom?: boolean(),
           stops_differ?: boolean(),
           estimate_problem:
@@ -317,6 +318,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
       bikes_allowed: Map.get(trip, :bikes_allowed),
       frequency_label: frequency_label(frequencies),
       frequency?: frequencies != [],
+      # The stored rows themselves, earliest first, for the Edit drawer's windows
+      # editor: `frequency_label/1` is the display summary, not the source.
+      frequencies: frequencies,
       custom?: custom?,
       stops_differ?: stops_differ?,
       estimate_problem: estimate_problem,
