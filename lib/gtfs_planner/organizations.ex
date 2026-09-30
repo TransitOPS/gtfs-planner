@@ -181,24 +181,20 @@ defmodule GtfsPlanner.Organizations do
 
   ## Examples
 
-      iex> remove_user_from_organization(user_id, organization_id)
+      iex> remove_user_from_organization(actor, user_id, organization_id)
       {:ok, %UserOrgMembership{}}
 
-      iex> remove_user_from_organization(user_id, organization_id)
+      iex> remove_user_from_organization(actor, user_id, organization_id)
       {:error, :not_found}
   """
-  def remove_user_from_organization(user_id, organization_id) do
-    from(m in UserOrgMembership,
-      where: m.user_id == ^user_id and m.organization_id == ^organization_id
-    )
-    |> Repo.one()
-    |> case do
-      nil ->
-        {:error, :not_found}
+  def remove_user_from_organization(actor, user_id, organization_id) do
+    case membership_command(actor, organization_id, user_id, :remove) do
+      {:ok, {membership, digests}} ->
+        publish_session_revocations(digests)
+        broadcast({:ok, membership}, [:memberships, :deleted])
 
-      membership ->
-        Repo.delete(membership)
-        |> broadcast([:memberships, :deleted])
+      error ->
+        error
     end
   end
 
@@ -207,27 +203,20 @@ defmodule GtfsPlanner.Organizations do
 
   ## Examples
 
-      iex> update_user_roles(user_id, organization_id, [:administrator, :editor])
+      iex> update_user_roles(actor, user_id, organization_id, [:pathways_studio_admin])
       {:ok, %UserOrgMembership{}}
 
-      iex> update_user_roles(user_id, organization_id, [])
+      iex> update_user_roles(actor, user_id, organization_id, [])
       {:ok, %UserOrgMembership{}}
   """
-  def update_user_roles(user_id, organization_id, roles) do
-    from(m in UserOrgMembership,
-      where: m.user_id == ^user_id and m.organization_id == ^organization_id,
-      preload: [:user, :organization]
-    )
-    |> Repo.one()
-    |> case do
-      nil ->
-        {:error, :not_found}
+  def update_user_roles(actor, user_id, organization_id, roles) do
+    case membership_command(actor, organization_id, user_id, {:roles, roles}) do
+      {:ok, {membership, digests}} ->
+        publish_session_revocations(digests)
+        broadcast({:ok, membership}, [:memberships, :updated])
 
-      membership ->
-        membership
-        |> UserOrgMembership.changeset(%{roles: roles})
-        |> Repo.update()
-        |> broadcast([:memberships, :updated])
+      error ->
+        error
     end
   end
 
@@ -295,14 +284,9 @@ defmodule GtfsPlanner.Organizations do
       {:error, :system_administrator}
   """
   def deactivate_user_in_organization(actor, user_id, organization_id) do
-    case membership_command(actor, organization_id, {:deactivate, user_id}) do
+    case membership_command(actor, organization_id, user_id, :deactivate) do
       {:ok, {membership, digests}} ->
-        Phoenix.PubSub.broadcast(
-          GtfsPlanner.PubSub,
-          "session_revocations",
-          {:session_tokens_revoked, digests}
-        )
-
+        publish_session_revocations(digests)
         broadcast({:ok, membership}, [:memberships, :deactivated])
 
       error ->
@@ -322,7 +306,7 @@ defmodule GtfsPlanner.Organizations do
       {:error, :not_found}
   """
   def activate_user_in_organization(actor, user_id, organization_id) do
-    case membership_command(actor, organization_id, {:activate, user_id}) do
+    case membership_command(actor, organization_id, user_id, :activate) do
       {:ok, membership} -> broadcast({:ok, membership}, [:memberships, :activated])
       error -> error
     end
@@ -414,9 +398,9 @@ defmodule GtfsPlanner.Organizations do
 
   # Private helper functions
 
-  defp membership_command(actor, organization_id, {action, user_id}) do
+  defp membership_command(actor, organization_id, user_id, action) do
     Repo.transaction(fn ->
-      Authorization.lock_member_admin!(actor, organization_id)
+      actor_level = Authorization.lock_member_admin!(actor, organization_id)
 
       with {:ok, user_id} <- Ecto.UUID.cast(user_id),
            %UserOrgMembership{} = membership <-
@@ -425,15 +409,15 @@ defmodule GtfsPlanner.Organizations do
                  where: m.user_id == ^user_id and m.organization_id == ^organization_id,
                  lock: "FOR UPDATE"
              ) do
-        apply_membership_command(action, membership)
+        apply_membership_command(action, membership, actor_level)
       else
         _ -> Repo.rollback(:not_found)
       end
     end)
   end
 
-  defp apply_membership_command(:deactivate, membership) do
-    case check_deactivation_allowed(membership) do
+  defp apply_membership_command(:deactivate, membership, _actor_level) do
+    case check_membership_change_allowed(membership, :deactivate, :system) do
       :ok ->
         updated =
           membership
@@ -442,26 +426,43 @@ defmodule GtfsPlanner.Organizations do
           })
           |> update_membership!()
 
-        digests =
-          updated.user_id
-          |> Accounts.delete_user_sessions()
-          |> Enum.flat_map(fn
-            # The token column already holds the SHA-256 digest used by web session topics.
-            %UserToken{context: "session", token: digest} -> [digest]
-            %UserToken{} -> []
-          end)
-
-        {updated, digests}
+        {updated, delete_session_digests(updated.user_id)}
 
       {:error, reason} ->
         Repo.rollback(reason)
     end
   end
 
-  defp apply_membership_command(:activate, membership) do
+  defp apply_membership_command(:activate, membership, _actor_level) do
     membership
     |> Ecto.Changeset.change(%{deactivated_at: nil})
     |> update_membership!()
+  end
+
+  defp apply_membership_command({:roles, roles}, membership, actor_level) do
+    changeset = UserOrgMembership.changeset(membership, %{roles: roles})
+
+    if not is_list(roles),
+      do: Repo.rollback(Ecto.Changeset.add_error(changeset, :roles, "must be a list"))
+
+    if not changeset.valid?, do: Repo.rollback(changeset)
+    enforce_membership_change!(membership, {:roles, roles}, actor_level)
+
+    updated = update_membership!(changeset)
+
+    {updated, delete_session_digests(updated.user_id)}
+  end
+
+  defp apply_membership_command(:remove, membership, actor_level) do
+    enforce_membership_change!(membership, :remove, actor_level)
+
+    deleted =
+      case Repo.delete(membership) do
+        {:ok, deleted} -> deleted
+        {:error, reason} -> Repo.rollback(reason)
+      end
+
+    {deleted, delete_session_digests(deleted.user_id)}
   end
 
   defp update_membership!(changeset) do
@@ -471,20 +472,67 @@ defmodule GtfsPlanner.Organizations do
     end
   end
 
-  # An already-deactivated membership keeps the plain re-deactivation behavior.
-  defp check_deactivation_allowed(%UserOrgMembership{deactivated_at: %DateTime{}}), do: :ok
+  defp enforce_membership_change!(membership, change, actor_level) do
+    case check_membership_change_allowed(membership, change, actor_level) do
+      :ok -> :ok
+      {:error, reason} -> Repo.rollback(reason)
+    end
+  end
 
-  defp check_deactivation_allowed(%UserOrgMembership{roles: roles} = membership) do
+  # An already-deactivated membership keeps the plain re-deactivation behavior.
+  defp check_membership_change_allowed(
+         %UserOrgMembership{deactivated_at: %DateTime{}},
+         :deactivate,
+         _
+       ),
+       do: :ok
+
+  defp check_membership_change_allowed(
+         %UserOrgMembership{roles: roles} = membership,
+         change,
+         actor_level
+       ) do
+    proposed_roles = if match?({:roles, _}, change), do: elem(change, 1), else: []
+    removes_system_role? = "administrator" in roles and "administrator" not in proposed_roles
+    grants_system_role? = "administrator" not in roles and "administrator" in proposed_roles
+
+    removes_usable_admin? =
+      "pathways_studio_admin" in roles and "pathways_studio_admin" not in proposed_roles and
+        is_nil(membership.deactivated_at) and
+        not is_nil(Repo.get!(User, membership.user_id).hashed_password)
+
     cond do
-      "administrator" in roles ->
+      removes_system_role? and
+          (change == :remove or change == :deactivate or actor_level != :system) ->
         {:error, :system_administrator}
 
-      "pathways_studio_admin" in roles and not other_active_admin?(membership) ->
+      grants_system_role? and actor_level != :system ->
+        {:error, :forbidden}
+
+      removes_usable_admin? and not other_active_admin?(membership) ->
         {:error, :last_organization_admin}
 
       true ->
         :ok
     end
+  end
+
+  defp delete_session_digests(user_id) do
+    user_id
+    |> Accounts.delete_user_sessions()
+    |> Enum.flat_map(fn
+      # The token column already holds the SHA-256 digest used by web session topics.
+      %UserToken{context: "session", token: digest} -> [digest]
+      %UserToken{} -> []
+    end)
+  end
+
+  defp publish_session_revocations(digests) do
+    Phoenix.PubSub.broadcast(
+      GtfsPlanner.PubSub,
+      "session_revocations",
+      {:session_tokens_revoked, digests}
+    )
   end
 
   defp other_active_admin?(%UserOrgMembership{id: id, organization_id: organization_id}) do

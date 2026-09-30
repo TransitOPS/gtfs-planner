@@ -328,34 +328,36 @@ defmodule GtfsPlanner.OrganizationsTest do
     end
   end
 
-  describe "remove_user_from_organization/2" do
+  describe "remove_user_from_organization/3" do
     setup do
       user = user_fixture()
       organization = organization_fixture()
+      actor = system_admin_fixture(organization_fixture())
 
       {:ok, membership} =
         Organizations.add_user_to_organization(user.id, organization.id)
 
-      %{user: user, organization: organization, membership: membership}
+      %{user: user, actor: actor, organization: organization, membership: membership}
     end
 
     test "removes user from organization", %{
       user: user,
+      actor: actor,
       organization: organization,
       membership: membership
     } do
       assert {:ok, _deleted} =
-               Organizations.remove_user_from_organization(user.id, organization.id)
+               Organizations.remove_user_from_organization(actor, user.id, organization.id)
 
       refute Repo.get(GtfsPlanner.Accounts.UserOrgMembership, membership.id)
     end
 
-    test "returns error when membership does not exist" do
+    test "returns error when membership does not exist", %{actor: actor} do
       user = user_fixture()
       organization = organization_fixture()
 
       assert {:error, :not_found} =
-               Organizations.remove_user_from_organization(user.id, organization.id)
+               Organizations.remove_user_from_organization(actor, user.id, organization.id)
     end
   end
 
@@ -541,10 +543,11 @@ defmodule GtfsPlanner.OrganizationsTest do
     end
   end
 
-  describe "update_user_roles/3" do
+  describe "update_user_roles/4" do
     setup do
       user = user_fixture()
       organization = organization_fixture()
+      actor = system_admin_fixture(organization_fixture())
 
       {:ok, _membership} =
         Organizations.add_user_to_organization(
@@ -553,31 +556,31 @@ defmodule GtfsPlanner.OrganizationsTest do
           ["pathways_studio_editor"]
         )
 
-      %{user: user, organization: organization}
+      %{user: user, actor: actor, organization: organization}
     end
 
-    test "updates user roles", %{user: user, organization: organization} do
+    test "updates user roles", %{user: user, actor: actor, organization: organization} do
       new_roles = ["pathways_studio_admin", "pathways_studio_editor"]
 
       assert {:ok, membership} =
-               Organizations.update_user_roles(user.id, organization.id, new_roles)
+               Organizations.update_user_roles(actor, user.id, organization.id, new_roles)
 
       assert membership.roles == new_roles
     end
 
-    test "updates to empty roles", %{user: user, organization: organization} do
+    test "updates to empty roles", %{user: user, actor: actor, organization: organization} do
       assert {:ok, membership} =
-               Organizations.update_user_roles(user.id, organization.id, [])
+               Organizations.update_user_roles(actor, user.id, organization.id, [])
 
       assert membership.roles == []
     end
 
-    test "returns error when membership does not exist" do
+    test "returns error when membership does not exist", %{actor: actor} do
       user = user_fixture()
       organization = organization_fixture()
 
       assert {:error, :not_found} =
-               Organizations.update_user_roles(user.id, organization.id, ["admin"])
+               Organizations.update_user_roles(actor, user.id, organization.id, ["admin"])
     end
   end
 

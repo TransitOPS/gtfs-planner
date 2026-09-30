@@ -216,7 +216,11 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
 
       {:noreply, socket}
     else
-      case Organizations.remove_user_from_organization(user_id, organization.id) do
+      case Organizations.remove_user_from_organization(
+             socket.assigns.current_user,
+             user_id,
+             organization.id
+           ) do
         {:ok, _membership} ->
           # Remove from stream
           socket =
@@ -232,6 +236,10 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
             |> put_flash(:error, "User not found in organization")
 
           {:noreply, socket}
+
+        {:error, reason}
+        when reason in [:forbidden, :system_administrator, :last_organization_admin] ->
+          {:noreply, put_flash(socket, :error, membership_error(reason))}
       end
     end
   end
@@ -246,7 +254,12 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
       |> Enum.filter(fn {_role, value} -> value == "true" end)
       |> Enum.map(fn {role, _value} -> role end)
 
-    case Organizations.update_user_roles(user_id, organization.id, roles) do
+    case Organizations.update_user_roles(
+           socket.assigns.current_user,
+           user_id,
+           organization.id,
+           roles
+         ) do
       {:ok, _membership} ->
         # Refresh the user list to show updated roles
         users = Organizations.list_users_in_organization(organization.id)
@@ -264,6 +277,13 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
           |> put_flash(:error, "User not found in organization")
 
         {:noreply, socket}
+
+      {:error, reason}
+      when reason in [:forbidden, :system_administrator, :last_organization_admin] ->
+        {:noreply, put_flash(socket, :error, membership_error(reason))}
+
+      {:error, %Ecto.Changeset{}} ->
+        {:noreply, put_flash(socket, :error, "Invalid roles")}
     end
   end
 
@@ -271,6 +291,12 @@ defmodule GtfsPlannerWeb.ManageUsersLive do
   def handle_event("validate_invite", %{"email" => _email}, socket) do
     {:noreply, socket}
   end
+
+  defp membership_error(:forbidden), do: "You no longer have permission to manage users"
+  defp membership_error(:system_administrator), do: "A system administrator cannot be removed"
+
+  defp membership_error(:last_organization_admin),
+    do: "The organization needs an active administrator"
 
   defp format_roles([]), do: "No roles"
   defp format_roles(roles), do: Enum.join(roles, ", ")
