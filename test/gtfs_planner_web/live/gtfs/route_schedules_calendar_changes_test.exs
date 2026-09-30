@@ -251,6 +251,46 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesCalendarChangesTest do
   end
 
   describe "Change calendar" do
+    test "undo after the original calendar was deleted says so and writes nothing", %{
+      conn: conn,
+      scope: scope
+    } do
+      %{saturday: saturday} = weekday_and_saturday!(scope)
+      named_calendar!(scope, saturday, "Saturday")
+
+      trip = linked_trip!(scope, "07:00:00", %{trip_id: "CAL_T0700"})
+
+      {:ok, view, _html} = live(conn, schedules_path(scope, %{"service_id" => scope.service}))
+
+      select_trips(view, [trip])
+      view |> element("#bulk-move") |> render_click()
+
+      view
+      |> element("#review-form")
+      |> render_change(%{"change" => %{"service_id" => saturday}})
+
+      view |> element("#review-apply") |> render_click()
+      assert trip_row(trip).service_id == saturday
+
+      # The emptied original calendar is deleted before the undo.
+      Repo.delete_all(
+        from(c in GtfsPlanner.Gtfs.Calendar,
+          where: c.gtfs_version_id == ^scope.version.id and c.service_id == ^scope.service
+        )
+      )
+
+      # The emptied view hides the grid bar; Cmd+Z sends the same event.
+      render_hook(view, "undo", %{})
+
+      assert trip_row(trip).service_id == saturday
+
+      assert assigns(view).outcome == %{
+               tone: :warning,
+               text: "Nothing was undone. A service day from that change was deleted after it.",
+               undo?: false
+             }
+    end
+
     test "a move keeps a block when every trip of the block moves", %{conn: conn, scope: scope} do
       %{saturday: saturday} = weekday_and_saturday!(scope)
       named_calendar!(scope, saturday, "Saturday")

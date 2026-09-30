@@ -963,7 +963,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
     case TripChanges.plan(command, state) do
       {:ok, change_set} ->
-        case restore_fence!(payload, state) do
+        case restore_fence!(payload, change_set, state) do
           :ok -> apply_restore(route, payload, state, change_set, audit_context)
           {:error, reason} -> Repo.rollback(reason)
         end
@@ -1014,11 +1014,23 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   defp change_services(identities, command) do
-    (Enum.map(identities, & &1.service_id) ++ [change_target_service(command)])
+    (Enum.map(identities, & &1.service_id) ++
+       [change_target_service(command) | restore_services(command)])
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
     |> Enum.sort()
   end
+
+  # A restore writes each captured `service_id` back, so every one of them must
+  # still exist; a deleted calendar rolls back `:calendar_not_found` under its lock.
+  defp restore_services({:restore, payload}) do
+    payload
+    |> attr(:trips)
+    |> List.wrap()
+    |> Enum.map(&attr(attr(&1, :fields), :service_id))
+  end
+
+  defp restore_services(_command), do: []
 
   # A calendar move can clear a block and a restore can put a captured block back,
   # so those two commands join the block guarantee; every other command leaves
@@ -1123,12 +1135,42 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   # R10's restore fence: every payload trip must still carry the `updated_at` the
-  # original write produced, and no transfer may name a trip the restore deletes.
-  # The changed check runs first; both refusals list the UUIDs and write nothing.
-  defp restore_fence!(payload, state) do
-    case restore_changed_ids(payload, state) do
+  # original write produced, every timing link the restore puts back must still
+  # hold, and no transfer may name a trip the restore deletes. The changed check
+  # runs first; both refusals list the UUIDs and write nothing.
+  defp restore_fence!(payload, change_set, state) do
+    case Enum.uniq(restore_changed_ids(payload, state) ++ relink_changed_ids(change_set, state)) do
       [] -> restore_transfer_fence!(payload, state)
-      ids -> {:error, {:not_restorable, :changed, ids}}
+      ids -> {:error, {:not_restorable, :changed, Enum.sort(ids)}}
+    end
+  end
+
+  # Editing or deleting a timing leaves the trips no longer linked to it alone, so
+  # their `updated_at` cannot fence it. A restore that links a trip back to another
+  # timing requires that timing to exist and still materialize to the captured rows.
+  defp relink_changed_ids(change_set, state) do
+    change_set.updates
+    |> Enum.reject(&relink_current?(&1, state))
+    |> Enum.map(& &1.trip_id)
+  end
+
+  defp relink_current?(%{trip_id: trip_id, fields: fields, stop_times: rows}, state) do
+    timing_id = Map.get(fields, :timed_pattern_id)
+
+    case Map.get(state.trips, trip_id) do
+      %{trip: %{timed_pattern_id: current} = trip}
+      when not is_nil(timing_id) and current != timing_id and is_list(rows) ->
+        case Map.get(state.patterns, trip.route_pattern_id) do
+          nil ->
+            false
+
+          pattern ->
+            timings = Enum.filter(pattern.timings, &(&1.timing.id == timing_id))
+            TripChanges.relink(rows, pattern.occurrences, timings) == {:linked, timing_id}
+        end
+
+      _unlinked_or_unchanged ->
+        true
     end
   end
 
