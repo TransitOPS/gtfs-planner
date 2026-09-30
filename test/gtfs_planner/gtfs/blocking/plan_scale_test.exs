@@ -439,7 +439,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanScaleTest do
 
     IO.puts(line)
 
-    assert line =~ "EV-12: suggest_ms=\\d+ export_ms=\\d+"
+    # `=~` on a binary is literal containment, so the two patterns are sigils;
+    # a plain string on the left of `=~` would compare for those exact characters.
+    assert line =~ ~r/^EV-12: suggest_ms=\d+ export_ms=\d+ /
     assert line =~ "trips=#{@trip_count}"
     assert line =~ ~r/arch=\S+ cpu=.+\z/
     assert suggest_ms >= 0
