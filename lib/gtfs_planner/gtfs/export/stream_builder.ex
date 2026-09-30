@@ -280,10 +280,24 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
   # and translation tables, none of which has a field in `@ordering_fields`.
   # Several key columns are nullable, so rows that tie on the key fall back to
   # `id`, which keeps every export of the same data in the same order.
+  # `fare_products` and `fare_leg_rules` order by their pre-widening key first and
+  # break ties on the columns `fare_schema_corrections` added, so the widened key
+  # stops exporting the same rows in a different order each run.
   @natural_keys %{
-    GtfsPlanner.Gtfs.FareProduct => [:fare_product_id, :fare_media_id],
+    GtfsPlanner.Gtfs.FareProduct => [
+      :fare_product_id,
+      :fare_media_id,
+      :rider_category_id
+    ],
     GtfsPlanner.Gtfs.FareMedia => [:fare_media_id],
-    GtfsPlanner.Gtfs.FareLegRule => [:network_id, :from_area_id, :to_area_id, :fare_product_id],
+    GtfsPlanner.Gtfs.FareLegRule => [
+      :network_id,
+      :from_area_id,
+      :to_area_id,
+      :fare_product_id,
+      :from_timeframe_group_id,
+      :to_timeframe_group_id
+    ],
     GtfsPlanner.Gtfs.FareLegJoinRule => [
       :from_network_id,
       :to_network_id,

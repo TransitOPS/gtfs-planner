@@ -14,10 +14,13 @@ sandbox version that is published before the export runs. One directory per
 fixture: the North Coast v1 and v2 feeds, the no-fare feed, the three refused
 variants and the trimmed public excerpts.
 
-`public/ctran` has no golden yet. C-TRAN publishes one product id per rider
-category and medium, which the current `fare_products` unique key
-(`fare_product_id`, `fare_media_id`) rejects, so the importer refuses the excerpt
-until the widened key lands. Record its golden on the revision that widens it.
+`public/ctran` had no golden on the revision that added the fixtures. C-TRAN
+publishes one product id per rider category and medium, which the then-current
+`fare_products` unique key (`fare_product_id`, `fare_media_id`) rejected, so the
+importer refused the excerpt. The widened key that admits rider categories
+landed with `20260930205949_fare_schema_corrections`, and `public/ctran` was
+recorded on that revision. No other entry's bytes changed on it, because the
+migration touches no export code.
 
 ## Regenerating and checking
 
