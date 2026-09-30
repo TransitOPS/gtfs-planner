@@ -4950,6 +4950,284 @@ case Accounts.register_first_admin(%{
         "#{paste_trip_count} Weekday trips, #{paste_transfer_count} transfers naming trip 1209)"
     )
 
+    # ── Advanced trip editing journey routes (spec 18, step 41) ──
+    #
+    # Three routes on the shared Browser E2E Version and its existing CAL_DAILY
+    # calendar carry the advanced trip editing browser journeys. No calendar and
+    # no version is added, so the calendars page keeps its six identities and the
+    # organization's latest published default stays the Browser E2E Version.
+    #
+    #   * BROWSER_SCHEDULES_GRID — one direction-0 pattern with a Base timing and
+    #     a faster Peak timing, twelve listed CAL_DAILY trips including a
+    #     two-trip block (SG-1) and one custom trip, and no CAL_SCHOOL trips;
+    #   * BROWSER_SCHEDULES_FREQ — one direction-0 pattern whose only trip carries
+    #     a 09:00–10:00 frequency window every ten minutes on CAL_DAILY;
+    #   * BROWSER_SCHEDULES_BULK — one direction-0 pattern with 500 listed
+    #     CAL_DAILY trips for the grid's latency observation, inserted with
+    #     chunked insert_all because this is scenario data, not an audited edit.
+    advanced_stops = [
+      {"BSS_1", 0, 0, 1},
+      {"BSS_2", 300, 360, 1},
+      {"BSS_3", 660, 720, 0},
+      {"BSS_4", 1020, 1080, 0},
+      {"BSS_5", 1500, 1560, 1},
+      {"BSS_6", 1800, 1860, 1}
+    ]
+
+    {:ok, grid_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "BROWSER_SCHEDULES_GRID",
+        route_short_name: "SG",
+        route_long_name: "Browser Schedules Grid",
+        route_type: 3
+      })
+
+    grid_pattern =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: grid_route.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-SCHED-PG1",
+        route_pattern_name: "Grid outbound",
+        route_pattern_typicality: 1,
+        timing_name: "Base",
+        timing_headsign: "Grid outbound",
+        stops: advanced_stops
+      })
+
+    # The Peak timing is the same pattern's faster variant: the same stopping
+    # pattern with shorter runs between the stops, so trips can link to either.
+    grid_peak =
+      GtfsPlanner.GtfsFixtures.timed_pattern_fixture(grid_pattern.pattern, %{
+        name: "Peak",
+        headsign: "Grid outbound"
+      })
+
+    grid_peak_offsets = [
+      {0, 0},
+      {240, 300},
+      {540, 600},
+      {900, 960},
+      {1260, 1320},
+      {1500, 1560}
+    ]
+
+    for {occurrence, {arrival_offset, departure_offset}} <-
+          Enum.zip(grid_pattern.occurrences, grid_peak_offsets) do
+      GtfsPlanner.GtfsFixtures.timed_pattern_stop_fixture(grid_peak, occurrence, %{
+        arrival_offset: arrival_offset,
+        departure_offset: departure_offset,
+        timepoint: 1
+      })
+    end
+
+    # The fixture materializes a linked trip from the pattern timing it is given
+    # in the bundle (the Base timing), so a Peak-linked trip states its own rows.
+    peak_stop_times = fn start_secs ->
+      Enum.zip(grid_pattern.occurrences, grid_peak_offsets)
+      |> Enum.map(fn {occurrence, {arrival_offset, departure_offset}} ->
+        {occurrence.stop_id, GtfsPlanner.Gtfs.GtfsTime.format(start_secs + arrival_offset),
+         GtfsPlanner.Gtfs.GtfsTime.format(start_secs + departure_offset)}
+      end)
+    end
+
+    for {trip_id, start_time, short_name, block_id} <- [
+          {"BSG_T01", "05:00:00", "9101", nil},
+          {"BSG_T02", "05:30:00", "9102", "SG-1"},
+          {"BSG_T03", "06:00:00", "9103", "SG-1"},
+          {"BSG_T04", "06:30:00", "9104", nil},
+          {"BSG_T05", "07:00:00", "9105", nil},
+          {"BSG_T06", "07:30:00", "9106", nil}
+        ] do
+      GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+        org.id,
+        diagram_version.id,
+        grid_route.route_id,
+        grid_pattern,
+        %{
+          service_id: "CAL_DAILY",
+          trip_id: trip_id,
+          trip_short_name: short_name,
+          start_time: start_time,
+          trip_headsign: "Grid outbound",
+          block_id: block_id
+        }
+      )
+    end
+
+    for {trip_id, start_secs, short_name} <- [
+          {"BSG_T07", 8 * 3600, "9107"},
+          {"BSG_T08", 8 * 3600 + 1800, "9108"},
+          {"BSG_T09", 9 * 3600, "9109"},
+          {"BSG_T10", 9 * 3600 + 1800, "9110"},
+          {"BSG_T11", 10 * 3600, "9111"}
+        ] do
+      GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+        org.id,
+        diagram_version.id,
+        grid_route.route_id,
+        grid_pattern,
+        %{
+          service_id: "CAL_DAILY",
+          trip_id: trip_id,
+          trip_short_name: short_name,
+          trip_headsign: "Grid outbound",
+          timed_pattern_id: grid_peak.id,
+          stop_times: peak_stop_times.(start_secs)
+        }
+      )
+    end
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      diagram_version.id,
+      grid_route.route_id,
+      grid_pattern,
+      %{
+        service_id: "CAL_DAILY",
+        trip_id: "BSG_CUSTOM",
+        trip_short_name: "9112",
+        state: "custom",
+        timed_pattern_id: nil,
+        trip_headsign: "Grid outbound",
+        stop_times: [
+          {"BSS_1", "11:00:00", "11:00:00"},
+          {"BSS_2", "11:05:00", "11:06:00"},
+          {"BSS_3", "11:11:00", "11:12:00"},
+          {"BSS_4", "11:17:00", "11:18:00"},
+          {"BSS_5", "11:25:00", "11:26:00"},
+          {"BSS_6", "11:30:00", "11:30:00"}
+        ]
+      }
+    )
+
+    IO.puts(
+      "Browser seed: BROWSER_SCHEDULES_GRID (Base and Peak timings, 12 listed " <>
+        "CAL_DAILY trips with one two-trip block and one custom trip, none on CAL_SCHOOL)"
+    )
+
+    {:ok, freq_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "BROWSER_SCHEDULES_FREQ",
+        route_short_name: "SF",
+        route_long_name: "Browser Schedules Frequency",
+        route_type: 3
+      })
+
+    freq_pattern =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: freq_route.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-SCHED-PF1",
+        route_pattern_name: "Frequency outbound",
+        route_pattern_typicality: 1,
+        timing_name: "All day",
+        timing_headsign: "Frequency outbound",
+        stops: advanced_stops
+      })
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      diagram_version.id,
+      freq_route.route_id,
+      freq_pattern,
+      %{
+        service_id: "CAL_DAILY",
+        trip_id: "BSF_T1",
+        trip_short_name: "9201",
+        start_time: "09:00:00",
+        trip_headsign: "Frequency outbound",
+        frequencies: [%{start_time: "09:00:00", end_time: "10:00:00", headway_secs: 600}]
+      }
+    )
+
+    IO.puts(
+      "Browser seed: BROWSER_SCHEDULES_FREQ (one frequency trip 09:00-10:00 " <>
+        "every 10 min on CAL_DAILY)"
+    )
+
+    {:ok, bulk_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "BROWSER_SCHEDULES_BULK",
+        route_short_name: "SB",
+        route_long_name: "Browser Schedules Bulk",
+        route_type: 3
+      })
+
+    bulk_pattern =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: bulk_route.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-SCHED-PB1",
+        route_pattern_name: "Bulk outbound",
+        route_pattern_typicality: 1,
+        timing_name: "All day",
+        timing_headsign: "Bulk outbound",
+        stops: advanced_stops
+      })
+
+    bulk_now = DateTime.utc_now()
+    bulk_first_departure = 5 * 3600
+
+    bulk_trip_id = fn index ->
+      "BSB_T" <> String.pad_leading(Integer.to_string(index), 3, "0")
+    end
+
+    bulk_trips =
+      for index <- 1..500 do
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          route_id: bulk_route.route_id,
+          service_id: "CAL_DAILY",
+          trip_id: bulk_trip_id.(index),
+          trip_short_name: String.pad_leading(Integer.to_string(index), 3, "0"),
+          trip_headsign: "Bulk outbound",
+          direction_id: 0,
+          route_pattern_id: bulk_pattern.pattern.route_pattern_id,
+          timed_pattern_id: bulk_pattern.timing.id,
+          pattern_derivation_state: "linked",
+          pattern_derivation_reason: nil,
+          inserted_at: bulk_now,
+          updated_at: bulk_now
+        }
+      end
+
+    bulk_stop_times =
+      for index <- 1..500,
+          {{stop_id, arrival_offset, departure_offset, timepoint}, sequence} <-
+            Enum.with_index(advanced_stops, 1) do
+        start_secs = bulk_first_departure + (index - 1) * 60
+
+        %{
+          id: Ecto.UUID.generate(),
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          trip_id: bulk_trip_id.(index),
+          stop_id: stop_id,
+          stop_sequence: sequence,
+          arrival_time: GtfsPlanner.Gtfs.GtfsTime.format(start_secs + arrival_offset),
+          departure_time: GtfsPlanner.Gtfs.GtfsTime.format(start_secs + departure_offset),
+          timepoint: timepoint,
+          inserted_at: bulk_now,
+          updated_at: bulk_now
+        }
+      end
+
+    Enum.each(Enum.chunk_every(bulk_trips, 100), &Repo.insert_all(Trip, &1))
+    Enum.each(Enum.chunk_every(bulk_stop_times, 500), &Repo.insert_all(StopTime, &1))
+
+    IO.puts(
+      "Browser seed: BROWSER_SCHEDULES_BULK (500 listed CAL_DAILY trips over one " <>
+        "pattern, chunked insert_all)"
+    )
+
     # ── Blocks browser journey (EV-28, step 29) ──
     #
     # A published "Browser Blocks Version" carries the Blocks page's own day types

@@ -186,11 +186,12 @@ test.describe("calendar list", () => {
       expect(statusText).toContain("Not used by trips");
 
       // Grouped trip usage is numeric and right-aligned in its own column. Every day
-      // service also carries the Schedules scenario's 23 trips in this version.
+      // service also carries the Schedules scenario's 23 trips plus the advanced trip
+      // editing journeys' 513 (12 grid, 1 frequency, 500 bulk) in this version.
       const dailyRow = page.locator("#calendars-list tr", {
         hasText: "Every day service",
       });
-      await expect(dailyRow.locator('td[data-label="Trips"]')).toHaveText("26");
+      await expect(dailyRow.locator('td[data-label="Trips"]')).toHaveText("539");
       await expect(
         page
           .locator("#calendars-list tr", { hasText: "School days" })
