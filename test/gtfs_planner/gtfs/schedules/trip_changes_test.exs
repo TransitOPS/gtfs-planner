@@ -276,11 +276,11 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChangesTest do
   end
 
   describe "plan/2" do
-    test "dispatches a planned tag and returns :invalid_command until a planner owns the rest" do
+    test "dispatches every command tag to its planner and refuses an unknown one" do
       # :shift is planned since step 9, :set_timing since step 14, :move_calendar since
-      # step 15, :copy since step 16 and :add_frequency/:update_frequency since step 17;
-      # :convert_frequency still falls through to the dispatch fallback until its planner
-      # step (18) adds a clause above it.
+      # step 15, :copy since step 16, :add_frequency/:update_frequency since step 17 and
+      # :convert_frequency since step 18; an unknown tag still falls through to the
+      # dispatch fallback. An empty state has no trip, so every planner reads :not_found.
       assert TripChanges.plan({:set_timing, [@trip_a], @trip_c}, %{}) == {:error, :not_found}
 
       assert TripChanges.plan({:move_calendar, [@trip_a], "SAT"}, %{}) ==
@@ -307,7 +307,9 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChangesTest do
              ) == {:error, :not_found}
 
       assert TripChanges.plan({:convert_frequency, @trip_a}, %{}) ==
-               {:error, :invalid_command}
+               {:error, :not_found}
+
+      assert TripChanges.plan({:unknown, [@trip_a]}, %{}) == {:error, :invalid_command}
     end
   end
 
