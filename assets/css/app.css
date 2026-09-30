@@ -814,6 +814,16 @@ body {
 #runs-timeline .runs-meta-type { left: var(--runs-meta-offset-1); }
 #runs-timeline .runs-meta-on { left: var(--runs-meta-offset-2); }
 #runs-timeline .runs-meta-off { left: var(--runs-meta-offset-3); }
+/* The header cells are named from `sort_columns/0`'s keys, which are `sign_on`
+   and `sign_off` because those are the values the URL sorts by
+   (`?sort=sign_on`). The body cells are named from `run_facts/1`'s keys, which
+   are `on` and `off`. Without these two the header cells still got
+   `position: sticky` from `.runs-meta` but no `left`, so they scrolled out with
+   the track while the numbers beneath stayed pinned: a pinned column with its
+   label gone. Naming the header's own class here keeps the URL contract and the
+   sticky offset in one place. */
+#runs-timeline .runs-meta-sign_on { left: var(--runs-meta-offset-2); }
+#runs-timeline .runs-meta-sign_off { left: var(--runs-meta-offset-3); }
 #runs-timeline .runs-meta-spread { left: var(--runs-meta-offset-4); }
 #runs-timeline .runs-meta-paid { left: var(--runs-meta-offset-5); }
 /* The last fact column takes the width from the right, so widening any earlier
