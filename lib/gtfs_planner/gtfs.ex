@@ -60,6 +60,7 @@ defmodule GtfsPlanner.Gtfs do
   alias GtfsPlanner.Gtfs.Pathway
   alias GtfsPlanner.Gtfs.PathwayEvolution
   alias GtfsPlanner.Gtfs.PathwayEvolutions
+  alias GtfsPlanner.Gtfs.PatternComparison
   alias GtfsPlanner.Gtfs.RecentChanges
   alias GtfsPlanner.Gtfs.RiderCategory
   alias GtfsPlanner.Gtfs.Route
@@ -208,6 +209,67 @@ defmodule GtfsPlanner.Gtfs do
       route_id,
       opts
     )
+  end
+
+  @doc """
+  Composes the two-pattern comparison of the URL route's A and an optional B
+  (spec §4 `R6`-`R9`) through the configured catalog read adapter.
+
+  `params` carries `:route_id` and `:a` and may carry `:b`, `:service`, `:ta`,
+  `:tb` and `:reverse`. A route or A outside the organization, the version and a
+  published route is `{:error, :not_found}`; a `b` that does not resolve there
+  is reported in the result as `b_error` with no B data. A lost database
+  connection is `{:error, :unavailable}`.
+  """
+  @spec load_pattern_comparison(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+          {:ok, map()} | {:error, :not_found | :unavailable}
+  def load_pattern_comparison(organization_id, gtfs_version_id, params) do
+    catalog_read_adapter().load_pattern_comparison(organization_id, gtfs_version_id, params)
+  end
+
+  @doc """
+  Returns one route direction's stop-by-pattern overview (AC-21) through the
+  configured catalog read adapter.
+
+  `opts` may carry `:direction` (`0` or `1`, default `0`) and `:service`; an
+  absent or unknown calendar uses the direction's busiest. A route outside the
+  organization and version, or on an unpublished version, is
+  `{:error, :not_found}`; a lost database connection is `{:error, :unavailable}`.
+  """
+  @spec load_pattern_overview(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) ::
+          {:ok, PatternComparison.overview()} | {:error, :not_found | :unavailable}
+  def load_pattern_overview(organization_id, gtfs_version_id, route_id, opts \\ []) do
+    catalog_read_adapter().load_pattern_overview(organization_id, gtfs_version_id, route_id, opts)
+  end
+
+  @doc """
+  Builds the comparison map payload for patterns `a` and `b` (AC-22, `R10`)
+  through the configured catalog read adapter.
+
+  `a` is the URL route's A that `load_pattern_comparison/3` has already bound to
+  the route; a `b` outside the organization, the version and a published route
+  is treated as absent, so the payload carries A alone. An A outside that scope
+  is `{:error, :not_found}`; a lost database connection is `{:error, :unavailable}`.
+  """
+  @spec load_pattern_compare_map(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t() | nil) ::
+          {:ok, PatternComparison.map_payload()} | {:error, :not_found | :unavailable}
+  def load_pattern_compare_map(organization_id, gtfs_version_id, a, b) do
+    catalog_read_adapter().load_pattern_compare_map(organization_id, gtfs_version_id, a, b)
+  end
+
+  @doc """
+  Lists the version's published patterns for the comparison picker (AC-20)
+  through the configured catalog read adapter.
+
+  `opts` may carry `:other`, the pattern on the other side of the comparison,
+  for the stops-in-common count, and `:service`, the calendar for the trip
+  counts. Entries are ranked by stops in common, then trips. A lost database
+  connection is `{:error, :unavailable}`.
+  """
+  @spec load_pattern_picker(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, [PatternComparison.picker_entry()]} | {:error, :unavailable}
+  def load_pattern_picker(organization_id, gtfs_version_id, opts \\ []) do
+    catalog_read_adapter().load_pattern_picker(organization_id, gtfs_version_id, opts)
   end
 
   @doc """
