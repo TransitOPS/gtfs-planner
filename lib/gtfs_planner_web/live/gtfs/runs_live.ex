@@ -79,6 +79,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:suggest_open, false)
      |> assign(:suggest_scope, :uncovered_only)
      |> assign(:suggest_notice, nil)
+     |> assign(:apply_state, :idle)
+     |> assign(:rebuild_confirm, false)
      |> assign(:shares_state, :loading)
      |> assign(:shares, [])
      # The duty chart's state. `sort`/`dir`/`scale` are read from the URL and
@@ -375,23 +377,53 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   def handle_event("select_scope", _params, socket), do: {:noreply, socket}
 
   def handle_event("preview_suggestion", _params, socket) do
-    scope = socket.assigns.suggest_scope
+    preview_with(socket, socket.assigns.day, socket.assigns.suggest_scope)
+  end
 
-    case Gtfs.suggest_runs(
-           socket.assigns.current_organization.id,
-           socket.assigns.current_gtfs_version.id,
-           socket.assigns.day,
-           scope
-         ) do
-      {:ok, plan} ->
-        {:noreply,
-         socket
-         |> assign(:plan, plan)
-         |> assign(:suggest_open, false)
-         |> stream_run_rows()}
+  def handle_event("apply_suggestion", _params, socket) do
+    cond do
+      not previewing?(socket.assigns) ->
+        {:noreply, put_toast(socket, "There is no suggestion to apply.", :refused)}
 
-      {:error, reason} ->
-        {:noreply, assign(socket, :suggest_notice, {:error, suggest_error(reason)})}
+      socket.assigns.apply_state == :pending ->
+        {:noreply, socket}
+
+      socket.assigns.apply_state == :stale ->
+        {:noreply, socket}
+
+      plan_needs_confirmation?(socket.assigns) ->
+        {:noreply, assign(socket, :rebuild_confirm, true)}
+
+      true ->
+        do_apply(socket)
+    end
+  end
+
+  def handle_event("confirm_rebuild", _params, socket) do
+    if socket.assigns.rebuild_confirm and socket.assigns.apply_state != :pending do
+      socket |> assign(:rebuild_confirm, false) |> do_apply()
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("cancel_rebuild", _params, socket) do
+    # "Keep current runs" closes the dialog and writes nothing. The preview stays
+    # up, because the reader asked a question about the suggestion and has not
+    # answered it yet.
+    {:noreply, assign(socket, :rebuild_confirm, false)}
+  end
+
+  def handle_event("suggest_again", _params, socket) do
+    case socket.assigns do
+      %{plan: plan} ->
+        # Start from the SAVED runs, not from the stale preview: the preview is
+        # dropped rather than re-suggested, because keeping it would show figures
+        # that cannot be applied beside a Suggest again just offered.
+        preview_with(socket, plan.day_type_key, plan.scope)
+
+      _ ->
+        {:noreply, socket}
     end
   end
 
@@ -402,6 +434,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     {:noreply,
      socket
      |> assign(:plan, nil)
+     |> assign(:apply_state, :idle)
+     |> assign(:rebuild_confirm, false)
+     |> assign(:suggest_notice, nil)
      |> stream_run_rows()}
   end
 
@@ -739,6 +774,102 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # them. It is LAST among the `handle_event` clauses on purpose: a catch-all
   # placed earlier would shadow the drawer events above it.
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  # One preview path for Preview and Suggest again, so the two cannot differ in
+  # what they clear or leave behind.
+  defp preview_with(socket, day_type_key, scope) do
+    case Gtfs.suggest_runs(
+           socket.assigns.current_organization.id,
+           socket.assigns.current_gtfs_version.id,
+           day_type_key,
+           scope
+         ) do
+      {:ok, plan} ->
+        {:noreply,
+         socket
+         |> assign(:plan, plan)
+         |> assign(:suggest_open, false)
+         |> assign(:apply_state, :idle)
+         |> assign(:rebuild_confirm, false)
+         |> assign(:suggest_notice, nil)
+         |> stream_run_rows()}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:suggest_notice, {:error, suggest_error(reason)})
+         |> put_toast(suggest_error(reason), :refused)}
+    end
+  end
+
+  # A REBUILD asks first; uncovering work does not.
+  #
+  # The test is not "is it reversible" — both are, by Undo — but whether the
+  # reader can SEE what changed. An uncovered preview adds runs and leaves the
+  # existing ones alone, so the diff is exactly the rows the panel already marks
+  # as new. A rebuild renumbers runs that may have been tuned by hand, and a
+  # rename the reader made is invisible in that diff.
+  defp plan_needs_confirmation?(%{plan: %{scope: :replace_all}}), do: true
+  defp plan_needs_confirmation?(_assigns), do: false
+
+  defp do_apply(socket) do
+    %{current_organization: organization, current_gtfs_version: version, plan: plan} =
+      socket.assigns
+
+    socket = assign(socket, :apply_state, :pending)
+
+    case Gtfs.apply_run_plan(organization.id, version.id, plan) do
+      {:ok, %{undo: undo_moves}} when undo_moves != [] ->
+        {:noreply,
+         socket
+         |> put_undo(%{moves: undo_moves, trips: undo_trip_count(undo_moves)})
+         |> put_toast("Suggestion applied.", :done)
+         |> assign(:plan, nil)
+         |> assign(:apply_state, :idle)
+         |> assign(:rebuild_confirm, false)
+         |> load_day()
+         |> stream_run_rows()}
+
+      {:ok, %{undo: []}} ->
+        # A plan that changed nothing reports success with no moves. Saying
+        # "Suggestion applied." and arming an Undo over zero moves would tell the
+        # reader vehicle work had been rearranged when none had.
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast("There was nothing to apply.", :refused)
+         |> assign(:plan, nil)
+         |> assign(:apply_state, :idle)
+         |> stream_run_rows()}
+
+      {:error, :stale_plan} ->
+        # The suggestion is now UNAPPLICABLE, not merely unapplied. Apply is
+        # disabled rather than left to fail again, and the plan stays on screen so
+        # the reader can see what they were about to write.
+        {:noreply, assign(socket, :apply_state, :stale)}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> assign(:apply_state, :failed)
+         |> put_toast("Couldn't apply the suggestion.", :refused)
+         |> put_toast(apply_failure_detail(reason), :refused)}
+    end
+  end
+
+  defp apply_failure_detail(:not_found), do: "This version is no longer available."
+
+  defp apply_failure_detail({:invalid_trips, trips}) do
+    "#{length(trips)} #{if length(trips) == 1, do: "trip", else: "trips"} could not be reassigned."
+  end
+
+  defp apply_failure_detail(_reason),
+    do: "Your saved runs are unchanged. Try again, or discard the suggestion."
+
+  # A pending apply is IGNORED, not queued and not re-run. The button is disabled
+  # while one is in flight, so this guard only catches what a disabled button
+  # cannot: a second event arriving before the reply is rendered.
 
   defp create_run_unchecked(params, socket) do
     case find_uncovered(socket.assigns.runs_day, params) do
@@ -1873,6 +2004,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
             plan={@plan}
             runs_day={@runs_day}
             day_label={day_label(@runs_day)}
+            apply_state={@apply_state}
           />
 
           <RunsComponents.page_footnote :if={@load_state == :loaded} />
@@ -1894,6 +2026,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
             no next number to name, so the drawer does not exist yet rather than
             existing with blanks in it. The button that opens it is already
             `:if={@runs_day}`, so this cannot hide an open drawer. --%>
+      <%!-- The confirmation is a `<dialog>`, so it lives outside the panel and
+            is open by an assign rather than by the panel's own state. --%>
+      <RunsComponents.rebuild_confirm
+        :if={previewing?(assigns)}
+        plan={@plan}
+        day_label={day_label(@runs_day)}
+        open={@rebuild_confirm}
+        pending={@apply_state == :pending}
+      />
+
       <RunsComponents.suggest_drawer
         :if={@runs_day}
         open={@suggest_open}
