@@ -4,8 +4,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   `AC-16`): the route header, the title row with its view toggle and calendar
   select, the loading skeleton, the unavailable state, and the A/B slot cards
   with the swap between them. The summary card adds the difference list and the
-  metric strip (`AC-7`, `AC-9`, `AC-18`); the `#compare-stops` and `#compare-map`
-  containers stay empty for the later steps that fill them.
+  metric strip (`AC-7`, `AC-9`, `AC-18`), and the stop-by-stop card adds the
+  streamed table with its lanes, difference cells, running-time columns and
+  folds (`AC-5`, `AC-6`, `AC-8`, `AC-19`); the `#compare-map` container stays
+  empty for the later step that fills it.
 
   The ready state owns the `#compare-workspace` grid the containers sit in.
   Every state decision stays in `RoutePatternCompareLive`; these components
@@ -53,6 +55,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   attr :two_path, :string, required: true, doc: "the compare URL with `view` cleared"
   attr :all_path, :string, required: true, doc: "the compare URL with `view=all`"
   attr :patterns_path, :string, required: true, doc: "the route's Patterns tab"
+
+  attr :rows, :any, required: true, doc: "the `:compare_rows` stream for the stop table"
 
   attr :slot_paths, :map,
     default: nil,
@@ -135,6 +139,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
           <% true -> %>
             <.two_pattern_containers
               comparison={@comparison}
+              rows={@rows}
               slot_paths={@slot_paths}
               reverse_path={@reverse_path}
             />
@@ -228,10 +233,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   # slots row and the two-column workspace mirror the prototype, including the
   # map's own column, which stacks above the table below `lg`.
   attr :comparison, :map, required: true
+  attr :rows, :any, required: true
   attr :slot_paths, :map, required: true
   attr :reverse_path, :string, default: nil
 
   defp two_pattern_containers(assigns) do
+    assigns = assign(assigns, :stops_mode, stops_mode(assigns.comparison))
+
     ~H"""
     <div id="compare-two-view" class="mt-4">
       <.slots comparison={@comparison} slot_paths={@slot_paths} />
@@ -250,7 +258,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
           >
             <.summary comparison={@comparison} />
           </section>
-          <section id="compare-stops" aria-label="Stop by stop"></section>
+          <section
+            id="compare-stops"
+            aria-labelledby="stops-title"
+            data-mode={@stops_mode}
+            class="rounded-card border border-subtle bg-white"
+          >
+            <.stop_table
+              :if={@comparison.alignment}
+              comparison={@comparison}
+              rows={@rows}
+              mode={@stops_mode}
+            />
+            <.stops_in_a :if={is_nil(@comparison.alignment)} comparison={@comparison} />
+          </section>
         </div>
         <aside
           id="compare-map-pane"
@@ -561,6 +582,833 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
       </div>
     </dl>
     """
+  end
+
+  # The stop-by-stop card (`AC-19`): the toolbar (rows mode, difference stepper
+  # and status), the table with its streamed rows, the fold markers and the
+  # footer that says what the times mean and how the stops are lined up. Lanes,
+  # rings and the magnitude bars are Tailwind utilities (`CR-4`); every time,
+  # wait, count and label is the read's own value (`INV-5`); the controls and
+  # links post no events, so selection, folds and hover stay in the workspace
+  # hook (`INV-4`).
+  #
+  # `rows` is the `:compare_rows` stream `stop_table_items/1` fills: one `<tr>`
+  # per item, a row or a fold marker, each with its own DOM id. Above 24 rows the
+  # server opens in Differences mode; the hook owns every later mode, fold and
+  # selection change.
+  attr :comparison, :map, required: true
+  attr :rows, :any, required: true, doc: "the `:compare_rows` stream"
+  attr :mode, :string, required: true, values: ["all", "diff"]
+
+  def stop_table(assigns) do
+    comparison = assigns.comparison
+    alignment = comparison.alignment
+    segments = Map.new(alignment.segments, &{&1.to, &1})
+    difference_count = difference_count(comparison)
+    show_times? = show_times?(comparison)
+    timed? = timed?(comparison)
+
+    assigns =
+      assigns
+      |> assign(:alignment, alignment)
+      |> assign(:row_count, length(alignment.rows))
+      |> assign(:difference_count, difference_count)
+      |> assign(:status, status_label(difference_count))
+      |> assign(:show_times?, show_times?)
+      |> assign(:timed?, timed?)
+      |> assign(:segments, segments)
+      |> assign(:boarding, boarding_by_row(alignment.differences.items))
+      |> assign(:spans, spans(alignment.rows))
+      |> assign(:b_sequence, b_sequence(comparison))
+      |> assign(:footer, footer_copy(comparison, show_times?, timed?))
+
+    ~H"""
+    <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-b border-subtle px-5 py-3">
+      <h3 id="stops-title" class="font-sans text-base font-bold">Stop by stop</h3>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <div
+          id="stops-mode"
+          role="group"
+          aria-label="Rows"
+          class="inline-flex rounded-control border border-control bg-white p-0.5"
+        >
+          <button
+            type="button"
+            id="stops-mode-all"
+            data-mode="all"
+            aria-pressed={aria_pressed(@mode == "all")}
+            class={mode_option_class()}
+          >
+            All stops <span class="ml-1.5 tabular-nums">{@row_count}</span>
+          </button>
+          <button
+            type="button"
+            id="stops-mode-diff"
+            data-mode="diff"
+            aria-pressed={aria_pressed(@mode == "diff")}
+            class={mode_option_class()}
+          >
+            Differences <span class="ml-1.5 tabular-nums">{@difference_count}</span>
+          </button>
+        </div>
+
+        <div role="group" aria-label="Move between differences" class="flex items-center">
+          <button
+            type="button"
+            id="stops-previous"
+            data-step="-1"
+            disabled={@difference_count == 0}
+            aria-label="Previous difference"
+            title="Previous difference"
+            class={step_class(:left)}
+          >
+            <.icon name="hero-chevron-right" class="size-4 -rotate-90" />
+          </button>
+          <button
+            type="button"
+            id="stops-next"
+            data-step="1"
+            disabled={@difference_count == 0}
+            aria-label="Next difference"
+            title="Next difference"
+            class={step_class(:right)}
+          >
+            <.icon name="hero-chevron-right" class="size-4 rotate-90" />
+          </button>
+          <span
+            id="stops-position"
+            role="status"
+            class="ml-2 min-w-[92px] text-[13px] tabular-nums text-muted"
+          >
+            {@status}
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <div class="overflow-x-auto">
+      <table class="w-full border-collapse text-left text-sm">
+        <thead class="bg-canvas text-[13px] text-muted">
+          <tr :if={@show_times?}>
+            <th colspan="4" class="max-sm:hidden"></th>
+            <th
+              colspan="3"
+              scope="colgroup"
+              class="border-l border-subtle px-2 pt-2 text-right font-[650] text-strong max-sm:hidden"
+            >
+              Running time from the previous shared stop
+            </th>
+          </tr>
+          <tr class="border-b border-subtle">
+            <th scope="col" class="w-11 py-2 text-center font-[650]">
+              <.series_chip letter="A" />
+            </th>
+            <th scope="col" class="w-11 py-2 text-center font-[650]">
+              <.series_chip letter="B" />
+            </th>
+            <th scope="col" class="py-2 pl-2 pr-3 font-[650]">Stop</th>
+            <th scope="col" class="w-[196px] py-2 pl-2 pr-3 font-[650] max-sm:hidden">Difference</th>
+            <th
+              :if={@show_times?}
+              scope="col"
+              class="w-[64px] border-l border-subtle px-2 py-2 text-right font-[650] max-sm:hidden"
+            >
+              A
+            </th>
+            <th
+              :if={@show_times?}
+              scope="col"
+              class="w-[64px] px-2 py-2 text-right font-[650] max-sm:hidden"
+            >
+              B
+            </th>
+            <th :if={@show_times?} scope="col" class="w-[92px] py-2 pl-2 pr-4 text-right font-[650]">
+              B vs A<span class="block font-normal sm:hidden">running time</span>
+            </th>
+          </tr>
+        </thead>
+
+        <tbody id="compare-rows" phx-update="stream">
+          <tr
+            :for={{dom_id, item} <- @rows}
+            id={dom_id}
+            data-row={row_index(item)}
+            data-stop-id={row_stop_id(item)}
+            data-type={row_type(item)}
+            data-moved-row={row_moved_to(item)}
+            data-fold={fold_marker(item)}
+            data-fold-range={fold_range(item)}
+            hidden={stream_row_hidden?(item, @mode)}
+            class={stream_row_class(item)}
+          >
+            <%= if item.kind == :fold do %>
+              <td colspan={if @show_times?, do: 7, else: 4} class="px-3 py-1">
+                <button
+                  type="button"
+                  data-unfold={fold_marker(item)}
+                  class="flex min-h-11 w-full items-center gap-2 rounded-control px-2 text-left text-sm text-default hover:bg-white"
+                >
+                  <.icon name="hero-chevron-down" class="size-4 shrink-0 text-muted" />
+                  <span>
+                    <span class="font-[650] text-strong">
+                      Show {plural(item.count, "matching stop")}
+                    </span>
+                    {" · "}{stop_name(@comparison, fold_stop(@alignment, item.from))} to {stop_name(
+                      @comparison,
+                      fold_stop(@alignment, item.to)
+                    )}
+                  </span>
+                </button>
+              </td>
+            <% else %>
+              <.lane_cell
+                letter="A"
+                row={item.row}
+                index={item.index}
+                spans={@spans}
+                visit_count={length(@comparison.b.stops)}
+                reversed?={@alignment.reversed?}
+              />
+              <.lane_cell
+                letter="B"
+                row={item.row}
+                index={item.index}
+                spans={@spans}
+                visit_count={length(@comparison.b.stops)}
+                reversed?={@alignment.reversed?}
+              />
+              <td class="min-w-0 py-2 pl-2 pr-3 align-middle">
+                <button
+                  type="button"
+                  data-select={item.index}
+                  class="block min-h-11 w-full rounded-control text-left"
+                >
+                  <span class="block text-[15px] font-[650] leading-snug text-strong">
+                    {stop_name(@comparison, item.row.stop_id)}
+                  </span>
+                  <span class="block text-[13px] text-muted">
+                    {stop_meta(@comparison, @b_sequence, item.row)}
+                  </span>
+                </button>
+                <div class="mt-1 text-sm sm:hidden">
+                  <.difference_cell
+                    cell={
+                      row_difference(
+                        @comparison,
+                        @alignment,
+                        @segments,
+                        @boarding,
+                        item,
+                        @timed?,
+                        @show_times?
+                      )
+                    }
+                    row={item.row}
+                  />
+                </div>
+              </td>
+              <td class="py-2 pl-2 pr-3 align-middle text-sm max-sm:hidden">
+                <.difference_cell
+                  cell={
+                    row_difference(
+                      @comparison,
+                      @alignment,
+                      @segments,
+                      @boarding,
+                      item,
+                      @timed?,
+                      @show_times?
+                    )
+                  }
+                  row={item.row}
+                />
+              </td>
+              <%= if @show_times? do %>
+                <%= if @timed? do %>
+                  <td class="border-l border-subtle px-2 py-2.5 text-right align-top tabular-nums text-strong max-sm:hidden">
+                    {duration_cell(Map.get(@segments, item.index), :a)}
+                  </td>
+                  <td class="px-2 py-2.5 text-right align-top tabular-nums text-strong max-sm:hidden">
+                    {duration_cell(Map.get(@segments, item.index), :b)}
+                  </td>
+                  <td class={[
+                    "py-2.5 pl-2 pr-4 text-right align-top tabular-nums",
+                    diff_cell_class(Map.get(@segments, item.index))
+                  ]}>
+                    <%= case Map.get(@segments, item.index) do %>
+                      <% %{diff: 0} -> %>
+                        Same
+                      <% %{diff: diff} -> %>
+                        {diff_label(diff)}
+                        <span class="mt-1 flex justify-end" aria-hidden="true">
+                          <span
+                            class={["block h-1 rounded-full", diff_bar_class(diff)]}
+                            style={"width: #{diff_bar_width(diff)}px"}
+                          >
+                          </span>
+                        </span>
+                      <% nil -> %>
+                    <% end %>
+                  </td>
+                <% else %>
+                  <td class="border-l border-subtle px-2 py-2.5 text-right align-top tabular-nums text-muted max-sm:hidden">
+                    —
+                  </td>
+                  <td class="px-2 py-2.5 text-right align-top tabular-nums text-muted max-sm:hidden">
+                    —
+                  </td>
+                  <td class="py-2.5 pl-2 pr-4 text-right align-top tabular-nums text-muted">—</td>
+                <% end %>
+              <% end %>
+            <% end %>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="grid gap-3 border-t border-subtle px-5 py-3 text-[13px] text-muted">
+      <p id="stops-footer">{@footer}</p>
+
+      <details class="group">
+        <summary class="inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 font-[650] text-action [&::-webkit-details-marker]:hidden">
+          <.icon name="hero-chevron-right" class="size-4 transition-transform group-open:rotate-90" />
+          How stops are lined up
+        </summary>
+        <div class="grid max-w-[76ch] gap-2 pb-2 pl-6 text-sm text-default">
+          <p>
+            Stops are matched in trip order, keeping as many as possible in the same order. A stop
+            visited twice, such as a loop’s first and last stop, keeps a row for each visit; the
+            second visit matches the other pattern’s second visit when it can.
+          </p>
+          <p>
+            When one pattern has its own stops in a stretch, they are listed together: A’s first,
+            then B’s. A stop both patterns serve, but at different points in the trip, appears at
+            both points as “Order differs”.
+          </p>
+          <p>
+            Running times are compared between two stops that both patterns serve in the same
+            order. When either pattern has its own stops in between, the time covers the whole
+            stretch.
+          </p>
+        </div>
+      </details>
+    </div>
+    """
+  end
+
+  # The compare page's choose-B state lists A's own stops in the stop card, so
+  # the page is still useful while B is being chosen (the reference's choose-b
+  # table). It is plain markup: there is no comparison to stream or interact with.
+  attr :comparison, :map, required: true
+
+  defp stops_in_a(assigns) do
+    ~H"""
+    <div class="border-b border-subtle px-5 py-4">
+      <h3 id="stops-title" class="font-sans text-base font-bold">Stops in A</h3>
+    </div>
+    <ol class="px-5 py-3">
+      <li
+        :for={{stop_id, index} <- Enum.with_index(@comparison.a.stops, 1)}
+        class="flex min-h-10 items-center gap-3 text-sm"
+      >
+        <span class="flex size-[26px] shrink-0 items-center justify-center rounded-full bg-navy-800 text-[12px] font-bold tabular-nums text-white">
+          {index}
+        </span>
+        <span class="text-strong">{stop_name(@comparison, stop_id)}</span>
+      </li>
+    </ol>
+    """
+  end
+
+  @doc """
+  Builds the `:compare_rows` stream items for `stop_table/1`.
+
+  One item per table row: the aligned rows in order, each preceded by a fold
+  marker when a run of matching rows is folded in Differences mode. Rows carry
+  their index, their aligned row and (inside a fold) the fold's range; markers
+  carry the range and its stop count. Every item has a stable DOM id
+  (`compare-row-<index>`, `compare-fold-<from>-<to>`), so a reset stream keeps
+  the same ids for the same rows. The fold set mirrors the reference: the first
+  and last rows, every difference's rows and frame, and the rows either side of
+  a row only one pattern serves stay visible; runs of the remaining matching
+  rows fold. A comparison without an alignment (B not chosen) has no items.
+  """
+  def stop_table_items(%{alignment: %{} = alignment}) do
+    rows = alignment.rows
+    folds = fold_groups(rows, alignment.differences.items)
+
+    rows
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {row, index} ->
+      case Map.get(folds, index) do
+        nil -> [stream_row(index, row, nil)]
+        {from, to} -> [fold_item(from, to), stream_row(index, row, {from, to})]
+      end
+    end)
+  end
+
+  def stop_table_items(_comparison), do: []
+
+  defp stream_row(index, row, fold) do
+    %{kind: :row, index: index, row: row, fold: fold, dom_id: "compare-row-#{index}"}
+  end
+
+  defp fold_item(from, to) do
+    %{kind: :fold, from: from, to: to, count: to - from + 1, dom_id: "compare-fold-#{from}-#{to}"}
+  end
+
+  defp fold_groups(rows, items) do
+    last = length(rows) - 1
+
+    difference_rows = Enum.flat_map(items, &(&1.frame ++ &1.rows))
+
+    neighbour_rows =
+      rows
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {row, index} ->
+        if row.type == :same, do: [], else: [index - 1, index + 1]
+      end)
+
+    keep = MapSet.new([0, last] ++ difference_rows ++ neighbour_rows)
+
+    rows
+    |> Enum.with_index()
+    |> Enum.reject(fn {_row, index} -> MapSet.member?(keep, index) end)
+    |> Enum.map(&elem(&1, 1))
+    |> consecutive_runs()
+    |> Map.new(fn run -> {hd(run), {hd(run), List.last(run)}} end)
+  end
+
+  defp consecutive_runs([]), do: []
+
+  defp consecutive_runs([first | rest]) do
+    {run, runs} =
+      Enum.reduce(rest, {[first], []}, fn index, {run, runs} ->
+        if index == List.last(run) + 1, do: {run ++ [index], runs}, else: {[index], runs ++ [run]}
+      end)
+
+    runs ++ [run]
+  end
+
+  defp fold_stop(alignment, index),
+    do: alignment.rows |> Enum.at(index) |> Map.fetch!(:stop_id)
+
+  defp row_index(%{kind: :row, index: index}), do: index
+  defp row_index(_item), do: nil
+
+  defp row_stop_id(%{kind: :row, row: row}), do: row.stop_id
+  defp row_stop_id(_item), do: nil
+
+  defp row_type(%{kind: :row, row: row}), do: row.type
+  defp row_type(_item), do: nil
+
+  defp row_moved_to(%{kind: :row, row: row}), do: row.moved_to
+  defp row_moved_to(_item), do: nil
+
+  defp fold_marker(%{kind: :fold, from: from, to: to}), do: "#{from}-#{to}"
+  defp fold_marker(_item), do: nil
+
+  defp fold_range(%{kind: :row, fold: {from, to}}), do: "#{from}-#{to}"
+  defp fold_range(_item), do: nil
+
+  defp stream_row_hidden?(%{kind: :fold}, mode), do: mode != "diff"
+  defp stream_row_hidden?(%{kind: :row, fold: fold}, mode), do: mode == "diff" and fold != nil
+
+  defp stream_row_class(%{kind: :fold}), do: "border-b border-subtle bg-canvas"
+
+  defp stream_row_class(%{kind: :row, row: row}),
+    do: ["border-b border-subtle hover:bg-canvas", row_tint(row)]
+
+  # The row tint follows the reference: A's own rows take the faintest navy,
+  # B's own rows the soft cyan and an order difference the warning ground. A
+  # matching row has no tint. The classes live here so the workspace hook can
+  # replace them for its own selection/highlight state.
+  defp row_tint(%{moved_to: moved_to}) when not is_nil(moved_to), do: "bg-warning-bg/50"
+  defp row_tint(%{type: :a}), do: "bg-navy-300/15"
+  defp row_tint(%{type: :b}), do: "bg-soft"
+  defp row_tint(_row), do: nil
+
+  # One lane cell: the line halves up to this visit's place in the pattern's
+  # span, its numbered ring, or - for a stop this pattern does not serve - a
+  # faint line through the span. Utilities only (`CR-4`); B's ring counts down
+  # when the read has B reversed.
+  attr :letter, :string, required: true, values: ["A", "B"]
+  attr :row, :map, required: true
+  attr :index, :integer, required: true
+  attr :spans, :map, required: true
+  attr :visit_count, :integer, required: true
+  attr :reversed?, :boolean, required: true
+
+  defp lane_cell(assigns) do
+    position = if assigns.letter == "A", do: assigns.row.a_pos, else: assigns.row.b_pos
+    {low, high} = Map.fetch!(assigns.spans, spans_key(assigns.letter))
+
+    assigns =
+      assigns
+      |> assign(:position, position)
+      |> assign(:low, low)
+      |> assign(:high, high)
+      |> assign(
+        :number,
+        position && ring_number(assigns.letter, position, assigns.visit_count, assigns.reversed?)
+      )
+
+    ~H"""
+    <td class="relative w-11 p-0 text-center align-middle">
+      <%= if @position do %>
+        <span
+          :if={@index > @low}
+          class={["absolute left-1/2 top-0 h-1/2 w-1 -translate-x-1/2", lane_color(@letter)]}
+        >
+        </span>
+        <span
+          :if={@index < @high}
+          class={["absolute left-1/2 bottom-0 h-1/2 w-1 -translate-x-1/2", lane_color(@letter)]}
+        >
+        </span>
+        <span class={[
+          "relative z-[1] mx-auto flex size-[26px] items-center justify-center rounded-full text-[12px] font-bold tabular-nums text-white ring-2 ring-white",
+          lane_color(@letter)
+        ]}>
+          {@number}
+        </span>
+      <% else %>
+        <span
+          :if={@index > @low and @index < @high}
+          class={[
+            "absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 opacity-45",
+            lane_color(@letter)
+          ]}
+        >
+        </span>
+      <% end %>
+    </td>
+    """
+  end
+
+  defp ring_number("B", position, count, true), do: count - position + 1
+  defp ring_number(_letter, position, _count, _reversed?), do: position
+
+  defp spans_key("A"), do: :a
+  defp spans_key("B"), do: :b
+
+  defp lane_color("A"), do: "bg-navy-800"
+  defp lane_color("B"), do: "bg-cyan-700"
+
+  # The Difference cell of one row, or nothing when there is nothing to say.
+  # The order is the reference's: a moved pair first, then a stop only one
+  # pattern serves, then the states the read reports for a shared stop - no
+  # scheduled time (`AC-6`), a boarding difference, a differing wait - and
+  # finally the stretch note on the anchor that closes a stretch with own stops
+  # (`AC-19`).
+  defp row_difference(comparison, alignment, segments, boarding, item, timed?, show_times?) do
+    row = item.row
+
+    cond do
+      row.moved_to != nil ->
+        moved_difference(alignment, row)
+
+      row.type == :a ->
+        %{kind: :only_a}
+
+      row.type == :b ->
+        %{kind: :only_b}
+
+      true ->
+        shared_difference(comparison, alignment, segments, boarding, item, timed?, show_times?)
+    end
+  end
+
+  defp shared_difference(comparison, alignment, segments, boarding, item, timed?, show_times?) do
+    cond do
+      MapSet.member?(alignment.untimed, item.index) ->
+        %{kind: :untimed}
+
+      not timed? ->
+        nil
+
+      detail = Map.get(boarding, item.index) ->
+        %{kind: :boarding, a: detail.a, b: detail.b}
+
+      wait = Map.get(alignment.waits, item.index) ->
+        %{kind: :wait, a: elem(wait, 0), b: elem(wait, 1)}
+
+      show_times? ->
+        stretch_difference(comparison, alignment, segments, item.index)
+
+      true ->
+        nil
+    end
+  end
+
+  defp moved_difference(alignment, row) do
+    other = Enum.at(alignment.rows, row.moved_to)
+
+    %{
+      kind: :moved,
+      target: row.moved_to,
+      a_pos: if(row.type == :a, do: row.a_pos, else: other.a_pos),
+      b_pos: if(row.type == :b, do: row.b_pos, else: other.b_pos)
+    }
+  end
+
+  # A stretch that spans one pattern's own stops ends at an anchor; the reference
+  # names the stop the stretch starts from so the time it covers is clear.
+  defp stretch_difference(comparison, alignment, segments, index) do
+    case Map.get(segments, index) do
+      %{same_stops?: false, from: from} ->
+        %{kind: :stretch, from: stop_name(comparison, row_stop_id_at(alignment, from))}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp row_stop_id_at(alignment, index),
+    do: alignment.rows |> Enum.at(index) |> Map.fetch!(:stop_id)
+
+  attr :cell, :map, required: true
+  attr :row, :map, required: true
+
+  defp difference_cell(%{cell: %{kind: :only_a}} = assigns) do
+    ~H"""
+    <span class="flex items-center gap-1.5 font-[650] text-strong">
+      <.icon name="hero-minus-circle" class="size-4 text-navy-800" /> Only in
+      <.series_chip letter="A" />
+    </span>
+    <span class="block text-[13px] text-muted">B doesn’t stop here</span>
+    """
+  end
+
+  defp difference_cell(%{cell: %{kind: :only_b}} = assigns) do
+    ~H"""
+    <span class="flex items-center gap-1.5 font-[650] text-strong">
+      <.icon name="hero-plus-circle" class="size-4 text-cyan-700" /> Only in
+      <.series_chip letter="B" />
+    </span>
+    <span class="block text-[13px] text-muted">A doesn’t stop here</span>
+    """
+  end
+
+  defp difference_cell(%{cell: %{kind: :moved} = cell} = assigns) do
+    assigns =
+      assigns
+      |> assign(:cell, cell)
+      |> assign(:letter, if(assigns.row.type == :a, do: "B", else: "A"))
+
+    ~H"""
+    <span class="flex items-center gap-1.5 font-[650] text-strong">
+      <.icon name="hero-arrows-up-down" class="size-4 text-warning-fg" /> Order differs
+    </span>
+    <span class="block text-[13px] text-muted tabular-nums">
+      Stop {@cell.a_pos} in A · stop {@cell.b_pos} in B
+    </span>
+    <a
+      href={"#compare-row-#{@cell.target}"}
+      data-goto-row={@cell.target}
+      class="inline-flex min-h-11 items-center text-[13px] font-[650] text-action underline"
+    >
+      Go to {@letter}’s visit
+    </a>
+    """
+  end
+
+  defp difference_cell(%{cell: %{kind: :untimed}} = assigns) do
+    ~H"""
+    <span class="flex items-center gap-1.5 font-[650] text-strong">
+      <.icon name="hero-question-mark-circle" class="size-4 text-muted" /> No scheduled time
+    </span>
+    """
+  end
+
+  defp difference_cell(%{cell: %{kind: :boarding} = cell} = assigns) do
+    assigns = assign(assigns, :cell, cell)
+
+    ~H"""
+    <span class="flex items-center gap-1.5 font-[650] text-strong">
+      <.icon name="hero-information-circle" class="size-4 text-info-fg" /> Boarding differs
+    </span>
+    <span class="block text-[13px] text-muted">
+      <.series_chip letter="B" /> {boarding_label(@cell.b)};
+      <.series_chip letter="A" /> {boarding_label(@cell.a)}.
+    </span>
+    """
+  end
+
+  defp difference_cell(%{cell: %{kind: :wait} = cell} = assigns) do
+    assigns = assign(assigns, :cell, cell)
+
+    ~H"""
+    <span class="flex items-center gap-1.5 font-[650] text-strong">
+      <.icon name="hero-clock" class="size-4 text-muted" /> Wait differs
+    </span>
+    <span class="block text-[13px] text-muted tabular-nums">
+      A {format_duration(@cell.a)} · B {format_duration(@cell.b)}
+    </span>
+    """
+  end
+
+  defp difference_cell(%{cell: %{kind: :stretch} = cell} = assigns) do
+    assigns = assign(assigns, :cell, cell)
+
+    ~H"""
+    <span class="block text-[13px] leading-snug text-muted">
+      Time covers the whole stretch from {@cell.from}
+    </span>
+    """
+  end
+
+  defp difference_cell(assigns), do: ~H""
+
+  defp duration_cell(nil, _letter), do: ""
+  defp duration_cell(segment, :a), do: format_duration(segment.a_secs)
+  defp duration_cell(segment, :b), do: format_duration(segment.b_secs)
+
+  defp diff_cell_class(nil), do: "text-muted"
+  defp diff_cell_class(%{diff: 0}), do: "text-muted"
+  defp diff_cell_class(_segment), do: "font-bold text-strong"
+
+  defp diff_label(0), do: "Same"
+  defp diff_label(secs), do: "#{if secs > 0, do: "+", else: "−"}#{format_duration(secs)}"
+
+  defp diff_bar_width(secs), do: min(40, round(abs(secs) / 30) * 4 + 4)
+
+  defp diff_bar_class(secs) when secs > 0, do: "bg-navy-300"
+  defp diff_bar_class(_secs), do: "bg-cyan-700"
+
+  defp stop_meta(comparison, b_sequence, row) do
+    [
+      "Stop " <> row.stop_id,
+      if(timepoint?(comparison, row.stop_id), do: "timepoint"),
+      visit_label(comparison, b_sequence, row)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  defp timepoint?(comparison, stop_id) do
+    match?(%{timepoint?: true}, Map.get(comparison.stops_by_id, stop_id))
+  end
+
+  defp visit_label(comparison, b_sequence, row) do
+    {sequence, position} =
+      if row.a_pos, do: {comparison.a.stops, row.a_pos}, else: {b_sequence, row.b_pos}
+
+    case visit_info(sequence, position) do
+      nil -> nil
+      %{n: n, total: total} -> "visit #{n} of #{total}"
+    end
+  end
+
+  defp visit_info(sequence, position) do
+    stop_id = Enum.at(sequence, position - 1)
+    total = Enum.count(sequence, &(&1 == stop_id))
+
+    if total > 1 do
+      %{n: Enum.count(Enum.take(sequence, position), &(&1 == stop_id)), total: total}
+    end
+  end
+
+  defp spans(rows), do: %{a: index_span(rows, :a_pos), b: index_span(rows, :b_pos)}
+
+  defp index_span(rows, key) do
+    indexes =
+      rows
+      |> Enum.with_index()
+      |> Enum.filter(fn {row, _index} -> Map.fetch!(row, key) != nil end)
+      |> Enum.map(&elem(&1, 1))
+
+    {Enum.min(indexes), Enum.max(indexes)}
+  end
+
+  defp b_sequence(comparison) do
+    if reversed?(comparison), do: Enum.reverse(comparison.b.stops), else: comparison.b.stops
+  end
+
+  defp boarding_by_row(items) do
+    items
+    |> Enum.filter(&(&1.kind == :boarding))
+    |> Map.new(fn %{rows: [index], detail: detail} -> {index, detail} end)
+  end
+
+  defp difference_count(%{alignment: %{counts: %{shared: 0}}}), do: 0
+  defp difference_count(%{alignment: %{differences: %{items: items}}}), do: length(items)
+
+  defp status_label(0), do: "No differences"
+  defp status_label(count), do: plural(count, "difference")
+
+  # Above 24 rows the reference opens in Differences mode; at or below it every
+  # row shows. The server only sets the initial mode; the hook owns it after that.
+  defp stops_mode(%{alignment: %{rows: rows}}) do
+    if length(rows) > 24, do: "diff", else: "all"
+  end
+
+  defp stops_mode(_comparison), do: "all"
+
+  defp show_times?(comparison) do
+    alignment = comparison.alignment
+
+    not reversed?(comparison) and not alignment.opposite? and alignment.counts.shared > 1
+  end
+
+  # The footer names why no running time is compared. A side without a timing has
+  # no times at all, so its cells read “—”; the reference's copy only covers B, but
+  # either side can be the one without a timing (AC-8).
+  defp footer_copy(comparison, show_times?, timed?) do
+    cond do
+      show_times? and timed? ->
+        "Scheduled running time in min:sec, from leaving the previous stop both patterns serve to arriving at this one, including time stopped at stops in between. Waits at shared stops are shown as “Wait differs”. Times come from the running times chosen above, not from individual trips."
+
+      show_times? ->
+        missing_times_copy(comparison)
+
+      reversed?(comparison) ->
+        "Running times are hidden while B is reversed."
+
+      comparison.alignment.opposite? ->
+        "Running times aren’t compared between opposite directions."
+
+      true ->
+        "Running times are compared only between stops both patterns serve."
+    end
+  end
+
+  defp missing_times_copy(comparison) do
+    missing =
+      [{"A", comparison.a}, {"B", comparison.b}]
+      |> Enum.filter(fn {_letter, side} -> side != nil and is_nil(side.timing_id) end)
+      |> Enum.map(&elem(&1, 0))
+
+    subject =
+      case missing do
+        ["A"] -> "A has"
+        ["B"] -> "B has"
+        _ -> "Neither pattern has"
+      end
+
+    "#{subject} no running times yet, so no running times are compared. — means no time."
+  end
+
+  # The rows-mode options and the difference stepper keep the reference's look and
+  # its 44 px target floor; both post nothing (INV-4).
+  defp mode_option_class do
+    [
+      "inline-flex min-h-11 items-center rounded-[5px] px-3 text-sm font-[650] text-muted hover:text-strong",
+      "aria-pressed:bg-selection aria-pressed:text-action"
+    ]
+  end
+
+  # ARIA's pressed state needs its value spelled out: a bare boolean attribute
+  # (what `aria-pressed={true}` renders) is not a valid value for it.
+  defp aria_pressed(condition), do: if(condition, do: "true", else: "false")
+
+  defp step_class(:left) do
+    "flex size-11 items-center justify-center rounded-l-control border border-control bg-white text-strong hover:bg-canvas disabled:text-muted"
+  end
+
+  defp step_class(:right) do
+    "-ml-px flex size-11 items-center justify-center rounded-r-control border border-control bg-white text-strong hover:bg-canvas disabled:text-muted"
   end
 
   # The difference sentence is a list of text, bold name, series chip and count
