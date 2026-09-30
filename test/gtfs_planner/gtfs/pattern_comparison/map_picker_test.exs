@@ -191,7 +191,9 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.MapPickerTest do
     %{
       scope: %{organization_id: organization.id, gtfs_version_id: version.id},
       organization: organization,
+      version: version,
       route: route,
+      via: via,
       other: other,
       foreign_scope: %{
         organization_id: foreign_organization.id,
@@ -456,6 +458,107 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.MapPickerTest do
            ]
   end
 
+  test "counts plain trips and every window of a repeating trip in one pattern", context do
+    # via on WEEKDAY: two plain trips, plus one repeating trip with two usable
+    # windows (06:00-07:00 every 20 minutes is 3 departures, 16:00-17:00 every
+    # 30 minutes is 2) and a row with an unparseable start that adds nothing.
+    linked_trips(
+      context.organization,
+      context.version,
+      context.route,
+      context.via,
+      "WEEKDAY",
+      ~w(07:00:00 08:00:00)
+    )
+
+    frequency_trip(context, "WEEKDAY", [
+      %{start_time: "06:00:00", end_time: "07:00:00", headway_secs: 1200},
+      %{start_time: "16:00:00", end_time: "17:00:00", headway_secs: 1800},
+      %{start_time: "later", end_time: "20:00:00", headway_secs: 600}
+    ])
+
+    assert picker_trips(context, "WEEKDAY") == %{
+             "full" => 3,
+             "via" => 7,
+             "other" => 8,
+             "gap" => 0
+           }
+  end
+
+  test "counts a trip whose frequency rows are all unusable as one departure", context do
+    # via on WEEKDAY: one plain trip and one trip whose two rows are unusable, an
+    # unparseable start and an unparseable end, so each counts as 1.
+    linked_trips(
+      context.organization,
+      context.version,
+      context.route,
+      context.via,
+      "WEEKDAY",
+      ~w(07:00:00)
+    )
+
+    frequency_trip(context, "WEEKDAY", [
+      %{start_time: "later", end_time: "13:30:00", headway_secs: 1800},
+      %{start_time: "10:00:00", end_time: "soon", headway_secs: 1800}
+    ])
+
+    assert picker_trips(context, "WEEKDAY") == %{
+             "full" => 3,
+             "via" => 2,
+             "other" => 8,
+             "gap" => 0
+           }
+  end
+
+  test "counts a repeating trip only on its own calendar", context do
+    # via has one plain SATURDAY trip; the repeating trip adds 7 departures there
+    # and nothing on WEEKDAY.
+    frequency_trip(context, "SATURDAY", [
+      %{start_time: "10:00:00", end_time: "13:30:00", headway_secs: 1800}
+    ])
+
+    assert picker_trips(context, "WEEKDAY") == %{
+             "full" => 3,
+             "via" => 0,
+             "other" => 8,
+             "gap" => 0
+           }
+
+    assert picker_trips(context, "SATURDAY") == %{
+             "full" => 0,
+             "via" => 8,
+             "other" => 0,
+             "gap" => 0
+           }
+  end
+
+  test "keeps a trip plain when only another organization or version has frequency rows for its ID",
+       context do
+    trip =
+      linked_trip(context.organization, context.version, context.route, context.via, "WEEKDAY")
+
+    frequency_fixture(
+      context.foreign_scope.organization_id,
+      context.foreign_scope.gtfs_version_id,
+      trip.trip_id,
+      %{start_time: "10:00:00", end_time: "13:30:00", headway_secs: 1800}
+    )
+
+    frequency_fixture(
+      context.other_version_scope.organization_id,
+      context.other_version_scope.gtfs_version_id,
+      trip.trip_id,
+      %{start_time: "10:00:00", end_time: "13:30:00", headway_secs: 1800}
+    )
+
+    assert picker_trips(context, "WEEKDAY") == %{
+             "full" => 3,
+             "via" => 1,
+             "other" => 8,
+             "gap" => 0
+           }
+  end
+
   test "lists no patterns outside the version's published routes", context do
     # The staging version and a pattern of another organization are outside this
     # scope; the read of their own scope stays inside itself.
@@ -541,6 +644,24 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.MapPickerTest do
         stop_sequence: 1
       })
     end)
+  end
+
+  defp picker_trips(context, service_id) do
+    {:ok, entries} = PatternComparison.picker_patterns(context.scope, nil, service_id)
+
+    Map.new(entries, &{&1.route_pattern_id, &1.trips})
+  end
+
+  # A trip of the via pattern with one frequency row per window.
+  defp frequency_trip(context, service_id, windows) do
+    trip =
+      linked_trip(context.organization, context.version, context.route, context.via, service_id)
+
+    Enum.each(windows, fn window ->
+      frequency_fixture(context.organization.id, context.version.id, trip.trip_id, window)
+    end)
+
+    trip
   end
 
   defp repeating_trip(organization, version, route, bundle) do
