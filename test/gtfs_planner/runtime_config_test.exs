@@ -159,9 +159,7 @@ defmodule GtfsPlanner.RuntimeConfigTest do
         variable = unquote(variable)
         invalid = unquote(invalid)
 
-        if invalid == nil,
-          do: System.delete_env(variable),
-          else: System.put_env(variable, invalid)
+        put_invalid_agent_limit(variable, invalid)
 
         error = assert_raise RuntimeError, fn -> read_prod_app_config!() end
         assert error.message == "#{variable} must be a positive integer"
@@ -176,6 +174,9 @@ defmodule GtfsPlanner.RuntimeConfigTest do
       assert Keyword.fetch!(config, :actor_daily_attempts) == 200
     end
   end
+
+  defp put_invalid_agent_limit(variable, nil), do: System.delete_env(variable)
+  defp put_invalid_agent_limit(variable, value), do: System.put_env(variable, value)
 
   defp put_required_prod_env! do
     Enum.each(@required_prod_env, fn {key, value} -> System.put_env(key, value) end)
