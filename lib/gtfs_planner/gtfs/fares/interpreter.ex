@@ -42,6 +42,14 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
   version whose rules name the column but store no value keeps the older reading.
   Issue #575 may reword this; `Fares.Normalize` is the only writer of these columns
   and this module is the only reader of the priority semantics (INV-4).
+
+  ## The older format
+
+  `price_journey_v1/2` is the same journey read the way an app that reads
+  `fare_attributes.txt` and `fare_rules.txt` reads it (AC-6, AC-29). It reads the
+  same struct — the derived rows of a managed version and the imported rows of an
+  unconverted one — and never queries or writes, so the older price and the rows
+  behind it come from one snapshot.
   """
 
   import Ecto.Query, warn: false
@@ -81,6 +89,8 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
   @removed_exception 2
 
   @end_of_day 86_400
+
+  @zero Decimal.new(0)
 
   @doc """
   Loads the version's fare rows, once, for the interpreter to read.
@@ -164,6 +174,56 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
   end
 
   @doc """
+  Prices one journey the way an app reading the older format prices it (AC-6).
+
+  The journey is the same list of legs `GtfsPlanner.Gtfs.Fares.Pricing.price_journey/2`
+  takes — each with a route, its two stops and its departure and arrival in seconds
+  after local midnight — and a rider and medium are ignored, because
+  `fare_attributes` rows carry one price and no rider dimension. The result is
+
+      %{total: Decimal.t() | nil, parts: [map()], split?: boolean(), unknown?: boolean()}
+
+  A fare covers the journey when the route of every leg is named by one of that
+  fare's `fare_rules` rows, that row's `origin_id` is the first leg's zone and its
+  `destination_id` the last leg's zone (an empty value matching any zone), the fare's
+  `transfers` allows the journey's changes and its `transfer_duration` covers the first
+  departure to the last arrival. A `contains_id` row is matched only when the journey
+  passes through the zone it names, and a fare with more than one `contains_id` row
+  needs every one of them crossed, which is the reading the reference's "all
+  `contains_id` zones must be matched" gives. Zones are the stops' `zone_id` values —
+  a v1 feed addresses zones that way and never uses areas.
+
+  The cheapest covering fare prices the whole journey, because the older model has a
+  fare per journey and not a product per leg. When no one fare covers it, each leg is
+  priced on its own with the cheapest covering fare and the parts are summed, which is
+  what the Check a journey line reads when the v2 rules give a cheaper answer. A leg no
+  fare covers is reported as `unknown` and leaves `total` as `nil`, because a journey
+  nobody can price must not read as a free ride.
+
+  A fare with no `transfers` value covers a single ride and a `transfer_duration` that
+  cannot be measured — a leg with no departure or arrival — is not read as a limit that
+  has passed. A fare with `transfers` of `-1` spans every change.
+  """
+  @spec price_journey_v1(Rows.t(), map()) :: %{
+          total: Decimal.t() | nil,
+          parts: [map()],
+          split?: boolean(),
+          unknown?: boolean()
+        }
+  def price_journey_v1(%Rows{} = rows, journey) do
+    legs = journey |> Map.get(:legs, []) |> Enum.map(&v1_leg(rows, &1))
+
+    if legs == [] do
+      %{total: @zero, parts: [], split?: false, unknown?: false}
+    else
+      case v1_cheapest_covering(rows, legs) do
+        nil -> v1_split_price(rows, legs)
+        fare -> %{total: fare.price, parts: [v1_part(fare, legs)], split?: false, unknown?: false}
+      end
+    end
+  end
+
+  @doc """
   The timeframe group ids whose service runs on `date` and whose interval holds `time`.
 
   `time` is seconds after local midnight, as a journey's departure is carried. A group
@@ -196,6 +256,157 @@ defmodule GtfsPlanner.Gtfs.Fares.Interpreter do
   @spec network_for_route(Rows.t(), String.t()) :: String.t() | nil
   def network_for_route(%Rows{} = rows, route_id) do
     presence(Map.get(rows.route_networks, route_id) || Map.get(rows.route_network_ids, route_id))
+  end
+
+  # A leg of the older-format price: the values its fare rules are matched against,
+  # with an empty column read as absent the way the reference reads an empty field.
+  defp v1_leg(rows, leg) do
+    from_stop_id = leg |> Map.get(:from_stop_id) |> presence()
+    to_stop_id = leg |> Map.get(:to_stop_id) |> presence()
+
+    %{
+      route_id: leg |> Map.get(:route_id) |> presence(),
+      from_stop_id: from_stop_id,
+      to_stop_id: to_stop_id,
+      from_zone: v1_zone(rows, from_stop_id),
+      to_zone: v1_zone(rows, to_stop_id),
+      departs: leg |> Map.get(:departs) |> v1_time(),
+      arrives: leg |> Map.get(:arrives) |> v1_time()
+    }
+  end
+
+  defp v1_zone(_rows, nil), do: nil
+  defp v1_zone(rows, stop_id), do: rows.stop_zones |> Map.get(stop_id) |> presence()
+
+  defp v1_time(value) when is_integer(value) and value >= 0, do: value
+  defp v1_time(_value), do: nil
+
+  defp v1_cheapest_covering(rows, legs) do
+    covering =
+      rows.fare_attributes
+      |> Enum.filter(&(not is_nil(&1.price) and v1_covers?(rows, &1, legs)))
+
+    case covering do
+      [] -> nil
+      fares -> v1_cheapest(fares)
+    end
+  end
+
+  # A tie keeps the fare that comes first in the rows, so the answer is the same on
+  # every read of the same version.
+  defp v1_cheapest([cheapest | rest]), do: Enum.reduce(rest, cheapest, &v1_cheaper/2)
+
+  defp v1_cheaper(fare, cheapest) do
+    if Decimal.compare(fare.price, cheapest.price) == :lt, do: fare, else: cheapest
+  end
+
+  defp v1_covers?(rows, fare, legs) do
+    rules = Enum.filter(rows.fare_rules, &(presence(&1.fare_id) == presence(fare.fare_id)))
+    plain = Enum.reject(rules, &v1_contains?/1)
+    contains = Enum.filter(rules, &v1_contains?/1)
+
+    rules_cover? =
+      Enum.any?(plain, &v1_rule_covers?(&1, legs)) or
+        (contains != [] and Enum.all?(contains, &v1_rule_covers?(&1, legs)))
+
+    rules_cover? and v1_allows_changes?(fare, length(legs) - 1) and
+      v1_duration_covers?(fare, legs)
+  end
+
+  defp v1_contains?(rule), do: not is_nil(presence(rule.contains_id))
+
+  defp v1_rule_covers?(rule, legs) do
+    v1_endpoint_matches?(rule.origin_id, v1_first(legs, :from_zone)) and
+      v1_endpoint_matches?(rule.destination_id, v1_last(legs, :to_zone)) and
+      Enum.all?(legs, &v1_route_allows?(rule, &1)) and
+      (not v1_contains?(rule) or v1_zone_passed?(rule, legs))
+  end
+
+  # An empty rule value is any zone, and a journey endpoint in no zone is not an
+  # endpoint the rule can name.
+  defp v1_endpoint_matches?(rule_value, zone) do
+    case {presence(rule_value), zone} do
+      {nil, _zone} -> true
+      {_rule_value, nil} -> false
+      {rule_value, zone} -> rule_value == zone
+    end
+  end
+
+  defp v1_route_allows?(rule, leg) do
+    case presence(rule.route_id) do
+      nil -> true
+      route_id -> route_id == leg.route_id
+    end
+  end
+
+  defp v1_zone_passed?(rule, legs) do
+    contains_id = presence(rule.contains_id)
+
+    Enum.any?(legs, &(&1.from_zone == contains_id or &1.to_zone == contains_id))
+  end
+
+  # `transfers` of `-1` spans every change, a value is the number of changes allowed,
+  # and no value at all covers a single ride.
+  defp v1_allows_changes?(_fare, 0), do: true
+  defp v1_allows_changes?(%{transfers: -1}, _changes), do: true
+
+  defp v1_allows_changes?(%{transfers: transfers}, changes) when is_integer(transfers),
+    do: changes <= transfers
+
+  defp v1_allows_changes?(_fare, _changes), do: false
+
+  # Google's clock for the older format runs from the first departure to the last
+  # arrival, and a limit with no endpoint to measure is not read as passed.
+  defp v1_duration_covers?(%{transfer_duration: limit}, _legs) when is_nil(limit), do: true
+
+  defp v1_duration_covers?(%{transfer_duration: limit}, legs)
+       when is_integer(limit) and limit >= 0 do
+    with departure when is_integer(departure) <- v1_first(legs, :departs),
+         arrival when is_integer(arrival) <- v1_last(legs, :arrives) do
+      arrival - departure <= limit
+    else
+      _missing_endpoint -> true
+    end
+  end
+
+  defp v1_duration_covers?(_fare, _legs), do: true
+
+  defp v1_first(legs, key), do: legs |> hd() |> Map.get(key)
+  defp v1_last(legs, key), do: legs |> List.last() |> Map.get(key)
+
+  defp v1_split_price(rows, legs) do
+    parts = Enum.map(legs, &v1_split_part(rows, &1))
+    unknown? = Enum.any?(parts, &is_nil(&1.price))
+
+    %{
+      total: if(unknown?, do: nil, else: v1_total(parts)),
+      parts: parts,
+      split?: length(parts) > 1,
+      unknown?: unknown?
+    }
+  end
+
+  defp v1_split_part(rows, leg) do
+    case v1_cheapest_covering(rows, [leg]) do
+      nil -> v1_part(nil, [leg])
+      fare -> v1_part(fare, [leg])
+    end
+  end
+
+  defp v1_total(parts) do
+    Enum.reduce(parts, @zero, fn part, total -> Decimal.add(total, part.price) end)
+  end
+
+  defp v1_part(fare, legs) do
+    %{
+      fare_id: fare && fare.fare_id,
+      price: fare && fare.price,
+      currency: fare && fare.currency_type,
+      payment_method: fare && fare.payment_method,
+      legs: length(legs),
+      from_stop_id: v1_first(legs, :from_stop_id),
+      to_stop_id: v1_last(legs, :to_stop_id)
+    }
   end
 
   defp scoped(queryable, organization_id, gtfs_version_id) do
