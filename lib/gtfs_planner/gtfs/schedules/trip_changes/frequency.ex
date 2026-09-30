@@ -287,11 +287,20 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.Frequency do
     end
   end
 
+  # Stored clocks may be unpadded ("9:00:00"), so rows sort by their parsed start;
+  # an unreadable start sorts last.
   defp ordered_frequencies(loaded) do
     loaded
     |> value(:frequencies)
     |> List.wrap()
-    |> Enum.sort_by(&value(&1, :start_time))
+    |> Enum.sort_by(fn row ->
+      start = value(row, :start_time)
+
+      case secs(start) do
+        nil -> {1, 0, to_string(start)}
+        seconds -> {0, seconds, ""}
+      end
+    end)
   end
 
   # The template moves by the first window's start change; a command that leaves the

@@ -34,6 +34,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.FrequencyTest do
   import GtfsPlanner.ScheduleEditingFixtures
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
 
@@ -282,6 +283,39 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.FrequencyTest do
       assert [log] = trip_logs(trip)
       assert log.action == "updated"
       assert log.changed_fields["operation_id"] == result.operation_id
+    end
+
+    test "an update with :keep pairs unpadded stored clocks in time order" do
+      scope = editing_scope!("12")
+
+      trip =
+        frequency_trip!(
+          scope,
+          [
+            %{start_secs: 32_400, end_secs: 36_000, headway_secs: 600, exact_times: 1},
+            %{start_secs: 36_000, end_secs: 39_600, headway_secs: 900, exact_times: nil}
+          ],
+          exact_times: nil
+        )
+
+      # Imported feeds may store "9:00:00", which sorts after "10:00:00" as text.
+      from(f in Frequency, where: f.trip_id == ^trip.trip_id and f.start_time == "09:00:00")
+      |> Repo.update_all(set: [start_time: "9:00:00"])
+
+      command =
+        {:update_frequency, trip.id,
+         %{
+           windows: [
+             %{start_secs: 32_400, end_secs: 36_000, headway_secs: 600},
+             %{start_secs: 36_000, end_secs: 39_600, headway_secs: 900}
+           ],
+           exact_times: :keep
+         }}
+
+      assert {:ok, review} = Gtfs.review_trip_change("12", command, scope.audit)
+      assert [update] = review.change_set.updates
+      assert update.stop_times == :unchanged
+      assert Enum.map(update.frequencies, & &1.exact_times) == [1, nil]
     end
 
     test "an update with :keep matches stored rows by index and fills a new row from the first (AC-18)" do

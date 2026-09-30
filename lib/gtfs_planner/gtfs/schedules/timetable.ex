@@ -320,7 +320,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.Timetable do
       frequency?: frequencies != [],
       # The stored rows themselves, earliest first, for the Edit drawer's windows
       # editor: `frequency_label/1` is the display summary, not the source.
-      frequencies: frequencies,
+      frequencies: Enum.sort_by(frequencies, &frequency_sort_key/1),
       custom?: custom?,
       stops_differ?: stops_differ?,
       estimate_problem: estimate_problem,

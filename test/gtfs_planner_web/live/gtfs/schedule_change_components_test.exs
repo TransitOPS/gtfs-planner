@@ -112,6 +112,34 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponentsTest do
       assert first_attr(document, "#windows-2-until", "aria-invalid") == "true"
     end
 
+    test "a window nested after a long one names the long window it overlaps" do
+      document =
+        doc(
+          render_windows([
+            row("06:00", "10:00", "10"),
+            row("07:00", "08:00", "10"),
+            row("09:00", "09:30", "10")
+          ])
+        )
+
+      assert text(document, "#windows-row-2") =~
+               "Overlaps 06:00–10:00. Windows can touch but not overlap."
+    end
+
+    test "an overlap message never names a reversed window" do
+      document =
+        doc(
+          render_windows([
+            row("06:00", "07:00", "10"),
+            row("06:30", "06:10", "10"),
+            row("06:45", "08:00", "10")
+          ])
+        )
+
+      assert text(document, "#windows-row-2") =~
+               "Overlaps 06:00–07:00. Windows can touch but not overlap."
+    end
+
     test "windows that touch are valid and the last remaining window cannot be removed" do
       document = doc(render_windows([row("06:00", "07:00", "10"), row("07:00", "08:00", "10")]))
 

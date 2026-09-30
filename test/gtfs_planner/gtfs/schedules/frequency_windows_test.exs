@@ -44,14 +44,24 @@ defmodule GtfsPlanner.Gtfs.Schedules.FrequencyWindowsTest do
              ]) == {:error, [%{index: 0, reason: :overlap}]}
     end
 
-    test "reports the window that starts inside the previous one" do
-      # The prototype's rule flags the later window of each adjacent pair in start
-      # order; the third window touches the second and is not itself an overlap.
+    test "reports every window that starts inside an earlier one" do
+      # The third window touches the second but starts inside the first
+      # (06:00–07:00), so both later windows overlap.
       assert FrequencyWindows.validate([
                @six_to_seven,
                %{start_secs: 21_600, end_secs: 23_400, headway_secs: 600},
                %{start_secs: 23_400, end_secs: 25_200, headway_secs: 600}
-             ]) == {:error, [%{index: 1, reason: :overlap}]}
+             ]) == {:error, [%{index: 1, reason: :overlap}, %{index: 2, reason: :overlap}]}
+    end
+
+    test "reports a window nested after a long one even when it clears its neighbour" do
+      # 06:00–10:00, 07:00–08:00 and 09:00–09:30: the last window clears 08:00 but
+      # starts inside 06:00–10:00.
+      assert FrequencyWindows.validate([
+               %{start_secs: 21_600, end_secs: 36_000, headway_secs: 600},
+               %{start_secs: 25_200, end_secs: 28_800, headway_secs: 600},
+               %{start_secs: 32_400, end_secs: 34_200, headway_secs: 600}
+             ]) == {:error, [%{index: 1, reason: :overlap}, %{index: 2, reason: :overlap}]}
     end
 
     test "accepts a window after 24:00" do

@@ -1860,12 +1860,14 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
     end
   end
 
-  # `validate/1` reports an overlap on the later of two windows in start order.
+  # `validate/1` reports an overlap on a window that starts before an earlier
+  # well-formed window in start order ends; the message names the one reaching
+  # furthest past its start. A reversed row takes no part in overlaps.
   defp previous_window(row, ordered) do
     ordered
-    |> Enum.reduce_while(nil, fn candidate, previous ->
-      if candidate.index == row.index, do: {:halt, previous}, else: {:cont, candidate}
-    end)
+    |> Enum.take_while(&(&1.index != row.index))
+    |> Enum.filter(&(&1.end_secs > &1.start_secs and &1.end_secs > row.start_secs))
+    |> Enum.max_by(& &1.end_secs, fn -> nil end)
   end
 
   defp row_errors(row, r8_errors) do
