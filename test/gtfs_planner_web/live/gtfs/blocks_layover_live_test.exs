@@ -194,7 +194,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLayoverLiveTest do
       assert has_element?(
                view,
                "#layover-minutes-help",
-               "Flag connections shorter than this. A short connection between two trips shows as a warning in Checks. Changing it re-checks every block."
+               "Flag connections shorter than this value. It applies to every day type in this version."
              )
 
       assert has_element?(view, "#layover-submit", "Save minimum")

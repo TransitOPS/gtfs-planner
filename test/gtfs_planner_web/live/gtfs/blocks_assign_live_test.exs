@@ -241,7 +241,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAssignLiveTest do
 
       assert has_element?(view, "#assign-form")
       assert has_element?(view, "#destination-search")
-      assert has_element?(view, "#assign-form", "1 trip · applies on #{weekday_dates()} days")
+      assert has_element?(view, "#assign-form", "1 trip · #{weekday_dates()} affected dates")
       assert has_element?(view, "#destination-new")
       refute has_element?(view, "[data-role='destination-option'][data-block='none']")
 
@@ -313,24 +313,24 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAssignLiveTest do
       assert has_element?(view, "#block-review", "Assignment changes")
       assert has_element?(view, "#block-review", "Preview · not saved")
 
-      # The viewed service day is this service day and adds no problem; the other one
+      # The viewed day type is the current view and adds no problem; the other one
       # is “Also changes” and lists the overlap the assign introduces there.
       assert has_element?(
                view,
                "#review-effect-#{key}[data-selected='true']",
-               "This service day · Weekday · #{weekday_dates() - length(school_dates())} days"
+               "Current view · Weekday · #{weekday_dates() - length(school_dates())} dates"
              )
 
       assert has_element?(
                view,
                "#review-effect-#{key}",
-               "No new timing or transfer problems on these days."
+               "No new timing or transfer problems on these dates."
              )
 
       assert has_element?(
                view,
                "#review-effect-#{school_key}[data-selected='false']",
-               "Also changes · School + Weekday · #{length(school_dates())} days"
+               "Also changes · School + Weekday · #{length(school_dates())} dates"
              )
 
       assert has_element?(
@@ -371,10 +371,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAssignLiveTest do
       submit_assign(view, "101")
 
       assert has_element?(view, "#block-review-confirm", "Assign 1 trip")
-      assert has_element?(view, "#block-review-cancel", "Change block")
+      assert has_element?(view, "#block-review-cancel", "Change selection")
     end
 
-    test "“Change block” closes the review and restores the form with the target",
+    test "“Change selection” closes the review and restores the form with the target",
          context do
       %{x: x} = cross_day_scope(context)
 
@@ -424,7 +424,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAssignLiveTest do
       assert has_element?(
                view,
                "#block-review-stale",
-               "Trips changed since you reviewed."
+               "Trips changed since you reviewed. Check the changes again."
              )
 
       assert has_element?(view, "#block-review[data-open='true']")
@@ -456,7 +456,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAssignLiveTest do
       assert has_element?(
                view,
                "#block-review-error",
-               "Another change is being saved. Try again in a moment."
+               "Another change is being saved. Try again."
              )
 
       # The review, the form and the chosen target are all still there.
@@ -493,7 +493,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAssignLiveTest do
 
       assert has_element?(view, "#block-review[data-open='true']")
       assert texts(view, "[data-role='review-proposed']") == ["1"]
-      assert has_element?(view, "#block-review", "Stay-on-board mismatch")
+      assert has_element?(view, "#block-review", "In-seat row")
 
       confirm_review(view)
 
