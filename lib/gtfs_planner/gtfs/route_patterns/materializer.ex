@@ -2,19 +2,27 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
   @moduledoc "Pure stop-time calculations for reviewed route-pattern edits."
 
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.RoutePatterns.TimingRules
 
   @max_seconds 2_147_483_647
   @slot_keys [:arrival_offset, :departure_offset]
 
-  @doc "Builds absolute GTFS stop times from a trip start, pattern occurrences and relative rows."
+  @doc """
+  Builds absolute GTFS stop times from a trip start, pattern occurrences and relative rows.
+
+  A row whose two offsets are nil is a blank stop: it materializes to nil
+  `arrival_time` and `departure_time`, so a blank stays the absence of a time and
+  is never `0` or an estimate. The rows are checked against the one timing rule
+  before they are materialized, so chronology is decided over the timed rows only.
+  """
   def materialize(start_seconds, occurrences, timing_rows)
       when is_integer(start_seconds) and start_seconds >= 0 and is_list(occurrences) and
              is_list(timing_rows) do
     with true <- start_seconds <= @max_seconds,
          true <- length(occurrences) >= 2,
          true <- length(occurrences) == length(timing_rows),
-         {:ok, values} <- absolute_rows(start_seconds, occurrences, timing_rows),
-         :ok <- valid_chronology(values) do
+         :ok <- valid_timing(timing_rows),
+         {:ok, values} <- absolute_rows(start_seconds, occurrences, timing_rows) do
       {:ok, values}
     else
       false -> {:error, :invalid_input}
@@ -61,27 +69,24 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
     |> Enum.zip(rows)
     |> Enum.with_index(1)
     |> Enum.reduce_while({:ok, []}, fn {{occurrence, row}, sequence}, {:ok, acc} ->
-      with {:ok, arrival_offset} <- integer_field(row, :arrival_offset),
-           {:ok, departure_offset} <- integer_field(row, :departure_offset),
-           arrival = start + arrival_offset,
-           departure = start + departure_offset,
-           true <-
-             arrival >= 0 and departure >= 0 and arrival <= @max_seconds and
-               departure <= @max_seconds do
-        value =
-          row
-          |> row_attrs()
-          |> Map.merge(%{
-            stop_id: field(occurrence, :stop_id),
-            stop_sequence: sequence,
-            arrival_time: GtfsTime.format(arrival),
-            departure_time: GtfsTime.format(departure)
-          })
+      case absolute_clocks(start, row) do
+        {:ok, clocks} ->
+          {:cont,
+           {:ok,
+            [
+              row
+              |> row_attrs()
+              |> Map.merge(%{
+                stop_id: field(occurrence, :stop_id),
+                stop_sequence: sequence,
+                arrival_time: clocks.arrival,
+                departure_time: clocks.departure
+              })
+              | acc
+            ]}}
 
-        {:cont, {:ok, [value | acc]}}
-      else
-        false -> {:halt, {:error, :negative_time}}
-        {:error, _} = error -> {:halt, error}
+        {:error, _} = error ->
+          {:halt, error}
       end
     end)
     |> case do
@@ -90,36 +95,40 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.Materializer do
     end
   end
 
-  defp valid_chronology([first | rest]) do
-    case parsed_clocks(first) do
-      {:ok, arrival, departure} when departure >= arrival ->
-        validate_remaining_chronology(rest, departure)
+  # A blank pair is the absence of a time, so it formats to nil rather than to
+  # midnight. A half pair is malformed and never reaches this function: the
+  # timing rule has already rejected it.
+  defp absolute_clocks(start, row) do
+    arrival_offset = field(row, :arrival_offset)
+    departure_offset = field(row, :departure_offset)
 
-      _ ->
-        {:error, :invalid_chronology}
+    cond do
+      is_nil(arrival_offset) and is_nil(departure_offset) ->
+        {:ok, %{arrival: nil, departure: nil}}
+
+      is_integer(arrival_offset) and is_integer(departure_offset) ->
+        clock_pair(start + arrival_offset, start + departure_offset)
+
+      true ->
+        {:error, :invalid_time}
     end
   end
 
-  defp validate_remaining_chronology(rows, first_departure) do
-    Enum.reduce_while(rows, {:ok, first_departure}, fn row, {:ok, preceding} ->
-      case parsed_clocks(row) do
-        {:ok, arrival, departure} when arrival >= preceding and departure >= arrival ->
-          {:cont, {:ok, departure}}
-
-        _ ->
-          {:halt, {:error, :invalid_chronology}}
-      end
-    end)
-    |> case do
-      {:ok, _} -> :ok
-      error -> error
+  defp clock_pair(arrival, departure) do
+    if arrival >= 0 and departure >= 0 and arrival <= @max_seconds and departure <= @max_seconds do
+      {:ok, %{arrival: GtfsTime.format(arrival), departure: GtfsTime.format(departure)}}
+    else
+      {:error, :negative_time}
     end
   end
 
-  defp parsed_clocks(row) do
-    with {:ok, arrival} <- GtfsTime.parse(row.arrival_time),
-         {:ok, departure} <- GtfsTime.parse(row.departure_time) do
-      {:ok, arrival, departure}
+  # The one timing rule decides validity, so a half pair, a blank end, a blank
+  # timepoint and a backwards timed row are all refused here rather than in a
+  # second chronology check of the formatted values.
+  defp valid_timing(rows) do
+    case TimingRules.validate(rows) do
+      :ok -> :ok
+      {:error, _violations} -> {:error, :invalid_chronology}
     end
   end
 
