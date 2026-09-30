@@ -840,7 +840,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternHeadsignComponents do
   defp warning_notes(%{warnings: warnings} = assigns) do
     value = Headsigns.normalize(assigns.value) || ""
 
-    Enum.map(warnings, fn
+    warnings
+    # A :sibling_case note names its sibling; with no sibling to name the note
+    # is dropped instead of crashing on the nil assign.
+    |> Enum.reject(&(&1 == :sibling_case and is_nil(assigns.sibling)))
+    |> Enum.map(fn
       :leading_to ->
         "Leave out “To”. Trip planner apps add their own “to” or arrow."
 
