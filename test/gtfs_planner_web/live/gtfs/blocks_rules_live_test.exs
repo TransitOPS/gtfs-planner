@@ -1,12 +1,10 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksRulesLiveTest do
-  # EV-33 (CL-33, rejects FH-33): the Block rules drawer, observed through the
+  # The Block rules drawer, observed through the
   # ordinary `/gtfs/:version/blocks` route on the production
   # `CatalogReadAdapter.Repo`, so a save reaches the real
   # `Gtfs.update_blocking_settings/3` → `Blocking.update_settings/3` upsert and
   # then `Gtfs.update_route_operating_settings/3` → the route writer's own
-  # transaction. The ids, copy and field order are the literal ones in
-  # `.specs/07-advanced-blocking/references/advanced-blocking-prototype.html`
-  # (`?state=rules`, `?state=rules-error`). The fixture rows and the rows the
+  # transaction. The fixture rows and the rows the
   # saves write are created inside the SQL Sandbox transaction and rolled back.
   use GtfsPlannerWeb.ConnCase, async: false
 
@@ -162,7 +160,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksRulesLiveTest do
       day_scope(context)
       view = open_day(context)
 
-      # The copy is the prototype's, and the old Minimum layover button no longer
+      # The old Minimum layover button no longer
       # exists anywhere on the page.
       assert has_element?(view, "#blocks-block-rules", "Block rules · 5 min layover")
       refute has_element?(view, "#blocks-min-layover")
@@ -172,16 +170,21 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksRulesLiveTest do
 
       assert has_element?(view, "#block-rules-drawer-overlay[data-open='true']")
       assert has_element?(view, "#block-rules-drawer", "Block rules")
-      assert has_element?(view, "#block-rules-scope", "This version · applies to every day type")
+
+      assert has_element?(
+               view,
+               "#block-rules-scope",
+               "This version · applies to every service day"
+             )
     end
 
-    test "the drawer shows every setting with its value and help, in the reference order",
+    test "the drawer shows every setting with its value and help, in reading order",
          context do
       day_scope(context)
       view = open_day(context)
       open_rules(view)
 
-      # The five numeric fields of AC-1, with the stored defaults.
+      # The five numeric fields, with the stored defaults.
       assert has_element?(view, "#layover-minutes[value='5'][min='0'][max='120']")
       assert has_element?(view, "#block-rules-max-block[min='60'][max='1440']")
       assert has_element?(view, "#block-rules-pull-out-buffer[value='0'][min='0'][max='60']")
@@ -191,7 +194,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksRulesLiveTest do
       # The optional longest-time field reads blank, which is “unset”.
       refute has_element?(view, "#block-rules-max-block[value]")
 
-      # The labels and the help sentences are the prototype's.
+      # The labels and the help sentences.
       assert has_element?(view, "#block-rules-form label", "Minimum layover (min)")
 
       assert has_element?(
@@ -222,7 +225,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksRulesLiveTest do
              )
 
       # The Route switches control is the shared segmented control, with the
-      # prototype's three labels and its stored value.
+      # three labels and its stored value.
       assert has_element?(view, "#block-rules-interlining-form")
       assert has_element?(view, "#block-rules-interlining", "Route switches within a block")
       assert has_element?(view, "#block-rules-interlining", "Anywhere")
@@ -283,7 +286,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksRulesLiveTest do
       # The segment is chosen through its own form, as a reader does.
       choose_interlining(view, "same_stop")
 
-      # The settings form is then posted as the prototype's payload: the settings
+      # The settings form is then posted as the drawer's payload: the settings
       # map and the route table's entries.
       params = %{
         "block_rules" => %{

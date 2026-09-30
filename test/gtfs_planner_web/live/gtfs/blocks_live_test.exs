@@ -9,7 +9,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Versions
 
-  @subtitle "A block is one vehicle's sequence of trips."
+  @subtitle "A block is one vehicle's trips for a service day, in order. Check that they fit, and give every trip a vehicle."
 
   defp editor_setup(_context) do
     organization = organization_fixture()
@@ -59,6 +59,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLiveTest do
 
       assert LazyHTML.text(LazyHTML.query(doc, "#blocks-page header p")) |> String.trim() ==
                @subtitle
+
+      # The page is drawn in the layout's wide frame, which the timeline needs.
+      assert [frame_class] =
+               LazyHTML.attribute(LazyHTML.query(doc, "#main-content > div"), "class")
+
+      assert frame_class =~ "max-w-[1600px]"
+      refute frame_class =~ "max-w-7xl"
 
       assert Enum.count(LazyHTML.query(doc, "#operations-sub-nav a")) == 3
 

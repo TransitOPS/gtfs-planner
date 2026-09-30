@@ -1,17 +1,13 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksBulkLiveTest do
-  # EV-25: the cross-page selection, its pruning and the bulk actions, observed
+  # The cross-page selection, its pruning and the bulk actions, observed
   # through the ordinary `/gtfs/:version/blocks` route on the production
   # `CatalogReadAdapter.Repo` and the scoped `Blocking` context, so every bulk
   # action reaches the real `Gtfs.apply_block_change/4`. Rows are created inside
   # the SQL Sandbox transaction and rolled back; nothing here substitutes an
   # adapter.
   #
-  # The card's browser scenarios (the bar across pages, the mixed-eligibility
-  # dialog and the 375px layout) belong to `assets/e2e/blocks.spec.js`, which
-  # step 29 owns with EV-28; this file writes the eleven server cases.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_bulk_live_test.exs`.
+  # The browser scenarios (the bar across pages, the mixed-eligibility dialog and
+  # the 375px layout) belong to `assets/e2e/blocks.spec.js`.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -242,7 +238,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBulkLiveTest do
   end
 
   # A repeating trip beside one that can be assigned, which is the mixed
-  # selection the reference's dialog names trip by trip.
+  # selection the dialog names trip by trip.
   defp ineligible_scope(context) do
     calendar(context, "WK", "Weekday")
 
@@ -423,7 +419,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBulkLiveTest do
       bulk_assign(view)
 
       assert has_element?(view, "#bulk-assign-dialog[data-open='true']")
-      assert has_element?(view, "#assign-form", "3 trips · #{weekday_dates()} affected dates")
+      assert has_element?(view, "#assign-form", "3 trips · applies on #{weekday_dates()} days")
 
       submit_bulk(view, "new")
 
@@ -504,7 +500,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBulkLiveTest do
       assert has_element?(
                view,
                "#bulk-ineligible",
-               "No trips will be changed until the selection is eligible."
+               "No trips will change until every selected trip can be assigned."
              )
 
       assert has_element?(

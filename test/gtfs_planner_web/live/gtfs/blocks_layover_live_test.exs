@@ -1,14 +1,11 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksLayoverLiveTest do
-  # EV-27/EV-33: the Block rules drawer's Minimum layover field, observed through
+  # The Block rules drawer's Minimum layover field, observed through
   # the ordinary `/gtfs/:version/blocks` route on the production
   # `CatalogReadAdapter.Repo` and
   # the scoped `Blocking` context, so a save reaches the real
   # `Gtfs.update_blocking_settings/3` → `Blocking.update_settings/3` upsert and the
   # reload that follows it. The fixture rows and the settings row the save writes
   # are created inside the SQL Sandbox transaction and rolled back.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_layover_live_test.exs`.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -317,7 +314,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLayoverLiveTest do
       assert html =~ "You don&#39;t have permission to change blocks in this version."
 
       # The sentence is shown in the open drawer's own alert slot, so it is visible
-      # and not only in the page flash behind the top-layer <dialog> (AC-31).
+      # and not only in the page flash behind the top-layer <dialog>.
       assert has_element?(
                view,
                "#block-rules-error",

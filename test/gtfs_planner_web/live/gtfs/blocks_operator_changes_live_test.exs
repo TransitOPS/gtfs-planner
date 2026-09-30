@@ -1,5 +1,5 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksOperatorChangesLiveTest do
-  # EV-35, rejecting FH-35 for CL-35: the Operator changes drawer as a planner
+  # The Operator changes drawer as a planner
   # sets it up — the limit, the day's candidate stops and stations with their
   # waits, a mark, and a limit that is turned off — read through the ordinary
   # `/gtfs/:version/blocks` route on the production `CatalogReadAdapter.Repo` and
@@ -7,9 +7,9 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksOperatorChangesLiveTest do
   # transaction and rolled back; nothing here substitutes an adapter, a context or
   # a hand-built candidate.
   #
-  # The fixture is the reference's own block 102 at its own geometry, with
+  # The fixture is a block 102, with
   # Riverside Station a real station: two bays that name the station as their
-  # `parent_station`, so marking it once covers both (AC-4, R5). One block of two
+  # `parent_station`, so marking it once covers both. One block of two
   # trips runs 06:00–08:00 — two hours — and the 06:30 → 07:30 connection is a
   # 3-minute drive and a 57-minute wait at the station, so with a 60-minute limit
   # the block's only stretch is 2 h and it is over the limit until the station is
@@ -17,9 +17,6 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksOperatorChangesLiveTest do
   # both stretches are exactly 60 min, which the check does not report. The
   # candidates, their waits and their order are the ones
   # `Gtfs.list_relief_candidates/3` derives from that day.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_operator_changes_live_test.exs`.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -96,7 +93,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksOperatorChangesLiveTest do
     log_in_user(context.conn, context.user, organization: context.organization)
   end
 
-  # The reference's block 102: out of Riverside Station at 06:00, back into it at
+  # Block 102: out of Riverside Station at 06:00, back into it at
   # 06:30, away again at 07:30 and into Market Square at 08:00.
   defp block_102!(context) do
     first =
@@ -277,7 +274,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksOperatorChangesLiveTest do
       open_operator_drawer(view)
 
       assert has_element?(view, "#operator-changes-drawer", "Operator changes")
-      assert has_element?(view, "#operator-changes-scope", "This version · every day type")
+      assert has_element?(view, "#operator-changes-scope", "This version · every service day")
 
       assert has_element?(
                view,
@@ -329,7 +326,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksOperatorChangesLiveTest do
 
       assert limit_value(view) == "90"
       # The station's own row is the marked one: marking a station is one mark
-      # that covers its bays, not one mark per bay (AC-4).
+      # that covers its bays, not one mark per bay.
       assert checked_stops(view) == ["AB_RS"]
     end
 

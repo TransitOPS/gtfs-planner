@@ -1,5 +1,5 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
-  # EV-31, rejecting FH-31 for CL-31: the block drawer's Garage and Vehicle type
+  # The block drawer's Garage and Vehicle type
   # form, its “Also changes” preview, the confirmation the context asks for and
   # the inline refusal on a block whose calendars disagree, read through the
   # ordinary `/gtfs/:version/blocks` route on the production
@@ -7,15 +7,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
   # inside the SQL Sandbox transaction and rolled back; nothing here substitutes
   # an adapter, a context or a hand-built review.
   #
-  # The fixture is the reference's shape: one garage per calendar to begin with,
+  # The fixture: one garage per calendar to begin with,
   # a second garage to move the block to, a block that runs on three day types
   # (Weekday alone, Weekday with Saturday, Weekday with School), a block that
   # runs on one day type only, and a block whose two calendars name different
   # garages. The date counts in the assertions are the fixture's own calendar
   # dates, counted from the day load the page reads.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_attributes_live_test.exs`.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -121,7 +118,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
       vehicle_type_id: cutaway.id
     })
 
-    # Block 103's two calendars disagree, which is the conflict R4 reports.
+    # Block 103's two calendars disagree, which is the garage conflict.
     block_attribute_fixture(organization.id, version.id, %{
       service_id: "WK",
       block_id: "103",
@@ -250,7 +247,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
              )
 
       # The pickers carry the resolution the day load made, not a stored value
-      # read again here (INV-9).
+      # read again here.
       assert view
              |> element("#block-attributes-form #block-garage option[selected]")
              |> render() =~ "Main"
@@ -278,7 +275,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
       assert has_element?(
                view,
                "#block-also-changes [data-day-type][data-role='block-also-changes']",
-               "School + Weekday · 2 dates"
+               "School + Weekday · 2 days"
              )
 
       assert has_element?(
@@ -290,7 +287,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
       assert has_element?(
                view,
                "#block-also-changes [data-role='block-also-changes']",
-               "Saturday + Weekday · 3 dates"
+               "Saturday + Weekday · 3 days"
              )
 
       # The note names every other day type the save reaches, in the order
@@ -309,8 +306,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
       view |> element("#block-attributes-form") |> render_submit()
 
       # The context decides the confirmation, and this save reaches two other
-      # day types, so the built review dialog opens and names them (AC-19).
-      assert has_element?(view, "#block-review", "Review block changes")
+      # day types, so the built review dialog opens and names them.
+      assert has_element?(view, "#block-review", "Review before saving")
       assert has_element?(view, "#block-review", "Save block settings")
       assert has_element?(view, "#block-review-attributes", "No trip changes block")
 
@@ -357,7 +354,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
       |> render_submit(%{"block_attributes" => %{"garage_id" => context.north.id}})
 
       # One day type and no added problem is the case the context does not ask
-      # to confirm (AC-19), so the save lands and the drawer closes, leaving the
+      # to confirm, so the save lands and the drawer closes, leaving the
       # page on the day type the drawer was opened for.
       assert_patch(view, open_path(context, "Saturday + Weekday"))
       assert has_element?(view, "#flash-info", "Block 102 saved")
@@ -374,7 +371,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
       {:ok, view, _html} = open(context, "103", "School + Weekday")
 
       # The picker opens on the prompt and the help names every row that
-      # disagrees, so the reader can see which calendar says what (AC-37).
+      # disagrees, so the reader can see which calendar says what.
       assert has_element?(view, "#block-garage option[value='']", "Choose one garage")
 
       assert has_element?(
@@ -402,7 +399,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
       assert has_element?(view, "#block-attributes-form")
 
       # Answering it previews the reach of the answer, and the card names the
-      # value the other day type gets.
+      # value the other service day gets.
       assert has_element?(
                view,
                "#block-also-changes [data-role='block-also-changes']",
@@ -421,7 +418,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksAttributesLiveTest do
 
       # A planning input moves under the review — a third vehicle type appears —
       # so the context's recomputed digest no longer matches the fingerprint the
-      # reader confirmed, and nothing is written (INV-7).
+      # reader confirmed, and nothing is written.
       vehicle_type_fixture(context.organization.id, %{"name" => "Artic"})
 
       view |> element("#block-review-confirm") |> render_click()

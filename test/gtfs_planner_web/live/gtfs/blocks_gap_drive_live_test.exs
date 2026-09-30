@@ -1,5 +1,5 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
-  # EV-32, rejecting FH-32 for CL-32: the gap drawer as the connection a planner
+  # The gap drawer as the connection a planner
   # works on — the pair's times, the time available, the drive without riders with
   # its source, the wait behind it, and whether an operator can change there — read
   # through the ordinary `/gtfs/:version/blocks` route on the production
@@ -7,17 +7,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
   # inside the SQL Sandbox transaction and rolled back; nothing here substitutes an
   # adapter, a context or a hand-built movement.
   #
-  # The fixture is the reference's own block 101 at its own geometry, scaled so
+  # The fixture is a block 101 scaled so
   # that the Valley College → Market Square leg is 5.2 km: the domain's own
   # estimator over the fixture's own coordinates returns 14 minutes for it, so the
   # drawer's `14 min` and its `Estimated` badge are the estimator's answer rather
   # than a number pasted into a fixture, and the 8 minutes between 6101's 06:35
-  # arrival and 8101's 06:43 departure are the ones the reference states. The
+  # arrival and 8101's 06:43 departure are the fixture's own. The
   # entered case stores the pair's minutes in `deadhead_times` instead, which is
-  # the same leg read the way AC-3 stores one.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_gap_drive_live_test.exs`.
+  # the same leg read the way an entered time is stored.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -53,7 +50,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
       route_fixture(organization.id, version.id, %{route_id: "R24", route_short_name: "24"})
 
     # One meridian. The two platforms of Riverside Station share its point, the
-    # way the reference's one station does, and Market Square sits 5.2 km north of
+    # way one station does, and Market Square sits 5.2 km north of
     # Valley College so that leg's estimate is 14 minutes.
     for {stop_id, name, lat} <- [
           {"AB_RS_A", "Riverside Station", "40.0100"},
@@ -102,7 +99,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
     )
   end
 
-  # The reference's block 101: 06:00 and 07:40 out of Riverside Station, the 06:43
+  # Block 101: 06:00 and 07:40 out of Riverside Station, the 06:43
   # Crosstown out of Market Square between them, and the 8-minute gap the vehicle
   # needs 14 minutes to cover.
   defp block_101!(context) do
@@ -192,25 +189,25 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
       )
       |> render_click()
 
-      assert has_element?(view, "#gap-drawer", "Between trips 6101 and 8101")
-      assert has_element?(view, "#gap-drawer", "Block 101 · Weekday")
+      assert has_element?(view, "#gap-drawer", "Can't reach the next trip")
+      assert has_element?(view, "#gap-drawer", "Block 101 · 6101 → 8101 · Weekday")
 
       assert has_element?(view, "#gap-drawer", "Arrives")
-      assert has_element?(view, "#gap-drawer", "06:35 at Valley College")
-      assert has_element?(view, "#gap-drawer", "Next trip leaves")
-      assert has_element?(view, "#gap-drawer", "06:43 from Market Square")
+      assert has_element?(view, "#gap-drawer", "06:35 · Valley College")
+      assert has_element?(view, "#gap-drawer", "Next trip departs")
+      assert has_element?(view, "#gap-drawer", "06:43 · Market Square")
       assert has_element?(view, "#gap-available", "8 min")
       assert has_element?(view, "#gap-drive", "14 min")
       assert has_element?(view, "#gap-drive-source", "Estimated")
 
       # The wait is the gap behind a drive the vehicle cannot make, so there is
-      # none to report (FH-40).
+      # none to report.
       assert has_element?(view, "#gap-wait", "—")
       assert has_element?(view, "#gap-operators", "No")
 
       # The rider note stays off an empty move, and the record list is still there.
       refute has_element?(view, "#gap-rider-note")
-      assert has_element?(view, "#gap-transfers", "Transfer records · 0")
+      assert has_element?(view, "#gap-transfers", "Stay-on-board records · 0")
     end
 
     test "the callout reads the minutes needed against the time there is", context do
@@ -283,7 +280,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
       base = blocks_path(context.version.id)
       {:ok, view, _html} = live(editor_conn(context), gap_url(base, trips.second, trips.third))
 
-      assert has_element?(view, "#gap-drawer", "Between trips 8101 and 6103")
+      assert has_element?(view, "#gap-drawer", "22 min between trips")
       assert has_element?(view, "#gap-drive", "None · same stop")
       assert has_element?(view, "#gap-wait", "22 min")
       # The vehicle never drives, so there is no pair to enter a driving time for.
@@ -308,7 +305,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
       # A drive the vehicle can make is not the callout's error, and the estimate
       # mark is gone with it.
       assert text(view, "#gap-text") =~
-               "Moves empty: Valley College → Market Square. 5 min to drive."
+               "Deadhead from Valley College to Market Square. 5 min to drive."
 
       refute has_element?(view, "#gap-text", "Needs 5 min")
     end
@@ -350,7 +347,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
 
       assert texts(view, "#gap-drawer dt") == [
                "Arrives",
-               "Next trip leaves",
+               "Next trip departs",
                "Time available",
                "Driving without riders",
                "Wait",

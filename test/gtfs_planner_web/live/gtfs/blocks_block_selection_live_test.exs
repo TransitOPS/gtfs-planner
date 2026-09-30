@@ -1,15 +1,11 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksBlockSelectionLiveTest do
-  # EV-36: the Blocks tab's block selection, observed through the ordinary
+  # The Blocks tab's block selection, observed through the ordinary
   # `/gtfs/:version/blocks` route on the production `CatalogReadAdapter.Repo` and
   # the scoped `Blocking` context. Rows are created inside the SQL Sandbox
   # transaction and rolled back; nothing here substitutes an adapter.
   #
-  # The card's last case names the Suggest blocks drawer step 44 builds, so this
-  # file asserts the hand-off the button makes — the `drawer=suggest` patch — and
-  # not the drawer it opens.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_block_selection_live_test.exs`.
+  # The last case asserts the hand-off the Rebuild button makes — the
+  # `drawer=suggest` patch — and not the drawer it opens.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -212,6 +208,25 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBlockSelectionLiveTest do
       refute has_element?(view, "[data-role='select-block'][data-block='102'][checked]")
     end
 
+    test "a selection of blocks hands the page's one primary to Rebuild selected blocks",
+         %{version: version} = context do
+      block_day(context)
+      conn = editor_conn(context)
+
+      {:ok, view, _html} = live(conn, blocks_path(version.id))
+
+      assert has_element?(view, "#blocks-review-checks.btn-primary")
+
+      toggle_block(view, "101")
+
+      assert has_element?(view, "#block-selection-rebuild.btn-primary")
+      assert has_element?(view, "#blocks-review-checks.btn-outline")
+
+      view |> element("#block-selection-clear") |> render_click()
+
+      assert has_element?(view, "#blocks-review-checks.btn-primary")
+    end
+
     test "the header checkbox selects the page and unselects it", %{version: version} = context do
       block_day(context)
       conn = editor_conn(context)
@@ -400,8 +415,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksBlockSelectionLiveTest do
 
       rebuild_selected(view)
 
-      # Step 44 adds the drawer behind this URL key; this step owns the hand-off,
-      # the selected scope the drawer reads being the same `:block_selection`.
+      # The button hands off to the drawer behind this URL key, whose selected
+      # scope reads the same `:block_selection`.
       assert_patch(view, base <> "?drawer=suggest")
       assert block_count(view) == "2 blocks selected"
     end

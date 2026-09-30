@@ -1,5 +1,5 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksFiguresLiveTest do
-  # EV-28, rejecting FH-28 for CL-28: the plan figures in the count strip and the
+  # The plan figures in the count strip and the
   # page-level fleet notices, read through the ordinary `/gtfs/:version/blocks`
   # route on the production `CatalogReadAdapter.Repo` and the scoped `Blocking`
   # context. Rows are created inside the SQL Sandbox transaction and rolled
@@ -16,13 +16,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksFiguresLiveTest do
   #   * riders       67% — 9,600 s of service over 14,400 s of platform time
   #   * peak out      4 at 06:05 — the earliest instant all four spans are open
   #
-  # The card's own literals (57% and 06:08) are the prototype's own figures for
-  # its own sample day, not this fixture's; the expectations below are the
-  # arithmetic above, so they would fail if the page re-derived a figure of its
-  # own rather than printing `Blocking`'s.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_figures_live_test.exs`.
+  # The expectations below are the arithmetic above, so they would fail if the
+  # page re-derived a figure of its own rather than printing `Blocking`'s.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest

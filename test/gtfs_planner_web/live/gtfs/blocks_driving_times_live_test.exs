@@ -1,5 +1,5 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksDrivingTimesLiveTest do
-  # EV-34, rejecting FH-34 for CL-34: the Driving times drawer as a planner
+  # The Driving times drawer as a planner
   # works on — the day's directional pairs, most used first, their minutes and
   # source, the “Estimated only” filter, an entered time, a reset, and a
   # refused value — read through the ordinary `/gtfs/:version/blocks` route on
@@ -7,16 +7,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksDrivingTimesLiveTest do
   # Rows are created inside the SQL Sandbox transaction and rolled back; nothing
   # here substitutes an adapter, a context or a hand-built pair.
   #
-  # The fixture is the reference's own block 101 at its own geometry, scaled so
-  # that the Valley College → Market Square leg is 5.2 km, and it adds the
-  # reference's second block 104 so one pair is driven twice: that is what makes
+  # The fixture is a block 101 scaled so
+  # that the Valley College → Market Square leg is 5.2 km, and it adds a
+  # second block 104 so one pair is driven twice: that is what makes
   # “most used first” a statement about the list rather than about one row. The
   # minutes in the table are the domain's own estimator over the fixture's own
   # coordinates, not numbers pasted into a fixture, and the entered cases store a
-  # pair in `deadhead_times`, which is the same read AC-3 stores one by.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_driving_times_live_test.exs`.
+  # pair in `deadhead_times`, which is the same read an entered time is stored by.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -104,7 +101,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksDrivingTimesLiveTest do
     )
   end
 
-  # The reference's block 101 and its block 104 both drive Valley College → Market
+  # Block 101 and block 104 both drive Valley College → Market
   # Square once, and block 105 drives that leg the other way, so the day has two
   # directional pairs and the busiest one comes first. The version has no garage,
   # so the only drives the day has are the two gaps: the drawer lists what the
@@ -152,7 +149,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksDrivingTimesLiveTest do
     })
 
     # Block 105 drives the same two places in the other direction, so the day has
-    # a second directional pair — each direction is a row of its own (AC-3).
+    # a second directional pair — each direction is a row of its own.
     trip!(context, context.riverside, %{
       trip_id: "6107",
       block_id: "105",
@@ -298,7 +295,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksDrivingTimesLiveTest do
       assert has_element?(view, "#driving-times-drawer", "Driving times")
       assert has_element?(view, "#driving-time-row-0", "Valley College → Market Square")
 
-      assert "bg-base-200" in row_classes(view, "#driving-time-row-0")
+      assert "bg-selection" in row_classes(view, "#driving-time-row-0")
       refute "bg-base-200" in row_classes(view, "#driving-time-row-1")
 
       # The row the URL named is the row the input id names, so the dialog hook

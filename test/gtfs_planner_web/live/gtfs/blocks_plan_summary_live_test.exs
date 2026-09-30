@@ -1,6 +1,6 @@
 defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
-  # EV-29, rejecting FH-29 for CL-29: the Plan summary drawer that replaced the
-  # Peak vehicles drawer (AC-35), read through the ordinary
+  # The Plan summary drawer that replaced the
+  # Peak vehicles drawer, read through the ordinary
   # `/gtfs/:version/blocks` route on the production `CatalogReadAdapter.Repo`
   # and the scoped `Blocking` context. Rows are created inside the SQL Sandbox
   # transaction and rolled back; nothing here substitutes an adapter or
@@ -25,13 +25,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksPlanSummaryLiveTest do
   # Cutaway listed the typed row is short by two, and the chart is that row's
   # because it is the first short row.
   #
-  # The card's own literals (57% and 06:08) are the prototype's figures for the
-  # prototype's sample day, not this fixture's; the expectations below are the
-  # arithmetic above, so they would fail if the drawer re-derived a figure of its
-  # own rather than printing `Blocking`'s.
-  #
-  # The focused gate command is deferred to branch review:
-  # `mix test test/gtfs_planner_web/live/gtfs/blocks_plan_summary_live_test.exs`.
+  # The expectations below are the arithmetic above, so they would fail if the
+  # drawer re-derived a figure of its own rather than printing `Blocking`'s.
   use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
