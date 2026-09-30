@@ -1479,6 +1479,29 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
   @impl true
   def render(assigns) do
+    # The page's one primary, decided ONCE per render and passed down.
+    #
+    # It cannot be written inline as `primary_owner(assigns)` at the call sites.
+    # Inside a `<:actions>` or `<:counts>` slot the name `assigns` is the SLOT's
+    # assigns — the page head's, which carry no `runs_day` — so a call there sees
+    # a map with no `runs_day` in it, matches no clause and hands the primary to
+    # nobody. Computing it here, in the function body, is also why it is NOT bound
+    # with `<% primary = ... %>` inside the sigil: a binding there did not reach
+    # the slots, and the symptom was the same silent `:none`.
+    #
+    # One decision for the whole page is the point. Two components each deciding
+    # for themselves is how a day ends up with two primaries.
+    #
+    # It is an ASSIGN rather than a plain variable. A bare Elixir variable read
+    # inside `~H` compiles with a warning and disables change tracking for the
+    # part of the tree that reads it; and it cannot be reached from a slot at
+    # all, because a slot only sees assigns. Binding it before the first slot is
+    # also why it is not written as `primary_owner(assigns)` at the call sites:
+    # inside a slot that `assigns` is the SLOT's map, which carries no
+    # `runs_day`, so the call would match no clause and hand the primary to
+    # nobody.
+    assigns = assign(assigns, :primary, primary_owner(assigns))
+
     ~H"""
     <Layouts.app
       flash={@flash}
@@ -1505,6 +1528,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
                 findings={@runs_day.derived.findings}
                 uncovered={@runs_day.derived.uncovered}
                 open={@problems_open}
+                primary={@primary == :problems}
+              />
+
+              <RunsComponents.suggest_runs_button
+                :if={@runs_day}
+                primary={@primary == :suggest}
               />
             </:actions>
           </RunsComponents.page_head>
@@ -1538,6 +1567,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
             </:counts>
           </RunsComponents.scope_bar>
 
+          <RunsComponents.relief_callout
+            :if={relief_setup_needed?(assigns)}
+            version_id={@current_gtfs_version.id}
+            day_type_key={@day || ""}
+          />
+
           <RunsComponents.plan_card
             :if={panel_state?(@load_state)}
             version_id={@current_gtfs_version.id}
@@ -1560,7 +1595,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
               />
 
               <.segmented_control
-                :if={@panel == :runs}
+                :if={@panel == :runs and not first_use?(assigns)}
                 id="runs-view"
                 name="view"
                 legend="Runs view"
@@ -1574,7 +1609,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
               />
 
               <.segmented_control
-                :if={@panel == :runs and @view == :timeline}
+                :if={@panel == :runs and @view == :timeline and not first_use?(assigns)}
                 id="runs-scale"
                 name="scale"
                 legend="Chart scale"
@@ -1589,32 +1624,40 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
             </div>
 
             <RunsComponents.plan_card version_id={@current_gtfs_version.id}>
-              <%= if @panel == :uncovered do %>
-                <RunsComponents.uncovered
-                  segments={uncovered_segments(@runs_day)}
-                  windows={uncovered_windows(@runs_day)}
-                  routes={@run_routes}
-                  stop_names={@run_stop_names}
+              <%= if first_use?(assigns) and @panel != :uncovered do %>
+                <RunsComponents.first_use
+                  version_id={@current_gtfs_version.id}
+                  day_type_key={@day || ""}
+                  uncovered_trips={uncovered_trip_count(@runs_day)}
                 />
               <% else %>
-                <%= if @view == :list do %>
-                  <RunsComponents.list
-                    run_rows={@streams.run_rows}
-                    sort={@sort}
-                    dir={@dir}
-                    day_label={day_label(@runs_day)}
+                <%= if @panel == :uncovered do %>
+                  <RunsComponents.uncovered
+                    segments={uncovered_segments(@runs_day)}
+                    windows={uncovered_windows(@runs_day)}
+                    routes={@run_routes}
+                    stop_names={@run_stop_names}
                   />
                 <% else %>
-                  <RunsComponents.chart_key />
-                  <RunsComponents.timeline
-                    run_rows={@streams.run_rows}
-                    axis={@run_axis}
-                    routes={@run_routes}
-                    sort={@sort}
-                    dir={@dir}
-                    scale={@scale}
-                    crew={runs_crew(@runs_day)}
-                  />
+                  <%= if @view == :list do %>
+                    <RunsComponents.list
+                      run_rows={@streams.run_rows}
+                      sort={@sort}
+                      dir={@dir}
+                      day_label={day_label(@runs_day)}
+                    />
+                  <% else %>
+                    <RunsComponents.chart_key :if={not first_use?(assigns)} />
+                    <RunsComponents.timeline
+                      run_rows={@streams.run_rows}
+                      axis={@run_axis}
+                      routes={@run_routes}
+                      sort={@sort}
+                      dir={@dir}
+                      scale={@scale}
+                      crew={runs_crew(@runs_day)}
+                    />
+                  <% end %>
                 <% end %>
               <% end %>
             </RunsComponents.plan_card>
@@ -1767,6 +1810,79 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # which reads as a failure to load.
   defp panel_state?(state) when state in [:loading, :no_dates, :empty, :unknown], do: true
   defp panel_state?(_state), do: false
+
+  # WHO owns the page's one primary, decided once per render (AC-31).
+  #
+  # Four things on this page could each argue for it — the Review problems
+  # action, Suggest runs, the no-blocks link and the first-use action — and each
+  # one knows only its own state. If each decided for itself, a day with both
+  # problems and no runs would render two primaries, and the reader would have no
+  # way to tell which is the next step. So the decision is made here, in the one
+  # place that can see all four, and passed down.
+  #
+  # The order is the order of what the reader must do first:
+  #
+  #   1. no blocks — there is nothing to plan, so Blocks is the only next step;
+  #   2. problems to review — a finding is work already in front of the reader;
+  #   3. first use — blocks and no runs is an unfinished setup, and suggesting is
+  #      the way out of it.
+  #
+  # A loaded day with no problems has NO primary: there is nothing to fix and
+  # nothing unfinished, so promoting anything would be asking the reader to
+  # prefer one action arbitrarily. Suggest runs stays secondary and says what it
+  # does.
+  defp primary_owner(assigns) do
+    cond do
+      assigns.load_state == :empty -> :blocks
+      first_use?(assigns) -> :suggest
+      problems_count(assigns) > 0 -> :problems
+      true -> :none
+    end
+  end
+
+  # Blocks exist and nothing has been cut: the first-use state. A day with no
+  # blocks is a different state with a different next step, so the block count is
+  # checked before the run count rather than after.
+  # Operator changes are not set up, so blocks are only cut at their ends. Read
+  # from the loaded day's own `relief_ready?`, which the domain computes from the
+  # marked relief points AND the piece limit: a limit with no relief point splits
+  # nothing, and a relief point with no limit splits at every window.
+  defp relief_setup_needed?(assigns) do
+    case assigns do
+      %{load_state: state, runs_day: %{relief_ready?: ready?}}
+      when state in [:loaded, :unavailable] ->
+        not ready?
+
+      _ ->
+        false
+    end
+  end
+
+  defp first_use?(assigns) do
+    case assigns do
+      %{
+        load_state: :loaded,
+        runs_day: %{day: %{counts: %{blocks: blocks}}, derived: %{runs: runs}}
+      } ->
+        blocks > 0 and runs == []
+
+      _ ->
+        false
+    end
+  end
+
+  defp problems_count(assigns) do
+    case assigns do
+      # `uncovered` is INSIDE `derived`, beside `findings`. Written as a sibling
+      # of `derived` the pattern still compiles and simply never matches, which
+      # is how this page came to believe a day with two findings had none.
+      %{runs_day: %{derived: %{findings: findings, uncovered: uncovered}}} ->
+        RunsComponents.problem_count(RunsComponents.group_findings(findings), uncovered)
+
+      _ ->
+        0
+    end
+  end
 
   # The crew rules for the loaded day, or nil.
   #

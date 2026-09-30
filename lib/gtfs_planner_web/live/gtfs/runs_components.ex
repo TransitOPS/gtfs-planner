@@ -248,6 +248,105 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   @doc """
+  Renders the FIRST USE panel: the day has blocks, and nothing has been cut yet.
+
+  This is a panel rather than an empty chart because there is nothing to draw.
+  A chart with no rows would look like a day whose blocks are all covered, and the
+  one thing the reader needs to know here is that nothing has been planned yet.
+
+  The copy is the CARD's rather than the prototype's. The prototype reads "Suggest
+  runs cuts each block at its relief windows and pairs the pieces into runs",
+  which describes the algorithm; the card's "No runs yet. Suggest runs cuts every
+  block into operator work." names the state first and then the effect, which is
+  what a reader who has not used the page yet needs. Recorded as prototype drift.
+  """
+  def first_use(assigns) do
+    ~H"""
+    <div id="runs-first-use" class="px-5 py-12 text-center">
+      <h2 class="text-[24px]">No runs yet. Suggest runs cuts every block into operator work.</h2>
+
+      <p class="mx-auto mt-2 max-w-[560px] text-sm text-base-content/70">
+        You can also create runs one at a time from uncovered work.
+      </p>
+
+      <p class="mt-3 text-sm text-base-content/70">
+        <.link
+          id="runs-first-use-uncovered"
+          href={"/gtfs/#{@version_id}/runs?day=#{@day_type_key}&panel=uncovered"}
+          data-role="first-use-uncovered"
+          class="min-h-11 font-semibold text-action underline underline-offset-4"
+        >
+          Open uncovered work ({@uncovered_trips} trips)
+        </.link>
+      </p>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the callout shown when operator changes are not set up.
+
+  `relief_ready?` is false when the version has no marked relief point or no
+  piece limit, and the consequence is concrete: every block is cut at its ends,
+  so a block longer than one operator's shift cannot be split. The callout says
+  that and links to the place the setting lives.
+
+  It is a callout and NOT a panel, and that is the whole design of it: it never
+  blocks an action. A reader whose blocks happen not to need splitting can go on
+  planning runs, and a reader who is blocked is told exactly where to go. A panel
+  here would be a reader stopped by a setting they may not need.
+  """
+  def relief_callout(assigns) do
+    ~H"""
+    <div
+      id="runs-relief-callout"
+      data-role="relief-callout"
+      role="status"
+      class="rounded-card border border-info-line bg-info-container px-4 py-3"
+    >
+      <p class="text-sm">
+        <strong>Runs are cut only at block ends.</strong>
+        Set up operator changes to split long blocks.
+      </p>
+
+      <.link
+        id="runs-relief-callout-link"
+        href={"/gtfs/#{@version_id}/blocks?day=#{@day_type_key}"}
+        data-role="relief-blocks-link"
+        class="mt-2 inline-flex min-h-11 items-center font-semibold text-action underline underline-offset-4"
+      >
+        Go to Blocks &rsaquo; Operator changes
+      </.link>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders the "Suggest runs" head action.
+
+  `primary` is passed in rather than derived here, because who owns the page's one
+  primary is a property of the WHOLE state — a problems button, a first-use
+  action, a no-blocks link and this one cannot each decide for themselves. The
+  selection is made once per render in `RunsLive` and handed down, so two
+  components can never both believe they are the primary.
+  """
+  def suggest_runs_button(assigns) do
+    ~H"""
+    <.button
+      id="runs-suggest"
+      type="button"
+      phx-click="open_suggest"
+      variant={if @primary, do: "primary", else: "secondary"}
+      data-role="suggest-runs"
+      data-primary={to_string(@primary)}
+      class="min-h-11"
+    >
+      <.icon name="hero-sparkles" class="size-4" /> Suggest runs
+    </.button>
+    """
+  end
+
+  @doc """
   Renders the callout shown when a reload failed while runs are already on
   screen.
 
@@ -1040,9 +1139,15 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   attr :uncovered, :list, required: true
   attr :open, :boolean, default: false
 
+  attr :primary, :boolean, required: true
+
   def review_problems_button(assigns) do
     count = problem_count(group_findings(assigns.findings), assigns.uncovered)
 
+    # `count` is what the LABEL says; `primary` is what the STATE decided. They
+    # are separate because a count is a fact about the day and a primary is a
+    # fact about the page, and a day can have problems while the page's one
+    # primary belongs to something else.
     assigns = assign(assigns, :count, count)
 
     ~H"""
@@ -1050,9 +1155,10 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       id="runs-review-problems"
       type="button"
       phx-click="open_problems"
-      variant={if @count > 0, do: "primary", else: "secondary"}
+      variant={if @primary, do: "primary", else: "secondary"}
       data-role="review-problems"
       data-count={@count}
+      data-primary={to_string(@primary)}
       class="min-h-11"
     >
       <.icon name="hero-exclamation-triangle-mini" class="size-4" />
@@ -2714,7 +2820,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # once, as its own section, and leaving the domain's finding in a run group
   # would show the same problem twice — in a group titled after a run that is
   # not involved in it.
-  defp group_findings(findings) do
+  @doc """
+  Groups the day's findings by run ID.
+
+  Public for the same reason `problem_count/2` is: `RunsLive` picks the page's one
+  primary from the same numbers the button shows, and it has to count the same
+  things the button counts. Handing `problem_count/2` a FLAT findings list would
+  pair each finding map with a `length/1` of itself, which is a count of
+  something that is not a list at all.
+  """
+  def group_findings(findings) do
     findings
     |> Enum.filter(&(&1.severity in [:error, :warning]))
     |> Enum.reject(&(&1.code == :uncovered_work))
@@ -2742,7 +2857,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # it as a `:uncovered_work` warning; the seeded day's "· 3" only comes out right
   # when that one warning is the item the "+1" stands for. The button therefore
   # counts what the drawer LISTS.
-  defp problem_count(run_findings, uncovered) do
+  @doc """
+  How many items the header action counts: one per run finding, plus ONE for the
+  uncovered work as a whole.
+
+  Public because `RunsLive` picks the page's one primary from the same number.
+  Two counts would be two truths: a button that reads 0 and a state that thinks
+  there are problems to review, which is exactly the split this one function
+  exists to prevent.
+  """
+  def problem_count(run_findings, uncovered) do
     total =
       Enum.reduce(run_findings, 0, fn {_run_id, list}, acc -> acc + length(list) end)
 
