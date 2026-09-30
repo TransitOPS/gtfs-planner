@@ -19,6 +19,24 @@ defmodule GtfsPlanner.Release do
     :ok
   end
 
+  def audit_ownership do
+    load_app()
+
+    reports =
+      for repo <- repos() do
+        {:ok, report, _} =
+          Ecto.Migrator.with_repo(repo, fn repo ->
+            GtfsPlanner.Integrity.OwnershipAudit.run(repo: repo)
+          end)
+
+        Enum.each(GtfsPlanner.Integrity.OwnershipAudit.report_lines(report), &IO.puts/1)
+        report
+      end
+
+    total = Enum.sum(Enum.map(reports, & &1.total))
+    if total == 0, do: :ok, else: {:error, total}
+  end
+
   defp backfill_legacy_diagrams!(repo) do
     case GtfsPlanner.Gtfs.DiagramStorage.migrate_legacy_assets(repo) do
       {:ok, _count} ->
