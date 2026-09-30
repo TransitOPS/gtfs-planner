@@ -1257,4 +1257,401 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       assert has_element?(view, "#paste-metric-trips", "7 → 9")
     end
   end
+
+  describe "review matrix" do
+    # Step 26: the `#paste-rows` stream with change badges, pasted and
+    # estimated times, was-values, removals and the timing note. Mode and
+    # template changes recompute and re-stream; stops view and filter only
+    # restash and re-stream the same review.
+    setup :editor_scope
+
+    # Three weekday outbound trips on a zero-dwell Main pattern. The
+    # matrix text refines to one unchanged row, one retimed 09:00 row (a
+    # new Pasted timing with `was` values), one added row and — in Replace
+    # mode — the struck 08:00 removal with its transfer note.
+    defp matrix_setup(%{organization: organization, version: version}) do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "PASTE26",
+          route_short_name: "12",
+          route_long_name: "Downtown – Riverside"
+        })
+
+      weekday = weekly_calendar(organization, version, "PASTE26_WKD", "Weekday")
+
+      Enum.each(1..3, fn index ->
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "PASTE26_S#{index}",
+          stop_name: "Matrix Stop #{index}"
+        })
+      end)
+
+      main =
+        schedule_pattern_fixture(organization.id, version.id, %{
+          route_id: route.route_id,
+          direction_id: 0,
+          route_pattern_id: "PASTE26-MAIN",
+          route_pattern_name: "Main",
+          route_pattern_typicality: 1,
+          timing_name: "Standard",
+          stops: [
+            {"PASTE26_S1", 0, 0, 1},
+            {"PASTE26_S2", 300, 300, 1},
+            {"PASTE26_S3", 600, 600, 1}
+          ]
+        })
+
+      Enum.each(
+        [
+          {"PASTE26_T0700", "07:00:00"},
+          {"PASTE26_T0800", "08:00:00"},
+          {"PASTE26_T0900", "09:00:00"}
+        ],
+        fn {trip_id, start_time} ->
+          schedule_trip_fixture(organization.id, version.id, route.route_id, main, %{
+            service_id: weekday,
+            trip_id: trip_id,
+            start_time: start_time
+          })
+        end
+      )
+
+      transfer_fixture(organization.id, version.id, %{
+        from_stop_id: "PASTE26_S3",
+        to_stop_id: "PASTE26_S1",
+        from_trip_id: "PASTE26_T0800",
+        transfer_type: 0
+      })
+
+      %{route: route, weekday: weekday, main: main}
+    end
+
+    defp matrix_text do
+      "Matrix Stop 1\tMatrix Stop 2\tMatrix Stop 3\n" <>
+        "07:00\t07:05\t07:10\n" <>
+        "09:00\t09:07\t09:12\n" <>
+        "06:00\t06:05\t06:10"
+    end
+
+    defp matrix_open(view, version, route, setup) do
+      follow(
+        view,
+        paste_path(version, route, %{
+          "service_id" => setup.weekday,
+          "direction" => "0",
+          "pattern" => setup.main.pattern.id
+        })
+      )
+    end
+
+    defp replace_matrix(view, text) do
+      review_read(view, text)
+      render_change(view, "input", review_params(text, %{"mode" => "replace"}))
+    end
+
+    test "streams one row per change with badges, was-values and the struck removal",
+         %{conn: conn, version: version} = context do
+      setup = matrix_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = matrix_open(view, version, setup.route, setup)
+
+      replace_matrix(view, matrix_text())
+
+      assert has_element?(view, "#paste-rows #paste-row-1")
+      assert has_element?(view, "#paste-rows #paste-row-2")
+      assert has_element?(view, "#paste-rows #paste-row-3")
+      assert has_element?(view, "#paste-rows #paste-remove-PASTE26_T0800")
+
+      assert has_element?(view, "#paste-rows #paste-row-1", "07:00")
+      assert has_element?(view, "#paste-rows #paste-row-1", "No change")
+      assert has_element?(view, "#paste-rows #paste-row-1", "Matches trip")
+
+      row2 = view |> element("#paste-rows #paste-row-2") |> render()
+      assert row2 =~ "Change"
+      assert row2 =~ "09:07"
+      assert row2 =~ "was"
+      assert row2 =~ "09:05"
+      assert row2 =~ "Keeps trip ID PASTE26_T0900"
+      assert row2 =~ "New ·"
+
+      row3 = view |> element("#paste-rows #paste-row-3") |> render()
+      assert row3 =~ "Add"
+      assert row3 =~ "06:00"
+
+      removal = view |> element("#paste-rows #paste-remove-PASTE26_T0800") |> render()
+      assert removal =~ "Remove"
+      assert removal =~ "<s"
+      assert removal =~ "08:00"
+      assert removal =~ "Trip ID PASTE26_T0800"
+      assert removal =~ "1 transfer"
+      assert removal =~ "removed with it"
+
+      assert has_element?(view, "#paste-review-table", "Timing")
+      assert has_element?(view, "#paste-review-table", "Details")
+      refute has_element?(view, "#paste-filter-warnings")
+    end
+
+    test "filters narrow the streamed rows and the empty state offers Show all rows",
+         %{conn: conn, version: version} = context do
+      setup = matrix_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = matrix_open(view, version, setup.route, setup)
+
+      replace_matrix(view, matrix_text())
+
+      render_click(view, "paste_filter", %{"filter" => "remove"})
+
+      assert has_element?(view, "#paste-rows #paste-remove-PASTE26_T0800")
+      refute has_element?(view, "#paste-rows #paste-row-1")
+
+      # Add mode has no removals, so the current filter matches nothing.
+      render_change(view, "input", review_params(matrix_text(), %{"mode" => "add"}))
+
+      assert has_element?(view, "#paste-review-table", "No rows match this filter.")
+      refute has_element?(view, "#paste-rows #paste-row-1")
+
+      view |> element("#paste-review-table button", "Show all rows") |> render_click()
+
+      assert has_element?(view, "#paste-filter-all[aria-pressed='true']")
+      assert has_element?(view, "#paste-rows #paste-row-1")
+    end
+
+    test "selecting a timing name opens the timing note with template and trip count",
+         %{conn: conn, version: version} = context do
+      setup = matrix_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = matrix_open(view, version, setup.route, setup)
+
+      # The uneven middle stop forces a new timing with an estimate, so
+      # the note names the template, the estimated stop and the trip count.
+      review_read(
+        view,
+        "Matrix Stop 1\tMatrix Stop 2\tMatrix Stop 3\n06:00\t\t06:20"
+      )
+
+      view |> element("#paste-rows #paste-row-1 button") |> render_click()
+
+      assert has_element?(view, "#paste-timing-note", "New timing")
+      assert has_element?(view, "#paste-timing-note", "Standard")
+      assert has_element?(view, "#paste-timing-note", "Matrix Stop 2")
+      assert has_element?(view, "#paste-timing-note", "Applying creates it for 1 trip")
+
+      render_click(view, "paste_timing_close")
+      refute has_element?(view, "#paste-timing-note")
+    end
+
+    test "an estimated stop renders italic in All stops and is absent in Pasted view",
+         %{conn: conn, version: version} = context do
+      setup = matrix_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = matrix_open(view, version, setup.route, setup)
+
+      text =
+        "Matrix Stop 1\tMatrix Stop 2\tMatrix Stop 3\n" <>
+          "06:00\t\t06:20"
+
+      review_read(view, text)
+
+      # The blank middle stop is estimated, so Pasted view has no column.
+      refute view |> element("#paste-review-table thead") |> render() =~ "Matrix Stop 2"
+      assert has_element?(view, "#paste-rows #paste-row-1", "06:20")
+
+      render_change(view, "input", review_params(text, %{"stops_view" => "all"}))
+
+      assert view |> element("#paste-review-table thead") |> render() =~ "Matrix Stop 2"
+
+      row = view |> element("#paste-rows #paste-row-1") |> render()
+      assert row =~ "06:10"
+      assert row =~ "italic"
+    end
+
+    test "overnight times show +1 day", %{conn: conn, version: version} = context do
+      setup = matrix_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = matrix_open(view, version, setup.route, setup)
+
+      review_read(
+        view,
+        "Matrix Stop 1\tMatrix Stop 2\tMatrix Stop 3\n24:03\t24:08\t24:13"
+      )
+
+      assert has_element?(view, "#paste-rows #paste-row-1", "24:03")
+      assert has_element?(view, "#paste-rows #paste-row-1", "+1 day")
+    end
+
+    test "arrival times render when arrival differs from departure",
+         %{conn: conn, version: version} = context do
+      setup = matrix_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = matrix_open(view, version, setup.route, setup)
+
+      review_read(
+        view,
+        "Matrix Stop 1\tMatrix Stop 2 arr\tMatrix Stop 2 dep\tMatrix Stop 3\n" <>
+          "07:00\t07:04\t07:05\t07:10"
+      )
+
+      assert has_element?(view, "#paste-rows #paste-row-1", "arr 07:04")
+      assert has_element?(view, "#paste-rows #paste-row-1", "07:05")
+    end
+
+    test "rows on another pattern name it above the timing",
+         %{conn: conn, organization: organization, version: version} do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "PASTE26X",
+          route_short_name: "12",
+          route_long_name: "Downtown – Riverside"
+        })
+
+      weekday = weekly_calendar(organization, version, "PASTE26X_WKD", "Weekday")
+
+      Enum.each(1..3, fn index ->
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "PASTE26X_S#{index}",
+          stop_name: "Matrix Stop #{index}"
+        })
+      end)
+
+      main =
+        schedule_pattern_fixture(organization.id, version.id, %{
+          route_id: route.route_id,
+          direction_id: 0,
+          route_pattern_id: "PASTE26X-MAIN",
+          route_pattern_name: "Main",
+          route_pattern_typicality: 1,
+          timing_name: "Standard",
+          stops: [
+            {"PASTE26X_S1", 0, 0, 1},
+            {"PASTE26X_S2", 300, 300, 1},
+            {"PASTE26X_S3", 600, 600, 1}
+          ]
+        })
+
+      schedule_pattern_fixture(organization.id, version.id, %{
+        route_id: route.route_id,
+        direction_id: 0,
+        route_pattern_id: "PASTE26X-SHORT",
+        route_pattern_name: "Short",
+        route_pattern_typicality: 0,
+        timing_name: "Standard",
+        stops: [
+          {"PASTE26X_S1", 0, 0, 1},
+          {"PASTE26X_S3", 600, 600, 1}
+        ]
+      })
+
+      {:ok, view, _html} = live(conn, paste_path(version, route))
+
+      _html =
+        follow(
+          view,
+          paste_path(version, route, %{
+            "service_id" => weekday,
+            "direction" => "0",
+            "pattern" => main.pattern.id
+          })
+        )
+
+      # The dash rules Main out, so the row takes the one pattern that fits.
+      review_read(
+        view,
+        "Matrix Stop 1\tMatrix Stop 2\tMatrix Stop 3\n06:00\t–\t06:10"
+      )
+
+      row = view |> element("#paste-rows #paste-row-1") |> render()
+      assert row =~ "Short"
+      assert row =~ "Standard"
+      assert row =~ "06:00"
+      assert row =~ "06:10"
+
+      refute view |> element("#paste-review-table thead") |> render() =~ "Matrix Stop 2"
+    end
+
+    test "the warnings filter lists rows whose trip number is already used",
+         %{conn: conn, organization: organization, version: version} do
+      route =
+        route_fixture(organization.id, version.id, %{
+          route_id: "PASTE26W",
+          route_short_name: "12",
+          route_long_name: "Downtown – Riverside"
+        })
+
+      weekday = weekly_calendar(organization, version, "PASTE26W_WKD", "Weekday")
+
+      Enum.each(1..3, fn index ->
+        stop_fixture(organization.id, version.id, %{
+          stop_id: "PASTE26W_S#{index}",
+          stop_name: "Matrix Stop #{index}"
+        })
+      end)
+
+      main =
+        schedule_pattern_fixture(organization.id, version.id, %{
+          route_id: route.route_id,
+          direction_id: 0,
+          route_pattern_id: "PASTE26W-MAIN",
+          route_pattern_name: "Main",
+          route_pattern_typicality: 1,
+          timing_name: "Standard",
+          stops: [
+            {"PASTE26W_S1", 0, 0, 1},
+            {"PASTE26W_S2", 300, 300, 1},
+            {"PASTE26W_S3", 600, 600, 1}
+          ]
+        })
+
+      Enum.each(
+        [
+          {"PASTE26W_T0700", "07:00:00", "7"},
+          {"PASTE26W_T0800", "08:00:00", "7"},
+          {"PASTE26W_T0900", "09:00:00", nil}
+        ],
+        fn {trip_id, start_time, short} ->
+          schedule_trip_fixture(organization.id, version.id, route.route_id, main, %{
+            service_id: weekday,
+            trip_id: trip_id,
+            start_time: start_time,
+            trip_short_name: short
+          })
+        end
+      )
+
+      text =
+        "Matrix Stop 1\tMatrix Stop 2\tMatrix Stop 3\n" <>
+          "07:00\t07:05\t07:10\n" <>
+          "08:00\t08:05\t08:10\n" <>
+          "09:00\t09:05\t09:10"
+
+      {:ok, view, _html} = live(conn, paste_path(version, route))
+
+      _html =
+        follow(
+          view,
+          paste_path(version, route, %{
+            "service_id" => weekday,
+            "direction" => "0",
+            "pattern" => main.pattern.id
+          })
+        )
+
+      review_read(view, text)
+
+      render_change(view, "input", review_params(text, %{"mode" => "replace"}))
+
+      assert has_element?(view, "#paste-filter-warnings", "2")
+
+      render_click(view, "paste_filter", %{"filter" => "warnings"})
+
+      assert has_element?(view, "#paste-rows #paste-row-1", "already used")
+      assert has_element?(view, "#paste-rows #paste-row-2")
+      refute has_element?(view, "#paste-rows #paste-row-3")
+    end
+  end
 end

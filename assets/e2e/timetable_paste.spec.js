@@ -280,3 +280,61 @@ test.describe("review header", () => {
     );
   });
 });
+
+test.describe("review matrix", () => {
+  // Step 26: the `#paste-rows` stream with change badges, pasted and
+  // estimated times, was-values, removals and the timing note. The run is
+  // deferred to branch review with the browser partition, like the cases
+  // above.
+  const MATRIX_PASTE = [
+    "Trip\tCentral Station\tMarket Street\tMill Street\tRiverside Terminal",
+    "1201\t6:00\t6:04\t6:10\t6:18",
+    "1203\t7:00\t7:04\t7:10\t7:18",
+  ].join("\n");
+
+  async function readMatrix(page) {
+    await logIn(page);
+    const versionId = await versionIdFor(page, "Browser E2E Version");
+
+    await page.goto(pastePath(versionId, PASTE_ROUTE));
+    await page.fill("#paste-source", MATRIX_PASTE);
+    await page.click("#paste-read");
+    await expect(page.locator("#paste-review")).toBeVisible();
+  }
+
+  test("streams one row per pasted trip with badges and times", async ({
+    page,
+  }) => {
+    await readMatrix(page);
+    await expect(page.locator("#paste-rows #paste-row-1")).toBeVisible();
+    await expect(page.locator("#paste-rows #paste-row-2")).toBeVisible();
+    await expect(page.locator("#paste-rows #paste-row-1")).toContainText("6:00");
+    await expect(
+      page.locator("#paste-review-table thead"),
+    ).toContainText("Central Station");
+    await expect(page.locator("#paste-review-table thead")).toContainText(
+      "Timing",
+    );
+    await expect(page.locator("#paste-review-table thead")).toContainText(
+      "Details",
+    );
+  });
+
+  test("switching to All stops keeps the streamed rows", async ({ page }) => {
+    await readMatrix(page);
+    await page.click("label:has(input[name='paste[stops_view]'][value='all'])");
+    await expect(page.locator("#paste-rows #paste-row-1")).toBeVisible();
+    await expect(page.locator("#paste-rows #paste-row-2")).toBeVisible();
+    await expect(page.locator("#paste-review")).toContainText(
+      "stored to the second as estimates",
+    );
+  });
+
+  test("selecting a timing name opens the timing note", async ({ page }) => {
+    await readMatrix(page);
+    await page.locator("#paste-rows #paste-row-1 button").first().click();
+    await expect(page.locator("#paste-timing-note")).toBeVisible();
+    await page.click("#paste-timing-close");
+    await expect(page.locator("#paste-timing-note")).toHaveCount(0);
+  });
+});

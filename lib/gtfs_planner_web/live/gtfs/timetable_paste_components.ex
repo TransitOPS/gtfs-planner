@@ -14,9 +14,10 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   one-line reasons, Confirm match for close matches, the Review-trips error
   summary, the all-unmatched layout hint and the pattern stop strip. Step 25
   owns the Review header (`review_header/1`): How to apply, Fill other stops
-  from, Stops view, the three metrics, the refusal and nothing callouts, the
-  filter buttons and the `#paste-rows` placeholder step 26 streams its matrix
-  into.
+  from, Stops view, the three metrics, the refusal and nothing callouts
+  and the filter buttons. Step 26 owns the review matrix
+  (`review_matrix/1`): the streamed timetable rows with change badges,
+  pasted and estimated times, was-values, removals and the timing note.
   """
   use GtfsPlannerWeb, :html
 
@@ -26,6 +27,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     only: [first_use: 1, drawer_scroll: 1, drawer_footer: 1, message: 1]
 
   alias GtfsPlanner.Gtfs.Trip
+  alias GtfsPlannerWeb.Gtfs.TimetablePasteReview
 
   @doc """
   Renders the schedule line: the resolved Calendar, Direction and Pattern plus
@@ -826,8 +828,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   @doc """
   Renders step 3, the Review header: How to apply, Fill other stops from,
   Stops view, the three current → after metrics, the refusal and nothing
-  callouts, the filter buttons and the `#paste-rows` placeholder step 26
-  streams its matrix into.
+  callouts, the filter buttons and the review matrix (step 26).
 
   The mode radios (`paste[mode]`) and the stops radios (`paste[stops_view]`)
   are native inputs inside the page's `#paste-form`, so every change flows
@@ -842,7 +843,9 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   value, empty on a button). The metrics are hand-rolled rather than
   `metric/1` because each carries a sub-line; the refusals and the nothing
   notice reuse `message/1` (alert for errors, status for info, like the
-  prototype). Copy follows the prototype's review stage.
+  prototype). Copy follows the prototype's review stage. The matrix reads
+  its rows from the `:plan_rows` stream the LiveView resets on every
+  recompute, filter and view change.
   """
   attr :review, :map, required: true, doc: "the pure paste review with grid, rows and plan"
 
@@ -853,6 +856,22 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   attr :input, :map,
     required: true,
     doc: "the LiveView paste input with mode, template, stops view and filter"
+
+  attr :columns, :list,
+    required: true,
+    doc: "the matrix display columns from `TimetablePasteReview.build/3`"
+
+  attr :rows, :any,
+    required: true,
+    doc: "the `:plan_rows` stream items for the matrix"
+
+  attr :shown, :integer,
+    required: true,
+    doc: "the filtered row count (streams are not countable)"
+
+  attr :timing_note, :any,
+    default: nil,
+    doc: "the open timing-note `pattern_id|name` ref, if any"
 
   def review_header(assigns) do
     plan = assigns.review.plan
@@ -1123,11 +1142,277 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
           {label}<span class={["tabular-nums", @filter != key && "text-muted"]}>{count}</span>
         </button>
       </div>
-      <%!-- Step 26 streams the review matrix into `#paste-rows`. --%>
-      <div id="paste-rows" class="border-t border-subtle px-5 py-4">
-        <p class="text-sm text-muted">The review rows will appear here.</p>
-      </div>
+      <.review_matrix
+        review={@review}
+        scope={@scope}
+        input={@input}
+        columns={@columns}
+        rows={@rows}
+        shown={@shown}
+        timing_note={@timing_note}
+      />
     </section>
+    """
+  end
+
+  @doc """
+  Renders step 26, the review matrix: Row, Trip (+Block), Change badge,
+  one column per pasted stop (Pasted view) or every occurrence (All stops
+  view), Timing and Details.
+
+  Rows come from the `:plan_rows` stream the LiveView resets on every
+  recompute, filter and view change (`paste-row-<n>` for pasted rows,
+  `paste-remove-<trip_id>` for removals); the column set and the filtered
+  count arrive as plain assigns because streams are not enumerable. Cells
+  render pasted times bold, estimates italic muted floored to the minute,
+  `Not served`, `+1 day` at or past 24:00, `arr HH:MM` for a differing
+  arrival, `was HH:MM` on changed cells and struck old times for removals.
+  Timing buttons store a `pattern_id|name` ref through `paste_timing` and
+  the note resolves it from the current review; rows on another pattern
+  name it above the timing. Row and Trip pin with sticky columns inside
+  the labelled scroll region. Decision controls live in the Details cell
+  and arrive in step 27.
+  """
+  attr :review, :map, required: true, doc: "the pure paste review with grid, rows and plan"
+  attr :scope, :map, required: true, doc: "the loaded paste scope with patterns and stops"
+  attr :input, :map, required: true, doc: "the LiveView paste input with stops view"
+  attr :columns, :list, required: true, doc: "the matrix display columns"
+  attr :rows, :any, required: true, doc: "the `:plan_rows` stream items"
+  attr :shown, :integer, required: true, doc: "the filtered row count"
+  attr :timing_note, :any, default: nil, doc: "the open timing-note ref, if any"
+
+  def review_matrix(assigns) do
+    assigns =
+      assigns
+      |> assign(
+        :note,
+        TimetablePasteReview.timing_note(
+          assigns.review,
+          assigns.scope,
+          assigns.input,
+          assigns.timing_note
+        )
+      )
+      |> assign(:pattern_name, matrix_pattern_name(assigns.scope))
+      |> assign(:stops_view, review_stops_view(assigns.input))
+      |> assign(:colspan, length(assigns.columns) + 5)
+
+    ~H"""
+    <div
+      class="relative overflow-x-auto border-t border-subtle"
+      tabindex="0"
+      role="region"
+      aria-label="Review rows"
+    >
+      <table id="paste-review-table" class="w-full border-collapse text-left text-sm">
+        <thead>
+          <tr class="bg-canvas text-[13px] text-strong">
+            <th
+              scope="col"
+              class="sticky left-0 z-30 w-14 min-w-14 border-b border-subtle bg-canvas px-3 py-2.5 font-[650]"
+            >
+              Row
+            </th>
+            <th
+              scope="col"
+              class="sticky left-14 z-30 min-w-[92px] border-b border-subtle bg-canvas px-3 py-2.5 font-[650]"
+            >
+              Trip
+            </th>
+            <th
+              scope="col"
+              class="min-w-[124px] border-b border-subtle px-3 py-2.5 font-[650]"
+            >
+              Change
+            </th>
+            <th
+              :for={column <- @columns}
+              scope="col"
+              class="min-w-[84px] border-b border-subtle px-3 py-2.5 text-right font-[650]"
+            >
+              {column.name}
+              <small
+                :if={@stops_view == :all and column.pasted?}
+                class="block text-[12px] font-normal text-muted"
+              >
+                Pasted
+              </small>
+            </th>
+            <th
+              scope="col"
+              class="min-w-[180px] border-b border-subtle px-3 py-2.5 font-[650]"
+            >
+              Timing
+            </th>
+            <th
+              scope="col"
+              class="min-w-[360px] border-b border-subtle px-3 py-2.5 font-[650]"
+            >
+              Details
+            </th>
+          </tr>
+        </thead>
+        <tbody id="paste-rows" phx-update="stream">
+          <tr
+            :for={{dom_id, row} <- @rows}
+            id={dom_id}
+            tabindex="-1"
+            class={[matrix_row_bg(row.op), "outline-none focus:outline-2 focus:outline-focus"]}
+          >
+            <td class={[
+              matrix_row_bg(row.op),
+              "sticky left-0 z-10 border-b border-subtle px-3 py-2.5 align-top tabular-nums text-muted"
+            ]}>
+              <%= if row.row_no do %>
+                {row.row_no}
+              <% else %>
+                –
+              <% end %>
+            </td>
+            <th
+              scope="row"
+              class={[
+                matrix_row_bg(row.op),
+                "sticky left-14 border-b border-subtle px-3 py-2.5 align-top font-[650] text-strong"
+              ]}
+            >
+              <%= if row.trip do %>
+                {row.trip}
+              <% else %>
+                <span class="font-normal text-muted">–</span>
+              <% end %>
+              <small :if={row.block} class="block text-[12px] font-normal text-muted">
+                Block {row.block}
+              </small>
+            </th>
+            <td class="border-b border-subtle px-3 py-2.5 align-top">
+              <.status_badge status={elem(row.badge, 1)} label={elem(row.badge, 0)} />
+            </td>
+            <td
+              :for={cell <- row.cells}
+              class="whitespace-nowrap border-b border-subtle px-3 py-2.5 text-right align-top"
+            >
+              <.matrix_cell cell={cell} muted={row.op in [:duplicate, :skipped, :unchanged]} />
+            </td>
+            <td class="border-b border-subtle px-3 py-2.5 align-top text-[13px]">
+              <span
+                :if={row.pattern_note}
+                class="block max-w-[240px] truncate font-[650] text-strong"
+                title={row.pattern_note}
+              >
+                {row.pattern_note}
+              </span>
+              <%= if row.timing do %>
+                <button
+                  type="button"
+                  phx-click="paste_timing"
+                  phx-value-ref={row.timing.ref}
+                  class="inline-flex min-h-8 items-center gap-1.5 text-[13px] font-[650] text-action underline underline-offset-4"
+                >
+                  <%= if row.timing.new? do %>
+                    New ·
+                  <% end %>
+                  {row.timing.name}
+                </button>
+              <% else %>
+                <span class="text-muted">–</span>
+              <% end %>
+            </td>
+            <td class="border-b border-subtle px-3 py-2.5 align-top">
+              <%!-- Step 27 fills the row decision controls here. --%>
+              <div :if={row.details != []} class="grid gap-1 text-[13px] text-muted">
+                <p :for={detail <- row.details} class={detail.warning? && "text-warning-fg"}>
+                  {detail.text}
+                </p>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+        <%!-- The empty state lives in its own body: every child of the
+        stream container above needs a DOM id. --%>
+        <tbody :if={@shown == 0}>
+          <tr>
+            <td colspan={@colspan} class="px-5 py-8 text-center text-sm text-muted">
+              No rows match this filter.
+              <button
+                type="button"
+                class="font-[650] text-action underline underline-offset-4"
+                phx-click="paste_filter"
+                phx-value-filter="all"
+              >
+                Show all rows
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div
+      :if={@note}
+      id="paste-timing-note"
+      role="status"
+      class="flex flex-wrap items-start justify-between gap-3 border-t border-cyan-200 bg-cyan-50 px-5 py-3 text-[13px] text-cyan-900"
+    >
+      <p class="min-w-0 flex-1 basis-[360px]">
+        <strong>{@note.name}</strong> · {timing_note_body(@note)}
+      </p>
+      <button
+        type="button"
+        id="paste-timing-close"
+        class="btn btn-outline btn-sm min-h-9"
+        phx-click="paste_timing_close"
+      >
+        Close
+      </button>
+    </div>
+    <p :if={!@note} class="border-t border-subtle px-5 py-3 text-[13px] text-muted">
+      Bold times are pasted and stay exact. Rows on a pattern other than {@pattern_name} name it above their timing.
+      <%= if @stops_view == :all do %>
+        Italic times are filled in from the timing:
+        stored to the second as estimates, shown to the minute.
+      <% else %>
+        Choose All stops to see
+        the times filled in between them.
+      <% end %>
+      Select a timing name to see how it was built.
+    </p>
+    """
+  end
+
+  @doc """
+  Renders one matrix time cell: pasted times bold, estimates italic muted
+  floored to the minute, `Not served`, `+1 day` at or past 24:00,
+  `arr HH:MM` for a differing arrival, `was HH:MM` on changed cells and
+  struck old times for removals.
+  """
+  attr :cell, :map, required: true, doc: "the cell view model"
+  attr :muted, :boolean, required: true, doc: "duplicates, skips and repeats read muted"
+
+  def matrix_cell(assigns) do
+    cell = assigns.cell
+
+    assigns =
+      assigns
+      |> assign(:main, cell.secs && TimetablePasteReview.format_clock(cell.secs))
+      |> assign(:arr, cell.arr_secs && TimetablePasteReview.format_clock(cell.arr_secs))
+      |> assign(:was, cell.was_secs && TimetablePasteReview.format_clock(cell.was_secs))
+      |> assign(:next_day?, is_integer(cell.secs) and cell.secs >= 86_400)
+
+    ~H"""
+    <%= cond do %>
+      <% @cell.state == :not_served -> %>
+        <span class="italic text-muted">Not served</span>
+      <% @cell.state == :blank -> %>
+        <span class="text-muted">–</span>
+      <% @cell.struck? -> %>
+        <s class="tabular-nums text-muted">{@main}</s>
+      <% true -> %>
+        <small :if={@arr} class="mr-1 text-[12px] text-muted">arr {@arr}</small><span class={[
+          "tabular-nums",
+          matrix_time_class(@cell, @muted)
+        ]}>{@main}</span><small :if={@next_day?} class="ml-1 text-[12px] text-muted">+1 day</small>
+        <small :if={@was} class="block text-[12px] text-muted">was <s>{@was}</s></small>
+    <% end %>
     """
   end
 
@@ -1141,7 +1426,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     {"unchanged", "No change"},
     {"duplicate", "Already exists"},
     {"skipped", "Skipped"},
-    {"needs_decision", "Needs decision"}
+    {"needs_decision", "Needs decision"},
+    {"warnings", "Warnings"}
   ]
 
   defp review_mode(%{mode: :replace}), do: :replace
@@ -1153,7 +1439,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
   defp review_stops_view(_input), do: :pasted
 
   defp review_filter(%{filter: filter})
-       when filter in ~w(all add change remove unchanged duplicate skipped needs_decision),
+       when filter in ~w(all add change remove unchanged duplicate skipped needs_decision warnings),
        do: filter
 
   defp review_filter(_input), do: "all"
@@ -1316,9 +1602,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
     end
   end
 
+  # Step 26 adds the Warnings filter step 25 deferred: rows carrying plan
+  # warnings, counted here because `plan.counts` has no warnings total.
   defp visible_filters(input, plan) do
-    counts = plan.counts
-    total = if is_list(plan.changes), do: length(plan.changes), else: 0
+    changes = if is_list(plan.changes), do: plan.changes, else: []
+    counts = Map.put(plan.counts, :warnings, Enum.count(changes, &TimetablePasteReview.warned?/1))
+    total = length(changes)
     current = review_filter(input)
 
     @review_filter_defs
@@ -1712,5 +2001,58 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteComponents do
 
   defp letter_column(letter) when is_binary(letter) do
     letter |> String.split(" ") |> List.first("")
+  end
+
+  # --- Review matrix (step 26) ---
+
+  defp matrix_row_bg(:needs_decision), do: "bg-warning-bg/40"
+  defp matrix_row_bg(:remove), do: "bg-error-bg/30"
+  defp matrix_row_bg(_op), do: "bg-white"
+
+  defp matrix_time_class(%{pasted?: true}, false), do: "font-[650] text-strong"
+  defp matrix_time_class(%{pasted?: true}, true), do: "text-muted"
+  defp matrix_time_class(_cell, _muted), do: "italic text-muted"
+
+  defp matrix_pattern_name(scope) when is_map(scope) do
+    patterns = Map.get(scope, :patterns, []) || []
+
+    case Enum.find(patterns, &(&1.id == Map.get(scope, :pattern_id))) do
+      %{name: name} when is_binary(name) and name != "" -> name
+      _pattern -> "this pattern"
+    end
+  end
+
+  defp matrix_pattern_name(_scope), do: "this pattern"
+
+  defp timing_note_body(%{new?: false} = note) do
+    base =
+      "Existing timing on #{note.pattern_name}, #{note.duration} min. " <>
+        "Every time in these rows, including the filled-in ones, matches it, so it’s reused."
+
+    if note.users > 0 do
+      base <> " Used by #{plural(note.users, "row")} here."
+    else
+      base
+    end
+  end
+
+  defp timing_note_body(%{new?: true} = note) do
+    base = "New timing on #{note.pattern_name}, #{note.duration} min. Pasted times are exact."
+
+    estimated =
+      case {note.estimated, note.template_name} do
+        {[], _template} ->
+          ""
+
+        {stops, template} when is_binary(template) ->
+          " Times at #{Enum.join(stops, ", ")} are estimated from #{template}, scaled to each pasted segment. " <>
+            "They are stored to the second, marked as estimates (timepoint 0), and shown here to the minute."
+
+        {stops, _template} ->
+          " Times at #{Enum.join(stops, ", ")} are spaced evenly between the pasted times. " <>
+            "They are stored to the second, marked as estimates (timepoint 0), and shown here to the minute."
+      end
+
+    base <> estimated <> " Applying creates it for #{plural(note.users, "trip")}."
   end
 end
