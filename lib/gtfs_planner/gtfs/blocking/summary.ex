@@ -24,7 +24,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
 
   @seconds_per_hour 3600
 
-  # The timeline's sortable columns (AC-32). `:garage` and `:out` replaced the
+  # The timeline's sortable columns. `:garage` and `:out` replaced the
   # removed `Trips`, `Start` and `End` columns; the trip count is still on the
   # List view, and the platform span is one column rather than two.
   @sort_keys [:block, :garage, :out, :hours, :status]
@@ -33,7 +33,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
   @status_rank %{error: 0, warning: 1, notice: 2, ok: 3}
 
   # The code reported for the worst severity is the first one in this order
-  # (Copy: the errors Overlap, Can't reach and Wrong type, then the warnings
+  # (the errors Overlap, Can't reach and Wrong type, then the warnings
   # Short layover, In-seat row, Too long, No operator change, Route switch and
   # Garage differs, then the notices Empty move, Frequency, Time missing and
   # Can't confirm).
@@ -58,8 +58,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
   @typedoc """
   One block's summary.
 
-  `garage_name`, `type_name` and `conflict?` name the block's R4 resolution
-  (INV-9): the two are `nil` until the day load names them from the context's
+  `garage_name`, `type_name` and `conflict?` name the block's garage and type resolution:
+  the two are `nil` until the day load names them from the context's
   garages and vehicle types, and `conflict?` is true when `resolve_block/3`
   reported rows that disagree. A block that no garage resolves has a `nil`
   `garage_name` whatever its type, which is the page's "No garage".
@@ -101,14 +101,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.Summary do
   A fourth argument overrides the span with a block's *platform* span — the
   pull-out start to the pull-back end from `Blocking.Movements.build/3`, which is
   the interval the vehicle is actually committed to its garage. It is the span the
-  day type's peak, bins and fleet demand are counted over (R7, R8), and a block
+  day type's peak, bins and fleet demand are counted over, and a block
   that pulls out before midnight gets a start below zero here where the trip span
   could never have one. `nil` for either end, or no argument at all, keeps the
   trip span, so a block with no movements and every existing caller of the
   three-arity form are unchanged.
 
   The three resolution keys start empty here: only the day load, which holds the
-  context the resolution came from, can name the garage and the type (INV-9).
+  context the resolution came from, can name the garage and the type.
   """
   @spec block_summary(String.t(), [Checks.trip_row()], [Checks.finding()], platform_span() | nil) ::
           block_summary()

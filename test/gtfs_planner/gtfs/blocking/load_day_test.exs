@@ -625,7 +625,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayTest do
       assert [%{code: :repositions, severity: :notice, block_id: "9", detail: detail}] =
                Enum.filter(day.findings, &(&1.code == :repositions))
 
-      # R9: the notice survives only where the drive is unknown, and the unknown
+      # The notice survives only where the drive is unknown, and the unknown
       # drive is what the detail says.
       assert detail == %{gap_secs: 600, meters: nil, drive: :unknown}
       assert day.counts.notices == 1
@@ -851,7 +851,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayTest do
   # A day of `trip_count` trips in consecutive two-trip blocks, together with the
   # planning inputs a real version has: a garage and a type for every block, a
   # shared shape, a marked relief stop, an entered driving time and a listed
-  # fleet. AC-3's constant query count is a claim about this, not about a version
+  # fleet. The constant query count is a claim about this, not about a version
   # with no planning rows at all, so every one of those reads is here and the
   # number of rows of each kind still grows with the day.
   defp seeded_scope(trip_count) do

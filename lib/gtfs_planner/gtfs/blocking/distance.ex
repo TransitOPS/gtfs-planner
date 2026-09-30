@@ -4,7 +4,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Distance do
 
   A trip's distance is the length of the path through its shape points, or —
   for a trip with no shape — through its stop coordinates, so one rule measures
-  both and a shapeless trip can be marked estimated (AC-7). A shape shared by
+  both and a shapeless trip can be marked estimated. A shape shared by
   many trips is measured once by the caller and the result reused.
 
   The measure never reads `shape_dist_traveled`. That column is a publisher's

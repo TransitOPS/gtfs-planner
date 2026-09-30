@@ -1,11 +1,11 @@
 defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
   @moduledoc """
-  Merge evidence (EV-15) for CL-15: a block's garage and vehicle type are saved
-  through one review that names every day type the rows reach, so FH-15's two
-  failures — a shared service's other day type changing without review, and a stale
-  confirmation writing anyway — stay rejected.
+  A block's garage and vehicle type are saved through one review that names every
+  day type the rows reach, so two failures — a shared service's other day type
+  changing without review, and a stale confirmation writing anyway — stay
+  rejected.
 
-  One case covers each observation EV-15 rejects FH-15 with:
+  One case covers each observation:
 
   - `WKDY` (Mon–Fri all year) and `SCHOOL` (two school weekdays) derive
     `{SCHOOL, WKDY}` and `{WKDY}`; setting block 101's garage on the school day
@@ -21,15 +21,15 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
     route does not require adds `:type_mismatch` and needs confirmation even
     though one day type is affected;
   - a confirmation offered before another writer entered a driving time returns
-    `{:error, {:stale_review, review}}` and writes nothing (INV-7);
+    `{:error, {:stale_review, review}}` and writes nothing;
   - a garage or a vehicle type of another organization, an unknown UUID and a
     block the day type does not run are each `:not_found`; a malformed UUID is a
     changeset error raised before the transaction opens;
   - blank values store `nil`;
   - the save writes no `transfers` row of its own and leaves the records already
-    stored exactly as they were (INV-3);
+    stored exactly as they were;
   - the writer waits for `Blocking.lock_blocking!/1` and completes after the
-    release (INV-1, AC-5).
+    release.
 
   Every value is read back from the database inside the SQL Sandbox transaction —
   the stored rows, the loaded day's `resolution` and the `transfers` table — so
@@ -45,7 +45,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
   The module is `async: false` because the lock case observes another backend's
   `pg_stat_activity` wait.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/block_attributes_test.exs`.
   """
   use GtfsPlanner.DataCase, async: false
@@ -73,7 +73,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
   @moduletag timeout: 120_000
 
   # The lock case holds one lock open and observes another backend's wait, so it is
-  # bounded: EV-15's 120 s command deadline per test, and a 10 s self-release for a
+  # bounded: a 120 s deadline per test, and a 10 s self-release for a
   # hold the test never gets to release.
   @hold_timeout 10_000
   @receive_timeout 5_000
@@ -170,7 +170,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
 
       # The selected day type is the current view, so its effect comes first; the
       # second is the day type the same `(WKDY, 101)` row is read on, carrying its
-      # own date count (AC-19).
+      # own date count.
       assert [selected, other] = review.effects
       assert selected.selected?
       assert selected.day_type.service_ids == ["SCHOOL", "WKDY"]
@@ -212,8 +212,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
 
       assert garage_id == scope.main.id
 
-      # R4 reads the row on both day types, so the resolution the page, the plan and
-      # the export use is the same one on each (INV-9).
+      # The row is read on both day types, so the resolution the page, the plan and
+      # the export use is the same one on each.
       assert resolution(scope, school_key, "101").garage_id == scope.main.id
       assert resolution(scope, weekday_key, "101").garage_id == scope.main.id
     end
@@ -275,7 +275,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
                save(scope, school_key, "103", %{"vehicle_type_id" => scope.cutaway.id})
 
       # One day type is affected, so only the added problem can ask for the
-      # confirmation (AC-19, R12).
+      # confirmation.
       assert [%{selected?: true}] = review.effects
 
       assert [
@@ -319,7 +319,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
                save(scope, school_key, "101", %{"garage_id" => scope.main.id})
 
       # A driving-time writer takes `lock_blocking!/1` too, so it can land between
-      # the review and the confirmation; the context digest moves with it (INV-7).
+      # the review and the confirmation; the context digest moves with it.
       assert {:ok, _pair} =
                Gtfs.put_deadhead_time(
                  scope.organization.id,
@@ -368,7 +368,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.BlockAttributesTest do
       assert %{garage_id: ["is invalid"]} = errors_on(changeset)
 
       # An unknown day type key selects nothing and falls back to no other day
-      # type (INV-6); a staging or foreign version is not found (AC-5).
+      # type; a staging or foreign version is not found.
       assert {:error, {:unknown_day_type, day_types}} = save(scope, "not-a-day-type", "101", %{})
 
       assert Enum.map(day_types, & &1.service_ids) |> Enum.sort() == [

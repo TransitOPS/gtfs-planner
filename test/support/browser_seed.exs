@@ -5049,37 +5049,34 @@ case Accounts.register_first_admin(%{
         "across #{map_size(block_stops)} stops and #{map_size(block_routes)} routes"
     )
 
-    # ── Advanced blocking browser journey (EV-9, step 31) ──
+    # ── Advanced blocking browser journey ──
     #
-    # A published "Browser Advanced Blocks Version" carries the prototype's
-    # “Plan with problems” state, isolated from every other scenario by its
+    # A published "Browser Advanced Blocks Version" carries a
+    # “Plan with problems” scenario, isolated from every other scenario by its
     # version and by its `AB_` names:
     #
     #   * the three calendars behind the day types the journey visits — “Weekday”
     #     on weekdays, “School days” on Monday, Wednesday and Friday and
     #     “Saturday” on Saturday — which derive {WKDY, SCHOOL} (the largest, so the
     #     page's default), {WKDY} alone and {SAT};
-    #   * the prototype's geometry, so an estimated drive at the stored 30 km/h
+    #   * the geometry, so an estimated drive at the stored 30 km/h
     #     and 1.3 circuity is Main garage → Riverside Station 12 min,
     #     Valley College ↔ Market Square 14 min and Main garage → Valley College
-    #     18 min (the three distances step 31 names). Riverside Station ↔ Valley
+    #     18 min. Riverside Station ↔ Valley
     #     College estimates 15 min, Riverside Station ↔ Market Square 11 min,
     #     North garage → Riverside Station 16 min and North garage → Valley
-    #     College 9 min. The prototype's own table is not one consistent set of
-    #     distances — its Main garage → Market Square 10 min cannot be reached from
-    #     any geometry that also holds the other eight — so that pair estimates
-    #     4 min here and nothing reads it;
+    #     College 9 min. Main garage → Market Square estimates 4 min and nothing
+    #     reads it;
     #   * blocks 101–104 on the largest day type, with the two problems the
-    #     state is named for: 101 cannot reach Market Square (14 min of drive
+    #     scenario is named for: 101 cannot reach Market Square (14 min of drive
     #     into an 8-minute gap) and 104 runs route 30, which requires a 35-ft
-    #     diesel, on a Cutaway. Block 102 is extended as the prototype's “No
-    #     operator change” state extends it, so it runs past the 330-minute
-    #     operator-change limit without ever visiting the relief point;
+    #     diesel, on a Cutaway. Block 102 is extended so it runs past the
+    #     330-minute operator-change limit without ever visiting the relief point;
     #   * a two-trip pool — 6105 and 8105 — plus the frequency trip F30;
     #   * Saturday blocks 101 and 102 out of the North garage, which is a
     #     different vehicle's day than the weekday 101 of the same number.
     #
-    # Block IDs are numeric (101–104) so R11 numbers generated blocks from 105.
+    # Block IDs are numeric (101–104) so generated blocks are numbered from 105.
     # They are scoped to this version, so they cannot collide with the
     # “Browser Blocks Version” `BB-` names.
     {:ok, advanced_version} =
@@ -5127,7 +5124,7 @@ case Accounts.register_first_admin(%{
     # Riverside Station is a station (location_type 1) with a Bay A and a Bay B
     # beneath it. The bays carry no point of their own, so every estimate uses
     # the parent's coordinates and a Bay A ↔ Bay B handoff is a same-station
-    # handoff rather than a drive, exactly as the prototype treats one station.
+    # handoff rather than a drive.
     AdvancedBlockingFixtures.stop_with_coordinates_fixture(org.id, advanced_version.id, %{
       stop_id: "AB_RS",
       stop_name: "Riverside Station",
@@ -5164,7 +5161,7 @@ case Accounts.register_first_admin(%{
       stop_lon: -73.967229
     })
 
-    # The prototype's route colours: 12 ocean, 24 plum, 30 green.
+    # Route colours: 12 ocean, 24 plum, 30 green.
     advanced_routes =
       [
         {"AB_R12", "12", "Riverside", "1F5FBF"},
@@ -5248,8 +5245,8 @@ case Accounts.register_first_admin(%{
       trip_headsign: "Valley College"
     })
 
-    # Block 102, extended as the prototype's “No operator change” state extends
-    # it: six trips from 06:05 to 11:35, every handoff at Valley College or at the
+    # Block 102, extended for the “No operator change” problem:
+    # six trips from 06:05 to 11:35, every handoff at Valley College or at the
     # station, so no trip ever passes the relief point at Market Square and the
     # block exceeds the 330-minute operator-change limit in one stretch.
     for {trip_id, first_stop, last_stop, first_arrival, last_arrival} <- [
@@ -5373,8 +5370,8 @@ case Accounts.register_first_admin(%{
       headway_secs: 1800
     })
 
-    # The two garages, at the prototype's points, and the two vehicle types with
-    # the prototype's time-out limits: a Cutaway 10 hours, a 35-ft diesel 8.
+    # The two garages, and the two vehicle types with their time-out limits: a
+    # Cutaway 10 hours, a 35-ft diesel 8.
     advanced_main =
       GtfsPlanner.OperationsFixtures.garage_fixture(org.id, %{
         garage_id: "MAIN",

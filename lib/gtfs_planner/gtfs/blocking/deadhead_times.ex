@@ -1,6 +1,6 @@
 defmodule GtfsPlanner.Gtfs.Blocking.DeadheadTimes do
   @moduledoc """
-  Driving times between two planning references, as R1 defines them.
+  Driving times between two planning references.
 
   A driving time is either *entered* — a human set it on the pair, in one
   direction only — or *estimated* from the straight-line distance between the two

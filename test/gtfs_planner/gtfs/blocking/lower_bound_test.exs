@@ -1,10 +1,10 @@
 defmodule GtfsPlanner.Gtfs.Blocking.LowerBoundTest do
   @moduledoc """
-  EV-4: the minimum possible follows R8. The expectations come from R8's own
-  three-trip example, from the exclusions `Checks.sequence/1` already makes, and
-  from an exhaustive enumeration of the smallest number of chains that is
-  feasible under the layover rule alone — the independent check behind AC-13 and
-  the answer to FH-4, that the minimum is overstated.
+  The minimum possible is a lower bound on the vehicles a plan needs. The
+  expectations come from a three-trip example, from the exclusions
+  `Checks.sequence/1` already makes, and from an exhaustive enumeration of the
+  smallest number of chains that is feasible under the layover rule alone — the
+  independent check that the minimum is never overstated.
 
   The oracle is not the interval count under another name. It partitions the
   day's trips into blocks of trips one vehicle could chain, and reports the

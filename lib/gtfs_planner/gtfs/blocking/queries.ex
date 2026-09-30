@@ -115,7 +115,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
   shaped trip from its shape and a shapeless one from its stop path without
   re-reading the trips. It is deliberately absent from `trip_identities/3`: that
   read feeds a review fingerprint, and adding a column there would change the
-  fingerprints spec 05 already produced.
+  fingerprints already produced.
 
   The filter is one of the `filter()` variants: a day type's services, exact trip
   UUIDs, natural trip IDs, block IDs within a set of services, or block IDs across
@@ -365,7 +365,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
   the answer, which is what `Blocking.Distance.path_km/1` takes.
 
   A shape ID with no rows is absent from the map rather than mapped to `[]`: a
-  trip naming it is a shaped trip whose measurement is zero, and step 7 decides
+  trip naming it is a shaped trip whose measurement is zero, and the caller decides
   what that means. One query answers any number of shapes.
   """
   @spec shape_points(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) :: %{
@@ -394,7 +394,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Queries do
   walkable path of the trip. A `stop_times` row naming a stop the version does not
   describe is dropped by the join for the same reason.
 
-  Called only for shapeless trips, whose distance AC-7 takes from this path; a
+  Called only for shapeless trips, whose distance is taken from this path; a
   shaped trip is measured once per `shape_id` by `shape_points/3` instead.
   """
   @spec stop_paths(Ecto.UUID.t(), Ecto.UUID.t(), [String.t()]) :: %{

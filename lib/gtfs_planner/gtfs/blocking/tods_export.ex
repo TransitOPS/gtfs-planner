@@ -1,18 +1,17 @@
 defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   @moduledoc """
-  The four TODS supplement files' rows for a version's derived movements, as R13
-  defines them.
+  The four TODS supplement files' rows for a version's derived movements.
 
   A consumer of a TODS feed needs a *service* to hang a movement on, and a
   movement is a deadhead: it carries no revenue, so the public calendar has no
-  service for it. R13 gives each day type one supplement service listing exactly
+  service for it. Each day type gets one supplement service listing exactly
   that day type's dates, and a second service with the `_prev` suffix listing the
   same dates one day earlier for the movements that start before midnight — a
   23:45 pull-out belongs to the previous service day, and a `calendar_dates` row
   is the only place a TODS feed can say so.
 
   The IDs are generated rather than read, because a supplement ID equal to a
-  public one would silently attach a deadhead to public service (PM-8). Every
+  public one would silently attach a deadhead to public service. Every
   generated identifier keeps its shape first and gains a suffix only when that
   shape is taken: a service ID widens its digest — 6, then 8, 10 and 12 hex
   characters of the SHA-256 of the day-type key — before it takes a `_2`, `_3`
@@ -27,12 +26,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   endpoint it can schedule and no time it can use, so it is left out and counted
   in `omitted` rather than written as a movement with a missing time; a layover is
   not a movement at all and is not counted. That count is what the export turns
-  into "N movements have no driving time and were left out." (AC-30).
+  into "N movements have no driving time and were left out."
 
   A movement's two stop times are its endpoints: the pull-out leaves the garage at
   `start_secs` and reaches the first stop at `end_secs`; a drive leaves the
   previous trip's last stop at its arrival and reaches the next trip's first stop
-  one drive later, with the remaining wait left at the destination (R2, R3). A
+  one drive later, with the remaining wait left at the destination. A
   time at or above 24:00 is kept, as GTFS allows, so a 25:10 pull-back reads
   `25:10:00` rather than being wrapped back into the morning. A negative time is
   never formatted: the movement moves to the `_prev` service and its clock is read
@@ -40,13 +39,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   leaves the garage at `23:45:00` on the previous service day.
 
   Garages are written by their correctable `garage_id`, the only place a planning
-  reference becomes a public one (CR-7); every other endpoint is a public
+  reference becomes a public one; every other endpoint is a public
   `stop_id`, read off the same trip rows the movements were derived from.
 
   The module is pure: it reads its arguments and calls no repository, clock, file
-  or network (CR-1). Movements stay derived and stored nowhere — these rows are
+  or network. Movements stay derived and stored nowhere — these rows are
   rebuilt from `Movements.t()` on every export, and the public files never carry
-  them (INV-8).
+  them.
   """
 
   alias GtfsPlanner.Gtfs.Blocking.Checks
@@ -219,7 +218,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   end
 
   # A gap names the trips it sits between, so its endpoints are read off the same
-  # `Checks.sequence/1` order the movements were built from (R2). The drive runs
+  # `Checks.sequence/1` order the movements were built from. The drive runs
   # first and the wait belongs to the destination, so the leg ends one drive after
   # the arrival rather than at the departure; a gap whose drive overruns its
   # departure is an infeasible plan, and the movement written is still the one it
@@ -377,7 +376,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
     }
   end
 
-  # Only the TODS export turns a garage's UUID into its public `garage_id` (CR-7);
+  # Only the TODS export turns a garage's UUID into its public `garage_id`;
   # every other endpoint is already a public `stop_id`.
   defp resolve_ref({:stop, stop_id}, _garages_by_id), do: stop_id
 

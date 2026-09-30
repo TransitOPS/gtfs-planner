@@ -1,9 +1,9 @@
 defmodule GtfsPlanner.Gtfs.Blocking.Relief do
   @moduledoc """
   The instants a relief (operator) change may happen in one block, and the
-  unrelieved stretches between them, as R5 and R6 define them.
+  unrelieved stretches between them.
 
-  Relief is derived, never stored (INV-8): a relief point is a marked stop or
+  Relief is derived, never stored: a relief point is a marked stop or
   station in the version's `relief_points` rows, `windows/3` turns a block's
   movements into the instants a change is possible, and `stretches/3` measures
   the time between the changes that were taken. The day load, the checks, the
@@ -25,11 +25,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.Relief do
   a window invented from a drive the version cannot compute would be a lie the
   checks would then have to contradict.
 
-  R6 asks for the schedule whose longest unrelieved stretch is as short as it can
-  be, and that is what `stretches/3` returns: a block whose stretches all sit
+  `stretches/3` returns the schedule whose longest unrelieved stretch is as short
+  as it can be: a block whose stretches all sit
   within the limit is genuinely staffable, and one that cannot be is reported at
   its true length rather than at the length a merely plausible schedule happened
-  to produce. R5's same-gap spacing is honoured throughout, because the vehicle
+  to produce. Same-gap spacing is honoured throughout, because the vehicle
   is behind the wheel for that drive and a change cannot happen inside it: a
   100-minute gap with an 80-minute drive, both ends marked and a 60-minute limit
   leaves an 80-minute stretch, which is over the limit and is exactly what the
@@ -38,7 +38,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Relief do
   driver is swapped in and out of.
 
   The module is pure: it reads its arguments and calls no repository, clock,
-  file or network (CR-1). `windows/3` takes the block's `Checks.sequence/1` trips,
+  file or network. `windows/3` takes the block's `Checks.sequence/1` trips,
   the `Movements.build/3` result for the same block and the planning context;
   `stretches/3` takes that movements map, the windows and the relief limit in
   seconds (`nil` for "no limit set").
@@ -60,8 +60,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Relief do
   @type stretch :: %{from_secs: integer(), to_secs: integer(), secs: non_neg_integer()}
 
   @doc """
-  Returns every instant a relief change may happen in one block, as R5 defines
-  them.
+  Returns every instant a relief change may happen in one block.
 
   `movements` is the `Movements.build/3` result for the same trips, which
   carries each gap's arrival, departure, kind, drive and feasibility; the
@@ -82,7 +81,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Relief do
   end
 
   @doc """
-  Returns the unrelieved stretches of one block, in order, as R6 defines them.
+  Returns the unrelieved stretches of one block, in order.
 
   A stretch is the time from the platform start, or from the last change taken,
   to the next change or to the platform end. With a `limit_secs` the result is
@@ -229,20 +228,19 @@ defmodule GtfsPlanner.Gtfs.Blocking.Relief do
   end
 
   # The instants a change may be planned for sit on a 60 s grid inside each
-  # window, which is the resolution EV-10's oracle searches.
+  # window, which is the resolution the test oracle searches.
   @change_step 60
 
-  # R6's schedule, made exact.
+  # The best schedule, made exact.
   #
-  # R6 asks for "the latest change instant reachable within the limit" and its
-  # reconciliation calls that greedy optimal for "can every stretch be within the
-  # limit". It is not. Taking the latest reachable instant spends a window near
+  # Taking "the latest change instant reachable within the limit" at each step is not
+  # optimal for "can every stretch be within the limit". It spends a window near
   # its far end, so a window that could have closed the tail is left with nothing
   # to give. The smallest counterexample the test oracle produces is two windows
   # [120, 1260] and [1620, 2040] on a 0..3960 platform with a 1920 s limit: the
   # greedy changes at 1920 and then strands a 2040 s tail, while changing at 120
   # and 2040 gives stretches of 120, 1920 and 1920 -- within the limit. So this
-  # returns the *best* schedule, which is what AC-11 and EV-10's oracle hold it
+  # returns the *best* schedule, which is what the exhaustive test oracle holds it
   # to, and a block that can be covered is never reported as uncoverable.
   #
   # The limit is the contract the schedule is judged against rather than a knob
@@ -273,7 +271,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Relief do
   # Every legal way to use one gap's windows: no change, one change in a single
   # window, or -- for a drive with both ends marked -- an origin change followed
   # by a destination change at least a drive later, because one operator drives
-  # the whole of that drive and the drive is never inside a window (R5).
+  # the whole of that drive and the drive is never inside a window.
   defp gap_options(group) do
     origin = Enum.find(group, &(&1.side == :origin))
     destination = Enum.find(group, &(&1.side == :destination))

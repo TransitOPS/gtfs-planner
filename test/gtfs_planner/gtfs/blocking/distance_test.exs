@@ -1,8 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Blocking.DistanceTest do
   @moduledoc """
-  Merge evidence (EV-11) for CL-11 / AC-7: a path length is the sum of the
-  great-circle legs between consecutive points, in kilometres, and it is measured
-  from coordinates alone.
+  A path length is the sum of the great-circle legs between consecutive points, in
+  kilometres, and it is measured from coordinates alone.
 
   Every expectation is derived independently of the module under test. The
   expected leg length is computed here from the haversine formula with the same
@@ -16,11 +15,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.DistanceTest do
   clock, file or network, so these cases run in the local ExUnit process with no
   sandbox, no fixtures and no cleanup.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/distance_test.exs`. This test
   establishes the arithmetic and the coordinates-only contract; it says nothing
   about how accurate a straight-line path is against real roads, which stays out
-  of scope, nor about the per-shape and per-trip aggregation of steps 7 and 9.
+  of scope, nor about the per-shape and per-trip aggregation done by the callers.
   """
   use ExUnit.Case, async: true
 

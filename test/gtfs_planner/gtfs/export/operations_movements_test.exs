@@ -1,14 +1,14 @@
 defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsTest do
   @moduledoc """
-  EV-8, rejecting FH-8 for CL-8: the `:operations` ZIP carries the four movement
-  supplements beside the garages and vehicles, leaves every public file
-  byte-identical to `:full`, and resolves every reference it writes (AC-30).
+  The `:operations` ZIP carries the four movement supplements beside the garages and
+  vehicles, leaves every public file byte-identical to `:full`, and resolves every
+  reference it writes.
 
   The cases go through `Export.build_zip/3` and `Export.Worker.build/4` — the
   production composition behind the export page's “GTFS + operations (TODS)”
   option — on rows created inside the SQL Sandbox transaction and rolled back.
   Nothing here builds a movement, a context or a supplement row by hand: a deadhead
-  a consumer cannot run is exactly what FH-8 calls a reference that does not
+  a consumer cannot run is exactly a reference that does not
   resolve, and only the real export can say whether it does.
 
   The one thing the cases do build themselves is the expectation that each
@@ -16,7 +16,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsTest do
   dates rather than from the file, so the assertion cannot read the
   implementation back.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/export/operations_movements_test.exs`.
   """
   use GtfsPlanner.DataCase, async: false
@@ -370,7 +370,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsTest do
   end
 
   # The one service of a day type and its `_prev` partner, matched by suffix so
-  # the cases do not recompute R13's digest.
+  # the cases do not recompute the digest.
   defp services(dates) do
     ids = dates |> Enum.map(& &1["service_id"]) |> Enum.uniq() |> Enum.sort()
 

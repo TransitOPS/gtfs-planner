@@ -1,18 +1,18 @@
 defmodule GtfsPlanner.Gtfs.Blocking.Generator do
   @moduledoc """
-  Suggested blocks for one day type, as R10 and R11 define them.
+  Suggested blocks for one day type.
 
   The generator is pure. It reads its trip rows, the version's planning context
   and the set of block IDs already in use, and returns an assignment of every
   scheduled trip to a block plus the blocks themselves and the leftovers it could
-  not place. It calls no repository, clock, file or network (CR-1), and it writes
+  not place. It calls no repository, clock, file or network, and it writes
   nothing: `Blocking.suggest_blocks/4` reads a day, calls `run/4` and hands the
   result to `Blocking.Plan.build/1` for review, and only `apply_block_plan/3`
   moves a trip's `block_id`.
 
   A block's garage and vehicle type come from `Blocking.Context.resolve_block/3`
-  like everywhere else (INV-9), and its movements and relief schedule come from
-  `Blocking.Movements` and `Blocking.Relief` (INV-8). Nothing here re-derives a
+  like everywhere else, and its movements and relief schedule come from
+  `Blocking.Movements` and `Blocking.Relief`. Nothing here re-derives a
   drive, a platform span or a relief window; a candidate that passes here is a
   candidate the checks will agree with, because both read the same derivation.
 
@@ -41,8 +41,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.Generator do
 
   Every scheduled trip leaves the run in exactly one block or in the leftovers
   with a reason, and a run over the same trips in any input order returns the
-  same result (AC-22, AC-23). Nothing derived here is stored: the result is a
-  proposal for review, and step 25 turns it into a plan with a fingerprint.
+  same result. Nothing derived here is stored: the result is a
+  proposal for review, and `Blocking.Plan.build/1` turns it into a plan with a fingerprint.
 
   The result map is:
 
@@ -105,8 +105,9 @@ defmodule GtfsPlanner.Gtfs.Blocking.Generator do
 
   `rows` are the day type's `Checks.trip_row()` values in whatever order the
   caller read them; the run sorts them itself, so the result is the same for
-  every input order (AC-23). `used_ids` is every block ID in use by any trip on
-  the affected dates, and R11 numbers the blocks this run creates from it.
+  every input order. `used_ids` is every block ID in use by any trip on
+  the affected dates, and new blocks this run creates continue after the highest numeric
+  one.
 
   Every returned row's UUID is a key of `assignments`, including the trips that
   were left where they were: a frequency trip keeps its `block_id` (or stays
@@ -176,13 +177,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.Generator do
 
   # --- partitions ------------------------------------------------------------
 
-  # The partition is R4 read for a block of this one trip, so the key here and
-  # the garage a block opened for it carries cannot disagree: both come from
-  # `Context.resolve_block/3` (INV-9). The block ID is the empty string because
-  # no attribute row is keyed to it, which is what makes this read the route's
-  # home garage (else the version default) and the route's required type, and
-  # which also makes a route naming a garage or type this version does not carry
-  # fall through to `nil` exactly as it would on a real block.
+  # The partition is the garage and type resolution read for a block of this one trip, so
+  # the key here and the garage a block opened for it carries cannot disagree: both come
+  # from `Context.resolve_block/3`. The block ID is the empty string because no attribute
+  # row is keyed to it, which is what makes this read the route's home garage (else the
+  # version default) and the route's required type, and which also makes a route naming a
+  # garage or type this version does not carry fall through to `nil` exactly as it would
+  # on a real block.
   defp partition(trip, context) do
     %{garage_id: garage_id, vehicle_type_id: vehicle_type_id} =
       Context.resolve_block(context, "", [trip])
@@ -235,7 +236,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Generator do
 
   defp seeds(_rebuild, _kept, _context), do: []
 
-  # R11: a rebuild over selected blocks reuses those blocks' own numbers in
+  # A rebuild over selected blocks reuses those blocks' own numbers in
   # ascending order, because the plan is a rebuild of exactly those blocks and
   # a reviewer sees the same number against the same trips. Anything past the
   # selection continues after the highest numeric ID in use, so a version whose
@@ -253,7 +254,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Generator do
   defp take_id(ids), do: {Integer.to_string(ids.next), %{ids | next: ids.next + 1}}
 
   # The leading digit run of an ID is its number. "105" is 105 and "101A" is 101
-  # for R11's "highest numeric ID used"; a purely alphabetic ID has no number to
+  # for the "highest numeric ID used"; a purely alphabetic ID has no number to
   # continue from and the run starts at 1, which is where the manual rule starts
   # too.
   defp highest(ids) do
@@ -302,7 +303,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Generator do
     end
   end
 
-  # R10's candidate test, one rule at a time. A failure anywhere is `:no`; the
+  # The candidate test, one rule at a time. A failure anywhere is `:no`; the
   # reason is the checks' to report, not the generator's to guess at.
   defp fit(block, trip, context) do
     last = List.last(block.trips)
@@ -393,7 +394,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Generator do
     end
   end
 
-  # R6's schedule cannot be scored on a gap; a stretch is a length between two
+  # A relief schedule cannot be scored on a gap; a stretch is a length between two
   # changes, so a trial that might stretch past the limit has to be built whole.
   # With no limit set there is no stretch to check and the trial stays cheap,
   # which is the case a real version is in until someone sets a relief limit.
@@ -411,8 +412,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.Generator do
   end
 
   # No block in the partition could take the trip, so it opens a new one. The
-  # new block carries the partition's garage and type, which is what R4 would
-  # resolve for a block of these trips alone (INV-9).
+  # new block carries the partition's garage and type, which is what
+  # `Context.resolve_block/3` would resolve for a block of these trips alone.
   defp open_block(state, trip, open) do
     context = state.context
 
@@ -426,7 +427,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Generator do
       {id, ids} = take_id(state.ids)
       # The block's own resolution, read through the same rule as a seeded one:
       # a new ID has no attribute row, so this is the partition's garage and
-      # type and is what step 25 writes as the block's attribute row.
+      # type and is what `Plan.build/1` writes as the block's attribute row.
       resolution = Context.resolve_block(context, id, [trip])
 
       block = %{
@@ -459,7 +460,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Generator do
   # A trip whose first stop the version cannot place is not a chain this run may
   # make. Every drive into it would be unknown, from the open blocks that end
   # somewhere else and from the garage a new block would pull out of, and an
-  # unknown drive is not a zero drive: it is a gap nobody can promise (FH-40).
+  # unknown drive is not a zero drive: it is a gap nobody can promise.
   # The trip stays in the leftovers rather than becoming a block whose first
   # movement the checks would report as an empty move.
   defp unmeasurable?(trip, open, context) do
@@ -506,7 +507,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Generator do
   # Blocks leave the run in natural ID order with their trips in service order,
   # because both are what a reviewer reads them in. A block's garage and type are
   # the resolved ones, which for a created block is the partition it was opened
-  # for and is what step 25 writes as its attribute row.
+  # for and is what `Plan.build/1` writes as its attribute row.
   defp finish(blocks) do
     blocks
     |> Enum.map(fn block ->
@@ -524,7 +525,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Generator do
   # A new block holding one trip is the only shape the generator can produce that
   # it had no choice about: there was nothing else for that trip to join. When it
   # is too long for the vehicle or its relief limit, the trip keeps the block and
-  # the run says so, because AC-21 allows exactly these two findings on a
+  # the run says so, because a plan may add exactly these two findings on a
   # reported singleton and a plan that dropped the trip instead would leave the
   # operator with no block and no explanation.
   defp singletons(blocks, context) do

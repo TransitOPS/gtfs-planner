@@ -1,12 +1,12 @@
 defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
   @moduledoc """
-  Merge evidence (EV-20) for CL-20: the Operator changes drawer lists the places
-  the day type's own trips start and end — grouped under a parent station, with
-  the number of feasible waits at each — and one save stores the relief limit and
-  exactly the ticked candidates among them, so FH-20's two failures stay
-  rejected.
+  The Operator changes list shows the places the day type's own trips start and
+  end — grouped under a parent station, with the number of feasible waits at each —
+  and one save stores the relief limit and exactly the ticked candidates among them,
+  so a save that unmarks stops outside the day type or ignores a parent station
+  stays rejected.
 
-  Every case goes through the `Gtfs` facade, which is the path step 41's
+  Every case goes through the `Gtfs` facade, which is the path the page's
   `save_operator_changes` uses, and both the list and the writer read the day
   through the same `Blocking.read_day/3` the page holds: nothing here builds a
   context, a movement or a candidate by hand. A candidate in this list is a place
@@ -26,7 +26,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
   The module is `async: false` because the lock case observes another backend's
   `pg_stat_activity` wait.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/relief_settings_test.exs`.
   """
   use GtfsPlanner.DataCase, async: false
@@ -49,7 +49,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
   @moduletag timeout: 120_000
 
   # The lock case holds one lock open and observes another backend's wait, so it is
-  # bounded: EV-20's 120 s command deadline per test, and a 10 s self-release for a
+  # bounded: a 120 s deadline per test, and a 10 s self-release for a
   # hold the test never gets to release.
   @hold_timeout 10_000
   @receive_timeout 5_000
@@ -113,7 +113,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
 
       # Two layovers inside Riverside Station are two waits at one candidate, and
       # the station reads by its own name with its two bays named beneath it. The
-      # Valley College → Market Square drive is R5's two windows, one wait at each
+      # Valley College → Market Square drive is two windows, one wait at each
       # end, so the two stops tie on one wait each and the name decides the order.
       assert candidates == [
                %{
@@ -228,7 +228,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ReliefSettingsTest do
       [day_type] = day.day_types
       assert Enum.map(day_types, & &1.key) == [day_type.key]
 
-      # The derived key itself answers, and with the same candidates (INV-6).
+      # The derived key itself answers, and with the same candidates.
       assert {:ok, candidates} =
                Gtfs.list_relief_candidates(organization.id, version.id, day_type.key)
 

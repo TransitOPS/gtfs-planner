@@ -1,8 +1,7 @@
 defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsValidatorTest do
   @moduledoc """
   Judges the `:operations` ZIP carrying movements against the unchanged `:full`
-  ZIP of the same version with the tracked MobilityData validator CLI (EV-8,
-  AC-30, rejecting FH-8).
+  ZIP of the same version with the tracked MobilityData validator CLI.
 
   The feed is a blocked day rather than the plain one `operations_validator_test`
   uses: the question here is whether the four movement supplements — their
@@ -16,12 +15,12 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsValidatorTest do
   directory removed after the test, and makes no network calls
   (`--skip_validator_update`). It shells out to the configured JDK and the tracked
   39 MB jar, so `@moduletag :validator_cli` excludes it from the default suite
-  (see `test/test_helper.exs`); branch review runs it explicitly:
+  (see `test/test_helper.exs`); run it explicitly:
 
       mix test --only validator_cli test/gtfs_planner/gtfs/export/operations_movements_validator_test.exs
 
-  The prepared EV-8 deadline covers both CLI invocations together; the single
-  test's ExUnit timeout enforces the 300-second process deadline.
+  The 300-second deadline covers both CLI invocations together; the single test's
+  ExUnit timeout enforces it.
   """
   use GtfsPlanner.DataCase, async: false
 
@@ -227,20 +226,20 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsMovementsValidatorTest do
 
   defp print_observation(full_errors, operations_errors, movement_notices) do
     IO.puts(
-      "EV-8 full ZIP ERROR codes: #{inspect(full_errors |> MapSet.to_list() |> Enum.sort())}"
+      "validator: full ZIP ERROR codes: #{inspect(full_errors |> MapSet.to_list() |> Enum.sort())}"
     )
 
     IO.puts(
-      "EV-8 operations ZIP ERROR codes: #{inspect(operations_errors |> MapSet.to_list() |> Enum.sort())}"
+      "validator: operations ZIP ERROR codes: #{inspect(operations_errors |> MapSet.to_list() |> Enum.sort())}"
     )
 
     case movement_notices do
       [] ->
-        IO.puts("EV-8 movement file notices: none reported")
+        IO.puts("validator: movement file notices: none reported")
 
       notices ->
         for {file, code, severity} <- notices do
-          IO.puts("EV-8 movement file notice: #{file} code=#{code} severity=#{severity}")
+          IO.puts("validator: movement file notice: #{file} code=#{code} severity=#{severity}")
         end
     end
   end

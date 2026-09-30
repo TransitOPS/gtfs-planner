@@ -1,22 +1,22 @@
 defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanTest do
   @moduledoc """
-  Merge evidence (EV-5) for CL-5: `apply_block_plan/3` writes a reviewed suggestion
-  atomically, fingerprinted over every planning input and serialized on the blocking
-  lock, so FH-5's three failures stay rejected — an intervening edit is overwritten,
-  an audit row survives a rollback, and a plan over 500 moves splits (AC-27, AC-5).
+  `apply_block_plan/3` writes a reviewed suggestion atomically, fingerprinted over
+  every planning input and serialized on the blocking lock, so three failures stay
+  rejected — an intervening edit is overwritten, an audit row survives a rollback,
+  and a plan over 500 moves splits.
 
-  One case covers each observation EV-5 rejects FH-5 with:
+  One case covers each observation:
 
   - an `:unassigned_only` plan moves the two pool trips onto the blocks it names,
     writes one `block_attributes` row per new block and one `"trip"` change log per
     moved trip, all under a single `operation_id`, with the whole affected list on
     every log;
   - a day type sharing `{WKDY}` and `{WKDY, SCHOOL}` applies on `{WKDY, SCHOOL}` and
-    changes the `WKDY` trips on *both* day types, because `block_id` is per trip
-    (R2, R3): what the plan's effects list as affected, the apply writes;
+    changes the `WKDY` trips on *both* day types, because `block_id` is per trip:
+    what the plan's effects list as affected, the apply writes;
   - each of a settings save, an entered driving time, a relief mark, a garage
     coordinate edit and a newly added trip, made after the suggestion, is answered
-    `{:error, :stale_plan}` with no `block_id` and no attribute row changed (INV-7);
+    `{:error, :stale_plan}` with no `block_id` and no attribute row changed;
   - a 620-move `:replace_all` plan applies inside one transaction, its `update_all`
     writes stay at or below 500 IDs a statement, and all 620 audits share one
     `operation_id`;
@@ -26,16 +26,15 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanTest do
   - three raised `40001` errors from the mock are `{:error, :busy}` and nothing
     raises out of the call;
   - a plan for another organization's version is `:not_found`;
-  - no `transfers` row is inserted, updated or deleted by any apply, refusal included
-    (INV-3).
+  - no `transfers` row is inserted, updated or deleted by any apply, refusal included.
 
   Every apply runs through the production chain — `Gtfs.apply_block_plan/3` ->
   `Blocking.apply_block_plan/3` -> `ReviewedApplyTransaction` -> the real generator and
   `Plan.build/1` over the real rows — with the day types read from the fixture's own
   calendars. The failure cases swap only the transaction boundary, through the Mox
-  mock the card names, and restore the application env in `on_exit`.
+  mock, and restore the application env in `on_exit`.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/apply_plan_test.exs`.
   """
 
@@ -172,7 +171,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanTest do
       assert is_binary(result.operation_id)
 
       # Every move landed on the block the plan named, and every trip the plan did not
-      # move kept the block it had (AC-22).
+      # move kept the block it had.
       assert stored_blocks(organization, version, ["p_1", "p_2"]) == %{
                "p_1" => travel(plan, "p_1"),
                "p_2" => travel(plan, "p_2")
@@ -206,7 +205,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanTest do
                |> Enum.sort_by(&{&1.service_id, &1.block_id})
 
       # One `"trip"` log per moved trip, one operation ID, the whole affected list and
-      # the block on each side of the change (INV-4).
+      # the block on each side of the change.
       logs = trip_logs(organization, version)
       assert length(logs) == 2
 
@@ -216,7 +215,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanTest do
       assert Enum.all?(logs, &is_nil(&1.changed_fields["before"]["block_id"]))
       assert Enum.all?(logs, &is_binary(&1.changed_fields["after"]["block_id"]))
 
-      # INV-3: a plan apply writes no transfer record, before or after.
+      # A plan apply writes no transfer record, before or after.
       assert transfer_rows(organization, version) == transfer_before
     end
 
@@ -258,7 +257,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanTest do
 
       # A pool trip on `WKDY` alone. `WKDY` is in both derived day types, so this trip
       # runs on the school dates and on every other weekday, and one `block_id` on it
-      # is the same work on both (R2, R3).
+      # is the same work on both.
       shared = trip(organization, version, route, "sh_1", @weekday, nil, "11:00:00", "12:00:00")
 
       plan = suggest!(organization, version, school_key, :unassigned_only)
@@ -278,14 +277,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanTest do
       assert result.changed_trip_ids == Enum.sort(moved_ids)
 
       # The trip the plan moved carries the new block, and it is one of the trips that
-      # block holds on `WKDY` (R2).
+      # block holds on `WKDY`.
       assert Repo.get!(Trip, shared.id).block_id == shared_move.to
       assert shared.id in block_on(organization, version, shared_move.to, @weekday)
       assert transfer_rows(organization, version) == transfer_before
 
       # `block_id` is a column on the trip, not a per-day-type table, so the block the
       # plan created holds the same trips whichever of the two day types that share
-      # `WKDY` is read through (R3). Both reads name the same block and the same
+      # `WKDY` is read through. Both reads name the same block and the same
       # trips, and the trip the plan moved is among them on both.
       assert block_trips_on(organization, version, school_key, shared_move.to) ==
                block_trips_on(organization, version, weekday_key, shared_move.to)
@@ -357,7 +356,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanTest do
 
       # The production transaction runs for real and the audit insert inside it is
       # refused by the audit layer's own changeset, which is the shape a
-      # database-rejected or audit-layer-refused log takes (AC-10, INV-4).
+      # database-rejected or audit-layer-refused log takes.
       #
       # A changeset the audit layer refuses: the transaction is run with an audit
       # context whose actor is missing, so `record_change_in_transaction/5` returns an
@@ -368,7 +367,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanTest do
       assert is_map(reason)
 
       # Nothing the plan would have written persisted: the assignments, the attribute
-      # rows and the audits all rolled back with the failed log (INV-4, FH-5).
+      # rows and the audits all rolled back with the failed log.
       assert stored_blocks(organization, version, ["p_1", "p_2"]) == before_blocks
       assert attribute_rows(organization, version) == before_attributes
       assert transfer_rows(organization, version) == before_transfers
@@ -406,7 +405,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanTest do
 
       # A plan built for another organization's own version, from its own rows. Its day
       # type key is derived from that version's calendars and its moves name its trips,
-      # so nothing about it names this organization (AC-5).
+      # so nothing about it names this organization.
       foreign_org = organization_fixture()
       foreign_version = gtfs_version_fixture(foreign_org.id)
       build_scope(foreign_org, foreign_version)
@@ -666,8 +665,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.ApplyPlanTest do
 
   # The five edits that each make a reviewed plan stale: a setting, an entered driving
   # time, a relief mark, a garage coordinate and one added trip. They all run through
-  # their own production writer, so each takes `lock_blocking!/1` exactly as INV-7 says
-  # an input writer does.
+  # their own production writer, so each takes `lock_blocking!/1` exactly as every
+  # input writer does.
   # Each of these returns the row or value its own API returns, so the loop above
   # asserts the one shape rather than re-wrapping five different ones.
   defp put_deadhead(organization, version) do

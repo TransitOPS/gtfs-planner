@@ -1,11 +1,10 @@
 defmodule GtfsPlanner.Gtfs.Blocking.Movements do
   @moduledoc """
-  Pull-outs, pull-backs and the drives between a block's trips, as R2 and R3
-  define them.
+  Pull-outs, pull-backs and the drives between a block's trips.
 
-  A block's movements are *derived* and never stored (INV-8): `build/3` computes
+  A block's movements are *derived* and never stored: `build/3` computes
   them from the block's trips, the garage and vehicle type resolved by
-  `Blocking.Context.resolve_block/3` (INV-9) and the version's planning inputs.
+  `Blocking.Context.resolve_block/3` and the version's planning inputs.
   The day load, checks, relief, the generator, the export and the page all read
   this result rather than repeating the rule.
 
@@ -22,13 +21,13 @@ defmodule GtfsPlanner.Gtfs.Blocking.Movements do
   endpoint stop the feed does not describe leaves the same way: there is nowhere
   to drive, so there is no pull and the span falls back.
 
-  Between trips, `Blocking.Checks.handoff/2` decides the kind (R2). The same stop,
+  Between trips, `Blocking.Checks.handoff/2` decides the kind. The same stop,
   the same station and a stop within 200 m are all a layover, so the whole gap is
   wait; only a move beyond 200 m gets a drive, and `wait` is `gap − drive`. A
   negative wait is a real answer — the vehicle cannot get there in time — so it is
   reported as `feasible?: false` rather than rounded away. A drive that cannot be
   computed stays `:unknown` with no feasibility claim at all, because an unknown
-  that became `0` would make every gap look reachable (FH-40).
+  that became `0` would make every gap look reachable.
 
   Three totals fall out of the legs. `service_secs` is the time the vehicle spends
   in service on its trips — each trip from its first departure to its last
@@ -37,7 +36,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Movements do
   out negative is an infeasibility, not time spent parked. `drive_secs` adds the
   two pulls to the inter-trip drives.
 
-  Distance follows AC-7. `service_km` sums the trip distances the context already
+  `service_km` sums the trip distances the context already
   measured, and `service_km_estimated?` is true when any of them came from a stop
   path rather than a shape. `deadhead_km` adds the straight-line distance of the
   *estimated* legs only: an entered driving time is a human's real route and its
@@ -45,8 +44,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.Movements do
   that would understate the day.
 
   The module is pure: it reads its arguments and calls no repository, clock, file
-  or network (CR-1). Garage references carry the garage's UUID, never its
-  correctable public `garage_id` (CR-7).
+  or network. Garage references carry the garage's UUID, never its
+  correctable public `garage_id`.
   """
 
   alias GtfsPlanner.Gtfs.Blocking.Checks
@@ -129,7 +128,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Movements do
     }
   end
 
-  # R2: the handoff decides the kind, and only a move gets a drive. `Checks.gaps/1`
+  # The handoff decides the kind, and only a move gets a drive. `Checks.gaps/1`
   # supplies `gap_secs` and the handoff; the trips are zipped back onto it for the
   # endpoint stops a drive needs. Both come from the same `sequence`, so the two
   # lists align by construction.
@@ -232,7 +231,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Movements do
     })
   end
 
-  # R3: the pull-out ends one buffer before the first departure and starts one
+  # The pull-out ends one buffer before the first departure and starts one
   # drive earlier. The anchor is the end, so an unknown drive collapses it to a
   # zero-length pull rather than moving the vehicle backwards in time.
   defp pull_out([], _garage_id, _context), do: nil
@@ -283,7 +282,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Movements do
     %{minutes: minutes, source: source} =
       DeadheadTimes.lookup(from_ref, from_point, to_ref, to_point, context)
 
-    # `DeadheadTimes` speaks in whole minutes; R3 counts in service-day seconds,
+    # `DeadheadTimes` speaks in whole minutes; this module counts in service-day seconds,
     # so the conversion happens here and nowhere else. An unknown drive stays
     # `nil` rather than becoming a zero-second drive.
     drive_secs = if minutes == nil, do: 0, else: minutes * @seconds_per_minute
@@ -353,7 +352,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Movements do
 
   # Only an estimated leg has a distance. An entered drive is a real route whose
   # length the version does not carry, and an unknown drive has no points to
-  # measure, so neither adds a straight line (AC-7).
+  # measure, so neither adds a straight line.
   defp deadhead_km(pulls, gaps) do
     Enum.sum(Enum.map(pulls, &leg_km_total/1)) + Enum.sum(Enum.map(gaps, &leg_km_total/1))
   end

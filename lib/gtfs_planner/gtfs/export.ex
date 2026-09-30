@@ -123,7 +123,7 @@ defmodule GtfsPlanner.Gtfs.Export do
   - `{:error, {:garage_stop_id_conflict, conflicts}}` when a garage ID equals an
     emitted `stop_id`; no ZIP is produced
 
-  The operations ZIP carries the movements, but never in a public file (INV-8):
+  The operations ZIP carries the movements, but never in a public file:
   the four supplement files are written beside `stops_supplement.txt` and
   `vehicles.txt` from `Blocking.TodsExport.rows/1`, over the same snapshot the
   public files were read in. A supplement file with no rows is omitted with a
@@ -659,7 +659,7 @@ defmodule GtfsPlanner.Gtfs.Export do
   end
 
   # The public trip, route and service IDs of this version, which is the set a
-  # generated supplement identifier is kept clear of (PM-8). A service is public
+  # generated supplement identifier is kept clear of. A service is public
   # in either of the two calendar files, so both are read.
   defp public_ids(organization_id, gtfs_version_id) do
     %{

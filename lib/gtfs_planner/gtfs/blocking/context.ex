@@ -14,11 +14,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.Context do
   builder that fills it from a version's reads lives in `GtfsPlanner.Gtfs.Blocking`
   so that `Blocking`, `Blocking.Queries` and `Operations` keep every database
   call. The `planning?` field is `false` only for the layover-only context
-  (`layover_only/1`), which reproduces spec 05's behaviour exactly.
+  (`layover_only/1`), which reproduces the layover-only findings exactly.
 
   `digest/1` fingerprints every field of a context into one lowercase SHA-256
   string, so a review can name the inputs it read and a later write can prove
-  they have not changed under it (INV-7, R12). The digest deliberately covers the
+  they have not changed under it. The digest deliberately covers the
   whole context rather than the inputs one plan happened to read: an over-stale
   preview costs a regeneration, while a fingerprint that missed a changed input
   would apply a plan nobody reviewed.
@@ -26,11 +26,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.Context do
   `layover_only/1` builds the one context that is not a planning context. It
   carries the minimum layover and nothing else, and `planning?` is `false` so a
   consumer can tell the difference between "the version has no garage set" and
-  "there was no planning read at all". Spec 05's findings, reviews and
-  fingerprints are reproduced through it exactly (CR-2).
+  "there was no planning read at all". The layover-only findings, reviews and
+  fingerprints are reproduced through it exactly.
 
   `resolve_block/3` is the one place a block's garage and vehicle type are
-  decided (R4, INV-9). Every consumer — checks, the day load, the generator, the
+  decided. Every consumer — checks, the day load, the generator, the
   export and the page — reads this result rather than repeating the rule, so a
   block that runs from two garages is described the same way everywhere, and the
   block that names two different garages is reported rather than silently
@@ -123,14 +123,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.Context do
         }
 
   @doc """
-  Returns the context that reproduces spec 05's behaviour: a layover and nothing
-  else.
+  Returns the context that reproduces the behaviour before planning inputs existed: a
+  layover and nothing else.
 
   `min_layover_minutes` is the value the settings carry; every other field keeps
   the struct's default, so the maps are empty, the marked-stop set is empty and
   the fleet and trip distances are empty lists and maps. `planning?` is `false`,
   which is what distinguishes this context from a version that has genuinely
-  planned nothing (CR-2).
+  planned nothing.
   """
   @spec layover_only(0..120) :: t()
   def layover_only(min_layover_minutes) when is_integer(min_layover_minutes) do
@@ -140,7 +140,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Context do
   @doc """
   Returns the garage, the vehicle type and any disagreement for one block.
 
-  R4 decides both values in the same order, and the rows keyed
+  Both values are decided in the same order, and the rows keyed
   `{service_id, block_id}` come first because they are the only per-block
   statement an operator has made: the row belonging to the first trip's service
   names the block's garage, and its type. Failing that the first trip's route
@@ -172,12 +172,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.Context do
   only the rows that disagreed would not say what a calendar resolves to when it
   is not the first trip's.
 
-  Rows are returned in `service_id` order. R4 already says which row is used
+  Rows are returned in `service_id` order. The rule above already says which row is used
   (the first trip's service's), so the list is a report and not a ranking, and
   sorting it keeps the answer independent of the order the trips arrived in.
 
-  The function reads its arguments only: no `Repo`, clock, file or network call
-  (CR-1), which is what lets the checks, the generator and the export resolve a
+  The function reads its arguments only: no `Repo`, clock, file or network call,
+  which is what lets the checks, the generator and the export resolve a
   block without re-reading the rows they were built from.
   """
   @spec resolve_block(t(), String.t(), [Checks.trip_row()]) :: resolve_result()
@@ -199,7 +199,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Context do
   # `Checks.sequence/1` is the order the block is planned in, so the trip that
   # pulls out is the one that pulls out first. When nothing sequences — every
   # trip frequency-based, or every trip without usable endpoint times — the block
-  # still has a first trip for R4 to read, and the smallest `trip_id` is the
+  # still has a first trip for the resolution to read, and the smallest `trip_id` is the
   # same tiebreak `Checks.sequence/1` ends on, so the fallback is at least
   # consistent with it.
   defp first_trip(trips) do
@@ -211,7 +211,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Context do
 
   # The rows for `{service_id, block_id}` of every service the block's trips run
   # on, in `service_id` order. A row for a service this block has no trip on is
-  # not read: it belongs to another day type's plan for the same number, and R4
+  # not read: it belongs to another day type's plan for the same number, and the rule
   # scopes a block to the services it actually runs.
   defp block_rows(context, block_id, trips) do
     trips
@@ -257,8 +257,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.Context do
     end
   end
 
-  # R4 uses the row of the first trip's service, not any row. A block whose trips
-  # span two services has one garage, and the spec names the one that decides it.
+  # The row of the first trip's service is used, not any row. A block whose trips
+  # span two services has one garage, and the first trip's service decides it.
   defp attribute_garage(context, first, rows) do
     case first_row(first, rows) do
       %{garage_id: garage_id} -> known_garage(context, garage_id)
@@ -285,7 +285,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.Context do
       %{garage_id: garage_id} -> known_garage(context, garage_id)
       # A route row that names only a required type says nothing about a garage,
       # and the context's own type marks both keys optional. The garage answers
-      # `nil` and R4's fall-through continues, exactly as it does for a row that
+      # `nil` and the fall-through continues, exactly as it does for a row that
       # names a garage nobody here runs.
       _no_garage -> nil
     end
@@ -329,12 +329,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.Context do
   digests differently. That includes fields the calling plan did not read: a
   garage coordinate, a fleet count or an attribute row for a service the day does
   not use all change the digest, and the *absence* of such a row is part of what
-  is encoded rather than an absence that compares equal to one (INV-7).
+  is encoded rather than an absence that compares equal to one.
 
   The over-invalidation is the point, not a side effect. A preview invalidated by
   an unrelated planning input costs one regeneration; a fingerprint that omitted
-  an input the plan would act on would let a write through that nobody reviewed
-  (R12, critique Must 2).
+  an input the plan would act on would let a write through that nobody reviewed.
 
   Map entries are sorted and each key is canonicalized in its own right, because
   this context is keyed by tuples - `{service_id, block_id}` and `{ref, ref}` -

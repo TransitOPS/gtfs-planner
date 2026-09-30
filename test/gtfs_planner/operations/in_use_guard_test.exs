@@ -5,7 +5,7 @@ defmodule GtfsPlanner.Operations.InUseGuardTest do
   A delete is refused while a vehicle, a `block_attributes` row or a
   `route_operating_settings` row references the parent, and the refusal names
   all three counts. A garage nothing else references goes with its
-  `deadhead_times` rows, whose refs hold the garage UUID (CR-7); a garage used
+  `deadhead_times` rows, whose refs hold the garage UUID; a garage used
   only as `blocking_settings.default_garage_id` is a default, not a reference,
   so it deletes and the setting becomes `nil`.
 

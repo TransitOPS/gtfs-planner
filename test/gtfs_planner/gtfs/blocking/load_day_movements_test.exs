@@ -1,15 +1,14 @@
 defmodule GtfsPlanner.Gtfs.Blocking.LoadDayMovementsTest do
   @moduledoc """
-  EV-14, rejecting FH-14 for CL-14: the day load returns each block's resolution,
-  movements and stretches, the day's figures and fleet rows, and a peak taken
-  over platform spans — at a query count that does not grow with the day.
+  The day load returns each block's resolution, movements and stretches, the day's
+  figures and fleet rows, and a peak taken over platform spans — at a query count
+  that does not grow with the day.
 
   The cases go through the ordinary `Gtfs.load_blocking_day/3` entry on the
   production `CatalogReadAdapter.Repo` and the scoped `Blocking` context, on rows
   created inside the SQL Sandbox transaction and rolled back. Nothing here builds
   a context or a movement by hand: the only way to know the day load hands the
-  page a platform span rather than a trip span is to read the day the page reads,
-  and FH-14 is exactly "figures use trip spans".
+  page a platform span rather than a trip span is to read the day the page reads.
 
   The numbers the cases assert are the ones the real load produces for the
   fixture's coordinates and times: the entered two-minute pull-out is exact, and
@@ -18,7 +17,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayMovementsTest do
   and against the sum of the day's own movements, so a figure that stopped being
   a sum would fail even where the arithmetic happened to agree.
 
-  The focused gate command is deferred to branch review:
+  Run with:
   `mix test test/gtfs_planner/gtfs/blocking/load_day_test.exs test/gtfs_planner/gtfs/blocking/load_day_movements_test.exs`.
   """
   use GtfsPlanner.DataCase, async: true
@@ -133,7 +132,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayMovementsTest do
       assert first.movements.platform_start_secs == @pull_out_start
       assert first.movements.platform_end_secs == 33_120
 
-      # No relief mark and no `max_piece_minutes`, so R6's answer is the one
+      # No relief mark and no `max_piece_minutes`, so the answer is the one
       # unrelieved stretch over the whole platform span.
       assert first.stretches == [%{from_secs: @pull_out_start, to_secs: 33_120, secs: 12_240}]
       assert block(day, "102").stretches == [%{from_secs: 21_060, to_secs: 25_380, secs: 4_320}]
@@ -267,7 +266,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayMovementsTest do
 
       assert day.figures.vehicles == 3
 
-      # R8 over the day's own trips: 05:50-06:55 and 06:00-07:05 overlap, and
+      # The minimum over the day's own trips: 05:50-06:55 and 06:00-07:05 overlap, and
       # nothing else does, so two vehicles is the schedule's own minimum.
       assert day.figures.minimum == 2
 
@@ -491,8 +490,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.LoadDayMovementsTest do
     end
   end
 
-  # The block's own attribute row: Main and the Cutaway, which is what R4's first
-  # rule reads. A block without one is the no-garage case.
+  # The block's own attribute row: Main and the Cutaway, which is what the first
+  # resolution rule reads. A block without one is the no-garage case.
   defp planning_block(context, block_id) do
     %{organization: organization, version: version, main: main, cutaway: cutaway} = context
 

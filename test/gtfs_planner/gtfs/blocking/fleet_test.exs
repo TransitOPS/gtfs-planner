@@ -1,14 +1,16 @@
 defmodule GtfsPlanner.Gtfs.Blocking.FleetTest do
   @moduledoc """
-  EV-7: the fleet rows follow R7. The expectations come from R7's own examples and
-  from critique Must 6, which is the finding this rule answers.
+  Fleet demand is the exact peak of half-open platform intervals, compared with the
+  vehicles a garage lists. The expectations come from three worked examples:
+  overlap inside one bin, back-to-back blocks, and a typed and an untyped block
+  sharing a garage total.
   """
 
   use ExUnit.Case, async: true
 
   alias GtfsPlanner.Gtfs.Blocking.Fleet
 
-  # Service-day seconds. 08:00 and 08:05 are the R7 boundary pair; the
+  # Service-day seconds. 08:00 and 08:05 are the boundary pair; the
   # 08:01-08:06 / 08:04-08:09 pair is the one bin sampling would miss.
   @t0800 8 * 3600
   @t0801 @t0800 + 60
@@ -38,7 +40,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.FleetTest do
 
   describe "peak/1" do
     test "counts the exact overlap bin sampling would miss" do
-      # R7 example 1: the two blocks overlap for two minutes inside one
+      # Example 1: the two blocks overlap for two minutes inside one
       # 15-minute bin. Sampling 08:00 and 08:15 would report 1.
       spans = [
         span(@main, @cutaway, @t0801, @t0806),
@@ -49,7 +51,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.FleetTest do
     end
 
     test "a block ending when another starts counts once" do
-      # R7 example 2: half-open intervals, ends before starts at equal times.
+      # Example 2: half-open intervals, ends before starts at equal times.
       spans = [
         span(@main, @cutaway, @t0800, @t0805),
         span(@main, @cutaway, @t0805, @t0810)
@@ -107,7 +109,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.FleetTest do
 
   describe "rows/2" do
     test "a typed block and an untyped block share the garage's total" do
-      # R7 example 3: the garage lists one Cutaway. The typed row is satisfied
+      # Example 3: the garage lists one Cutaway. The typed row is satisfied
       # (1 needed, 1 listed) but the garage total is short, because the untyped
       # block also occupies one of the garage's vehicles.
       spans = [

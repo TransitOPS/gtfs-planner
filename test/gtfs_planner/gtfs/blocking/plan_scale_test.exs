@@ -1,7 +1,6 @@
 defmodule GtfsPlanner.Gtfs.Blocking.PlanScaleTest do
   @moduledoc """
-  Measures a suggestion and the operations export on a 3,000-trip day type
-  (EV-12, CL-12, AC-28).
+  Measures a suggestion and the operations export on a 3,000-trip day type.
 
   The fixture is the largest day type `Blocking.suggest_blocks/4` will answer at
   all: 3,000 trips, which is exactly the scope bound, so the run is the whole
@@ -14,22 +13,21 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanScaleTest do
   the planner would otherwise scan `stop_times` once per trip (the same reason
   `scale_test.exs` analyzes).
 
-  Both measurements are the production entries the reviewer's page and the export
+  Both measurements are the production entries the planner's page and the export
   worker call: `Gtfs.suggest_blocks/4` in `:replace_all` mode, which includes the
   plan build, and `Export.build_zip/3` in `:operations`, which includes the
   movement supplements. Neither is stubbed and neither is a private entry.
 
   The elapsed milliseconds, the trip count, the system architecture and the CPU
-  model are printed on one `EV-12:` line for the evidence artifact, and the line
-  is printed *before* the bound is asserted, so the recorded measurement is in the
-  output of the very run that fails. `suggest_ms` is the AC-28 bound; `export_ms`
-  is recorded with no bound, as spec 05's EV-9 measurement is: the 2,000 ms figure
-  the artifact compares against is a recorded target, not a guarantee.
+  model are printed on one `plan scale:` line, and the line is printed *before* the
+  bound is asserted, so the recorded measurement is in the output of the very run
+  that fails. `suggest_ms` is asserted against a 10,000 ms bound and recorded
+  against a 2,000 ms target, which is a target and not a guarantee; `export_ms` is
+  recorded with no bound.
 
   The fixture and both measurements fill a whole test-database transaction, so the
   module carries `@moduletag :blocking_scale`, which `test/test_helper.exs`
-  excludes from the default suite, plus the card's 600-second timeout. Branch
-  review runs it explicitly:
+  excludes from the default suite, plus a 600-second timeout. Run it explicitly:
 
       mix test --only blocking_scale test/gtfs_planner/gtfs/blocking/plan_scale_test.exs
   """
@@ -102,7 +100,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanScaleTest do
 
       assert_observation(plan, zip, suggest_ms, export_ms)
 
-      # AC-28: the whole scope, in one suggestion, inside the bound. `export_ms` is
+      # The whole scope, in one suggestion, inside the bound. `export_ms` is
       # recorded beside it and deliberately not bounded.
       assert suggest_ms < 10_000,
              "suggesting #{@trip_count} trips took #{suggest_ms} ms, over the 10,000 ms bound"
@@ -125,9 +123,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanScaleTest do
   @doc """
   Inserts the benchmark fixture for one version and returns the inserted row counts.
 
-  Public because the step's throwaway local smoke calls this same function without
-  ExUnit; the test above is the only committed caller, so the smoke cannot seed a
-  different fixture than the gate does.
+  Public so the same fixture can be built without ExUnit; the test above is the only
+  committed caller.
   """
   @spec build_scale_day(Ecto.UUID.t(), Ecto.UUID.t(), %{
           main: GtfsPlanner.Operations.Garage.t(),
@@ -424,16 +421,16 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanScaleTest do
     {System.monotonic_time(:millisecond) - started, result}
   end
 
-  # EV-12's observation line: the measured times, the trip count the suggestion
+  # The observation line: the measured times, the trip count the suggestion
   # actually moved, the built plan's own size, the ZIP's size, the system
   # architecture and the CPU model. Nothing here compares `export_ms` with a
-  # budget; the values are printed for the evidence artifact and returned to the
+  # budget; the values are printed and returned to the
   # test only as non-negative integers.
   defp assert_observation(plan, zip, suggest_ms, export_ms) do
     arch = :erlang.system_info(:system_architecture)
 
     line =
-      "EV-12: suggest_ms=#{suggest_ms} export_ms=#{export_ms} " <>
+      "plan scale: suggest_ms=#{suggest_ms} export_ms=#{export_ms} " <>
         "trips=#{@trip_count} moves=#{length(plan.moves)} new_blocks=#{length(plan.new_blocks)} " <>
         "zip_bytes=#{byte_size(zip)} arch=#{arch} cpu=#{cpu_model()}"
 
@@ -441,7 +438,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.PlanScaleTest do
 
     # `=~` on a binary is literal containment, so the two patterns are sigils;
     # a plain string on the left of `=~` would compare for those exact characters.
-    assert line =~ ~r/^EV-12: suggest_ms=\d+ export_ms=\d+ /
+    assert line =~ ~r/^plan scale: suggest_ms=\d+ export_ms=\d+ /
     assert line =~ "trips=#{@trip_count}"
     assert line =~ ~r/arch=\S+ cpu=.+\z/
     assert suggest_ms >= 0
