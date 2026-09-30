@@ -7628,6 +7628,585 @@ case Accounts.register_first_admin(%{
         "and no native calendars"
     )
 
+    # ── In-seat connection browser journey (package 11, step 12) ──
+    #
+    # A published "Browser In-Seat Version" carries every connection and record
+    # case the in-seat UI steps (13-28) and the EV-29 journey need, isolated from
+    # every other scenario by its version and by its `BIS_`/`BIS-` names:
+    #
+    #   * three calendars — "Weekday service" every weekday, "School days" on
+    #     Monday, Wednesday and Friday and "No school days" on Tuesday and
+    #     Thursday — which derive two day types, {School days, Weekday service}
+    #     (the most trips, so the page's default) and {No school days, Weekday
+    #     service};
+    #   * a same-stop group of four Route 12 → Route 24 connections at BIS_FAR_A
+    #     (`BIS-FA1`…`BIS-FA4`), the first already carrying a matching type-4
+    #     record, so the group panel's "Set all" has an already-set row;
+    #   * a Route 57 turnback group of two connections at BIS_UNION, whose first
+    #     departure row carries `pickup_type` 1 (no pickup), so the choice form's
+    #     R14 warning has a real pair;
+    #   * a 370 m empty move and a 180 m nearby handoff with a 14-minute wait;
+    #   * a "School Junction" group of three Route 12 → Route 24 connections
+    #     (`BIS-SHARED-1`…`BIS-SHARED-3`) whose first block runs a `BIS_NOSCHOOL`
+    #     trip between the pair, so its type-4 record is stale with a named next
+    #     trip and "Set all" has a row to skip;
+    #   * an "Old Alignment" pair carrying a stopless type-4 row beside a type-5
+    #     row (a conflict) and a second pair whose record names a stop its to-trip
+    #     no longer starts at (old stops);
+    #   * an "Unknown Place" group of two whose arrival stop BIS_NOCOORD is stored
+    #     without coordinates, one of them a type-5 row, so the network map
+    #     reports a place it cannot draw;
+    #   * two records naming trips that have no block, which are the version's
+    #     unmatched rows.
+    #
+    # Backdated, so this version never becomes the organization's latest published
+    # default and every existing browser journey keeps opening "Browser E2E
+    # Version". The `BIS_MOVE_A`→`BIS_MOVE_B` and `BIS_NEAR_A`→`BIS_NEAR_B`
+    # coordinates are the exact 370 m and 180 m great-circle separations the
+    # connection drawer prints, so the move and the nearby handoff need no
+    # rounding to land on their cases.
+    {:ok, in_seat_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser In-Seat Version"})
+
+    in_seat_version =
+      Repo.update!(
+        Ecto.Changeset.change(in_seat_version,
+          published_at: ~U[2020-03-01 00:00:00.000000Z]
+        )
+      )
+
+    bis_week_start = ~D[2026-09-07]
+    bis_week_end = ~D[2026-10-30]
+
+    for {service_id, name, days} <- [
+          {"BIS_WEEK", "Weekday service",
+           [monday: 1, tuesday: 1, wednesday: 1, thursday: 1, friday: 1]},
+          {"BIS_SCHOOL", "School days", [monday: 1, wednesday: 1, friday: 1]},
+          {"BIS_NOSCHOOL", "No school days", [tuesday: 1, thursday: 1]}
+        ] do
+      GtfsPlanner.BlockingFixtures.calendar_service_fixture(org.id, in_seat_version.id, %{
+        service_id: service_id,
+        name: name,
+        monday: Keyword.get(days, :monday, 0),
+        tuesday: Keyword.get(days, :tuesday, 0),
+        wednesday: Keyword.get(days, :wednesday, 0),
+        thursday: Keyword.get(days, :thursday, 0),
+        friday: Keyword.get(days, :friday, 0),
+        saturday: 0,
+        sunday: 0,
+        start_date: bis_week_start,
+        end_date: bis_week_end
+      })
+    end
+
+    # Every stop but BIS_NOCOORD carries coordinates, so the two handoffs the
+    # drawer measures have exact distances and the one place the network map
+    # cannot draw is the only stop stored without them.
+    bis_stops =
+      for {stop_id, name, lat, lon} <- [
+            {"BIS_FAR_A", "Far Avenue", "40.70000000", "-74.01000000"},
+            {"BIS_FAR_END", "Far Avenue Terminus", "40.70400000", "-74.01000000"},
+            {"BIS_UNION", "Union Station", "40.71000000", "-74.00600000"},
+            {"BIS_UNION_END", "Union Plaza", "40.71400000", "-74.00600000"},
+            {"BIS_TURN_END", "Union Yards", "40.71800000", "-74.00600000"},
+            {"BIS_DEPOT", "Depot Yard", "40.79600000", "-73.94000000"},
+            {"BIS_MOVE_A", "Depot Row", "40.80000000", "-73.94000000"},
+            {"BIS_MOVE_B", "Depot Row North", "40.80332746", "-73.94000000"},
+            {"BIS_MOVE_END", "Depot Row Terminus", "40.80700000", "-73.94000000"},
+            {"BIS_NEAR_START", "Market Street", "40.80600000", "-73.93000000"},
+            {"BIS_NEAR_A", "Market Row", "40.81000000", "-73.93000000"},
+            {"BIS_NEAR_B", "Market Row West", "40.81161875", "-73.93000000"},
+            {"BIS_NEAR_END", "Market Square", "40.81400000", "-73.93000000"},
+            {"BIS_SHARED_A", "School Junction", "40.75000000", "-73.92000000"},
+            {"BIS_SHARED_END", "School Junction Terminus", "40.75400000", "-73.92000000"},
+            {"BIS_OLD_END", "Old Alignment West", "40.82600000", "-73.91000000"},
+            {"BIS_OLD_A", "Old Alignment", "40.83000000", "-73.91000000"},
+            {"BIS_OLD_B", "Old Alignment East", "40.83134750", "-73.91000000"},
+            {"BIS_OLD_FAR", "Old Alignment Terminus", "40.83800000", "-73.91000000"},
+            {"BIS_NOCOORD_END", "Unknown Place Terminus", "40.85000000", "-73.90000000"}
+          ],
+          into: %{} do
+        stop =
+          GtfsPlanner.GtfsFixtures.stop_fixture(org.id, in_seat_version.id, %{
+            stop_id: stop_id,
+            stop_name: name,
+            stop_lat: Decimal.new(lat),
+            stop_lon: Decimal.new(lon)
+          })
+
+        {stop_id, stop}
+      end
+
+    # The one place the map cannot draw, created without coordinates exactly as
+    # the unlocated-route fixtures above do.
+    {:ok, _bis_nocoord} =
+      Gtfs.create_stop(%{
+        organization_id: org.id,
+        gtfs_version_id: in_seat_version.id,
+        stop_id: "BIS_NOCOORD",
+        stop_name: "Unknown Place",
+        location_type: 0
+      })
+
+    bis_routes =
+      for {route_id, short_name, long_name} <- [
+            {"BIS_R12", "12", "In-seat Avenue"},
+            {"BIS_R24", "24", "In-seat Crosstown"},
+            {"BIS_R31", "31", "In-seat Depot"},
+            {"BIS_R42", "42", "In-seat Market"},
+            {"BIS_R57", "57", "In-seat University"}
+          ] do
+        {:ok, _route} =
+          Gtfs.create_route(%{
+            organization_id: org.id,
+            gtfs_version_id: in_seat_version.id,
+            route_id: route_id,
+            route_short_name: short_name,
+            route_long_name: long_name,
+            route_type: 3,
+            route_color: "1E6868"
+          })
+
+        route_id
+      end
+
+    # `HH:MM:SS` from minutes after midnight, so every seeded time reads as the
+    # clock an editor sees.
+    bis_clock = fn mins ->
+      [div(mins, 60), rem(mins, 60)]
+      |> Enum.map_join(":", &String.pad_leading(Integer.to_string(&1), 2, "0"))
+      |> Kernel.<>(":00")
+    end
+
+    bis_trip = fn attrs ->
+      attrs = attrs |> Map.new() |> Map.put_new(:service_id, "BIS_WEEK")
+
+      GtfsPlanner.BlockingFixtures.blocked_trip_fixture(
+        org.id,
+        in_seat_version.id,
+        Map.fetch!(attrs, :route_id),
+        Map.take(attrs, [
+          :trip_id,
+          :service_id,
+          :block_id,
+          :direction_id,
+          :trip_headsign,
+          :first_stop,
+          :last_stop,
+          :first_departure,
+          :last_arrival,
+          :first_pickup_type,
+          :last_drop_off_type
+        ])
+      )
+    end
+
+    # The same-stop group of four. The waits differ so the group reports a range,
+    # and only BIS-FA1 carries a record, which matches the block on both weekday
+    # day types.
+    for {gap, index} <- Enum.with_index([10, 12, 14, 16], 1) do
+      base = 8 * 60 + (index - 1) * 40
+      block_id = "BIS-FA#{index}"
+
+      far_a =
+        bis_trip.(%{
+          trip_id: "BIS_FA#{index}A",
+          route_id: "BIS_R12",
+          block_id: block_id,
+          direction_id: 0,
+          trip_headsign: "In-seat Avenue",
+          first_stop: "BIS_FAR_END",
+          last_stop: "BIS_FAR_A",
+          first_departure: bis_clock.(base),
+          last_arrival: bis_clock.(base + 30)
+        })
+
+      far_b =
+        bis_trip.(%{
+          trip_id: "BIS_FA#{index}B",
+          route_id: "BIS_R24",
+          block_id: block_id,
+          direction_id: 0,
+          trip_headsign: "In-seat Crosstown",
+          first_stop: "BIS_FAR_A",
+          last_stop: "BIS_FAR_END",
+          first_departure: bis_clock.(base + 30 + gap),
+          last_arrival: bis_clock.(base + 60 + gap)
+        })
+
+      if index == 1 do
+        GtfsPlanner.BlockingFixtures.in_seat_transfer_fixture(
+          org.id,
+          in_seat_version.id,
+          far_a,
+          far_b
+        )
+      end
+    end
+
+    # The turnback group. One vehicle, one route, two directions, and the first
+    # to-trip's first stop forbids pickup, so the choice form previews the R14
+    # warning on that connection and not on the other.
+    for {gap, index} <- Enum.with_index([8, 20], 1) do
+      base = 7 * 60 + (index - 1) * 60
+      block_id = "BIS-TURN#{index}"
+
+      bis_trip.(%{
+        trip_id: "BIS_TURN#{index}A",
+        route_id: "BIS_R57",
+        block_id: block_id,
+        direction_id: 0,
+        trip_headsign: "University",
+        first_stop: "BIS_UNION_END",
+        last_stop: "BIS_UNION",
+        first_departure: bis_clock.(base),
+        last_arrival: bis_clock.(base + 25)
+      })
+
+      bis_trip.(%{
+        trip_id: "BIS_TURN#{index}B",
+        route_id: "BIS_R57",
+        block_id: block_id,
+        direction_id: 1,
+        trip_headsign: "University",
+        first_stop: "BIS_UNION",
+        last_stop: "BIS_TURN_END",
+        first_departure: bis_clock.(base + 25 + gap),
+        last_arrival: bis_clock.(base + 50 + gap),
+        first_pickup_type: if(index == 1, do: 1, else: nil)
+      })
+    end
+
+    # The 370 m empty move: Route 31 leaves the vehicle at Depot Row and Route 42
+    # picks it up 370 m north, beyond the 200 m nearby threshold.
+    bis_trip.(%{
+      trip_id: "BIS_MOVE_T1",
+      route_id: "BIS_R31",
+      block_id: "BIS-MOVE",
+      direction_id: 0,
+      trip_headsign: "Depot",
+      first_stop: "BIS_DEPOT",
+      last_stop: "BIS_MOVE_A",
+      first_departure: bis_clock.(14 * 60),
+      last_arrival: bis_clock.(14 * 60 + 30)
+    })
+
+    bis_trip.(%{
+      trip_id: "BIS_MOVE_T2",
+      route_id: "BIS_R42",
+      block_id: "BIS-MOVE",
+      direction_id: 0,
+      trip_headsign: "Market",
+      first_stop: "BIS_MOVE_B",
+      last_stop: "BIS_MOVE_END",
+      first_departure: bis_clock.(14 * 60 + 40),
+      last_arrival: bis_clock.(15 * 60 + 10)
+    })
+
+    # The 180 m nearby handoff with a 14-minute wait, so the drawer carries the
+    # wait hint beside the nearby handoff.
+    bis_trip.(%{
+      trip_id: "BIS_NEAR_T1",
+      route_id: "BIS_R42",
+      block_id: "BIS-NEAR",
+      direction_id: 0,
+      trip_headsign: "Market",
+      first_stop: "BIS_NEAR_START",
+      last_stop: "BIS_NEAR_A",
+      first_departure: bis_clock.(13 * 60),
+      last_arrival: bis_clock.(13 * 60 + 30)
+    })
+
+    bis_trip.(%{
+      trip_id: "BIS_NEAR_T2",
+      route_id: "BIS_R31",
+      block_id: "BIS-NEAR",
+      direction_id: 0,
+      trip_headsign: "Depot",
+      first_stop: "BIS_NEAR_B",
+      last_stop: "BIS_NEAR_END",
+      first_departure: bis_clock.(13 * 60 + 44),
+      last_arrival: bis_clock.(14 * 60 + 14)
+    })
+
+    # The shared-trip pair. BIS-SHARED-1 runs BIS_NOSCHOOL's BIS_SH_X between the
+    # two weekday trips, so on {School days, Weekday service} the pair is
+    # consecutive and on {No school days, Weekday service} it is not: the record
+    # is stale and names the trip that actually runs next.
+    shared_a =
+      bis_trip.(%{
+        trip_id: "BIS_SH_A1",
+        route_id: "BIS_R12",
+        block_id: "BIS-SHARED-1",
+        direction_id: 0,
+        trip_headsign: "In-seat Avenue",
+        first_stop: "BIS_SHARED_END",
+        last_stop: "BIS_SHARED_A",
+        first_departure: bis_clock.(7 * 60),
+        last_arrival: bis_clock.(7 * 60 + 30)
+      })
+
+    bis_trip.(%{
+      trip_id: "BIS_SH_X",
+      route_id: "BIS_R57",
+      service_id: "BIS_NOSCHOOL",
+      block_id: "BIS-SHARED-1",
+      direction_id: 0,
+      trip_headsign: "School shuttle",
+      first_stop: "BIS_SHARED_A",
+      last_stop: "BIS_SHARED_END",
+      first_departure: bis_clock.(7 * 60 + 40),
+      last_arrival: bis_clock.(7 * 60 + 55)
+    })
+
+    shared_b =
+      bis_trip.(%{
+        trip_id: "BIS_SH_B1",
+        route_id: "BIS_R24",
+        block_id: "BIS-SHARED-1",
+        direction_id: 0,
+        trip_headsign: "In-seat Crosstown",
+        first_stop: "BIS_SHARED_A",
+        last_stop: "BIS_SHARED_END",
+        first_departure: bis_clock.(8 * 60 + 5),
+        last_arrival: bis_clock.(8 * 60 + 35)
+      })
+
+    GtfsPlanner.GtfsFixtures.transfer_fixture(org.id, in_seat_version.id, %{
+      from_trip_id: shared_a.trip_id,
+      to_trip_id: shared_b.trip_id,
+      from_stop_id: "BIS_SHARED_A",
+      to_stop_id: "BIS_SHARED_A",
+      transfer_type: 4
+    })
+
+    # Two quiet neighbours, so the group's "Set all" saves them and skips only
+    # the shared-trip pair.
+    for {base, index} <- Enum.with_index([9 * 60, 10 * 60 + 30], 2) do
+      block_id = "BIS-SHARED-#{index}"
+
+      bis_trip.(%{
+        trip_id: "BIS_SH_A#{index}",
+        route_id: "BIS_R12",
+        block_id: block_id,
+        direction_id: 0,
+        trip_headsign: "In-seat Avenue",
+        first_stop: "BIS_SHARED_END",
+        last_stop: "BIS_SHARED_A",
+        first_departure: bis_clock.(base),
+        last_arrival: bis_clock.(base + 30)
+      })
+
+      bis_trip.(%{
+        trip_id: "BIS_SH_B#{index}",
+        route_id: "BIS_R24",
+        block_id: block_id,
+        direction_id: 0,
+        trip_headsign: "In-seat Crosstown",
+        first_stop: "BIS_SHARED_A",
+        last_stop: "BIS_SHARED_END",
+        first_departure: bis_clock.(base + 40),
+        last_arrival: bis_clock.(base + 70)
+      })
+    end
+
+    # Old Alignment, one place with two groups: the conflict pair and the
+    # old-stops pair. Neither connection's handoff is measured between its two
+    # stops being the same, so both carry a record and both need review.
+    old_conflict_a =
+      bis_trip.(%{
+        trip_id: "BIS_OLD_T1",
+        route_id: "BIS_R31",
+        block_id: "BIS-OLD-CONFLICT",
+        direction_id: 0,
+        trip_headsign: "Depot",
+        first_stop: "BIS_OLD_END",
+        last_stop: "BIS_OLD_A",
+        first_departure: bis_clock.(6 * 60),
+        last_arrival: bis_clock.(6 * 60 + 30)
+      })
+
+    old_conflict_b =
+      bis_trip.(%{
+        trip_id: "BIS_OLD_T2",
+        route_id: "BIS_R42",
+        block_id: "BIS-OLD-CONFLICT",
+        direction_id: 0,
+        trip_headsign: "Market",
+        first_stop: "BIS_OLD_B",
+        last_stop: "BIS_OLD_FAR",
+        first_departure: bis_clock.(6 * 60 + 40),
+        last_arrival: bis_clock.(7 * 60 + 10)
+      })
+
+    GtfsPlanner.GtfsFixtures.transfer_fixture(org.id, in_seat_version.id, %{
+      from_trip_id: old_conflict_a.trip_id,
+      to_trip_id: old_conflict_b.trip_id,
+      transfer_type: 4
+    })
+
+    GtfsPlanner.GtfsFixtures.transfer_fixture(org.id, in_seat_version.id, %{
+      from_trip_id: old_conflict_a.trip_id,
+      to_trip_id: old_conflict_b.trip_id,
+      from_stop_id: "BIS_OLD_A",
+      to_stop_id: "BIS_OLD_B",
+      transfer_type: 5
+    })
+
+    old_stops_a =
+      bis_trip.(%{
+        trip_id: "BIS_OLD_T3",
+        route_id: "BIS_R42",
+        block_id: "BIS-OLD-STOPS",
+        direction_id: 0,
+        trip_headsign: "Market",
+        first_stop: "BIS_OLD_END",
+        last_stop: "BIS_OLD_A",
+        first_departure: bis_clock.(8 * 60),
+        last_arrival: bis_clock.(8 * 60 + 30)
+      })
+
+    old_stops_b =
+      bis_trip.(%{
+        trip_id: "BIS_OLD_T4",
+        route_id: "BIS_R24",
+        block_id: "BIS-OLD-STOPS",
+        direction_id: 0,
+        trip_headsign: "In-seat Crosstown",
+        first_stop: "BIS_OLD_B",
+        last_stop: "BIS_OLD_FAR",
+        first_departure: bis_clock.(8 * 60 + 40),
+        last_arrival: bis_clock.(9 * 60 + 10)
+      })
+
+    # The imported row still names Old Alignment as the to-trip's first stop,
+    # which the trip no longer starts at.
+    GtfsPlanner.GtfsFixtures.transfer_fixture(org.id, in_seat_version.id, %{
+      from_trip_id: old_stops_a.trip_id,
+      to_trip_id: old_stops_b.trip_id,
+      from_stop_id: "BIS_OLD_A",
+      to_stop_id: "BIS_OLD_A",
+      transfer_type: 4
+    })
+
+    # The place with no coordinates. Its first connection carries a type-5 row,
+    # so the Connections list has a "Riders must re-board" chip as well as stay.
+    for {base, index} <- Enum.with_index([9 * 60, 10 * 60 + 30], 1) do
+      block_id = "BIS-NOCOORD-#{index}"
+
+      nocoord_a =
+        bis_trip.(%{
+          trip_id: "BIS_NC_T#{index}A",
+          route_id: "BIS_R31",
+          block_id: block_id,
+          direction_id: 0,
+          trip_headsign: "Depot",
+          first_stop: "BIS_NOCOORD_END",
+          last_stop: "BIS_NOCOORD",
+          first_departure: bis_clock.(base),
+          last_arrival: bis_clock.(base + 30)
+        })
+
+      nocoord_b =
+        bis_trip.(%{
+          trip_id: "BIS_NC_T#{index}B",
+          route_id: "BIS_R42",
+          block_id: block_id,
+          direction_id: 0,
+          trip_headsign: "Market",
+          first_stop: "BIS_NOCOORD",
+          last_stop: "BIS_NOCOORD_END",
+          first_departure: bis_clock.(base + 40),
+          last_arrival: bis_clock.(base + 70)
+        })
+
+      if index == 1 do
+        GtfsPlanner.GtfsFixtures.transfer_fixture(org.id, in_seat_version.id, %{
+          from_trip_id: nocoord_a.trip_id,
+          to_trip_id: nocoord_b.trip_id,
+          from_stop_id: "BIS_NOCOORD",
+          to_stop_id: "BIS_NOCOORD",
+          transfer_type: 5
+        })
+      end
+    end
+
+    # The two unmatched rows: records whose trips carry no block, so no gap ever
+    # hosts them and the version-level read lists them with :no_block.
+    for {handoff_stop, other_stop, first_trip, second_trip, transfer_type} <- [
+          {"BIS_FAR_A", "BIS_FAR_END", "BIS_UNB1", "BIS_UNB2", 4},
+          {"BIS_MOVE_B", "BIS_MOVE_END", "BIS_UNB3", "BIS_UNB4", 5}
+        ] do
+      bis_trip.(%{
+        trip_id: first_trip,
+        route_id: "BIS_R12",
+        direction_id: 0,
+        trip_headsign: "In-seat Avenue",
+        first_stop: other_stop,
+        last_stop: handoff_stop,
+        first_departure: bis_clock.(6 * 60),
+        last_arrival: bis_clock.(6 * 60 + 20)
+      })
+
+      bis_trip.(%{
+        trip_id: second_trip,
+        route_id: "BIS_R24",
+        direction_id: 0,
+        trip_headsign: "In-seat Crosstown",
+        first_stop: handoff_stop,
+        last_stop: other_stop,
+        first_departure: bis_clock.(6 * 60 + 25),
+        last_arrival: bis_clock.(6 * 60 + 45)
+      })
+
+      GtfsPlanner.GtfsFixtures.transfer_fixture(org.id, in_seat_version.id, %{
+        from_trip_id: first_trip,
+        to_trip_id: second_trip,
+        from_stop_id: handoff_stop,
+        to_stop_id: handoff_stop,
+        transfer_type: transfer_type
+      })
+    end
+
+    bis_blocked_trips =
+      Repo.aggregate(
+        from(t in Trip,
+          where: t.gtfs_version_id == ^in_seat_version.id and not is_nil(t.block_id)
+        ),
+        :count
+      )
+
+    # Two trips that run only on the school calendar. They are unassigned, so they
+    # join the pool instead of a block, and they are what makes {School days,
+    # Weekday service} carry more trips than {No school days, Weekday service}:
+    # without them the two day types tie on trip count and the page's default
+    # would fall to whichever key sorted first.
+    for index <- 1..2 do
+      bis_trip.(%{
+        trip_id: "BIS_SCHOOL_POOL_#{index}",
+        route_id: "BIS_R57",
+        service_id: "BIS_SCHOOL",
+        direction_id: 0,
+        trip_headsign: "School shuttle",
+        first_stop: "BIS_SHARED_END",
+        last_stop: "BIS_SHARED_A",
+        first_departure: bis_clock.(16 * 60 + (index - 1) * 30),
+        last_arrival: bis_clock.(16 * 60 + 20 + (index - 1) * 30)
+      })
+    end
+
+    bis_in_seat_records =
+      Repo.aggregate(
+        from(t in Transfer, where: t.gtfs_version_id == ^in_seat_version.id),
+        :count
+      )
+
+    IO.puts(
+      "Browser seed: version #{in_seat_version.name} (#{in_seat_version.id}) with " <>
+        "2 day types, #{map_size(bis_stops) + 1} stops, #{length(bis_routes)} routes, " <>
+        "#{bis_blocked_trips} blocked trips and #{bis_in_seat_records} in-seat records"
+    )
+
     IO.puts("Browser seed: restored Browser E2E Version as the latest default")
 
     # ── Pattern alignment fixtures (spec 12, step 20 and every later visual step) ──
