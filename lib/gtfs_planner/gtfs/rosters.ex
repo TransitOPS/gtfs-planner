@@ -258,6 +258,75 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   end
 
   @doc """
+  Fills every weekday of a group with one run, in one write.
+
+  The group is the set of weekdays sharing the requested weekday's base day
+  type, so "Set Mon–Fri to run N" on any of Monday to Friday fills the same five
+  days. Every one of them stores the run's current `sign_on_secs` and
+  `sign_off_secs` exactly as `set_slot/5` stores them, so a group write and a
+  single-day write produce rows nothing can tell apart, and a re-cut run is
+  accepted by re-setting it either way (INV-13).
+
+  Whether the write is allowed is `Rosters.Candidates.group_availability/4` and
+  nothing else: a group whose only day is one day, a run another line holds on
+  any of its days, a day the line already works a different run on, and a result
+  leaving less than the minimum rest anywhere in the week are all that owner's
+  refusals, and this writer returns the one it produced without writing a row.
+  The short-rest rule is why the builder refuses what `set_slot/5` reports
+  instead: a manual per-day edit may leave short rest and says so, a builder
+  never creates one (domain rule 5).
+
+  The days are written inside the one transaction `with_roster_lock/3` opens, and
+  a write that fails part-way rolls the whole group back rather than leaving a
+  partial Mon–Fri, so a refusal or a lost race leaves the line exactly as it was.
+
+  Returns `{:error, :not_found}` when the version is unpublished, belongs to
+  another organization, or names no line of that version under the given
+  organization. A foreign or malformed line id is `:not_found` too.
+  """
+  @spec set_weekday_group(Ecto.UUID.t(), Ecto.UUID.t(), term(), 1..7, String.t()) ::
+          {:ok, %{weekdays: [1..7]}} | {:error, :not_found | Candidates.refusal()}
+  def set_weekday_group(organization_id, gtfs_version_id, line_id, weekday, run_id) do
+    with_roster_lock(organization_id, gtfs_version_id, fn ->
+      with {:ok, line} <- fetch_line(organization_id, gtfs_version_id, line_id),
+           {:ok, view} <- compose_read(organization_id, gtfs_version_id),
+           :ok <- Candidates.group_availability(view.roster, line.id, weekday, run_id),
+           {:ok, key, run} <- weekday_run(view, weekday, run_id) do
+        # Availability is `:ok`, so the group and the run both resolve; these two
+        # reads restate what `group_availability/4` just proved rather than
+        # deciding anything.
+        weekdays = group_weekdays(view.roster, weekday)
+
+        write_group_days(organization_id, gtfs_version_id, line.id, key, run, weekdays)
+
+        {:ok, %{weekdays: weekdays}}
+      end
+    end)
+  end
+
+  # Every weekday of the requested weekday's group, which availability has already
+  # established exists and holds more than one day.
+  defp group_weekdays(roster, weekday) do
+    Enum.find_value(roster.groups, fn group ->
+      if weekday in group.weekdays, do: group.weekdays
+    end)
+  end
+
+  # One upsert per group day, the same `write_day/6` `set_slot/5` uses, so a group
+  # row and a single-day row carry the same columns written the same way. A day
+  # that fails — the run-once-per-weekday index losing a race — rolls the whole
+  # transaction back with the refusal `write_day/6` produced, so the group is
+  # never half written and the caller is told which line won.
+  defp write_group_days(organization_id, gtfs_version_id, line_id, key, run, weekdays) do
+    Enum.each(weekdays, fn weekday ->
+      case write_day(organization_id, gtfs_version_id, line_id, weekday, key, run) do
+        {:ok, _stored} -> :ok
+        {:error, refusal} -> Repo.rollback(refusal)
+      end
+    end)
+  end
+
+  @doc """
   Clears one weekday of a line, returning its run to open work.
 
   A day off is the absence of a row, so clearing is a delete of the

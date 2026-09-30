@@ -5700,6 +5700,27 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Fills every weekday of a group with one run, in one write.
+
+  This is "Set Mon–Fri to run N": the group is every weekday sharing the
+  requested weekday's base day type, and each of its days is written with the
+  run's current sign-on and sign-off, exactly as `set_roster_slot/5` writes one.
+
+  The write is allowed only when `Rosters.Candidates.group_availability/4` says
+  so — the run is open on every day of the group, the line works no different
+  run on any of them, and the resulting week has no short rest. A refusal names
+  its reason and writes nothing, in one transaction, so a group is never half
+  filled. A line from another version or organization, a malformed id, or an
+  unpublished version is `{:error, :not_found}`.
+  """
+  @spec set_roster_weekday_group(Ecto.UUID.t(), Ecto.UUID.t(), term(), 1..7, String.t()) ::
+          {:ok, %{weekdays: [1..7]}}
+          | {:error, :not_found | GtfsPlanner.Gtfs.Rosters.Candidates.refusal()}
+  def set_roster_weekday_group(organization_id, gtfs_version_id, line_id, weekday, run_id) do
+    Rosters.set_weekday_group(organization_id, gtfs_version_id, line_id, weekday, run_id)
+  end
+
+  @doc """
   Clears one weekday of a line, returning its run to open work.
 
   Clearing deletes the `(line, weekday)` row and touches nothing else, so the
