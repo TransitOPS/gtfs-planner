@@ -69,6 +69,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   attr :bulk_error, :atom, default: nil
   attr :bulk_pending, :boolean, default: false
 
+  attr :grouped_summary, :map,
+    default: nil,
+    doc: "the derivation summary returned by a grouping review that was applied"
+
   def page(%{load_state: :loading} = assigns) do
     ~H"""
     <div id="route-patterns-page" class="ds-page">
@@ -202,6 +206,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
         <div class="mt-4 hidden gap-4 has-[>*]:grid">
           <.build_summary_message :if={@build_summary} summary={@build_summary} />
+
+          <.grouped_message :if={@grouped_summary} summary={@grouped_summary} />
 
           <.message
             :if={@stale?}
@@ -408,7 +414,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   attr :route, :map, required: true
   attr :version, :map, required: true
   attr :editable?, :boolean, required: true
-
   # The trips import left outside patterns, one row per reason with the fix that
   # reason can have here. A viewer reads why they are there and takes no action.
   defp left_out_card(assigns) do
@@ -517,7 +522,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
   defp left_out_title(1), do: "1 trip isn’t in a pattern"
   defp left_out_title(total), do: "#{total} trips aren’t in a pattern"
-
   # Only a trip with no direction can be grouped on this page, so it is the one
   # reason that offers the review and the view's primary action.
   # One id per action. The grouping review keeps the stable id the criteria name;
@@ -620,7 +624,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
   attr :busy, :string, required: true
   slot :inner_block, required: true
-
   # The label of a button that re-reads the list. While its click is in flight the
   # icon spins and the label says so; `phx-disable-with` would replace the icon.
   defp reload_label(assigns) do
@@ -644,6 +647,40 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
     </.message>
     """
   end
+
+  # What the grouping review just wrote. It names the trips that got a direction
+  # and the patterns they joined, and says the one thing an operator checks
+  # afterwards: their times did not change.
+  attr :summary, :map, required: true
+
+  defp grouped_message(assigns) do
+    ~H"""
+    <.message
+      id="patterns-grouped"
+      kind="success"
+      title={grouped_title(@summary)}
+    >
+      {grouped_body(@summary)}
+    </.message>
+    """
+  end
+
+  defp grouped_title(%{trips_linked: linked}) do
+    "Grouped #{plural(linked, "trip", "trips")} into patterns"
+  end
+
+  defp grouped_body(%{patterns_created: created, timings_created: timings}) do
+    "Their direction is set and exported, and their times did not change. " <>
+      created_part(created) <> timings_part(timings)
+  end
+
+  defp created_part(0), do: "No new pattern was needed. "
+  defp created_part(1), do: "One new pattern was created. "
+  defp created_part(created), do: "#{created} new patterns were created. "
+
+  defp timings_part(0), do: ""
+  defp timings_part(1), do: "One new timing was named after its service."
+  defp timings_part(timings), do: "#{timings} new timings were named after their services."
 
   attr :route, :map, required: true
   attr :version, :map, required: true
@@ -793,7 +830,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   end
 
   defp head_class, do: "h-11 px-4 py-0 text-[13px] font-[650] text-default"
-
   # Legend, closed until asked. It defines the words the list uses once, so the
   # rows can stay short.
   defp help_panel(assigns) do
@@ -862,7 +898,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
   attr :candidates, :list, required: true
   attr :first?, :boolean, required: true
-
   # Map lines that still need paths. It leads the card when most patterns need
   # them (right after an import) and closes it otherwise.
   defp attention(assigns) do
@@ -923,7 +958,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   attr :id, :string, required: true
   attr :summary, :map, required: true
   attr :bulk_result, :map, default: nil
-
   # The whole row opens the pattern; the name button is the keyboard path and the
   # map-line cell keeps its own target. Below `md` the cells wrap into one card.
   defp pattern_row(assigns) do
@@ -1071,7 +1105,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   attr :name, :string, required: true
   attr :natural_id, :string, required: true
   attr :bulk_entry, :map, default: nil
-
   # The map-line cell is the way to the pattern's map-line task. After a bulk run
   # it reports what the run found for this pattern instead.
   defp map_cell(%{bulk_entry: nil} = assigns) do
@@ -1179,7 +1212,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
 
   attr :dialog, :map, default: nil
   attr :selected, :any, default: nil
-
   # Choose the patterns to include, see how many sections that covers, then
   # confirm. The list holds the selection, so the limit is met by unchecking.
   defp bulk_dialog(assigns) do
@@ -1272,7 +1304,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   end
 
   # --- state ------------------------------------------------------------------
-
   # Nothing can be grouped automatically: the build found nothing waiting, or every
   # trip keeps its imported times.
   defp blocked?(assigns) do
@@ -1317,9 +1348,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   end
 
   defp bulk_entry(_result, _id), do: nil
-
   # --- wording ----------------------------------------------------------------
-
   defp plural(1, one, _many), do: "1 #{one}"
   defp plural(count, _one, many), do: "#{count} #{many}"
 
@@ -1378,7 +1407,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponents do
   defp use_label(4), do: {:warning, "Detour"}
   defp use_label(5), do: {:info, "Reference"}
   defp use_label(_typicality), do: {:neutral, "Unknown"}
-
   # Same precedence as the map line's summary everywhere else: missing sections,
   # then blocked, then how the saved line compares with the export.
   defp map_status(nil), do: {:neutral, "hero-minus-circle", "Not saved yet"}

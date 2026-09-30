@@ -214,3 +214,158 @@ test.describe("left-out list", () => {
     });
   }
 });
+
+// ── grouping review ─────────────────────────────────────────────────────────
+
+// `BROWSER_SHAPES` seeds exactly what the review is built for: a saved 13-stop
+// pattern in Direction 0, 18 direction-less trips over that same order and 6 over
+// its first seven, 2 refused for chronology and 1 for a station-only stop. Rule 4
+// therefore answers both groups from the saved pattern, so the review opens with
+// both suggestions preselected and nothing to fill in.
+//
+// The apply is its own test, and it runs last on purpose: the suite shares one
+// seeded database, and applying consumes the 24 trips for good. Both viewports
+// therefore read the review while it still has something to offer, and one test
+// after them is what spends it.
+test.describe("grouping review", () => {
+  for (const viewport of VIEWPORTS) {
+    test(`reviews the left-out trips at ${viewport.width}×${viewport.height}`, async ({
+      page,
+    }, testInfo) => {
+      testInfo.setTimeout(120_000);
+
+      const problems = collectPageErrors(page);
+      await page.setViewportSize({
+        width: viewport.width,
+        height: viewport.height,
+      });
+      await stubTiles(page);
+      await logIn(page);
+      const versionId = await getVersionId(page);
+
+      await page.goto(
+        `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns?review=group`,
+      );
+      await waitForLiveView(page);
+
+      const review = page.locator("#grouping-review");
+      await expect(review).toBeVisible();
+      await expect(review.locator("#grouping-title")).toHaveText(
+        "Group 24 trips into patterns",
+      );
+
+      // One card per groupable stop order, and both carry the suggestion the
+      // saved pattern already answers. The cards are in preview key order, which
+      // is not stop-count order, so the ranges are asserted as a set.
+      const cards = review.locator("article[id^='grouping-card-']");
+      await expect(cards).toHaveCount(2);
+      await expect(review.locator("[data-stop-range]")).toHaveCount(2);
+
+      const ranges = await review
+        .locator("[data-stop-range]")
+        .allInnerTexts()
+        .then((texts) => texts.map((text) => text.replace(/\s+/g, " ").trim()));
+
+      expect(ranges.sort()).toEqual([
+        "US 101 Stop 1 → US 101 Stop 13",
+        "US 101 Stop 1 → US 101 Stop 7",
+      ]);
+      await expect(
+        review.locator("input[id^='grouping-direction-'][value='0'][checked]"),
+      ).toHaveCount(2);
+      await expect(
+        review.locator("[id^='grouping-direction-'][id$='-0-suggested']"),
+      ).toHaveCount(2);
+
+      // The trips the review is not offering are named with their reasons, and
+      // the running state never promises a change that has not happened.
+      await expect(review.locator("#grouping-blocked")).toContainText(
+        "Not offered here: 3 trips with other problems (2 with times out of order and 1 that serves a station)",
+      );
+      await expect(review.locator("#grouping-submit")).toHaveText(
+        "Group 24 trips",
+      );
+      await expect(review.locator("#grouping-cancel")).toHaveText(
+        "Keep trips as they are",
+      );
+
+      await capture(page, `grouping-review-production-${viewport.label}`);
+
+      // Overriding one card is what the radios are for, and it is kept on screen
+      // rather than spent. The second group is asked to go the other way, so the
+      // apply would have to build that direction rather than land on the saved
+      // pattern.
+      await cards.last().locator("input[type='radio'][value='1']").check();
+      await expect(
+        cards.last().locator("input[type='radio'][value='1']"),
+      ).toBeChecked();
+      await expect(review).toBeVisible();
+
+      const referenceCaptured = await captureReference(
+        page,
+        "?state=group-review",
+        `grouping-review-reference-${viewport.label}`,
+      );
+
+      testInfo.annotations.push({
+        type: "reference-captured",
+        description: referenceCaptured
+          ? `grouping-review-reference-${viewport.label}.png`
+          : "prototype absent from this checkout",
+      });
+
+      expect(problems).toEqual([]);
+    });
+  }
+
+  test("applies the review and reports what it wrote", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(120_000);
+
+    const problems = collectPageErrors(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.goto(
+      `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns?review=group`,
+    );
+    await waitForLiveView(page);
+
+    const review = page.locator("#grouping-review");
+    await expect(review.locator("#grouping-submit")).toBeEnabled();
+    await review.locator("#grouping-submit").click();
+
+    // The list is what the review hands back, and it names what was written in
+    // the operator's own words, INV-2's promise included.
+    await expect(page).toHaveURL(/\/patterns$/);
+    await expect(page.locator("#patterns-grouped")).toContainText(
+      "Grouped 24 trips into patterns",
+    );
+    await expect(page.locator("#patterns-grouped")).toContainText(
+      "their times did not change",
+    );
+    await expect(page.locator("#patterns-left-out")).toContainText(
+      "3 trips aren’t in a pattern",
+    );
+
+    await capture(page, "grouping-done-production-desktop");
+
+    const referenceCaptured = await captureReference(
+      page,
+      "?state=group-done",
+      "grouping-done-reference-desktop",
+    );
+
+    testInfo.annotations.push({
+      type: "reference-captured",
+      description: referenceCaptured
+        ? "grouping-done-reference-desktop.png"
+        : "prototype absent from this checkout",
+    });
+
+    expect(problems).toEqual([]);
+  });
+});
