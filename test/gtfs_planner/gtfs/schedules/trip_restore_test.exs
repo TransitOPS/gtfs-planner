@@ -288,6 +288,30 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripRestoreTest do
       assert log_count(scope) == logs_before
     end
 
+    test "a timing whose pickup rule changed after the change refuses the relink",
+         %{scope: scope} do
+      trip = timing_linked_trip!(scope)
+      original = scope.bundle.timing
+      slow = extra_timing!(scope.bundle, [{0, 0, 1}, {360, 390, 1}, {840, 840, 1}], "Slow")
+      applied = apply_set_timing!(scope, trip, slow)
+
+      # Another editor stops pickups at the middle stop of the original timing;
+      # its clocks are unchanged.
+      from(s in TimedPatternStop,
+        where: s.timed_pattern_id == ^original.id and s.arrival_offset == 300
+      )
+      |> Repo.update_all(set: [pickup_type: 1])
+
+      logs_before = log_count(scope)
+
+      assert {:error, {:not_restorable, :changed, [changed_id]}} =
+               Gtfs.restore_trips("12", applied.restore, scope.audit)
+
+      assert changed_id == trip.id
+      assert trip_row(trip).timed_pattern_id == slow.id
+      assert log_count(scope) == logs_before
+    end
+
     test "an unchanged timing is linked back", %{scope: scope} do
       trip = timing_linked_trip!(scope)
       original = scope.bundle.timing

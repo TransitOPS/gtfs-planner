@@ -1151,7 +1151,8 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   # Editing or deleting a timing leaves the trips no longer linked to it alone, so
   # their `updated_at` cannot fence it. A restore that links a trip back to another
   # timing requires that timing to exist and still materialize the captured
-  # arrival and departure clocks; flags may differ, as they do for paste links.
+  # clocks, pickup and drop-off types (blank read as 0) and stop headsigns; only
+  # timepoint may differ, as it does for paste links.
   defp relink_changed_ids(change_set, state) do
     change_set.updates
     |> Enum.reject(&relink_current?(&1, state))
@@ -1164,24 +1165,24 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     case Map.get(state.trips, trip_id) do
       %{trip: %{timed_pattern_id: current} = trip}
       when not is_nil(timing_id) and current != timing_id and is_list(rows) ->
-        timing_clocks_current?(Map.get(state.patterns, trip.route_pattern_id), timing_id, rows)
+        timing_rows_current?(Map.get(state.patterns, trip.route_pattern_id), timing_id, rows)
 
       _unlinked_or_unchanged ->
         true
     end
   end
 
-  defp timing_clocks_current?(%{} = pattern, timing_id, rows) do
+  defp timing_rows_current?(%{} = pattern, timing_id, rows) do
     case Enum.find(pattern.timings, &(&1.timing.id == timing_id)) do
       %{rows: timing_rows} ->
-        TripChanges.timing_clocks_match?(rows, pattern.occurrences, timing_rows)
+        TripChanges.timing_rows_match?(rows, pattern.occurrences, timing_rows)
 
       nil ->
         false
     end
   end
 
-  defp timing_clocks_current?(nil, _timing_id, _rows), do: false
+  defp timing_rows_current?(nil, _timing_id, _rows), do: false
 
   defp restore_changed_ids(payload, state) do
     payload

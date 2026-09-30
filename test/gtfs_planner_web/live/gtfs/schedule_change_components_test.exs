@@ -48,7 +48,8 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponentsTest do
         from: "Weekday",
         to: "Saturday",
         target_options: [{"Saturday", "SAT"}],
-        rows: [],
+        # One selected trip, so Move would be enabled but for the refusal.
+        rows: [%{trip_id: "T1", label: "Trip 1", clock: "07:00", block_id: nil}],
         return_focus_id: "bulk-move"
       }
     }
