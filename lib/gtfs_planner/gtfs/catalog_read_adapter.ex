@@ -26,6 +26,12 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
   focused LiveView tests can substitute this application-owned behaviour without
   mocking `Repo` or Postgrex.
 
+  The pattern comparison reads carry the same classification: the comparison,
+  overview and map reads are `{:error, :not_found}` for a route, pattern or
+  timing outside the organization, the version and a published route, the
+  picker read answers with the version's own entries, and only a lost database
+  connection becomes `{:error, :unavailable}`.
+
   The blocking day read keeps its domain tagged results the same way: `{:ok, day}`
   for a coherent scoped load, `{:error, :not_found}` for a foreign or unpublished
   version and `{:error, {:unknown_day_type, day_types}}` for a key no day type has.
@@ -41,6 +47,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
     FareZones,
     Flex.Checks,
     FlexService,
+    PatternComparison,
     Route,
     RoutePattern,
     Routes,
@@ -98,6 +105,14 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter do
               {:ok, [RoutePattern.t()]} | unavailable()
   @callback load_route_pattern_screen(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) ::
               {:ok, map()} | {:error, :not_found | :unavailable}
+  @callback load_pattern_comparison(Ecto.UUID.t(), Ecto.UUID.t(), map()) ::
+              {:ok, map()} | {:error, :not_found | :unavailable}
+  @callback load_pattern_overview(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), keyword()) ::
+              {:ok, PatternComparison.overview()} | {:error, :not_found | :unavailable}
+  @callback load_pattern_compare_map(Ecto.UUID.t(), Ecto.UUID.t(), String.t(), String.t() | nil) ::
+              {:ok, PatternComparison.map_payload()} | {:error, :not_found | :unavailable}
+  @callback load_pattern_picker(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+              {:ok, [PatternComparison.picker_entry()]} | unavailable()
   @callback search_stops(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::
               {:ok, %{stops: [Stop.t()], truncated?: boolean()}} | unavailable()
   @callback fetch_stop(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) ::

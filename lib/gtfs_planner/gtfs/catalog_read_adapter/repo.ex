@@ -15,7 +15,10 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
   stop rows. Station-detail regions resolve independently so one failing region
   does not erase the others. Calendar list and detail reads delegate to
   `GtfsPlanner.Gtfs.Calendars` and unwrap only its outer transaction tuple while
-  preserving the domain's own `{:error, :not_found}`. A blocking day read delegates to
+  preserving the domain's own `{:error, :not_found}`. The pattern comparison,
+  overview and map reads delegate to `GtfsPlanner.Gtfs.PatternComparison` and
+  unwrap its tuple the same way, while its picker read answers with the version's
+  entries. A blocking day read delegates to
   `GtfsPlanner.Gtfs.Blocking` and unwraps its transaction tuple the same way, as do the
   Schedules block warning and the first-day-type key. The calendar screen read
   delegates the same way, so its one protected snapshot carries the summaries, the
@@ -45,6 +48,7 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
     FareZones,
     Flex,
     Flex.Checks,
+    PatternComparison,
     Route,
     RoutePatterns,
     Routes,
@@ -117,6 +121,58 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
          end) do
       {:ok, {:ok, screen}} -> {:ok, screen}
       {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def load_pattern_comparison(organization_id, gtfs_version_id, params) do
+    case run(fn ->
+           PatternComparison.compare(pattern_scope(organization_id, gtfs_version_id), params)
+         end) do
+      {:ok, {:ok, comparison}} -> {:ok, comparison}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def load_pattern_overview(organization_id, gtfs_version_id, route_id, opts) do
+    case run(fn ->
+           PatternComparison.overview(
+             pattern_scope(organization_id, gtfs_version_id),
+             route_id,
+             Keyword.get(opts, :direction, 0),
+             opts[:service]
+           )
+         end) do
+      {:ok, {:ok, overview}} -> {:ok, overview}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def load_pattern_compare_map(organization_id, gtfs_version_id, a, b) do
+    case run(fn ->
+           PatternComparison.map_payload(pattern_scope(organization_id, gtfs_version_id), a, b)
+         end) do
+      {:ok, {:ok, payload}} -> {:ok, payload}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :unavailable} = error -> error
+    end
+  end
+
+  @impl true
+  def load_pattern_picker(organization_id, gtfs_version_id, opts) do
+    case run(fn ->
+           PatternComparison.picker_patterns(
+             pattern_scope(organization_id, gtfs_version_id),
+             opts[:other],
+             opts[:service]
+           )
+         end) do
+      {:ok, {:ok, entries}} -> {:ok, entries}
       {:error, :unavailable} = error -> error
     end
   end
@@ -356,6 +412,12 @@ defmodule GtfsPlanner.Gtfs.CatalogReadAdapter.Repo do
       per_page when is_integer(per_page) and per_page >= 1 -> per_page
       _ -> @default_per_page
     end
+  end
+
+  # Every pattern comparison read is limited to the loaded organization and
+  # version (`INV-1`); the context read owns the published-route requirement.
+  defp pattern_scope(organization_id, gtfs_version_id) do
+    %{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
   end
 
   # Wraps query execution only. `DBConnection.ConnectionError` is the single
