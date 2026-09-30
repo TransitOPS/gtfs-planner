@@ -1,0 +1,6 @@
+fare_id,price,currency_type,payment_method,transfers,agency_id,transfer_duration
+LOCAL,1.50,USD,0,2,NCT,5400
+VALLEY,2.50,USD,0,2,NCT,5400
+COAST,3.50,USD,0,2,NCT,5400
+VALCOAST,5.00,USD,0,2,NCT,5400
+INTERCITY,6.00,USD,0,0,NCT,

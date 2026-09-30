@@ -1,0 +1,15 @@
+route_id,service_id,trip_id,trip_headsign
+1,weekday,T1,Newport Transit Center
+2,weekday,T2,South Beach Park & Ride
+3,weekday,T3,Samaritan Pacific Hospital
+4,weekday,T4,Newport Transit Center
+5,weekday,T5,Yachats
+6,weekday,T6,Depoe Bay
+7,weekday,T7,Toledo City Hall
+10,weekday,T10,Corvallis Downtown Transit Center
+11,weekday,T11,Agate Beach
+12,weekday,T12,Samaritan Pacific Hospital
+20,weekday,T20,Lincoln City Transit Center
+21,weekday,T21,Lincoln City Transit Center
+30,weekday,T30,Newport Transit Center
+40,weekday,T40,Waldport

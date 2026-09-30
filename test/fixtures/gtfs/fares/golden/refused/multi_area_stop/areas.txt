@@ -1,0 +1,4 @@
+area_id,area_name
+CST,Coast zone
+NPT,Newport local
+TOL,Toledo and valley

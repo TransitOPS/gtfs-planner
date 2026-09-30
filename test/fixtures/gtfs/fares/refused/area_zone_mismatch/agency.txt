@@ -1,0 +1,2 @@
+agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_fare_url
+NCT,North Coast Transit,https://northcoast.example,America/Los_Angeles,en,https://northcoast.example/fares

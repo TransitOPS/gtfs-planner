@@ -1,0 +1,2 @@
+agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_phone,agency_fare_url
+1,Santa Cruz METRO,https://scmetro.org,America/Los_Angeles,en,(831)425-8600,https://scmetro.org/fares

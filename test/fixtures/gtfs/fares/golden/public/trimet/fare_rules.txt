@@ -1,0 +1,11 @@
+fare_id,route_id,origin_id,destination_id,contains_id
+SC,193,,,
+SC,194,,,
+SC,195,,,
+AT,208,,,
+RB,,R,,B
+B,,B,,B
+RB,,R,,R
+R,,R,,R
+BR,,B,,B
+BR,,B,,R

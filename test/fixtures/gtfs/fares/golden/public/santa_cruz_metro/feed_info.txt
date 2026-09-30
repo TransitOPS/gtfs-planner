@@ -1,0 +1,2 @@
+feed_publisher_name,feed_publisher_url,feed_lang,default_lang,feed_start_date,feed_end_date,feed_version,feed_contact_email,feed_contact_url
+Santa Cruz METRO,https://scmetro.org,en,,20260910,20261216,S1000117,gtfs@scmtd.com,https://developer.scmetro.org

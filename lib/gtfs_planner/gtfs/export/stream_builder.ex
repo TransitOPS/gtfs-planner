@@ -338,6 +338,13 @@ defmodule GtfsPlanner.Gtfs.Export.StreamBuilder do
     order_by(query, [s], asc: s.shape_id, asc: s.shape_pt_sequence)
   end
 
+  # One service can carry many exception dates, so `service_id` alone leaves the
+  # rows of a re-imported feed in heap order and two exports of the same feed
+  # differ. The date and its exception type are the rest of the row's identity.
+  defp order_by_for_schema(query, GtfsPlanner.Gtfs.CalendarDate) do
+    order_by(query, [s], asc: s.service_id, asc: s.date, asc: s.exception_type)
+  end
+
   defp order_by_for_schema(query, schema) when is_map_key(@natural_keys, schema) do
     order_by(query, ^(Map.fetch!(@natural_keys, schema) ++ [:id]))
   end
