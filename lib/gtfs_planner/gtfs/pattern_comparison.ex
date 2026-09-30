@@ -16,6 +16,12 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
     calendar, then the most trips on all calendars, then name ascending. The
     all-calendars count is one trip row per trip, while the calendar count is the
     `Usage` departure count the calendar select shows.
+  - `R8` Entry. `defaults/3` opens the route's pattern with the most trips on the
+    route's busiest calendar as A and the next by trips in A's direction as B.
+    A route without patterns gives `a: nil, b: nil`.
+  - `AC-21` Overview. `overview/4` lays one direction's patterns out against the
+    busiest one with `Alignment.overview_rows/1`, each pattern carrying its
+    trips on the calendar, typicality, service description and visit count.
   - `R9` Scope. A is looked up by the URL route plus its natural ID, so a
     pattern outside the route is `{:error, :not_found}`. B resolves inside the
     organization, version and a published route; a missing, foreign or
@@ -44,11 +50,13 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
 
   alias GtfsPlanner.Gtfs.PatternComparison.Alignment
   alias GtfsPlanner.Gtfs.PatternComparison.Usage
+  alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
   alias GtfsPlanner.Gtfs.RoutePatterns
   alias GtfsPlanner.Gtfs.RoutePatternStop
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.TimedPattern
+  alias GtfsPlanner.Gtfs.TimedPatternStop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
 
@@ -56,6 +64,27 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
 
   @typedoc "The scoped published organization and version every read is limited to."
   @type scope :: %{organization_id: Ecto.UUID.t(), gtfs_version_id: Ecto.UUID.t()}
+
+  @typedoc "One pattern's column facts in the stop-by-pattern overview (AC-21)."
+  @type overview_pattern :: %{
+          route_pattern_id: String.t(),
+          name: String.t() | nil,
+          typicality: String.t(),
+          service_description: String.t() | nil,
+          stop_count: non_neg_integer(),
+          trips: non_neg_integer()
+        }
+
+  @typedoc "The stop-by-pattern overview of one route direction (AC-21)."
+  @type overview :: %{
+          route: Route.t(),
+          service_id: String.t() | nil,
+          calendars: [Usage.calendar_usage()],
+          patterns: [overview_pattern()],
+          rows: [%{stop_id: String.t(), served: %{String.t() => pos_integer()}}],
+          spans: %{String.t() => {non_neg_integer(), non_neg_integer()}},
+          stops_by_id: %{String.t() => map()}
+        }
 
   @doc """
   Composes the comparison of `a` and `b` on the URL route (spec §4, `R6`-`R9`).
@@ -77,7 +106,11 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
       candidates = if is_nil(b), do: suggestion_candidates(scope, route, a), else: []
 
       calendars = Usage.calendars(scope, [a.route_pattern_id | pattern_ids(b)])
-      service_id = resolve_service(calendars, Map.get(params, :service), a, b)
+
+      service_id =
+        resolve_calendar(calendars, Map.get(params, :service), [
+          a.route_pattern_id | pattern_ids(b)
+        ])
 
       base_patterns = [a | List.wrap(b)]
 
@@ -130,8 +163,96 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
          service_id: service_id,
          alignment: b_side && alignment(a_side, b_side, reversed?),
          stops_by_id:
-           stops_by_id(scope, a_side.stops ++ side_stops(b_side), a_side.rows, b_rows(b_side)),
+           stops_by_id(
+             scope,
+             a_side.stops ++ side_stops(b_side),
+             timepoint_ids([a_side.rows | b_rows(b_side)])
+           ),
          suggestions: suggestions
+       }}
+    end
+  end
+
+  @doc """
+  Resolves the entry defaults for a route (R8, AC-15).
+
+  The route's pattern with the most trips on the route's busiest calendar is A,
+  and B is the next by trips in A's direction; a route with a single pattern in
+  that direction gives `b: nil`. The busiest calendar is the one with the most
+  trips of the route's patterns combined, ties keeping
+  `Calendars.list_calendars/2` order. `:service` names another calendar to count
+  on; an unknown one falls back to the busiest, as an unknown `service` does in
+  `compare/2`. A route without patterns gives `a: nil, b: nil`.
+
+  A route outside the organization and version, or on an unpublished version,
+  is `{:error, :not_found}`.
+  """
+  @spec defaults(scope(), String.t(), keyword()) ::
+          {:ok, %{a: String.t() | nil, b: String.t() | nil}} | {:error, :not_found}
+  def defaults(scope, route_id, opts) do
+    with {:ok, route} <-
+           RoutePatterns.published_route(scope.organization_id, scope.gtfs_version_id, route_id) do
+      patterns = route_patterns(scope, route.route_id)
+      pattern_ids = Enum.map(patterns, & &1.route_pattern_id)
+      calendars = Usage.calendars(scope, pattern_ids)
+      service_id = resolve_calendar(calendars, Keyword.get(opts, :service), pattern_ids)
+      usage = Usage.usage(scope, patterns, service_id)
+      ordered = by_trips(patterns, usage)
+
+      a = List.first(ordered)
+      b = a && Enum.find(Enum.drop(ordered, 1), &(&1.direction_id == a.direction_id))
+
+      {:ok, %{a: a && a.route_pattern_id, b: b && b.route_pattern_id}}
+    end
+  end
+
+  @doc """
+  Returns the stop-by-pattern overview of one route direction (AC-21).
+
+  Every pattern of the direction is returned busiest first on the calendar
+  (ties keep sort order, then natural ID) with its name, typicality label,
+  service description, visit count and trips, plus `Alignment.overview_rows/1`'s
+  aligned `rows` and `spans` (one row per visit, repeated visits kept).
+  `service_id` selects the calendar; an absent or unknown one uses the
+  direction's busiest calendar. `stops_by_id` carries each served stop's name,
+  code and coordinates, with `timepoint?` true when any timing of the
+  direction's patterns marks it as one.
+
+  A route outside the organization and version, or on an unpublished version,
+  is `{:error, :not_found}`.
+  """
+  @spec overview(scope(), String.t(), 0 | 1, String.t() | nil) ::
+          {:ok, overview()} | {:error, :not_found}
+  def overview(scope, route_id, direction_id, service_id) do
+    with {:ok, route} <-
+           RoutePatterns.published_route(scope.organization_id, scope.gtfs_version_id, route_id) do
+      patterns = route_patterns(scope, route.route_id, direction_id)
+      pattern_ids = Enum.map(patterns, & &1.route_pattern_id)
+      calendars = Usage.calendars(scope, pattern_ids)
+      service_id = resolve_calendar(calendars, service_id, pattern_ids)
+      usage = Usage.usage(scope, patterns, service_id)
+      stops_by_pattern = pattern_stops(scope, Enum.map(patterns, & &1.id))
+      ordered = by_trips(patterns, usage)
+
+      alignment =
+        Alignment.overview_rows(
+          Enum.map(ordered, &{&1.route_pattern_id, pattern_stop_ids(&1, stops_by_pattern)})
+        )
+
+      {:ok,
+       %{
+         route: route,
+         service_id: service_id,
+         calendars: calendars,
+         patterns: Enum.map(ordered, &overview_pattern(&1, usage, stops_by_pattern)),
+         rows: alignment.rows,
+         spans: alignment.spans,
+         stops_by_id:
+           stops_by_id(
+             scope,
+             Enum.flat_map(ordered, &pattern_stop_ids(&1, stops_by_pattern)),
+             direction_timepoints(scope, Enum.map(ordered, & &1.id))
+           )
        }}
     end
   end
@@ -198,13 +319,13 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
   end
 
   # The chosen calendar is the requested one when it exists, otherwise the
-  # calendar with the most trips of A and B together; ties keep the calendar
-  # list order (R8).
-  defp resolve_service(calendars, requested, a, b) do
+  # calendar with the most trips of the given patterns together; ties keep the
+  # calendar list order (R8).
+  defp resolve_calendar(calendars, requested, pattern_ids) do
     if Enum.any?(calendars, &(&1.service_id == requested)) do
       requested
     else
-      busiest_calendar(calendars, [a.route_pattern_id | pattern_ids(b)])
+      busiest_calendar(calendars, pattern_ids)
     end
   end
 
@@ -225,6 +346,51 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
   defp calendar_trips(calendar, pattern_ids) do
     Enum.sum_by(pattern_ids, &Map.get(calendar.trips, &1, 0))
   end
+
+  # One route's patterns in the scope, optionally one direction, in the order
+  # `overview/4` and `defaults/3` rank from.
+  defp route_patterns(scope, route_id, direction_id \\ nil) do
+    query =
+      from(pattern in RoutePattern,
+        where:
+          pattern.organization_id == ^scope.organization_id and
+            pattern.gtfs_version_id == ^scope.gtfs_version_id and
+            pattern.route_id == ^route_id,
+        order_by: [asc: pattern.route_pattern_sort_order, asc: pattern.route_pattern_id]
+      )
+
+    if is_nil(direction_id) do
+      Repo.all(query)
+    else
+      Repo.all(where(query, [pattern], pattern.direction_id == ^direction_id))
+    end
+  end
+
+  # Busiest first on the chosen calendar; ties keep the query's sort order and
+  # then the natural ID, so the overview's column order is deterministic.
+  defp by_trips(patterns, usage) do
+    Enum.sort_by(patterns, fn pattern ->
+      {-usage_total(usage, pattern), pattern.route_pattern_sort_order || 0,
+       pattern.route_pattern_id}
+    end)
+  end
+
+  defp usage_total(usage, pattern) do
+    usage |> Map.get(pattern.route_pattern_id, %{}) |> Map.get(:total, 0)
+  end
+
+  defp overview_pattern(pattern, usage, stops_by_pattern) do
+    %{
+      route_pattern_id: pattern.route_pattern_id,
+      name: pattern.route_pattern_name,
+      typicality: RoutePattern.typicality_label(pattern.route_pattern_typicality),
+      service_description: pattern.route_pattern_time_desc,
+      stop_count: length(pattern_stop_ids(pattern, stops_by_pattern)),
+      trips: usage_total(usage, pattern)
+    }
+  end
+
+  defp pattern_stop_ids(pattern, stops_by_pattern), do: Map.get(stops_by_pattern, pattern.id, [])
 
   defp side(
          pattern,
@@ -366,7 +532,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
       route_pattern_id: pattern.route_pattern_id,
       name: pattern.route_pattern_name,
       shared: MapSet.intersection(a_stop_ids, MapSet.new(stops)) |> MapSet.size(),
-      trips: usage |> Map.get(pattern.route_pattern_id, %{total: 0}) |> Map.get(:total, 0),
+      trips: usage_total(usage, pattern),
       identical?: stops == a_stops
     }
   end
@@ -422,16 +588,38 @@ defmodule GtfsPlanner.Gtfs.PatternComparison do
     end)
   end
 
-  # The card's stop projection: names, codes and coordinates only, both sides in
-  # one query. `timepoint?` follows the chosen timings, not the stop row.
-  defp stops_by_id(scope, stop_ids, a_rows, b_rows) do
+  # A stop in the overview is a timepoint when any timing of the direction's
+  # patterns marks it as one; there is no timepoint column on the visits.
+  defp direction_timepoints(_scope, []), do: MapSet.new()
+
+  defp direction_timepoints(scope, pattern_uuids) do
+    from(row in TimedPatternStop,
+      join: timing in TimedPattern,
+      on: timing.id == row.timed_pattern_id,
+      join: occurrence in RoutePatternStop,
+      on: occurrence.id == row.route_pattern_stop_id,
+      where:
+        row.timepoint == 1 and timing.organization_id == ^scope.organization_id and
+          timing.gtfs_version_id == ^scope.gtfs_version_id and
+          timing.route_pattern_id in ^pattern_uuids and
+          occurrence.organization_id == ^scope.organization_id and
+          occurrence.gtfs_version_id == ^scope.gtfs_version_id,
+      distinct: true,
+      select: occurrence.stop_id
+    )
+    |> Repo.all()
+    |> MapSet.new()
+  end
+
+  # The card's stop projection: names, codes and coordinates only, in one query.
+  # `timepoint?` is decided by the caller's timing rows (compare) or timing
+  # marks (overview), not by the stop row.
+  defp stops_by_id(scope, stop_ids, timepoints) do
     stop_ids = stop_ids |> Enum.uniq() |> Enum.sort()
 
     if stop_ids == [] do
       %{}
     else
-      timepoints = timepoint_ids([a_rows | b_rows])
-
       from(stop in Stop,
         where:
           stop.organization_id == ^scope.organization_id and
