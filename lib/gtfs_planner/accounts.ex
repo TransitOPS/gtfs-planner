@@ -314,9 +314,8 @@ defmodule GtfsPlanner.Accounts do
   Deletes all session and API session tokens for a user and returns the
   deleted `%UserToken{}` records.
 
-  This is used when deactivating a user to force them to log out. Pass the
-  returned tokens to `GtfsPlannerWeb.UserAuth.disconnect_sessions/1` to close
-  the user's open LiveViews.
+  Membership commands use the deleted web-session digests to disconnect the
+  user's open LiveViews after the transaction commits.
 
   ## Examples
 

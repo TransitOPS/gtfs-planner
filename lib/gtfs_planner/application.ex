@@ -13,6 +13,7 @@ defmodule GtfsPlanner.Application do
         GtfsPlanner.Repo,
         {DNSCluster, query: Application.get_env(:gtfs_planner, :dns_cluster_query) || :ignore},
         {Phoenix.PubSub, name: GtfsPlanner.PubSub},
+        GtfsPlannerWeb.SessionRevocations,
         {Task.Supervisor, name: GtfsPlanner.TaskSupervisor},
         {DynamicSupervisor,
          name: GtfsPlanner.Gtfs.Import.RunnerSupervisor, strategy: :one_for_one},
