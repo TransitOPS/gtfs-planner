@@ -287,7 +287,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternFillTest do
                {"08:10:00", "08:11:00", _}
              ] = trip_clocks(trip)
 
-      assert render(view) =~ "trips updated"
+      assert render(view) =~ "1 trip updated"
     end
 
     test "a manual change to an estimated row clears its estimated mark", %{
