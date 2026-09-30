@@ -356,3 +356,58 @@ test.describe("compare picker (step 18)", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 });
+
+// ── All-patterns overview captures (step 19) ────────────────────────────────
+//
+// The direction's patterns as columns with the pick-two checkboxes: the plain
+// overview at both viewports, the direction with a single pattern, and the two
+// chosen columns the Compare button waits for. The picks are server state, so
+// the picked capture clicks the checkboxes and waits for the header chips the
+// server renders, which is the LiveView round trip rather than a client guess.
+
+test.describe("compare overview (step 19)", () => {
+  test("capture: overview", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    for (const [name, width, height] of [
+      ["overview-1440", 1440, 900],
+      ["overview-390", 390, 844],
+    ]) {
+      await page.setViewportSize({ width, height });
+      await page.goto(compareUrl(versionId, "?view=all"));
+      await page.waitForSelector("#overview-table tbody tr[data-stop-id]");
+      await capture(page, name);
+    }
+
+    // Direction 1 holds BACK alone, so the overview is one column and its lane
+    // runs the whole table.
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(compareUrl(versionId, "?view=all&dir=1"));
+    await page.waitForSelector("#overview-pattern-BROWSER-CMP-BACK");
+    await capture(page, "overview-dir1-1440");
+
+    for (const [name, width, height] of [
+      ["overview-picked-1440", 1440, 900],
+      ["overview-picked-390", 390, 844],
+    ]) {
+      await page.setViewportSize({ width, height });
+      await page.goto(compareUrl(versionId, "?view=all"));
+      await page.waitForSelector("#overview-table tbody tr[data-stop-id]");
+      await page.click("#overview-pick-BROWSER-CMP-FULL");
+      await page.click("#overview-pick-BROWSER-CMP-SHORT");
+
+      await expect(page.locator("#overview-pattern-BROWSER-CMP-FULL")).toContainText("Pattern A");
+      await expect(page.locator("#overview-pattern-BROWSER-CMP-SHORT")).toContainText("Pattern B");
+      await expect(page.locator("#overview-compare")).toBeEnabled();
+      await capture(page, name);
+    }
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+});

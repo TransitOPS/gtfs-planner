@@ -24,6 +24,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
   `Gtfs.load_pattern_picker/3` loaded once per open; `picker_search` filters that
   list in memory, `choose_pattern` patches the chosen side and drops its pinned
   timing, and `close_picker` patches the param away.
+
+  The all-patterns view (`view=all`, `AC-21`) loads
+  `Gtfs.load_pattern_overview/4` for the URL's direction instead of a pair: every
+  pattern of that direction is a column of the overview, and the checkboxes keep
+  the picked columns as server state (the URL does not carry them), at most two
+  in pick order. "Compare 2 patterns" patches the picked pair into the two-view
+  URL as `a` and `b`.
   """
   use GtfsPlannerWeb, :live_view
 
@@ -46,6 +53,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
      |> assign(:requested, %{})
      |> assign(:view, :two)
      |> assign(:comparison, nil)
+     |> assign(:overview, nil)
+     |> assign(:overview_dir, 0)
+     |> assign(:overview_picked, [])
      |> assign(:picker, nil)
      |> assign(:load_state, :loading)
      |> stream(:compare_rows, [], dom_id: & &1.dom_id)}
@@ -114,6 +124,38 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
     end
   end
 
+  # One overview checkbox is server state (`INV-4`): the click toggles that
+  # pattern in the picked list, which keeps at most two in pick order, so a third
+  # pick drops the oldest and the pair compared is the last two chosen (`AC-21`).
+  @impl true
+  def handle_event("overview_pick", %{"pattern" => pattern_id}, socket) do
+    picked = socket.assigns.overview_picked
+
+    next =
+      if pattern_id in picked do
+        List.delete(picked, pattern_id)
+      else
+        Enum.take(picked ++ [pattern_id], -2)
+      end
+
+    {:noreply, assign(socket, :overview_picked, next)}
+  end
+
+  # "Compare 2 patterns" opens the two view with the picked columns as A and B in
+  # pick order, which is the order the checkboxes were ticked. The button is
+  # disabled unless two are picked, so any other payload keeps the page as it is.
+  @impl true
+  def handle_event("overview_compare", _params, socket) do
+    case socket.assigns.overview_picked do
+      [a, b] ->
+        {:noreply,
+         push_patch(socket, to: compare_path(socket, %{"view" => nil, "a" => a, "b" => b}))}
+
+      _not_two ->
+        {:noreply, socket}
+    end
+  end
+
   @impl true
   def handle_event("swap", _params, socket) do
     case socket.assigns.comparison && socket.assigns.comparison.b do
@@ -156,7 +198,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
     >
       <RoutePatternCompareComponents.page
         load_state={@load_state}
-        route={@comparison && @comparison.route}
+        route={(@comparison && @comparison.route) || (@overview && @overview.route)}
         version={@current_gtfs_version}
         view={@view}
         comparison={@comparison}
@@ -170,15 +212,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
         }
         reverse_path={reverse_path(@comparison, @current_gtfs_version.id, @route_id, @requested)}
         picker={@picker}
+        overview={@overview}
+        overview_dir={@overview_dir}
+        overview_picked={@overview_picked}
+        overview_dir_paths={overview_dir_paths(@current_gtfs_version.id, @route_id, @requested)}
       />
     </Layouts.app>
     """
   end
 
-  # A visit without `a` opens `R8`'s entry pair. The defaults read has no facade
-  # callback (the facade carries the four comparison reads), so it goes to
-  # `PatternComparison.defaults/3` directly; the patch then loads the comparison
-  # through `Gtfs.load_pattern_comparison/3` like every other visit.
+  # A visit reads the all-patterns overview or the pair, never both: the overview
+  # holds every pattern of a direction, so it needs no A and a bare
+  # `?view=all` works, while the two view still resolves R8's entry pair.
+  defp load(socket, %{"view" => "all"} = params), do: load_overview(socket, params)
+
   defp load(socket, params) do
     case params["a"] do
       nil -> load_defaults(socket)
@@ -186,6 +233,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
     end
   end
 
+  # A visit without `a` opens `R8`'s entry pair. The defaults read has no facade
+  # callback (the facade carries the four comparison reads), so it goes to
+  # `PatternComparison.defaults/3` directly; the patch then loads the comparison
+  # through `Gtfs.load_pattern_comparison/3` like every other visit.
   defp load_defaults(socket) do
     scope = scope(socket)
 
@@ -232,6 +283,49 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
       {:error, :unavailable} ->
         {:noreply,
          socket
+         |> assign(:comparison, nil)
+         |> assign(:picker, nil)
+         |> assign(:load_state, :unavailable)}
+    end
+  end
+
+  # The all-patterns read (`AC-21`): one route direction's overview, at the URL's
+  # `dir` and calendar. The picked columns belong to one direction, so a
+  # direction change clears them while a calendar change keeps them. The pair's
+  # own read is dropped with it: the two views share nothing but the URL.
+  defp load_overview(socket, params) do
+    direction = direction_param(params["dir"])
+    scope = scope(socket)
+
+    case Gtfs.load_pattern_overview(
+           scope.organization_id,
+           scope.gtfs_version_id,
+           socket.assigns.route_id,
+           direction: direction,
+           service: params["service"]
+         ) do
+      {:ok, overview} ->
+        picked =
+          if socket.assigns.overview_dir == direction,
+            do: socket.assigns.overview_picked,
+            else: []
+
+        {:noreply,
+         socket
+         |> assign(:overview, overview)
+         |> assign(:overview_dir, direction)
+         |> assign(:overview_picked, picked)
+         |> assign(:comparison, nil)
+         |> assign(:picker, nil)
+         |> assign(:load_state, :ready)}
+
+      {:error, :not_found} ->
+        not_found(socket)
+
+      {:error, :unavailable} ->
+        {:noreply,
+         socket
+         |> assign(:overview, nil)
          |> assign(:comparison, nil)
          |> assign(:picker, nil)
          |> assign(:load_state, :unavailable)}
@@ -297,6 +391,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
 
   defp timing_param("a"), do: "ta"
   defp timing_param("b"), do: "tb"
+
+  defp direction_param("1"), do: 1
+  defp direction_param(_dir), do: 0
 
   defp scope(socket) do
     %{
@@ -382,6 +479,21 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
 
   defp patterns_path(version_id, route_id) do
     "/gtfs/#{version_id}/routes/#{route_id}/patterns"
+  end
+
+  # The direction toggle's patch targets: the all-patterns URL for each
+  # direction, whatever the current URL holds (`AC-21`). `dir` is URL state like
+  # every other selection (`INV-4`).
+  defp overview_dir_paths(version_id, route_id, requested) do
+    Map.new([0, 1], fn direction ->
+      path =
+        compare_path(version_id, route_id, requested, %{
+          "view" => "all",
+          "dir" => Integer.to_string(direction)
+        })
+
+      {direction, path}
+    end)
   end
 
   # Builds the compare URL from the current params, overriding the named keys; a

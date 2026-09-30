@@ -6,8 +6,9 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   with the swap between them. The summary card adds the difference list and the
   metric strip (`AC-7`, `AC-9`, `AC-18`), and the stop-by-stop card adds the
   streamed table with its lanes, difference cells, running-time columns and
-  folds (`AC-5`, `AC-6`, `AC-8`, `AC-19`); the `#compare-map` container stays
-  empty for the later step that fills it.
+  folds (`AC-5`, `AC-6`, `AC-8`, `AC-19`); the all-patterns overview (`AC-21`)
+  adds the direction's column table with its pick-two checkboxes, and the
+  `#compare-map` container stays empty for the later step that fills it.
 
   The ready state owns the `#compare-workspace` grid the containers sit in.
   Every state decision stays in `RoutePatternCompareLive`; these components
@@ -76,7 +77,25 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
     default: nil,
     doc: "the open picker's `%{side, entries, query}`; nil when the drawer is closed"
 
+  attr :overview, :map,
+    default: nil,
+    doc: "the loaded all-patterns overview; nil outside `view=all`"
+
+  attr :overview_dir, :integer,
+    default: 0,
+    doc: "the overview's direction (`0` or `1`)"
+
+  attr :overview_picked, :list,
+    default: [],
+    doc: "the overview's chosen pattern ids, in pick order"
+
+  attr :overview_dir_paths, :map,
+    default: %{},
+    doc: "the all-patterns URL per direction, for the direction toggle"
+
   def page(assigns) do
+    assigns = assign(assigns, :calendar_options, calendar_options(assigns))
+
     ~H"""
     <div id="compare-page" class="ds-page">
       <.route_header
@@ -120,7 +139,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
             </.link>
           </div>
 
-          <label :if={@comparison} for="compare-calendar" class="flex items-center gap-2">
+          <label :if={@calendar_options != []} for="compare-calendar" class="flex items-center gap-2">
             <span class="text-sm font-[650] text-strong">Trips on</span>
             <select
               id="compare-calendar"
@@ -129,11 +148,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
               class="h-11 w-[250px] max-w-full rounded-control border border-control bg-white px-3 text-sm text-strong"
             >
               <option
-                :for={calendar <- @comparison.calendars}
-                value={calendar.service_id}
-                selected={calendar.service_id == @comparison.service_id}
+                :for={{value, label, selected?} <- @calendar_options}
+                value={value}
+                selected={selected?}
               >
-                {calendar_label(calendar, @comparison)}
+                {label}
               </option>
             </select>
           </label>
@@ -145,7 +164,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
           <% @load_state == :unavailable -> %>
             <.unavailable patterns_path={@patterns_path} />
           <% @view == :all -> %>
-            <%!-- The all-patterns overview lands in a later step. --%>
+            <.overview
+              overview={@overview}
+              direction={@overview_dir}
+              picked={@overview_picked}
+              dir_paths={@overview_dir_paths}
+            />
           <% true -> %>
             <.two_pattern_containers
               comparison={@comparison}
@@ -170,6 +194,31 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
       "inline-flex min-h-11 items-center gap-2 rounded-control px-3.5 text-sm font-[650] text-muted no-underline",
       "hover:text-strong aria-[current=page]:bg-selection aria-[current=page]:text-action"
     ]
+  end
+
+  # The calendar select's options: the pair's own "A n · B m" counts in the two
+  # view, and the direction's combined count over all its patterns in the all
+  # view (the prototype's per-view note). Both read a loaded comparison or
+  # overview, so they stay away while loading and after a failure.
+  defp calendar_options(%{view: :all, overview: %{} = overview}) do
+    Enum.map(overview.calendars, fn calendar ->
+      {calendar.service_id, direction_calendar_label(calendar),
+       calendar.service_id == overview.service_id}
+    end)
+  end
+
+  defp calendar_options(%{comparison: %{} = comparison}) do
+    Enum.map(comparison.calendars, fn calendar ->
+      {calendar.service_id, calendar_label(calendar, comparison),
+       calendar.service_id == comparison.service_id}
+    end)
+  end
+
+  defp calendar_options(_assigns), do: []
+
+  # "Weekday (6 trips)", the all-direction total on that calendar.
+  defp direction_calendar_label(calendar) do
+    "#{calendar.name} (#{Enum.sum(Map.values(calendar.trips))} trips)"
   end
 
   # "Weekday (A 2 · B 1 trips)", or the A count alone while B is not chosen yet.
@@ -306,6 +355,259 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
       </div>
     </div>
     """
+  end
+
+  # The all-patterns overview (`AC-21`): the direction's patterns as columns, one
+  # row per aligned visit, and a "Served by" count per row. Rows, spans and
+  # counts come from `PatternComparison.overview/4` (`INV-5`); the direction
+  # toggle is a patch link and the picked columns are server state (`INV-4`), so
+  # the URL still carries the whole selection. Lanes and rings are Tailwind
+  # utilities (`CR-4`), and the sticky stop column keeps the names visible while
+  # the table alone scrolls sideways.
+  attr :overview, :map, required: true
+  attr :direction, :integer, required: true
+  attr :picked, :list, required: true
+  attr :dir_paths, :map, required: true
+
+  defp overview(assigns) do
+    assigns = assign(assigns, :patterns, assigns.overview.patterns)
+
+    ~H"""
+    <div id="compare-overview" class="mt-5">
+      <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+        <div
+          id="overview-dirs"
+          role="group"
+          aria-label="Direction"
+          class="inline-flex rounded-control border border-control bg-white p-0.5"
+        >
+          <.link
+            :for={direction <- [0, 1]}
+            id={"overview-dir-#{direction}"}
+            patch={Map.fetch!(@dir_paths, direction)}
+            aria-current={@direction == direction && "page"}
+            class={view_option_class()}
+          >
+            {RoutePattern.direction_label(direction)}
+          </.link>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3">
+          <p id="overview-hint" class="text-sm text-muted">{overview_hint(@picked)}</p>
+          <.button
+            id="overview-compare"
+            type="button"
+            phx-click="overview_compare"
+            disabled={length(@picked) != 2}
+            data-unavailable={length(@picked) != 2}
+            class="min-h-11"
+          >
+            <.icon name="hero-view-columns" class="size-4" /> Compare 2 patterns
+          </.button>
+        </div>
+      </div>
+
+      <.message
+        :if={@patterns == []}
+        id="overview-empty"
+        kind="info"
+        title={"No patterns in " <> RoutePattern.direction_label(@direction)}
+        class="mt-4"
+      >
+        This route has no patterns in that direction. The Patterns tab lists them by direction and
+        is where another one is added.
+      </.message>
+
+      <div
+        :if={@patterns != []}
+        id="overview-wrap"
+        role="region"
+        aria-label="Stops served by each pattern"
+        tabindex="0"
+        class="mt-4 overflow-x-auto rounded-card border border-subtle bg-white"
+      >
+        <table id="overview-table" class="w-full border-collapse text-left text-sm">
+          <thead class="bg-canvas text-[13px] text-muted">
+            <tr class="border-b border-subtle">
+              <th
+                scope="col"
+                class="sticky left-0 z-[1] bg-canvas px-4 py-3 align-bottom font-[650]"
+              >
+                Stop
+              </th>
+              <th
+                :for={pattern <- @patterns}
+                id={"overview-pattern-" <> pattern.route_pattern_id}
+                scope="col"
+                class={[
+                  "min-w-[136px] max-w-[168px] border-l border-subtle px-3 pb-3 pt-3 align-top font-normal",
+                  overview_tint(picked_index(@picked, pattern))
+                ]}
+              >
+                <label class="flex min-h-11 cursor-pointer items-start gap-2">
+                  <input
+                    type="checkbox"
+                    id={"overview-pick-" <> pattern.route_pattern_id}
+                    checked={picked_index(@picked, pattern) != nil}
+                    phx-click="overview_pick"
+                    phx-value-pattern={pattern.route_pattern_id}
+                    class="mt-0.5 size-5 shrink-0 accent-action"
+                  />
+                  <span class="min-w-0">
+                    <span class="block text-[13px] font-[650] leading-snug text-strong">
+                      {pattern.name}
+                    </span>
+                    <span class="mt-1 block text-[12px] leading-snug text-muted">
+                      {pattern.typicality} · {plural(pattern.stop_count, "stop")}
+                    </span>
+                    <span class={[
+                      "block text-[12px] leading-snug",
+                      if(pattern.trips > 0, do: "text-default", else: "text-muted")
+                    ]}>
+                      {overview_trips(@overview, pattern)}
+                    </span>
+                    <span
+                      :if={picked_index(@picked, pattern)}
+                      class="mt-1.5 inline-flex items-center gap-1 text-[12px] font-[650] text-strong"
+                    >
+                      <.series_chip letter={picked_letter(picked_index(@picked, pattern))} />
+                      {"Pattern " <> picked_letter(picked_index(@picked, pattern))}
+                    </span>
+                  </span>
+                </label>
+              </th>
+              <th
+                scope="col"
+                class="border-l border-subtle px-4 py-3 text-right align-bottom font-[650]"
+              >
+                Served by
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              :for={{row, index} <- Enum.with_index(@overview.rows)}
+              id={"overview-row-#{index}"}
+              data-stop-id={row.stop_id}
+              class="border-b border-subtle hover:bg-canvas"
+            >
+              <th
+                scope="row"
+                class="sticky left-0 z-[1] min-w-[220px] bg-white px-4 py-2 text-left font-normal"
+              >
+                <span class="block text-sm font-[650] text-strong">
+                  {stop_name(@overview, row.stop_id)}
+                </span>
+                <span class="block text-[12px] text-muted">{overview_row_meta(@overview, row)}</span>
+              </th>
+              <td
+                :for={pattern <- @patterns}
+                data-pattern={pattern.route_pattern_id}
+                data-served={Map.get(row.served, pattern.route_pattern_id)}
+                class={[
+                  "relative h-[52px] border-l border-subtle p-0 text-center align-middle",
+                  overview_tint(picked_index(@picked, pattern))
+                ]}
+              >
+                <.lane_marks
+                  position={Map.get(row.served, pattern.route_pattern_id)}
+                  number={Map.get(row.served, pattern.route_pattern_id)}
+                  low={overview_span(@overview, pattern) |> elem(0)}
+                  high={overview_span(@overview, pattern) |> elem(1)}
+                  index={index}
+                  color={overview_lane_color(picked_index(@picked, pattern))}
+                />
+              </td>
+              <td class={[
+                "border-l border-subtle px-4 text-right text-[13px] tabular-nums",
+                if(overview_varies?(@overview, index),
+                  do: "font-[650] text-strong",
+                  else: "text-muted"
+                )
+              ]}>
+                {overview_served(@overview, index)} of {length(@patterns)}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p :if={@patterns != []} class="mt-3 max-w-[90ch] text-[13px] text-muted">
+        A dot is a stop the pattern serves, with its place in the trip. A thin line means the pattern goes on without stopping there. Stops served twice, such as a loop’s first stop, have a row for each visit.
+      </p>
+    </div>
+    """
+  end
+
+  # The hint beside the button says what the picks mean, so a disabled button
+  # explains itself where the reader is looking. It carries `data-unavailable`
+  # while it is disabled: `.ds-page`'s disabled primary reads as "working"
+  # otherwise, and this one is waiting for a second pattern.
+  defp overview_hint([_one]), do: "Choose one more pattern."
+  defp overview_hint([_one, _two]), do: "Ready to compare."
+  defp overview_hint(_picked), do: "Choose two patterns to compare them stop by stop."
+
+  defp picked_index(picked, pattern),
+    do: Enum.find_index(picked, &(&1 == pattern.route_pattern_id))
+
+  defp picked_letter(0), do: "A"
+  defp picked_letter(1), do: "B"
+
+  # The picked columns carry the series tint the stop table gives the same
+  # pattern's rows: A navy, B cyan. An unpicked column has no ground.
+  defp overview_tint(0), do: "bg-navy-300/15"
+  defp overview_tint(1), do: "bg-soft"
+  defp overview_tint(_unpicked), do: nil
+
+  defp overview_lane_color(1), do: "bg-cyan-700"
+  defp overview_lane_color(_other), do: "bg-navy-800"
+
+  defp overview_span(overview, pattern) do
+    Map.get(overview.spans, pattern.route_pattern_id, {0, -1})
+  end
+
+  defp overview_served(overview, index) do
+    row = Enum.at(overview.rows, index)
+    Enum.count(overview.patterns, &Map.has_key?(row.served, &1.route_pattern_id))
+  end
+
+  # A row stands out when a pattern that runs through it does not stop there:
+  # the count is the difference worth reading.
+  defp overview_varies?(overview, index) do
+    row = Enum.at(overview.rows, index)
+
+    Enum.any?(overview.patterns, fn pattern ->
+      {low, high} = overview_span(overview, pattern)
+      index >= low and index <= high and not Map.has_key?(row.served, pattern.route_pattern_id)
+    end)
+  end
+
+  # "Stop 1001 · timepoint", the prototype's row meta line.
+  defp overview_row_meta(overview, row) do
+    [
+      "Stop " <> row.stop_id,
+      if(timepoint?(overview, row.stop_id), do: "timepoint")
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  # "2 trips on Weekday", or "No trips on Saturday" (the prototype's trips line).
+  defp overview_trips(overview, pattern) do
+    name = overview_calendar_name(overview)
+
+    if pattern.trips > 0,
+      do: "#{plural(pattern.trips, "trip")} on #{name}",
+      else: "No trips on #{name}"
+  end
+
+  defp overview_calendar_name(%{service_id: nil}), do: "this calendar"
+
+  defp overview_calendar_name(overview) do
+    case Enum.find(overview.calendars, &(&1.service_id == overview.service_id)) do
+      %{name: name} -> name
+      nil -> overview.service_id
+    end
   end
 
   # The two slot cards with the swap control between them (AC-16). The swap is
@@ -1055,7 +1357,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   # One lane cell: the line halves up to this visit's place in the pattern's
   # span, its numbered ring, or - for a stop this pattern does not serve - a
   # faint line through the span. Utilities only (`CR-4`); B's ring counts down
-  # when the read has B reversed.
+  # when the read has B reversed. The marks themselves are shared with the
+  # all-patterns overview (`lane_marks/1`).
   attr :letter, :string, required: true, values: ["A", "B"]
   attr :row, :map, required: true
   attr :index, :integer, required: true
@@ -1079,34 +1382,57 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
 
     ~H"""
     <td class="relative w-11 p-0 text-center align-middle">
-      <%= if @position do %>
-        <span
-          :if={@index > @low}
-          class={["absolute left-1/2 top-0 h-1/2 w-1 -translate-x-1/2", lane_color(@letter)]}
-        >
-        </span>
-        <span
-          :if={@index < @high}
-          class={["absolute left-1/2 bottom-0 h-1/2 w-1 -translate-x-1/2", lane_color(@letter)]}
-        >
-        </span>
-        <span class={[
-          "relative z-[1] mx-auto flex size-[26px] items-center justify-center rounded-full text-[12px] font-bold tabular-nums text-white ring-2 ring-white",
-          lane_color(@letter)
-        ]}>
-          {@number}
-        </span>
-      <% else %>
-        <span
-          :if={@index > @low and @index < @high}
-          class={[
-            "absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 opacity-45",
-            lane_color(@letter)
-          ]}
-        >
-        </span>
-      <% end %>
+      <.lane_marks
+        position={@position}
+        number={@number}
+        low={@low}
+        high={@high}
+        index={@index}
+        color={lane_color(@letter)}
+      />
     </td>
+    """
+  end
+
+  # The lane's marks in one cell: the two line halves (a pattern that starts or
+  # ends on a row has no line past it), the numbered ring, or the faint pass
+  # line where a pattern runs through without stopping.
+  attr :position, :integer, default: nil
+  attr :number, :integer, default: nil
+  attr :low, :integer, required: true
+  attr :high, :integer, required: true
+  attr :index, :integer, required: true
+  attr :color, :string, required: true
+
+  defp lane_marks(assigns) do
+    ~H"""
+    <%= if @position do %>
+      <span
+        :if={@index > @low}
+        class={["absolute left-1/2 top-0 h-1/2 w-1 -translate-x-1/2", @color]}
+      >
+      </span>
+      <span
+        :if={@index < @high}
+        class={["absolute left-1/2 bottom-0 h-1/2 w-1 -translate-x-1/2", @color]}
+      >
+      </span>
+      <span class={[
+        "relative z-[1] mx-auto flex size-[26px] items-center justify-center rounded-full text-[12px] font-bold tabular-nums text-white ring-2 ring-white",
+        @color
+      ]}>
+        {@number}
+      </span>
+    <% else %>
+      <span
+        :if={@index > @low and @index < @high}
+        class={[
+          "absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 opacity-45",
+          @color
+        ]}
+      >
+      </span>
+    <% end %>
     """
   end
 
