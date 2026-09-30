@@ -7509,6 +7509,9 @@ defmodule GtfsPlanner.Gtfs do
         diagram_coordinate
         parent_station
         level_id
+        stop_code
+        tts_stop_name
+        stop_url
       )
 
   def reversible_fields_for(:pathway), do: reversible_fields_for("pathway")
@@ -7855,7 +7858,15 @@ defmodule GtfsPlanner.Gtfs do
       platform_code: stop.platform_code,
       diagram_coordinate: stop.diagram_coordinate,
       parent_station: stop.parent_station,
-      level_id: stop.level_id
+      level_id: stop.level_id,
+      # The stop editor writes these three; without them the audit entry and any
+      # rollback would lose a sign number, a spoken name or a web page.
+      stop_code: stop.stop_code,
+      tts_stop_name: stop.tts_stop_name,
+      stop_url: stop.stop_url,
+      # Read-only here (Settings › Fares owns a zone) but recorded so history
+      # still shows what the stop had.
+      zone_id: stop.zone_id
     }
   end
 
