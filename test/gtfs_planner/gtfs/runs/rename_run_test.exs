@@ -301,6 +301,25 @@ defmodule GtfsPlanner.Gtfs.Runs.RenameRunTest do
 
       assert all_rows(theirs) == before
     end
+
+    test "an unpublished version is not found and writes nothing", %{world: world} do
+      world.version
+      |> Ecto.Changeset.change(publication_status: "staging", published_at: nil)
+      |> GtfsPlanner.Repo.update!()
+
+      before = all_rows(world)
+
+      assert {:error, :not_found} =
+               Gtfs.rename_run(
+                 world.organization.id,
+                 world.version.id,
+                 world.day_type_key,
+                 "1006",
+                 "3006"
+               )
+
+      assert all_rows(world) == before
+    end
   end
 
   describe "day type scoping" do

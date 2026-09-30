@@ -440,6 +440,18 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMovePieceLiveTest do
       assert text(view, "[data-role=toast-text]") =~ "no longer here"
     end
 
+    test "piece 0 writes nothing, rather than moving the last piece", ctx do
+      w = two_run_world(ctx)
+      view = open(ctx, w, "run=1001")
+
+      before = trip_ids(w, "1001")
+
+      render_submit(view, "move_piece", %{"piece" => "0", "move" => %{"to" => "1002"}})
+
+      assert trip_ids(w, "1001") == before
+      assert text(view, "[data-role=toast-text]") =~ "no longer here"
+    end
+
     test "a piece whose run changed underneath the page is refused", ctx do
       w = two_run_world(ctx)
       view = open(ctx, w, "run=1001")
