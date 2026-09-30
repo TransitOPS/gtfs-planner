@@ -1073,7 +1073,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # the drawer only decides which value means "a run of its own".
   attr :move_form, :any, required: true
   attr :move_runs, :list, default: []
+  # Block ID to that block's relief windows. A piece cannot answer "where could
+  # this split" on its own, so the drawer is handed its blocks' windows.
+  attr :piece_windows, :map, default: %{}
   attr :next_run_id, :string, default: "1"
+  attr :split_form, :any, required: true
 
   def run_drawer(assigns) do
     ~H"""
@@ -1221,6 +1225,55 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
               </.button>
             </div>
           </.form>
+
+          <div class="mt-4">
+            <h4 class="text-[13px] font-semibold text-base-content">Split at a relief point</h4>
+
+            <p
+              :if={split_points(piece, @piece_windows) == []}
+              class="mt-1 text-sm text-base-content/70"
+            >
+              No relief point inside this piece.
+            </p>
+
+            <.form
+              :if={split_points(piece, @piece_windows) != []}
+              for={@split_form}
+              id={"run-split-piece-form-#{index}"}
+              novalidate
+              phx-submit="split_piece"
+              action="#run-drawer"
+            >
+              <input type="hidden" name="piece" value={index} />
+              <div class="mt-2 grid gap-3 sm:grid-cols-2">
+                <div>
+                  <.input
+                    field={@split_form[:gap]}
+                    id={"run-split-at-#{index}"}
+                    type="select"
+                    label="Split at relief window"
+                    prompt="Choose a relief point"
+                    options={split_options(piece, @piece_windows, @stop_names)}
+                    errors={[]}
+                  />
+                </div>
+                <div>
+                  <.input
+                    field={@split_form[:to]}
+                    id={"run-split-to-#{index}"}
+                    type="select"
+                    label="Later trips go to"
+                    prompt="Choose a run"
+                    options={move_options(@move_runs, @next_run_id)}
+                    errors={[]}
+                  />
+                </div>
+              </div>
+              <.button type="submit" phx-disable-with="Splitting…" class="mt-3 min-h-11">
+                Split piece
+              </.button>
+            </.form>
+          </div>
         </fieldset>
       </div>
 
@@ -1388,6 +1441,69 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # list of string keys, which renders each option's whole label as its VALUE —
   # so the list looks right on screen and every option posts its own sentence as
   # a run ID.
+  # The piece's internal gaps that HAVE a relief window, in order.
+  #
+  # Only the FIRST window of each gap is offered, because that is the handover:
+  # `Relief.windows/3` returns a gap's `:origin` window before its `:destination`
+  # one and the origin is the earlier of the two instants (the rule `Runs.Pieces`
+  # already states). Offering both would offer two instants for one handover,
+  # and the later one is not where the operator changes.
+  #
+  # A gap with no window at all is not offered. That is not a missing feature:
+  # the handover then happens where the incoming trip ends rather than at a
+  # marked relief point, and a piece can only be split where the operator can
+  # actually change over.
+  defp split_points(piece, _piece_windows) when length(piece.trips) < 2, do: []
+
+  defp split_points(piece, piece_windows) do
+    # `@piece_windows` is a MAP of block ID to that block's windows, so the
+    # piece's own block is selected here. Enumerating the map instead — which
+    # yields `{block_id, windows}` tuples — reaches `first_window/2` with tuples
+    # where it expects windows, and every piece raises BadMapError.
+    windows = Map.get(piece_windows, piece.block_id, [])
+
+    # A piece's `gaps` also carries the gap that forms its own START boundary.
+    # That one is not a place the piece can be split — the piece already starts
+    # there, and splitting at it would move every trip and leave nothing behind.
+    # Only the gaps BETWEEN two of the piece's trips are offered, which is what
+    # "internal" means in the card's wording.
+    piece.gaps
+    |> Enum.with_index(1)
+    |> Enum.filter(fn {_gap, position} -> position < length(piece.trips) end)
+    |> Enum.flat_map(fn {gap, position} ->
+      case first_window(windows, gap.index) do
+        nil -> []
+        window -> [%{position: position, gap: gap, window: window}]
+      end
+    end)
+  end
+
+  defp first_window(windows, gap_index) do
+    windows
+    |> Enum.filter(&(&1.gap_index == gap_index))
+    |> List.first()
+  end
+
+  # "<time> at <stop> (after <trip>)": when the handover is, where, and which
+  # trip the reader would be splitting after.
+  defp split_options(piece, windows, stop_names) do
+    piece
+    |> split_points(windows)
+    |> Enum.map(fn %{position: position, window: window} ->
+      {split_option_text(piece, position, window, stop_names), to_string(position)}
+    end)
+  end
+
+  defp split_option_text(piece, position, window, stop_names) do
+    stop = Map.get(stop_names, window.stop_id) || window.stop_id
+    after_trip = Enum.at(piece.trips, position - 1)
+
+    "#{BlocksComponents.clock(window.start_secs)} at #{stop} (after #{trip_id(after_trip)})"
+  end
+
+  defp trip_id(nil), do: "the end of this piece"
+  defp trip_id(trip), do: trip.id
+
   defp move_options(runs, next_run_id) do
     [{"New run (#{next_run_id})", @new_run_option} | Enum.map(runs, &move_option/1)]
   end

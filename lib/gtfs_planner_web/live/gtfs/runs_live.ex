@@ -82,7 +82,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      |> assign(:rename_form, to_form(%{"run_id" => ""}, as: :run))
      |> assign(:rename_errors, [])
      |> assign(:move_form, to_form(%{"to" => ""}, as: :move))
+     |> assign(:split_form, to_form(%{"gap" => "", "to" => ""}, as: :split))
      |> assign(:move_runs, [])
+     |> assign(:piece_windows, %{})
      |> assign(:next_run_id, "1")
      |> assign(:run_axis, nil)
      |> assign(:run_routes, %{})
@@ -489,6 +491,74 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
+  # Split a piece at a relief handover, from the drawer.
+  #
+  # The trips that move are the ones AFTER the chosen gap — the gap is a
+  # handover point, so the operator changes there and everything from the next
+  # trip onward belongs to the other run. The gap is named by its POSITION in
+  # the piece's own gap list, and the trips come from the drawer's own piece
+  # list: a form that posted trip_ids could move work the reader is not looking
+  # at, and one that posted a block-level gap index would be slicing the wrong
+  # piece of a run whose second piece is the tail of a block.
+  #
+  # `from:` is the drawn run, so the same optimistic check as every other write
+  # refuses a split whose trips have since changed hands.
+  def handle_event(
+        "split_piece",
+        %{"piece" => index, "split" => %{"gap" => gap, "to" => to}},
+        socket
+      ) do
+    with {:ok, piece} <- piece_at(socket, index),
+         :ok <- both_chosen?(gap, to),
+         {:ok, at} <- split_position(socket, piece, gap),
+         {:ok, destination} <- destination(to),
+         [_ | _] <- Enum.drop(piece.trips, at + 1) do
+      moves =
+        piece.trips
+        |> Enum.drop(at + 1)
+        |> Enum.map(&%{trip_id: &1.id, from: socket.assigns.run, to: destination})
+
+      {:noreply,
+       apply_moves(
+         socket,
+         moves,
+         split_text(piece, at, destination),
+         "This run changed since the page loaded. Reload to see the latest runs.",
+         fn socket, new_run_id -> follow_run(socket, new_run_id, destination) end
+       )}
+    else
+      :no_piece ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast("That piece is no longer here. Reload to see the latest runs.", :refused)}
+
+      :no_relief ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast(
+           "You can only split at a relief point. Reload to see the latest runs.",
+           :refused
+         )}
+
+      :bad_gap ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast(
+           "That relief point is no longer here. Reload to see the latest runs.",
+           :refused
+         )}
+
+      :nothing_chosen ->
+        {:noreply,
+         socket
+         |> put_undo(nil)
+         |> put_toast("Choose a relief point and a run to split this piece at.", :refused)}
+    end
+  end
+
   def handle_event("close_drawer", _params, socket) do
     {:noreply,
      socket
@@ -552,10 +622,35 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     |> assign(:run_pieces, (find_run(day, current) || %{pieces: []}).pieces)
     |> assign(:next_run_id, Gtfs.next_run_id(run_ids(day)))
     |> assign(:move_runs, move_runs(day, current))
+    |> assign(:piece_windows, piece_windows(day, current))
   end
 
   defp run_ids(day) do
     day.derived.runs |> Enum.map(& &1.run_id) |> Enum.sort()
+  end
+
+  # The relief windows of every block the drawn run touches, by block ID.
+  #
+  # These live on the BLOCK, not on the piece: `Pieces.derive/2` takes the
+  # block's windows as input and carries only the derived `gaps` out, so a piece
+  # cannot answer "where could this split" on its own. The card's rule — only
+  # gaps that HAVE a window, and the FIRST window of a gap is the handover — is
+  # the handover rule `Runs.Pieces` already documents, read here rather than
+  # re-derived.
+  defp piece_windows(day, current) do
+    case find_run(day, current) do
+      nil ->
+        %{}
+
+      run ->
+        run.pieces
+        |> Enum.map(& &1.block_id)
+        |> Enum.uniq()
+        |> Map.new(fn block_id ->
+          block = Enum.find(day.day.blocks, &(&1.summary.block_id == block_id))
+          {block_id, (block && block.windows) || []}
+        end)
+    end
   end
 
   # The day's runs, minus the one being drawn, in sign-on order. The LABELS are
@@ -585,6 +680,44 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     ArgumentError -> :no_piece
   end
 
+  # The gap's POSITION in the piece, one-based for the reader as with the piece
+  # itself. Out of range is refused, not clamped: clamping gap 9 to the last gap
+  # would split at a different point from the one named.
+  # A split needs BOTH choices. `:ok <- false` would fall through the `with`
+  # uncaught — `false` is not `:ok` and not one of the refusals — and take the
+  # whole LiveView down on an ordinary unchosen select.
+  defp both_chosen?(gap, to) do
+    if chosen?(gap) and chosen?(to), do: :ok, else: :nothing_chosen
+  end
+
+  defp chosen?(""), do: false
+  defp chosen?(_value), do: true
+
+  defp split_position(socket, piece, gap) do
+    at = String.to_integer(gap) - 1
+    gap_entry = Enum.at(piece.gaps, at)
+
+    cond do
+      is_nil(gap_entry) -> :bad_gap
+      not relief_window?(socket, piece, gap_entry) -> :no_relief
+      true -> {:ok, at}
+    end
+  rescue
+    ArgumentError -> :bad_gap
+  end
+
+  # Whether the block has a relief window at this gap.
+  #
+  # This is not belt and braces. The select only ever OFFERS gaps that have a
+  # window, so a form posting an unoffered gap is a page that no longer matches
+  # the data — and without this check the split simply happens at a gap where no
+  # operator can change over, which is the one thing the control exists to
+  # prevent. The SERVER decides, not the select.
+  defp relief_window?(socket, piece, gap) do
+    windows = Map.get(socket.assigns.piece_windows, piece.block_id, [])
+    Enum.any?(windows, &(&1.gap_index == gap.index))
+  end
+
   # The value the select carried, in the shape `apply_run_moves/4` wants.
   defp destination("__new"), do: {:ok, :new}
   defp destination(""), do: :nothing_chosen
@@ -602,6 +735,31 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       nil -> "Piece moved to run #{destination}."
       new_run_id -> "Piece moved to run #{new_run_id}."
     end
+  end
+
+  # A split's own success text: which block, how many trips changed run, and
+  # where they went. The count is the thing a reader wants confirmed after a
+  # split, and it comes from the piece and the gap rather than from prose.
+  #
+  # A split into a run that ALREADY existed returns `new_run_id: nil`, and the
+  # text then names the run the reader chose rather than going blank — the same
+  # rule step 30 and 31 settled on.
+  defp split_text(piece, at, destination) do
+    later_count = piece.trips |> Enum.drop(at + 1) |> length()
+
+    fn new_run_id ->
+      split_sentence(piece.block_id, later_count, target_id(new_run_id, destination))
+    end
+  end
+
+  # Which run the trips ended up on. A split into a run that already existed
+  # returns `new_run_id: nil`, and the run the READER chose is the one to name.
+  defp target_id(new_run_id, :new), do: new_run_id
+  defp target_id(_new_run_id, destination), do: destination
+
+  defp split_sentence(block_id, later_count, target) do
+    trips = if later_count == 1, do: "1 trip", else: "#{later_count} trips"
+    "#{trips} from block #{block_id} moved to run #{target}."
   end
 
   # The drawer follows the PIECE. A piece moved into a run of its own leaves the
@@ -1135,7 +1293,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         rename_form={@rename_form}
         rename_errors={@rename_errors}
         move_form={@move_form}
+        split_form={@split_form}
         move_runs={@move_runs}
+        piece_windows={@piece_windows}
         next_run_id={@next_run_id}
         return_focus_id={"runs-run-#{@run}"}
       />
