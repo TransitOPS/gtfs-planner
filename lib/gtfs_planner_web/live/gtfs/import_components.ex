@@ -14,13 +14,16 @@ defmodule GtfsPlannerWeb.Gtfs.ImportComponents do
   `assets/css/app.css`, so the page needs only the shared `ds-page` scope.
   """
   use Phoenix.Component
+  use GtfsPlannerWeb, :verified_routes
 
   import GtfsPlannerWeb.CoreComponents, only: [icon: 1]
   import GtfsPlannerWeb.ResultComponents, only: [tone_badge: 1]
 
   alias GtfsPlanner.Gtfs.Import.ChangeDecision
   alias GtfsPlanner.Gtfs.Import.Run
+  alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.Components.TransitPresentation
+  alias GtfsPlannerWeb.Gtfs.LeftOutWording
 
   @doc """
   A card with the design system's head band: a title and one line under it on the
@@ -860,6 +863,149 @@ defmodule GtfsPlannerWeb.Gtfs.ImportComponents do
   defp diff_text(value) when is_number(value) or is_boolean(value), do: to_string(value)
   defp diff_text(value) when is_atom(value), do: Atom.to_string(value)
   defp diff_text(value), do: inspect(value)
+
+  # ── Trips left outside patterns ───────────────────────────────────────────
+
+  @doc """
+  The trips this import could not group, grouped by route: a route badge and name
+  with the route's own total, then one row per derivation reason with the fix
+  that reason can have, and the raw codes in a disclosure.
+
+  `groups` is empty for a feed whose every trip is in a pattern, and the block
+  then renders nothing at all rather than an empty table.
+  """
+  attr :groups, :list,
+    required: true,
+    doc: "one entry per route from `GtfsPlannerWeb.Gtfs.ImportLive.import_left_out/2`"
+
+  attr :version_id, :string, required: true, doc: "the version this import published"
+
+  def left_out_block(assigns) do
+    assigns =
+      assigns
+      |> assign(:total, Enum.reduce(assigns.groups, 0, &(&1.trip_count + &2)))
+      |> then(fn assigns -> assign(assigns, :one?, assigns.total == 1) end)
+
+    ~H"""
+    <section
+      :if={@groups != []}
+      id="import-patterns"
+      aria-labelledby="import-patterns-title"
+      class="border-t border-subtle px-5 py-5"
+    >
+      <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <h3
+          id="import-patterns-title"
+          class="font-display text-[18px] font-semibold leading-tight tracking-[-0.01em] text-strong"
+        >
+          {LeftOutWording.title(@total)}
+        </h3>
+      </div>
+      <p class="mt-1 max-w-[86ch] text-[15px] leading-relaxed text-default">
+        Import could not group {if @one?, do: "it", else: "them"} by direction and stop order. {if @one?,
+          do: "It stays",
+          else: "They stay"} exactly as imported, and {if @one?,
+          do: "its map line can’t",
+          else: "their map lines can’t"} be edited until {if @one?, do: "it is", else: "they are"} in a pattern. Trips with no direction can be
+        grouped on the route’s Patterns tab; the rest need a fix in the source feed and a
+        re-import.
+      </p>
+      <div class="mt-4 overflow-hidden rounded-card border border-subtle">
+        <table id="import-left-out" class="w-full border-collapse text-left text-sm">
+          <thead>
+            <tr class="bg-canvas text-[13px] font-[650] text-default">
+              <th scope="col" class="py-0 pl-4 pr-4">
+                <span class="inline-flex min-h-11 items-center">Why</span>
+              </th>
+              <th scope="col" class="w-20 px-4 py-0 text-right max-sm:hidden">
+                <span class="inline-flex min-h-11 items-center">Trips</span>
+              </th>
+              <th scope="col" class="w-44 py-0 pl-4 pr-4 text-right max-sm:hidden"><span /></th>
+            </tr>
+          </thead>
+          <tbody :for={group <- @groups}>
+            <tr>
+              <th
+                scope="rowgroup"
+                colspan="3"
+                class="border-t border-subtle px-4 pb-2 pt-4 text-left font-normal"
+              >
+                <span class="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <RouteIdentity.route_badge :if={group.route} route={group.route} />
+                  <span class="text-[15px] font-[650] text-strong">{route_label(group)}</span>
+                  <span class="text-[13px] text-muted tabular-nums">
+                    {group.trip_count}
+                    {if group.trip_count == 1, do: " trip", else: " trips"}
+                  </span>
+                </span>
+              </th>
+            </tr>
+            <tr :for={row <- group.rows} id={row.id} class="border-t border-subtle">
+              <td class="py-3 pl-4 pr-4 align-top">
+                <p class="text-[15px] font-[650] text-strong">{row.title}</p>
+                <p class="mt-0.5 max-w-[62ch] text-[13px] text-muted">{row.body}</p>
+                <p class="mt-1 flex flex-wrap items-center gap-x-3 text-[13px] text-default sm:hidden">
+                  {row.count} {if row.count == 1, do: "trip", else: "trips"}
+                  <.link
+                    :if={row.action}
+                    id={"#{row.action.id}-compact"}
+                    navigate={left_out_path(row.action.target, @version_id, group.route_id)}
+                    class="inline-flex min-h-11 items-center font-semibold text-action hover:underline"
+                  >
+                    {row.action.label}
+                  </.link>
+                </p>
+              </td>
+              <td class="w-20 px-4 py-3 text-right align-top tabular-nums text-default max-sm:hidden">
+                {row.count}
+              </td>
+              <td class="w-44 pb-1.5 pl-4 pr-4 pt-0.5 text-right align-top max-sm:hidden">
+                <.link
+                  :if={row.action}
+                  id={row.action.id}
+                  navigate={left_out_path(row.action.target, @version_id, group.route_id)}
+                  class="inline-flex min-h-11 items-center justify-end font-semibold text-action hover:underline"
+                >
+                  {row.action.label}
+                </.link>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <details
+        id="import-left-out-codes"
+        class="group mt-2 text-[13px] text-muted"
+      >
+        <summary class="inline-flex min-h-11 cursor-pointer items-center gap-1 font-[650] text-default hover:underline">
+          <.icon name="hero-chevron-right" class="size-4 transition-transform group-open:rotate-90" />
+          Technical details
+        </summary>
+        <p class="pb-2">
+          Derivation reasons:
+          <%= for group <- @groups do %>
+            <%= for row <- group.rows do %>
+              <code class="font-mono text-[12px] text-strong">{row.code}</code>
+            <% end %>
+          <% end %>
+        </p>
+      </details>
+    </section>
+    """
+  end
+
+  # A route the feed named by id alone still needs a label. The route badge falls
+  # back to the same three fields when the row is missing entirely.
+  defp route_label(%{route: nil} = group), do: group.route_id
+
+  defp route_label(%{route: route}),
+    do: route.route_long_name || route.route_short_name || route.route_id
+
+  defp left_out_path(:group, version_id, route_id),
+    do: ~p"/gtfs/#{version_id}/routes/#{route_id}/patterns?review=group"
+
+  defp left_out_path(:schedules, version_id, route_id),
+    do: ~p"/gtfs/#{version_id}/routes/#{route_id}/schedules"
 
   @doc """
   What the sticky apply bar says beside its button, in the words of the two

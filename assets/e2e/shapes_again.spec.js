@@ -718,3 +718,134 @@ test.describe("grouping review", () => {
     expect(problems).toEqual([]);
   });
 });
+
+// ── import result ───────────────────────────────────────────────────────────
+
+// A finished import reports the trips it could not group, grouped by route, in
+// the same words the route's Patterns tab uses. `shapes_again_nodirection.zip`
+// is a feed whose `trips.txt` has no `direction_id` column at all, so every trip
+// is left out for the same reason and the block leads with the one reason that
+// can be fixed from here: the grouping review.
+//
+// The fixture's literal GTFS rows live beside it in
+// `assets/e2e/fixtures/shapes_again_nodirection/`, so the counts the block
+// reports can be read without running anything.
+const NO_DIRECTION_FIXTURE = resolve(
+  REPO_ROOT,
+  "assets",
+  "e2e",
+  "fixtures",
+  "shapes_again_nodirection.zip",
+);
+
+// The upload channel joins asynchronously, so a file chosen before it is ready is
+// dropped. Retry the way `import_export.spec.js` does until the entry is listed.
+async function setImportFile(page, file) {
+  const input = page.locator("#gtfs-import-upload-input input");
+  const entries = page.locator("#gtfs-import-upload-entries");
+  let lastError;
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await waitForLiveView(page);
+    await expect(input).toHaveAttribute("data-phx-upload-ref", /.+/);
+    await input.setInputFiles(file);
+
+    try {
+      await expect(entries).toContainText("shapes_again_nodirection.zip", {
+        timeout: 5_000,
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError;
+}
+
+test.describe("import result", () => {
+  test("reports the trips left outside patterns, grouped by route", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.goto(`/gtfs/${versionId}/import`);
+    await waitForLiveView(page);
+
+    await page
+      .locator("#gtfs-import-version-name")
+      .fill("Shapes Again No Direction");
+    await setImportFile(page, NO_DIRECTION_FIXTURE);
+
+    await expect(page.locator("#gtfs-import-submit")).toBeEnabled();
+    await page.locator("#gtfs-import-submit").click();
+
+    // The result is the success card, and the new block sits inside it, below
+    // the counts and the agency findings.
+    await expect(page.locator("#gtfs-import-result")).toBeVisible();
+
+    const block = page.locator("#import-left-out");
+    await expect(block).toBeVisible();
+
+    // Six trips on route 1 and two on route 6, all for the same reason.
+    await expect(page.locator("#import-patterns-title")).toHaveText(
+      "8 trips aren’t in a pattern",
+    );
+    await expect(block).toContainText("Coast Highway");
+    await expect(block).toContainText("Depoe Bay Shuttle");
+    await expect(
+      page.locator("#import-left-out-1-missing_direction"),
+    ).toContainText("6 trips have no direction");
+    await expect(
+      page.locator("#import-left-out-6-missing_direction"),
+    ).toContainText("2 trips have no direction");
+
+    // The grouping review is the one fix offered here, and each route's link
+    // opens the version this import published, not the one the page was on.
+    const publishedId = await page
+      .locator("#gtfs-import-view-version")
+      .getAttribute("href")
+      .then((href) => href.split("/")[2]);
+
+    const group = page.locator("#import-left-out-group-1");
+    await expect(group).toHaveText("Group 6 trips");
+    await expect(group).toHaveAttribute(
+      "href",
+      `/gtfs/${publishedId}/routes/1/patterns?review=group`,
+    );
+    await expect(page.locator("#import-left-out-group-6")).toHaveText(
+      "Group 2 trips",
+    );
+
+    // The raw codes stay in the disclosure under the table.
+    await expect(page.locator("#import-left-out-codes")).toContainText(
+      "missing_direction",
+    );
+
+    await capture(page, "import-result-production-1440");
+
+    // The block's layout and its grouping by route are what this capture is
+    // compared against, so the reference half is the prototype's attention
+    // state, which draws the same table. The totals are the fixture's own.
+    const referenceCaptured = await captureReference(
+      page,
+      "?state=import-attention",
+      "import-result-reference-1440",
+    );
+
+    testInfo.annotations.push({
+      type: "reference-captured",
+      description: referenceCaptured
+        ? "import-result-reference-1440.png"
+        : "prototype absent from this checkout",
+    });
+
+    expect(problems).toEqual([]);
+  });
+});
