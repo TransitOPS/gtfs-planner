@@ -38,6 +38,7 @@ alias GtfsPlanner.Accounts.UserToken
 alias GtfsPlanner.AdvancedBlockingFixtures
 alias GtfsPlanner.Gtfs
 alias GtfsPlanner.Gtfs.Agency
+alias GtfsPlanner.Gtfs.AlignmentSegment
 alias GtfsPlanner.Gtfs.Calendar
 alias GtfsPlanner.Gtfs.CalendarAttribute
 alias GtfsPlanner.Gtfs.ChangeLog
@@ -57,6 +58,7 @@ alias GtfsPlanner.Gtfs.PathwayEvolution
 alias GtfsPlanner.Gtfs.Route
 alias GtfsPlanner.Gtfs.RoutePattern
 alias GtfsPlanner.Gtfs.RoutePatternStop
+alias GtfsPlanner.Gtfs.RoutePatterns.Derivation
 alias GtfsPlanner.Gtfs.Shape
 alias GtfsPlanner.Gtfs.Stop
 alias GtfsPlanner.Gtfs.StopTime
@@ -1054,6 +1056,337 @@ case Accounts.register_first_admin(%{
         shape_pt_sequence: sequence
       })
     end)
+
+    # ── Spec 27 scenario route (step 18) ──
+    #
+    # BROWSER_SHAPES carries every state the Patterns tab, the blank-timing
+    # editor and the grouping review need at once: a drawn pattern with linked
+    # trips, a timing whose middle rows are blank, 27 trips left outside
+    # patterns across three reasons and one supplied label pair. The left-out
+    # trips stay pending and Derivation classifies them, so the reasons stored
+    # on them are the production rules' own verdicts rather than seeded labels,
+    # and the label child is linked through the same run.
+    {:ok, shapes_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "BROWSER_SHAPES",
+        route_short_name: "SH",
+        route_long_name: "US 101 Coast Newport – Lincoln City",
+        route_type: 3
+      })
+
+    # The corridor runs north along one meridian of US 101 between Newport and
+    # Lincoln City, so a saved segment's midpoint is its own latitude step and
+    # no projection error competes with the drawn line.
+    shapes_coordinates = [
+      {"44.6360", "-124.0490"},
+      {"44.6610", "-124.0490"},
+      {"44.6860", "-124.0490"},
+      {"44.7110", "-124.0490"},
+      {"44.7360", "-124.0490"},
+      {"44.7610", "-124.0490"},
+      {"44.7860", "-124.0490"},
+      {"44.8110", "-124.0490"},
+      {"44.8360", "-124.0490"},
+      {"44.8610", "-124.0490"},
+      {"44.8860", "-124.0490"},
+      {"44.9110", "-124.0490"},
+      {"44.9360", "-124.0490"}
+    ]
+
+    shapes_stop_ids =
+      Enum.map(1..13, fn index ->
+        {lat, lon} = Enum.at(shapes_coordinates, index - 1)
+
+        {:ok, stop} =
+          Gtfs.create_stop(%{
+            stop_id: "BROWSER_SHAPES_STOP_#{index}",
+            stop_name: "US 101 Stop #{index}",
+            location_type: 0,
+            stop_lat: Decimal.new(lat),
+            stop_lon: Decimal.new(lon),
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id
+          })
+
+        stop.stop_id
+      end)
+
+    # A station with no platform: the one trip served only from here cannot
+    # become a pattern stop, which is the `unusable_stops` case.
+    {:ok, _shapes_station} =
+      Gtfs.create_stop(%{
+        stop_id: "BROWSER_SHAPES_STATION",
+        stop_name: "US 101 Transit Center",
+        location_type: 1,
+        stop_lat: Decimal.new("44.6485"),
+        stop_lon: Decimal.new("-124.0490"),
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+
+    shapes_pattern =
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: shapes_route.route_id,
+        route_pattern_id: "BROWSER-SHAPES-A",
+        route_pattern_name: "Newport – Lincoln City",
+        route_pattern_time_desc: "All day",
+        route_pattern_typicality: 1,
+        direction_id: 0,
+        route_pattern_sort_order: 1
+      })
+
+    shapes_occurrences =
+      shapes_stop_ids
+      |> Enum.with_index(1)
+      |> Enum.map(fn {stop_id, position} ->
+        GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(shapes_pattern, stop_id, position)
+      end)
+
+    # One shared segment per drawn leg, so the route opens on a saved map line.
+    # Scope fields are set on the struct and never cast: the changeset takes
+    # only `:points`.
+    shapes_stop_ids
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.with_index()
+    |> Enum.each(fn {[from_stop_id, to_stop_id], index} ->
+      %AlignmentSegment{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        from_stop_id: from_stop_id,
+        to_stop_id: to_stop_id
+      }
+      |> AlignmentSegment.changeset(%{
+        points: [[-124.0490, 44.6485 + index * 0.0250]]
+      })
+      |> Repo.insert!()
+    end)
+
+    shapes_timing =
+      GtfsPlanner.GtfsFixtures.timed_pattern_fixture(shapes_pattern, %{name: "Weekday daytime"})
+
+    # Stops 2-4 are passed through without a scheduled time, so the timing has
+    # blank offset pairs exactly where the timing editor draws them blank.
+    Enum.each(shapes_occurrences, fn occurrence ->
+      offsets =
+        if occurrence.position in 2..4 do
+          %{arrival_offset: nil, departure_offset: nil}
+        else
+          minutes = (occurrence.position - 1) * 5
+
+          %{arrival_offset: minutes, departure_offset: minutes}
+        end
+
+      GtfsPlanner.GtfsFixtures.timed_pattern_stop_fixture(shapes_timing, occurrence, offsets)
+    end)
+
+    Enum.each(1..38, fn index ->
+      trip =
+        GtfsPlanner.GtfsFixtures.trip_fixture(
+          org.id,
+          diagram_version.id,
+          shapes_route.route_id,
+          %{
+            trip_id:
+              "BROWSER_SHAPES_LINKED_" <> String.pad_leading(Integer.to_string(index), 2, "0"),
+            service_id: "BROWSER_SHAPES_SERVICE",
+            trip_headsign: "Lincoln City",
+            direction_id: 0
+          }
+        )
+
+      # Linked trips of the drawn pattern. `route_pattern_id` and
+      # `timed_pattern_id` are application-owned and not cast by the changeset.
+      GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(trip, %{
+        route_pattern_id: "BROWSER-SHAPES-A",
+        timed_pattern_id: shapes_timing.id,
+        pattern_derivation_state: "linked"
+      })
+    end)
+
+    # The imported northbound shape the 18 direction-less trips share, drawn
+    # slightly east of the stop line so the map shows two geometries.
+    Enum.with_index(shapes_coordinates, 1)
+    |> Enum.each(fn {{lat, lon}, sequence} ->
+      Repo.insert!(%Shape{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        shape_id: "BROWSER_SHAPE_N",
+        shape_pt_lat: Decimal.new(lat),
+        shape_pt_lon: Decimal.add(Decimal.new(lon), Decimal.new("0.0020")),
+        shape_pt_sequence: sequence
+      })
+    end)
+
+    # ── Supplied label pair ──
+    #
+    # The owner carries the stop order and the child carries the owner's id, as
+    # INV-3 requires; the trips below reference the child, so derivation links
+    # them to it without creating a second child of its own.
+    label_stop_ids = Enum.take(shapes_stop_ids, 4)
+
+    label_owner =
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: shapes_route.route_id,
+        route_pattern_id: "BROWSER-LABEL-A",
+        route_pattern_name: "Coast Limited",
+        route_pattern_time_desc: "All day",
+        direction_id: 0,
+        route_pattern_sort_order: 2
+      })
+
+    label_stop_ids
+    |> Enum.with_index(1)
+    |> Enum.each(fn {stop_id, position} ->
+      GtfsPlanner.GtfsFixtures.route_pattern_stop_fixture(label_owner, stop_id, position)
+    end)
+
+    label_child =
+      %RoutePattern{}
+      |> RoutePattern.changeset(%{
+        route_id: shapes_route.route_id,
+        route_pattern_id: "BROWSER-LABEL-X",
+        route_pattern_name: "Coast Limited Short",
+        route_pattern_time_desc: "All day",
+        direction_id: 0,
+        route_pattern_sort_order: 2,
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id
+      })
+      |> Ecto.Changeset.change(label_pattern_id: label_owner.id)
+      |> Repo.insert!()
+
+    IO.puts("Browser seed: BROWSER_SHAPES route with #{length(shapes_stop_ids)} stops")
+
+    # ── Left-out trips and the label pair's trips ──
+    #
+    # Every trip below is left pending, so Derivation reads its own stop-time
+    # vector and classifies it. The 24 direction-less trips become the two
+    # groups the review offers (18 over the full stop order, 6 over its first
+    # seven), the two trips served before they depart become
+    # `invalid_chronology` and the station-only trip becomes `unusable_stops`.
+    hhmm = fn minutes ->
+      "#{String.pad_leading(Integer.to_string(div(minutes, 60)), 2, "0")}:" <>
+        "#{String.pad_leading(Integer.to_string(rem(minutes, 60)), 2, "0")}:00"
+    end
+
+    seed_pending_trip = fn trip_id, attrs, stop_ids, times ->
+      trip =
+        GtfsPlanner.GtfsFixtures.trip_fixture(
+          org.id,
+          diagram_version.id,
+          shapes_route.route_id,
+          attrs
+        )
+
+      stop_ids
+      |> Enum.zip(times)
+      |> Enum.with_index(1)
+      |> Enum.each(fn {{stop_id, time}, sequence} ->
+        GtfsPlanner.GtfsFixtures.stop_time_fixture(
+          org.id,
+          diagram_version.id,
+          trip.trip_id,
+          stop_id,
+          %{arrival_time: time, departure_time: time, stop_sequence: sequence}
+        )
+      end)
+
+      trip
+    end
+
+    Enum.each(1..18, fn index ->
+      seed_pending_trip.(
+        "BROWSER_SHAPES_NORTH_" <> String.pad_leading(Integer.to_string(index), 2, "0"),
+        %{
+          trip_headsign: "Lincoln City",
+          shape_id: "BROWSER_SHAPE_N"
+        },
+        shapes_stop_ids,
+        Enum.map(0..12, fn step -> hhmm.(420 + index + step * 5) end)
+      )
+    end)
+
+    Enum.each(1..6, fn index ->
+      seed_pending_trip.(
+        "BROWSER_SHAPES_SHORT_" <> String.pad_leading(Integer.to_string(index), 2, "0"),
+        %{trip_headsign: "Depoe Bay"},
+        Enum.take(shapes_stop_ids, 7),
+        Enum.map(0..6, fn step -> hhmm.(540 + index + step * 5) end)
+      )
+    end)
+
+    # Served before it departs: the second stop is timed before the first, so
+    # derivation refuses the vector for its chronology. They name the drawn
+    # pattern, so the refusal is the only thing left unlinked about them and the
+    # route keeps no second pattern for an order no trip can time.
+    Enum.each(1..2, fn index ->
+      out_of_order =
+        seed_pending_trip.(
+          "BROWSER_SHAPES_OUT_OF_ORDER_" <> String.pad_leading(Integer.to_string(index), 2, "0"),
+          %{trip_headsign: "Lincoln City", direction_id: 0},
+          shapes_stop_ids,
+          [hhmm.(425 + index), hhmm.(420 + index)] ++
+            Enum.map(2..12, fn step -> hhmm.(420 + index + step * 5) end)
+        )
+
+      GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(out_of_order, %{
+        route_pattern_id: "BROWSER-SHAPES-A"
+      })
+    end)
+
+    seed_pending_trip.(
+      "BROWSER_SHAPES_STATION_TRIP",
+      %{trip_headsign: "Transit Center", direction_id: 0},
+      ["BROWSER_SHAPES_STATION"],
+      [hhmm.(600)]
+    )
+
+    Enum.each(1..2, fn index ->
+      label_trip =
+        seed_pending_trip.(
+          "BROWSER_SHAPES_LABEL_" <> String.pad_leading(Integer.to_string(index), 2, "0"),
+          %{trip_headsign: "Coast Limited", direction_id: 0},
+          label_stop_ids,
+          Enum.map(0..3, fn step -> hhmm.(660 + index + step * 4) end)
+        )
+
+      # The trips name the supplied child, so derivation links them to it and
+      # never plans a derived pattern for the label's own stop order.
+      GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(label_trip, %{
+        route_pattern_id: label_child.route_pattern_id
+      })
+    end)
+
+    {:ok, shapes_derivation} =
+      Derivation.derive_route(org.id, diagram_version.id, shapes_route.route_id, {:import, nil})
+
+    # The seed fails loudly rather than serving a browser scenario that drifted
+    # from the numbers the later visual steps capture.
+    [
+      %{reason: "missing_direction", trip_count: 24},
+      %{reason: "invalid_chronology", trip_count: 2},
+      %{reason: "unusable_stops", trip_count: 1}
+    ] = Gtfs.left_out_trips(org.id, diagram_version.id, shapes_route.route_id)
+
+    [stored_owner, stored_child] =
+      Repo.all(
+        from(p in RoutePattern,
+          where:
+            p.organization_id == ^org.id and p.gtfs_version_id == ^diagram_version.id and
+              p.route_id == ^shapes_route.route_id and
+              p.route_pattern_id in ["BROWSER-LABEL-A", "BROWSER-LABEL-X"]
+        )
+      )
+      |> Enum.sort_by(& &1.route_pattern_id)
+
+    true = stored_child.label_pattern_id == stored_owner.id
+    true = is_nil(stored_owner.label_pattern_id)
+
+    IO.puts(
+      "Browser seed: BROWSER_SHAPES #{inspect(shapes_derivation)}, 27 trips left out, label child #{label_child.route_pattern_id}"
+    )
 
     # ── Other-route context fixtures (spec 16, step 31) ──
     #
