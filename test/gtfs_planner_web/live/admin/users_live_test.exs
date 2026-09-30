@@ -54,7 +54,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
           user_fixture(%{email: email})
       end
 
-    {:ok, _membership} =
+    {:ok, membership} =
       Accounts.create_user_org_membership(%{
         user_id: user.id,
         organization_id: organization.id,
@@ -62,7 +62,7 @@ defmodule GtfsPlannerWeb.Admin.UsersLiveTest do
       })
 
     if Map.get(attrs, :deactivated?, false) do
-      {:ok, _} = Organizations.deactivate_user_in_organization(user.id, organization.id)
+      deactivate_membership_fixture(membership)
     end
 
     user

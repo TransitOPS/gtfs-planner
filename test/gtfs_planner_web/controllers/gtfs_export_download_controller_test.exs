@@ -141,7 +141,10 @@ defmodule GtfsPlannerWeb.GtfsExportDownloadControllerTest do
 
     assert role_conn.status == 403
 
-    {:ok, _membership} = Organizations.deactivate_user_in_organization(user.id, organization.id)
+    actor = system_admin_fixture(organization)
+
+    {:ok, _membership} =
+      Organizations.deactivate_user_in_organization(actor, user.id, organization.id)
 
     deactivated_conn =
       build_conn()

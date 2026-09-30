@@ -86,6 +86,13 @@ defmodule GtfsPlanner.AccountsFixtures do
     user
   end
 
+  @doc "Creates a system administrator who can manage the given organization."
+  def system_admin_fixture(organization) do
+    user = user_fixture()
+    organization_membership_fixture(user, organization, ["administrator"])
+    user
+  end
+
   @doc """
   Deactivate an existing membership the way the application does.
 

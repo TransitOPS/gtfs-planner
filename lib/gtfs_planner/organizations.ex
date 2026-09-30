@@ -4,10 +4,12 @@ defmodule GtfsPlanner.Organizations do
   """
 
   import Ecto.Query, warn: false
+  alias GtfsPlanner.Accounts
+  alias GtfsPlanner.Accounts.{User, UserOrgMembership, UserToken}
+  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Organizations.AdminReadAdapter
   alias GtfsPlanner.Organizations.Organization
-  alias GtfsPlanner.Accounts.{User, UserOrgMembership}
   alias GtfsPlanner.Versions
 
   @default_admin_read_adapter AdminReadAdapter.Repo
@@ -283,28 +285,28 @@ defmodule GtfsPlanner.Organizations do
 
   ## Examples
 
-      iex> deactivate_user_in_organization(user_id, organization_id)
+      iex> deactivate_user_in_organization(actor, user_id, organization_id)
       {:ok, %UserOrgMembership{}}
 
-      iex> deactivate_user_in_organization(user_id, organization_id)
+      iex> deactivate_user_in_organization(actor, user_id, organization_id)
       {:error, :not_found}
 
-      iex> deactivate_user_in_organization(system_administrator_id, organization_id)
+      iex> deactivate_user_in_organization(actor, system_administrator_id, organization_id)
       {:error, :system_administrator}
   """
-  def deactivate_user_in_organization(user_id, organization_id) do
-    from(m in UserOrgMembership,
-      where: m.user_id == ^user_id and m.organization_id == ^organization_id
-    )
-    |> Repo.one()
-    |> case do
-      nil ->
-        {:error, :not_found}
+  def deactivate_user_in_organization(actor, user_id, organization_id) do
+    case membership_command(actor, organization_id, {:deactivate, user_id}) do
+      {:ok, {membership, digests}} ->
+        Phoenix.PubSub.broadcast(
+          GtfsPlanner.PubSub,
+          "session_revocations",
+          {:session_tokens_revoked, digests}
+        )
 
-      membership ->
-        with :ok <- check_deactivation_allowed(membership) do
-          deactivate_membership(membership)
-        end
+        broadcast({:ok, membership}, [:memberships, :deactivated])
+
+      error ->
+        error
     end
   end
 
@@ -313,26 +315,16 @@ defmodule GtfsPlanner.Organizations do
 
   ## Examples
 
-      iex> activate_user_in_organization(user_id, organization_id)
+      iex> activate_user_in_organization(actor, user_id, organization_id)
       {:ok, %UserOrgMembership{}}
 
-      iex> activate_user_in_organization(user_id, organization_id)
+      iex> activate_user_in_organization(actor, user_id, organization_id)
       {:error, :not_found}
   """
-  def activate_user_in_organization(user_id, organization_id) do
-    from(m in UserOrgMembership,
-      where: m.user_id == ^user_id and m.organization_id == ^organization_id
-    )
-    |> Repo.one()
-    |> case do
-      nil ->
-        {:error, :not_found}
-
-      membership ->
-        membership
-        |> Ecto.Changeset.change(%{deactivated_at: nil})
-        |> Repo.update()
-        |> broadcast([:memberships, :activated])
+  def activate_user_in_organization(actor, user_id, organization_id) do
+    case membership_command(actor, organization_id, {:activate, user_id}) do
+      {:ok, membership} -> broadcast({:ok, membership}, [:memberships, :activated])
+      error -> error
     end
   end
 
@@ -422,32 +414,64 @@ defmodule GtfsPlanner.Organizations do
 
   # Private helper functions
 
-  defp deactivate_membership(%UserOrgMembership{user_id: user_id} = membership) do
-    result =
-      membership
-      |> Ecto.Changeset.change(%{
-        deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)
-      })
-      |> Repo.update()
+  defp membership_command(actor, organization_id, {action, user_id}) do
+    Repo.transaction(fn ->
+      Authorization.lock_member_admin!(actor, organization_id)
 
-    case result do
-      {:ok, _membership} = success ->
-        # Invalidate all user sessions and close the user's open LiveViews
-        user_id
-        |> GtfsPlanner.Accounts.delete_user_sessions()
-        |> GtfsPlannerWeb.UserAuth.disconnect_sessions()
+      with {:ok, user_id} <- Ecto.UUID.cast(user_id),
+           %UserOrgMembership{} = membership <-
+             Repo.one(
+               from m in UserOrgMembership,
+                 where: m.user_id == ^user_id and m.organization_id == ^organization_id,
+                 lock: "FOR UPDATE"
+             ) do
+        apply_membership_command(action, membership)
+      else
+        _ -> Repo.rollback(:not_found)
+      end
+    end)
+  end
 
-        broadcast(success, [:memberships, :deactivated])
+  defp apply_membership_command(:deactivate, membership) do
+    case check_deactivation_allowed(membership) do
+      :ok ->
+        updated =
+          membership
+          |> Ecto.Changeset.change(%{
+            deactivated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+          })
+          |> update_membership!()
 
-      error ->
-        error
+        digests =
+          updated.user_id
+          |> Accounts.delete_user_sessions()
+          |> Enum.flat_map(fn
+            # The token column already holds the SHA-256 digest used by web session topics.
+            %UserToken{context: "session", token: digest} -> [digest]
+            %UserToken{} -> []
+          end)
+
+        {updated, digests}
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp apply_membership_command(:activate, membership) do
+    membership
+    |> Ecto.Changeset.change(%{deactivated_at: nil})
+    |> update_membership!()
+  end
+
+  defp update_membership!(changeset) do
+    case Repo.update(changeset) do
+      {:ok, membership} -> membership
+      {:error, reason} -> Repo.rollback(reason)
     end
   end
 
   # An already-deactivated membership keeps the plain re-deactivation behavior.
-  # The last-admin check is read-then-write, so two administrators deactivating
-  # each other at the same instant can both pass it; closing that needs the
-  # organization's admin rows locked in one transaction.
   defp check_deactivation_allowed(%UserOrgMembership{deactivated_at: %DateTime{}}), do: :ok
 
   defp check_deactivation_allowed(%UserOrgMembership{roles: roles} = membership) do

@@ -407,7 +407,7 @@ defmodule GtfsPlannerWeb.Admin.Components do
   def member_status(_member), do: :active
 
   @doc """
-  Explains why `GtfsPlanner.Organizations.deactivate_user_in_organization/2`
+  Explains why `GtfsPlanner.Organizations.deactivate_user_in_organization/3`
   refused or failed, for the member action feedback.
   """
   def deactivation_error(:system_administrator, email),

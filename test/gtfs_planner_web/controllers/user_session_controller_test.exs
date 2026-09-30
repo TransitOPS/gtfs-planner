@@ -119,7 +119,8 @@ defmodule GtfsPlannerWeb.UserSessionControllerTest do
 
     test "rejects a deactivated member and issues no token" do
       %{user: user, organization: organization} = member_user()
-      {:ok, _} = Organizations.deactivate_user_in_organization(user.id, organization.id)
+      actor = system_admin_fixture(organization)
+      {:ok, _} = Organizations.deactivate_user_in_organization(actor, user.id, organization.id)
 
       conn = log_in_through_pipeline(user)
 
@@ -287,7 +288,8 @@ defmodule GtfsPlannerWeb.UserSessionControllerTest do
 
     test "post-commit deactivation failure stays logged out with no replacement session" do
       %{user: user, organization: organization} = member_user()
-      {:ok, _} = Organizations.deactivate_user_in_organization(user.id, organization.id)
+      actor = system_admin_fixture(organization)
+      {:ok, _} = Organizations.deactivate_user_in_organization(actor, user.id, organization.id)
 
       # Deactivation deleted prior sessions; install one directly to reach the action.
       conn = build_conn() |> log_in_user(user)

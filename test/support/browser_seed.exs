@@ -2677,7 +2677,7 @@ case Accounts.register_first_admin(%{
         roles: ["pathways_studio_editor"]
       })
 
-    {:ok, _} = Organizations.deactivate_user_in_organization(auth_deactivated.id, org.id)
+    {:ok, _} = Organizations.deactivate_user_in_organization(user, auth_deactivated.id, org.id)
     IO.puts("Browser seed: auth deactivated user #{auth_deactivated.email}")
 
     # Login recovery: confirmed user with no organization membership.
@@ -2857,7 +2857,11 @@ case Accounts.register_first_admin(%{
       add_accepted_member.("contracts-deactivated@gtfs-planner.test", ["pathways_studio_editor"])
 
     {:ok, _deactivated_membership} =
-      Organizations.deactivate_user_in_organization(deactivated_member.id, admin_org.id)
+      Organizations.deactivate_user_in_organization(
+        org_admin,
+        deactivated_member.id,
+        admin_org.id
+      )
 
     # Invitation pending: `invite_user/2` uses `User.invite_changeset/2`, which
     # sets no password, so the row renders "Invitation pending" and offers

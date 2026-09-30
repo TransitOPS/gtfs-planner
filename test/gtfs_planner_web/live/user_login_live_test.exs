@@ -169,7 +169,8 @@ defmodule GtfsPlannerWeb.UserLoginLiveTest do
       conn: conn
     } do
       %{user: user, organization: organization} = member_user()
-      {:ok, _} = Organizations.deactivate_user_in_organization(user.id, organization.id)
+      actor = system_admin_fixture(organization)
+      {:ok, _} = Organizations.deactivate_user_in_organization(actor, user.id, organization.id)
 
       view =
         conn

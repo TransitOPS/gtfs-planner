@@ -21,7 +21,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   Deactivation is server-owned. The browser may only *propose* a user ID; the
   request and the confirmation each resolve that member again from a fresh read
   scoped to the organization currently in the route, and only the resolved
-  server-side identity reaches `Organizations.deactivate_user_in_organization/2`.
+  server-side identity reaches `Organizations.deactivate_user_in_organization/3`.
   """
   use GtfsPlannerWeb, :live_view
 
@@ -460,6 +460,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
   def handle_event("activate_user", %{"user-id" => user_id}, socket) do
     with_resolved_member(socket, user_id, fn socket, member ->
       case Organizations.activate_user_in_organization(
+             socket.assigns.current_user,
              member.user.id,
              socket.assigns.organization.id
            ) do
@@ -536,6 +537,7 @@ defmodule GtfsPlannerWeb.Admin.OrganizationsLive do
 
   defp deactivate_member(socket, member) do
     case Organizations.deactivate_user_in_organization(
+           socket.assigns.current_user,
            member.user.id,
            socket.assigns.organization.id
          ) do

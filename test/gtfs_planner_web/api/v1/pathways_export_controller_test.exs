@@ -392,7 +392,11 @@ defmodule GtfsPlannerWeb.Api.V1.PathwaysExportControllerTest do
       before = run_count(organization.id)
 
       assert {:ok, _membership} =
-               Organizations.deactivate_user_in_organization(user.id, organization.id)
+               Organizations.deactivate_user_in_organization(
+                 system_admin_fixture(organization),
+                 user.id,
+                 organization.id
+               )
 
       created = build_conn() |> api_conn(user, organization) |> post(create_path(version.id))
       shown = build_conn() |> api_conn(user, organization) |> get(status_path(version.id, run.id))

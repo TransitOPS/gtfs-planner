@@ -181,7 +181,11 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       deactivated_admin = member_fixture(organization, ["pathways_studio_admin"])
 
       {:ok, _} =
-        Organizations.deactivate_user_in_organization(deactivated_admin.id, organization.id)
+        Organizations.deactivate_user_in_organization(
+          admin,
+          deactivated_admin.id,
+          organization.id
+        )
 
       user = member_fixture(organization, ["pathways_studio_editor"])
       conn = log_in_user(conn, user, organization: organization)
@@ -242,7 +246,11 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       deactivated_admin = member_fixture(organization, ["pathways_studio_admin"])
 
       {:ok, _} =
-        Organizations.deactivate_user_in_organization(deactivated_admin.id, organization.id)
+        Organizations.deactivate_user_in_organization(
+          admin,
+          deactivated_admin.id,
+          organization.id
+        )
 
       # Membership exists but neither editor nor organization-admin product role.
       user = member_fixture(organization, [])
@@ -273,7 +281,9 @@ defmodule GtfsPlannerWeb.DashboardLiveTest do
       active_member = member_fixture(organization, ["pathways_studio_editor"])
 
       deactivated = member_fixture(organization, ["pathways_studio_editor"])
-      {:ok, _} = Organizations.deactivate_user_in_organization(deactivated.id, organization.id)
+
+      {:ok, _} =
+        Organizations.deactivate_user_in_organization(admin, deactivated.id, organization.id)
 
       conn = log_in_user(conn, admin, organization: organization)
 
