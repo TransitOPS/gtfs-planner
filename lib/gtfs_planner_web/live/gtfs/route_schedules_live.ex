@@ -4278,12 +4278,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp timing_total_minutes(timing) do
     timing
     |> Map.get(:rows, [])
-    |> Enum.map(fn row ->
-      Map.get(row, :arrival_offset) || Map.get(row, :departure_offset) || 0
-    end)
+    |> Enum.map(&row_offset/1)
+    # A blank row carries no offset; it is skipped rather than counted as midnight.
+    |> Enum.reject(&is_nil/1)
     |> Enum.max(fn -> 0 end)
     |> div(60)
   end
+
+  defp row_offset(row),
+    do: Map.get(row, :arrival_offset) || Map.get(row, :departure_offset)
 
   defp row_start_secs(%{values: values}) do
     case parse_clock_value(values["start_time"]) do
