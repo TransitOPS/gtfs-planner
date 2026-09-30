@@ -4730,3 +4730,55 @@ body:has(#home-page) {
 #runs-uncovered-table [data-role="uncovered-relief"] {
   min-width: 14rem;
 }
+
+/* ── The run drawer ──
+   The drawer reuses the run table's cell classes (`runs-uncovered-th` /
+   `runs-uncovered-td`) rather than declaring its own. The Pieces table and the
+   Paid time table are the same table twice — the reader is looking at the same
+   run under two headings — and two sets of cell rules for one set of cells is
+   two sets of cell rules to drift. */
+
+#run-drawer h3 {
+  scroll-margin-top: 1rem;
+}
+
+#run-drawer .runs-uncovered-td,
+#run-drawer .runs-uncovered-th {
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--color-base-300);
+}
+
+#run-drawer .runs-uncovered-th {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--color-base-content/70);
+}
+
+#run-drawer [data-role="piece-number"] {
+  width: 3rem;
+}
+
+#run-drawer [data-role="piece-block-link"] {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+
+#run-drawer [data-role="piece-time"] {
+  white-space: nowrap;
+}
+
+/* An unpaid break and a break the operator cannot reach both leave their value
+   cell empty, and an empty cell needs no right-alignment: the right edge is
+   where the other values line up, and a line with nothing in it should not
+   pretend to be a number. The label carries the length instead. */
+#run-drawer [data-role="pay-value"] {
+  white-space: nowrap;
+}
+
+#run-drawer [data-role="pay-total"] {
+  border-bottom: none;
+}

@@ -1024,6 +1024,288 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   end
 
   @doc """
+  Renders the run drawer: one run, in the order a reader asks about it.
+
+  **Problems, then pieces, then paid time, then the rule.** A reader who opens a
+  run's drawer is usually asking one of two questions — is this run sound, and
+  what am I being paid for — and the order answers them in that order. Problems
+  first because a run with an error above it should not be read past.
+
+  ## Why the pay table adds up
+
+  The drawer's whole claim is that a reader can see where the Paid figure in the
+  run's row came from. So the lines are **the run's own `work.segments`, one line
+  each**, and not a fixed set of kinds with totals looked up beside them. That is
+  what makes the sum a fact rather than a coincidence: `work.paid_secs` is
+  computed from those same segments, so a line added to the work without a kind
+  the table knows about would show up as a gap in the sum instead of passing
+  unnoticed.
+
+  ## Why an unpaid break has no value
+
+  A break of 5 h 35 min that is not paid has two true numbers and the table can
+  only hold one. Printing the length in the value column would say the run was
+  paid for it; printing "0 min" would say the break did not happen. So the length
+  goes in the **label** — "Break, unpaid (5 h 35 min)" — and the value cell is
+  **empty**, which is the only cell that can mean "nothing, and here is why".
+
+  A break the operator cannot reach is drawn the same way. A negative span is not
+  a duration; it is a finding, and step 24 already has words for it.
+  """
+  attr :run, :map, required: true
+  attr :day_type_key, :string, required: true
+  attr :version_id, :string, required: true
+  attr :crew, :map, required: true
+  attr :stop_names, :map, default: %{}
+  attr :open?, :boolean, default: false
+  attr :on_close, :string, default: "close_drawer"
+  attr :return_focus_id, :string, default: "runs-page"
+
+  def run_drawer(assigns) do
+    ~H"""
+    <.drawer
+      id="run-drawer"
+      open={@open?}
+      on_close={@on_close}
+      title={"Run #{@run.run_id}"}
+      return_focus_id={@return_focus_id}
+    >
+      <p id="run-drawer-summary" class="text-sm text-base-content/70">
+        {run_type_label(@run.work.type)} &middot; {length(@run.pieces)} {if length(@run.pieces) == 1,
+          do: "piece",
+          else: "pieces"} &middot; {duration(@run.work.spread_secs)} spread &middot; {duration(
+          @run.work.paid_secs
+        )} paid
+      </p>
+
+      <div id="run-drawer-findings" class="mt-3">
+        <p
+          :if={@run.findings == []}
+          data-role="run-no-problems"
+          class="flex items-center gap-1.5 text-sm text-success"
+        >
+          No problems
+        </p>
+        <ul :if={@run.findings != []} class="grid gap-2">
+          <li
+            :for={finding <- @run.findings}
+            data-role="run-finding"
+            data-code={finding.code}
+            data-severity={finding.severity}
+            class="border-l-4 border-warning bg-warning/10 px-4 py-3"
+          >
+            <p class="flex items-center gap-1.5 text-sm">
+              <span class={[severity_class(finding.severity), "flex items-center gap-1.5"]}>
+                <.icon name={severity_icon(finding.severity)} class="size-4" />
+                {finding_label(finding)}
+              </span>
+            </p>
+            <p :if={finding_detail(finding)} class="mt-0.5 text-sm text-base-content/70">
+              {finding_detail(finding)}
+            </p>
+          </li>
+        </ul>
+      </div>
+
+      <h3 class="mt-5 text-base font-bold">Pieces</h3>
+      <div id="run-drawer-pieces" class="mt-2">
+        <table id="run-drawer-pieces-table" class="w-full border-separate border-spacing-0 text-sm">
+          <caption class="sr-only">Pieces of run {@run.run_id}</caption>
+          <thead>
+            <tr>
+              <th scope="col" class="runs-uncovered-th">Piece</th>
+              <th scope="col" class="runs-uncovered-th">Block</th>
+              <th scope="col" class="runs-uncovered-th">Time</th>
+              <th scope="col" class="runs-uncovered-th">From &rarr; to</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              :for={{piece, index} <- Enum.with_index(@run.pieces, 1)}
+              data-role="run-piece"
+              data-piece={index}
+              data-block={piece.block_id}
+              data-start={piece.start_secs}
+              data-end={piece.end_secs}
+              class="runs-uncovered-row"
+            >
+              <td class="runs-uncovered-td tabular-nums" data-role="piece-number">{index}</td>
+              <td class="runs-uncovered-td" data-role="piece-block">
+                <.link
+                  href={
+                    "/gtfs/#{@version_id}/blocks?day=#{@day_type_key}&block=#{piece.block_id}"
+                  }
+                  data-role="piece-block-link"
+                  data-block={piece.block_id}
+                  class="min-h-11 font-semibold text-action underline underline-offset-4"
+                >
+                  Block {piece.block_id}
+                </.link>
+                <div class="text-[13px] text-base-content/70">
+                  Route {piece.route_id} &middot; {length(piece.trips)} trips
+                </div>
+              </td>
+              <td class="runs-uncovered-td tabular-nums" data-role="piece-time">
+                {BlocksComponents.clock(piece.start_secs)}&ndash;{BlocksComponents.clock(
+                  piece.end_secs
+                )}
+                <div class="text-[13px] text-base-content/70">
+                  {duration(piece.end_secs - piece.start_secs)}
+                </div>
+              </td>
+              <td class="runs-uncovered-td" data-role="piece-places">
+                {piece_place(@stop_names, piece.start_stop, piece.start_kind)}
+                <br />&rarr; {piece_place(@stop_names, piece.end_stop, piece.end_kind)}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="mt-5 text-base font-bold">Paid time</h3>
+      <.pay_table work={@run.work} pieces={@run.pieces} crew={@crew} />
+
+      <p id="run-drawer-rule" data-role="run-rule" class="mt-2 text-[13px] text-base-content/70">
+        {crew_rule_sentence(@crew)}
+      </p>
+    </.drawer>
+    """
+  end
+
+  @doc """
+  Renders one run's paid time as its own lines, and the total they add to.
+
+  Every line is one segment of `work.segments`, so the lines ARE the work rather
+  than a restatement of it. `data-paid` marks the cells that count toward the
+  total, which is what lets a reader — and the gate — add them up without
+  re-deriving which kinds are paid.
+  """
+  attr :work, :map, required: true
+  attr :pieces, :list, default: []
+  attr :crew, :map, default: %{}
+
+  def pay_table(assigns) do
+    ~H"""
+    <table id="run-pay-table" class="mt-2 w-full border-separate border-spacing-0 text-sm">
+      <caption class="sr-only">Paid time for this run</caption>
+      <tbody>
+        <tr
+          :for={{segment, index} <- Enum.with_index(@work.segments, 0)}
+          data-role="pay-line"
+          data-kind={segment.kind}
+          data-index={index}
+          data-paid={to_string(segment.paid? and segment.end_secs >= segment.start_secs)}
+          data-secs={segment.end_secs - segment.start_secs}
+          class="runs-uncovered-row"
+        >
+          <td class="runs-uncovered-td" data-role="pay-label">
+            {pay_label(segment, @pieces)}
+            <span
+              :if={
+                segment.kind == :break and not segment.paid? and
+                  segment.end_secs >= segment.start_secs
+              }
+              data-role="pay-unpaid-length"
+              class="text-base-content/70"
+            >
+              ({duration(segment.end_secs - segment.start_secs)})
+            </span>
+          </td>
+          <td
+            class="runs-uncovered-td text-right tabular-nums"
+            data-role="pay-value"
+            data-paid={to_string(segment.paid? and segment.end_secs >= segment.start_secs)}
+          >
+            <span :if={segment.paid? and segment.end_secs >= segment.start_secs}>
+              {duration(segment.end_secs - segment.start_secs)}
+            </span>
+          </td>
+        </tr>
+        <tr class="runs-uncovered-row">
+          <th scope="row" class="runs-uncovered-td font-bold" data-role="pay-total-label">
+            Paid
+          </th>
+          <td
+            class="runs-uncovered-td text-right tabular-nums font-bold"
+            data-role="pay-total"
+            data-secs={@work.paid_secs}
+          >
+            {duration(@work.paid_secs)}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    """
+  end
+
+  # One label per kind, and the two that need to know which piece they belong to.
+  #
+  # A report is "before piece N", and whether it is a PULL-OUT or a RELIEF comes
+  # from that piece's own `start_kind` — not from the report segment, which
+  # carries no place at all. Reading the two as interchangeable is how a run
+  # would claim 15 minutes of report before a change of operator when the crew
+  # rules say 5.
+  defp pay_label(%{kind: :report, piece_index: index}, pieces) do
+    kind = piece_start_kind(pieces, index)
+    "Report before piece #{index} (#{kind})"
+  end
+
+  defp pay_label(%{kind: :piece, piece_index: index}, _pieces), do: "Piece #{index}"
+  defp pay_label(%{kind: :travel}, _pieces), do: "Travel"
+  defp pay_label(%{kind: :sign_off}, _pieces), do: "Sign-off"
+  defp pay_label(%{kind: :break}, _pieces), do: "Break"
+  defp pay_label(%{kind: kind}, _pieces), do: to_string(kind)
+
+  defp piece_start_kind(pieces, index) do
+    case Enum.at(pieces, (index || 1) - 1) do
+      %{start_kind: :block_start} -> "pull-out"
+      %{start_kind: :relief} -> "relief"
+      _other -> "relief"
+    end
+  end
+
+  # The crew rules in words, so a reader can check the arithmetic above it
+  # without opening the crew drawer.
+  #
+  # Every number is the version's OWN, and a rule nobody set says so rather than
+  # reading "0 min" — which would be a claim about a limit of zero rather than
+  # about no limit.
+  defp crew_rule_sentence(crew) do
+    "Paid time = report (#{crew.report_pull_out_minutes} min before each pull-out, " <>
+      "#{crew.report_relief_minutes} min before each relief) + time on vehicles + travel + " <>
+      "a break of #{crew.paid_break_max_minutes} minutes or less + sign-off " <>
+      "(#{crew.sign_off_minutes} min)."
+  end
+
+  defp run_type_label(:split), do: "Split"
+  defp run_type_label(:straight), do: "Straight"
+  defp run_type_label(:one_piece), do: "One piece"
+
+  # A place, with the kind of boundary it is, because a change of operator at a
+  # relief is not the same place-change as a garage move and the reader is being
+  # told where a run may be interrupted.
+  defp piece_place(_stop_names, nil, _kind), do: "Unknown stop"
+
+  defp piece_place(stop_names, %{stop_id: stop_id}, kind) do
+    [
+      Map.get(stop_names, stop_id) || stop_id,
+      kind == :relief && "(relief point)"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" ")
+  end
+
+  defp finding_detail(%{code: :piece_too_long, detail: %{secs: secs, limit_secs: limit}}) do
+    "#{duration(secs)} against a limit of #{duration(limit)}."
+  end
+
+  defp finding_detail(%{code: :spread_too_long, detail: %{secs: secs, limit_secs: limit}}) do
+    "#{duration(secs)} spread against a limit of #{duration(limit)}."
+  end
+
+  defp finding_detail(_finding), do: nil
+
+  @doc """
   Renders the `Runs · N | Uncovered work · N` tabs.
 
   The counts are in the labels because the second tab's whole purpose is to say
@@ -1445,8 +1727,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
         type="button"
         phx-click="open_run"
         phx-value-run={@run.run_id}
+        id={"runs-run-#{@run.run_id}"}
         class="runs-run-button"
-        title={"Run " <> @run.run_id}
+        title={"Open run " <> @run.run_id}
       >
         {@run.run_id}
       </button>

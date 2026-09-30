@@ -76,6 +76,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      # empty is also what makes `toast/1` render NOTHING on first paint: a
      # `role="status"` region present with no text announces nothing and still
      # occupies the fixed box at the foot of the viewport.
+     |> assign(:run, nil)
      |> assign(:toast, nil)
      |> assign(:undo, nil)
      |> assign(:run_axis, nil)
@@ -110,14 +111,37 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       |> assign(:scale, scale_value(params["scale"]))
       |> assign(:view, view)
       |> assign(:panel, panel_value(params["panel"]))
+      |> assign(:run, blank_to_nil(params["run"]))
       |> ensure_day_loaded()
 
     socket =
-      if (resort? or view_changed?) and socket.assigns.runs_day,
+      if (resort? or view_changed?) and is_map(socket.assigns.runs_day),
         do: stream_run_rows(socket),
         else: socket
 
-    {:noreply, socket}
+    {:noreply, sync_run_drawer(socket)}
+  end
+
+  # **The URL opens the drawer, not just the button.** `?run=1001` has to be the
+  # same page as pressing the Run button, or the link is a page that renders
+  # without its drawer: a colleague opening the link sees the chart and not the
+  # run, and the address bar says `run=1001` while the screen disagrees.
+  #
+  # It runs AFTER `ensure_day_loaded/1` because it looks the run up in the loaded
+  # day — before the load, no run is findable and every drawer would be closed.
+  # A `run` naming nothing is dropped rather than left in the path: a parameter
+  # the page cannot honour is a parameter the next patch would carry forward.
+  defp sync_run_drawer(socket) do
+    case {socket.assigns.run, find_run(socket.assigns.runs_day, socket.assigns.run)} do
+      {nil, _} ->
+        assign(socket, :drawer, nil)
+
+      {_run, nil} ->
+        socket |> assign(:run, nil) |> assign(:drawer, nil)
+
+      {run_id, _run} ->
+        assign(socket, :drawer, {:run, run_id})
+    end
   end
 
   # The sort keys this chart owns. A key the chart does not have is refused
@@ -319,8 +343,35 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
+  def handle_event("open_run", %{"run" => run_id}, socket) do
+    # A run is addressed by a URL parameter rather than by a number this page
+    # hands out, for the reason `?day=` is: a drawer a reader cannot link to is a
+    # drawer they have to find again, and a colleague cannot be shown the run you
+    # are looking at. The handler refuses an unknown run rather than opening an
+    # empty one.
+    case find_run(socket.assigns.runs_day, run_id) do
+      nil ->
+        {:noreply, assign(socket, :drawer, nil)}
+
+      run ->
+        {:noreply,
+         socket
+         |> assign(:drawer, {:run, run.run_id})
+         |> assign(:run, run.run_id)}
+    end
+  end
+
+  # Closing PATCHES, because the drawer is addressed by a parameter. Assigning
+  # alone would close the panel while the address bar still said `?run=1001`, and
+  # the next patch to rebuild the path would reopen it — step 26's rule about the
+  # path being a record of the reader's whole state, applied to a control that
+  # removes one of its entries.
   def handle_event("close_drawer", _params, socket) do
-    {:noreply, assign(socket, :drawer, nil)}
+    {:noreply,
+     socket
+     |> assign(:drawer, nil)
+     |> assign(:run, nil)
+     |> push_patch(to: runs_path(socket, socket.assigns.day, %{run: ""}))}
   end
 
   # The Run button and the piece buttons. The run drawer is step 29, so pressing
@@ -675,6 +726,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     view = to_string(Map.get(extra, :view) || socket.assigns.view)
     scale = to_string(Map.get(extra, :scale) || socket.assigns.scale)
     panel = to_string(Map.get(extra, :panel) || socket.assigns.panel)
+    run = to_string(Map.get(extra, :run) || socket.assigns.run || "")
 
     params =
       [
@@ -683,7 +735,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         {"dir", if(dir == :desc, do: "desc")},
         {"scale", if(scale != "day", do: scale)},
         {"view", if(view != "timeline", do: view)},
-        {"panel", if(panel != "runs", do: panel)}
+        {"panel", if(panel != "runs", do: panel)},
+        {"run", if(run != "", do: run)}
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
       |> Enum.map_join("&", fn {key, value} -> key <> "=" <> to_string(value) end)
@@ -824,8 +877,19 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         </div>
       </div>
 
+      <RunsComponents.run_drawer
+        :if={is_map(@runs_day) and selected_run(@runs_day, @drawer)}
+        open?={match?({:run, _id}, @drawer)}
+        run={selected_run(@runs_day, @drawer)}
+        version_id={@current_gtfs_version.id}
+        day_type_key={@day}
+        crew={@runs_day.crew}
+        stop_names={@run_stop_names}
+        return_focus_id={"runs-run-#{@run}"}
+      />
+
       <RunsComponents.summary_drawer
-        :if={@runs_day}
+        :if={is_map(@runs_day)}
         open?={match?({:summary, _key}, @drawer)}
         stats={@runs_day.derived.stats}
         crew={@runs_day.crew}
@@ -843,6 +907,26 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # The count tile that is currently pressed, or nil when the drawer is closed.
   defp selected_count_tile({:summary, key}), do: key
   defp selected_count_tile(_drawer), do: nil
+
+  # The run the drawer is showing, or nil.
+  #
+  # Re-found from the LOADED DAY on every render rather than held in an assign,
+  # because the day is re-read after every write (step 28) and a drawer holding a
+  # run struct would then be describing a version of the run that no longer
+  # exists. One lookup over a list this size, on a render that already redraws the
+  # chart.
+  defp selected_run(%{derived: %{runs: runs}}, {:run, run_id}) do
+    Enum.find(runs, &(&1.run_id == run_id))
+  end
+
+  defp selected_run(_runs_day, _drawer), do: nil
+
+  # The run a button names, or nil. Same reason as `selected_run/2`.
+  defp find_run(nil, _run_id), do: nil
+
+  defp find_run(%{derived: %{runs: runs}}, run_id) do
+    Enum.find(runs, &(&1.run_id == run_id))
+  end
 
   # The drawer's subtitle is the LOADED day type's own label rather than its key,
   # which is a base64 hash a reader cannot check against anything — and rather
