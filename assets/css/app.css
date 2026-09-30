@@ -91,8 +91,10 @@
   --color-action-hover: #9f0f5c;
   --color-selection: #fef1f6;
   --color-focus: #96305f;
+  --color-navy-50: #eef0f7; /* connection chip ground */
   --color-navy-100: #d6dae8; /* avatar */
   --color-navy-300: #7a85ac; /* sort indicator, inverse surfaces */
+  --color-navy-700: #0f1a3d; /* connection chip fill — 17.0:1 with white */
   --color-navy-800: #0a1330; /* toast */
   --color-cyan-300: #7dd3cb; /* toast icon */
 
@@ -579,6 +581,87 @@ body {
 }
 
 #blocks-page .blocks-gap-short:hover { background: var(--color-warning-bg); }
+
+/* A connection's setting replaces the gap's minutes with a 22px chip. The chip
+   is the visible mark; the button keeps the gap's own geometry, and its `::after`
+   grows only the clickable area to the row's 44px height, so the target is 44px
+   tall without the bar moving or reaching a neighbouring control. A trip bar
+   paints at z-index 2 above the gap's 1, so an expanded target never takes a
+   trip's own clicks. */
+#blocks-page .blocks-gap::after {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+}
+
+#blocks-page .blocks-gap-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+}
+
+/* The three decided settings. Each pairs an icon with the gap's title text, so
+   none of them is carried by colour alone. A decided gap sits above the trip bars
+   (4, under the short layover's 5) the way `.blocks-gap-short` already does: the
+   22px chip is wider than a narrow gap's own bar, so at the bar's own z-index it
+   would be painted over by the trips on either side and read as no marking at all.
+   5 matches the short layover's, so a row's overlap bar (3) and its shifted bar
+   (4) both stay under it. Only the chip is opaque — the rest of the button is
+   transparent — so it covers the few pixels of a neighbouring bar it reaches. */
+#blocks-page .blocks-gap-stay,
+#blocks-page .blocks-gap-reboard,
+#blocks-page .blocks-gap-review {
+  z-index: 5;
+}
+
+#blocks-page .blocks-gap-stay .blocks-gap-chip {
+  background-color: var(--color-soft);
+  color: var(--color-cyan-800);
+}
+
+#blocks-page .blocks-gap-reboard .blocks-gap-chip {
+  background-color: var(--color-navy-700);
+  color: #fff;
+}
+
+#blocks-page .blocks-gap-review .blocks-gap-chip {
+  background-color: var(--color-warning-bg);
+  color: var(--color-warning-fg);
+  border-color: var(--color-warning-line);
+}
+
+/* The connection half of the timeline key, painted with the same three grounds
+   the gaps carry so the key cannot drift from the chart it explains. */
+#blocks-page .blocks-legend-connection {
+  border-width: 1px;
+  border-style: solid;
+  font-weight: 700;
+  font-size: 11px;
+  line-height: 1;
+}
+
+#blocks-page .blocks-legend-stay {
+  background-color: var(--color-soft);
+  color: var(--color-cyan-800);
+  border-color: var(--color-subtle);
+}
+
+#blocks-page .blocks-legend-reboard {
+  background-color: var(--color-navy-700);
+  color: #fff;
+  border-color: var(--color-navy-700);
+}
+
+#blocks-page .blocks-legend-review {
+  background-color: var(--color-warning-bg);
+  color: var(--color-warning-fg);
+  border-color: var(--color-warning-line);
+}
 
 /* The minutes print only when the gap's own bar is at least 26px wide. */
 #blocks-page .blocks-gap-label {

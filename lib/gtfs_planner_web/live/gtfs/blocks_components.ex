@@ -4345,6 +4345,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :axis, :map, default: nil
   attr :max_piece_minutes, :integer, default: nil
   attr :routes, :map, required: true
+
+  attr :connection_settings, :any,
+    default: %{},
+    doc: "the day's connections by id, each `%{setting, review?}`"
+
   attr :selected_ids, :any, required: true
   attr :selected_block_ids, :any, required: true, doc: "the block IDs the reader has selected"
   attr :page_block_ids, :any, required: true, doc: "the block IDs the current page holds"
@@ -4534,6 +4539,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               axis={@axis}
               routes={@routes}
               max_piece_minutes={@max_piece_minutes}
+              connection_settings={@connection_settings}
               selected_block_ids={@selected_block_ids}
               page_block_ids={@page_block_ids}
               changed_block_ids={@changed_block_ids}
@@ -4669,6 +4675,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # explains. The operator-change key shows only when a limit is set, because with
   # no limit there is no operator change to place and no `⇄` can appear on a row;
   # the changed key shows only while a suggestion is previewed.
+  #
+  # The connection group closes the key: the minutes for a gap nobody has decided
+  # and the three decided chips, painted with the same grounds the gaps carry and
+  # each named in words so the chip's colour is never the whole meaning.
   attr :relief?, :boolean, default: false
   attr :changed?, :boolean, default: false
 
@@ -4722,6 +4732,47 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       <span :if={@changed?} class="inline-flex items-center gap-1.5">
         <span class="blocks-legend-key blocks-legend-changed" aria-hidden="true"></span>
         Changed · not saved
+      </span>
+      <span
+        data-role="connection-legend"
+        class="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 border-l border-subtle pl-4"
+      >
+        <span class="inline-flex items-center gap-1.5">
+          <span
+            class="blocks-legend-key blocks-legend-connection border-control bg-white text-default"
+            aria-hidden="true"
+          >
+            6
+          </span>
+          Not stated (minutes)
+        </span>
+        <span class="inline-flex items-center gap-1.5">
+          <span
+            class="blocks-legend-key blocks-legend-connection blocks-legend-stay"
+            aria-hidden="true"
+          >
+            <.icon name="hero-link-mini" class="size-3" />
+          </span>
+          Riders stay on board
+        </span>
+        <span class="inline-flex items-center gap-1.5">
+          <span
+            class="blocks-legend-key blocks-legend-connection blocks-legend-reboard"
+            aria-hidden="true"
+          >
+            <.icon name="hero-arrow-right-start-on-rectangle-mini" class="size-3" />
+          </span>
+          Riders must re-board
+        </span>
+        <span class="inline-flex items-center gap-1.5">
+          <span
+            class="blocks-legend-key blocks-legend-connection blocks-legend-review"
+            aria-hidden="true"
+          >
+            <.icon name="hero-exclamation-triangle-mini" class="size-3" />
+          </span>
+          Needs review
+        </span>
       </span>
       <span class="ml-auto hidden 2xl:inline">
         Bars are colored by route and labeled with the route number.
@@ -5534,6 +5585,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :axis, :map, default: nil
   attr :routes, :map, required: true
   attr :max_piece_minutes, :integer, default: nil
+
+  attr :connection_settings, :any,
+    default: %{},
+    doc: "the day's connections by id, each `%{setting, review?}`"
+
   attr :selected_block_ids, :any, required: true, doc: "the block IDs the reader has selected"
   attr :page_block_ids, :any, required: true, doc: "the block IDs the current page holds"
 
@@ -5612,6 +5668,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
             track_style={@track_style}
             route_filter={@state.route}
             max_piece_minutes={@max_piece_minutes}
+            connection_settings={@connection_settings}
             selected?={MapSet.member?(@selected_block_ids, block.summary.block_id)}
             changed?={MapSet.member?(@changed_block_ids, block.summary.block_id)}
           />
@@ -5651,6 +5708,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :track_style, :string, default: nil
   attr :route_filter, :string, default: nil
   attr :max_piece_minutes, :integer, default: nil
+
+  attr :connection_settings, :any,
+    default: %{},
+    doc: "the day's connections by id, each `%{setting, review?}`"
+
   attr :selected?, :boolean, default: false, doc: "whether the block is in the reader's selection"
   attr :changed?, :boolean, default: false, doc: "whether the previewed plan changes this block"
 
@@ -5738,6 +5800,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               short?={row.short?}
               drive_secs={row.movement && row.movement.drive_secs}
               relief?={MapSet.member?(@relief, row.gap_index)}
+              setting={gap_setting(@connection_settings, row)}
+              review?={gap_review?(@connection_settings, row)}
             />
             <.trip_bar
               trip={row.trip}
@@ -5912,6 +5976,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   and above the bars, so the states differ by more than colour. A wait at a marked
   stop ends its label with `⇄` once the bar is wide enough for both, which is the
   instant an operator change is possible there.
+
+  `setting` is the connection's own decision, read from the day's
+  `Blocking.Connections` derivation: no record is `:none`, one type 4 record is
+  `:stay`, one type 5 record is `:reboard` and two or more are `:conflict`. A
+  decided gap draws a 22px chip with the matching icon in place of its minutes and
+  keeps the bar's own geometry and click target; the minutes stay for a gap with no
+  record, which is the case that still needs a decision. `review?` covers a record
+  the day load found stale and a pair that carries two records: either way the chip
+  is the warning, and the title says so in words as well as in the icon.
   """
   attr :gap, :map, required: true
   attr :from, :map, required: true
@@ -5920,10 +5993,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :drive_secs, :integer, default: nil
   attr :relief?, :boolean, default: false
 
+  attr :setting, :atom,
+    values: [:none, :stay, :reboard, :conflict],
+    default: :none,
+    doc: "the connection's decided in-seat setting"
+
+  attr :review?, :boolean,
+    default: false,
+    doc: "whether the connection's record is stale or duplicated"
+
   def gap(assigns) do
     assigns =
       assigns
       |> assign(:wait_secs, assigns.gap.gap_secs - (assigns.drive_secs || 0))
+      |> assign(:marker, gap_marker(assigns.setting, assigns.review?))
       |> assign(
         :style,
         gap_geometry(assigns.gap, assigns.from, assigns.axis, assigns.drive_secs, assigns.short?)
@@ -5939,19 +6022,72 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       data-handoff={handoff_key(@gap.handoff)}
       data-short={to_string(@short?)}
       data-relief={to_string(@relief?)}
+      data-setting={@marker.setting}
       phx-click="open_gap"
       phx-value-from={@from.id}
       phx-value-to={@gap.to_id}
       style={@style}
-      class={["blocks-gap", @short? && "blocks-gap-short"]}
-      title={gap_hover(@gap)}
+      class={["blocks-gap", @short? && "blocks-gap-short", @marker.class]}
+      title={gap_title(@gap, @marker.label)}
     >
       <span :if={@short?} aria-hidden="true">!</span>
-      <span class="blocks-gap-label">
-        {div(@wait_secs, 60)}<span :if={@relief?} data-role="blocks-gap-relief"> ⇄</span>
-      </span>
+      <%= if @marker.icon do %>
+        <span
+          data-role="blocks-gap-setting"
+          data-setting={@marker.setting}
+          class="blocks-gap-chip"
+        >
+          <.icon name={@marker.icon} class="size-3.5" />
+        </span>
+      <% else %>
+        <span class="blocks-gap-label">
+          {div(@wait_secs, 60)}<span :if={@relief?} data-role="blocks-gap-relief"> ⇄</span>
+        </span>
+      <% end %>
     </button>
     """
+  end
+
+  # What one gap draws for its connection: the `data-setting` value the timeline
+  # and the Playwright journeys read, the chip's class, its icon and the words its
+  # title adds. A record that needs review wins over its own setting, because a
+  # stale or doubled record is the thing a planner has to look at.
+  defp gap_marker(:none, _review?), do: %{setting: "none", class: nil, icon: nil, label: nil}
+
+  defp gap_marker(_setting, true) do
+    %{
+      setting: "review",
+      class: "blocks-gap-review",
+      icon: "hero-exclamation-triangle-mini",
+      label: "Needs review"
+    }
+  end
+
+  defp gap_marker(:stay, false) do
+    %{
+      setting: "stay",
+      class: "blocks-gap-stay",
+      icon: "hero-link-mini",
+      label: "Riders stay on board"
+    }
+  end
+
+  defp gap_marker(:reboard, false) do
+    %{
+      setting: "reboard",
+      class: "blocks-gap-reboard",
+      icon: "hero-arrow-right-start-on-rectangle-mini",
+      label: "Riders must re-board"
+    }
+  end
+
+  defp gap_marker(:conflict, false) do
+    %{
+      setting: "review",
+      class: "blocks-gap-review",
+      icon: "hero-exclamation-triangle-mini",
+      label: "Needs review"
+    }
   end
 
   @doc """
@@ -6713,6 +6849,31 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp waitable?(%{kind: :layover}), do: true
   defp waitable?(_gap), do: false
 
+  # A row's connection is named by its two trip UUIDs joined by a bar, the same
+  # name `Blocking.Connections` gives it, so the timeline and the drawer cannot
+  # disagree about which record a gap is showing. A row with no gap, or a gap the
+  # day's derivation holds nothing for, is undecided rather than an error.
+  defp gap_connection(settings, row) do
+    case row.gap do
+      nil -> nil
+      gap -> Map.get(settings, "#{row.previous.id}|#{gap.to_id}")
+    end
+  end
+
+  defp gap_setting(settings, row) do
+    case gap_connection(settings, row) do
+      %{setting: setting} -> setting
+      _undecided -> :none
+    end
+  end
+
+  defp gap_review?(settings, row) do
+    case gap_connection(settings, row) do
+      %{review?: review?} -> review?
+      _undecided -> false
+    end
+  end
+
   defp overlap_trip_ids(findings) do
     findings
     |> Enum.filter(&(&1.code == :overlap))
@@ -6796,6 +6957,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
   defp gap_hover(%{handoff: {:nearby, meters}} = gap),
     do: "#{minutes(gap.gap_secs)} gap · nearby stop, #{meters} m"
+
+  # A decided gap's title names the decision beside the gap's own handoff text,
+  # so the chip's icon is never the only thing that says what it means.
+  defp gap_title(gap, nil), do: gap_hover(gap)
+  defp gap_title(gap, label), do: "#{gap_hover(gap)} · #{label}"
 
   defp handoff_key(:same_stop), do: "same_stop"
   defp handoff_key(:same_station), do: "same_station"
