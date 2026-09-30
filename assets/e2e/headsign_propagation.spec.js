@@ -15,8 +15,8 @@ import { resolve } from "node:path";
  * pattern's block id.
  *
  * The details journey here runs against the wired Details task; the read-only
- * review-drawer render still waits for step 12's `open_headsign_review` wiring,
- * so its selectors record the pre-wiring state until then.
+ * review-drawer render opens through the wired `open_headsign_review` event,
+ * and the mutating review journey fixes the typo on BROWSER-HS3.
  */
 
 const EDITOR_USER = {
@@ -31,6 +31,30 @@ async function capture(page, name) {
 
   mkdirSync(CAPTURE_DIR, { recursive: true });
   await page.screenshot({ path: resolve(CAPTURE_DIR, `${name}.png`), fullPage: true });
+}
+
+// A drawer is a top-layer dialog anchored to the viewport, so a fullPage shot
+// leaves it half outside the extended frame; these capture what a user sees.
+async function captureViewport(page, name) {
+  if (!CAPTURE_DIR) return;
+
+  mkdirSync(CAPTURE_DIR, { recursive: true });
+  await page.screenshot({ path: resolve(CAPTURE_DIR, `${name}.png`) });
+}
+
+// The panel slides in over 300ms (ds-drawer-slide-in), so a capture or a
+// coordinate taken at open time freezes it mid-flight; wait for it to sit at
+// the viewport's right edge.
+async function waitDrawerSettled(page) {
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const panel = document.querySelector("#headsign-review-drawer");
+        const aside = panel && panel.closest("aside");
+        return aside ? aside.getBoundingClientRect().right - window.innerWidth : Number.NaN;
+      }),
+    )
+    .toBeLessThanOrEqual(1);
 }
 
 // Waits for the LiveView root to report itself connected, so an interaction is
@@ -149,9 +173,7 @@ test("edit, save and undo on details", async ({ page }) => {
 });
 
 // Read-only render journey: the drawer opens from the usage line's Review link
-// and shows the seeded typo and interline groups. Opening is a step-12 event,
-// so until `open_headsign_review` is wired this records the pre-wiring
-// failure, like the details journey above.
+// and shows the seeded typo and interline groups without touching any trip.
 test("review drawer renders", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openPattern(page, versionId, "BROWSER_HEADSIGNS", "BROWSER-HS1", "details");
@@ -160,6 +182,7 @@ test("review drawer renders", async ({ page }) => {
 
   const drawer = page.locator("#headsign-review-drawer");
   await expect(drawer).toBeVisible();
+  await waitDrawerSettled(page);
   await expect(drawer).toContainText("Trips with a different headsign");
   await expect(drawer).toContainText("Lincoln city");
   await expect(drawer).toContainText("Likely typo");
@@ -167,5 +190,93 @@ test("review drawer renders", async ({ page }) => {
   await expect(drawer).toContainText("Next in block: Route H20 at 10:15 toward Roads End");
   await expect(drawer).toContainText("Change trips");
 
-  await capture(page, "review-hs1-drawer-1440");
+  await captureViewport(page, "review-hs1-drawer-1440");
+});
+
+// The mutating review journey (BROWSER-HS3): the exceptions drawer fixes the
+// likely typo — Escape returns focus to the opener, Select likely typo stages
+// one trip, Change writes it under the per-trip fence, the done callout offers
+// Undo, and Undo restores the seeded value through the page's confirmation.
+test("exceptions drawer fixes a typo", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openPattern(page, versionId, "BROWSER_HEADSIGNS", "BROWSER-HS3", "details");
+
+  const usage = page.locator("#headsign-usage");
+  await expect(usage).toContainText("Used by 5 trips");
+  await expect(usage).toContainText("2 show a different headsign");
+
+  await capture(page, "review-hs3-details-1440");
+
+  await page.locator("#headsign-usage-review").click();
+
+  const drawer = page.locator("#headsign-review-drawer");
+  await expect(drawer).toBeVisible();
+  await waitDrawerSettled(page);
+  await expect(drawer).toContainText("Trips with a different headsign");
+  await expect(drawer).toContainText("3 of 5 trips show");
+  await expect(drawer).toContainText("Lincoln city");
+  await expect(drawer).toContainText("Likely typo");
+  await expect(drawer).toContainText("Roads End via Lincoln City");
+
+  const apply = page.locator("#headsign-review-drawer-apply");
+  await expect(apply).toContainText("Change trips");
+  await expect(apply).toBeDisabled();
+
+  await captureViewport(page, "review-hs3-drawer-1440");
+
+  // Escape closes the drawer and focus returns to the opener button.
+  await page.keyboard.press("Escape");
+  await expect(drawer).toHaveCount(0);
+  await expect(page.locator("#headsign-usage-review")).toBeFocused();
+
+  await page.locator("#headsign-usage-review").click();
+  await expect(drawer).toBeVisible();
+  await waitDrawerSettled(page);
+  await expect(drawer).toContainText("Lincoln city");
+
+  await page.locator("#headsign-review-drawer-select-typos").click();
+  await expect(apply).toContainText("Change 1 trip to Lincoln City");
+  await expect(apply).toBeEnabled();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(drawer).toBeVisible();
+  await captureViewport(page, "review-hs3-drawer-390");
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  await apply.click();
+
+  const done = page.locator("#headsign-review-drawer-done");
+  await expect(done).toContainText("1 trip now shows Lincoln City");
+  await expect(done).toContainText("1 trip kept a different headsign");
+  await expect(page.locator("#headsign-review-drawer-undo")).toBeVisible();
+
+  await captureViewport(page, "review-hs3-done-1440");
+
+  // The usage behind the drawer reloaded with the write.
+  await expect(usage).toContainText("1 shows a different headsign");
+
+  // The done callout's Undo restores the seeded typo and closes the drawer
+  // onto the page's confirmation.
+  await page.locator("#headsign-review-drawer-undo").click();
+  await expect(drawer).toHaveCount(0);
+  await expect(page.locator("#pattern-save-status")).toContainText("Headsign change undone");
+  await expect(usage).toContainText("Used by 5 trips");
+  await expect(usage).toContainText("2 show a different headsign");
+
+  // Change mode, from the inline update box: the followers start checked and
+  // Escape hands focus back to the box's review button. Nothing is written.
+  await page.fill("#pattern-details-headsign", "Lincoln City via Depoe Bay");
+  await page.locator("#headsign-update-review").click();
+  await expect(drawer).toBeVisible();
+  await waitDrawerSettled(page);
+  await expect(drawer).toContainText("Trips the new headsign reaches");
+  await expect(drawer).toContainText("Preview · not saved");
+  await expect(drawer).toContainText("Show Lincoln City");
+  await expect(page.locator("#headsign-review-drawer-group-0-toggle")).toBeChecked();
+
+  await captureViewport(page, "review-hs3-change-1440");
+
+  await page.keyboard.press("Escape");
+  await expect(drawer).toHaveCount(0);
+  await expect(page.locator("#headsign-update-review")).toBeFocused();
 });
