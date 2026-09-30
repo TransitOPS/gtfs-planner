@@ -335,7 +335,11 @@ defmodule GtfsPlanner.Gtfs.Export do
   end
 
   defp build_flex(flex_dir, organization_id, gtfs_version_id, mapper, estimate, coords) do
-    {:ok, entries, warnings} = FlexExport.build_entries(organization_id, gtfs_version_id)
+    {:ok, entries, warnings} =
+      FlexExport.build_entries(organization_id, gtfs_version_id,
+        estimate: estimate,
+        coordinates: coords
+      )
 
     case write_flex_zip(
            flex_dir,

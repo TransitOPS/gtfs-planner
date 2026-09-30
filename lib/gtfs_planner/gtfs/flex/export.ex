@@ -10,7 +10,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
   value between. Nothing here reads readiness or geometry, so a service with
   errors still keeps the main feed's sequences stable.
 
-  `build_entries/2` is the flex zip's one assembly point and runs inside the
+  `build_entries/3` is the flex zip's one assembly point and runs inside the
   caller's export snapshot. It loads the version's services, readiness facts,
   calendars and agency, then for every active service:
 
@@ -46,6 +46,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
   alias GtfsPlanner.Gtfs.Calendars.ServiceDates
   alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Export.CsvWriter
+  alias GtfsPlanner.Gtfs.Export.MissingTimes
   alias GtfsPlanner.Gtfs.Export.StreamBuilder
   alias GtfsPlanner.Gtfs.Flex
   alias GtfsPlanner.Gtfs.Flex.Checks
@@ -80,7 +81,7 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
   }
 
   @typedoc """
-  What `build_entries/2` returns: the rows the flex zip appends per file, the
+  What `build_entries/3` returns: the rows the flex zip appends per file, the
   extra file entries, the number of services exported and whether the flex zip
   replaces a main feed that was not produced (R15).
   """
@@ -133,9 +134,17 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
   `entries.rows` to the flex zip's `routes.txt`, `trips.txt`, `stop_times.txt`
   and `booking_rules.txt`, after any stored rows, and writes `entries.entries`
   as whole files.
+
+  `estimate: :distance | :even` fills each covered trip's stop times through
+  `MissingTimes.fill_trip/3` (with `coordinates:`) before the detour rows are
+  derived, so the zone windows match the main zip's estimates; a trip that
+  cannot be estimated keeps its stored times here without another warning.
   """
-  @spec build_entries(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, entries(), [Export.warning()]}
-  def build_entries(organization_id, version_id) do
+  @spec build_entries(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) ::
+          {:ok, entries(), [Export.warning()]}
+  def build_entries(organization_id, version_id, opts \\ []) do
+    estimate = normalize_estimate(Keyword.get(opts, :estimate))
+    coords = Keyword.get(opts, :coordinates, %{})
     services = Flex.list_services(organization_id, version_id)
     active = Enum.filter(services, & &1.active)
     facts = Checks.version_facts(organization_id, version_id)
@@ -154,7 +163,9 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
           names,
           agency_id,
           organization_id,
-          version_id
+          version_id,
+          estimate: estimate,
+          coordinates: coords
         )
       end)
 
@@ -521,7 +532,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
          calendars,
          agency_id,
          organization_id,
-         version_id
+         version_id,
+         opts
        ) do
     case service.kind do
       :area ->
@@ -542,7 +554,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
           facts,
           calendars,
           organization_id,
-          version_id
+          version_id,
+          opts
         )
     end
   end
@@ -594,7 +607,8 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
          facts,
          calendars,
          organization_id,
-         version_id
+         version_id,
+         opts
        ) do
     checks = Checks.run(service, facts, services)
     error = Enum.find(checks, &(&1.level == :error))
@@ -628,7 +642,13 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
               Detours.rows(
                 service,
                 zones,
-                detour_trip_times(organization_id, version_id, service.route_id),
+                detour_trip_times(
+                  organization_id,
+                  version_id,
+                  service.route_id,
+                  Keyword.get(opts, :estimate),
+                  Keyword.get(opts, :coordinates, %{})
+                ),
                 rule_id(rules, service)
               )
 
@@ -728,8 +748,11 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
   # The trips the detour rows consider: the route's exported trips with their
   # stored stop times in visit order, each flagged when `frequencies.txt` lists
   # it (R2, R6). A trip the export leaves out with its inactive route gets no
-  # zone rows.
-  defp detour_trip_times(organization_id, version_id, route_id) do
+  # zone rows. With an estimate method the stops are filled through
+  # `MissingTimes.fill_trip/3` first, so the zone windows match the main zip's
+  # estimates; a trip that cannot be estimated keeps its stored times without
+  # another warning (the main build already warns once per trip).
+  defp detour_trip_times(organization_id, version_id, route_id, estimate \\ nil, coords \\ %{}) do
     trips =
       from(t in Trip,
         as: :row,
@@ -755,7 +778,9 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
           stop_id: st.stop_id,
           stop_sequence: st.stop_sequence,
           arrival_time: st.arrival_time,
-          departure_time: st.departure_time
+          departure_time: st.departure_time,
+          timepoint: st.timepoint,
+          shape_dist_traveled: st.shape_dist_traveled
         }
       )
       |> Repo.all()
@@ -776,15 +801,55 @@ defmodule GtfsPlanner.Gtfs.Flex.Export do
         trip_id: trip.trip_id,
         service_id: trip.service_id,
         frequency?: MapSet.member?(frequencies, trip.trip_id),
-        stops: stop_times_in_visit_order(stop_times, trip.trip_id)
+        stops:
+          fill_detour_stops(
+            stop_times_in_visit_order(stop_times, trip.trip_id),
+            trip.trip_id,
+            estimate,
+            coords
+          )
       }
     end)
   end
 
+  defp fill_detour_stops(stops, _trip_id, estimate, _coords)
+       when estimate not in [:distance, :even] do
+    Enum.map(
+      stops,
+      &Map.take(&1, [:stop_id, :stop_sequence, :arrival_time, :departure_time])
+    )
+  end
+
+  defp fill_detour_stops(stops, trip_id, estimate, coords) do
+    records = Enum.map(stops, &Map.put(&1, :trip_id, trip_id))
+
+    {filled, _status} = MissingTimes.fill_trip(records, estimate, coords)
+
+    Enum.map(
+      filled,
+      &Map.take(&1, [:stop_id, :stop_sequence, :arrival_time, :departure_time])
+    )
+  end
+
+  # An estimate option other than the two known methods writes stored rows
+  # unchanged; this keeps a `false` run flag and an unknown value on one path.
+  defp normalize_estimate(:distance), do: :distance
+  defp normalize_estimate(:even), do: :even
+  defp normalize_estimate(_), do: nil
+
   defp stop_times_in_visit_order(stop_times, trip_id) do
     stop_times
     |> Map.get(trip_id, [])
-    |> Enum.map(&Map.take(&1, [:stop_id, :stop_sequence, :arrival_time, :departure_time]))
+    |> Enum.map(
+      &Map.take(&1, [
+        :stop_id,
+        :stop_sequence,
+        :arrival_time,
+        :departure_time,
+        :timepoint,
+        :shape_dist_traveled
+      ])
+    )
   end
 
   # --- rows and files ---------------------------------------------------------
