@@ -47,7 +47,7 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.SegmentsTest do
       assert result.waits == %{}
 
       assert result.segments == [
-               %{from: 0, to: 2, a_secs: 900, b_secs: 800, diff: -100, same_stops?: false}
+               %{from: 0, to: 2, a_secs: 900, b_secs: 800, diff: -100, same_stops?: true}
              ]
     end
 
