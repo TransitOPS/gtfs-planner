@@ -270,12 +270,18 @@ body {
    design system's dense-chart exception to the 44px target: every bar and gap is
    a real button, and the List view is the full-size control surface. */
 #blocks-page {
+  /* Each block column is its widest content plus the cell's 20px of padding, so
+     nothing in it clips (13px Figtree): Select is the 44px checkbox target; Block
+     holds its 44px button and "Block" with a sort icon; Garage · type holds
+     "Differs · Cutaway" in its warning weight; Time out holds
+     "23:45 −1d–01:30 +1d"; Hours holds its header with a sort icon; Status holds
+     "Stay-on-board mismatch" and its icon. Whatever these leave is the track. */
   --blocks-meta-select: 44px;
-  --blocks-meta-block: 112px;
-  --blocks-meta-garage: 132px;
-  --blocks-meta-out: 140px;
-  --blocks-meta-hours: 58px;
-  --blocks-meta-status: 208px;
+  --blocks-meta-block: 72px;
+  --blocks-meta-garage: 126px;
+  --blocks-meta-out: 154px;
+  --blocks-meta-hours: 75px;
+  --blocks-meta-status: 192px;
   --blocks-meta-width: calc(
     var(--blocks-meta-select) + var(--blocks-meta-block) + var(--blocks-meta-garage) +
       var(--blocks-meta-out) + var(--blocks-meta-hours) + var(--blocks-meta-status)
@@ -700,12 +706,10 @@ body {
   background-color: var(--color-action);
 }
 
-/* The panel's heading takes focus when the suggestion arrives, so it needs a
-   visible ring of its own: a programmatically focused heading is not
-   :focus-visible, and the page's focus is nowhere else to show. The replace
-   confirmation focuses its sentence for the same reason — it is what the
-   reader has to read before choosing. */
-#blocks-page #suggestion-title:focus,
+/* The Suggested blocks heading takes focus when the preview arrives and, like the
+   page's other programmatic targets (`tabindex="-1"`), shows no ring. The messages
+   that report an apply and the replace confirmation's sentence are what the
+   reader has to read next, so they keep a ring when they take focus. */
 #blocks-page #suggestion-applied:focus,
 #blocks-page #suggestion-apply-message:focus,
 #blocks-page #suggestion-replace-summary:focus {
