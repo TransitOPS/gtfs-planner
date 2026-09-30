@@ -215,8 +215,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsMovePieceLiveTest do
       w = two_run_world(ctx)
       view = open(ctx, w, "run=1001")
 
-      [__new | _] = option_values(view, 1)
-      assert __new == "__new"
+      [first | _] = option_values(view, 1)
+      assert first == "__new"
 
       assert has_element?(view, "#run-move-to-1 option[value=__new]", "New run (1003)")
     end

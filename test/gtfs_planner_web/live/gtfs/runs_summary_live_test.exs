@@ -34,7 +34,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSummaryLiveTest do
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.BlockingFixtures
-  import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.RunsFixtures
 
   alias GtfsPlanner.Accounts
