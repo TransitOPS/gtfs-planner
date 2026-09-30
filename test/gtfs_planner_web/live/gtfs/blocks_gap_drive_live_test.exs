@@ -189,12 +189,17 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
       )
       |> render_click()
 
-      assert has_element?(view, "#gap-drawer", "Can't reach the next trip")
-      assert has_element?(view, "#gap-drawer", "Block 101 · 6101 → 8101 · Weekday")
+      assert has_element?(view, "#gap-drawer-title", "Route 12 continues as Route 24")
+
+      assert has_element?(
+               view,
+               "#gap-drawer",
+               "Block 101 · trip 6101 → 8101 · Valley College · Weekday"
+             )
 
       assert has_element?(view, "#gap-drawer", "Arrives")
       assert has_element?(view, "#gap-drawer", "06:35 · Valley College")
-      assert has_element?(view, "#gap-drawer", "Next trip departs")
+      assert has_element?(view, "#gap-drawer", "Departs")
       assert has_element?(view, "#gap-drawer", "06:43 · Market Square")
       assert has_element?(view, "#gap-available", "8 min")
       assert has_element?(view, "#gap-drive", "14 min")
@@ -205,9 +210,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
       assert has_element?(view, "#gap-wait", "—")
       assert has_element?(view, "#gap-operators", "No")
 
-      # The rider note stays off an empty move, and the record list is still there.
+      # The rider note stays off an empty move, and the drawer's own outcome
+      # surface is still there.
       refute has_element?(view, "#gap-rider-note")
-      assert has_element?(view, "#gap-transfers", "Stay-on-board records · 0")
+      assert has_element?(view, "#gap-riders", "What trip planners show riders")
     end
 
     test "the callout reads the minutes needed against the time there is", context do
@@ -347,8 +353,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapDriveLiveTest do
 
       assert texts(view, "#gap-drawer dt") == [
                "Arrives",
-               "Next trip departs",
-               "Time available",
+               "Departs",
+               "On board",
                "Driving without riders",
                "Wait",
                "Operators can change"

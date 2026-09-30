@@ -151,16 +151,16 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       assert_patch(view, gap_url(base, a.id, b.id))
 
       assert has_element?(view, "#gap-drawer", "12 min between trips")
-      assert has_element?(view, "#gap-drawer", "Block 101 · a → b · Weekday")
+      assert has_element?(view, "#gap-drawer", "Block 101 · trip a → b · Main St · Weekday")
       assert has_element?(view, "#gap-drawer", "Arrives")
       assert has_element?(view, "#gap-drawer", "07:00")
-      assert has_element?(view, "#gap-drawer", "Next trip departs")
+      assert has_element?(view, "#gap-drawer", "Departs")
       assert has_element?(view, "#gap-drawer", "07:12")
       assert has_element?(view, "#gap-drawer", "Main St")
       assert has_element?(view, "#gap-text", "12 min layover at Main St")
       assert has_element?(view, "#gap-text[data-short='false']")
       assert has_element?(view, "#gap-rider-note", @rider_note)
-      assert has_element?(view, "#gap-transfers", "Stay-on-board records · 0")
+      assert has_element?(view, "#gap-riders", "What trip planners show riders")
 
       # Each trip's own drawer is one click away with the block context kept.
       assert attribute_values(view, "#gap-drawer [data-role='gap-inspect']", "phx-value-trip") ==
@@ -463,7 +463,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
       assert_patch(view, gap_url(base, a.id, b.id, [{"block", "101"}]))
 
       assert has_element?(view, "#gap-drawer", "10 min overlap")
-      assert has_element?(view, "#gap-drawer", "Block 101 · a → b · Weekday")
+      assert has_element?(view, "#gap-drawer", "Block 101 · trip a → b · Riverside · Weekday")
       assert has_element?(view, "#gap-back-to-block", "Back to block 101")
     end
 
@@ -509,21 +509,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksGapBlockDrawerLiveTest do
 
       {:ok, view, _html} = live(conn, gap_url(base, a.id, b.id))
 
-      assert has_element?(view, "#gap-transfers", "Stay-on-board records · 1")
-
       assert has_element?(
                view,
-               "#gap-transfers [data-role='gap-transfer'][data-transfer-type='4']",
+               "#gap-record-note[data-quiet='true']",
                "Riders stay on board"
              )
 
       assert has_element?(
                view,
-               "#gap-transfers [data-role='gap-transfer-state']",
+               "#gap-record-note",
                "Matches the block on every shared day."
              )
 
-      refute has_element?(view, "#gap-transfers", "Trip a → c")
+      # The record for the pair this gap does not join earns no note here.
+      refute has_element?(view, "#gap-record-note", "Trip a → c")
     end
   end
 

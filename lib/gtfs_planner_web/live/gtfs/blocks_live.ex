@@ -1606,7 +1606,15 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       {true, day} when not is_nil(day) ->
         state = socket.assigns.state
         block = find_block(day, state.block)
-        gap = resolve_gap(day, state.gap, not is_nil(socket.assigns.max_piece_minutes))
+
+        gap =
+          resolve_gap(
+            day,
+            socket.assigns.connections_all,
+            state.gap,
+            not is_nil(socket.assigns.max_piece_minutes)
+          )
+
         {socket, trip} = resolve_trip_view(socket, day, state.trip)
 
         socket
@@ -1676,22 +1684,22 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   # relief windows of that same gap, so neither is recomputed or re-derived here.
   # Operator changes are read as "checked" only while a relief limit is set, which
   # is the same rule the timeline's own relief mark follows.
-  defp resolve_gap(_day, nil, _relief_checked?), do: nil
+  defp resolve_gap(_day, _connections, nil, _relief_checked?), do: nil
 
-  defp resolve_gap(day, gap, relief_checked?) do
+  defp resolve_gap(day, connections, gap, relief_checked?) do
     case String.split(gap, "|") do
-      [from_id, to_id] -> find_gap(day, from_id, to_id, relief_checked?)
+      [from_id, to_id] -> find_gap(day, connections, from_id, to_id, relief_checked?)
       _other -> nil
     end
   end
 
-  defp find_gap(day, from_id, to_id, relief_checked?) do
+  defp find_gap(day, connections, from_id, to_id, relief_checked?) do
     Enum.find_value(day.blocks, fn block ->
-      gap_entry(day, block, from_id, to_id, relief_checked?)
+      gap_entry(day, block, connections, from_id, to_id, relief_checked?)
     end)
   end
 
-  defp gap_entry(day, block, from_id, to_id, relief_checked?) do
+  defp gap_entry(day, block, connections, from_id, to_id, relief_checked?) do
     with from when not is_nil(from) <- Enum.find(block.trips, &(&1.id == from_id)),
          to when not is_nil(to) <- Enum.find(block.trips, &(&1.id == to_id)),
          gap when not is_nil(gap) <-
@@ -1710,9 +1718,29 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
         records: pair_records(day.in_seat, from, to),
         short?: short_layover?(block, from_id, to_id)
       }
+      |> Map.merge(connection_facts(connections, from, to))
     else
       _other -> nil
     end
+  end
+
+  # The rider-facing facts `Blocking.Connections` already derived for this pair:
+  # the in-seat setting its records decided, whether they need review, and the
+  # place and turnback its group was grouped by. Reading the same map the timeline
+  # gaps and the later Connections view read keeps the drawer, the chart and the
+  # view from disagreeing about one connection. A pair the grouping does not
+  # carry — a loaded day cannot produce one — falls back to the arrival stop.
+  defp connection_facts(connections, from, to) do
+    id = "#{from.id}|#{to.id}"
+    connection = Enum.find(connections.connections, &(&1.id == id))
+    group = Enum.find(connections.groups, &(connection && &1.key == connection.group_key))
+
+    %{
+      setting: if(connection, do: connection.setting, else: :none),
+      review?: if(connection, do: connection.review?, else: false),
+      place: if(group, do: group.place.name, else: ""),
+      turnback?: if(group, do: group.turnback?, else: false)
+    }
   end
 
   # The block's own movement for the pair and the index its relief windows carry.
@@ -4204,6 +4232,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                   day_label={gap.day_label}
                   block_id={gap.block_id}
                   records={gap.records}
+                  routes={@routes}
+                  setting={gap.setting}
+                  place={gap.place}
+                  turnback?={gap.turnback?}
                   short?={gap.short?}
                   back_block={@back_block}
                 />
