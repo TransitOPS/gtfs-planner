@@ -58,6 +58,21 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   @type warning :: :wrong_side | :middle_of_street | :off_line
   @type move_band :: :correction | :review | :far
 
+  # The shapes `version_checks/1` reads. They are the `StopsMap` row maps, named
+  # here rather than referenced as `StopsMap.stop_row()`: `StopsMap` calls into
+  # this module at runtime, so a compile-time typespec reference back to it would
+  # close a cycle. The fields this function actually reads are `:id`, `:stop_id`,
+  # `:point`, `:location_type`, `:parent_station`, `:served?` and `:pattern_ids`,
+  # and `:pattern_id`, `:source` and `:points` on a line.
+  @type checked_stop :: map()
+  @type checked_line :: map()
+
+  # The width of one bucket in the duplicate scan, in metres. A cell has to be
+  # wider than the duplicate threshold or a pair either side of a boundary would
+  # be missed, and narrow enough that the scan is not quadratic over a whole
+  # city. Ten metres against a five-metre threshold leaves room on both sides.
+  @cell_metres 10.0
+
   @doc """
   How far apart two stops are, in metres.
   """
@@ -321,4 +336,151 @@ defmodule GtfsPlanner.Gtfs.StopPlacement do
   # two-point line, so this is the same geometry every other function here
   # uses rather than a second projection of the same question.
   defp deviation(point, first, last), do: offset_m(point, [first, last]) |> elem(0)
+
+  @doc """
+  The three placement problems a whole version has, for the map's checks list.
+
+  Takes the `StopsMap.load/2` model and answers with
+
+      %{duplicates: [{stop, stop, metres}],
+        wrong_side: [{stop, line}],
+        not_served: [stop]}
+
+  which is what step 26's disclosure renders: a pair of stops an editor has to
+  call different, a stop waiting on the far pavement from the vehicle that
+  serves it, and a stop nothing serves at all.
+
+  The duplicate scan is bucketed into a grid of `@cell_metres` cells around the
+  centre of the version, so its cost grows with the stops actually near each
+  other rather than with the square of the feed. Two stops within five metres
+  can only be in the same or an adjacent cell, so scanning each stop against its
+  own and eight neighbouring cells finds every pair and no others. Each pair is
+  listed once, ordered as `load/2` ordered the stops, so the list is stable
+  between two reads of the same version.
+
+  Same-station siblings and pairs of stations are skipped. Two bays of one
+  station are different places by construction — that is `classify_shared_station/2`
+  in the single-stop case — and two stations 3 m apart are two stations, which
+  is what stop IDs exist to express.
+
+  A wrong-side entry pairs the stop with the *first* of its own `:shape` lines
+  that puts it on the far pavement, rather than with all of them. The editor's
+  action is "look at this stop", and a stop on the wrong side of four
+  directional patterns is one row, not four. `:connector` lines are never
+  considered: they describe no roadside, so a stop beside one is not on the
+  wrong side of anything.
+
+  Not-served stops are the ones `served?` is false for with `location_type` 0.
+  An unserved *station* is not listed: a station with no children served is a
+  container awaiting platforms, not a stop riders are standing at.
+  """
+  @spec version_checks(%{stops: [checked_stop()], lines: [checked_line()]}) :: %{
+          duplicates: [{checked_stop(), checked_stop(), float()}],
+          wrong_side: [{checked_stop(), checked_line()}],
+          not_served: [checked_stop()]
+        }
+  def version_checks(%{stops: stops, lines: lines}) do
+    %{
+      duplicates: duplicate_pairs(stops),
+      wrong_side: wrong_side_stops(stops, lines),
+      not_served: not_served_stops(stops)
+    }
+  end
+
+  defp duplicate_pairs(stops) do
+    located = Enum.filter(stops, & &1.point)
+    grid = build_grid(located)
+
+    located
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {stop, index} ->
+      stop
+      |> later_neighbours(grid, index)
+      |> Enum.flat_map(&duplicate_pair(stop, &1))
+    end)
+  end
+
+  # The candidate pairs this stop contributes: each other stop in its own and the
+  # eight surrounding cells that comes after it in the list. The ordering is what
+  # makes every pair appear exactly once rather than twice.
+  defp later_neighbours(stop, grid, index) do
+    stop
+    |> neighbour_candidates(grid)
+    |> Enum.filter(fn {_other, other_index} -> other_index > index end)
+    |> Enum.map(fn {other, _other_index} -> other end)
+  end
+
+  # The pair a stop makes with one candidate, or nothing if they are not two
+  # places that could be the same one, or are further apart than the threshold.
+  defp duplicate_pair(stop, other) do
+    if comparable?(stop, other) do
+      metres = distance(stop.point, other.point)
+
+      if metres <= @duplicate_metres, do: [{stop, other, metres}], else: []
+    else
+      []
+    end
+  end
+
+  # Stops in the same cell as `stop` and in the eight around it, each with the
+  # index it holds in the caller's list. The index is what makes every pair
+  # appear exactly once: each stop only keeps candidates that come after it.
+  defp neighbour_candidates(stop, grid) do
+    {cell_x, cell_y} = cell_of(stop.point)
+
+    for dx <- -1..1,
+        dy <- -1..1,
+        {other, index} <- Map.get(grid, {cell_x + dx, cell_y + dy}, []),
+        do: {other, index}
+  end
+
+  defp build_grid(located) do
+    Enum.group_by(Enum.with_index(located), fn {stop, _index} -> cell_of(stop.point) end)
+  end
+
+  # The cell a point falls in, on a metre grid whose origin is lon/lat 0,0.
+  # Cells are compared relative to the same origin for every point, so a pair in
+  # adjacent cells is in adjacent cells on the same grid; bucketing around the
+  # version's centre instead would only change which cells exist, not which are
+  # neighbours.
+  defp cell_of({lon, lat}) do
+    {floor(lon * @metres_per_degree * :math.cos(:math.pi() * lat / 180) / @cell_metres),
+     floor(lat * @metres_per_degree / @cell_metres)}
+  end
+
+  # Two stops are comparable when they are genuinely two places that could be the
+  # same one. Sharing a station means they are siblings, and either one being a
+  # station means they are a station and something, never a duplicated pair.
+  defp comparable?(stop, other) do
+    not same_station?(stop, other) and not station?(stop) and not station?(other)
+  end
+
+  defp same_station?(stop, other) do
+    not is_nil(stop.parent_station) and stop.parent_station == other.parent_station
+  end
+
+  defp station?(stop), do: stop.location_type == 1
+
+  # One row per stop, not per offending line: a bidirectional pattern pair puts
+  # a stop on the wrong side of one direction only, and an editor's action is
+  # "look at this stop" rather than "look at this stop four times".
+  defp wrong_side_stops(stops, lines) do
+    shapes = Enum.filter(lines, &(&1.source == :shape))
+
+    for stop <- stops,
+        stop.served?,
+        not is_nil(stop.point),
+        line = Enum.find(own_shape_lines(stop, shapes), wrong_side_for?(stop)),
+        do: {stop, line}
+  end
+
+  defp wrong_side_for?(stop), do: &(warn(stop.point, &1.points, :shape) == :wrong_side)
+
+  defp own_shape_lines(stop, shapes) do
+    Enum.filter(shapes, &(&1.pattern_id in (stop.pattern_ids || [])))
+  end
+
+  defp not_served_stops(stops) do
+    Enum.filter(stops, &(&1.served? == false and &1.location_type == 0))
+  end
 end
