@@ -906,6 +906,36 @@ defmodule GtfsPlanner.Gtfs do
   def review_trip_change(_route_id, _command, _audit_context), do: {:error, :invalid_input}
 
   @doc """
+  Applies one trip-change command through `Schedules.apply_trip_change/4`.
+
+  `fence` is the caller's R3 tolerance: `{:reviewed, fingerprint}` for a reviewed
+  bulk command or the Shift strip, and `{:expected, %{trip_uuid => updated_at}}`
+  for a direct cell edit, clear or nudge; `:none` is the unfenced `:add_frequency`
+  pairing. A fingerprint mismatch is `{:error, {:stale_review, review}}`, an
+  `updated_at` mismatch is `{:error, :stale}` and an unpaired fence is
+  `{:error, :fence_required}`, each with nothing written. A change set with an
+  error consequence is `{:error, {:refused, errors}}`. Otherwise one command's
+  rows commit in one transaction behind the §4.4 lock order with one
+  shared-operation `"trip"` audit log per affected trip; the result carries the
+  changed, created and deleted trip UUIDs, the removed transfer count and the
+  restore payload an undo re-submits (nil for `:convert_frequency` and
+  `:restore`).
+  """
+  @spec apply_trip_change(
+          String.t(),
+          Schedules.TripChanges.command(),
+          Schedules.fence(),
+          AuditContext.t()
+        ) ::
+          {:ok, Schedules.apply_result()} | {:error, Schedules.apply_error()}
+  def apply_trip_change(route_id, command, fence, %AuditContext{} = audit_context) do
+    Schedules.apply_trip_change(route_id, command, fence, audit_context)
+  end
+
+  def apply_trip_change(_route_id, _command, _fence, _audit_context),
+    do: {:error, :invalid_input}
+
+  @doc """
   Edits one trip in place through `Schedules.update_trip/5`.
 
   `attrs` is a subset of `:start_time`, `:timed_pattern_id`, `:service_id`,

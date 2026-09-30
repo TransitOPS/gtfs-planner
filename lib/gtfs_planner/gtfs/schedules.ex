@@ -174,6 +174,41 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   @type delete_error :: :invalid_input | :not_found | :stale | :busy
   @type delete_result :: %{trips: non_neg_integer(), transfers: non_neg_integer()}
 
+  @typedoc """
+  What an apply accepts as its stale tolerance (R3, §4.4).
+
+  `{:reviewed, fingerprint}` is the reviewed bulk command and the Shift strip,
+  `{:expected, %{trip_uuid => updated_at}}` a direct cell edit, clear or nudge whose
+  page loaded those rows, and `:none` the unfenced `:add_frequency` pairing. Every
+  other command/fence pairing is `{:error, :fence_required}`.
+  """
+  @type fence :: {:reviewed, String.t()} | {:expected, %{Ecto.UUID.t() => DateTime.t()}} | :none
+
+  @typedoc "What one applied command returns; `restore` is nil for a non-undoable command."
+  @type apply_result :: %{
+          operation_id: Ecto.UUID.t(),
+          changed_trip_ids: [Ecto.UUID.t()],
+          created_trip_ids: [Ecto.UUID.t()],
+          deleted_trip_ids: [Ecto.UUID.t()],
+          transfers_removed: non_neg_integer(),
+          change_set: TripChanges.change_set(),
+          restore: TripChanges.restore_payload() | nil
+        }
+
+  @type apply_error ::
+          {:stale_review, TripChanges.review()}
+          | :stale
+          | {:refused, [TripChanges.consequence()]}
+          | :fence_required
+          | :not_found
+          | :calendar_not_found
+          | :invalid_command
+          | :too_many_trips
+          | :busy
+          | :trip_stop_times_mismatch
+          | :trip_id_conflict
+          | Ecto.Changeset.t()
+
   @doc """
   Expands a series of departure seconds from `start_secs`.
 
@@ -758,6 +793,589 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     case Repo.transaction(read) do
       {:ok, result} -> {:ok, result}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # -- Change apply (R3) ------------------------------------------------------
+
+  @doc """
+  Applies one validated trip-change command in a single write transaction.
+
+  The command is validated first; the transaction then re-reads the command's
+  scoped identities and takes the §4.4 engine locks in order: the calendar
+  reference check for every involved service in sorted order, the published route
+  `FOR UPDATE`, each affected pattern `FOR UPDATE` by ascending UUID, the version's
+  blocking advisory lock when `block_id` can change, and the affected trips
+  `FOR UPDATE` by ascending UUID. Under those locks it re-loads the same state the
+  review loaded, plans the command again and checks the caller's fence: a
+  `{:reviewed, fingerprint}` must equal the recomputed fingerprint
+  (`{:error, {:stale_review, review}}` otherwise) and an `{:expected, ...}` map must
+  equal every command trip's `updated_at` (`{:error, :stale}` otherwise). Any
+  command/fence pairing outside §4.4 is `{:error, :fence_required}`.
+
+  A change set carrying any `{:error, _}` consequence is
+  `{:error, {:refused, errors}}` with no write. Otherwise the applier reads the
+  audit `before` snapshots and the restore capture, writes the change set (trip
+  fields and a forced `updated_at`, positionally written stop-time values,
+  wholesale frequency replacement, inserts and deletes), and records one `"trip"`
+  audit log per affected trip under one shared operation id. The result carries the
+  changed, created and deleted trip UUIDs, the removed transfer count, the applied
+  change set, and the restore payload an undo re-submits (nil for
+  `:convert_frequency` and `:restore`).
+  """
+  @spec apply_trip_change(String.t(), TripChanges.command(), fence(), AuditContext.t()) ::
+          {:ok, apply_result()} | {:error, apply_error()}
+  def apply_trip_change(route_id, command, fence, %AuditContext{} = audit_context) do
+    case TripChanges.validate(command) do
+      {:ok, command} ->
+        run_write(fn -> do_apply_trip_change(route_id, command, fence, audit_context) end)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def apply_trip_change(_route_id, _command, _fence, _audit_context),
+    do: {:error, :invalid_input}
+
+  defp do_apply_trip_change(route_id, command, fence, audit_context) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+
+    # The pre-lock read chooses the lock set (services, route, patterns, trips);
+    # every identity is re-read under the locks below, which is the authoritative
+    # state the fence and the planner consume.
+    route = published_route!(organization_id, version_id, route_id)
+    identities = change_identities!(organization_id, version_id, route, command)
+
+    patterns =
+      change_patterns!(
+        organization_id,
+        version_id,
+        route,
+        change_pattern_ids!(organization_id, version_id, route, command, identities)
+      )
+
+    lock_change_scope!(route_id, command, identities, patterns, audit_context)
+
+    state = load_change_state(route, command, audit_context)
+
+    case TripChanges.plan(command, state) do
+      {:ok, change_set} ->
+        review = change_review(command, state, change_set)
+
+        with :ok <- check_fence!(command, fence, state, review),
+             :ok <- refuse_errors!(change_set) do
+          apply_change_set(route, command, state, change_set, audit_context)
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  # INV-1 lock order: calendar reference locks for every involved service in
+  # sorted order, the route, the affected patterns by ascending UUID, the blocking
+  # advisory lock when a block can change, then the trips by ascending UUID.
+  defp lock_change_scope!(route_id, command, identities, patterns, audit_context) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+
+    identities
+    |> change_services(command)
+    |> Enum.each(&Calendars.lock_service_for_reference!(organization_id, version_id, &1))
+
+    route = RoutePatterns.lock_published_route!(audit_context, route_id)
+
+    patterns
+    |> Map.values()
+    |> Enum.map(& &1.pattern)
+    |> Enum.sort_by(& &1.id)
+    |> Enum.each(&RoutePatterns.lock_pattern!(route, &1.id))
+
+    if change_locks_blocking?(command, identities), do: Blocking.lock_blocking!(version_id)
+
+    lock_change_trips!(organization_id, version_id, route.route_id, Enum.map(identities, & &1.id))
+    :ok
+  end
+
+  defp change_services(identities, command) do
+    (Enum.map(identities, & &1.service_id) ++ [change_target_service(command)])
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  # A calendar move can clear a block and a restore can put a captured block back,
+  # so those two commands join the block guarantee; every other command leaves
+  # `block_id` alone and must not take the advisory lock.
+  defp change_locks_blocking?({:move_calendar, _trip_ids, _service_id}, _identities), do: true
+
+  defp change_locks_blocking?({:restore, payload}, identities) do
+    captured = payload_block_ids(payload)
+
+    Enum.any?(identities, fn identity ->
+      Map.get(captured, identity.id) != identity.block_id
+    end)
+  end
+
+  defp change_locks_blocking?(_command, _identities), do: false
+
+  defp payload_block_ids(payload) do
+    payload
+    |> attr(:trips)
+    |> List.wrap()
+    |> Map.new(fn trip -> {attr(trip, :id), attr(attr(trip, :fields), :block_id)} end)
+  end
+
+  defp lock_change_trips!(_organization_id, _version_id, _route_id, []), do: :ok
+
+  defp lock_change_trips!(organization_id, version_id, route_id, trip_uuids) do
+    locked =
+      from(t in Trip,
+        where:
+          t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+            t.route_id == ^route_id and t.id in ^trip_uuids,
+        order_by: [asc: t.id],
+        lock: "FOR UPDATE"
+      )
+      |> Repo.all()
+
+    if length(locked) != length(trip_uuids), do: Repo.rollback(:not_found)
+    :ok
+  end
+
+  # §4.4 fence table: a reviewed command compares the recomputed fingerprint, a
+  # direct command compares every affected trip's `updated_at`, and adding
+  # frequency service has no prior row to fence.
+  defp check_fence!(command, fence, state, review) do
+    case {fence_rule(command), fence} do
+      {:reviewed, {:reviewed, fingerprint}} when is_binary(fingerprint) ->
+        reviewed_fence(fingerprint, review)
+
+      {:reviewed_or_expected, {:reviewed, fingerprint}} when is_binary(fingerprint) ->
+        reviewed_fence(fingerprint, review)
+
+      {:expected, {:expected, expected}} when is_map(expected) ->
+        expected_fence(command, expected, state)
+
+      {:reviewed_or_expected, {:expected, expected}} when is_map(expected) ->
+        expected_fence(command, expected, state)
+
+      {:none, :none} ->
+        :ok
+
+      _pairing ->
+        {:error, :fence_required}
+    end
+  end
+
+  defp reviewed_fence(fingerprint, review) do
+    if fingerprint == review.fingerprint, do: :ok, else: {:error, {:stale_review, review}}
+  end
+
+  defp fence_rule({:shift, _trip_ids, _delta, _from_position}), do: :reviewed_or_expected
+  defp fence_rule({:edit_stop, _trip_id, _params}), do: :expected
+  defp fence_rule({:update_frequency, _trip_id, _params}), do: :expected
+  defp fence_rule({:set_timing, _trip_ids, _timing_id}), do: :reviewed
+  defp fence_rule({:move_calendar, _trip_ids, _service_id}), do: :reviewed
+  defp fence_rule({:copy, _trip_ids, _service_id, _offset, _skip_existing}), do: :reviewed
+  defp fence_rule({:convert_frequency, _trip_id}), do: :reviewed
+  defp fence_rule({:add_frequency, _attrs}), do: :none
+  defp fence_rule(_command), do: :unsupported
+
+  defp expected_fence(command, expected, state) do
+    if command
+       |> change_trip_ids()
+       |> Enum.all?(&expected_trip?(&1, expected, state)) do
+      :ok
+    else
+      {:error, :stale}
+    end
+  end
+
+  defp expected_trip?(trip_id, expected, state) do
+    case Map.get(state.trips, trip_id) do
+      %{trip: trip} -> expected_match?(trip.updated_at, Map.get(expected, trip_id))
+      _missing -> false
+    end
+  end
+
+  defp expected_match?(updated_at, expected) do
+    case normalize_timestamp(expected) do
+      %DateTime{} = value -> DateTime.compare(updated_at, value) == :eq
+      nil -> false
+    end
+  end
+
+  defp refuse_errors!(change_set) do
+    case Enum.filter(change_set.consequences, &match?({:error, _}, &1)) do
+      [] -> :ok
+      errors -> {:error, {:refused, errors}}
+    end
+  end
+
+  defp apply_change_set(route, command, state, change_set, audit_context) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+    now = DateTime.utc_now()
+    operation_id = Ecto.UUID.generate()
+
+    updates = Enum.map(change_set.updates, &change_update_entry(&1, state))
+    deletes = Enum.map(change_set.deletes, &change_delete_entry(&1, state))
+
+    # R11: the audit `before` snapshots and the restore capture are read before
+    # any row changes; a later restore fences on the `updated_at` this write makes.
+    restore = capture_restore(command, route, updates, operation_id, audit_context, now)
+
+    before =
+      trip_audit_snapshots(
+        organization_id,
+        version_id,
+        change_trip_structs(updates, deletes)
+      )
+
+    updated =
+      Enum.map(updates, fn {update, entry} ->
+        {entry.trip, apply_change_update!(update, entry, now)}
+      end)
+
+    inserted = Enum.map(change_set.inserts, &apply_change_insert!(&1, audit_context))
+    transfers_removed = apply_change_deletes(organization_id, version_id, deletes)
+    restore = put_restore_created(restore, inserted)
+
+    after_snapshots =
+      trip_audit_snapshots(
+        organization_id,
+        version_id,
+        Enum.map(updated, &elem(&1, 1)) ++ inserted
+      )
+
+    affected_ids = change_affected_ids(updates, inserted, deletes)
+
+    audit_change_set!(
+      audit_context,
+      operation_id,
+      affected_ids,
+      before,
+      after_snapshots,
+      updated,
+      inserted,
+      deletes
+    )
+
+    %{
+      operation_id: operation_id,
+      changed_trip_ids: Enum.map(updated, fn {_before, after_trip} -> after_trip.id end),
+      created_trip_ids: Enum.map(inserted, & &1.id),
+      deleted_trip_ids: Enum.map(deletes, & &1.trip.id),
+      transfers_removed: transfers_removed,
+      change_set: change_set,
+      restore: restore
+    }
+  end
+
+  defp change_update_entry(update, state) do
+    case Map.get(state.trips, update.trip_id) do
+      %{trip: _trip} = entry -> {update, entry}
+      _missing -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp change_delete_entry(trip_id, state) do
+    case Map.get(state.trips, trip_id) do
+      %{trip: _trip} = entry -> entry
+      _missing -> Repo.rollback(:not_found)
+    end
+  end
+
+  defp change_trip_structs(updates, deletes) do
+    Enum.map(updates, fn {_update, entry} -> entry.trip end) ++
+      Enum.map(deletes, & &1.trip)
+  end
+
+  # An update writes the planned trip fields, forces a fresh `updated_at` even
+  # when only the stop times moved (FH-15, INV-2), then writes the listed
+  # stop-time values positionally and replaces the frequency rows when given.
+  defp apply_change_update!(update, entry, now) do
+    updated =
+      entry.trip
+      |> Ecto.Changeset.change(update.fields)
+      |> Ecto.Changeset.force_change(:updated_at, now)
+      |> update_trip_row!()
+
+    write_change_stop_times!(updated, update.stop_times)
+    write_change_frequencies!(updated, update.frequencies)
+    updated
+  end
+
+  defp write_change_stop_times!(_trip, :unchanged), do: :ok
+
+  defp write_change_stop_times!(trip, values) when is_list(values) do
+    rows =
+      from(st in StopTime,
+        where:
+          st.organization_id == ^trip.organization_id and
+            st.gtfs_version_id == ^trip.gtfs_version_id and st.trip_id == ^trip.trip_id,
+        order_by: [asc: st.stop_sequence, asc: st.id],
+        lock: "FOR UPDATE"
+      )
+      |> Repo.all()
+
+    if length(rows) != length(values), do: Repo.rollback(:trip_stop_times_mismatch)
+
+    rows
+    |> Enum.zip(Enum.sort_by(values, & &1.position))
+    |> Enum.each(fn {row, values} ->
+      attrs =
+        [:arrival_time, :departure_time, :timepoint, :pickup_type, :drop_off_type, :stop_headsign]
+        |> Enum.filter(&Map.has_key?(values, &1))
+        |> Map.new(&{&1, Map.get(values, &1)})
+
+      row
+      |> Ecto.Changeset.change(attrs)
+      |> update_stop_time_row!()
+    end)
+  end
+
+  defp write_change_frequencies!(_trip, :unchanged), do: :ok
+
+  defp write_change_frequencies!(trip, frequencies) when is_list(frequencies) do
+    delete_children!(:frequencies, trip.organization_id, trip.gtfs_version_id, [trip.trip_id])
+    insert_change_frequencies!(trip, frequencies)
+  end
+
+  # A created trip never carries a block (R7, FH-23): the engine owns the scope
+  # columns and drops any `block_id` a change set submits.
+  defp apply_change_insert!(insert, audit_context) do
+    attrs =
+      insert.attrs
+      |> Map.drop([:block_id])
+      |> Map.put(:organization_id, audit_context.organization_id)
+      |> Map.put(:gtfs_version_id, audit_context.gtfs_version_id)
+
+    trip = insert_trip!(attrs)
+
+    insert_change_stop_times!(trip, List.wrap(insert.stop_times))
+    insert_change_frequencies!(trip, List.wrap(insert.frequencies))
+    trip
+  end
+
+  defp insert_change_stop_times!(trip, rows) do
+    now = DateTime.utc_now()
+
+    rows =
+      Enum.map(rows, fn row ->
+        %{
+          trip_id: trip.trip_id,
+          stop_id: attr(row, :stop_id),
+          stop_sequence: attr(row, :stop_sequence),
+          arrival_time: attr(row, :arrival_time),
+          departure_time: attr(row, :departure_time),
+          stop_headsign: attr(row, :stop_headsign),
+          pickup_type: attr(row, :pickup_type),
+          drop_off_type: attr(row, :drop_off_type),
+          continuous_pickup: attr(row, :continuous_pickup),
+          continuous_drop_off: attr(row, :continuous_drop_off),
+          shape_dist_traveled: attr(row, :shape_dist_traveled),
+          timepoint: attr(row, :timepoint),
+          organization_id: trip.organization_id,
+          gtfs_version_id: trip.gtfs_version_id,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    insert_stop_times!(rows)
+  end
+
+  defp insert_change_frequencies!(trip, frequencies) do
+    now = DateTime.utc_now()
+
+    rows =
+      Enum.map(frequencies, fn frequency ->
+        %{
+          trip_id: trip.trip_id,
+          start_time: frequency_time(frequency, :start_time, :start_secs),
+          end_time: frequency_time(frequency, :end_time, :end_secs),
+          headway_secs: attr(frequency, :headway_secs),
+          exact_times: attr(frequency, :exact_times),
+          organization_id: trip.organization_id,
+          gtfs_version_id: trip.gtfs_version_id,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    if rows != [], do: Repo.insert_all(Frequency, rows)
+    :ok
+  end
+
+  # The stored-row frequency shape carries clocks; a `FrequencyWindows.window()`
+  # carries seconds. One accepts both without a second converter.
+  defp frequency_time(frequency, time_key, secs_key) do
+    case attr(frequency, time_key) do
+      time when is_binary(time) ->
+        time
+
+      _missing ->
+        case attr(frequency, secs_key) do
+          secs when is_integer(secs) -> GtfsTime.format(secs)
+          _absent -> nil
+        end
+    end
+  end
+
+  defp apply_change_deletes(_organization_id, _version_id, []), do: 0
+
+  defp apply_change_deletes(organization_id, version_id, deletes) do
+    trips = Enum.map(deletes, & &1.trip)
+    natural_ids = Enum.map(trips, & &1.trip_id)
+
+    delete_children!(:stop_times, organization_id, version_id, natural_ids)
+    delete_children!(:frequencies, organization_id, version_id, natural_ids)
+
+    {transfers, nil} =
+      Repo.delete_all(trip_transfers_query(organization_id, version_id, natural_ids))
+
+    delete_trip_rows!(organization_id, version_id, Enum.map(trips, & &1.id))
+    transfers
+  end
+
+  # The restore payload captures what an undo puts back (R10): the changed trip's
+  # R10 fields, its stop-time rows and its frequency rows, plus the `updated_at`
+  # this write produces. `:convert_frequency` and `:restore` are not undoable.
+  defp capture_restore(command, route, updates, operation_id, audit_context, now) do
+    if undoable_command?(command) do
+      %{
+        operation_id: operation_id,
+        organization_id: audit_context.organization_id,
+        gtfs_version_id: audit_context.gtfs_version_id,
+        route_id: route.route_id,
+        trips: Enum.map(updates, fn {_update, entry} -> restore_trip(entry, now) end),
+        created: []
+      }
+    end
+  end
+
+  defp undoable_command?(command) when is_tuple(command) and tuple_size(command) > 0,
+    do: elem(command, 0) not in [:convert_frequency, :restore]
+
+  defp undoable_command?(_command), do: false
+
+  defp restore_trip(entry, written_updated_at) do
+    %{
+      id: entry.trip.id,
+      written_updated_at: written_updated_at,
+      fields:
+        Map.take(entry.trip, [
+          :service_id,
+          :timed_pattern_id,
+          :pattern_derivation_state,
+          :pattern_derivation_reason,
+          :block_id
+        ]),
+      stop_times: Enum.map(entry.stop_times, &restore_stop_time/1),
+      frequencies: Enum.map(entry.frequencies, &restore_frequency/1)
+    }
+  end
+
+  defp restore_stop_time(stop_time) do
+    %{
+      id: attr(stop_time, :id),
+      arrival_time: attr(stop_time, :arrival_time),
+      departure_time: attr(stop_time, :departure_time),
+      timepoint: attr(stop_time, :timepoint),
+      pickup_type: attr(stop_time, :pickup_type),
+      drop_off_type: attr(stop_time, :drop_off_type),
+      stop_headsign: attr(stop_time, :stop_headsign)
+    }
+  end
+
+  defp restore_frequency(frequency) do
+    %{
+      start_time: attr(frequency, :start_time),
+      end_time: attr(frequency, :end_time),
+      headway_secs: attr(frequency, :headway_secs),
+      exact_times: attr(frequency, :exact_times)
+    }
+  end
+
+  defp put_restore_created(nil, _inserted), do: nil
+
+  defp put_restore_created(restore, inserted) do
+    Map.put(restore, :created, Enum.map(inserted, &restore_created_trip/1))
+  end
+
+  defp restore_created_trip(trip) do
+    %{id: trip.id, trip_id: trip.trip_id, written_updated_at: trip.updated_at}
+  end
+
+  defp change_affected_ids(updates, inserted, deletes) do
+    (Enum.map(updates, fn {_update, entry} -> entry.trip.id end) ++
+       Enum.map(inserted, & &1.id) ++ Enum.map(deletes, & &1.trip.id))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  # R11: one `"trip"` log per affected trip, all sharing one operation id and the
+  # command's complete affected trip list. An audit failure rolls the whole
+  # transaction back (INV-3).
+  defp audit_change_set!(
+         audit_context,
+         operation_id,
+         affected_ids,
+         before,
+         after_snapshots,
+         updated,
+         inserted,
+         deletes
+       ) do
+    Enum.each(updated, fn {before_trip, after_trip} ->
+      audit_trip!(
+        audit_context,
+        after_trip,
+        "updated",
+        Map.get(before, before_trip.id),
+        Map.get(after_snapshots, after_trip.id),
+        operation_id,
+        affected_ids
+      )
+    end)
+
+    Enum.each(inserted, fn trip ->
+      audit_trip!(
+        audit_context,
+        trip,
+        "created",
+        nil,
+        Map.get(after_snapshots, trip.id),
+        operation_id,
+        affected_ids
+      )
+    end)
+
+    Enum.each(deletes, fn entry ->
+      audit_trip!(
+        audit_context,
+        entry.trip,
+        "deleted",
+        Map.get(before, entry.trip.id),
+        nil,
+        operation_id,
+        affected_ids
+      )
+    end)
+
+    :ok
+  end
+
+  defp update_stop_time_row!(changeset) do
+    case Repo.update(changeset) do
+      {:ok, stop_time} -> stop_time
+      {:error, changeset} -> Repo.rollback(changeset)
     end
   end
 
