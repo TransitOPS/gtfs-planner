@@ -512,14 +512,35 @@ defmodule GtfsPlannerWeb.Gtfs.RunsTimelineLiveTest do
       world = seeded_world(context)
       conn = log_in_user(context.conn, context.user, organization: world.organization)
 
-      # The version's day type with no runs still has blocks, so the page is
-      # `:loaded` and the chart renders — with no rows, because there are no
-      # runs. The header and the axis are still there, so the empty table is not
-      # an unexplained blank region: step 24 fills it.
+      # The version's day type with no runs still has blocks, so the page IS
+      # `:loaded` — and step 35 gave that state a panel of its own. The chart used
+      # to render here with no rows; it no longer does, because an empty chart
+      # reads as a day whose blocks are all covered, which is the opposite of
+      # what is true. The region is still explained, by the first-use panel.
       {:ok, view, _html} = live(conn, "/gtfs/#{world.version.id}/runs")
 
-      assert has_element?(view, "#runs-timeline")
-      assert row_order(view) == []
+      assert has_element?(view, "#runs-page[data-load-state=loaded]")
+      assert has_element?(view, "#runs-first-use")
+      refute has_element?(view, "#runs-timeline")
+
+      # A day that HAS runs is not in that state, and the chart is there — which
+      # is what keeps the panel from being a permanent replacement.
+      planned = seeded_world(context)
+      [first | _rest] = planned.blocks["101"]
+
+      trip_run_fixture(planned.organization.id, planned.version.id, %{
+        trip: first,
+        day_type_key: planned.day_type_key,
+        run_id: "1001"
+      })
+
+      # A FRESH conn: `live/2` consumes the one it is given, so the same `conn`
+      # cannot mount a second LiveView.
+      planned_conn = log_in_user(context.conn, context.user, organization: planned.organization)
+      {:ok, planned_view, _html} = live(planned_conn, "/gtfs/#{planned.version.id}/runs")
+
+      refute has_element?(planned_view, "#runs-first-use")
+      assert has_element?(planned_view, "#runs-timeline")
 
       # An unknown day type is a state the page moves into rather than a day it
       # has, and the chart is not part of that state.
