@@ -103,20 +103,26 @@ for (const viewport of VIEWPORTS) {
       await page.goto(schedulesPath(versionId, GRID_ROUTE));
       await expect(page.locator("#trip-BSG_T01-start")).toHaveText("05:00");
 
-      // Establish the cursor in the first row, then walk it to the last row
-      // with the hook's own scroll-into-view (PM-10, FH-40).
+      // Establish the cursor in the first row at the top of the page, then walk
+      // it to the last row with the hook's own scroll-into-view (PM-10, FH-40).
+      // The section continues below the viewport here, so the sticky bar is
+      // pinned over the rows and could cover the cursor; at the document's end
+      // the bar sits in flow below the sections and cannot.
       await page.locator("#cell-BSG_T01-1").click();
       await expect(page.locator("#cell-BSG_T01-1")).toBeFocused();
       await page.keyboard.press("Control+ArrowDown");
       await expect(page.locator("#cell-BSG_CUSTOM-1")).toBeFocused();
 
-      // The document's end is the worst case: the region's bottom edge sits
-      // nearest the sticky bar.
-      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-      await page.waitForTimeout(250);
-      await page.keyboard.press("Control+ArrowDown");
-      await expect(page.locator("#cell-BSG_CUSTOM-1")).toBeFocused();
-      await page.waitForTimeout(250);
+      // Measure once the scroll has settled: two frames with the same offset.
+      await page.waitForFunction(
+        () =>
+          new Promise((settled) => {
+            const start = window.scrollY;
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => settled(window.scrollY === start)),
+            );
+          }),
+      );
 
       const geometry = await page.evaluate(() => {
         const cell = document.activeElement;
