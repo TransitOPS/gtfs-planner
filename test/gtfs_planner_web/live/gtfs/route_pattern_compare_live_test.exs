@@ -315,6 +315,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLiveTest do
         end
       end)
 
+      # The retry that recovers the comparison loads the map read with it (the
+      # map is its own read, `CL-13`); only the pair read is stubbed to fail.
+      stub(CatalogReadAdapterMock, :load_pattern_compare_map, fn org, ver, a, b ->
+        CatalogReadAdapter.Repo.load_pattern_compare_map(org, ver, a, b)
+      end)
+
       {:ok, view, _html} =
         live(conn, compare_path(version, route, %{"a" => "FULL", "b" => "SHORT"}))
 

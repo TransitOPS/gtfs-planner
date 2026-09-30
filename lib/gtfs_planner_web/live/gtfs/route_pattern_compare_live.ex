@@ -5,8 +5,8 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
   Route › Patterns › Compare patterns lines two patterns up stop by stop. The
   route header, the title row with its view switch and calendar select, and the
   loading and unavailable states are rendered here from
-  `RoutePatternCompareComponents.page/1`; the slots, summary and stop table
-  arrive with it, and the map arrives in a later step. The stop table is a
+  `RoutePatternCompareComponents.page/1`; the slots, summary, stop table and
+  map pane arrive with it. The stop table is a
   stream (`:compare_rows`), reset on every load and rendered with stable DOM ids
   per row index (`INV-4`).
 
@@ -19,6 +19,12 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
   published route returns to the Patterns tab with the `Pattern not found` flash.
   Access uses the same editor guard as the pattern pages. The page writes nothing
   (`INV-2`).
+
+  The map pane (`AC-22`) arrives with the pair: `#compare-map` mounts the
+  `PatternCompareMap` hook on `Gtfs.load_pattern_compare_map/4`'s payload, read
+  after the comparison and carrying one numbered pin per difference. Its own
+  failure is isolated to the pane, and `retry_map` reloads only that read
+  (`CL-13`).
 
   The pattern picker (`AC-20`) is the `picker` param. It opens with
   `Gtfs.load_pattern_picker/3` loaded once per open; `picker_search` filters that
@@ -57,6 +63,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
      |> assign(:overview_dir, 0)
      |> assign(:overview_picked, [])
      |> assign(:picker, nil)
+     |> assign(:map_payload, nil)
      |> assign(:load_state, :loading)
      |> stream(:compare_rows, [], dom_id: & &1.dom_id)}
   end
@@ -81,6 +88,18 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
   @impl true
   def handle_event("retry", _params, socket) do
     load(socket, socket.assigns.requested)
+  end
+
+  # "Retry map" re-runs the map read alone (`CL-13`, `AC-22`): the comparison,
+  # its stream and every other pane stay exactly as they were, so a map outage
+  # never costs the planner the table. Without a loaded comparison there is
+  # nothing to draw and nothing to retry.
+  @impl true
+  def handle_event("retry_map", _params, socket) do
+    case socket.assigns.comparison do
+      %{} = comparison -> {:noreply, load_map(socket, comparison)}
+      nil -> {:noreply, socket}
+    end
   end
 
   @impl true
@@ -211,6 +230,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
             slot_paths(@comparison, @current_gtfs_version.id, @route_id, @requested)
         }
         reverse_path={reverse_path(@comparison, @current_gtfs_version.id, @route_id, @requested)}
+        map_payload={@map_payload}
         picker={@picker}
         overview={@overview}
         overview_dir={@overview_dir}
@@ -271,9 +291,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
           socket
           |> assign(:comparison, comparison)
           |> assign(:load_state, :ready)
+          |> assign(:map_payload, nil)
           |> stream(:compare_rows, RoutePatternCompareComponents.stop_table_items(comparison),
             reset: true
           )
+          |> load_map(comparison)
 
         {:noreply, load_picker(socket, params, comparison)}
 
@@ -289,10 +311,47 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
     end
   end
 
+  # The map read is separate from the comparison read (`CL-13`, `AC-22`): it runs
+  # after a successful pair load, and a failure here changes nothing else on the
+  # page, so `nil` means only the pane shows its own unavailable block and
+  # retry. A's payload is drawn with B's only when B resolved inside the scope;
+  # `:not_found` (A vanished between the two reads) is the same pane failure.
+  defp load_map(socket, comparison) do
+    scope = scope(socket)
+
+    case Gtfs.load_pattern_compare_map(
+           scope.organization_id,
+           scope.gtfs_version_id,
+           comparison.a.pattern.route_pattern_id,
+           comparison.b && comparison.b.pattern.route_pattern_id
+         ) do
+      {:ok, payload} ->
+        assign(socket, :map_payload, Map.put(payload, :pins, map_pins(comparison)))
+
+      {:error, _reason} ->
+        assign(socket, :map_payload, nil)
+    end
+  end
+
+  # The map's numbered pins (`AC-22`): one per difference, in the summary's own
+  # order, at the first row of the difference (`R10`). Pin n is the "What's
+  # different" item n, so the two numberings agree without a second source; the
+  # hook drops a pin whose stop the read left unlocated.
+  defp map_pins(%{alignment: %{differences: %{items: items}, rows: rows}}) do
+    items
+    |> Enum.with_index(1)
+    |> Enum.map(fn {item, number} ->
+      %{n: number, stop_id: Enum.at(rows, Enum.min(item.rows)).stop_id}
+    end)
+  end
+
+  defp map_pins(_comparison_without_alignment), do: []
+
   # The all-patterns read (`AC-21`): one route direction's overview, at the URL's
   # `dir` and calendar. The picked columns belong to one direction, so a
   # direction change clears them while a calendar change keeps them. The pair's
-  # own read is dropped with it: the two views share nothing but the URL.
+  # own read and its map are dropped with it: the two views share nothing but
+  # the URL.
   defp load_overview(socket, params) do
     direction = direction_param(params["dir"])
     scope = scope(socket)
@@ -316,6 +375,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
          |> assign(:overview_dir, direction)
          |> assign(:overview_picked, picked)
          |> assign(:comparison, nil)
+         |> assign(:map_payload, nil)
          |> assign(:picker, nil)
          |> assign(:load_state, :ready)}
 

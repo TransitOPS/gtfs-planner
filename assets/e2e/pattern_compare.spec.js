@@ -411,3 +411,93 @@ test.describe("compare overview (step 19)", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 });
+
+// ── Map captures (step 21) ──────────────────────────────────────────────────
+//
+// The sticky map pane: the replacement pair (B replaces A's third stop with two
+// stops) drawn from the map read at both viewports, with its numbered
+// difference pins, and the pane's own unavailable composition. The database is
+// healthy, so the unavailable map a browser can reach is the tile proxy
+// failing: the hook's #compare-map-off then keeps the pane, the copy and the
+// stop table, which is what the reference's map-unavailable state shows. The
+// read-outage block #compare-map-unavailable is asserted by EV-19, which the
+// browser cannot reach without a database outage.
+
+test.describe("compare map (step 21)", () => {
+  test("capture: map", async ({ page, context }) => {
+    test.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    for (const [name, width, height] of [
+      ["map-1440", 1440, 900],
+      ["map-390", 390, 844],
+    ]) {
+      await page.setViewportSize({ width, height });
+      await page.goto(compareUrl(versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-DEV"));
+
+      // Text readiness: the map read landed on the hook (both series drawn) and
+      // the two differences are pinned (the replaced stop and the +1:00 stretch
+      // into stop 5). The legend names what the hook drew.
+      await page.waitForSelector(".compare-map-pin");
+      await expect(page.locator("#compare-map")).toHaveAttribute(
+        "data-map-payload",
+        /"series":"both"/,
+      );
+      await expect(page.locator(".compare-map-pin")).toHaveCount(2);
+      await expect(page.locator("#compare-map-legend")).toContainText("Only B");
+      await expect(page.locator("#compare-map-legend")).toContainText("Difference");
+      await capture(page, name);
+    }
+
+    // Below lg the pane stacks first at the map's 360 px height, above the
+    // summary, so the map and the table are both on the one column.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(compareUrl(versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-DEV"));
+    await page.waitForSelector(".compare-map-pin");
+
+    const mapBox = await page.locator("#compare-map").boundingBox();
+    const paneBox = await page.locator("#compare-map-pane").boundingBox();
+    const summaryBox = await page.locator("#compare-summary").boundingBox();
+
+    expect(Math.round(mapBox.height)).toBe(360);
+    expect(paneBox.y).toBeLessThan(summaryBox.y);
+
+    // Tiles failing: the map degrades to the pane's notice and everything else
+    // stays. The browser logs each failed tile, so only that line is ignored.
+    const failed = await context.newPage();
+    const failedProblems = collectPageErrors(failed);
+
+    await failed.route("**/map/tiles/**", (route) => route.fulfill({ status: 500, body: "" }));
+    await logIn(failed);
+
+    for (const [name, width, height] of [
+      ["map-unavailable-1440", 1440, 900],
+      ["map-unavailable-390", 390, 844],
+    ]) {
+      await failed.setViewportSize({ width, height });
+      await failed.goto(compareUrl(versionId, "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-DEV"));
+
+      await expect(failed.locator("#compare-map-off")).toBeVisible();
+      await expect(failed.locator("#compare-map-off")).toContainText("The map is unavailable");
+      await expect(failed.locator("#compare-map-off")).toContainText(
+        "The stop list, differences and times still work.",
+      );
+      await expect(failed.locator("#compare-map-retry")).toHaveText("Retry map");
+      await expect(failed.locator("#compare-stops")).toBeVisible();
+      await capture(failed, name);
+    }
+
+    await failed.close();
+
+    expect(problems, problems.join("\n")).toEqual([]);
+    expect(
+      failedProblems.filter((problem) => !problem.includes("Failed to load resource")),
+      failedProblems.join("\n"),
+    ).toEqual([]);
+  });
+});
