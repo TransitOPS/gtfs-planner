@@ -943,7 +943,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
          |> assign(:drawer, {:run, run.run_id})
          |> assign(:run, run.run_id)
          |> reset_rename_form()
-         |> sync_run_context()}
+         |> sync_run_context()
+         |> push_patch(to: runs_path(socket, socket.assigns.day, %{run: run.run_id}))}
     end
   end
 
