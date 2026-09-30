@@ -21,6 +21,10 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Alignment do
     time stopped in between counts and a wait at either anchor does not. A `:same` row missing a
     time on either side is untimed and is not an anchor. Waits at an anchor that is neither the
     first nor the last visit of either pattern are reported when they differ.
+  - `AC-18` Differences. `differences/2` derives the ordered summary items: stop stretches with
+    their bounding anchors and segment, moved pairs (collapsed above three), boarding changes and
+    the largest timing changes, plus the count of smaller timing differences. `detail` stays
+    data-only; the components render the sentences.
 
   Alignment costs O(n*m) over three integer matrices (match, A-only row, B-only row). The assumed
   ceiling is 200 x 200 visits; beyond that the upgrade path is banded alignment. The module is
@@ -56,6 +60,13 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Alignment do
           b_secs: integer() | nil,
           diff: integer() | nil,
           same_stops?: boolean()
+        }
+
+  @type difference :: %{
+          kind: :stops | :moved | :boarding | :time,
+          rows: [non_neg_integer()],
+          frame: [non_neg_integer()],
+          detail: map()
         }
 
   @doc """
@@ -115,7 +126,210 @@ defmodule GtfsPlanner.Gtfs.PatternComparison.Alignment do
     end
   end
 
+  @doc """
+  Derives the ordered difference items for the comparison summary (`AC-18`).
+
+  `segments` is the segment list from `segments/3`; `a_rows`/`b_rows` are the chosen timing rows
+  per side. A `nil` timing side also disables boarding items, which compare pickup/drop-off types
+  and so need both timing rows.
+
+  - `:stops` for each maximal non-`:same` stretch, excluding moved rows. `detail` carries the
+    bounding anchor stop ids (`before`/`after`, `nil` at an end), the own stops of the stretch
+    (`a_only`/`b_only`) and the segment between the anchors (`segment`).
+  - `:moved` for each pair, or one collapsed item with `detail.count` pairs when there are more
+    than three; the collapsed item's rows cover both rows of every pair.
+  - `:boarding` for each `:same` row whose pickup or drop-off type differs between the timing
+    rows, with both sides' values in `detail`.
+  - `:time` for the largest three same-stop segments with `abs(diff) >= 60`. `smaller_timing`
+    counts the remaining non-zero timing differences: sub-minute ones and qualifying ones beyond
+    the largest three.
+
+  Items are sorted by their smallest row index; `frame` holds the rows to highlight and frame on
+  the map. `detail` is data-only: the components render the sentences.
+  """
+  @spec differences([row()], %{
+          segments: [segment()],
+          a_rows: [timing_row()] | nil,
+          b_rows: [timing_row()] | nil
+        }) :: %{items: [difference()], smaller_timing: non_neg_integer()}
+  def differences(rows, %{segments: segments, a_rows: a_rows, b_rows: b_rows})
+      when is_list(rows) do
+    stops = stop_items(Enum.with_index(rows), segments)
+    moved = moved_items(rows)
+    boarding = boarding_items(rows, timing_tuple(a_rows), timing_tuple(b_rows))
+    {timing, smaller_timing} = timing_items(segments)
+
+    %{
+      items: sort_by_first_row(stops ++ moved ++ boarding ++ timing),
+      smaller_timing: smaller_timing
+    }
+  end
+
   defp same_count(rows), do: Enum.count(rows, &(&1.type == :same))
+
+  defp timing_tuple(nil), do: nil
+  defp timing_tuple(rows), do: List.to_tuple(rows)
+
+  defp sort_by_first_row(items), do: Enum.sort_by(items, fn item -> Enum.min(item.rows) end)
+
+  defp stop_items(indexed, segments) do
+    last = length(indexed) - 1
+
+    indexed
+    |> non_same_stretches()
+    |> Enum.flat_map(&stop_item(&1, indexed, last, segments))
+  end
+
+  defp non_same_stretches(indexed) do
+    indexed
+    |> Enum.chunk_by(fn {row, _index} -> row.type == :same end)
+    |> Enum.reject(fn [{row, _index} | _] -> row.type == :same end)
+  end
+
+  defp stop_item(stretch, indexed, last, segments) do
+    indexes = Enum.map(stretch, &elem(&1, 1))
+    a_only = own_stops(stretch, :a)
+    b_only = own_stops(stretch, :b)
+
+    if a_only == [] and b_only == [] do
+      []
+    else
+      before = hd(indexes) - 1
+      after_ = List.last(indexes) + 1
+
+      [
+        %{
+          kind: :stops,
+          rows: indexes,
+          frame: frame_indexes(before, indexes, after_, last),
+          detail: %{
+            before: stop_id_at(indexed, before),
+            after: stop_id_at(indexed, after_),
+            a_only: a_only,
+            b_only: b_only,
+            segment: find_segment(segments, before, after_)
+          }
+        }
+      ]
+    end
+  end
+
+  defp own_stops(stretch, type) do
+    for {row, _index} <- stretch, row.type == type and is_nil(row.moved_to), do: row.stop_id
+  end
+
+  defp frame_indexes(before, indexes, after_, last) do
+    ([before | indexes] ++ [after_])
+    |> Enum.filter(&(&1 >= 0 and &1 <= last))
+  end
+
+  defp stop_id_at(indexed, index) when index >= 0 do
+    case Enum.at(indexed, index) do
+      {row, _index} -> row.stop_id
+      nil -> nil
+    end
+  end
+
+  defp stop_id_at(_indexed, _index), do: nil
+
+  defp find_segment(segments, from, to) when from >= 0 do
+    Enum.find(segments, &(&1.from == from and &1.to == to))
+  end
+
+  defp find_segment(_segments, _from, _to), do: nil
+
+  defp moved_items(rows) do
+    pairs =
+      rows
+      |> Enum.with_index()
+      |> Enum.flat_map(fn
+        {%{type: :a, moved_to: to}, index} when is_integer(to) -> [{index, to}]
+        _row -> []
+      end)
+
+    collapse_moves(pairs, length(rows))
+  end
+
+  defp collapse_moves([], _row_count), do: []
+
+  defp collapse_moves(pairs, row_count) when length(pairs) > 3 do
+    indexes = pairs |> Enum.flat_map(fn {a, b} -> [a, b] end) |> Enum.uniq() |> Enum.sort()
+
+    [
+      %{
+        kind: :moved,
+        rows: indexes,
+        frame: Enum.to_list(0..(row_count - 1)//1),
+        detail: %{count: length(pairs)}
+      }
+    ]
+  end
+
+  defp collapse_moves(pairs, _row_count) do
+    Enum.map(pairs, fn {a, b} ->
+      pair = Enum.sort([a, b])
+      %{kind: :moved, rows: pair, frame: pair, detail: %{count: 1}}
+    end)
+  end
+
+  defp boarding_items(_rows, nil, _b_rows), do: []
+  defp boarding_items(_rows, _a_rows, nil), do: []
+
+  defp boarding_items(rows, a_rows, b_rows) do
+    rows
+    |> Enum.with_index()
+    |> Enum.flat_map(&boarding_item(&1, a_rows, b_rows))
+  end
+
+  defp boarding_item({%{type: :same} = row, index}, a_rows, b_rows) do
+    a_row = at(a_rows, row.a_pos)
+    b_row = at(b_rows, row.b_pos)
+
+    if is_nil(a_row) or is_nil(b_row) or same_boarding?(a_row, b_row) do
+      []
+    else
+      [
+        %{
+          kind: :boarding,
+          rows: [index],
+          frame: [index],
+          detail: %{
+            a: %{pickup_type: a_row.pickup_type, drop_off_type: a_row.drop_off_type},
+            b: %{pickup_type: b_row.pickup_type, drop_off_type: b_row.drop_off_type}
+          }
+        }
+      ]
+    end
+  end
+
+  defp boarding_item(_row, _a_rows, _b_rows), do: []
+
+  defp same_boarding?(a_row, b_row) do
+    a_row.pickup_type == b_row.pickup_type and a_row.drop_off_type == b_row.drop_off_type
+  end
+
+  defp timing_items(segments) do
+    same_stops = Enum.filter(segments, & &1.same_stops?)
+
+    listed =
+      same_stops
+      |> Enum.filter(&(is_integer(&1.diff) and abs(&1.diff) >= 60))
+      |> Enum.sort_by(&abs(&1.diff), :desc)
+      |> Enum.take(3)
+
+    smaller = Enum.count(same_stops, &(is_integer(&1.diff) and &1.diff != 0)) - length(listed)
+
+    {Enum.map(listed, &timing_item/1), smaller}
+  end
+
+  defp timing_item(segment) do
+    %{
+      kind: :time,
+      rows: [segment.to],
+      frame: [segment.from, segment.to],
+      detail: %{segment: segment}
+    }
+  end
 
   # Scores are {primary, secondary} integer tuples. The primary component is the R2 score; the
   # secondary component prefers matching earlier A positions among equal-score alignments. Only
