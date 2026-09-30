@@ -990,6 +990,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
       |> assign(:values, assigns.drawer && assigns.drawer.values)
       |> assign(:run_as, drawer_run_as(assigns.drawer))
       |> assign(:frequency_add?, frequency_add?(assigns.drawer))
+      |> assign(:frequency_edit?, frequency_edit?(assigns.drawer))
       |> assign(:refusal, drawer_refusal(assigns.drawer))
       |> assign(:stop_name, drawer_stop_name(assigns.sections, pattern))
 
@@ -1037,10 +1038,25 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
             be saved.
           </.message>
 
-          <.message :if={@frequency?} kind="info" title={frequency_title(@drawer)}>
+          <.message
+            :if={@frequency? and not @frequency_edit?}
+            kind="info"
+            title={frequency_title(@drawer)}
+          >
             Frequency times are shown for reference. The departure and timing can't be edited here.
             You can still change the service days and trip details.
           </.message>
+
+          <div :if={@frequency_edit?} class="grid gap-5">
+            <ScheduleChangeComponents.windows_editor
+              windows={@values["windows"]}
+              stop_name={@stop_name}
+            />
+            <ScheduleChangeComponents.riders_see
+              windows={@values["windows"]}
+              exact_times={@values["exact_times"]}
+            />
+          </div>
 
           <ScheduleChangeComponents.run_as_choice
             :if={@drawer.mode == :add}
@@ -1048,7 +1064,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
             refusal={@refusal}
           />
 
-          <div :if={not @frequency_add?} class="grid gap-1">
+          <div :if={not @frequency_add? and not @frequency_edit?} class="grid gap-1">
             <.input
               id="trip-start"
               name="drawer[start_time]"
@@ -1114,6 +1130,11 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
           </div>
 
           <.drawer_preview drawer={@drawer} />
+
+          <p :if={@frequency_edit?} class="text-[13px] text-muted">
+            Headsign, trip number and accessibility are edited as today. Frequency service is never
+            assigned to blocks.
+          </p>
 
           <.form_section :if={@drawer.mode == :add} title="Where these trips run" first?={false}>
             <.input
@@ -1408,6 +1429,11 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   defp frequency_add?(%{mode: :add} = drawer), do: drawer_run_as(drawer) == "frequency"
   defp frequency_add?(_drawer), do: false
+
+  # The Edit drawer for a frequency trip carries the windows editor in place of
+  # the frequency notice (step 35).
+  defp frequency_edit?(%{mode: :edit, frequency?: true}), do: true
+  defp frequency_edit?(_drawer), do: false
 
   defp drawer_refusal(%{errors: errors}) when is_map(errors), do: Map.get(errors, :run_as)
   defp drawer_refusal(_drawer), do: nil
@@ -1717,7 +1743,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   # FH-35); every other drawer leaves the primary available and refuses the save
   # itself, keeping the typed value.
   defp submit_disabled?(drawer) do
-    frequency_add?(drawer) and
+    (frequency_add?(drawer) or frequency_edit?(drawer)) and
       (drawer_refusal(drawer) != nil or not is_nil(drawer.preview.error))
   end
 
