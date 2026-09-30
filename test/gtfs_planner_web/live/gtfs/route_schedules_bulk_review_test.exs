@@ -288,6 +288,149 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
     end
   end
 
+  describe "the review surface keeps the grid honest" do
+    test "a selection change keeps the amber preview on screen", %{conn: conn, scope: scope} do
+      trips = bulk_trips!(scope)
+      {:ok, view, _html} = live(conn, schedules_path(scope))
+
+      select_trips(view, trips, ["BULK_T0700"])
+      render_hook(grid(view), "open_change", %{"kind" => "shift"})
+      assert has_element?(view, "td#cell-BULK_T0700-2.is-preview", "07:15")
+
+      render_click(view, "toggle_trip", %{"trip" => trips["BULK_T0730"].id})
+
+      assert has_element?(view, "td#cell-BULK_T0700-2.is-preview", "07:15")
+      assert has_element?(view, "#shift-strip")
+    end
+
+    test "an estimated stop the shift leaves blank keeps its estimate in the preview", %{
+      conn: conn,
+      scope: scope
+    } do
+      trip =
+        custom_trip!(
+          scope,
+          [
+            {"BULK_START", "07:00:00", "07:00:00"},
+            {"BULK_LIB", "07:10:00", "07:10:00"},
+            {"BULK_OAK", nil, nil},
+            {"BULK_END", "07:37:00", "07:37:00"}
+          ],
+          %{trip_id: "BULK_BLANK"}
+        )
+
+      {:ok, view, _html} = live(conn, schedules_path(scope, %{"stops" => "all"}))
+      render_click(view, "toggle_trip", %{"trip" => trip.id})
+      render_hook(grid(view), "open_change", %{"kind" => "shift"})
+
+      assert %{3 => nil} = assigns(view).change.review.preview[trip.id]
+      assert has_element?(view, "td#cell-BULK_BLANK-3[data-estimated]")
+      refute has_element?(view, "td#cell-BULK_BLANK-3.is-preview")
+      assert has_element?(view, "td#cell-BULK_BLANK-4.is-preview[title='Was 07:37']", "07:42")
+    end
+
+    test "a trip deleted before apply shows the reason on the strip and writes nothing", %{
+      conn: conn,
+      scope: scope
+    } do
+      trips = bulk_trips!(scope)
+      trip = trips["BULK_T0700"]
+      {:ok, view, _html} = live(conn, schedules_path(scope))
+
+      select_trips(view, trips, ["BULK_T0700", "BULK_T0715"])
+      view |> element("#bulk-shift") |> render_click()
+
+      assert {:ok, _result} =
+               Gtfs.delete_trips(@route_id, scope.service, [trip.id], scope.audit)
+
+      view |> element("#strip-apply") |> render_click()
+
+      assert assigns(view).change.refusal == [{:error, :not_found}]
+
+      assert has_element?(
+               view,
+               "#strip-consequences",
+               ScheduleComponents.error_message(:not_found)
+             )
+
+      assert has_element?(view, "#strip-apply[disabled]")
+      assert stop_time_clocks(trips["BULK_T0715"]) == @t0715_before
+      assert assigns(view).undo_stack == []
+    end
+
+    test "a cleared or negative minutes field clears the review instead of keeping 5", %{
+      conn: conn,
+      scope: scope
+    } do
+      trips = bulk_trips!(scope)
+      {:ok, view, _html} = live(conn, schedules_path(scope))
+
+      select_trips(view, trips, ["BULK_T0700"])
+      view |> element("#bulk-shift") |> render_click()
+
+      for typed <- ["", "-10"] do
+        view |> element("#strip-form") |> render_change(%{"change" => %{"minutes" => typed}})
+
+        assert assigns(view).change.params.minutes == nil
+        assert assigns(view).change.review == nil
+        assert has_element?(view, "#strip-consequences", "Enter the minutes to shift by.")
+        assert has_element?(view, "#strip-apply[disabled]")
+      end
+
+      render_hook(grid(view), "apply_change", %{})
+      assert stop_time_clocks(trips["BULK_T0700"]) == @t0700_before
+    end
+
+    test "Change timing on trips of two patterns is refused with the one-pattern reason", %{
+      conn: conn,
+      scope: scope
+    } do
+      trips = bulk_trips!(scope)
+
+      other =
+        GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(
+          scope.organization.id,
+          scope.version.id,
+          %{route_id: @route_id, route_pattern_id: "BULK-OTHER", stops: @stops}
+        )
+
+      elsewhere = linked_trip!(%{scope | bundle: other}, "08:00:00", %{trip_id: "BULK_OTHER"})
+      {:ok, view, _html} = live(conn, schedules_path(scope))
+
+      select_trips(view, trips, ["BULK_T0700"])
+      render_click(view, "toggle_trip", %{"trip" => elsewhere.id})
+      render_hook(grid(view), "open_change", %{"kind" => "timing"})
+
+      change = assigns(view).change
+      assert change.review == nil
+      assert change.refusal == [{:error, :multiple_patterns}]
+
+      assert has_element?(
+               view,
+               "#strip-consequences",
+               "The selected trips use more than one pattern. Timings belong to a pattern, so select trips on one pattern."
+             )
+
+      assert has_element?(view, "#strip-apply[disabled]")
+    end
+
+    test "a position shift counts only the trips it moves", %{conn: conn, scope: scope} do
+      trips = bulk_trips!(scope)
+      frequency = frequency_trip!(scope, [{"09:00:00", "10:00:00", 600}])
+      {:ok, view, _html} = live(conn, schedules_path(scope))
+
+      select_trips(view, trips, ["BULK_T0700"])
+      render_click(view, "toggle_trip", %{"trip" => frequency.id})
+      view |> element("#bulk-shift") |> render_click()
+      assert has_element?(view, "#strip-apply", "Shift 2 trips")
+
+      view |> element("#strip-form") |> render_change(%{"change" => %{"from_position" => "2"}})
+
+      assert assigns(view).change.review.counts.excluded == 1
+      assert has_element?(view, "#strip-apply", "Shift 1 trip")
+    end
+  end
+
   describe "a stale review" do
     test "never applies, and Refresh re-reviews the current rows", %{conn: conn, scope: scope} do
       trips = bulk_trips!(scope)
@@ -394,7 +537,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
       assert change.ids == [trip.id]
       assert change.review.command == {:shift, [trip.id], 300, nil}
 
-      # A foreign timing, an unreadable position and a malformed value are all
+      # A foreign timing, an unreadable position and a malformed direction are
       # ignored: the reviewed command keeps its own trips and parameters.
       render_hook(grid(view), "change_params", %{"change" => %{"timing_id" => forged}})
       assert assigns(view).change.params == %{direction: 1, minutes: 5, from_position: nil}
@@ -402,10 +545,19 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
       render_hook(grid(view), "change_params", %{"change" => %{"from_position" => "999"}})
       assert assigns(view).change.params == %{direction: 1, minutes: 5, from_position: nil}
 
+      # Malformed minutes clear the minutes, so nothing can apply the previous
+      # value the field no longer shows.
       render_hook(grid(view), "change_params", %{
         "change" => %{"minutes" => "7 minutes", "direction" => "9"}
       })
 
+      assert assigns(view).change.params == %{direction: 1, minutes: nil, from_position: nil}
+      assert assigns(view).change.review == nil
+
+      render_hook(grid(view), "apply_change", %{})
+      assert stop_time_clocks(trip) == @t0700_before
+
+      render_hook(grid(view), "change_params", %{"change" => %{"minutes" => "5"}})
       assert assigns(view).change.params == %{direction: 1, minutes: 5, from_position: nil}
       assert assigns(view).change.review.command == {:shift, [trip.id], 300, nil}
 

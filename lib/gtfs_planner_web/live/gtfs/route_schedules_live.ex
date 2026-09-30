@@ -1863,12 +1863,20 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
-  defp change_command(_socket, %{kind: :timing, ids: ids, params: %{timing_id: timing_id}})
-       when is_binary(timing_id) do
-    {:ok, {:set_timing, ids, timing_id}}
-  end
+  # Timings belong to a pattern, so a selection spanning patterns is refused
+  # before any timing is reviewed, like the prototype.
+  defp change_command(socket, %{kind: :timing, ids: ids} = change) do
+    case {one_pattern?(socket, ids), change.params} do
+      {false, _params} ->
+        {:error, :multiple_patterns}
 
-  defp change_command(_socket, %{kind: :timing}), do: {:error, :timed_pattern_required}
+      {true, %{timing_id: timing_id}} when is_binary(timing_id) ->
+        {:ok, {:set_timing, ids, timing_id}}
+
+      {true, _params} ->
+        {:error, :timed_pattern_required}
+    end
+  end
 
   # Copy to calendar is R7 at offset 0 to the chosen service day with the skip
   # choice the drawer posted; Change calendar is R6 to the chosen service day.
@@ -1974,6 +1982,16 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp pattern_timings(_socket, []), do: []
+
+  defp one_pattern?(socket, ids) do
+    ids
+    |> Enum.map(fn id -> socket |> find_row(id) |> row_pattern_id() end)
+    |> Enum.uniq()
+    |> length() == 1
+  end
+
+  defp row_pattern_id(%{route_pattern_id: pattern_id}), do: pattern_id
+  defp row_pattern_id(_missing), do: nil
 
   defp change_pattern(socket, route_pattern_id) do
     Enum.find(socket.assigns.payload.patterns, &(&1.route_pattern_id == route_pattern_id))
@@ -2112,10 +2130,19 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
+  # A posted blank or malformed value clears the minutes, so the strip shows no
+  # review and a disabled primary instead of applying the previous value the
+  # field no longer shows.
   defp merge_shift_minutes(params, raw) do
-    case shift_minutes(raw["minutes"]) do
-      {:ok, minutes} -> %{params | minutes: minutes}
-      :error -> params
+    case Map.fetch(raw, "minutes") do
+      {:ok, value} ->
+        case shift_minutes(value) do
+          {:ok, minutes} -> %{params | minutes: minutes}
+          :error -> %{params | minutes: nil}
+        end
+
+      :error ->
+        params
     end
   end
 
@@ -2219,8 +2246,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
       {:error, {:refused, errors}} ->
         assign(socket, :change, %{change | refusal: errors})
 
+      # The open strip, drawer or dialog covers the bar, so the surface itself
+      # renders the reason and disables its primary.
       {:error, reason} ->
-        warning_outcome(socket, ScheduleComponents.error_message(reason))
+        assign(socket, :change, %{change | refusal: [{:error, reason}]})
     end
   end
 
