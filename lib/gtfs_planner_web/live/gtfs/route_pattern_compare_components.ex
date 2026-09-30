@@ -1,15 +1,21 @@
 defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   @moduledoc """
-  The compare page shell (spec 19, `AC-13`, `AC-14`): the route header, the title
-  row with its view toggle and calendar select, the loading skeleton and the
-  unavailable state.
+  The compare page shell and its pattern slots (spec 19, `AC-13`, `AC-14`,
+  `AC-16`): the route header, the title row with its view toggle and calendar
+  select, the loading skeleton, the unavailable state, and the A/B slot cards
+  with the swap between them.
 
-  The ready state leaves the `#compare-slots`, `#compare-summary`,
-  `#compare-stops` and `#compare-map` containers empty for the later steps that
-  fill them, and owns the `#compare-workspace` grid they sit in. Every state
-  decision stays in `RoutePatternCompareLive`; these components present it. They
-  reuse `RouteWorkspace.route_header/1` and `PlannerComponents.message/1` and add
-  no parallel header or callout (`CR-1`).
+  The ready state leaves the `#compare-summary`, `#compare-stops` and
+  `#compare-map` containers empty for the later steps that fill them, and owns
+  the `#compare-workspace` grid they sit in. Every state decision stays in
+  `RoutePatternCompareLive`; these components present it. They reuse
+  `RouteWorkspace.route_header/1`, `PlannerComponents.message/1` and `<.button>`
+  and add no parallel header, callout, button or dialog (`CR-1`).
+
+  A slot card is a box with a coloured left rule, so it rounds only its right
+  side (`rounded-r-card`, `CR-3`): A's rule is navy, B's is cyan. The card's
+  facts come from the loaded comparison; the "runs on" list reads the calendars
+  the read already counted.
 
   The calendar options read the loaded comparison and the view switch only makes
   sense with content, so both show once a read has succeeded (the prototype hides
@@ -18,8 +24,16 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   """
   use GtfsPlannerWeb, :html
 
+  # `<.slot>` is this module's own slot-card component. `Phoenix.Component`
+  # exports a `slot/1` macro for named-slot declarations, which HEEx would
+  # otherwise resolve for the tag, so the import is narrowed.
+  import Phoenix.Component, except: [slot: 1]
+
   import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1]
+
+  alias GtfsPlanner.Gtfs.RoutePattern
+  alias GtfsPlannerWeb.Components.RouteIdentity
 
   attr :load_state, :atom, required: true, values: [:loading, :unavailable, :ready]
 
@@ -33,6 +47,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   attr :two_path, :string, required: true, doc: "the compare URL with `view` cleared"
   attr :all_path, :string, required: true, doc: "the compare URL with `view=all`"
   attr :patterns_path, :string, required: true, doc: "the route's Patterns tab"
+
+  attr :slot_paths, :map,
+    default: nil,
+    doc: "per-side `%{change, open, times}` paths for the slot cards"
 
   def page(assigns) do
     ~H"""
@@ -105,7 +123,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
           <% @view == :all -> %>
             <%!-- The all-patterns overview lands in a later step. --%>
           <% true -> %>
-            <.two_pattern_containers />
+            <.two_pattern_containers comparison={@comparison} slot_paths={@slot_paths} />
         <% end %>
       </section>
     </div>
@@ -195,14 +213,13 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
   # The compare workspace's layout; later steps fill the empty containers. The
   # slots row and the two-column workspace mirror the prototype, including the
   # map's own column, which stacks above the table below `lg`.
+  attr :comparison, :map, required: true
+  attr :slot_paths, :map, required: true
+
   defp two_pattern_containers(assigns) do
     ~H"""
     <div id="compare-two-view" class="mt-4">
-      <div
-        id="compare-slots"
-        class="grid items-stretch gap-3 md:grid-cols-[minmax(0,1fr)_44px_minmax(0,1fr)]"
-      >
-      </div>
+      <.slots comparison={@comparison} slot_paths={@slot_paths} />
 
       <div
         id="compare-workspace"
@@ -223,4 +240,351 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
     </div>
     """
   end
+
+  # The two slot cards with the swap control between them (AC-16). The swap is
+  # the middle column's one control; it is disabled until a B is chosen. Change
+  # and the timing select are patch targets and swap is a server event, so the
+  # URL keeps the whole selection (`INV-4`).
+  attr :comparison, :map, required: true
+  attr :slot_paths, :map, required: true
+
+  defp slots(assigns) do
+    ~H"""
+    <div
+      id="compare-slots"
+      class="grid items-stretch gap-3 md:grid-cols-[minmax(0,1fr)_44px_minmax(0,1fr)]"
+    >
+      <.slot
+        id="slot-a"
+        letter="A"
+        comparison={@comparison}
+        side={@comparison.a}
+        paths={@slot_paths.a}
+      />
+
+      <div class="flex items-center justify-center">
+        <.button
+          id="compare-swap"
+          type="button"
+          variant="secondary"
+          phx-click="swap"
+          disabled={is_nil(@comparison.b)}
+          aria-label="Swap A and B"
+          title="Swap A and B"
+          class="btn-square min-h-11 min-w-11 p-0"
+        >
+          <.icon name="hero-arrows-right-left" class="size-5 max-md:rotate-90" />
+        </.button>
+      </div>
+
+      <.slot
+        id="slot-b"
+        letter="B"
+        comparison={@comparison}
+        side={@comparison.b}
+        unavailable_id={unavailable_id(@comparison)}
+        paths={@slot_paths.b}
+      />
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :letter, :string, required: true, values: ["A", "B"]
+  attr :comparison, :map, required: true
+
+  attr :side, :map,
+    default: nil,
+    doc: "the loaded side; nil renders this side's empty or unavailable card"
+
+  attr :unavailable_id, :string,
+    default: nil,
+    doc: "the requested ID when the side did not resolve"
+
+  attr :paths, :map, required: true, doc: "this side's `%{change, open, times}` paths"
+
+  def slot(assigns) do
+    assigns =
+      assigns
+      |> assign(:calendar_name, calendar_name(assigns.comparison))
+      |> assign(:used_calendars, used_calendars(assigns.side, assigns.comparison.calendars))
+      |> assign(:pattern_name, pattern_name(assigns.side))
+      |> assign(:route_name, route_name(assigns.side))
+      |> assign(:other_route?, other_route?(assigns))
+      |> assign(:meta_line, meta_line(assigns.side))
+      |> assign(:empty_id, empty_id(assigns))
+
+    assigns = assign(assigns, trips(assigns))
+
+    ~H"""
+    <div :if={is_nil(@side)} id={@empty_id} class={empty_card_class(@letter, @unavailable_id)}>
+      <div class="flex items-start gap-3">
+        <.series_chip letter={@letter} />
+        <div class="min-w-0">
+          <p class={["text-[15px] font-bold", empty_ink(@unavailable_id)]}>
+            {empty_title(@letter, @unavailable_id)}
+          </p>
+          <p class={["mt-1 text-sm", empty_ink(@unavailable_id)]}>
+            <%= if @unavailable_id do %>
+              The link asked for pattern <span class="font-mono text-[13px]">{@unavailable_id}</span>,
+              which isn’t in this version. It may have been deleted or renamed. Choose another
+              pattern to compare.
+            <% else %>
+              Any pattern in this version, on this route or another one.
+            <% end %>
+          </p>
+        </div>
+      </div>
+      <div>
+        <.button type="button" patch={@paths.change} class="min-h-11 gap-2">
+          <.icon name="hero-magnifying-glass" class="size-4" /> Choose pattern {@letter}
+        </.button>
+      </div>
+    </div>
+
+    <article
+      :if={@side}
+      id={@id}
+      class={card_class(@letter)}
+      aria-label={"Pattern " <> @letter}
+    >
+      <div class="flex items-start gap-3">
+        <.series_chip letter={@letter} />
+        <div class="min-w-0 flex-1">
+          <h3 class="flex flex-wrap items-center gap-x-2 font-sans text-[15px] font-bold leading-snug text-strong">
+            <RouteIdentity.route_badge :if={@other_route?} route={@side.route} />
+            <span :if={@other_route?} class="font-[650]">{@route_name} ·</span>
+            <span>{@pattern_name}</span>
+          </h3>
+          <p class="mt-0.5 text-[13px] text-muted">{@meta_line}</p>
+          <p class="mt-0.5 text-sm text-default">
+            <span class="font-[650] tabular-nums text-strong">{@trips_lead}</span>{@trips_after}<span
+              :if={@trips_note}
+              class="text-muted"
+            > · {@trips_note}</span>
+          </p>
+        </div>
+        <.button
+          id={@id <> "-change"}
+          type="button"
+          variant="secondary"
+          patch={@paths.change}
+          class="min-h-11 shrink-0"
+        >
+          Change {@letter}
+        </.button>
+      </div>
+
+      <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 pl-8">
+        <label :if={@side.timings != []} class="flex min-w-0 items-center gap-2">
+          <span class="shrink-0 text-[13px] font-[650] text-strong">Running times</span>
+          <select
+            id={@id <> "-timing"}
+            name={timing_param(@letter)}
+            phx-change="select_timing"
+            class="h-11 min-w-0 max-w-[290px] rounded-control border border-control bg-white px-3 text-sm text-strong"
+          >
+            <option
+              :for={timing <- @side.timings}
+              value={timing.id}
+              selected={timing.id == @side.timing_id}
+            >
+              {timing_label(timing)}
+            </option>
+          </select>
+        </label>
+
+        <p
+          :if={@side.timings == []}
+          class="flex min-h-11 flex-wrap items-center gap-x-3 text-sm text-default"
+        >
+          <span class="text-[13px] font-[650] text-strong">Running times</span>
+          None yet
+          <.link
+            id={@id <> "-add-times"}
+            navigate={@paths.times}
+            class="inline-flex min-h-11 items-center font-[650] text-action underline"
+          >
+            Add running times
+          </.link>
+        </p>
+
+        <.link
+          id={@id <> "-open"}
+          navigate={@paths.open}
+          class="ml-auto inline-flex min-h-11 items-center gap-1.5 rounded-control px-1 text-sm font-[650] text-action hover:underline"
+        >
+          Open pattern<.icon name="hero-arrow-top-right-on-square" class="size-4" />
+        </.link>
+      </div>
+    </article>
+    """
+  end
+
+  attr :letter, :string, required: true, values: ["A", "B"]
+
+  defp series_chip(assigns) do
+    ~H"""
+    <span
+      class={[
+        "inline-flex size-[18px] shrink-0 items-center justify-center rounded-badge text-[11px] font-bold leading-none text-white",
+        series_chip_class(@letter)
+      ]}
+      title={"Pattern " <> @letter}
+    >
+      {@letter}
+    </span>
+    """
+  end
+
+  # A's series colour is the DS navy (the ramp has no 700, so the darkest navy
+  # token is the closest match to the prototype's navy-700); B's is cyan-700.
+  defp series_border("A"), do: "border-l-navy-800"
+  defp series_border("B"), do: "border-l-cyan-700"
+
+  defp series_chip_class("A"), do: "bg-navy-800"
+  defp series_chip_class("B"), do: "bg-cyan-700"
+
+  defp card_class(letter) do
+    [
+      "flex h-full flex-col rounded-r-card border border-l-4 border-subtle bg-white px-4 pb-3 pt-3",
+      series_border(letter)
+    ]
+  end
+
+  defp empty_card_class(letter, unavailable_id) do
+    [
+      "flex h-full flex-col justify-center gap-3 rounded-r-card border border-l-4 px-5 py-5",
+      series_border(letter),
+      if(unavailable_id,
+        do: "border-error-line bg-error-bg",
+        else: "border-dashed border-control bg-canvas"
+      )
+    ]
+  end
+
+  defp empty_ink(nil), do: "text-strong"
+  defp empty_ink(_unavailable_id), do: "text-error-fg"
+
+  defp empty_title(_letter, nil), do: "Choose a pattern to compare"
+  defp empty_title(letter, _unavailable_id), do: "Pattern #{letter} isn’t available"
+
+  defp empty_id(assigns) do
+    if assigns.unavailable_id, do: assigns.id <> "-unavailable", else: assigns.id <> "-empty"
+  end
+
+  defp unavailable_id(%{b_error: {:not_found, pattern_id}}), do: pattern_id
+  defp unavailable_id(_comparison), do: nil
+
+  defp timing_param("A"), do: "ta"
+  defp timing_param("B"), do: "tb"
+
+  # "Weekday base · 2 trips", or the bare name when that timing carries none on
+  # the chosen calendar (the prototype's option label).
+  defp timing_label(timing) do
+    if timing.trips > 0, do: "#{timing.name} · #{plural(timing.trips, "trip")}", else: timing.name
+  end
+
+  # The card's one meta line: direction, stops, use and the service description
+  # when the pattern has one, in the prototype's order.
+  defp meta_line(nil), do: nil
+
+  defp meta_line(side) do
+    [
+      RoutePattern.direction_label(side.pattern.direction_id),
+      plural(length(side.stops), "stop"),
+      RoutePattern.typicality_label(side.pattern.route_pattern_typicality),
+      service_description(side)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  defp service_description(%{pattern: %{route_pattern_time_desc: description}}) do
+    if blank?(description), do: nil, else: description
+  end
+
+  defp service_description(_side), do: nil
+
+  defp pattern_name(nil), do: nil
+
+  defp pattern_name(%{pattern: %{route_pattern_name: name, route_pattern_id: pattern_id}}) do
+    if blank?(name), do: pattern_id, else: name
+  end
+
+  # The badge already carries the short name, so the heading leads with the long
+  # name and falls back through the same fields the route header uses.
+  defp route_name(nil), do: nil
+
+  defp route_name(%{route: route}) do
+    [route.route_long_name, route.route_short_name, route.route_id]
+    |> Enum.find(&(is_binary(&1) and String.trim(&1) != ""))
+  end
+
+  defp other_route?(%{letter: "B", side: side} = assigns) when not is_nil(side) do
+    side.route.route_id != assigns.comparison.route.route_id
+  end
+
+  defp other_route?(_assigns), do: false
+
+  # The pattern's trips on the chosen calendar (AC-9), or the calendars it is
+  # used on; both read the counts the comparison already loaded. Only the count
+  # is bold, as the prototype has it.
+  defp trips(%{side: nil}), do: %{trips_lead: nil, trips_after: nil, trips_note: nil}
+
+  defp trips(assigns) do
+    usage = assigns.side.usage
+
+    if usage.total > 0 do
+      %{
+        trips_lead: plural(usage.total, "trip"),
+        trips_after: " on " <> assigns.calendar_name,
+        trips_note: trip_notes(usage)
+      }
+    else
+      note =
+        case assigns.used_calendars do
+          [] -> "no trips in this version"
+          names -> "runs on " <> Enum.join(names, ", ")
+        end
+
+      %{
+        trips_lead: "Not used on " <> assigns.calendar_name,
+        trips_after: nil,
+        trips_note: note
+      }
+    end
+  end
+
+  defp trip_notes(usage) do
+    [
+      usage.custom > 0 && "#{usage.custom} with their own times",
+      usage.repeating > 0 && "#{usage.repeating} from a repeating trip"
+    ]
+    |> Enum.reject(&(&1 == false))
+    |> Enum.join(" · ")
+    |> blank_to_nil()
+  end
+
+  defp used_calendars(nil, _calendars), do: []
+
+  defp used_calendars(side, calendars) do
+    calendars
+    |> Enum.filter(&(Map.get(&1.trips, side.pattern.route_pattern_id, 0) > 0))
+    |> Enum.map(& &1.name)
+  end
+
+  defp calendar_name(comparison) do
+    case Enum.find(comparison.calendars, &(&1.service_id == comparison.service_id)) do
+      nil -> "this calendar"
+      calendar -> calendar.name
+    end
+  end
+
+  defp plural(1, word), do: "1 #{word}"
+  defp plural(count, word), do: "#{count} #{word}s"
+
+  defp blank?(value), do: not is_binary(value) or String.trim(value) == ""
+  defp blank_to_nil(""), do: nil
+  defp blank_to_nil(value), do: value
 end

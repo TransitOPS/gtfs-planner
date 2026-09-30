@@ -70,6 +70,45 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
   end
 
   @impl true
+  def handle_event("select_timing", %{"ta" => timing_id}, socket),
+    do: patch_timing(socket, "ta", timing_id)
+
+  def handle_event("select_timing", %{"tb" => timing_id}, socket),
+    do: patch_timing(socket, "tb", timing_id)
+
+  # Swap A with B (AC-16). When B is on the URL route the patch keeps the page;
+  # when it is on another route the whole page navigates to that route's compare
+  # URL, because the route is part of the path. A timing the URL pinned follows
+  # its pattern across the swap; an unpinned default stays unpinned.
+  @impl true
+  def handle_event("swap", _params, socket) do
+    case socket.assigns.comparison && socket.assigns.comparison.b do
+      nil ->
+        {:noreply, socket}
+
+      b ->
+        overrides = swap_overrides(socket, socket.assigns.comparison.a, b)
+
+        socket =
+          if b.route.route_id == socket.assigns.route_id do
+            push_patch(socket, to: compare_path(socket, overrides))
+          else
+            push_navigate(socket,
+              to:
+                compare_path(
+                  socket.assigns.current_gtfs_version.id,
+                  b.route.route_id,
+                  socket.assigns.requested,
+                  overrides
+                )
+            )
+          end
+
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app
@@ -90,6 +129,10 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
         two_path={compare_path(@current_gtfs_version.id, @route_id, @requested, %{"view" => nil})}
         all_path={compare_path(@current_gtfs_version.id, @route_id, @requested, %{"view" => "all"})}
         patterns_path={patterns_path(@current_gtfs_version.id, @route_id)}
+        slot_paths={
+          @comparison &&
+            slot_paths(@comparison, @current_gtfs_version.id, @route_id, @requested)
+        }
       />
     </Layouts.app>
     """
@@ -159,12 +202,63 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLive do
     }
   end
 
+  # The one "not found" exit for a missing route or `a`: flash and return to
+  # the Patterns tab. It returns the `{:noreply, socket}` tuple its callers
+  # (`handle_params`, `retry`) must hand LiveView, so every path out of
+  # `handle_params` has the same shape.
   defp not_found(socket) do
-    socket
-    |> put_flash(:error, "Pattern not found")
-    |> push_navigate(
-      to: patterns_path(socket.assigns.current_gtfs_version.id, socket.assigns.route_id)
-    )
+    {:noreply,
+     socket
+     |> put_flash(:error, "Pattern not found")
+     |> push_navigate(
+       to: patterns_path(socket.assigns.current_gtfs_version.id, socket.assigns.route_id)
+     )}
+  end
+
+  defp patch_timing(socket, key, timing_id) do
+    {:noreply, push_patch(socket, to: compare_path(socket, %{key => timing_id}))}
+  end
+
+  defp swap_overrides(socket, a, b) do
+    requested = socket.assigns.requested
+
+    %{
+      "a" => b.pattern.route_pattern_id,
+      "b" => a.pattern.route_pattern_id,
+      "ta" => requested["tb"],
+      "tb" => requested["ta"]
+    }
+  end
+
+  # The slot cards' own paths: the compare URL that opens the picker (`picker`),
+  # and each pattern's Stops and Timings tasks. A side without a pattern keeps
+  # its change path so the empty and unavailable cards can offer "Choose pattern
+  # B"; the pattern task paths are nil until it has one.
+  defp slot_paths(comparison, version_id, route_id, requested) do
+    %{
+      a:
+        side_paths(
+          comparison.a,
+          version_id,
+          compare_path(version_id, route_id, requested, %{"picker" => "a"})
+        ),
+      b:
+        side_paths(
+          comparison.b,
+          version_id,
+          compare_path(version_id, route_id, requested, %{"picker" => "b"})
+        )
+    }
+  end
+
+  defp side_paths(nil, _version_id, change_path),
+    do: %{change: change_path, open: nil, times: nil}
+
+  defp side_paths(side, version_id, change_path) do
+    base =
+      "/gtfs/#{version_id}/routes/#{side.route.route_id}/patterns/#{side.pattern.route_pattern_id}"
+
+    %{change: change_path, open: base <> "?task=stops", times: base <> "?task=timings"}
   end
 
   defp patterns_path(version_id, route_id) do

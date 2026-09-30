@@ -128,3 +128,43 @@ test.describe("compare shell (step 12)", () => {
     expect(problems, problems.join("\n")).toEqual([]);
   });
 });
+
+// ── Slot captures (step 13) ─────────────────────────────────────────────────
+//
+// The two slot cards and the swap in the prototype's states: the ideal pair,
+// B on another route, an extension (B adds stops past A), the choose-B empty
+// card and the unavailable B card. Every state waits on the part it adds.
+
+test.describe("compare slots (step 13)", () => {
+  test("capture: slots", async ({ page }) => {
+    test.setTimeout(180_000);
+
+    const problems = collectPageErrors(page);
+
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    const states = [
+      ["ideal", "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-SHORT", "#slot-a h3"],
+      ["cross-route", "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-OTHER", "#slot-b h3"],
+      ["extension", "?a=BROWSER-CMP-SHORT&b=BROWSER-CMP-FULL", "#slot-b h3"],
+      ["choose-b", "?a=BROWSER-CMP-FULL", "#slot-b-empty"],
+      ["stale-selection", "?a=BROWSER-CMP-FULL&b=BROWSER-CMP-UNKNOWN", "#slot-b-unavailable"],
+    ];
+
+    for (const [name, query, selector] of states) {
+      for (const [width, height] of [
+        [1440, 900],
+        [390, 844],
+      ]) {
+        await page.setViewportSize({ width, height });
+        await page.goto(compareUrl(versionId, query));
+        await page.waitForSelector(selector);
+        await capture(page, `slots-${name}-${width}`);
+      }
+    }
+
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+});

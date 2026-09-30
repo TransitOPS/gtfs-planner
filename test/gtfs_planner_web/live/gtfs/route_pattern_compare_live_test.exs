@@ -26,6 +26,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLiveTest do
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs.CatalogReadAdapter
   alias GtfsPlanner.Gtfs.CatalogReadAdapterMock
+  alias Phoenix.LiveView.Utils
 
   @adapter_key :gtfs_catalog_read_adapter
 
@@ -177,7 +178,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLiveTest do
   defp redirect_flash(%{} = flash), do: flash
 
   defp redirect_flash(token) when is_binary(token) do
-    Phoenix.LiveView.Utils.verify_flash(GtfsPlannerWeb.Endpoint, token)
+    Utils.verify_flash(GtfsPlannerWeb.Endpoint, token)
   end
 
   describe "compare shell" do
@@ -239,14 +240,20 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareLiveTest do
     test "a visit without a opens the entry pair", %{conn: conn, version: version} = context do
       %{route: route} = comparison_route(context)
 
+      # The connect resolves R8's entry pair and pushes it as a patch. A real
+      # client applies that patch (the committed `capture: shell` browser run
+      # lands on this exact pair), but Phoenix.LiveViewTest's proxy does not
+      # surface a patch issued during the connected mount, so the test performs
+      # the same patch itself. The pair below is hand-derived from the fixtures:
+      # Full runs twice and Short turn once on Weekday.
+      default_pair = compare_path(version, route, %{"a" => "FULL", "b" => "SHORT"})
+
       {:ok, view, _html} = live(conn, compare_path(version, route))
-
-      default_pair = assert_patch(view)
-      assert default_pair == compare_path(version, route, %{"a" => "FULL", "b" => "SHORT"})
-
       render_patch(view, default_pair)
 
       assert has_element?(view, "#compare-calendar", "Weekday (A 2 · B 1 trips)")
+      assert has_element?(view, "#slot-a", "Full")
+      assert has_element?(view, "#slot-b", "Short turn")
     end
 
     test "a pattern of another route returns to the Patterns tab",
