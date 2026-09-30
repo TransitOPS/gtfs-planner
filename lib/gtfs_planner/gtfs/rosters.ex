@@ -33,6 +33,8 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   alias GtfsPlanner.Gtfs.RosterLine
   alias GtfsPlanner.Gtfs.RosterLineDay
   alias GtfsPlanner.Gtfs.Rosters.BaseWeek
+  alias GtfsPlanner.Gtfs.Rosters.Candidates
+  alias GtfsPlanner.Gtfs.Rosters.Checks
   alias GtfsPlanner.Gtfs.Rosters.Roster
   alias GtfsPlanner.Gtfs.Runs
   alias GtfsPlanner.Repo
@@ -53,6 +55,22 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   # than these would reset the Block rules and the crew rules stored on the same
   # row, and one that replaced fewer would leave a previous save's value behind.
   @replace_roster_columns BlockingSetting.roster_fields() ++ [:updated_at]
+
+  # What one slot write replaces: the weekday's own row, kept at one row per line
+  # and weekday by the `roster_line_id, weekday` index the upsert targets. Every
+  # write refreshes the two stored times as well as the run, which is what makes
+  # a re-set re-cut run a fresh slot again (INV-13).
+  @replace_day_columns [
+    :day_type_key,
+    :run_id,
+    :run_sign_on_secs,
+    :run_sign_off_secs,
+    :updated_at
+  ]
+
+  # The database's own answer to "a run is on at most one line per weekday", read
+  # by name when the upsert loses the race for it.
+  @run_once_constraint :roster_line_days_run_once_per_weekday
 
   @published_status "published"
 
@@ -193,6 +211,53 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   end
 
   @doc """
+  Sets one weekday of a line to a run, storing the run's current times.
+
+  A slot names a run-day and the times it was set with, so the write stores the
+  run's own `sign_on_secs` and `sign_off_secs` as `Runs.derive_version/3` reads
+  them today. That is what makes a later re-cut of the same run visible as a
+  stale slot rather than a silently accepted one, and re-setting the same run is
+  how a planner accepts the new times (INV-13).
+
+  The write is an upsert on `(line, weekday)`, so setting a day that already
+  works another run replaces it and the line keeps one row for that weekday.
+
+  Three refusals happen before anything is written, in the order the page fixes
+  them: `{:no_base, weekday}` when the weekday's base week has no day type at
+  all, `{:unknown_run, run_id}` when the run is not one of that day type's runs,
+  and `{:run_held, weekday, line_number}` when another line already works that
+  run that day. The database's own run-once-per-weekday index is the backstop for
+  the third, and a refusal maps onto the same named answer whichever one caught
+  it, so a planner is never told "nothing happened" (AC-13).
+
+  A manual edit is allowed to leave short rest — the builder never creates it,
+  but a planner working one day at a time is allowed to. `short_rests` is
+  `Rosters.Checks.short_rests/2` over the week the write leaves, so the drawer
+  can show exactly which pair is short and by how much rather than a bare
+  refusal (domain rule 5).
+
+  Returns `{:error, :not_found}` when the version is unpublished, belongs to
+  another organization, or names no line of that version under the given
+  organization. A foreign or malformed line id is `:not_found` too, never a
+  cross-tenant write.
+  """
+  @spec set_slot(Ecto.UUID.t(), Ecto.UUID.t(), term(), 1..7, String.t()) ::
+          {:ok, %{short_rests: [Checks.short_rest()]}}
+          | {:error, :not_found | Candidates.refusal()}
+  def set_slot(organization_id, gtfs_version_id, line_id, weekday, run_id) do
+    with_roster_lock(organization_id, gtfs_version_id, fn ->
+      with {:ok, line} <- fetch_line(organization_id, gtfs_version_id, line_id),
+           {:ok, view} <- compose_read(organization_id, gtfs_version_id),
+           {:ok, key, run} <- weekday_run(view, weekday, run_id),
+           :ok <- check_run_held(view.roster, weekday, line.id, key, run.run_id),
+           {:ok, _day} <-
+             write_day(organization_id, gtfs_version_id, line.id, weekday, key, run) do
+        {:ok, %{short_rests: short_rests_after(view.roster, line.id, weekday, run)}}
+      end
+    end)
+  end
+
+  @doc """
   Clears one weekday of a line, returning its run to open work.
 
   A day off is the absence of a row, so clearing is a delete of the
@@ -230,6 +295,165 @@ defmodule GtfsPlanner.Gtfs.Rosters do
          ) do
       {1, _deleted} -> {:ok, :cleared}
       {0, _deleted} -> {:ok, :already_off}
+    end
+  end
+
+  # The version's whole roster, composed for a writer that already holds both
+  # locks and has read its own line. It reuses `load_roster/2`'s derivation and
+  # `compose/5` itself, so the writer's refusals and its reported short rests are
+  # computed from the same composition the page draws and the export reads
+  # (INV-15) rather than from a second walk of the roster tables.
+  defp compose_read(organization_id, gtfs_version_id) do
+    {movements, run_days} = derive_runs(organization_id, gtfs_version_id)
+
+    {:ok,
+     compose(
+       organization_id,
+       gtfs_version_id,
+       movements,
+       run_days,
+       list_lines(organization_id, gtfs_version_id)
+     )}
+  end
+
+  # The run the weekday's base day type would work on that weekday, and the key
+  # the slot has to name with it. A weekday no day type dates has no base and no
+  # run to place (AC-2), and a run that is not one of that day type's derived
+  # runs has no work to place, so both are refused before anything is written.
+  defp weekday_run(view, weekday, run_id) do
+    with {:ok, key} <- base_key(view.roster, weekday),
+         {:ok, run} <- find_run(Map.get(view.run_days, key), run_id) do
+      {:ok, key, run}
+    end
+  end
+
+  defp base_key(roster, weekday) do
+    case Map.get(roster.base_week, weekday) do
+      %{day_type: %{key: key}} -> {:ok, key}
+      _no_base -> {:error, {:no_base, weekday}}
+    end
+  end
+
+  defp find_run(nil, run_id), do: {:error, {:unknown_run, run_id}}
+
+  defp find_run(day, run_id) do
+    case Enum.find(day.runs, &(&1.run_id == run_id)) do
+      nil -> {:error, {:unknown_run, run_id}}
+      run -> {:ok, run}
+    end
+  end
+
+  # Another line already working this run-day, named by its line number so the
+  # planner is told where to look. The line being written to is not a holder: it
+  # is the line the change is for, and re-setting its own run on a day is how a
+  # re-cut run is accepted.
+  defp check_run_held(roster, weekday, line_id, day_type_key, run_id) do
+    holder =
+      Enum.find_value(roster.lines, fn line ->
+        if line.id != line_id and holds_run_day?(line, weekday, day_type_key, run_id) do
+          line.line_number
+        end
+      end)
+
+    case holder do
+      nil -> :ok
+      line_number -> {:error, {:run_held, weekday, line_number}}
+    end
+  end
+
+  defp holds_run_day?(line, weekday, day_type_key, run_id) do
+    case Map.get(line.slots, weekday) do
+      %{day_type_key: ^day_type_key, run_id: ^run_id} -> true
+      _day_off -> false
+    end
+  end
+
+  # One upsert on the `(line, weekday)` index: a day that already works another
+  # run is replaced rather than refused, and every write stores the run's current
+  # times so a re-cut cannot be accepted without the planner re-setting it
+  # (INV-13).
+  defp write_day(organization_id, gtfs_version_id, line_id, weekday, day_type_key, run) do
+    attrs = %{
+      run_id: run.run_id,
+      run_sign_on_secs: run.work.sign_on_secs,
+      run_sign_off_secs: run.work.sign_off_secs
+    }
+
+    changeset =
+      %RosterLineDay{
+        roster_line_id: line_id,
+        organization_id: organization_id,
+        gtfs_version_id: gtfs_version_id,
+        weekday: weekday,
+        day_type_key: day_type_key
+      }
+      |> RosterLineDay.changeset(attrs)
+
+    case Repo.insert(changeset,
+           on_conflict: {:replace, @replace_day_columns},
+           conflict_target: [:roster_line_id, :weekday]
+         ) do
+      {:ok, day} ->
+        {:ok, day}
+
+      # Ecto wrapped the statement in a savepoint, so the transaction is still
+      # usable here and the holder is readable: the refusal names the same line
+      # the check above would have named, whichever of the two caught it.
+      {:error, invalid} ->
+        held_run_day(organization_id, gtfs_version_id, invalid, weekday, day_type_key, run)
+    end
+  end
+
+  defp held_run_day(organization_id, gtfs_version_id, changeset, weekday, day_type_key, run) do
+    if run_held_constraint?(changeset) do
+      case holder_line_number(organization_id, gtfs_version_id, weekday, day_type_key, run) do
+        nil -> {:error, changeset}
+        line_number -> {:error, {:run_held, weekday, line_number}}
+      end
+    else
+      {:error, changeset}
+    end
+  end
+
+  defp run_held_constraint?(changeset) do
+    Enum.any?(changeset.errors, fn {_field, {_message, options}} ->
+      options[:constraint] == @run_once_constraint
+    end)
+  end
+
+  # The line holding the run-day the index refused, scoped by the caller's own
+  # organization and version on both tables: the number a refusal reports is a
+  # line of this version, never another tenant's.
+  defp holder_line_number(organization_id, gtfs_version_id, weekday, day_type_key, run) do
+    Repo.one(
+      from(l in RosterLine,
+        join: d in RosterLineDay,
+        on: d.roster_line_id == l.id,
+        where:
+          l.organization_id == ^organization_id and l.gtfs_version_id == ^gtfs_version_id and
+            d.weekday == ^weekday and d.day_type_key == ^day_type_key and d.run_id == ^run.run_id,
+        select: l.line_number
+      )
+    )
+  end
+
+  # The short rests the week would have once this day is set: the line's own
+  # non-stale days, with the weekday being written replaced by the run just
+  # stored. A stale neighbour's stored times are not the run's times, so it is
+  # left out exactly as `Rosters.Roster.build/1` leaves it out of its own rest
+  # check — the two cannot disagree about what a line's rest is (INV-15).
+  defp short_rests_after(roster, line_id, weekday, run) do
+    case Enum.find(roster.lines, &(&1.id == line_id)) do
+      nil ->
+        []
+
+      line ->
+        line.slots
+        |> Enum.reject(fn {other, _slot} -> other == weekday end)
+        |> Enum.filter(fn {_other, slot} -> slot.state == :ok end)
+        |> Map.new(fn {other, slot} -> {other, slot.run.work} end)
+        |> Map.put(weekday, run.work)
+        |> Checks.short_rests(roster.rules.min_rest_minutes)
     end
   end
 
@@ -291,16 +515,7 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   @spec load_roster(Ecto.UUID.t(), Ecto.UUID.t()) :: {:ok, roster_view()} | {:error, :not_found}
   def load_roster(organization_id, gtfs_version_id) do
     if Versions.published_gtfs_version_for_org?(organization_id, gtfs_version_id) do
-      movements = Blocking.export_movements(organization_id, gtfs_version_id)
-
-      # The whole-version runs, exactly as `Export.movement_rows/2` derives them,
-      # so the page, the writers' checks and the export read one snapshot.
-      run_days =
-        Runs.derive_version(
-          movements,
-          Runs.assignments_by_day_type(organization_id, gtfs_version_id),
-          Runs.get_crew_settings(organization_id, gtfs_version_id)
-        )
+      {movements, run_days} = derive_runs(organization_id, gtfs_version_id)
 
       {:ok,
        compose(
@@ -313,6 +528,22 @@ defmodule GtfsPlanner.Gtfs.Rosters do
     else
       {:error, :not_found}
     end
+  end
+
+  # The version's movements and its whole-version runs, derived exactly as
+  # `Export.movement_rows/2` derives them, so the page, `set_slot/5`'s own
+  # checks and the export read one snapshot (INV-11).
+  defp derive_runs(organization_id, gtfs_version_id) do
+    movements = Blocking.export_movements(organization_id, gtfs_version_id)
+
+    run_days =
+      Runs.derive_version(
+        movements,
+        Runs.assignments_by_day_type(organization_id, gtfs_version_id),
+        Runs.get_crew_settings(organization_id, gtfs_version_id)
+      )
+
+    {movements, run_days}
   end
 
   @doc """

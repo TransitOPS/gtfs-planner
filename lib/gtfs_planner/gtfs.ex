@@ -5680,6 +5680,26 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Sets one weekday of a line to a run, storing the run's current times.
+
+  This is the slot drawer's write. It replaces whatever run that weekday held,
+  stores the run's own sign-on and sign-off as the runs derive them today — which
+  is what makes a later re-cut show as a stale slot — and answers with the short
+  rests the resulting week would have, because a manual edit may leave short
+  rest where the builder never would.
+
+  An unknown run, a weekday with no base day type, and a run another line already
+  works that day are refused by name and write nothing; so is a line from another
+  version or organization, a malformed id, or an unpublished version.
+  """
+  @spec set_roster_slot(Ecto.UUID.t(), Ecto.UUID.t(), term(), 1..7, String.t()) ::
+          {:ok, %{short_rests: [GtfsPlanner.Gtfs.Rosters.Checks.short_rest()]}}
+          | {:error, :not_found | GtfsPlanner.Gtfs.Rosters.Candidates.refusal()}
+  def set_roster_slot(organization_id, gtfs_version_id, line_id, weekday, run_id) do
+    Rosters.set_slot(organization_id, gtfs_version_id, line_id, weekday, run_id)
+  end
+
+  @doc """
   Clears one weekday of a line, returning its run to open work.
 
   Clearing deletes the `(line, weekday)` row and touches nothing else, so the
