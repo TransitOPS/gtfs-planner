@@ -2228,7 +2228,15 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp undo_timing!(pattern, timing_id) do
-    case pattern.id |> pattern_timings() |> Enum.find(&(&1.id == timing_id)) do
+    # The preload matches `scoped_timing/2`: restoring the timing's own
+    # headsign runs its changeset, whose scope validation reads the loaded
+    # parent pattern.
+    case Repo.one(
+           from(timing in TimedPattern,
+             where: timing.route_pattern_id == ^pattern.id and timing.id == ^timing_id,
+             preload: [:route_pattern]
+           )
+         ) do
       %TimedPattern{} = timing -> timing
       nil -> Repo.rollback(:not_found)
     end

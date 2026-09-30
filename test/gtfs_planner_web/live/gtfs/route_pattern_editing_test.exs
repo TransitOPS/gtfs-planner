@@ -311,7 +311,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       view |> element("#timing-review-refresh") |> render_click()
       refute has_element?(view, "#timing-review-dialog-confirm[disabled]")
       view |> element("#timing-review-dialog-confirm") |> render_click()
-      assert has_element?(view, "#status", "1 trips updated")
+      assert has_element?(view, "#status", "1 trip updated")
     end
 
     test "details stale before review and before apply can refresh without losing input", %{
@@ -646,7 +646,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       render_click(view, "apply_stop_review")
 
       refute has_element?(view, "#stop-review-dialog[data-open='true']")
-      assert has_element?(view, "#status", "1 trips updated")
+      assert has_element?(view, "#status", "1 trip updated")
 
       assert occurrence_rows(pattern) |> Enum.map(& &1.stop_id) == [
                Enum.at(stops, 0).stop_id,
@@ -751,7 +751,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
 
       render_click(view, "apply_stop_review")
 
-      assert has_element?(view, "#status", "1 trips updated")
+      assert has_element?(view, "#status", "1 trip updated")
 
       assert occurrence_rows(pattern) |> Enum.map(& &1.stop_id) == [
                Enum.at(stops, 1).stop_id,
@@ -962,7 +962,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
       render_click(view, "apply_timing_review")
 
       refute has_element?(view, "#timing-review-dialog[data-open='true']")
-      assert has_element?(view, "#status", "1 trips updated")
+      assert has_element?(view, "#status", "1 trip updated")
 
       assert trip_clocks(first_trip) == [
                {Enum.at(stops, 0).stop_id, 1, "08:00:00", "08:00:00"},
@@ -1275,7 +1275,7 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternEditingTest do
 
       render_click(stale_view, "apply_timing_review")
 
-      assert has_element?(stale_view, "#status", "1 trips updated")
+      assert has_element?(stale_view, "#status", "1 trip updated")
 
       assert trip_clocks(trip) == [
                {Enum.at(stops, 0).stop_id, 1, "08:00:00", "08:00:00"},
