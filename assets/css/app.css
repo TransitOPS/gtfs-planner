@@ -1894,6 +1894,19 @@ html:has(#route-details-save-bar:not([hidden])) {
   stroke: var(--diagram-pathway-forward) !important;
 }
 
+/* The white casing under each pathway line separates it from dark linework. */
+#diagram-page [data-pathway-casing] {
+  stroke: var(--diagram-label-halo);
+}
+
+#diagram-page [data-pathway-elevator-box] {
+  stroke: var(--diagram-pathway-forward) !important;
+}
+
+#diagram-page [data-pathway-elevator-text] {
+  fill: var(--diagram-pathway-forward) !important;
+}
+
 #diagram-page #pathway-arrow path,
 #diagram-page [data-cross-level-badge-stairs],
 #diagram-page [data-cross-level-badge-elevator] {
@@ -2201,7 +2214,7 @@ dialog[role="alertdialog"][open] > div > div {
   flex: 1 1 auto;
 }
 
-/* Markers and pathways: navy points and cyan pathways, with the action colour
+/* Markers and pathways: blue points and pathways, with the action colour
    for the item under the pointer and for the item being edited. Shape, label and
    halo carry the meaning where colour cannot. */
 #diagram-page g[data-stop-id]:hover [data-stop-marker]:not([data-location-type="2"]) {
