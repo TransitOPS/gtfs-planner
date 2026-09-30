@@ -989,3 +989,98 @@ describe("DiagramCanvasHook — clicking a pathway while setting scale", () => {
     expect(routed).toEqual([["edit_pathway", "1"]]);
   });
 });
+
+describe("DiagramCanvasHook — canvas resize", () => {
+  let observers;
+  let overlay;
+  let svg;
+  let label;
+
+  class FakeResizeObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.observe = vi.fn();
+      this.disconnect = vi.fn();
+      observers.push(this);
+    }
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    observers = [];
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+
+    const canvas = makeCanvas();
+    svg = canvas.svg;
+    overlay = canvas.overlay;
+    label = elSVG("text", {
+      "data-stop-label": "true",
+      "data-center-x": "50",
+      "data-center-y": "50",
+      "data-label-offset-x": "2",
+      "data-label-offset-y": "8"
+    });
+    overlay.appendChild(label);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps a point label 12px on screen when the canvas is resized", () => {
+    overlay.getScreenCTM = () => ({ a: 13 });
+    const hook = makeHook(svg);
+    hook.mounted();
+
+    expect(parseFloat(label.getAttribute("font-size")) * 13).toBeCloseTo(12, 6);
+
+    overlay.getScreenCTM = () => ({ a: 3.2 });
+    observers[0].callback([]);
+
+    expect(parseFloat(label.getAttribute("font-size")) * 3.2).toBeCloseTo(12, 6);
+    hook.destroyed();
+  });
+
+  it("keeps a point label 12px once a portrait plan loads and the fit becomes height-bound", async () => {
+    // A 650px square canvas: a 100x100 viewBox fits at 6.5 px/unit; a portrait
+    // plan (100x200 units) is height-bound and fits at 3.25 px/unit.
+    overlay.getScreenCTM = () => {
+      const [, , w, h] = overlay.getAttribute("viewBox").split(" ").map(parseFloat);
+      return { a: Math.min(650 / w, 650 / h) };
+    };
+    overlay.setAttribute("viewBox", "0 0 100 100");
+    svg.appendChild(elSVG("image", { href: "/plan.png" }));
+    vi.stubGlobal(
+      "Image",
+      class {
+        set src(_value) {
+          this.naturalWidth = 500;
+          this.naturalHeight = 1000;
+          queueMicrotask(() => this.onload());
+        }
+      }
+    );
+    const hook = makeHook(svg);
+    hook.mounted();
+
+    expect(parseFloat(label.getAttribute("font-size")) * 6.5).toBeCloseTo(12, 6);
+
+    await Promise.resolve();
+
+    expect(parseFloat(label.getAttribute("font-size")) * 3.25).toBeCloseTo(12, 6);
+    hook.destroyed();
+  });
+
+  it("watches the canvas container and stops watching when destroyed", () => {
+    overlay.getScreenCTM = () => ({ a: 13 });
+    const hook = makeHook(svg);
+    hook.mounted();
+
+    expect(observers).toHaveLength(1);
+    expect(observers[0].observe).toHaveBeenCalledWith(svg.parentElement);
+
+    hook.destroyed();
+
+    expect(observers[0].disconnect).toHaveBeenCalledTimes(1);
+  });
+});

@@ -1834,14 +1834,15 @@ html:has(#route-details-save-bar:not([hidden])) {
 
 /* Paired SVG-native focus indicator that stays visible over any floorplan color:
    the design system's focus stroke on the hit geometry, over a white halo. It is
-   drawn on the 44px hit target (or the pathway's own hit line), so the ring sits
+   drawn on the 24px hit target (or the pathway's own hit line), so the ring sits
    on the item rather than on the group's zoom-inflated bounding box. */
 #diagram-overlay g[tabindex]:focus-visible > [data-stop-hit-target],
 #diagram-overlay g[tabindex]:focus-visible > [data-pathway-hit],
 #diagram-overlay g[tabindex]:focus-visible > [data-cross-level-badge-hit] {
   stroke: var(--diagram-focus);
-  stroke-width: 0.3px;
-  stroke-dasharray: 0.9 0.6;
+  /* --diagram-px is one screen pixel in overlay units, set by the hook. */
+  stroke-width: calc(2 * var(--diagram-px, 0.15px));
+  stroke-dasharray: calc(6 * var(--diagram-px, 0.15px)) calc(4 * var(--diagram-px, 0.15px));
   filter: drop-shadow(0 0 1px oklch(100% 0 0)) drop-shadow(0 0 1px oklch(100% 0 0));
 }
 
@@ -2228,6 +2229,13 @@ dialog[role="alertdialog"][open] > div > div {
 #diagram-page [data-stop-label],
 #diagram-page [data-pathway-label] {
   font-family: var(--font-ds);
+}
+
+#diagram-page [data-stop-label] {
+  font-weight: 500;
+}
+
+#diagram-page [data-pathway-label] {
   font-weight: 650;
 }
 

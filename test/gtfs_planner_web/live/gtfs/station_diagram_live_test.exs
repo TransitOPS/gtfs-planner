@@ -5034,27 +5034,33 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert has_element?(
                view,
                "#child_stops-#{platform_stop.id} [data-stop-label]",
-               "PLATFORM LABEL · 3A"
+               "Platform Label · 3A"
              )
 
       assert has_element?(
                view,
                "#child_stops-#{platform_without_code.id} [data-stop-label]",
-               "PLATFORM NO CODE"
+               "Platform No Code"
              )
 
       assert has_element?(
                view,
                "#child_stops-#{entrance_stop.id} [data-stop-label]",
-               "ENTRANCE LABEL"
+               "Entrance Label"
              )
 
-      assert has_element?(view, "#child_stops-#{node_stop.id} [data-stop-label]", "NODE LABEL")
+      assert has_element?(view, "#child_stops-#{node_stop.id} [data-stop-label]", "Node Label")
+
+      # Base sizes are CSS pixels; the hook converts them for the current zoom.
+      assert has_element?(
+               view,
+               "#child_stops-#{node_stop.id} [data-stop-label][data-base-font-size='12'][data-base-stroke='3']"
+             )
 
       assert has_element?(
                view,
                "#child_stops-#{boarding_without_code.id} [data-stop-label]",
-               "BOARDING NO CODE"
+               "Boarding No Code"
              )
     end
 
@@ -5434,13 +5440,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#pathways-#{pathway.id} [data-pathway-label][data-offset-y='-0.95']",
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-y='-10.0']",
                "Forward Y →"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{pathway.id} [data-pathway-label][data-offset-y='0.95']",
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-y='10.0']",
                "← Reverse Y"
              )
     end
@@ -5488,13 +5494,13 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#pathways-#{pathway.id} [data-pathway-label][data-offset-x='-0.95']",
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-x='-10.0']",
                "Forward X →"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{pathway.id} [data-pathway-label][data-offset-x='0.95']",
+               "#pathways-#{pathway.id} [data-pathway-label][data-offset-x='10.0']",
                "← Reverse X"
              )
     end
@@ -5862,7 +5868,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       # affordances above are gated on view mode.
       assert has_element?(
                view,
-               "#cross-level-badge-#{cross_level_pathway.id} rect[data-cross-level-badge-hit='true'][data-base-size='0.9']"
+               "#cross-level-badge-#{cross_level_pathway.id} rect[data-cross-level-badge-hit='true'][data-base-size='20']"
              )
 
       # Icon paths must not carry the edit-mode hover color.
@@ -5973,7 +5979,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#cross-level-badge-#{cross_level_pathway.id} rect[data-cross-level-badge-hit='true'][data-base-size='0.9']"
+               "#cross-level-badge-#{cross_level_pathway.id} rect[data-cross-level-badge-hit='true'][data-base-size='20']"
              )
 
       assert has_element?(
@@ -6003,7 +6009,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       # AC #1: badge <g> has exactly one unified hit rect
       assert has_element?(
                view,
-               "g#cross-level-badge-#{badge_pathway.id} rect[data-cross-level-badge-hit='true'][data-base-size='0.9']"
+               "g#cross-level-badge-#{badge_pathway.id} rect[data-cross-level-badge-hit='true'][data-base-size='20']"
              )
 
       # AC #2/#3: legacy hit attributes are gone everywhere
@@ -7434,17 +7440,17 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
 
       assert has_element?(
                view,
-               "#pathways-#{paired_1.id} [data-pathway-line][data-base-stroke='0.54']"
+               "#pathways-#{paired_1.id} [data-pathway-line][data-base-stroke='4.5']"
              )
 
       assert has_element?(
                view,
-               "#pathways-#{paired_2.id} [data-pathway-line][data-base-stroke='0.54']"
+               "#pathways-#{paired_2.id} [data-pathway-line][data-base-stroke='4.5']"
              )
 
       refute has_element?(
                view,
-               "#pathways-#{single.id} [data-pathway-line][data-base-stroke='0.54']"
+               "#pathways-#{single.id} [data-pathway-line][data-base-stroke='4.5']"
              )
     end
 
@@ -8255,7 +8261,7 @@ defmodule GtfsPlannerWeb.Gtfs.StationDiagramLiveTest do
       assert html =~ ~r/data-ruler-label="true"/
       assert html =~ ~r/data-label-anchor-x="10(?:\.0)?"/
       assert html =~ ~r/data-label-anchor-y="10(?:\.0)?"/
-      assert html =~ ~r/data-label-offset-x="0\.5"/
+      assert html =~ ~r/data-label-offset-x="8"/
       assert html =~ ~r/text-anchor="start"/
       assert has_element?(view, "#diagram-overlay text[data-ruler-label]", "SCALE")
     end
