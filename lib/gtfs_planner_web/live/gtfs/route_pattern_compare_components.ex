@@ -246,6 +246,17 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
 
       <.relation :if={@comparison.alignment} comparison={@comparison} reverse_path={@reverse_path} />
 
+      <%!-- The workspace hook owns an empty, ignored anchor and decorates the
+        server-rendered workspace below by id, so the stream and the server's
+        patches keep working (AGENTS.md: ignored hook elements). --%>
+      <div
+        id="compare-workspace-hook"
+        phx-hook="PatternCompareWorkspace"
+        phx-update="ignore"
+        hidden
+      >
+      </div>
+
       <div
         id="compare-workspace"
         class="mt-6 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(340px,400px)]"
