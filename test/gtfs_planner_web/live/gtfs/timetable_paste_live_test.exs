@@ -499,4 +499,243 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
       assert has_element?(view, "#paste-scope-pattern", "Main")
     end
   end
+
+  describe "timetable step" do
+    # Step 23: the paste form textarea, hint, Layout disclosure, Read
+    # timetable, inline errors and the collapsed summary. Reads go through
+    # `Gtfs.prepare_timetable_paste/5` with the full current input; failures
+    # keep the text and name the fix; success collapses the step and
+    # auto-advances to the review placeholder when no column issues remain
+    # (the columns/review UI lands in steps 24-28, so the placeholders mark
+    # their seams). This describe also covers step 22's deferred asks: a
+    # real paste surviving the schedule-change patch and the rebuild warning
+    # with a review in place.
+    setup :editor_scope
+
+    defp canonical_path(view, version, route, paste) do
+      follow(
+        view,
+        paste_path(version, route, %{
+          "service_id" => paste.weekday,
+          "direction" => "0",
+          "pattern" => paste.main.pattern.id
+        })
+      )
+    end
+
+    defp exact_text do
+      "Trip\tPaste Stop 1\tPaste Stop 2\tPaste Stop 3\n" <>
+        "101\t06:00\t06:05\t06:10\n102\t07:00\t07:05\t07:10"
+    end
+
+    defp read_params(overrides \\ %{}) do
+      %{
+        "paste" =>
+          Map.merge(
+            %{"text" => exact_text(), "layout" => "auto", "header" => "true"},
+            overrides
+          )
+      }
+    end
+
+    defp read(view, overrides \\ %{}) do
+      render_submit(view, "read", read_params(overrides))
+    end
+
+    test "the first-use step shows the labelled textarea, hint, layout and read button",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      assert has_element?(view, "#paste-form")
+      assert has_element?(view, "#paste-source")
+      assert has_element?(view, "#paste-source-hint", "Up to 500 trips")
+
+      assert has_element?(
+               view,
+               "#paste-form label",
+               "Timetable copied from your spreadsheet"
+             )
+
+      assert has_element?(view, "#paste-source[phx-debounce='blur']")
+      assert has_element?(view, "#paste-layout", "Layout")
+      assert has_element?(view, "#paste-layout-auto")
+      assert has_element?(view, "#paste-layout-header")
+      assert has_element?(view, "#paste-read", "Read timetable")
+      assert has_element?(view, "#paste-read[phx-disable-with='Reading…']")
+      refute has_element?(view, "#paste-source-error")
+      refute has_element?(view, "#paste-source-summary")
+    end
+
+    test "reading 612 trip rows shows the 500-row message and keeps the text",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      rows = for index <- 1..612, do: "#{1300 + index}\t06:00\t06:05\t06:10"
+
+      text =
+        "Trip\tPaste Stop 1\tPaste Stop 2\tPaste Stop 3\n" <> Enum.join(rows, "\n")
+
+      read(view, %{"text" => text})
+
+      # The raw scanner stops past 501 records, so the count names the
+      # early stop while the message names the 500-row cap.
+      assert has_element?(view, "#paste-source-error", "trip rows")
+      assert has_element?(view, "#paste-source-error", "Paste up to 500")
+      assert has_element?(view, "#paste-source[aria-invalid='true']")
+
+      # The text stays in the textarea for the fix.
+      assert view |> element("#paste-source") |> render() =~ "1301"
+      assert view |> element("#paste-source") |> render() =~ "06:05"
+      refute has_element?(view, "#paste-source-summary")
+    end
+
+    test "a paste with no times shows No times found inline",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      read(view, %{"text" => "Trip\tPaste Stop 1\nfoo\tbar"})
+
+      assert has_element?(view, "#paste-source-error", "No times found")
+      assert view |> element("#paste-source") |> render() =~ "foo"
+      refute has_element?(view, "#paste-source-summary")
+    end
+
+    test "reading an empty timetable asks for a paste first",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      read(view, %{"text" => "   "})
+
+      assert has_element?(view, "#paste-source-error", "Paste a timetable first")
+      refute has_element?(view, "#paste-source-summary")
+    end
+
+    test "an unclosed quote names its starting line",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      read(view, %{"text" => "Trip\tPaste Stop 1\n\"06:00\t06:05"})
+
+      assert has_element?(view, "#paste-source-error", "starts on line 2")
+      refute has_element?(view, "#paste-source-summary")
+    end
+
+    test "an exact paste collapses the step and shows the review placeholder",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      read(view)
+
+      assert has_element?(view, "#paste-source-summary", "2 trip rows")
+      assert has_element?(view, "#paste-source-summary", "trips in rows")
+      assert has_element?(view, "#paste-source-edit", "Edit timetable")
+      assert has_element?(view, "#paste-review")
+      refute has_element?(view, "#paste-source")
+      refute has_element?(view, "#paste-source-error")
+      refute has_element?(view, "#paste-columns")
+    end
+
+    test "a paste with an unmatched column shows the columns placeholder",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      read(view, %{
+        "text" => "Trip\tMystery Stop\tPaste Stop 2\tPaste Stop 3\n101\t06:00\t06:05\t06:10"
+      })
+
+      assert has_element?(view, "#paste-source-summary")
+      assert has_element?(view, "#paste-columns")
+      refute has_element?(view, "#paste-review")
+    end
+
+    test "Edit timetable reopens the step with the text intact",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      read(view)
+      assert has_element?(view, "#paste-source-summary")
+
+      render_click(view, "edit_source")
+
+      assert has_element?(view, "#paste-source")
+      assert view |> element("#paste-source") |> render() =~ "06:00"
+      refute has_element?(view, "#paste-source-summary")
+      # Reopening hides the later stages until the next Read, like the
+      # prototype returning to its source stage.
+      refute has_element?(view, "#paste-review")
+    end
+
+    test "changing the schedule keeps a real paste and rebuilds the review",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = canonical_path(view, version, paste.route, paste)
+
+      # Typing stashes the paste without reviewing it.
+      render_change(view, "input", read_params())
+      refute has_element?(view, "#paste-source-summary")
+
+      read(view)
+      assert has_element?(view, "#paste-source-summary")
+
+      # Step 22's deferred positive case: a review now warns about the rebuild.
+      view |> element("#paste-scope-open") |> render_click()
+      assert has_element?(view, "#paste-scope-rebuild-warning")
+
+      render_submit(
+        view,
+        "change_schedule",
+        %{
+          "scope" => %{
+            "service_id" => paste.weekday,
+            "direction" => "1",
+            "pattern" => paste.inbound.pattern.id
+          }
+        }
+      )
+
+      inbound_path =
+        paste_path(version, paste.route, %{
+          "service_id" => paste.weekday,
+          "direction" => "1",
+          "pattern" => paste.inbound.pattern.id
+        })
+
+      assert_patch(view, inbound_path)
+      _html = follow(view, inbound_path)
+
+      assert has_element?(view, "#paste-scope-direction", "Inbound")
+      # The rebuilt review collapses the step again on the new schedule.
+      assert has_element?(view, "#paste-source-summary")
+
+      # And the pasted text survived the patch.
+      render_click(view, "edit_source")
+      assert view |> element("#paste-source") |> render() =~ "06:00"
+    end
+  end
 end
