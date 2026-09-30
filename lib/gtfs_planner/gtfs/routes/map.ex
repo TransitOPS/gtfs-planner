@@ -16,7 +16,10 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
   occurrence `position` and sections reference `from_position`/`to_position`,
   so a stop visited twice keeps two distinct occurrence identities. Imported
   trip shapes are deduplicated by `shape_id` and labelled as variants, so
-  duplicate trip copies never duplicate geometry.
+  duplicate trip copies never duplicate geometry. Each variant also carries
+  `outside_trip_count`: how many of its trips are outside every route pattern
+  (`custom` derivation), counted from landed trip rows, with
+  `route_pattern_ids` naming only the patterns its trips are linked to.
 
   Every section carries its `source` (`:stop_pair` for connectors derived from
   ordered stop coordinates, `:imported_shape` for `shapes` rows) and a truthful
@@ -96,7 +99,8 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
           shape_id: String.t(),
           variant: pos_integer(),
           label: String.t(),
-          route_pattern_ids: [String.t()]
+          route_pattern_ids: [String.t()],
+          outside_trip_count: non_neg_integer()
         }
   @type pattern_map :: %{
           id: Ecto.UUID.t(),
@@ -160,7 +164,7 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
          route_id: route.route_id,
          status: :ok,
          saved_alignment: :unavailable,
-         patterns: Enum.map(patterns, &pattern_map(&1, Map.fetch!(visits, &1.id))),
+         patterns: Enum.map(patterns, &pattern_map(&1, Map.get(visits, &1.id, []))),
          imported_shape_variants: load_shape_variants(route)
        }}
     end
@@ -371,10 +375,12 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
   end
 
   # Same connector derivation as the current route, deduplicated across a
-  # route's patterns: two patterns over the same stops carry one section.
+  # route's patterns: two patterns over the same stops carry one section. A
+  # pattern with no landed occurrences contributes no section rather than
+  # failing the whole page.
   defp context_sections(patterns, visits) do
     patterns
-    |> Enum.flat_map(&connector_sections(Map.fetch!(visits, &1.id)))
+    |> Enum.flat_map(&connector_sections(Map.get(visits, &1.id, [])))
     |> Enum.uniq_by(&{&1.source, &1.status, Map.get(&1, :coordinates), Map.get(&1, :unlocated)})
   end
 
@@ -519,23 +525,11 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
   end
 
   defp load_shape_variants(route) do
-    pattern_ids_by_shape =
-      from(trip in Trip,
-        where:
-          trip.organization_id == ^route.organization_id and
-            trip.gtfs_version_id == ^route.gtfs_version_id and
-            trip.route_id == ^route.route_id and not is_nil(trip.shape_id),
-        distinct: true,
-        select: {trip.route_pattern_id, trip.shape_id}
-      )
-      |> Repo.all()
-      |> Enum.group_by(fn {_pattern_id, shape_id} -> shape_id end, fn {pattern_id, _} ->
-        pattern_id
-      end)
+    trips_by_shape = load_trips_by_shape(route)
 
-    points_by_shape = load_shape_points(route, Map.keys(pattern_ids_by_shape))
+    points_by_shape = load_shape_points(route, Map.keys(trips_by_shape))
 
-    pattern_ids_by_shape
+    trips_by_shape
     |> Map.keys()
     |> Enum.sort()
     |> Enum.with_index(1)
@@ -544,9 +538,31 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
         shape_id,
         variant,
         Map.get(points_by_shape, shape_id, []),
-        pattern_ids_by_shape
+        Map.fetch!(trips_by_shape, shape_id)
       )
     end)
+  end
+
+  # One row per distinct imported shape: the route pattern ids its trips carry
+  # and how many of its trips sit outside every pattern (`custom` derivation),
+  # both counted in the database so a shape repeated by many trips still yields
+  # one variant. Only this route's trips are read, so another route's outside
+  # trips never land in this route's projection.
+  defp load_trips_by_shape(route) do
+    from(trip in Trip,
+      where:
+        trip.organization_id == ^route.organization_id and
+          trip.gtfs_version_id == ^route.gtfs_version_id and
+          trip.route_id == ^route.route_id and not is_nil(trip.shape_id),
+      group_by: trip.shape_id,
+      select: %{
+        shape_id: trip.shape_id,
+        route_pattern_ids: fragment("array_agg(?)", trip.route_pattern_id),
+        outside_trip_count: filter(count(trip.id), trip.pattern_derivation_state == "custom")
+      }
+    )
+    |> Repo.all()
+    |> Map.new(&{&1.shape_id, &1})
   end
 
   defp load_shape_points(_route, []), do: %{}
@@ -563,18 +579,18 @@ defmodule GtfsPlanner.Gtfs.Routes.Map do
     |> Enum.group_by(& &1.shape_id)
   end
 
-  defp shape_variant(shape_id, variant, rows, pattern_ids_by_shape) do
+  defp shape_variant(shape_id, variant, rows, trips) do
     base = %{
       source: :imported_shape,
       shape_id: shape_id,
       variant: variant,
       label: "Variant #{variant}",
       route_pattern_ids:
-        pattern_ids_by_shape
-        |> Map.fetch!(shape_id)
+        trips.route_pattern_ids
         |> Enum.reject(&is_nil/1)
         |> Enum.uniq()
-        |> Enum.sort()
+        |> Enum.sort(),
+      outside_trip_count: trips.outside_trip_count
     }
 
     cond do
