@@ -740,9 +740,16 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExportTest do
         piece(run_id: nil, trips: [trip(@t3, "TP-3", "S1", "S2", 6 * @h, 7 * @h)])
 
       result =
-        rows([], run_days: %{@key => day([], [uncovered_piece])})
+        rows([], run_days: %{@key => day([run([])], [uncovered_piece])})
 
       assert result.uncovered == [%{day_type: day_type(), trips: 1}]
+    end
+
+    test "a day type with no runs is not reported, because nothing in it has been cut" do
+      uncovered_piece =
+        piece(run_id: nil, trips: [trip(@t3, "TP-3", "S1", "S2", 6 * @h, 7 * @h)])
+
+      assert rows([], run_days: %{@key => day([], [uncovered_piece])}).uncovered == []
     end
 
     test "a day type with nothing uncovered is not reported" do
@@ -753,7 +760,7 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExportTest do
       a = piece(run_id: nil, trips: [trip(@t3, "TP-3", "S1", "S2", 6 * @h, 7 * @h)])
       b = piece(run_id: nil, trips: [trip(@t3, "TP-3", "S1", "S2", 6 * @h, 7 * @h)])
 
-      assert rows([], run_days: %{@key => day([], [a, b])}).uncovered == [
+      assert rows([], run_days: %{@key => day([run([])], [a, b])}).uncovered == [
                %{day_type: day_type(), trips: 1}
              ]
     end

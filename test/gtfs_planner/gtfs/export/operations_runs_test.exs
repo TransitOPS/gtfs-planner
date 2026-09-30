@@ -202,7 +202,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
   end
 
   describe "a version without runs" do
-    test "writes no run_events.txt, and says why", %{world: world} do
+    test "writes no run_events.txt and raises no run warning", %{world: world} do
       # Blocks and no saved assignments: the movements are still exported, but
       # there is no run to write.
       {:ok, zip, warnings} =
@@ -212,19 +212,11 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
 
       refute Map.has_key?(entries, @run_events)
 
-      # No "file omitted" warning: the four movement supplements warn when they are
-      # absent, and matching that would break spec 07's EV-08, which asserts a
-      # version with movements and no runs produces no warnings at all. The file's
-      # absence needs no announcement; the uncovered work does.
-      refute Enum.any?(warnings, &(&1.code == "tods_file_omitted" and &1.file == @run_events))
-
-      # Every trip is in no run, so the day type is fully uncovered and says so.
-      [day_type | _] = day_types(world)
-      [uncovered | _] = Enum.filter(warnings, &(&1.code == "tods_runs_uncovered"))
-
-      assert uncovered.file == @run_events
-      assert uncovered.entity_type == "run"
-      assert uncovered.detail =~ "are not in a run for #{day_type.label}"
+      # A version with movements and no runs exports with no warnings at all, as
+      # the movements export already promises: runs are optional, and a day type
+      # nobody has cut has no uncovered work to report.
+      refute Enum.any?(warnings, &(&1.file == @run_events)),
+             "expected no run warning, got #{inspect(warnings)}"
     end
   end
 

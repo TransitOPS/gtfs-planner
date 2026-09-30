@@ -123,9 +123,8 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
             {day_events, day_left_out} =
               day_events(day_type.key, day, ids, garages_by_id)
 
-            uncovered = uncovered ++ [uncovered(day_type, day)]
-
-            {events ++ day_events, left_out + day_left_out, uncovered}
+            {events ++ day_events, left_out + day_left_out,
+             uncovered ++ day_uncovered(day_type, day)}
         end
       end)
 
@@ -162,6 +161,12 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
       {[run_events(key, run, services, ids, garages_by_id) | events], left_out}
     end
   end
+
+  # A day type with no runs has not been cut yet, so its trips are not reported:
+  # a version exported with blocks and no runs would otherwise warn about every
+  # trip of every day type on every export.
+  defp day_uncovered(_day_type, %{runs: []}), do: []
+  defp day_uncovered(day_type, day), do: [uncovered(day_type, day)]
 
   # The trips of every piece in no run at all, counted for the day type's warning.
   defp uncovered(day_type, day) do
