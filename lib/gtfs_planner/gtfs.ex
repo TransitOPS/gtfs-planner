@@ -936,6 +936,28 @@ defmodule GtfsPlanner.Gtfs do
     do: {:error, :invalid_input}
 
   @doc """
+  Restores one executed command's captured rows through `Schedules.restore_trips/3`.
+
+  `payload` is the exact capture a successful `apply_trip_change/4` returned; the
+  LiveView holds it and re-submits it for Undo. The write takes the §4.4 lock
+  order, then refuses with `{:error, {:not_restorable, :changed, ids}}` when any
+  payload trip changed after the original write, and with
+  `{:error, {:not_restorable, :transfer_names_created_trip, ids}}` when a transfer
+  names a trip the restore would delete; each refusal writes nothing. Otherwise
+  the updated trips' fields, stop times and frequencies are put back, the created
+  trips are deleted, and one shared-operation `"trip"` audit log per affected trip
+  carries `undoes` = the payload's original operation id. Returns the restore's
+  operation id, the restored trip UUIDs and the deleted trip UUIDs.
+  """
+  @spec restore_trips(String.t(), Schedules.TripChanges.restore_payload(), AuditContext.t()) ::
+          {:ok, Schedules.restore_result()} | {:error, Schedules.restore_error()}
+  def restore_trips(route_id, payload, %AuditContext{} = audit_context) do
+    Schedules.restore_trips(route_id, payload, audit_context)
+  end
+
+  def restore_trips(_route_id, _payload, _audit_context), do: {:error, :invalid_input}
+
+  @doc """
   Edits one trip in place through `Schedules.update_trip/5`.
 
   `attrs` is a subset of `:start_time`, `:timed_pattern_id`, `:service_id`,
@@ -7957,7 +7979,7 @@ defmodule GtfsPlanner.Gtfs do
   # whose complete member list lives once in the envelope (AC-26).
   defp audited_attrs_for(type, attrs) when type in [:trip, "trip"] do
     Map.filter(attrs, fn {key, _value} ->
-      to_string(key) in ~w(before after operation_id affected_trip_ids combination)
+      to_string(key) in ~w(before after operation_id affected_trip_ids combination undoes)
     end)
   end
 
@@ -8158,7 +8180,9 @@ defmodule GtfsPlanner.Gtfs do
   # UUIDs alongside the per-trip before/after snapshot, so one log per affected
   # trip can be reconstructed into the whole command.
   defp put_trip_operation(changed, attrs) do
-    Enum.reduce([:operation_id, :affected_trip_ids, :combination], changed, fn key, acc ->
+    keys = [:operation_id, :affected_trip_ids, :combination, :undoes]
+
+    Enum.reduce(keys, changed, fn key, acc ->
       case Map.get(attrs, key, Map.get(attrs, Atom.to_string(key))) do
         nil -> acc
         value -> Map.put(acc, Atom.to_string(key), normalize_value(value))

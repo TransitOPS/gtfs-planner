@@ -209,6 +209,27 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           | :trip_id_conflict
           | Ecto.Changeset.t()
 
+  @typedoc """
+  What one restore returns (R10, §4.4).
+
+  `restored_trip_ids` are the updated trips put back and `deleted_trip_ids` the
+  created trips removed; `operation_id` is the restore's own operation, while
+  every audit log carries the original apply's id in `undoes`.
+  """
+  @type restore_result :: %{
+          operation_id: Ecto.UUID.t(),
+          restored_trip_ids: [Ecto.UUID.t()],
+          deleted_trip_ids: [Ecto.UUID.t()]
+        }
+
+  @type restore_error ::
+          {:not_restorable, :changed | :transfer_names_created_trip, [Ecto.UUID.t()]}
+          | :not_found
+          | :invalid_command
+          | :trip_stop_times_mismatch
+          | :busy
+          | Ecto.Changeset.t()
+
   @doc """
   Expands a series of departure seconds from `start_secs`.
 
@@ -838,6 +859,41 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   def apply_trip_change(_route_id, _command, _fence, _audit_context),
     do: {:error, :invalid_input}
 
+  @doc """
+  Restores one executed command's captured rows in a single write transaction (R10).
+
+  `payload` is the exact capture a successful `apply_trip_change/4` returned. The
+  transaction re-reads the payload's trip identities under the §4.4 lock order
+  (the same locks the original command took, plus the blocking advisory lock when
+  a captured `block_id` differs from the locked row), plans the payload through
+  `TripChanges.Restore` and fences: every payload trip's locked `updated_at` must
+  equal its captured `written_updated_at`, and no transfer may name a trip the
+  restore deletes. A trip that changed is
+  `{:error, {:not_restorable, :changed, ids}}`; a transfer naming a created trip
+  is `{:error, {:not_restorable, :transfer_names_created_trip, ids}}`; both write
+  nothing.
+
+  Otherwise the updated trips' captured fields, stop-time values and frequency
+  rows are put back, the created trips with their stop times, frequencies and
+  naming transfers are deleted, and one `"trip"` audit log per affected trip is
+  recorded under one shared operation id with `undoes` set to the payload's
+  original operation id. Returns the restore's operation id, the restored trip
+  UUIDs and the deleted trip UUIDs.
+  """
+  @spec restore_trips(String.t(), TripChanges.restore_payload(), AuditContext.t()) ::
+          {:ok, restore_result()} | {:error, restore_error()}
+  def restore_trips(route_id, payload, %AuditContext{} = audit_context) do
+    case TripChanges.validate({:restore, payload}) do
+      {:ok, {:restore, payload}} ->
+        run_write(fn -> do_restore_trips(route_id, payload, audit_context) end)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def restore_trips(_route_id, _payload, _audit_context), do: {:error, :invalid_input}
+
   defp do_apply_trip_change(route_id, command, fence, audit_context) do
     organization_id = audit_context.organization_id
     version_id = audit_context.gtfs_version_id
@@ -874,6 +930,55 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       {:error, reason} ->
         Repo.rollback(reason)
     end
+  end
+
+  defp do_restore_trips(route_id, payload, audit_context) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+    command = {:restore, payload}
+
+    # The same pre-lock read and §4.4 lock order as `apply_trip_change/4`: a
+    # restore locks the trips it puts back and the created trips it removes.
+    route = published_route!(organization_id, version_id, route_id)
+    identities = change_identities!(organization_id, version_id, route, command)
+
+    patterns =
+      change_patterns!(
+        organization_id,
+        version_id,
+        route,
+        change_pattern_ids!(organization_id, version_id, route, command, identities)
+      )
+
+    lock_change_scope!(route_id, command, identities, patterns, audit_context)
+
+    state = load_change_state(route, command, audit_context)
+
+    case TripChanges.plan(command, state) do
+      {:ok, change_set} ->
+        case restore_fence!(payload, state) do
+          :ok -> apply_restore(route, payload, state, change_set, audit_context)
+          {:error, reason} -> Repo.rollback(reason)
+        end
+
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  # The apply machinery does the write; a restore adds the `undoes` audit key and
+  # returns its own result shape instead of the full apply result.
+  defp apply_restore(route, payload, state, change_set, audit_context) do
+    result =
+      apply_change_set(route, {:restore, payload}, state, change_set, audit_context, %{
+        undoes: attr(payload, :operation_id)
+      })
+
+    %{
+      operation_id: result.operation_id,
+      restored_trip_ids: result.changed_trip_ids,
+      deleted_trip_ids: result.deleted_trip_ids
+    }
   end
 
   # INV-1 lock order: calendar reference locks for every involved service in
@@ -1010,6 +1115,58 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     end
   end
 
+  # R10's restore fence: every payload trip must still carry the `updated_at` the
+  # original write produced, and no transfer may name a trip the restore deletes.
+  # The changed check runs first; both refusals list the UUIDs and write nothing.
+  defp restore_fence!(payload, state) do
+    case restore_changed_ids(payload, state) do
+      [] -> restore_transfer_fence!(payload, state)
+      ids -> {:error, {:not_restorable, :changed, ids}}
+    end
+  end
+
+  defp restore_changed_ids(payload, state) do
+    payload
+    |> restore_entries()
+    |> Enum.reject(fn {id, written_updated_at} ->
+      restore_unchanged?(id, written_updated_at, state)
+    end)
+    |> Enum.map(&elem(&1, 0))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  # Every updated and created entry carries `written_updated_at`: the timestamp
+  # the original write forced on the trip, which this restore's fence compares.
+  defp restore_entries(payload) do
+    (List.wrap(attr(payload, :trips)) ++ List.wrap(attr(payload, :created)))
+    |> Enum.map(&{attr(&1, :id), attr(&1, :written_updated_at)})
+  end
+
+  defp restore_unchanged?(trip_id, written_updated_at, state) do
+    with %{trip: trip} <- Map.get(state.trips, trip_id),
+         %DateTime{} = written <- normalize_timestamp(written_updated_at) do
+      DateTime.compare(trip.updated_at, written) == :eq
+    else
+      _missing_or_unreadable -> false
+    end
+  end
+
+  defp restore_transfer_fence!(payload, state) do
+    counts = attr(state, :transfer_counts) || %{}
+
+    ids =
+      payload
+      |> attr(:created)
+      |> List.wrap()
+      |> Enum.filter(fn trip -> Map.get(counts, attr(trip, :trip_id), 0) != 0 end)
+      |> Enum.map(&attr(&1, :id))
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    if ids == [], do: :ok, else: {:error, {:not_restorable, :transfer_names_created_trip, ids}}
+  end
+
   defp refuse_errors!(change_set) do
     case Enum.filter(change_set.consequences, &match?({:error, _}, &1)) do
       [] -> :ok
@@ -1017,7 +1174,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     end
   end
 
-  defp apply_change_set(route, command, state, change_set, audit_context) do
+  defp apply_change_set(route, command, state, change_set, audit_context, audit_extra \\ %{}) do
     organization_id = audit_context.organization_id
     version_id = audit_context.gtfs_version_id
     now = DateTime.utc_now()
@@ -1057,13 +1214,10 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
     audit_change_set!(
       audit_context,
-      operation_id,
-      affected_ids,
+      %{operation_id: operation_id, affected_ids: affected_ids, extra: audit_extra},
       before,
       after_snapshots,
-      updated,
-      inserted,
-      deletes
+      %{updated: updated, inserted: inserted, deletes: deletes}
     )
 
     %{
@@ -1323,49 +1477,43 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   # R11: one `"trip"` log per affected trip, all sharing one operation id and the
   # command's complete affected trip list. An audit failure rolls the whole
   # transaction back (INV-3).
-  defp audit_change_set!(
-         audit_context,
-         operation_id,
-         affected_ids,
-         before,
-         after_snapshots,
-         updated,
-         inserted,
-         deletes
-       ) do
-    Enum.each(updated, fn {before_trip, after_trip} ->
+  defp audit_change_set!(audit_context, audit, before, after_snapshots, written) do
+    Enum.each(written.updated, fn {before_trip, after_trip} ->
       audit_trip!(
         audit_context,
         after_trip,
         "updated",
         Map.get(before, before_trip.id),
         Map.get(after_snapshots, after_trip.id),
-        operation_id,
-        affected_ids
+        audit.operation_id,
+        audit.affected_ids,
+        audit.extra
       )
     end)
 
-    Enum.each(inserted, fn trip ->
+    Enum.each(written.inserted, fn trip ->
       audit_trip!(
         audit_context,
         trip,
         "created",
         nil,
         Map.get(after_snapshots, trip.id),
-        operation_id,
-        affected_ids
+        audit.operation_id,
+        audit.affected_ids,
+        audit.extra
       )
     end)
 
-    Enum.each(deletes, fn entry ->
+    Enum.each(written.deletes, fn entry ->
       audit_trip!(
         audit_context,
         entry.trip,
         "deleted",
         Map.get(before, entry.trip.id),
         nil,
-        operation_id,
-        affected_ids
+        audit.operation_id,
+        audit.affected_ids,
+        audit.extra
       )
     end)
 
@@ -3528,13 +3676,31 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   # rolls the whole transaction back, so no trip data survives a partial audit. A
   # bulk operation passes one generated operation id and its complete affected
   # trip UUID list.
-  defp audit_trip!(audit_context, trip, action, before, after_snapshot, operation_id, affected) do
-    case Gtfs.record_change_in_transaction(audit_context, :trip, trip, action, %{
-           before: before,
-           after: after_snapshot,
-           operation_id: operation_id,
-           affected_trip_ids: affected
-         }) do
+  defp audit_trip!(
+         audit_context,
+         trip,
+         action,
+         before,
+         after_snapshot,
+         operation_id,
+         affected,
+         extra \\ %{}
+       ) do
+    case Gtfs.record_change_in_transaction(
+           audit_context,
+           :trip,
+           trip,
+           action,
+           Map.merge(
+             %{
+               before: before,
+               after: after_snapshot,
+               operation_id: operation_id,
+               affected_trip_ids: affected
+             },
+             extra
+           )
+         ) do
       {:ok, _log} -> :ok
       {:error, changeset} -> Repo.rollback(changeset)
     end
