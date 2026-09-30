@@ -663,6 +663,68 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
                Enum.sort([scope.trips.first, scope.trips.second, "R-APPLY-0-WKD-APPLY-0800"])
     end
 
+    test "new timings on two patterns sharing a name each land on their own pattern",
+         context do
+      scope = apply_case!(context, short_turn?: true)
+
+      input =
+        add_input(
+          "Central Station\tMarket Street\tHospital\n08:00\t08:05\t08:12\n08:30\t08:37\t-\n"
+        )
+
+      review = prepare_review!(context, scope, input)
+
+      assert review.plan.counts.add == 2
+
+      assert review.plan.new_timings |> Enum.map(&{&1.pattern_id, &1.name}) |> Enum.sort() ==
+               Enum.sort([
+                 {scope.main.pattern.id, "Pasted Sep 28 · A"},
+                 {scope.short.pattern.id, "Pasted Sep 28 · A"}
+               ])
+
+      assert {:ok, summary} =
+               Schedules.apply_paste(
+                 scope.route_id,
+                 scope_params(scope),
+                 input,
+                 review.fingerprint,
+                 context.audit
+               )
+
+      assert summary.added == 2
+
+      main_timing =
+        Repo.get_by!(TimedPattern,
+          route_pattern_id: scope.main.pattern.id,
+          name: "Pasted Sep 28 · A"
+        )
+
+      short_timing =
+        Repo.get_by!(TimedPattern,
+          route_pattern_id: scope.short.pattern.id,
+          name: "Pasted Sep 28 · A"
+        )
+
+      main_trip = Repo.get_by!(Trip, trip_id: "R-APPLY-0-WKD-APPLY-0800")
+      short_trip = Repo.get_by!(Trip, trip_id: "R-APPLY-0-WKD-APPLY-0830")
+
+      assert {main_trip.route_pattern_id, main_trip.timed_pattern_id} == {"MAIN", main_timing.id}
+
+      assert {short_trip.route_pattern_id, short_trip.timed_pattern_id} ==
+               {"SHORT", short_timing.id}
+
+      assert ordered_stop_ids(context, "R-APPLY-0-WKD-APPLY-0830") == ["PSA-1", "PSA-2"]
+
+      created_timing_ids =
+        context
+        |> timing_logs()
+        |> Enum.filter(&(&1.action == "created"))
+        |> Enum.map(& &1.entity_id)
+        |> Enum.sort()
+
+      assert created_timing_ids == Enum.sort([main_timing.id, short_timing.id])
+    end
+
     test "an Add paste with a duplicate row writes only the new trip and leaves no orphans",
          context do
       scope = apply_case!(context)
@@ -1008,6 +1070,20 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
         stops: [{"PSA-3", 0, 0, 1}, {"PSA-2", 300, 300, 1}, {"PSA-1", 600, 600, 1}]
       })
 
+    short =
+      if opts[:short_turn?] do
+        schedule_pattern_fixture(organization_id, version_id, %{
+          route_id: route.route_id,
+          direction_id: 0,
+          route_pattern_id: "SHORT",
+          route_pattern_name: "Short turn",
+          route_pattern_sort_order: 2,
+          headsign: "Market Street",
+          timing_name: "Standard",
+          stops: [{"PSA-1", 0, 0, 1}, {"PSA-2", 300, 300, 1}]
+        })
+      end
+
     first =
       schedule_trip_fixture(organization_id, version_id, route.route_id, main, %{
         trip_id: "R-APPLY-0-WKD-APPLY-0600",
@@ -1118,6 +1194,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.PasteApplyTest do
       service: service,
       main: main,
       rev: rev,
+      short: short,
       trips: %{
         first: first.trip_id,
         second: second.trip_id,

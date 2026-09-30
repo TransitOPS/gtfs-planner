@@ -737,14 +737,14 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     result = remove_locked_trips!(organization_id, version_id, remove_trips)
     audit_removed_trips!(audit_context, remove_trips, snapshots, operation_id)
 
-    timings_by_name = create_paste_timings!(route, review.plan, audit_context, operation_id)
+    pasted_timings = create_paste_timings!(route, review.plan, audit_context, operation_id)
 
     {changed_count, changed_ids} =
       apply_paste_changes!(
         route,
         review.plan,
         locked_trips,
-        timings_by_name,
+        pasted_timings,
         operation_id,
         audit_context
       )
@@ -755,7 +755,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
         review.plan,
         service_id,
         direction,
-        timings_by_name,
+        pasted_timings,
         operation_id,
         audit_context
       )
@@ -860,17 +860,19 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   # Step 17: pending timings first (AC-19), in plan order, before the trip
-  # updates that reference them. Entries sharing a name reuse the single
-  # created row through the returned name → id map. New timings carry no
-  # headsign, so trips keep falling through to the pattern default exactly
-  # as Plan's effective-default rule assumes (a pending timing has no
-  # headsign yet).
+  # updates that reference them. The returned map is keyed by
+  # `{pattern_id, name}` because Plan names pending timings per pattern, so
+  # two patterns in one paste can each mint `Pasted <stamp> · A`. New
+  # timings carry no headsign, so trips keep falling through to the pattern
+  # default exactly as Plan's effective-default rule assumes (a pending
+  # timing has no headsign yet).
   defp create_paste_timings!(route, plan, audit_context, operation_id) do
-    Enum.reduce(paste_timing_entries(plan), %{}, fn entry, by_name ->
+    Enum.reduce(paste_timing_entries(plan), %{}, fn entry, by_key ->
       name = attr(entry, :name)
+      key = {attr(entry, :pattern_id), name}
 
-      if Map.has_key?(by_name, name) do
-        by_name
+      if Map.has_key?(by_key, key) do
+        by_key
       else
         pattern = lock_paste_pattern!(route, attr(entry, :pattern_id))
 
@@ -884,7 +886,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
             operation_id
           )
 
-        Map.put(by_name, name, timing.id)
+        Map.put(by_key, key, timing.id)
       end
     end)
   end
@@ -907,7 +909,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
          route,
          plan,
          locked_trips,
-         timings_by_name,
+         pasted_timings,
          operation_id,
          audit_context
        ) do
@@ -921,7 +923,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
           route,
           change,
           by_id,
-          timings_by_name,
+          pasted_timings,
           operation_id,
           affected,
           audit_context
@@ -946,7 +948,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
          route,
          change,
          by_id,
-         timings_by_name,
+         pasted_timings,
          operation_id,
          affected,
          audit_context
@@ -964,7 +966,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     timing_rows = attr(row, :timing_rows)
     unless is_list(timing_rows) and timing_rows != [], do: Repo.rollback(:stale_plan)
 
-    timed_pattern_id = paste_change_timing_id!(change, timings_by_name)
+    timed_pattern_id = paste_change_timing_id!(change, pasted_timings)
     pattern = lock_paste_pattern!(route, attr(row, :pattern_id))
     occurrences = pattern_occurrences(pattern)
 
@@ -1003,15 +1005,17 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   end
 
   # An {:existing, id} timing is already stored; a {:new, name} timing was
-  # created above, so its mapped id applies. Anything else means the plan no
-  # longer fits the locked state.
-  defp paste_change_timing_id!(change, timings_by_name) do
+  # created above on the row's own pattern, so that pattern's mapped id
+  # applies. Anything else means the plan no longer fits the locked state.
+  defp paste_change_timing_id!(change, pasted_timings) do
+    pattern_id = attr(attr(change, :row), :pattern_id)
+
     case attr(change, :timing) do
       {:existing, id} when is_binary(id) ->
         id
 
       {:new, name} when is_binary(name) ->
-        case Map.fetch(timings_by_name, name) do
+        case Map.fetch(pasted_timings, {pattern_id, name}) do
           {:ok, id} -> id
           :error -> Repo.rollback(:stale_plan)
         end
@@ -1092,7 +1096,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
          plan,
          service_id,
          direction,
-         timings_by_name,
+         pasted_timings,
          operation_id,
          audit_context
        ) do
@@ -1125,7 +1129,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
             trip_id,
             service_id,
             direction,
-            timings_by_name,
+            pasted_timings,
             audit_context,
             now
           )
@@ -1176,7 +1180,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
          trip_id,
          service_id,
          direction,
-         timings_by_name,
+         pasted_timings,
          audit_context,
          now
        ) do
@@ -1195,7 +1199,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       do: Repo.rollback(:stale_plan)
 
     timing_rows = normalize_paste_timing_rows(raw_timing_rows)
-    timed_pattern_id = paste_change_timing_id!(change, timings_by_name)
+    timed_pattern_id = paste_change_timing_id!(change, pasted_timings)
     pattern = lock_paste_pattern!(route, attr(row, :pattern_id))
     if pattern.direction_id != direction, do: Repo.rollback(:stale_plan)
 
