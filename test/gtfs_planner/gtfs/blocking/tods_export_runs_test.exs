@@ -183,7 +183,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportRunsTest do
       # The run hangs on a service. A day type with runs and no deadhead has
       # nothing to write in the movement files, but the run events still need
       # somewhere to hang, and the service is that somewhere.
-      assert rows.ids.service_ids[@weekday_key] == s
+      assert rows.ids.service_ids[@weekday_key].service_id == s
       assert dates_of(rows.calendar_dates, s) == [@d1, @d2]
     end
 
@@ -308,7 +308,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportRunsTest do
     end
 
     test "service_ids matches the service_id on that day type's calendar rows", %{rows: rows} do
-      service = rows.ids.service_ids[@weekday_key]
+      service = rows.ids.service_ids[@weekday_key].service_id
 
       assert service == service_id(@weekday_key)
       assert dates_of(rows.calendar_dates, service) == [@d1, @d2]
@@ -390,9 +390,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExportRunsTest do
           )
         )
 
-      assert rows.ids.service_ids[@weekday_key] == service_id(@weekday_key)
-      assert rows.ids.service_ids[other_key] == service_id(other_key)
-      refute rows.ids.service_ids[@weekday_key] == rows.ids.service_ids[other_key]
+      assert rows.ids.service_ids[@weekday_key].service_id == service_id(@weekday_key)
+      assert rows.ids.service_ids[other_key].service_id == service_id(other_key)
+
+      refute rows.ids.service_ids[@weekday_key].service_id ==
+               rows.ids.service_ids[other_key].service_id
 
       # The movement is keyed by its own day type, so the same block id on two
       # day types does not collide.

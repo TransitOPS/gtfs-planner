@@ -132,7 +132,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   The identifiers a consumer needs to refer back to what was written.
 
   `service_ids` is by day type, so a run event can name the service its run hangs
-  on. `movement_trip_ids` is by `{day_type_key, block_id, leg}` — the leg being
+  on. Each entry carries the `prev_service_id` alongside it, which is `nil` unless
+  the `_prev` service was reserved. It is here rather than derivable by the
+  caller because reservation can suffix the ID: a `_prev` that collided takes
+  `_prev_2`, so appending the suffix at the far end would name a service that was
+  never written. `movement_trip_ids` is by `{day_type_key, block_id, leg}` — the leg being
   `:pull_out`, `:pull_back` or `{:gap, index}` for a drive — so a run event on a
   deadhead can name the trip that movement was written as.
 
@@ -140,7 +144,12 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   so there is nothing to refer to.
   """
   @type ids :: %{
-          required(:service_ids) => %{optional(String.t()) => String.t()},
+          required(:service_ids) => %{
+            optional(String.t()) => %{
+              required(:service_id) => String.t(),
+              required(:prev_service_id) => String.t() | nil
+            }
+          },
           required(:movement_trip_ids) => %{
             optional({String.t(), String.t(), term()}) => String.t()
           }
@@ -358,7 +367,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
       stop_times: Enum.flat_map(day_rows, & &1.stop_times),
       omitted: omitted,
       ids: %{
-        service_ids: Map.new(ids, &{&1.key, &1.service_id}),
+        service_ids:
+          Map.new(ids, &{&1.key, %{service_id: &1.service_id, prev_service_id: &1.prev_id}}),
         movement_trip_ids: Enum.reduce(ids, %{}, &Map.merge(&2, &1.movement_trip_ids))
       }
     }
@@ -437,6 +447,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
       %{
         key: day_type.key,
         service_id: service_id,
+        prev_id: prev_id,
         movement_trip_ids: Map.new(movement_trip_ids)
       },
       used
