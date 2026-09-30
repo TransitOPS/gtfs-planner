@@ -82,6 +82,19 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   notice instead of re-applying; a plain reconnect rebuilds the review
   and shows the reconnected notice. Success push-navigates to Schedules
   with the filters and a flash naming the change.
+
+  Step 30 owns the leave and version-switch guards. A `switch_gtfs_version`
+  with pasted text opens `#paste-switch-confirm` (`Keep reviewing` /
+  `Switch version`) and only navigates on confirm, through
+  `switch_version/2` like `RouteSchedulesLive`; an empty form navigates at
+  once. In-app navigation the page cannot intercept server-side (the route
+  tabs, the header) arrives through the colocated `.PasteLeaveGuard` hook
+  as `paste_leave_guard`: with pasted text it opens `#paste-leave-confirm`
+  (`Keep reviewing` / `Leave page`), otherwise it navigates at once. The
+  hook also answers `beforeunload` while the form holds text, which covers
+  the header version switcher's full-page navigation. The page's own Open
+  Schedules link navigates through `paste_leave` behind `data-confirm`
+  when dirty.
   """
   use GtfsPlannerWeb, :live_view
 
@@ -129,6 +142,8 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
      |> assign(:failed_reference, nil)
      |> assign(:replace_confirm, false)
      |> assign(:discard_confirm, false)
+     |> assign(:switch_confirm, nil)
+     |> assign(:leave_confirm, nil)
      |> assign(:show_review_errors, false)
      |> stream_configure(:plan_rows, dom_id: & &1.id)
      |> stream(:plan_rows, [])
@@ -151,12 +166,12 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
 
   @impl true
   def handle_event("gtfs_version_loaded", %{"version_id" => version_id}, socket) do
-    switch_version(socket, version_id)
+    guard_version_switch(socket, version_id)
   end
 
   @impl true
   def handle_event("switch_gtfs_version", %{"version" => version_id}, socket) do
-    switch_version(socket, version_id)
+    guard_version_switch(socket, version_id)
   end
 
   # Step 22 owns the Change schedule drawer. Opening drafts the current
@@ -541,6 +556,74 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
      |> put_plan_rows()}
   end
 
+  # Step 30 owns the leave and version-switch guards. A version switch
+  # with pasted text opens `#paste-switch-confirm` instead of navigating;
+  # confirming navigates through `switch_version/2` like
+  # `RouteSchedulesLive`. In-app navigation the page cannot intercept
+  # server-side (the route tabs, the header) arrives through the
+  # `.PasteLeaveGuard` hook as `paste_leave_guard` with the link's `href`;
+  # with pasted text it opens `#paste-leave-confirm`, otherwise it
+  # navigates at once. The page's own Open Schedules link
+  # (`paste_leave`, behind `data-confirm` when dirty) navigates at once
+  # because the browser already asked.
+  @impl true
+  def handle_event("paste_switch_confirm", _params, socket) do
+    case socket.assigns[:switch_confirm] do
+      %{version_id: version_id} ->
+        socket
+        |> assign(:switch_confirm, nil)
+        |> switch_version(version_id)
+
+      _no_pending ->
+        {:noreply, assign(socket, :switch_confirm, nil)}
+    end
+  end
+
+  @impl true
+  def handle_event("paste_switch_cancel", _params, socket) do
+    {:noreply, assign(socket, :switch_confirm, nil)}
+  end
+
+  @impl true
+  def handle_event("paste_leave_guard", %{"to" => to}, socket) do
+    if safe_leave_path?(to) do
+      if blank_paste_text?(input_text(socket)) do
+        {:noreply, push_navigate(socket, to: to)}
+      else
+        {:noreply, assign(socket, :leave_confirm, %{to: to})}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("paste_leave_guard", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("paste_leave_confirm", _params, socket) do
+    case socket.assigns[:leave_confirm] do
+      %{to: to} ->
+        {:noreply,
+         socket
+         |> assign(:leave_confirm, nil)
+         |> push_navigate(to: to)}
+
+      _no_pending ->
+        {:noreply, assign(socket, :leave_confirm, nil)}
+    end
+  end
+
+  @impl true
+  def handle_event("paste_leave_cancel", _params, socket) do
+    {:noreply, assign(socket, :leave_confirm, nil)}
+  end
+
+  @impl true
+  def handle_event("paste_leave", _params, socket) do
+    {:noreply, push_navigate(socket, to: leave_schedules_path(socket))}
+  end
+
   # Review again reloads the scope around the kept input (text, columns
   # and decisions stay) and clears the outcome, for the stale and unknown
   # notices.
@@ -625,6 +708,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
             review={@review}
             version_id={@current_gtfs_version.id}
             route_id={@route_id}
+            has_text={!blank_paste_text?(@input.text)}
           />
 
           <.form
@@ -677,6 +761,13 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
             input={@input}
           />
           <TimetablePasteComponents.discard_confirm :if={@discard_confirm} open={true} />
+          <TimetablePasteComponents.switch_confirm
+            :if={@switch_confirm}
+            open={true}
+            version_name={@switch_confirm.version_name}
+          />
+          <TimetablePasteComponents.leave_confirm :if={@leave_confirm} open={true} />
+          <TimetablePasteComponents.leave_guard />
         </div>
       </div>
     </Layouts.app>
@@ -1753,6 +1844,44 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     socket
     |> put_flash(:error, "Route not found")
     |> push_navigate(to: "/gtfs/#{version_id}/routes")
+  end
+
+  # A version switch with pasted text opens the switch confirmation
+  # instead of navigating; confirming navigates through switch_version/2.
+  # An empty form navigates at once, like RouteSchedulesLive.
+  defp guard_version_switch(socket, version_id) do
+    if blank_paste_text?(input_text(socket)) do
+      switch_version(socket, version_id)
+    else
+      {:noreply,
+       assign(socket, :switch_confirm, %{
+         version_id: version_id,
+         version_name: switch_version_name(socket, version_id)
+       })}
+    end
+  end
+
+  defp switch_version_name(socket, version_id) do
+    socket.assigns[:available_versions]
+    |> List.wrap()
+    |> Enum.find_value("another version", fn {id, name} ->
+      if to_string(id) == to_string(version_id), do: name
+    end)
+  end
+
+  # The leave guard only ever navigates to a same-origin path the hook
+  # read off a link the page rendered; anything else is dropped.
+  defp safe_leave_path?(to) when is_binary(to), do: String.starts_with?(to, "/")
+  defp safe_leave_path?(_to), do: false
+
+  defp leave_schedules_path(socket) do
+    case socket.assigns[:scope] do
+      nil ->
+        "/gtfs/#{socket.assigns.current_gtfs_version.id}/routes/#{socket.assigns.route_id}/schedules"
+
+      scope ->
+        apply_schedules_path(socket, scope)
+    end
   end
 
   defp switch_version(socket, version_id) do

@@ -2522,4 +2522,187 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLiveTest do
              )
     end
   end
+
+  # Step 30: the leave and version-switch guards. A version switch with
+  # pasted text opens `#paste-switch-confirm` and waits for confirmation;
+  # the Schedules tab (via the `.PasteLeaveGuard` hook's
+  # `paste_leave_guard`) opens `#paste-leave-confirm`; with no text both
+  # navigate at once. The page's own Open Schedules link asks through
+  # `data-confirm` while the unknown notice holds the paste.
+  describe "leaving and version guards" do
+    setup :editor_scope
+
+    defp guard_open(view, version, route, paste) do
+      follow(
+        view,
+        paste_path(version, route, %{
+          "service_id" => paste.weekday,
+          "direction" => "0",
+          "pattern" => paste.main.pattern.id
+        })
+      )
+    end
+
+    defp guard_text(view) do
+      render_change(view, "input", %{
+        "paste" => %{
+          "text" => "Trip\tPaste Stop 1\n101\t06:00",
+          "layout" => "auto",
+          "header" => "true"
+        }
+      })
+    end
+
+    defp guard_schedules(version, route, paste) do
+      query =
+        URI.encode_query([
+          {"service_id", paste.weekday},
+          {"direction", "0"},
+          {"pattern", paste.main.pattern.id}
+        ])
+
+      "/gtfs/#{version.id}/routes/#{route.route_id}/schedules?#{query}"
+    end
+
+    test "switching versions with a paste opens the confirm and waits",
+         %{conn: conn, organization: organization, version: version} = context do
+      paste = paste_route(context)
+      other = gtfs_version_fixture(organization.id)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = guard_open(view, version, paste.route, paste)
+      guard_text(view)
+
+      render_click(view, "switch_gtfs_version", %{"version" => other.id})
+      refute_redirected(view)
+
+      assert has_element?(
+               view,
+               "#paste-switch-confirm",
+               "Switch to #{other.name}?"
+             )
+
+      assert has_element?(view, "#paste-switch-confirm-cancel", "Keep reviewing")
+      assert has_element?(view, "#paste-switch-confirm-confirm", "Switch version")
+
+      # Cancelling keeps the paste on the page.
+      render_click(view, "paste_switch_cancel")
+      refute has_element?(view, "#paste-switch-confirm")
+      assert view |> element("#paste-source") |> render() =~ "06:00"
+
+      # Confirming navigates to the other version's paste page.
+      render_click(view, "switch_gtfs_version", %{"version" => other.id})
+
+      {:error, {:live_redirect, %{to: path}}} =
+        render_click(view, "paste_switch_confirm")
+
+      assert path =~ "/gtfs/#{other.id}/routes/#{paste.route.route_id}/schedules/paste"
+    end
+
+    test "switching versions with no text navigates immediately",
+         %{conn: conn, organization: organization, version: version} = context do
+      paste = paste_route(context)
+      other = gtfs_version_fixture(organization.id)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = guard_open(view, version, paste.route, paste)
+
+      {:error, {:live_redirect, %{to: path}}} =
+        render_click(view, "switch_gtfs_version", %{"version" => other.id})
+
+      assert path =~ "/gtfs/#{other.id}/routes/#{paste.route.route_id}/schedules/paste"
+    end
+
+    test "leaving through the Schedules tab with text asks first",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = guard_open(view, version, paste.route, paste)
+      guard_text(view)
+
+      schedules = guard_schedules(version, paste.route, paste)
+      render_click(view, "paste_leave_guard", %{"to" => schedules})
+      refute_redirected(view)
+
+      assert has_element?(
+               view,
+               "#paste-leave-confirm",
+               "Leave without applying?"
+             )
+
+      assert has_element?(view, "#paste-leave-confirm-cancel", "Keep reviewing")
+      assert has_element?(view, "#paste-leave-confirm-confirm", "Leave page")
+
+      # Cancelling keeps the paste on the page.
+      render_click(view, "paste_leave_cancel")
+      refute has_element?(view, "#paste-leave-confirm")
+      assert view |> element("#paste-source") |> render() =~ "06:00"
+
+      # Confirming leaves for the intercepted path.
+      render_click(view, "paste_leave_guard", %{"to" => schedules})
+
+      {:error, {:live_redirect, %{to: ^schedules}}} =
+        render_click(view, "paste_leave_confirm")
+    end
+
+    test "the leave guard navigates immediately with no text",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = guard_open(view, version, paste.route, paste)
+
+      schedules = guard_schedules(version, paste.route, paste)
+
+      {:error, {:live_redirect, %{to: ^schedules}}} =
+        render_click(view, "paste_leave_guard", %{"to" => schedules})
+    end
+
+    test "the leave guard hook watches the paste form",
+         %{conn: conn, version: version} = context do
+      paste = paste_route(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, paste.route))
+      _html = guard_open(view, version, paste.route, paste)
+
+      # Colocated hooks render with the module-qualified hook name, so
+      # match the stable id plus the ignore marker and the guard name.
+      assert has_element?(view, "#paste-leave-guard[phx-update='ignore']")
+      assert view |> element("#paste-leave-guard") |> render() =~ "PasteLeaveGuard"
+    end
+
+    test "Open Schedules asks first while the unknown notice holds the paste",
+         %{conn: conn, version: version} = context do
+      setup = apply_setup(context)
+
+      {:ok, view, _html} = live(conn, paste_path(version, setup.route))
+      _html = apply_open(view, version, setup.route, setup)
+
+      text = apply_headers() <> "\n08:30\t08:35\t08:40"
+      apply_read(view, text)
+
+      render_change(view, "input", %{
+        "paste" => %{
+          "text" => text,
+          "layout" => "auto",
+          "header" => "true",
+          "mode" => "add",
+          "decisions" => Jason.encode!(%{}),
+          "applying" => "true"
+        }
+      })
+
+      assert has_element?(view, "#paste-notice-unknown")
+      assert view |> element("#paste-open-schedules") |> render() =~ "data-confirm"
+
+      assert view |> element("#paste-open-schedules") |> render() =~
+               "Leave without applying?"
+
+      {:error, {:live_redirect, %{to: path}}} =
+        view |> element("#paste-open-schedules") |> render_click()
+
+      assert path =~ "/routes/#{setup.route.route_id}/schedules?"
+    end
+  end
 end
