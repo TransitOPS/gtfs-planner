@@ -1923,7 +1923,7 @@ html:has(#route-details-save-bar:not([hidden])) {
   stroke: var(--diagram-label-halo) !important;
 }
 
-#diagram-page g[data-stop-state] [data-location-type="2"] {
+#diagram-page g[data-stop-state] [data-stop-marker][data-location-type="2"] {
   fill: var(--diagram-label-halo) !important;
   stroke: var(--diagram-active-stop) !important;
 }
