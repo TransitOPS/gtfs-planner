@@ -99,17 +99,14 @@ defmodule GtfsPlanner.Gtfs.FareZones do
 
   import Ecto.Query, warn: false
 
-  alias GtfsPlanner.Authorization
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.FareAttribute
   alias GtfsPlanner.Gtfs.FareRule
+  alias GtfsPlanner.Gtfs.Fares.VersionLock
   alias GtfsPlanner.Gtfs.FareZone
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Repo
-  alias GtfsPlanner.Versions.GtfsVersion
-
-  @published_status "published"
 
   @rule_key_message "A rule with this fare, route, start and end already exists. Edit that rule instead."
   @stopless_zone_message "This zone has no stops yet. Assign stops before using it in a fare rule."
@@ -660,7 +657,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     organization_id = audit.organization_id
     gtfs_version_id = audit.gtfs_version_id
 
-    transact(audit, fn ->
+    VersionLock.transact(audit, fn ->
       changeset =
         %FareZone{organization_id: organization_id, gtfs_version_id: gtfs_version_id}
         |> FareZone.changeset(attrs, :new)
@@ -703,7 +700,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     organization_id = audit.organization_id
     gtfs_version_id = audit.gtfs_version_id
 
-    transact(audit, fn ->
+    VersionLock.transact(audit, fn ->
       if zone_exists?(organization_id, gtfs_version_id, current_zone_id) do
         update_zone_write(organization_id, gtfs_version_id, current_zone_id, attrs)
       else
@@ -759,7 +756,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     organization_id = audit.organization_id
     gtfs_version_id = audit.gtfs_version_id
 
-    transact(audit, fn ->
+    VersionLock.transact(audit, fn ->
       zone = inventory_zone(organization_id, gtfs_version_id, zone_id)
 
       cond do
@@ -875,7 +872,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     organization_id = audit.organization_id
     gtfs_version_id = audit.gtfs_version_id
 
-    transact(audit, fn ->
+    VersionLock.transact(audit, fn ->
       save_rule_group_write(organization_id, gtfs_version_id, reviewed, attrs)
     end)
   end
@@ -896,7 +893,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     organization_id = audit.organization_id
     gtfs_version_id = audit.gtfs_version_id
 
-    transact(audit, fn ->
+    VersionLock.transact(audit, fn ->
       if stale_rule_review?(list_rows(organization_id, gtfs_version_id), reviewed) do
         Repo.rollback(:stale)
       else
@@ -910,7 +907,7 @@ defmodule GtfsPlanner.Gtfs.FareZones do
     organization_id = audit.organization_id
     gtfs_version_id = audit.gtfs_version_id
 
-    transact(audit, fn ->
+    VersionLock.transact(audit, fn ->
       validate_targets(organization_id, gtfs_version_id, changes, opts)
       locked_stops = lock_selected_stops(organization_id, gtfs_version_id, changes)
       stale = stale_changes(locked_stops, changes)
@@ -923,40 +920,6 @@ defmodule GtfsPlanner.Gtfs.FareZones do
       %{applied: changes}
     end)
   end
-
-  # Membership is checked on every write attempt before the published version
-  # lock. The version row then validates the selected scope and serializes zone
-  # writers; an invalid or unpublished version rolls back with :not_found.
-  defp transact(%AuditContext{} = audit, fun) do
-    Repo.transaction(fn ->
-      Authorization.lock_editor!(audit)
-      lock_version_and_run(audit.organization_id, audit.gtfs_version_id, fun)
-    end)
-  end
-
-  defp lock_version_and_run(organization_id, gtfs_version_id, fun) do
-    version =
-      if uuid?(organization_id) and uuid?(gtfs_version_id),
-        do: published_version_for_update(organization_id, gtfs_version_id)
-
-    case version do
-      %GtfsVersion{} -> fun.()
-      nil -> Repo.rollback(:not_found)
-    end
-  end
-
-  defp published_version_for_update(organization_id, gtfs_version_id) do
-    from(v in GtfsVersion,
-      where:
-        v.id == ^gtfs_version_id and v.organization_id == ^organization_id and
-          v.publication_status == ^@published_status,
-      lock: "FOR UPDATE"
-    )
-    |> Repo.one()
-  end
-
-  defp uuid?(value) when is_binary(value), do: match?({:ok, _}, Ecto.UUID.cast(value))
-  defp uuid?(_value), do: false
 
   # A preview has no lock to roll back to, so it returns the target error instead.
   defp validate_target(_organization_id, _gtfs_version_id, nil), do: :ok
