@@ -42,6 +42,12 @@ defmodule GtfsPlanner.Gtfs.Runs do
 
   @published_status "published"
 
+  # Rows per write statement. PostgreSQL caps a statement at 65535 bind
+  # parameters and a plan is a whole day, so a single insert would fail on a
+  # large one. 500 leaves the cap a long way off for any realistic day while
+  # keeping the round trips few.
+  @write_batch 500
+
   @type crew :: %{
           report_pull_out_minutes: 0..30,
           report_relief_minutes: 0..15,
@@ -704,6 +710,135 @@ defmodule GtfsPlanner.Gtfs.Runs do
       preview: preview,
       fingerprint: runs_day.fingerprint
     })
+  end
+
+  @doc """
+  Applies a runs plan: every move it names, or none, and an undo.
+
+  The plan was built by `suggest_runs/4` against a day as it looked at preview
+  time. This checks that it still does.
+
+  **The fingerprint is recomputed inside the transaction, after the locks and
+  before the first write.** Both halves of that sentence matter. After the
+  locks, because the check and the write it guards must not be separable by
+  another writer. Before the first write, because `updated_at` is in the covered
+  set: a check run after a write would see the write's own effect and refuse a
+  plan this call had just applied correctly.
+
+  A mismatch rolls back with `:stale_plan` and writes nothing (rule 12, AC-19).
+  The plan is **not** re-validated against its own `from` values beyond the trip
+  check — the fingerprint already covers every assignment on the day type, so a
+  stale plan is detected before the moves are read, and one mechanism is enough.
+
+  Writes go in batches of 500 rows. PostgreSQL caps a statement at 65535 bind
+  parameters and a plan is a whole day, so a single insert would fail on a large
+  one; the batch size is chosen well under the cap. A `Postgrex.Error` from any
+  batch — a run ID that slipped past validation, a constraint, a deadlock —
+  becomes `:write_failed` and rolls the whole call back, so a half-applied plan
+  cannot exist.
+  """
+  @spec apply_run_plan(Ecto.UUID.t(), Ecto.UUID.t(), Plan.t()) ::
+          {:ok, %{changed_trips: non_neg_integer(), undo: [Plan.move()]}}
+          | {:error,
+             :not_found
+             | :stale_plan
+             | {:invalid_trips, [Ecto.UUID.t()]}
+             | :write_failed}
+  def apply_run_plan(organization_id, gtfs_version_id, plan) do
+    Repo.transaction(fn ->
+      Versions.lock_for_input_write!(organization_id, gtfs_version_id)
+      :ok = Blocking.lock_blocking!(gtfs_version_id)
+
+      case Blocking.load_day(organization_id, gtfs_version_id, plan.day_type_key) do
+        {:ok, day} -> write_plan(organization_id, gtfs_version_id, day, plan)
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp write_plan(organization_id, gtfs_version_id, day, plan) do
+    # The same read `suggest_runs/4` used, and therefore the same fingerprint:
+    # rule 12 works because both sides compute it with one function, not because
+    # two implementations agree.
+    runs_day = build_runs_day(organization_id, gtfs_version_id, day)
+
+    if runs_day.fingerprint == plan.fingerprint do
+      sequence_ids =
+        MapSet.new(Enum.flat_map(day.blocks, &Enum.map(&1.trips, fn trip -> trip.id end)))
+
+      case check_trips(plan.moves, sequence_ids) do
+        # The bare reason is rolled back, not the `{:error, reason}` tuple:
+        # rolling that back hands the caller `{:error, {:error, reason}}`.
+        {:error, reason} -> Repo.rollback(reason)
+        :ok -> apply_plan_moves(organization_id, gtfs_version_id, day, plan)
+      end
+    else
+      Repo.rollback(:stale_plan)
+    end
+  end
+
+  # Every move, or none. A `Postgrex.Error` from any batch — a run ID that
+  # slipped past, a constraint, a deadlock — is caught and rolled back, so a
+  # half-applied plan cannot be observed.
+  defp apply_plan_moves(organization_id, gtfs_version_id, day, plan) do
+    key = day.day_type.key
+    now = DateTime.utc_now()
+    assigns = Enum.filter(plan.moves, & &1.to)
+    unassigns = Enum.reject(plan.moves, & &1.to)
+
+    try do
+      assigns
+      |> Enum.chunk_every(@write_batch)
+      |> Enum.each(fn batch ->
+        Repo.insert_all(
+          TripRun,
+          Enum.map(batch, fn move ->
+            %{
+              organization_id: organization_id,
+              gtfs_version_id: gtfs_version_id,
+              day_type_key: key,
+              trip_id: move.trip_id,
+              run_id: move.to,
+              inserted_at: now,
+              updated_at: now
+            }
+          end),
+          # Columns, not the index name: PostgreSQL's `ON CONFLICT (...)` takes
+          # column names or expressions and resolves the unique index itself.
+          on_conflict: {:replace, [:run_id, :updated_at]},
+          conflict_target: [:organization_id, :gtfs_version_id, :day_type_key, :trip_id]
+        )
+      end)
+
+      unassigns
+      |> Enum.chunk_every(@write_batch)
+      |> Enum.each(fn batch ->
+        Repo.delete_all(
+          from(row in TripRun,
+            where:
+              row.organization_id == ^organization_id and
+                row.gtfs_version_id == ^gtfs_version_id and row.day_type_key == ^key and
+                row.trip_id in ^Enum.map(batch, & &1.trip_id)
+          )
+        )
+      end)
+
+      # Every move in a plan is a trip whose run differs, and the fingerprint
+      # confirmed nothing changed since the plan was built, so the move count is
+      # the changed count and needs no second read to discover.
+      %{changed_trips: length(plan.moves), undo: plan_undo(plan.moves)}
+    rescue
+      Postgrex.Error -> Repo.rollback(:write_failed)
+    end
+  end
+
+  # The undo is `apply_moves/4` material: every move reversed, in the same shape,
+  # so undoing a plan is refused by the same per-trip rule (INV-12) rather than by
+  # a bespoke reverse-update that would bypass it.
+  defp plan_undo(moves) do
+    moves
+    |> Enum.map(&%{trip_id: &1.trip_id, from: &1.to, to: &1.from})
+    |> Enum.sort_by(& &1.trip_id)
   end
 
   @doc """
