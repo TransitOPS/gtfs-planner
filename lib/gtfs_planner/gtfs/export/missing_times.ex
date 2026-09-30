@@ -5,16 +5,22 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
 
   Every estimation rule lives in `StopTimeEstimator`; this module only
   translates record inputs and outputs (criteria "One rule core"). It never
-  writes `stop_times` rows: `fill_trip/3` transforms in-memory records and
-  `stop_coordinates/2` only reads stops (INV-1). `stop_coordinates/2` is
-  scoped to one organization and version (INV-2).
+  writes `stop_times` rows: `fill_trip/3` transforms in-memory records,
+  `stop_coordinates/2` only reads stops, and `summary/2` only reads
+  stop times, trips and routes (INV-1). `stop_coordinates/2` and `summary/2`
+  are scoped to one organization and version (INV-2).
   """
 
   import Ecto.Query
 
+  alias GtfsPlanner.Gtfs.Export.StreamBuilder
+  alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Gtfs.StopTimeEstimator
+  alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
 
   @max_warnings 100
@@ -64,18 +70,15 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
   def fill_trip([], _method, _coords), do: {[], :unchanged}
 
   def fill_trip(records, method, coords) do
-    if Enum.all?(records, &complete?/1) do
-      {records, :unchanged}
-    else
-      rows = Enum.map(records, &estimator_row(&1, coords))
+    case classify(records, method, coords) do
+      :unchanged ->
+        {records, :unchanged}
 
-      %{rows: out_rows, problems: problems} =
-        StopTimeEstimator.estimate(rows, method: method, distances: :strict)
+      {:filled, out_rows} ->
+        {apply_estimates(records, out_rows), :filled}
 
-      case problems do
-        [] -> {apply_estimates(records, out_rows), :filled}
-        _ -> {records, {:not_estimated, not_estimated_warning(records, problems)}}
-      end
+      {:not_estimated, problems} ->
+        {records, {:not_estimated, not_estimated_warning(records, problems)}}
     end
   end
 
@@ -100,6 +103,77 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
         ]
     else
       warnings
+    end
+  end
+
+  # The single classifier behind `fill_trip/3` and `summary/2` (criteria
+  # "One classifier"): a trip with no blank cell is `:unchanged` without
+  # touching the estimator, otherwise the estimator verdict decides `:filled`
+  # versus `{:not_estimated, problems}` with `distances: :strict` and the
+  # given stop coordinates, exactly as the export uses it.
+  defp classify([], _method, _coords), do: :unchanged
+
+  defp classify(records, method, coords) do
+    if Enum.all?(records, &complete?/1) do
+      :unchanged
+    else
+      rows = Enum.map(records, &estimator_row(&1, coords))
+
+      %{rows: out_rows, problems: problems} =
+        StopTimeEstimator.estimate(rows, method: method, distances: :strict)
+
+      if problems == [], do: {:filled, out_rows}, else: {:not_estimated, problems}
+    end
+  end
+
+  @doc """
+  Counts a version's missing stop times and classifies trips exactly as the
+  export does (spec 23, AC-16).
+
+  Trips are selected by one query for `trip_id`s with a blank time through
+  the same organization, version and inactive-route-closure filters
+  `StreamBuilder.stream_records/4` applies to `StopTime`; each selected trip
+  is classified with the shared `classify` verdict behind `fill_trip/3`
+  using the method from `ExportDefaults.get/1`. `missing_times` and
+  `estimable_times` count blank arrival/departure cells, so every blank cell
+  of a filled trip is an estimable time. `straight_line?` is true for a
+  route with a blank cell on a row without a stored distance, whose span
+  therefore cannot use stored distances (R5). Only reads; never writes
+  `stop_times` (INV-1).
+  """
+  @spec summary(Ecto.UUID.t(), Ecto.UUID.t()) :: %{
+          trips: non_neg_integer(),
+          missing_times: non_neg_integer(),
+          estimable_trips: non_neg_integer(),
+          estimable_times: non_neg_integer(),
+          not_estimable: [
+            %{
+              trip_id: String.t(),
+              route_id: String.t(),
+              service_id: String.t(),
+              first_departure: String.t() | nil,
+              reason: :no_first_time | :no_last_time | :timepoint_without_time | :order
+            }
+          ],
+          routes: [
+            %{
+              route_id: String.t(),
+              route_short_name: String.t() | nil,
+              route_long_name: String.t() | nil,
+              route_color: String.t() | nil,
+              trips: non_neg_integer(),
+              missing_times: non_neg_integer(),
+              straight_line?: boolean()
+            }
+          ]
+        }
+  def summary(organization_id, gtfs_version_id) do
+    method = ExportDefaults.get(organization_id).estimate_method
+    coords = stop_coordinates(organization_id, gtfs_version_id)
+
+    case blank_trip_ids(organization_id, gtfs_version_id) do
+      [] -> empty_summary()
+      trip_ids -> build_summary(organization_id, gtfs_version_id, trip_ids, method, coords)
     end
   end
 
@@ -200,4 +274,192 @@ defmodule GtfsPlanner.Gtfs.Export.MissingTimes do
   defp to_float(%Decimal{} = decimal), do: Decimal.to_float(decimal)
   defp to_float(value) when is_float(value), do: value
   defp to_float(value) when is_integer(value), do: value / 1
+
+  defp empty_summary do
+    %{
+      trips: 0,
+      missing_times: 0,
+      estimable_trips: 0,
+      estimable_times: 0,
+      not_estimable: [],
+      routes: []
+    }
+  end
+
+  # Trip IDs with a blank arrival or departure cell, through the same
+  # organization, version and inactive-route-closure filters the export
+  # applies to `StopTime`; `exclude_inactive/4` is already public, so no
+  # `StreamBuilder` change is needed. Stored blanks are NULL or "" (writes
+  # trim strings); the query uses the `:row` binding the filter requires.
+  defp blank_trip_ids(organization_id, gtfs_version_id) do
+    from(s in StopTime,
+      as: :row,
+      where: s.organization_id == ^organization_id,
+      where: s.gtfs_version_id == ^gtfs_version_id,
+      where:
+        is_nil(s.arrival_time) or s.arrival_time == "" or
+          is_nil(s.departure_time) or s.departure_time == "",
+      select: s.trip_id,
+      distinct: true,
+      order_by: s.trip_id
+    )
+    |> StreamBuilder.exclude_inactive(StopTime, organization_id, gtfs_version_id)
+    |> Repo.all()
+  end
+
+  defp build_summary(organization_id, gtfs_version_id, trip_ids, method, coords) do
+    records =
+      from(s in StopTime,
+        where: s.organization_id == ^organization_id,
+        where: s.gtfs_version_id == ^gtfs_version_id,
+        where: s.trip_id in ^trip_ids,
+        order_by: [asc: s.trip_id, asc: s.stop_sequence]
+      )
+      |> Repo.all()
+
+    trip_meta =
+      from(t in Trip,
+        where: t.organization_id == ^organization_id,
+        where: t.gtfs_version_id == ^gtfs_version_id,
+        where: t.trip_id in ^trip_ids,
+        select: {t.trip_id, t.route_id, t.service_id}
+      )
+      |> Repo.all()
+      |> Map.new(fn {trip_id, route_id, service_id} ->
+        {trip_id, %{route_id: route_id, service_id: service_id}}
+      end)
+
+    route_meta =
+      trip_meta
+      |> Map.values()
+      |> Enum.map(& &1.route_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> case do
+        [] ->
+          %{}
+
+        route_ids ->
+          from(r in Route,
+            where: r.organization_id == ^organization_id,
+            where: r.gtfs_version_id == ^gtfs_version_id,
+            where: r.route_id in ^route_ids,
+            select: {r.route_id, r.route_short_name, r.route_long_name, r.route_color}
+          )
+          |> Repo.all()
+          |> Map.new(fn {route_id, short, long, color} ->
+            {route_id,
+             %{
+               route_short_name: short,
+               route_long_name: long,
+               route_color: color
+             }}
+          end)
+      end
+
+    by_trip = Enum.group_by(records, & &1.trip_id)
+
+    classified =
+      Enum.map(trip_ids, fn trip_id ->
+        trip_records =
+          by_trip |> Map.fetch!(trip_id) |> Enum.sort_by(& &1.stop_sequence)
+
+        {trip_id, trip_records, blank_cells(trip_records), classify(trip_records, method, coords)}
+      end)
+
+    not_estimable =
+      for {trip_id, trip_records, _blanks, {:not_estimated, problems}} <- classified do
+        meta = Map.get(trip_meta, trip_id, %{route_id: nil, service_id: nil})
+
+        %{
+          trip_id: trip_id,
+          route_id: meta.route_id,
+          service_id: meta.service_id,
+          first_departure: first_departure(trip_records),
+          reason: primary_reason(problems)
+        }
+      end
+
+    {estimable_trips, estimable_times} =
+      Enum.reduce(classified, {0, 0}, fn
+        {_trip_id, _records, blanks, {:filled, _}}, {trips, times} ->
+          {trips + 1, times + blanks}
+
+        {_trip_id, _records, _blanks, _status}, acc ->
+          acc
+      end)
+
+    routes =
+      classified
+      |> Enum.group_by(fn {trip_id, _records, _blanks, _status} ->
+        Map.get(trip_meta, trip_id, %{route_id: nil}) |> Map.get(:route_id)
+      end)
+      |> Enum.reject(fn {route_id, _} -> is_nil(route_id) end)
+      |> Enum.map(fn {route_id, group} ->
+        meta =
+          Map.get(route_meta, route_id, %{
+            route_short_name: nil,
+            route_long_name: nil,
+            route_color: nil
+          })
+
+        %{
+          route_id: route_id,
+          route_short_name: meta.route_short_name,
+          route_long_name: meta.route_long_name,
+          route_color: meta.route_color,
+          trips: length(group),
+          missing_times:
+            Enum.sum(Enum.map(group, fn {_id, _records, blanks, _status} -> blanks end)),
+          straight_line?:
+            Enum.any?(group, fn {_id, trip_records, _blanks, _status} ->
+              Enum.any?(trip_records, &blank_without_distance?/1)
+            end)
+        }
+      end)
+      |> Enum.sort_by(& &1.route_id)
+
+    %{
+      trips: length(classified),
+      missing_times:
+        Enum.sum(Enum.map(classified, fn {_id, _records, blanks, _status} -> blanks end)),
+      estimable_trips: estimable_trips,
+      estimable_times: estimable_times,
+      not_estimable: not_estimable,
+      routes: routes
+    }
+  end
+
+  defp blank_cells(records) do
+    Enum.sum(
+      Enum.map(records, fn record ->
+        if(present?(Map.get(record, :arrival_time)), do: 0, else: 1) +
+          if present?(Map.get(record, :departure_time)), do: 0, else: 1
+      end)
+    )
+  end
+
+  defp blank_without_distance?(record) do
+    (not present?(Map.get(record, :arrival_time)) or
+       not present?(Map.get(record, :departure_time))) and
+      is_nil(Map.get(record, :shape_dist_traveled))
+  end
+
+  defp first_departure(records) do
+    case records |> List.first() |> Map.get(:departure_time) do
+      nil -> nil
+      "" -> nil
+      departure -> departure
+    end
+  end
+
+  # The first estimator problem decides the summary reason, matching the
+  # order `fill_trip/3` reports them in its warning (`classify` guarantees a
+  # non-empty list here).
+  defp primary_reason([first | _]), do: problem_reason(first)
+
+  defp problem_reason({:no_first_time, _}), do: :no_first_time
+  defp problem_reason({:no_last_time, _}), do: :no_last_time
+  defp problem_reason({:timepoint_without_time, _}), do: :timepoint_without_time
+  defp problem_reason({:order, _, _}), do: :order
 end
