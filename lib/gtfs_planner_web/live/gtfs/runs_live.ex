@@ -61,25 +61,78 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
      # drawer cannot appear on a page whose day type has not loaded.
      |> assign(:drawer, nil)
      |> assign(:shares_state, :loading)
-     |> assign(:shares, [])}
+     |> assign(:shares, [])
+     # The duty chart's state. `sort`/`dir`/`scale` are read from the URL and
+     # nowhere else, for the same reason `?day=` is: a chart whose order or zoom
+     # lives in an assign a second code path could set can disagree with its own
+     # address bar, and a back button that does not restore the order the reader
+     # had is a page that cannot be shared.
+     |> assign(:sort, :sign_on)
+     |> assign(:dir, :asc)
+     |> assign(:scale, :day)
+     |> assign(:run_axis, nil)
+     |> assign(:run_routes, %{})
+     |> stream(:run_rows, [], dom_id: &run_dom_id/1)}
   end
 
   @impl true
   def handle_params(params, _uri, socket) do
     day = blank_to_nil(params["day"])
+    sort = sort_key(params["sort"])
+    dir = sort_dir(params["dir"])
 
-    {:noreply,
-     socket
-     |> assign(:day, day)
-     |> ensure_day_loaded()}
+    # A sort is a re-order of rows that are ALREADY loaded, so it must not
+    # re-read the day: `ensure_day_loaded/1` would see its own guard and return
+    # the socket untouched, and the rows would keep the order they had. So the
+    # re-stream is asked for explicitly, here, where the change is known.
+    resort? = socket.assigns.sort != sort or socket.assigns.dir != dir
+
+    socket =
+      socket
+      |> assign(:day, day)
+      |> assign(:sort, sort)
+      |> assign(:dir, dir)
+      |> assign(:scale, scale_value(params["scale"]))
+      |> ensure_day_loaded()
+
+    socket =
+      if resort? and socket.assigns.runs_day, do: stream_run_rows(socket), else: socket
+
+    {:noreply, socket}
   end
+
+  # The sort keys this chart owns. A key the chart does not have is refused
+  # rather than passed through, because `sort_by/2` would raise on an unknown
+  # atom and a reader who edits the URL should get the default order, not a
+  # crash.
+  @sort_keys %{
+    "id" => :id,
+    "type" => :type,
+    "sign_on" => :sign_on,
+    "sign_off" => :sign_off,
+    "spread" => :spread,
+    "paid" => :paid,
+    "status" => :status
+  }
+
+  defp sort_key(nil), do: :sign_on
+  defp sort_key(key) when is_binary(key), do: Map.get(@sort_keys, key, :sign_on)
+  defp sort_key(key) when is_atom(key) and not is_nil(key), do: sort_key(Atom.to_string(key))
+  defp sort_key(_key), do: :sign_on
+
+  defp sort_dir("desc"), do: :desc
+  defp sort_dir(_dir), do: :asc
+
+  defp scale_value("zoom"), do: :zoom
+  defp scale_value(_scale), do: :day
+
+  @count_tile_keys ~w(runs straight_share paid_hours on_vehicles longest_spread uncovered)
 
   @impl true
   def handle_event("select_day", %{"day" => day}, socket) do
     {:noreply, push_patch(socket, to: runs_path(socket, blank_to_nil(day)))}
   end
 
-  @impl true
   def handle_event("retry", _params, socket) do
     # The reload is a real read, not a re-render: the point of retry is to find
     # out whether the database has come back. Clearing the loaded key through
@@ -87,6 +140,32 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     # own guard and return the socket untouched.
     {:noreply, socket |> assign(:loaded_day_key, nil) |> ensure_day_loaded()}
   end
+
+  # Sorting the same key again reverses it; any other key starts ascending,
+  # which is `BlocksLive`'s rule and the one a reader has already met. `sort` and
+  # `dir` go into the URL rather than into an assign, so the order is shareable
+  # and the back button restores it.
+  def handle_event("sort", %{"key" => key}, socket) do
+    if Map.has_key?(@sort_keys, key) do
+      sort = Map.fetch!(@sort_keys, key)
+      dir = if socket.assigns.sort == sort, do: toggle_dir(socket.assigns.dir), else: :asc
+
+      {:noreply,
+       push_patch(socket, to: runs_path(socket, socket.assigns.day, %{sort: key, dir: dir}))}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("set_scale", %{"scale" => "zoom"}, socket) do
+    {:noreply, push_patch(socket, to: runs_path(socket, socket.assigns.day, %{scale: "zoom"}))}
+  end
+
+  def handle_event("set_scale", %{"scale" => "day"}, socket) do
+    {:noreply, push_patch(socket, to: runs_path(socket, socket.assigns.day, %{scale: "day"}))}
+  end
+
+  def handle_event("set_scale", _params, socket), do: {:noreply, socket}
 
   # Every strip tile opens the same drawer, and the pressed tile is the one the
   # reader pressed. The prototype sends each tile its own `data-act`; only the
@@ -99,9 +178,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # button can still dispatch, so the handler rejects an unknown key rather than
   # trusting it — a key this component does not own would mark a tile pressed
   # that does not exist.
-  @count_tile_keys ~w(runs straight_share paid_hours on_vehicles longest_spread uncovered)
-
-  @impl true
   def handle_event("open_drawer", %{"key" => key}, socket) do
     # `is_map/1` rather than a truthiness check: `runs_day` is a map or `nil`,
     # and `and` refuses a non-boolean left side rather than treating a map as
@@ -116,10 +192,19 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
-  @impl true
   def handle_event("close_drawer", _params, socket) do
     {:noreply, assign(socket, :drawer, nil)}
   end
+
+  # The Run button and the piece buttons. The run drawer is step 29, so pressing
+  # one must not silently do nothing — the buttons carry `aria-disabled` from
+  # the day they stop being inert, and this clause is where step 29 replaces
+  # them. It is LAST among the `handle_event` clauses on purpose: a catch-all
+  # placed earlier would shadow the drawer events above it.
+  def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  defp toggle_dir(:asc), do: :desc
+  defp toggle_dir(_dir), do: :asc
 
   # The share of every day type is a WHOLE-VERSION read — `Runs.day_type_shares/2`
   # exports movements, reads the crew rules and derives each day type — so it is
@@ -192,6 +277,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         |> assign(:day_types, runs_day.day.day_types)
         |> assign(:loaded_day_key, {:key, runs_day.day.day_type.key})
         |> assign(:load_state, day_state(runs_day))
+        |> stream_run_rows()
         # A reloaded day type closes the drawer. The shares are version-wide and
         # would still be right, but the drawer's *other* half is this day's
         # figures, and leaving a drawer open across a day-type change would show
@@ -229,6 +315,68 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     end
   end
 
+  # The rows are a stream, not an assign, so a sort re-sends one diff instead of
+  # the whole table, and so a future step that adds or removes a run sends the
+  # one row that changed. `reset: true` on every load and re-sort is what tells
+  # LiveView the new order replaces the old one rather than adding to it.
+  #
+  # The sort is stable on run ID: two runs with the same paid time or the same
+  # sign-on second are ordered by name, so clicking a header twice returns the
+  # same order both times. Without the tiebreak, a re-sort that does not change
+  # the key would shuffle rows that the reader has learned the positions of.
+  defp stream_run_rows(socket) do
+    runs_day = socket.assigns.runs_day
+    %{sort: sort, dir: dir} = socket.assigns
+
+    runs =
+      runs_day.derived.runs
+      |> Enum.sort_by(fn run -> {run.run_id} end)
+      |> Enum.sort_by(&sort_value(&1, sort), sorter_comparator(dir))
+      |> Enum.map(fn run -> %{id: "run-#{run.run_id}", run: run} end)
+
+    socket
+    |> assign(:run_axis, runs_day.derived.axis)
+    |> assign(:run_routes, runs_day.day.routes)
+    |> stream(:run_rows, runs, reset: true, dom_id: &run_dom_id/1)
+  end
+
+  # `stream/4` would otherwise prefix every row with the STREAM's name, giving
+  # `run_rows-run-1001`. The row is a run, and a run id is already a legal DOM
+  # id, so the row keeps the name the prototype and the piece titles use.
+  defp run_dom_id(%{id: id}), do: id
+
+  # `Enum.sort_by/3`'s comparator is a two-argument function, so the direction
+  # lives here rather than in a `> `/`< ` conditional at every key.
+  defp sorter_comparator(:asc), do: &<=/2
+  defp sorter_comparator(_dir), do: &>=/2
+
+  # The status order is the severity of the run's WORST finding, so sorting by
+  # Status brings the run that needs attention to the top rather than ordering
+  # by a count and hiding a single error behind four notices.
+  defp sort_value(run, :id), do: run.run_id
+  defp sort_value(run, :type), do: type_rank(run.work.type)
+  defp sort_value(run, :sign_on), do: {run.work.sign_on_secs, run.run_id}
+  defp sort_value(run, :sign_off), do: {run.work.sign_off_secs, run.run_id}
+  defp sort_value(run, :spread), do: {run.work.spread_secs, run.run_id}
+  defp sort_value(run, :paid), do: {run.work.paid_secs, run.run_id}
+  defp sort_value(run, :status), do: {status_rank(run.findings), run.run_id}
+
+  defp type_rank(:one_piece), do: 0
+  defp type_rank(:straight), do: 1
+  defp type_rank(:split), do: 2
+
+  defp status_rank(findings) do
+    case Enum.min_by(findings, &severity_rank(&1.severity), fn -> nil end) do
+      nil -> 99
+      finding -> severity_rank(finding.severity)
+    end
+  end
+
+  defp severity_rank(:error), do: 0
+  defp severity_rank(:warning), do: 1
+  defp severity_rank(:notice), do: 2
+  defp severity_rank(_severity), do: 99
+
   # The five states, decided the same way `BlocksLive.day_state/1` decides its
   # own. A version with no dates and a version with no trips are different
   # problems with different fixes, and the reader is sent to a different page
@@ -251,14 +399,31 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   defp blank_to_nil(_value), do: nil
 
   # `?day=` is dropped rather than rendered empty when no day type is selected,
+  # `?day=` is dropped rather than rendered empty when no day type is selected,
   # so `/runs` and `/runs?day=` are the same URL and the first one the one a
   # reader bookmarks.
-  defp runs_path(socket, nil) do
-    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/runs"
-  end
+  #
+  # Sort and scale patch the day type's own URL, keeping whatever the reader
+  # already had, so changing the order never drops `?day=` and zooming never
+  # resets it. A patch that rebuilt the path from scratch would silently send a
+  # reader who had picked a day type back to the version's default day.
+  #
+  # A value equal to its default is left OUT rather than written, so the URL a
+  # reader copies for the default view is the short one and the address bar does
+  # not fill with `sort=sign_on&dir=asc`.
+  defp runs_path(socket, day, extra \\ %{}) do
+    params =
+      [
+        {"day", day},
+        {"sort", if(extra[:sort] && extra[:sort] != "sign_on", do: extra[:sort])},
+        {"dir", if(extra[:dir] == :desc, do: "desc")},
+        {"scale", if(extra[:scale] && extra[:scale] != "day", do: extra[:scale])}
+      ]
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Enum.map_join("&", fn {key, value} -> key <> "=" <> to_string(value) end)
 
-  defp runs_path(socket, day) do
-    ~p"/gtfs/#{socket.assigns.current_gtfs_version.id}/runs?day=#{day}"
+    base = "/gtfs/#{socket.assigns.current_gtfs_version.id}/runs"
+    if params == "", do: base, else: base <> "?" <> params
   end
 
   @impl true
@@ -309,6 +474,34 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
               day_types={@day_types}
             />
           </RunsComponents.plan_card>
+
+          <div :if={@load_state == :loaded or @load_state == :unavailable} class="mt-4">
+            <div class="flex flex-wrap items-end justify-end gap-3 pb-3">
+              <.segmented_control
+                id="runs-scale"
+                name="scale"
+                legend="Chart scale"
+                legend_class="sr-only"
+                options={[{"Whole day", "day"}, {"Zoom in", "zoom"}]}
+                value={Atom.to_string(@scale)}
+                event="set_scale"
+                size={:sm}
+                appearance={:joined}
+                emphasis={:quiet}
+              />
+            </div>
+
+            <RunsComponents.plan_card version_id={@current_gtfs_version.id}>
+              <RunsComponents.timeline
+                run_rows={@streams.run_rows}
+                axis={@run_axis}
+                routes={@run_routes}
+                sort={@sort}
+                dir={@dir}
+                scale={@scale}
+              />
+            </RunsComponents.plan_card>
+          </div>
 
           <RunsComponents.page_footnote :if={@load_state == :loaded} />
         </div>
