@@ -29,12 +29,21 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   builds on the `input`/`review` assigns kept here. The
   version-switch events mirror `RouteSchedulesLive`; the unsaved-work
   confirmation arrives in step 30.
+
+  Step 24 owns the columns step: the Use-as selects post back into the
+  `input` event as `paste[overrides][<col>]`, which is diffed against the
+  review's effective values so untouched columns never pin their automatic
+  pick; `confirm_column` records a close-match confirmation. Both recompute
+  the review purely from the loaded scope through
+  `TimetablePaste.review/2` (no database read); `to_review` with issues
+  shows the error summary and focuses it.
   """
   use GtfsPlannerWeb, :live_view
 
   import GtfsPlannerWeb.RouteWorkspace, only: [route_header: 1, route_label: 1]
 
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.TimetablePaste
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.Gtfs.TimetablePasteComponents
 
@@ -57,6 +66,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
      |> assign(:paste_form, to_form(paste_form_params(), as: :paste))
      |> assign(:paste_error, nil)
      |> assign(:source_open, true)
+     |> assign(:show_column_errors, false)
      |> assign(:scope_draft, nil)
      |> assign(:scope_form, to_form(%{}, as: :scope))
      |> assign(:scope_calendars, [])
@@ -166,9 +176,19 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   # database; only Read, Review again and Change schedule reload the scope
   # (review-recompute criterion). Clearing the textarea invalidates the last
   # read, so the stale review and error go away with it.
+  # Step 24 extends the timetable step: the columns step's Use-as selects
+  # arrive here as `paste[overrides][<col>]` alongside the text, layout and
+  # header. Overrides are diffed against the review's effective values, so
+  # re-submitting an untouched select never pins its automatic pick; a real
+  # change recomputes the review purely from the loaded scope (no database
+  # read) and advances to the review placeholder when the last issue
+  # clears. Text, layout and header edits alone only stash, exactly like
+  # step 23; clearing the textarea still invalidates the last read.
   @impl true
   def handle_event("input", %{"paste" => params}, socket) when is_map(params) do
-    input = merge_paste_params(current_input(socket), params)
+    old_input = current_input(socket)
+    input = merge_paste_params(old_input, params)
+    input = merge_column_overrides(socket, old_input, input, params)
 
     socket =
       socket
@@ -176,13 +196,19 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
       |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))
 
     socket =
-      if blank_paste_text?(input.text) do
-        socket
-        |> assign(:review, nil)
-        |> assign(:paste_error, nil)
-        |> assign(:source_open, true)
-      else
-        socket
+      cond do
+        blank_paste_text?(input.text) ->
+          socket
+          |> assign(:review, nil)
+          |> assign(:paste_error, nil)
+          |> assign(:source_open, true)
+          |> assign(:show_column_errors, false)
+
+        recompute_columns?(socket, old_input, input, params) ->
+          recompute_columns_review(socket, input)
+
+        true ->
+          socket
       end
 
     {:noreply, socket}
@@ -222,9 +248,52 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   end
 
   # Reopening keeps the text and the last review; the next Read replaces it.
+  # A visible column error summary belongs to the columns stage, so it
+  # goes away until the next Read or Review trips.
   @impl true
   def handle_event("edit_source", _params, socket) do
-    {:noreply, assign(socket, :source_open, true)}
+    {:noreply, socket |> assign(:source_open, true) |> assign(:show_column_errors, false)}
+  end
+
+  # Step 24 owns column confirmation: a close match joins the input's
+  # confirmations and the review is recomputed purely from the loaded
+  # scope. Confirming the last issue advances to the review placeholder
+  # through the render conditions below.
+  @impl true
+  def handle_event("confirm_column", %{"col" => col}, socket) do
+    with col when is_integer(col) <- parse_column(col),
+         %{column_issues: [_ | _]} <- socket.assigns[:review] do
+      input = current_input(socket)
+      confirmations = MapSet.put(confirmation_set(input), col)
+      input = %{input | confirmations: confirmations}
+
+      {:noreply,
+       socket
+       |> assign(:input, input)
+       |> assign(:paste_form, to_form(paste_form_params(input), as: :paste))
+       |> recompute_columns_review(input)}
+    else
+      _unchanged -> {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("confirm_column", _params, socket), do: {:noreply, socket}
+
+  # Review trips with column issues shows the error summary and focuses
+  # it; with no issues the review placeholder is already showing.
+  @impl true
+  def handle_event("to_review", _params, socket) do
+    case socket.assigns[:review] do
+      %{column_issues: [_ | _]} ->
+        {:noreply,
+         socket
+         |> assign(:show_column_errors, true)
+         |> push_event("focus_scoped_target", %{id: "paste-column-errors"})}
+
+      _review ->
+        {:noreply, socket}
+    end
   end
 
   @impl true
@@ -296,6 +365,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
             for={@paste_form}
             phx-change="input"
             phx-submit="read"
+            phx-hook="FormErrorFocus"
             class="mt-4 grid gap-4"
           >
             <TimetablePasteComponents.source_step
@@ -304,9 +374,13 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
               open={@source_open}
               review={@review}
             />
-            <TimetablePasteComponents.columns_step_placeholder :if={
-              @review != nil and !@source_open and @review.column_issues != []
-            } />
+            <TimetablePasteComponents.columns_step
+              :if={@review != nil and !@source_open and @review.column_issues != []}
+              review={@review}
+              scope={@scope}
+              header?={@input.header?}
+              show_errors={@show_column_errors}
+            />
             <TimetablePasteComponents.review_placeholder :if={
               @review != nil and !@source_open and @review.column_issues == []
             } />
@@ -351,6 +425,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
     |> assign(:review, review)
     |> assign(:paste_error, nil)
     |> assign(:source_open, is_nil(review))
+    |> assign(:show_column_errors, false)
     |> assign(:load_state, :ready)
     |> push_canonical(scope, params)
   end
@@ -417,6 +492,7 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
         |> assign(:review, review)
         |> assign(:paste_error, nil)
         |> assign(:source_open, false)
+        |> assign(:show_column_errors, false)
         |> assign(:load_state, :ready)
 
       {:error, :not_found} ->
@@ -470,11 +546,106 @@ defmodule GtfsPlannerWeb.Gtfs.TimetablePasteLive do
   defp paste_header(%{"header" => header}, _input), do: header != "false"
   defp paste_header(_params, input), do: input.header? != false
 
+  # Step 24 diffs the submitted Use-as selects against the current review's
+  # effective values. A select re-submits its displayed pick whether or not
+  # the person touched it, so storing every submission would pin each
+  # automatic pick (and silently confirm every close match) into an
+  # override. Only a real change writes or clears an override; anything
+  # else leaves the input's overrides alone. Without a review there is
+  # nothing to diff against, so the submitted selects are ignored (later
+  # steps extend this branch for form recovery).
+  defp merge_column_overrides(socket, old_input, input, params) do
+    with %{"overrides" => submitted} when is_map(submitted) <- params,
+         %{columns: columns} when is_list(columns) <- socket.assigns[:review] do
+      %{input | overrides: diff_overrides(columns, old_input.overrides, submitted)}
+    else
+      _no_diff -> input
+    end
+  end
+
+  defp diff_overrides(columns, current, submitted) do
+    submitted = Map.new(submitted, fn {col, value} -> {to_string(col), value} end)
+    current = current || %{}
+
+    Enum.reduce(columns, current, fn column, acc ->
+      case Map.fetch(submitted, Integer.to_string(column.col)) do
+        :error ->
+          acc
+
+        {:ok, raw} ->
+          value = raw |> to_string_safe() |> String.trim()
+          effective = TimetablePasteComponents.column_value(column)
+
+          if value == "" or value == effective do
+            Map.delete(acc, column.col)
+          else
+            Map.put(acc, column.col, value)
+          end
+      end
+    end)
+  end
+
+  # The review is recomputed only when the paste itself did not change:
+  # an override edit with the same text, layout and header re-reviews the
+  # loaded scope, while typing waits for Read like step 23.
+  defp recompute_columns?(socket, old_input, input, params) do
+    is_map(params["overrides"]) and input.text == old_input.text and
+      input.layout == old_input.layout and input.header? == old_input.header? and
+      not is_nil(socket.assigns[:scope]) and not is_nil(socket.assigns[:review])
+  end
+
+  # Recomputes the review purely from the loaded scope: the scope was
+  # already read for the last Read or patch, so overrides and
+  # confirmations never cost a database read. Overrides cannot break
+  # parsing, so a failure keeps the last review. Clearing the last issue
+  # hides a visible error summary with it.
+  defp recompute_columns_review(socket, input) do
+    case socket.assigns[:scope] do
+      nil ->
+        socket
+
+      scope ->
+        case TimetablePaste.review(scope, input) do
+          {:ok, review} ->
+            socket
+            |> assign(:review, review)
+            |> assign(
+              :show_column_errors,
+              socket.assigns[:show_column_errors] == true and review.column_issues != []
+            )
+
+          {:error, _reason} ->
+            socket
+        end
+    end
+  end
+
+  defp confirmation_set(%{confirmations: %MapSet{} = confirmations}), do: confirmations
+  defp confirmation_set(_input), do: MapSet.new()
+
+  defp to_string_safe(value) when is_binary(value), do: value
+  defp to_string_safe(value) when is_atom(value), do: Atom.to_string(value)
+  defp to_string_safe(value) when is_integer(value), do: Integer.to_string(value)
+  defp to_string_safe(_value), do: ""
+
+  defp parse_column(col) when is_integer(col) and col >= 0, do: col
+
+  defp parse_column(col) when is_binary(col) do
+    case Integer.parse(String.trim(col)) do
+      {number, ""} when number >= 0 -> number
+      _parse -> nil
+    end
+  end
+
+  defp parse_column(_col), do: nil
+
   defp paste_form_params(input \\ fresh_paste_input()) do
     %{
       "text" => input.text || "",
       "layout" => layout_param(input.layout),
-      "header" => if(input.header? == false, do: "false", else: "true")
+      "header" => if(input.header? == false, do: "false", else: "true"),
+      "overrides" =>
+        Map.new(input.overrides || %{}, fn {col, value} -> {to_string(col), value} end)
     }
   end
 
