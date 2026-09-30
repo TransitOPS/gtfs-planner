@@ -596,11 +596,13 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   Scoped read model for the pattern editor.
 
   Returns the route's pattern summaries with their stop, trip and timing counts,
-  the route's pending/custom trip counts and bounded derivation error, the
-  version's eligible stop choices (only when `include_stop_choices: true`), and
-  optionally one pattern's detail: its ordered occurrences, every timing summary
-  and only the selected timing's rows. Nothing else is loaded, so the editor
-  never accumulates the feed's stop-time vectors (AC-18).
+  their differing-headsign counts (`headsign_differ_count`: trips that do not
+  follow their effective default; `headsign_typo_count`: the likely-typo share
+  of them), the route's pending/custom trip counts and bounded derivation error,
+  the version's eligible stop choices (only when `include_stop_choices: true`),
+  and optionally one pattern's detail: its ordered occurrences, every timing
+  summary and only the selected timing's rows. Nothing else is loaded, so the
+  editor never accumulates the feed's stop-time vectors (AC-18).
 
   A missing route, or a pattern outside the loaded route/version scope, returns
   `{:error, :not_found}`; a timing that belongs to another pattern returns
@@ -615,15 +617,20 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       trip_counts = route_row_counts(Trip, route)
       timing_counts = route_row_counts(TimedPattern, route)
       trip_states = trip_state_counts(route)
+      headsign_counts = headsign_counts(route, patterns)
 
       summaries =
         Enum.map(patterns, fn pattern ->
+          counts = Map.get(headsign_counts, pattern.route_pattern_id, %{differ: 0, typo: 0})
+
           %{
             id: pattern.route_pattern_id,
             pattern: pattern,
             stop_count: Map.get(stop_counts, pattern.id, 0),
             trip_count: Map.get(trip_counts, pattern.route_pattern_id, 0),
-            timing_count: Map.get(timing_counts, pattern.id, 0)
+            timing_count: Map.get(timing_counts, pattern.id, 0),
+            headsign_differ_count: counts.differ,
+            headsign_typo_count: counts.typo
           }
         end)
 
@@ -679,6 +686,84 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     )
     |> Repo.all()
     |> Map.new()
+  end
+
+  # Differing-headsign tallies per route_pattern_id for the pattern summaries.
+  # One select for the route's trips and one for the route's timings; every trip
+  # is counted once against its effective default (the headsign of the pattern's
+  # timing named by timed_pattern_id when it carries one, else the pattern's).
+  # The comparison runs in Elixir through the shared Headsigns rule — no SQL
+  # expression compares headsigns.
+  defp headsign_counts(route, patterns) do
+    patterns_by_route_pattern_id = Map.new(patterns, &{&1.route_pattern_id, &1})
+    timings_by_id = route_timings_by_id(route)
+
+    from(trip in Trip,
+      where:
+        trip.organization_id == ^route.organization_id and
+          trip.gtfs_version_id == ^route.gtfs_version_id and trip.route_id == ^route.route_id,
+      select: %{
+        route_pattern_id: trip.route_pattern_id,
+        timed_pattern_id: trip.timed_pattern_id,
+        trip_headsign: trip.trip_headsign
+      }
+    )
+    |> Repo.all()
+    |> Enum.reduce(%{}, fn trip, counts ->
+      case Map.get(patterns_by_route_pattern_id, trip.route_pattern_id) do
+        nil -> counts
+        pattern -> add_headsign_count(counts, trip, pattern, timings_by_id)
+      end
+    end)
+  end
+
+  # The route's timings carry the pattern's primary key, not a route id, so the
+  # route scoping joins through the pattern row.
+  defp route_timings_by_id(route) do
+    from(timing in TimedPattern,
+      join: pattern in RoutePattern,
+      on: pattern.id == timing.route_pattern_id,
+      where:
+        timing.organization_id == ^route.organization_id and
+          timing.gtfs_version_id == ^route.gtfs_version_id and
+          pattern.route_id == ^route.route_id,
+      select: %{
+        id: timing.id,
+        route_pattern_id: timing.route_pattern_id,
+        headsign: timing.headsign
+      }
+    )
+    |> Repo.all()
+    |> Map.new(&{&1.id, &1})
+  end
+
+  defp add_headsign_count(counts, trip, pattern, timings_by_id) do
+    default = trip_effective_default(trip, pattern, timings_by_id)
+
+    if Headsigns.follows?(trip.trip_headsign, default) do
+      counts
+    else
+      %{likely_typo: typo?} = Headsigns.difference(trip.trip_headsign, default, nil)
+      typo_count = if(typo?, do: 1, else: 0)
+
+      Map.update(counts, trip.route_pattern_id, %{differ: 1, typo: typo_count}, fn tallies ->
+        %{differ: tallies.differ + 1, typo: tallies.typo + typo_count}
+      end)
+    end
+  end
+
+  # The trip's own timing is the timing of its pattern whose id equals
+  # timed_pattern_id; a trip naming a timing outside its pattern (or none at
+  # all) has no timing default and falls to the pattern headsign, like the
+  # pattern scope query.
+  defp trip_effective_default(trip, pattern, timings_by_id) do
+    case Map.get(timings_by_id, trip.timed_pattern_id) do
+      %{route_pattern_id: pattern_id, headsign: headsign} when pattern_id == pattern.id ->
+        Headsigns.effective_default(headsign, pattern.headsign)
+
+      _ ->
+        Headsigns.effective_default(nil, pattern.headsign)
+    end
   end
 
   defp pattern_detail(_route, organization_id, version_id, route_id, opts) do
