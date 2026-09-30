@@ -37,6 +37,7 @@ defmodule GtfsPlanner.Gtfs.Rosters do
   alias GtfsPlanner.Gtfs.Rosters.Checks
   alias GtfsPlanner.Gtfs.Rosters.Roster
   alias GtfsPlanner.Gtfs.Runs
+  alias GtfsPlanner.Operations
   alias GtfsPlanner.Repo
   alias GtfsPlanner.Versions
 
@@ -620,6 +621,120 @@ defmodule GtfsPlanner.Gtfs.Rosters do
         {:ok, %{line_number: line.line_number, run_days: run_days}}
       end
     end)
+  end
+
+  @doc """
+  Records or clears the operator of one line.
+
+  This is the pick: which operator a line belongs to, set by an editor and
+  nothing else. Nothing about the roster is enforced by recording it — no
+  seniority order, no rest rule, no history — because the pick is a record of
+  what the planner agreed, not a proposal the app re-decides (domain rule 13,
+  AC-19).
+
+  A non-`nil` operator id has to name an operator of the caller's organization,
+  read through `Operations.get_operator/2` the way `GtfsPlanner.Gtfs.Blocking`
+  resolves a garage or vehicle type. An id of another organization, a missing one
+  and a malformed one are all `{:error, :not_found}` and write nothing, so a
+  submitted id cannot reach another tenant's personal data (PM-4).
+
+  An operator holds at most one line per version, and
+  `roster_lines_one_line_per_operator` is the database's backstop for that. The
+  refusal itself is decided here, from the line the operator already holds in
+  this version, and answers `{:operator_holds, line_number, display_name}` —
+  naming the line to look at and the person holding it — so a planner is never
+  told "nothing happened". The same operator may hold a line in another version:
+  the index is per version.
+
+  `nil` clears the pick. Clearing a line that has no operator is `{:ok,
+  %{line_number: n}}` again, exactly like setting the operator the line already
+  holds: both reach the state that was asked for.
+
+  The write runs inside the one transaction `with_roster_lock/3` opens, so the
+  version `FOR SHARE`, the publication check and `Blocking.lock_blocking!/1` all
+  precede its reads and its write (INV-1), and a refusal writes nothing.
+  """
+  @spec assign_operator(Ecto.UUID.t(), Ecto.UUID.t(), term(), term() | nil) ::
+          {:ok, %{line_number: pos_integer()}}
+          | {:error, :not_found | {:operator_holds, pos_integer(), String.t()}}
+  def assign_operator(organization_id, gtfs_version_id, line_id, operator_id) do
+    with_roster_lock(organization_id, gtfs_version_id, fn ->
+      with {:ok, line} <- fetch_line(organization_id, gtfs_version_id, line_id),
+           {:ok, operator} <- fetch_operator(organization_id, operator_id),
+           :ok <- check_operator_held(line, operator) do
+        write_operator(line, operator)
+      end
+    end)
+  end
+
+  # The operator this pick names, scoped to the caller's organization by
+  # `Operations.get_operator/2`, or `nil` for a cleared pick. A `term()` id that
+  # casts but names no operator of this organization is the same `:not_found` a
+  # malformed one is (domain rule 13).
+  defp fetch_operator(_organization_id, nil), do: {:ok, nil}
+
+  defp fetch_operator(organization_id, operator_id) do
+    case Operations.get_operator(organization_id, operator_id) do
+      nil -> {:error, :not_found}
+      operator -> {:ok, operator}
+    end
+  end
+
+  # The line in this version the operator already holds, which is the whole
+  # refusal. The read is scoped by the line's own organization and version — the
+  # caller's, never a submitted scope — so the number reported is always a line
+  # of this version, and the line being written to is not a holder: recording the
+  # same pick twice is how a planner confirms it, not a conflict.
+  #
+  # Every roster writer for a version holds `Blocking.lock_blocking!/1`, so this
+  # read and the write below are serialized against every other pick in this
+  # version; the unique index is the database's own backstop for anything that
+  # writes `roster_lines` outside that order (AC-19, FH-9).
+  defp check_operator_held(_line, nil), do: :ok
+
+  defp check_operator_held(line, operator) do
+    case holder_line_number(line, operator.id) do
+      nil -> :ok
+      line_number -> {:error, {:operator_holds, line_number, operator.display_name}}
+    end
+  end
+
+  # The one write: the line's own row, with the operator set to the submitted one
+  # or cleared. Setting the operator the line already holds is an update of that
+  # row to the value it has, which the unique index has nothing to refuse.
+  defp write_operator(line, operator) do
+    changeset =
+      line
+      |> RosterLine.changeset(%{})
+      |> Ecto.Changeset.change(%{operator_id: operator && operator.id})
+
+    case Repo.update(changeset) do
+      {:ok, saved} ->
+        {:ok, %{line_number: saved.line_number}}
+
+      # Only a writer that ignored `Blocking.lock_blocking!/1` can get here: the
+      # holder read above answered every writer that took the lock, and this is
+      # the index refusing on a pick committed between the two. PostgreSQL has
+      # already aborted the statement, and this transaction has nothing else to
+      # write, so it is rolled back with the rejection instead of committed in a
+      # failed state. The refusal cannot be named here — the holder is only
+      # readable on a connection that is no longer in a failed transaction — which
+      # is why the check above is the one that names it.
+      {:error, invalid} ->
+        Repo.rollback(invalid)
+    end
+  end
+
+  defp holder_line_number(line, operator_id) do
+    Repo.one(
+      from(l in RosterLine,
+        where:
+          l.organization_id == ^line.organization_id and
+            l.gtfs_version_id == ^line.gtfs_version_id and l.operator_id == ^operator_id and
+            l.id != ^line.id,
+        select: l.line_number
+      )
+    )
   end
 
   @doc """

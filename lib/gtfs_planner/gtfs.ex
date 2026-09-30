@@ -5775,6 +5775,26 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Records or clears the operator of one line — the pick.
+
+  Nothing about the roster is enforced by recording it: no seniority order and no
+  history. A submitted operator id has to name an operator of the caller's own
+  organization, so an id from another organization is `{:error, :not_found}` and
+  writes nothing. An operator already holding a line in this version is refused
+  as `{:error, {:operator_holds, line_number, display_name}}`; the same operator
+  may hold a line in another version. `nil` clears the pick.
+
+  A line id of another version or organization, a malformed one, or an
+  unpublished version is `{:error, :not_found}` and changes no line.
+  """
+  @spec assign_roster_operator(Ecto.UUID.t(), Ecto.UUID.t(), term(), term() | nil) ::
+          {:ok, %{line_number: pos_integer()}}
+          | {:error, :not_found | {:operator_holds, pos_integer(), String.t()}}
+  def assign_roster_operator(organization_id, gtfs_version_id, line_id, operator_id) do
+    Rosters.assign_operator(organization_id, gtfs_version_id, line_id, operator_id)
+  end
+
+  @doc """
   Returns one entry per route of a version, with its stored home garage and
   required vehicle type (`nil` when the planner has set neither).
 

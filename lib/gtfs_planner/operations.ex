@@ -35,6 +35,7 @@ defmodule GtfsPlanner.Operations do
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Operations.Garage
+  alias GtfsPlanner.Operations.Operator
   alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Operations.Vehicle
   alias GtfsPlanner.Operations.VehicleType
@@ -762,6 +763,24 @@ defmodule GtfsPlanner.Operations do
     |> Enum.sort_by(fn bucket ->
       {summary_sort_key(bucket.garage), summary_sort_key(bucket.vehicle_type)}
     end)
+  end
+
+  # --- Operators -------------------------------------------------------------
+
+  @doc """
+  Gets an operator by organization and id, or nil when it does not exist or
+  belongs to another organization. A malformed id is treated as missing.
+
+  This is how another context resolves a submitted operator id without reading
+  the `operators` table itself — `GtfsPlanner.Gtfs.Rosters.assign_operator/4`
+  uses it, the way the block writers resolve a garage or vehicle type.
+  """
+  @spec get_operator(Ecto.UUID.t(), Ecto.UUID.t()) :: Operator.t() | nil
+  def get_operator(organization_id, id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, id} -> Repo.get_by(Operator, id: id, organization_id: organization_id)
+      :error -> nil
+    end
   end
 
   # --- TODS import -----------------------------------------------------------
