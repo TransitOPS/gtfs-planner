@@ -182,6 +182,50 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.ConvertTest do
     end
   end
 
+  describe "converting keeps the source's stored stop-time values" do
+    test "each converted linked trip keeps the stored continuous flags and shape distance" do
+      scope = editing_scope!("12")
+      windows = [%{start_secs: 21_600, end_secs: 22_800, headway_secs: 600, exact_times: 0}]
+      trip = frequency_trip!(scope, windows)
+
+      # Imported values the timing does not carry: continuous stopping at B and
+      # shape distances at A and B; C has no stored distance.
+      stored = %{
+        "A" => [continuous_pickup: 1, continuous_drop_off: 1, shape_dist_traveled: 0],
+        "B" => [continuous_pickup: 0, continuous_drop_off: 2, shape_dist_traveled: 1500],
+        "C" => [continuous_pickup: 1, continuous_drop_off: 1]
+      }
+
+      Enum.each(stored, fn {stop_id, values} ->
+        from(st in StopTime,
+          where:
+            st.trip_id == ^trip.trip_id and st.gtfs_version_id == ^scope.version.id and
+              st.stop_id == ^stop_id
+        )
+        |> Repo.update_all(set: values)
+      end)
+
+      command = {:convert_frequency, trip.id}
+
+      assert {:ok, review} = Gtfs.review_trip_change("12", command, scope.audit)
+
+      assert {:ok, result} =
+               Gtfs.apply_trip_change("12", command, {:reviewed, review.fingerprint}, scope.audit)
+
+      assert length(result.created_trip_ids) == 2
+
+      for created_id <- result.created_trip_ids do
+        created = Repo.get!(Trip, created_id)
+
+        assert continuous_rows(created) == [
+                 {"A", 1, 1, Decimal.new("0")},
+                 {"B", 0, 2, Decimal.new("1500")},
+                 {"C", 1, 1, nil}
+               ]
+      end
+    end
+  end
+
   describe "converting a custom frequency trip (R8)" do
     test "every converted trip offsets the stored template by its departure difference" do
       scope = editing_scope!("12")
@@ -381,6 +425,18 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges.ConvertTest do
   defp stop_row(row) do
     {row.stop_id, row.stop_sequence, row.arrival_time, row.departure_time, row.timepoint,
      row.pickup_type, row.drop_off_type, row.shape_dist_traveled}
+  end
+
+  defp continuous_rows(trip) do
+    Repo.all(
+      from(st in StopTime,
+        where:
+          st.trip_id == ^trip.trip_id and st.organization_id == ^trip.organization_id and
+            st.gtfs_version_id == ^trip.gtfs_version_id,
+        order_by: [asc: st.stop_sequence, asc: st.id],
+        select: {st.stop_id, st.continuous_pickup, st.continuous_drop_off, st.shape_dist_traveled}
+      )
+    )
   end
 
   defp stop_id_rows(trip) do
