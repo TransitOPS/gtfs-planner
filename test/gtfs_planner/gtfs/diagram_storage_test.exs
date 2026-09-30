@@ -655,6 +655,16 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
       version_b = gtfs_version_fixture(org.id)
       version_c = gtfs_version_fixture(org.id)
 
+      version_b_station =
+        stop_fixture(org.id, version_b.id, stop_id: station.stop_id, location_type: 1)
+
+      version_b_level = level_fixture(org.id, version_b.id, level_id: level.level_id)
+
+      version_c_station =
+        stop_fixture(org.id, version_c.id, stop_id: station.stop_id, location_type: 1)
+
+      version_c_level = level_fixture(org.id, version_c.id, level_id: level.level_id)
+
       # Seed a legacy file for this station.
       legacy_dir = Path.join([uploads_root(org.id), PathSafety.stop_storage_dir(station.stop_id)])
       File.mkdir_p!(legacy_dir)
@@ -673,8 +683,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
       {:ok, _} =
         Gtfs.create_stop_level(%{
-          stop_id: station.id,
-          level_id: level.id,
+          stop_id: version_b_station.id,
+          level_id: version_b_level.id,
           diagram_filename: "plan.png",
           organization_id: org.id,
           gtfs_version_id: version_b.id
@@ -682,8 +692,8 @@ defmodule GtfsPlanner.Gtfs.DiagramStorageTest do
 
       {:ok, _} =
         Gtfs.create_stop_level(%{
-          stop_id: station.id,
-          level_id: level.id,
+          stop_id: version_c_station.id,
+          level_id: version_c_level.id,
           diagram_filename: "plan.png",
           organization_id: org.id,
           gtfs_version_id: version_c.id

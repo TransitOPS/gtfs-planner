@@ -238,7 +238,9 @@ defmodule GtfsPlanner.Gtfs.Stations.LevelsTest do
 
     assert Repo.get!(Stop, untouched.id).level_id == "L1"
     assert Repo.get!(Stop, untouched.id).diagram_coordinate != nil
-    assert [%{action: "deleted"}] = logs(scope.audit, :stop_level, attached.id)
+
+    assert [%{action: "deleted"}, %{action: "created"}] =
+             logs(scope.audit, :stop_level, attached.id)
   end
 
   test "revocation and a failed history insert leave level changes untouched", scope do

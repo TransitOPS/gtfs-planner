@@ -26,6 +26,7 @@ defmodule GtfsPlanner.Gtfs.Stations.NamingTest do
     version = gtfs_version_fixture(organization.id)
     actor = editor_fixture(organization)
     station = stop_fixture(organization.id, version.id, stop_id: "ST", location_type: 1)
+    level_fixture(organization.id, version.id, level_id: "L1")
 
     first =
       stop_fixture(organization.id, version.id,

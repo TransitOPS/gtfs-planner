@@ -183,12 +183,14 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteTest do
                scope.audit
              )
 
+    history_before_refusal = all_logs(scope)
+
     assert {:error, :pathway_in_use} =
              Stations.delete_child_stop(scope.audit, scope.child.id, scope.child.lock_version)
 
     assert Repo.get!(Stop, scope.child.id)
     assert Repo.get!(Pathway, pathway.id)
-    assert all_logs(scope) == []
+    assert all_logs(scope) == history_before_refusal
   end
 
   test "stale and foreign stops cannot be deleted", scope do
@@ -290,6 +292,8 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteTest do
                scope.audit
              )
 
+    history_before_refusal = all_logs(scope)
+
     assert {:error, :pathway_in_use} =
              Stations.remove_child_stop_from_diagram(
                scope.audit,
@@ -299,7 +303,7 @@ defmodule GtfsPlanner.Gtfs.Stations.DeleteTest do
 
     assert Repo.get!(Pathway, pathway.id)
     assert Repo.get!(Stop, scope.child.id).level_id == scope.child.level_id
-    assert all_logs(scope) == []
+    assert all_logs(scope) == history_before_refusal
   end
 
   test "a failed audit insert rolls back diagram removal", scope do
