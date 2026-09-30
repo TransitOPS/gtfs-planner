@@ -1962,6 +1962,168 @@ case Accounts.register_first_admin(%{
     seed_pattern_trip_times.("BROWSER_TERMINAL_T1")
 
     IO.puts("Browser seed: route pattern editing routes (used, unused, custom, deletable)")
+
+    # ── Headsign propagation fixtures ──
+    #
+    # One route with a pattern per browser journey (BROWSER-HS1…HS5) and a
+    # continuation route for their interlined trips, all inside the existing
+    # Browser E2E version: a newer published_at would become the default
+    # version. Every pattern carries the same shape so each journey starts
+    # from the same usage picture — pattern headsign "Lincoln City", one
+    # "Weekday base" timing whose stop 3 shows its own stop headsign, and five
+    # linked trips: three "Lincoln City", one "Lincoln city" (the likely
+    # typo), and one "Roads End via Lincoln City" whose block continues on a
+    # BROWSER_HEADSIGNS_20 trip. Journeys mutate different patterns, so no
+    # test inherits another's writes.
+    {:ok, headsign_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "BROWSER_HEADSIGNS",
+        route_short_name: "HS",
+        route_long_name: "Browser Headsign",
+        route_type: 3
+      })
+
+    {:ok, headsign_route_20} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: diagram_version.id,
+        route_id: "BROWSER_HEADSIGNS_20",
+        route_short_name: "H20",
+        route_long_name: "Browser Headsign Continuation",
+        route_type: 3
+      })
+
+    headsign_pattern = fn pattern_id, pattern_name, route ->
+      GtfsPlanner.GtfsFixtures.route_pattern_fixture(org.id, diagram_version.id, %{
+        route_id: route.route_id,
+        route_pattern_id: pattern_id,
+        route_pattern_name: pattern_name,
+        headsign: "Lincoln City",
+        direction_id: 0
+      })
+    end
+
+    headsign_timing = fn pattern, timing_headsign ->
+      timing =
+        GtfsPlanner.GtfsFixtures.timed_pattern_fixture(pattern, %{
+          name: "Weekday base",
+          headsign: timing_headsign
+        })
+
+      occurrences = occurrence_fixture.(pattern, pattern_stops)
+
+      arrival_offsets = [0, 4, 10, 14]
+      departure_offsets = [0, 5, 11, 15]
+
+      occurrences
+      |> Enum.with_index(1)
+      |> Enum.each(fn {occurrence, position} ->
+        GtfsPlanner.GtfsFixtures.timed_pattern_stop_fixture(timing, occurrence, %{
+          arrival_offset: Enum.at(arrival_offsets, position - 1),
+          departure_offset: Enum.at(departure_offsets, position - 1),
+          stop_headsign: if(position == 3, do: "Lincoln City Transit Center", else: nil)
+        })
+      end)
+
+      timing
+    end
+
+    hs_clock = fn minute ->
+      hour = minute |> div(60) |> Integer.to_string() |> String.pad_leading(2, "0")
+      padded_minute = minute |> rem(60) |> Integer.to_string() |> String.pad_leading(2, "0")
+      "#{hour}:#{padded_minute}:00"
+    end
+
+    hs_seed_trip_times = fn trip_id, start_minute ->
+      [0, 5, 11, 15]
+      |> Enum.with_index(1)
+      |> Enum.each(fn {offset, sequence} ->
+        {:ok, _stop_time} =
+          Gtfs.create_stop_time(%{
+            organization_id: org.id,
+            gtfs_version_id: diagram_version.id,
+            trip_id: trip_id,
+            stop_id: "BROWSER_PATTERN_STOP_#{sequence}",
+            stop_sequence: sequence,
+            arrival_time: hs_clock.(start_minute + offset),
+            departure_time: hs_clock.(start_minute + offset)
+          })
+      end)
+    end
+
+    hs_trip = fn trip_id, route, pattern, timing, start_minute, headsign, block_id ->
+      {:ok, trip} =
+        Gtfs.create_trip(%{
+          organization_id: org.id,
+          gtfs_version_id: diagram_version.id,
+          route_id: route.route_id,
+          trip_id: trip_id,
+          service_id: "BROWSER_PATTERN_SERVICE",
+          trip_headsign: headsign,
+          block_id: block_id,
+          direction_id: 0
+        })
+
+      GtfsPlanner.GtfsFixtures.trip_pattern_metadata_fixture(trip, %{
+        route_pattern_id: pattern.route_pattern_id,
+        timed_pattern_id: timing.id,
+        pattern_derivation_state: "linked"
+      })
+
+      hs_seed_trip_times.(trip_id, start_minute)
+
+      trip
+    end
+
+    continuation_pattern =
+      headsign_pattern.("BROWSER-HS20", "Browser Headsign Continuation", headsign_route_20)
+
+    continuation_timing = headsign_timing.(continuation_pattern, "Roads End")
+
+    pattern_names = %{
+      1 => "Browser Headsign One",
+      2 => "Browser Headsign Two",
+      3 => "Browser Headsign Three",
+      4 => "Browser Headsign Four",
+      5 => "Browser Headsign Five"
+    }
+
+    Enum.each(1..5, fn n ->
+      pattern = headsign_pattern.("BROWSER-HS#{n}", Map.fetch!(pattern_names, n), headsign_route)
+      timing = headsign_timing.(pattern, nil)
+
+      hs_trip.("BROWSER_HS#{n}_T1", headsign_route, pattern, timing, 480, "Lincoln City", nil)
+      hs_trip.("BROWSER_HS#{n}_T2", headsign_route, pattern, timing, 510, "Lincoln City", nil)
+      hs_trip.("BROWSER_HS#{n}_T3", headsign_route, pattern, timing, 540, "Lincoln City", nil)
+      hs_trip.("BROWSER_HS#{n}_T4", headsign_route, pattern, timing, 560, "Lincoln city", nil)
+
+      hs_trip.(
+        "BROWSER_HS#{n}_T5",
+        headsign_route,
+        pattern,
+        timing,
+        580,
+        "Roads End via Lincoln City",
+        "BROWSER_HS#{n}_BLOCK"
+      )
+
+      hs_trip.(
+        "BROWSER_HS20_T#{n}",
+        headsign_route_20,
+        continuation_pattern,
+        continuation_timing,
+        600 + n * 15,
+        "Roads End",
+        "BROWSER_HS#{n}_BLOCK"
+      )
+    end)
+
+    IO.puts(
+      "Browser seed: headsign propagation routes (patterns BROWSER-HS1..HS5 plus BROWSER_HEADSIGNS_20 continuations)"
+    )
+
     # ── Auth fixtures for authentication.spec.js (Package 10) ──
     #
     # Deterministic, test-only token fixtures. Each raw value is a fixed
