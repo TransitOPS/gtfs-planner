@@ -33,6 +33,35 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponentsTest do
     """)
   end
 
+  defp render_move_review(refusal) do
+    assigns = %{
+      change: %{
+        kind: :move,
+        ids: [],
+        params: %{service_id: "SAT"},
+        review: nil,
+        refusal: refusal,
+        notice: nil,
+        stale?: false
+      },
+      drawer: %{
+        from: "Weekday",
+        to: "Saturday",
+        target_options: [{"Saturday", "SAT"}],
+        rows: [],
+        return_focus_id: "bulk-move"
+      }
+    }
+
+    rendered_to_string(~H"""
+    <ScheduleChangeComponents.change_review_drawer
+      change={@change}
+      drawer={@drawer}
+      version_name="Draft"
+    />
+    """)
+  end
+
   defp render_riders(windows, exact_times) do
     assigns = %{windows: windows, exact_times: exact_times}
 
@@ -228,6 +257,16 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponentsTest do
         doc(render_riders([row("10:00", "14:00", "15"), row("14:00", "15:30", "30")], "0"))
 
       assert text(document, "#riders-see") =~ "Gaps over 20 minutes"
+    end
+  end
+
+  describe "change_review_drawer/1" do
+    test "a selection over 500 trips names the limit, says nothing moves and disables Move" do
+      document = doc(render_move_review([{:error, :too_many_trips}]))
+
+      assert text(document, "#review-refusal") =~ "Select 500 or fewer trips at a time."
+      assert text(document, "#review-status") == "Nothing can be moved until that is fixed."
+      assert first_attr(document, "#review-apply", "disabled") != nil
     end
   end
 end

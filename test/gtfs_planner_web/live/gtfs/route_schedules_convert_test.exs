@@ -412,7 +412,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesConvertTest do
 
       view |> element("#convert-apply") |> render_click()
 
-      assert assigns(view).outcome.text == message
+      # The dialog covers the bar, so it states the refusal and disables Convert.
+      assert assigns(view).outcome == nil
+      assert has_element?(view, "#convert-refusal", message)
+      assert has_element?(view, "#convert-apply[disabled]")
       assert Repo.get(Trip, frequency.id) != nil
       assert rows(frequency) == [@stored_window]
       assert assigns(view).undo_stack == []

@@ -20,11 +20,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
   # `#strip-cancel`) and read the same reviewed state back.
   use GtfsPlannerWeb.ConnCase, async: false
 
+  import Mox
   import Phoenix.LiveViewTest
   import GtfsPlanner.ScheduleEditingFixtures
 
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
+  alias GtfsPlanner.Gtfs.ReviewedApplyTransactionMock
   alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Repo
   alias GtfsPlannerWeb.Gtfs.ScheduleComponents
@@ -689,12 +692,16 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
       message = ScheduleComponents.error_message(:unauthorized)
 
       # The open review is still process state; the apply re-reads the role and
-      # refuses before the facade.
+      # refuses before the facade. The strip covers the bar, so the strip itself
+      # says why and disables its primary.
       render_hook(grid(view), "apply_change", %{})
 
       assigns = assigns(view)
-      assert assigns.outcome.text == message
+      assert assigns.outcome == nil
+      assert assigns.change.refusal == [{:error, :unauthorized}]
       assert assigns.change.review.fingerprint == fingerprint
+      assert has_element?(view, "#strip-consequences", message)
+      assert has_element?(view, "#strip-apply[disabled]")
       assert assigns.undo_stack == []
       assert stop_time_clocks(trip) == @t0700_before
 
@@ -705,6 +712,40 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
       assert assigns.change == nil
       assert assigns.outcome.text == message
       assert stop_time_clocks(trip) == @t0700_before
+    end
+  end
+
+  describe "a busy apply" do
+    test "shows a notice, writes nothing and leaves the primary to retry", %{
+      conn: conn,
+      scope: scope
+    } do
+      trips = bulk_trips!(scope)
+      trip = trips["BULK_T0700"]
+      {:ok, view, _html} = live(conn, schedules_path(scope))
+
+      select_trips(view, trips, ["BULK_T0700"])
+      view |> element("#bulk-shift") |> render_click()
+
+      set_mox_global()
+      use_write_transaction_mock()
+
+      # Three serialization failures surface as `:busy`; the mock returns it on
+      # the first attempt, and the next click runs the real transaction.
+      expect(ReviewedApplyTransactionMock, :run, fn _transaction -> {:error, :busy} end)
+      view |> element("#strip-apply") |> render_click()
+
+      assert has_element?(view, "#strip-busy", "Another change is being saved. Try again.")
+      refute has_element?(view, "#strip-apply[disabled]")
+      assert assigns(view).change.refusal == nil
+      assert stop_time_clocks(trip) == @t0700_before
+
+      expect(ReviewedApplyTransactionMock, :run, &ReviewedApplyTransaction.Sandbox.run/1)
+      view |> element("#strip-apply") |> render_click()
+
+      assert assigns(view).change == nil
+      refute has_element?(view, "#strip-busy")
+      assert stop_time_clocks(trip) == @t0700_after
     end
   end
 
@@ -953,6 +994,18 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesBulkReviewTest do
   end
 
   defp grid(view), do: element(view, "#schedules-grid")
+
+  defp use_write_transaction_mock do
+    previous = Application.fetch_env(:gtfs_planner, :reviewed_apply_transaction)
+    Application.put_env(:gtfs_planner, :reviewed_apply_transaction, ReviewedApplyTransactionMock)
+
+    on_exit(fn ->
+      case previous do
+        {:ok, value} -> Application.put_env(:gtfs_planner, :reviewed_apply_transaction, value)
+        :error -> Application.delete_env(:gtfs_planner, :reviewed_apply_transaction)
+      end
+    end)
+  end
 
   defp assigns(view), do: :sys.get_state(view.pid).socket.assigns
 end
