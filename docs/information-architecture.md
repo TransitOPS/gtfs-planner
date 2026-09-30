@@ -132,8 +132,9 @@ flowchart LR
 
   class app,routes,routeList,route,rDetails,rPatterns,pattern,pTabs,cals,calList,cal,stops,station,sTabs,imp,exp,orgs live;
   class rSchedules live;
+  class compare live;
   class paste,blocks,runs,rosters,evol planned;
-  class transfers,compare,pAlign,combine,ops,flex,flexSvc,gtfs,publish,settings,sVersion,sAll,sOrg proposed;
+  class transfers,pAlign,combine,ops,flex,flexSvc,gtfs,publish,settings,sVersion,sAll,sOrg proposed;
 ```
 
 ## Areas
@@ -147,7 +148,7 @@ Routes                              /gtfs/:version/routes
 └── Route                           /routes/:route_id
     ├── Details                     Live (read-only) → Proposed (editable)
     ├── Patterns                    Live
-    │   ├── Compare patterns        Proposed  /routes/:route_id/patterns/compare?a=…&b=…
+    │   ├── Compare patterns        Live      /routes/:route_id/patterns/compare?a=…&b=…
     │   └── Pattern                 Live      Stops · Timings · Alignment (Proposed) · Details
     └── Schedules                   Live (#698)
         └── Paste timetable         Planned
@@ -183,13 +184,16 @@ badges; New route drawer.
 **Route › Patterns** (Live, with proposed additions):
 - A **Generate missing alignments** bulk action, and a missing-segment count on each pattern row.
 - A "N trips use a different headsign" warning on each pattern row.
-- **Compare patterns:** select two patterns, then open a full-width page under the route. The
-  Patterns tab stays current.
-  - Stops are aligned side by side, with added, removed and moved stops marked by symbol and
-    text.
-  - Trip counts for the calendar filter.
-  - Running-time differences for each shared segment.
-  - The picker can include a pattern from another route.
+
+**Route › Patterns › Compare patterns** (Live): select two patterns, then open a full-width page
+under the route. The Patterns tab stays current.
+- **Two patterns** aligns the pair stop by stop, with added, removed and moved stops marked by
+  symbol and text.
+- **All patterns** shows every pattern of one direction as a stop-by-pattern overview.
+- Trip counts for the calendar filter and running-time differences for each shared segment.
+- A linked map draws both paths, marks the stops only one of the pair calls at, and follows the
+  selected row.
+- The picker can include a pattern from another route.
 
 **Pattern** tabs:
 - **Stops** (Live): the ordered stop visits. Loops are supported: A → B → A is valid, and only the
@@ -458,7 +462,6 @@ its feature is specified.
 |---|---|---|
 | [AC-TRIP-041, AC-TRIP-042](requirements/trips-requirements.md) | "In-seat transfers allowed" checkbox on the trip form | Riders stay on board choice on the block connection |
 | [AC-TRIP-038 to AC-TRIP-040](requirements/trips-requirements.md) | Weekday checkboxes on each trip | Service days come only from the trip's calendar |
-| [AC-PAT-004](requirements/patterns-and-alignments-requirements.md) | A matrix of all patterns, grouped by direction | Compare page for two selected patterns |
 | [AC-CAL-031](requirements/calendars-and-service-periods-requirements.md) | Move trips from a source to a destination calendar; the source remains with zero trips | Combine drawer; it should keep the source calendars to match |
 
 ## Requirement index
@@ -468,7 +471,7 @@ its feature is specified.
 | Alignments | [Patterns and alignments](requirements/patterns-and-alignments-requirements.md) AC-PAT-032 to AC-PAT-054 | Pattern › Alignment; Route › Patterns bulk generate | Proposed |
 | Loop patterns | AC-PAT-050 | Pattern › Stops (Live); continuous overrides in Pattern › Timings | Live / Proposed |
 | Headsigns | AC-PAT-014, AC-PAT-027, AC-PAT-028 | Pattern › Details and Timings; trip drawer | Live / Planned / Proposed |
-| Pattern comparison | AC-PAT-004 | Route › Patterns › Compare | Proposed |
+| Pattern comparison | AC-PAT-004 | Route › Patterns › Compare | Live |
 | Route list, edit, delete | [Routes](requirements/routes-requirements.md) AC-ROUTE-001 to AC-ROUTE-020 | Routes list (Live); Route › Details | Live / Proposed |
 | Calendars | [Calendars](requirements/calendars-and-service-periods-requirements.md) AC-CAL-001 to AC-CAL-032 | Calendars list and Calendar | Live; coverage bars and combine Proposed |
 | Trips and frequencies | [Trips](requirements/trips-requirements.md) | Route › Schedules | Planned / Proposed |

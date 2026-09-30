@@ -268,6 +268,11 @@ The picker can include another route's pattern, for example 10 against 10X.
 **Open difference.** AC-PAT-004 describes a matrix of *all* patterns, grouped by direction. It's
 undecided whether the compare page opens as that matrix.
 
+**Resolved.** AC-PAT-004 now describes both views, so the page opens as Two patterns and reaches
+the All patterns overview of one direction from the same page. The requirement index lists pattern
+comparison as Live. A linked map reuses the existing alignment geometry and the authenticated tile
+proxy.
+
 | Rejected | Reason |
 |---|---|
 | A comparison drawer | Two stop lists and their timing differences need full width |

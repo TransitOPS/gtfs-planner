@@ -368,10 +368,9 @@ As a schedule editor, I want to understand that interpolated times appear only i
 - Then only patterns with that direction are displayed
 
 **AC-PAT-004: Compare patterns view**
-- Given I click "Compare Patterns"
-- Then I see a matrix showing all patterns grouped by direction
-- And each pattern's stops are displayed in sequence
-- And I can visually identify which stops differ between patterns
+- Given I open Compare patterns for a route
+- Then I see every pattern of one direction as a stop-by-pattern overview
+- And I can compare any two patterns stop by stop, with running times and trips on a chosen calendar
 
 ### 4.2 Stop Pattern Creation
 
