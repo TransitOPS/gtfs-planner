@@ -40,34 +40,6 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponentsTest do
     end
   end
 
-  describe "bulk_toolbar/1" do
-    test "renders nothing without a selection" do
-      assigns = %{}
-
-      html =
-        rendered_to_string(~H"""
-        <ScheduleComponents.bulk_toolbar selected_count={0} />
-        """)
-
-      assert Enum.empty?(doc(html) |> LazyHTML.query("#schedules-bulk-toolbar"))
-    end
-
-    test "counts the selection and offers to clear or delete it" do
-      assigns = %{}
-
-      html =
-        rendered_to_string(~H"""
-        <ScheduleComponents.bulk_toolbar selected_count={2} />
-        """)
-
-      document = doc(html)
-
-      assert text(document, "#schedules-bulk-toolbar") =~ "2 trips selected"
-      assert text(document, "#schedules-delete-selected") == "Delete 2 trips"
-      assert Enum.count(LazyHTML.query(document, "#schedules-clear-selection")) == 1
-    end
-  end
-
   describe "unavailable_notice/1" do
     test "says nothing loaded when no timetables are on screen" do
       assigns = %{}

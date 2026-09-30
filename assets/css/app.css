@@ -4914,7 +4914,9 @@ body:has(#home-page) {
   color: var(--color-muted);
 }
 
-#cell-reading kbd {
+/* The grid bar's keycap (the idle hint's `?`) shares the reading line's cap. */
+#cell-reading kbd,
+#grid-bar kbd {
   display: inline-flex;
   min-width: 22px;
   height: 22px;

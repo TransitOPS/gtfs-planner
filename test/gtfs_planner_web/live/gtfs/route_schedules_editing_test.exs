@@ -886,9 +886,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
       render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0700").id})
       render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_SHORT_1").id})
 
-      assert has_element?(view, "#schedules-bulk-toolbar")
-      assert render(view) =~ "3 trips selected"
-      assert renders(view, "#schedules-delete-selected") =~ "Delete 3 trips"
+      assert has_element?(view, "#selection-count", "3 trips selected")
+      assert renders(view, "#bulk-delete") =~ "Delete 3 trips"
 
       html = render_click(view, "delete_selected")
 
@@ -905,8 +904,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
 
       render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0600").id})
 
-      assert renders(view, "#schedules-bulk-toolbar") =~ "1 trip selected"
-      assert renders(view, "#schedules-delete-selected") =~ "Delete 1 trip"
+      assert renders(view, "#selection-count") =~ "1 trip selected"
+      assert renders(view, "#bulk-delete") =~ "Delete 1 trip"
     end
 
     test "the confirmation lists the first six departures and counts the rest", context do
@@ -932,14 +931,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
 
       render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0600").id})
       render_click(view, "toggle_trip", %{"trip" => trip_row(scope, "EDT_T0700").id})
-      assert has_element?(view, "#schedules-bulk-toolbar")
+      assert has_element?(view, "#selection-count")
 
       before = count_trips(scope)
 
       # A view change clears the selection, so the replayed event has nothing to
       # act on and no trip leaves the database.
       render_patch(view, schedules_path(scope, %{"service_id" => @weekday, "direction" => "1"}))
-      refute has_element?(view, "#schedules-bulk-toolbar")
+      refute has_element?(view, "#selection-count")
 
       render_click(view, "delete_selected")
       refute has_element?(view, "#delete-dialog[data-open='true']")

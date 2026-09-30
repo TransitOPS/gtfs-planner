@@ -7,8 +7,8 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   `GtfsPlanner.Gtfs.load_route_schedule/4`: the scope bar that turns service day
   and direction into URL parameters, the planning summary, one timetable card per
   pattern section, the notices and the empty states, plus the trip drawer, the
-  row menu, the bulk bar and the delete confirmation. Stored stop times are
-  displayed as they are; nothing here recomputes a trip from a timing.
+  row menu and the delete confirmation. Stored stop times are displayed as they
+  are; nothing here recomputes a trip from a timing.
 
   The timetable keeps its selection and Departs columns pinned on the left and
   Actions on the right while the stop columns scroll inside the table's own
@@ -730,53 +730,6 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
 
   defp bar_height(0, _max), do: 2
   defp bar_height(count, max), do: max(6, round(count / max * 24))
-
-  # --- bulk bar --------------------------------------------------------------------
-
-  @doc """
-  Renders the bulk bar for the current selection.
-
-  It totals the selected rows across sections and offers the bulk delete. The
-  count and the delete action come from the selection the server owns, so a bar
-  left on screen after a view change cannot act on hidden trips. It sticks to the
-  bottom of the viewport so the action stays in reach while the timetable scrolls.
-  """
-  attr :selected_count, :integer, required: true
-
-  def bulk_toolbar(assigns) do
-    ~H"""
-    <div
-      :if={@selected_count > 0}
-      id="schedules-bulk-toolbar"
-      role="status"
-      class="sticky bottom-3 z-20 mt-6 flex max-w-[760px] flex-wrap items-center justify-between gap-3 rounded-card border border-action bg-selection px-4 py-3 text-sm shadow-float"
-    >
-      <p class="font-bold text-action tabular-nums">{trip_count(@selected_count)} selected</p>
-      <div class="flex flex-wrap items-center gap-3">
-        <.button
-          id="schedules-clear-selection"
-          type="button"
-          variant="secondary"
-          class="min-h-11"
-          phx-click="clear_selection"
-        >
-          Clear selection
-        </.button>
-        <.button
-          id="schedules-delete-selected"
-          type="button"
-          variant="quiet"
-          class="min-h-11 border border-error-line bg-white text-error-fg hover:bg-error-bg"
-          phx-click="delete_selected"
-          phx-disconnected={JS.set_attribute({"disabled", ""})}
-          phx-connected={JS.remove_attribute("disabled")}
-        >
-          <.icon name="hero-trash" class="size-4" /> Delete {trip_count(@selected_count)}
-        </.button>
-      </div>
-    </div>
-    """
-  end
 
   # --- row actions -------------------------------------------------------------------
 

@@ -237,7 +237,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesSelectionTest do
 
       render_click(view, "toggle_trip", %{"trip" => trips["SEL_T0600"].id})
       render_click(view, "toggle_trip", %{"trip" => trips["SEL_T0700"].id})
-      assert has_element?(view, "#schedules-bulk-toolbar")
+      assert has_element?(view, "#selection-count")
 
       render_patch(view, schedules_path(scope, %{"service_id" => saturday}))
 
@@ -251,7 +251,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesSelectionTest do
                undo?: false
              }
 
-      refute has_element?(view, "#schedules-bulk-toolbar")
+      refute has_element?(view, "#selection-count")
       refute checked?(view, "SEL_T0600")
       assert has_element?(view, "#trip-select-SEL_SAT")
     end
