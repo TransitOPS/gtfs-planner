@@ -20,12 +20,14 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponentsTest do
     pattern =
       Map.merge(
         %{
+          id: Ecto.UUID.generate(),
           route_pattern_id: id,
           route_pattern_name: "Pattern #{id}",
           route_pattern_time_desc: "All service days",
           route_pattern_typicality: 1,
           direction_id: direction_id,
-          headsign: "Lincoln City"
+          headsign: "Lincoln City",
+          label_pattern_id: nil
         },
         Map.get(overrides, :pattern, %{})
       )
@@ -120,6 +122,31 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternListComponentsTest do
 
     test "is empty when there are no patterns" do
       assert RoutePatternListComponents.stream_items([]) == []
+    end
+
+    test "puts a label's children under its owner, and an owner with none stays alone" do
+      owner = summary("A", 0)
+      owner_with_child = summary("B", 0)
+
+      child =
+        summary("B-2", 0, %{pattern: %{label_pattern_id: owner_with_child.pattern.id}})
+
+      items = RoutePatternListComponents.stream_items([owner, owner_with_child, child])
+
+      assert Enum.map(items, &{&1.kind, &1.id}) == [
+               {:direction, "direction-0"},
+               {:pattern, "A"},
+               {:label, "label-B"},
+               {:pattern, "B"},
+               {:pattern, "B-2"}
+             ]
+
+      assert [%{kind: :label, label_id: "B", count: 2}, owner_item, child_item] =
+               Enum.drop(items, 2)
+
+      # The two rows in the group say which part they play in it.
+      assert owner_item.label == %{id: "B", role: :owner}
+      assert child_item.label == %{id: "B", role: :child}
     end
   end
 
