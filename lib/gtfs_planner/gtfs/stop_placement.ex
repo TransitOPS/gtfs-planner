@@ -1,0 +1,267 @@
+defmodule GtfsPlanner.Gtfs.StopPlacement do
+  @moduledoc """
+  The judgements an editor makes about where a stop sits, as pure functions.
+
+  Placing a stop on a map raises questions that have no single right answer,
+  only defensible ones: is this a second copy of the stop I just placed, is it on
+  the wrong side of the street, is it so far from the line that the shape is
+  wrong rather than the stop. Each of those is a threshold, and the thresholds
+  live here and nowhere else (INV-3), so that "why does the editor warn at 5 m
+  and not at 6" has one answer.
+
+  Every function takes points as `{lon, lat}`, the order the map hook sends
+  coordinates in. Callers holding a `{lat, lon}` pair convert at the edge rather
+  than relying on this module to guess.
+
+  The geometry works in a local metre grid around the point being measured,
+  because projecting a whole city onto a sphere is not needed to answer "is this
+  3 m off the line". Over the tens of metres a stop can be from a line, an
+  equirectangular projection is accurate to well under a centimetre.
+  """
+
+  alias GtfsPlanner.Gtfs.StationReport2.Helpers
+
+  # Metres per degree of latitude, at the equator. Longitude is scaled by the
+  # cosine of the latitude, which is what makes a local grid roughly square.
+  @metres_per_degree 111_320.0
+
+  # Two stops closer than this are the same stop placed twice. Five metres is
+  # about one doorway: close enough that a rider could not tell which stop the
+  # vehicle stopped at.
+  @duplicate_metres 5.0
+
+  # A stop further than this from another is its own place. Thirty metres is far
+  # enough to be a different doorway, close enough to be worth a look when an
+  # editor is reviewing a feed.
+  @nearby_metres 30.0
+
+  # A stop further than this from every serving line is off the shape.
+  @off_line_metres 100.0
+
+  # A stop at least this far from a line is not on the kerb. Measured across a
+  # northbound line, so a rider on the far pavement is on the wrong side.
+  @wrong_side_metres 3.0
+
+  # How far a stop may be moved and still be called a correction rather than
+  # something a person must review. Eight metres is about a kerbside reposition;
+  # past it, the editor's intent is unclear.
+  @correction_metres 8.0
+
+  # Past this, a move changes where the stop serves. Being told "yes, move it
+  # that far" is not a reason to accept moving a stop four hundred metres.
+  @far_metres 100.0
+
+  @type point :: {float(), float()}
+  @type line :: [point()]
+  @type role :: :shape | :connector
+  @type classification :: :duplicate | :nearby | :distinct
+  @type warning :: :wrong_side | :middle_of_street | :off_line
+  @type move_band :: :correction | :review | :far
+
+  @doc """
+  How far apart two stops are, in metres.
+  """
+  @spec distance(point(), point()) :: float()
+  def distance({lon1, lat1}, {lon2, lat2}),
+    do: Helpers.haversine(lat1, lon1, lat2, lon2)
+
+  @doc """
+  Whether two stops are the same stop placed twice, nearby, or distinct places.
+
+  Judged only between stops, never against a shape: two stops 4 m apart are the
+  same stop twice whatever the route does, and two stops 40 m apart are two
+  stops however many lines run between them.
+  """
+  @spec classify(point(), point()) :: classification()
+  def classify(a, b) do
+    metres = distance(a, b)
+
+    cond do
+      metres < @duplicate_metres -> :duplicate
+      metres <= @nearby_metres -> :nearby
+      true -> :distinct
+    end
+  end
+
+  @doc """
+  Classifies two stops that share a parent station.
+
+  Two child stops of one station are different levels or different platforms by
+  construction, however close their pins are, so the answer is `:distinct` and
+  the distance is returned for a diagram that wants to flag the overlap. Being
+  this close is how a diagram stops being readable, but it is a diagram problem
+  rather than a duplicate data problem.
+  """
+  @spec classify_shared_station(point(), point()) :: {classification(), float()}
+  def classify_shared_station(a, b), do: {:distinct, distance(a, b)}
+
+  @doc """
+  How far a point sits from a line, and which side of it.
+
+  Returns `{metres, :west | :east | :on}`. The side is relative to the direction
+  the line runs: a point west of a northbound line is the far pavement from a
+  vehicle travelling that way, and the same point east of a southbound line is
+  the far pavement too. A point on the line is `:on` rather than a zero with an
+  arbitrary side, so callers can tell "on the kerb" from "on the centreline".
+  """
+  @spec offset_m(point(), line()) :: {float(), :west | :east | :on}
+  def offset_m(_point, []), do: {:infinity, :on}
+  def offset_m(_point, [_only]), do: {:infinity, :on}
+
+  def offset_m({lon, lat}, line) when is_list(line) do
+    line
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.map(&segment_offset({lon, lat}, &1))
+    |> Enum.min_by(fn {metres, _side} -> metres end, fn -> {:infinity, :on} end)
+  end
+
+  defp segment_offset({lon, lat}, [{lon1, lat1}, {lon2, lat2}]) do
+    # One frame, origin at the segment's first point: the point sits at (x, y)
+    # and the segment runs from (0, 0) to (x2, y2).
+    {x, y} = local({lon, lat}, {lon1, lat1})
+    {x2, y2} = local({lon2, lat2}, {lon1, lat1})
+
+    {foot_x, foot_y} = closest_point(x, y, x2, y2)
+
+    east_offset = x - foot_x
+    north_offset = y - foot_y
+
+    {:math.sqrt(east_offset * east_offset + north_offset * north_offset),
+     side_of(east_offset, y2)}
+  end
+
+  # The nearest point on the segment, clamped to its ends. A point beyond the
+  # last vertex is measured to that vertex, not to the infinite line the segment
+  # would extend along, so a stop past the end of a shape is as far away as the
+  # shape's end really is.
+  defp closest_point(x, y, x2, y2) do
+    length_squared = x2 * x2 + y2 * y2
+
+    if length_squared == 0.0 do
+      {0.0, 0.0}
+    else
+      t = (x * x2 + y * y2) / length_squared
+
+      cond do
+        t <= 0.0 -> {0.0, 0.0}
+        t >= 1.0 -> {x2, y2}
+        true -> {t * x2, t * y2}
+      end
+    end
+  end
+
+  # Which side of the line the point falls on, relative to the direction the line
+  # runs. A line running north serves its east kerb, so a point west of it is on
+  # the far pavement; a line running south serves its west kerb, so the same east
+  # offset is now the far side. `y2` is the line's northward extent, so its sign
+  # is the direction of travel for any line that is not running east-west.
+  # A line with no northward extent runs east-west, so a point on it has no side.
+  defp side_of(_east_offset, y2) when abs(y2) < @metres_per_degree * 0.000001, do: :on
+
+  defp side_of(east_offset, y2) when y2 > 0 do
+    if east_offset < 0.0, do: :west, else: :east
+  end
+
+  defp side_of(east_offset, _y2) do
+    if east_offset > 0.0, do: :west, else: :east
+  end
+
+  # Local metres east and north of the segment's first point.
+  defp local({lon, lat}, {lon_ref, lat_ref}) do
+    {(lon - lon_ref) * @metres_per_degree * :math.cos(:math.pi() * lat_ref / 180),
+     (lat - lat_ref) * @metres_per_degree}
+  end
+
+  @doc """
+  A point reflected across a line, for the editor's "put it on this side" action.
+
+  Reflects in the line itself, so a point 8 m east of a northbound line comes
+  back 8 m west of it, on the kerb the vehicle actually serves. A point already
+  on the line reflects to itself. An empty or single-point line returns the
+  point unchanged, because there is nothing to reflect in.
+  """
+  @spec across_street(point(), line()) :: point()
+  def across_street(point, []), do: point
+  def across_street(point, [_only]), do: point
+
+  def across_street({lon, lat}, line) do
+    {lon1, lat1} = hd(line)
+    {lon2, lat2} = List.last(line)
+
+    # One frame, origin at the line's first point: the line runs from (0, 0) to
+    # (x2, y2) and the point sits at (x, y).
+    {x, y} = local({lon, lat}, {lon1, lat1})
+    {x2, y2} = local({lon2, lat2}, {lon1, lat1})
+
+    dx = x2
+    dy = y2
+    length_squared = dx * dx + dy * dy
+
+    if length_squared == 0.0 do
+      {lon, lat}
+    else
+      # The point's projection onto the line, then the same distance again on
+      # the far side of it.
+      t = (x * dx + y * dy) / length_squared
+      foot_x = t * dx
+      foot_y = t * dy
+
+      unproject({2 * foot_x - x, 2 * foot_y - y}, {lon1, lat1})
+    end
+  end
+
+  defp unproject({x, y}, {lon_ref, lat_ref}) do
+    {lon_ref + x / (@metres_per_degree * :math.cos(:math.pi() * lat_ref / 180)),
+     lat_ref + y / @metres_per_degree}
+  end
+
+  @doc """
+  The warning a point on a line deserves, or nil.
+
+  A `:shape` line is where the vehicle actually runs, so a stop on the wrong side
+  of one is a real error: riders on that pavement wait for the wrong direction. A
+  `:connector` line joins two shapes and describes no roadside at all, so the
+  same distances produce no side warning — only `:off_line`, which is a
+  statement about distance and so means the same thing for either role.
+  """
+  @spec warn(point(), line(), role()) :: warning() | nil
+  def warn(_point, [], _role), do: nil
+
+  def warn(point, line, :connector), do: off_line(point, line)
+
+  def warn(point, line, :shape) do
+    {metres, side} = offset_m(point, line)
+
+    cond do
+      metres > @off_line_metres -> :off_line
+      side == :west and metres > @wrong_side_metres -> :wrong_side
+      # On the served side but nearer the centreline than the kerb: right side
+      # of the road, wrong place in it. The band is the same three metres the
+      # wrong-side rule uses, so the two partition the kerbside cleanly.
+      metres <= @wrong_side_metres -> :middle_of_street
+      true -> nil
+    end
+  end
+
+  defp off_line(point, line) do
+    case offset_m(point, line) do
+      {metres, _side} when metres > @off_line_metres -> :off_line
+      _ -> nil
+    end
+  end
+
+  @doc """
+  How much a proposed move should worry the editor.
+
+  A stop nothing serves can be moved as far as the editor likes: there is no
+  schedule to contradict, so the move is a correction whatever its size. A stop
+  that is served has riders and a timetable attached to where it is, so moving it
+  is a `:review` past the correction band and `:far` past a hundred metres,
+  however confident the editor is.
+  """
+  @spec move_band(float(), boolean()) :: move_band()
+  def move_band(_metres, false), do: :correction
+  def move_band(metres, true) when metres > @far_metres, do: :far
+  def move_band(metres, true) when metres > @correction_metres, do: :review
+  def move_band(_metres, _served), do: :correction
+end
