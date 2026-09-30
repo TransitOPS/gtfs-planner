@@ -8492,6 +8492,209 @@ case Accounts.register_first_admin(%{
         "(BROWSER_MW_000 current route plus 499 distinct-geometry context routes)"
     )
 
+    # ── Stop-time interpolation journey (spec 23, step 16) ──
+    #
+    # A dedicated published version carries the fill/export/schedules journey
+    # records so no other spec's route, stop or trip counts move. Its
+    # `published_at` is backdated like the transfers/helper/workload versions
+    # above, so the Browser E2E Version keeps the organization's
+    # latest-published default; the journey reaches this version by its
+    # version id in the URL.
+    #
+    #   * BROWSER_INTERP_FILL — five stops with coordinates, one pattern with
+    #     a "Weekday" timing (timepoints at stops 1, 3 and 5) and a linked
+    #     trip. The Running times journey adds a blank "Fill journey" timing,
+    #     times its first and last stops, and fills the middle.
+    #   * BROWSER_INTERP_IMPORT — the same five stops with an imported custom
+    #     trip whose middle stop times are blank, so Export defaults, Export
+    #     and Schedules all have gaps to estimate.
+    {:ok, interp_version} =
+      Versions.create_gtfs_version(org.id, %{name: "Browser Interp Version"})
+
+    interp_version =
+      Repo.update!(
+        Ecto.Changeset.change(interp_version,
+          published_at: ~U[2020-03-01 00:00:00.000000Z]
+        )
+      )
+
+    interp_today = Gtfs.DisplayClock.today(org.id, interp_version.id).date
+    interp_now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    Enum.each(1..5, fn index ->
+      {lat, lon} =
+        Enum.at(
+          [
+            {"39.9515", "-75.1640"},
+            {"39.9540", "-75.1590"},
+            {"39.9575", "-75.1540"},
+            {"39.9610", "-75.1480"},
+            {"39.9640", "-75.1400"}
+          ],
+          index - 1
+        )
+
+      {:ok, _stop} =
+        Gtfs.create_stop(%{
+          stop_id: "BIS_#{index}",
+          stop_name: "Interp Stop #{index}",
+          location_type: 0,
+          stop_lat: Decimal.new(lat),
+          stop_lon: Decimal.new(lon),
+          organization_id: org.id,
+          gtfs_version_id: interp_version.id
+        })
+    end)
+
+    [
+      %{
+        service_id: "INTERP_DAILY",
+        monday: 1,
+        tuesday: 1,
+        wednesday: 1,
+        thursday: 1,
+        friday: 1,
+        saturday: 1,
+        sunday: 1,
+        start_date: Date.add(interp_today, -30),
+        end_date: Date.add(interp_today, 30)
+      }
+    ]
+    |> Enum.map(
+      &Map.merge(&1, %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: interp_version.id,
+        inserted_at: interp_now,
+        updated_at: interp_now
+      })
+    )
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.Calendar, &1))
+
+    [
+      %{
+        service_id: "INTERP_DAILY",
+        service_description: "Interp every day service",
+        service_schedule_name: nil,
+        service_schedule_type: nil,
+        service_schedule_typicality: 0,
+        rating_start_date: nil,
+        rating_end_date: nil,
+        rating_description: nil
+      }
+    ]
+    |> Enum.map(
+      &Map.merge(&1, %{
+        id: Ecto.UUID.generate(),
+        organization_id: org.id,
+        gtfs_version_id: interp_version.id,
+        inserted_at: interp_now,
+        updated_at: interp_now
+      })
+    )
+    |> then(&Repo.insert_all(GtfsPlanner.Gtfs.CalendarAttribute, &1))
+
+    {:ok, interp_fill_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: interp_version.id,
+        route_id: "BROWSER_INTERP_FILL",
+        route_short_name: "IF",
+        route_long_name: "Browser Interp Fill",
+        route_type: 3
+      })
+
+    interp_fill_bundle =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, interp_version.id, %{
+        route_id: interp_fill_route.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-INTERP-FILL",
+        route_pattern_name: "Interp Fill Pattern",
+        route_pattern_typicality: 1,
+        timing_name: "Weekday",
+        timing_headsign: "Interp outbound",
+        stops: [
+          {"BIS_1", 0, 0, 1},
+          {"BIS_2", 150, 180, 0},
+          {"BIS_3", 300, 300, 1},
+          {"BIS_4", 450, 480, 0},
+          {"BIS_5", 600, 600, 1}
+        ]
+      })
+
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      interp_version.id,
+      interp_fill_route.route_id,
+      interp_fill_bundle,
+      %{
+        service_id: "INTERP_DAILY",
+        trip_id: "BROWSER_INTERP_T1",
+        trip_short_name: "6101",
+        start_time: "08:00:00",
+        trip_headsign: "Interp outbound"
+      }
+    )
+
+    {:ok, interp_import_route} =
+      Gtfs.create_route(%{
+        organization_id: org.id,
+        gtfs_version_id: interp_version.id,
+        route_id: "BROWSER_INTERP_IMPORT",
+        route_short_name: "IX",
+        route_long_name: "Browser Interp Imported",
+        route_type: 3
+      })
+
+    interp_import_bundle =
+      GtfsPlanner.GtfsFixtures.schedule_pattern_fixture(org.id, interp_version.id, %{
+        route_id: interp_import_route.route_id,
+        direction_id: 0,
+        route_pattern_id: "BROWSER-INTERP-IMPORT",
+        route_pattern_name: "Interp Imported Pattern",
+        route_pattern_typicality: 1,
+        timing_name: "Imported",
+        timing_headsign: "Interp imported",
+        stops: [
+          {"BIS_1", 0, 0, 1},
+          {"BIS_2", 150, 180, 0},
+          {"BIS_3", 300, 300, 1},
+          {"BIS_4", 450, 480, 0},
+          {"BIS_5", 600, 600, 1}
+        ]
+      })
+
+    # An imported custom trip: its timepoint stops carry times while the
+    # middle stops are blank, so every surface has gaps to estimate.
+    GtfsPlanner.GtfsFixtures.schedule_trip_fixture(
+      org.id,
+      interp_version.id,
+      interp_import_route.route_id,
+      interp_import_bundle,
+      %{
+        service_id: "INTERP_DAILY",
+        trip_id: "BROWSER_INTERP_C1",
+        trip_short_name: "6102",
+        state: "custom",
+        reason: "imported",
+        timed_pattern_id: nil,
+        trip_headsign: "Interp imported",
+        stop_times: [
+          {"BIS_1", "08:00:00", "08:00:00"},
+          {"BIS_2", nil, nil},
+          {"BIS_3", "08:10:00", "08:10:00"},
+          {"BIS_4", nil, nil},
+          {"BIS_5", "08:20:00", "08:20:00"}
+        ]
+      }
+    )
+
+    IO.puts(
+      "Browser seed: interp version #{interp_version.id} " <>
+        "(BROWSER_INTERP_FILL pattern with a linked trip, " <>
+        "BROWSER_INTERP_IMPORT pattern with a blank-middle custom trip)"
+    )
+
   {:error, changeset} ->
     raise "Browser seed failed: #{inspect(changeset.errors)}"
 end
