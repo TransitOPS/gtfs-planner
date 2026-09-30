@@ -3645,6 +3645,14 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   # R9 (INV-5) for one trip's calendar change: the pattern's trips before, and the
   # same trips with this one on its new service after, under the held pattern lock.
+  # A trip on no pattern, or one keeping its service, has nothing to check.
+  defp check_moved_service_mix!(_organization_id, _version_id, _route, nil, _trip, _service_id),
+    do: :ok
+
+  defp check_moved_service_mix!(_organization_id, _version_id, _route, _pattern, trip, service_id)
+       when trip.service_id == service_id,
+       do: :ok
+
   defp check_moved_service_mix!(organization_id, version_id, route, pattern, trip, service_id) do
     before_trips = pattern_trip_kinds(organization_id, version_id, route, pattern)
 
@@ -3960,16 +3968,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     if effective_service != target_service,
       do: Calendars.lock_service_for_reference!(organization_id, version_id, effective_service)
 
-    if pattern && effective_service != trip.service_id,
-      do:
-        check_moved_service_mix!(
-          organization_id,
-          version_id,
-          route,
-          pattern,
-          trip,
-          effective_service
-        )
+    check_moved_service_mix!(organization_id, version_id, route, pattern, trip, effective_service)
 
     edit_trip!(pattern, trip, attrs, requested_start, audit)
   end
