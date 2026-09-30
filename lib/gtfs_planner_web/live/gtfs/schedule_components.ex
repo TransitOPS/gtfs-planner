@@ -1451,6 +1451,12 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
       "Listed trips can't run on the same days. Convert the frequency service to scheduled trips first."
   end
 
+  # A version whose every calendar was deleted leaves the grid bar's Copy to
+  # calendar and Change calendar verbs with no service day to name.
+  def error_message(:no_target_calendar) do
+    "There is no other service day to copy or move trips to. Add one on Calendars first."
+  end
+
   # The grid cell refusals: each names the fix, never a value the page would have
   # to supply (an error row is rendered from this copy alone).
   def error_message({:out_of_order, _position}) do

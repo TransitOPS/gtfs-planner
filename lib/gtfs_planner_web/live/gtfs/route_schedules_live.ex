@@ -1415,9 +1415,52 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
-  # Copy to calendar, Change calendar, Duplicate and Convert plug in here with
-  # their steps' builders.
+  # Copy to calendar and Change calendar act on the visible selection and open on
+  # the page's first other service day, like the reference's Saturday default.
+  defp open_reviewed_change(socket, "copy", _trip_id), do: open_calendar_change(socket, :copy)
+  defp open_reviewed_change(socket, "move", _trip_id), do: open_calendar_change(socket, :move)
+
+  # Duplicate, Paste and Convert plug in here with their steps' builders.
   defp open_reviewed_change(socket, _kind, _trip_id), do: socket
+
+  # With no other service day there is nowhere to copy or move to, so the bar
+  # says so rather than opening a drawer with no target (a one-calendar version
+  # is reachable on a version whose calendars were all deleted).
+  defp open_calendar_change(socket, kind) do
+    ids = visible_ids(socket, MapSet.to_list(socket.assigns.selected_ids))
+
+    case {ids, change_target_options(socket.assigns)} do
+      {[], _options} ->
+        socket
+
+      {_ids, []} ->
+        warning_outcome(socket, ScheduleComponents.error_message(:no_target_calendar))
+
+      {ids, [%{value: service_id} | _rest]} ->
+        params =
+          if kind == :copy,
+            do: %{service_id: service_id, skip_existing: true},
+            else: %{service_id: service_id}
+
+        review_change(socket, kind, ids, params)
+    end
+  end
+
+  # The service days this page can copy or move to: every service day except the
+  # one being shown, labelled the way the scope bar and the drawers label them.
+  defp change_target_options(assigns) do
+    source = assigns.filters.service_id
+
+    for calendar <- assigns.payload.calendars, calendar.service_id != source do
+      name = calendar_label(assigns.payload.calendars, calendar.service_id)
+
+      %{
+        value: calendar.service_id,
+        name: name,
+        label: "#{name} · #{trip_count_label(calendar.route_trip_count)}"
+      }
+    end
+  end
 
   # Change timing acts on the selection, or on the one trip whose Timing cell
   # opened it when nothing is selected. Only a row this page loaded resolves; a
@@ -1510,6 +1553,25 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   defp change_command(_socket, %{kind: :timing}), do: {:error, :timed_pattern_required}
 
+  # Copy to calendar is R7 at offset 0 to the chosen service day with the skip
+  # choice the drawer posted; Change calendar is R6 to the chosen service day.
+  defp change_command(_socket, %{kind: :copy, ids: ids, params: params}) do
+    case params[:service_id] do
+      service_id when is_binary(service_id) ->
+        {:ok, {:copy, ids, service_id, 0, params[:skip_existing] != false}}
+
+      _no_target ->
+        {:error, :calendar_not_found}
+    end
+  end
+
+  defp change_command(_socket, %{kind: :move, ids: ids, params: params}) do
+    case params[:service_id] do
+      service_id when is_binary(service_id) -> {:ok, {:move_calendar, ids, service_id}}
+      _no_target -> {:error, :calendar_not_found}
+    end
+  end
+
   defp change_command(_socket, _change), do: :incomplete
 
   # The strip's default timing: the pattern's first timing that not every
@@ -1592,6 +1654,33 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
         change.params
     end
   end
+
+  defp merge_change_params(socket, %{kind: :copy} = change, raw) do
+    change.params
+    |> merge_change_target(socket, raw["service_id"])
+    |> merge_change_skip(raw["skip_existing"])
+  end
+
+  defp merge_change_params(socket, %{kind: :move} = change, raw) do
+    merge_change_target(change.params, socket, raw["service_id"])
+  end
+
+  # Only a service day the drawer offered can become the target, so a forged id
+  # never widens the reviewed command (CR-5, FH-30).
+  defp merge_change_target(params, socket, value) when is_binary(value) do
+    if Enum.any?(change_target_options(socket.assigns), &(&1.value == value)),
+      do: Map.put(params, :service_id, value),
+      else: params
+  end
+
+  defp merge_change_target(params, _socket, _value), do: params
+
+  # The skip checkbox posts "true"/"false" (the core input's hidden field); any
+  # other value leaves the current choice alone.
+  defp merge_change_skip(params, value) when value in ["true", "false", true, false],
+    do: Map.put(params, :skip_existing, value in ["true", true])
+
+  defp merge_change_skip(params, _value), do: params
 
   defp merge_shift_direction(params, raw) do
     case raw["direction"] do
@@ -1756,6 +1845,52 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     "#{trip_count_label(count)} #{verb} #{timing_name(socket, timing_id)}."
   end
 
+  # A copy names what it created and what the default skip left alone; a move
+  # names the trips and the blocks they left (the reference's two bodies).
+  defp change_outcome(socket, %{kind: :copy, params: params}, result) do
+    skipped = consequence_count(result.change_set.consequences, :skipped_existing)
+
+    "Copied #{trip_count_label(length(result.created_trip_ids))} to " <>
+      "#{calendar_name(socket, params.service_id)}.#{skipped_clause(skipped)}"
+  end
+
+  defp change_outcome(socket, %{kind: :move, params: params}, result) do
+    blocks = cleared_blocks(result.change_set.consequences)
+
+    "Moved #{trip_count_label(length(result.changed_trip_ids))} to " <>
+      "#{calendar_name(socket, params.service_id)}.#{cleared_block_clause(blocks)}"
+  end
+
+  defp skipped_clause(0), do: " They start without a block."
+
+  defp skipped_clause(1),
+    do: " 1 trip was skipped because it already leaves at the same time."
+
+  defp skipped_clause(count),
+    do: " #{count} trips were skipped because they already leave at the same time."
+
+  defp cleared_block_clause([]), do: " Blocks are kept."
+
+  defp cleared_block_clause([block]),
+    do: " 1 trip left block #{block}."
+
+  defp cleared_block_clause(blocks),
+    do: " #{length(blocks)} trips left block #{Enum.join(blocks, ", ")}."
+
+  defp cleared_blocks(consequences) do
+    consequences
+    |> Enum.flat_map(fn
+      {:note, {:cleared_block, _id, block}} -> [block]
+      _consequence -> []
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp consequence_count(consequences, tag) do
+    Enum.count(consequences, &match?({:note, {^tag, _id, _block}}, &1))
+  end
+
   defp block_kept?(socket, trip_id) do
     case find_row(socket, trip_id) do
       nil -> false
@@ -1825,6 +1960,51 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp change_strip_view(_assigns), do: nil
+
+  # The Change review drawer's loaded view data: the two service-day names, the
+  # target options, the selected rows' trip numbers, departures and blocks, and
+  # the control that returns focus when the drawer closes. The review itself
+  # stays the component's own input, so its counts, inserts and notes have one
+  # consumer.
+  defp change_drawer_view(%{change: %{kind: kind} = change} = assigns)
+       when kind in [:copy, :move] do
+    options = change_target_options(assigns)
+    target = Enum.find(options, &(&1.value == change.params[:service_id]))
+
+    %{
+      from: calendar_label(assigns.payload.calendars, assigns.filters.service_id),
+      to: target && target.name,
+      target_options: Enum.map(options, &{&1.label, &1.value}),
+      rows: change_drawer_rows(assigns, change),
+      return_focus_id: if(kind == :copy, do: "bulk-copy", else: "bulk-move")
+    }
+  end
+
+  defp change_drawer_view(_assigns), do: nil
+
+  # The selected trips in departure order, as the reviewed table shows them: the
+  # natural trip ID, the departure (a frequency trip shows its window, the way
+  # the drawer states it) and the block the trip carries now.
+  defp change_drawer_rows(assigns, %{ids: ids}) do
+    ids
+    |> Enum.flat_map(fn trip_id ->
+      case strip_row(assigns, trip_id) do
+        nil ->
+          []
+
+        row ->
+          [
+            %{
+              trip_id: row.id,
+              label: row.trip_id,
+              clock: row.frequency_label || row.start_cell.text,
+              block_id: row.block_id
+            }
+          ]
+      end
+    end)
+    |> Enum.sort_by(&{&1.clock, &1.label})
+  end
 
   defp change_who(assigns, %{ids: [trip_id]}) do
     case strip_row(assigns, trip_id) do
@@ -3201,6 +3381,14 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                 calendars={@payload.calendars}
                 blocks_path={"/gtfs/#{@current_gtfs_version.id}/blocks"}
                 patterns_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"}
+                version_name={@current_gtfs_version.name}
+              />
+
+              <% change_drawer = change_drawer_view(assigns) %>
+              <ScheduleChangeComponents.change_review_drawer
+                :if={change_drawer}
+                change={@change}
+                drawer={change_drawer}
                 version_name={@current_gtfs_version.name}
               />
 
