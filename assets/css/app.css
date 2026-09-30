@@ -4323,3 +4323,230 @@ body:has(#home-page) {
   flex-wrap: wrap;
   min-width: 0;
 }
+
+/* ── Run marks, the chart key and the status text ──
+   Everything the track draws between the pieces: the report before them, the
+   travel to reach one, the paid and unpaid breaks between them, and the two
+   boundary marks. A mark is absolutely positioned in seconds-to-percentage
+   terms by the component, so the mark and the piece it belongs to cannot
+   disagree about where a moment in the day is. */
+
+#runs-page .runs-mark {
+  position: absolute;
+  pointer-events: auto;
+  z-index: 1;
+}
+
+/* Report and sign-off: a light box with a navy edge. The lightest thing on the
+   track, because it is the least the reader is looking for. */
+#runs-page .runs-mark-report {
+  top: 12px;
+  height: 20px;
+  min-width: 3px;
+  background: var(--color-navy-100);
+  border: 1px solid var(--color-navy-300);
+  border-radius: 3px;
+}
+
+/* Travel: a dotted line rather than a box, so a long drive and a short one read
+   the same and neither competes with a break. */
+#runs-page .runs-mark-travel {
+  top: 21px;
+  height: 0;
+  border-top: 3px dotted var(--color-navy-300);
+  container-type: inline-size;
+}
+
+/* The estimate only appears once the leg is wide enough to hold it. Below 30px
+   a label is a smudge, and a mark the reader cannot read is worse than a mark
+   with no label — the title still says "estimated" on hover. */
+#runs-page .runs-mark-label {
+  display: none;
+  position: absolute;
+  left: 50%;
+  top: -14px;
+  transform: translateX(-50%);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--color-base-content);
+  background: #fff;
+  padding: 0 2px;
+  white-space: nowrap;
+}
+
+@container (min-width: 30px) {
+  #runs-page .runs-mark-travel .runs-mark-label {
+    display: block;
+  }
+}
+
+/* A paid break is hatched, because a break the operator is paid for is the one
+   mark whose mere presence changes what the day costs. The hatching runs on the
+   palette's own cyan and reads as a texture, not as a colour block. */
+#runs-page .runs-mark-break-paid {
+  top: 14px;
+  height: 16px;
+  min-width: 3px;
+  border: 1px solid var(--color-cyan-300);
+  border-radius: 3px;
+  background: repeating-linear-gradient(
+    135deg,
+    transparent 0 3px,
+    var(--color-cyan-300) 3px 5px
+  );
+}
+
+/* An unpaid break is a thin line on the baseline: a split the operator eats. */
+#runs-page .runs-mark-break-unpaid {
+  top: 21px;
+  height: 0;
+  border-top: 1px solid var(--color-navy-300);
+}
+
+/* A break that cannot be taken at all. It sits ABOVE the piece it follows,
+   because the piece is where the operator already is and the shortfall is the
+   story; a mark hidden under a bar would be the one finding a reader cannot
+   see. */
+#runs-page .runs-mark-cant-reach {
+  top: 6px;
+  height: 8px;
+  min-width: 3px;
+  z-index: 3;
+  border-radius: 2px;
+  outline: 2px solid var(--color-error-line);
+  outline-offset: -2px;
+  background: repeating-linear-gradient(
+    135deg,
+    var(--color-error-bg) 0 3px,
+    color-mix(in srgb, var(--color-error-line) 55%, var(--color-error-bg)) 3px 5px
+  );
+}
+
+/* The two boundary marks. `⇄` is a change the plan allows and needs no ink of
+   its own — it is drawn in the piece's own white so it reads at any piece
+   length. `!` is a change it does not allow, and takes the error pairing because
+   it is a finding drawn on the track rather than only in the Status cell. */
+#runs-page .runs-boundary {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 18px;
+  border-radius: 3px;
+  font-weight: 800;
+  font-size: 12px;
+  line-height: 1;
+}
+
+#runs-page .runs-boundary-relief {
+  color: #fff;
+}
+
+#runs-page .runs-boundary-bad {
+  background: var(--color-error-bg);
+  color: var(--color-error-fg);
+  padding: 0 3px;
+}
+
+#runs-page .runs-boundary-out {
+  margin-left: auto;
+}
+
+/* A piece carrying a finding wears it, so a problem is visible on the bar
+   itself and not only in the far-right Status cell. The outline is the piece's
+   own edge: the bar's shape is a fact, and rounding it into a badge would make
+   the track harder to read, not easier. */
+#runs-page .runs-piece-error {
+  outline: 2px solid var(--color-error-line);
+  outline-offset: 0;
+}
+
+#runs-page .runs-piece-warning {
+  outline: 2px solid var(--color-warning-line);
+  outline-offset: 0;
+}
+
+/* The chart key. Each swatch paints the mark it names at chart size, so the key
+   cannot drift from the surface it explains; the words carry the meaning for a
+   reader who cannot see the hatching. */
+#runs-page .runs-key {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+}
+
+#runs-page .runs-key-piece {
+  width: auto;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--color-navy-800);
+  box-shadow: inset 0 -4px 0 var(--color-cyan-300);
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1;
+}
+
+#runs-page .runs-key-relief,
+#runs-page .runs-key-bad,
+#runs-page .runs-key-reach {
+  font-weight: 800;
+  font-size: 12px;
+  line-height: 1;
+}
+
+#runs-page .runs-key-relief {
+  color: var(--color-navy-800);
+}
+
+#runs-page .runs-key-bad,
+#runs-page .runs-key-reach {
+  background: var(--color-error-bg);
+  color: var(--color-error-fg);
+  border-radius: 3px;
+  height: 20px;
+}
+
+#runs-page .runs-key-text {
+  position: static;
+  transform: none;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font-weight: inherit;
+}
+
+/* Key swatches are not on a track, so the marks are laid out inside a 28px box
+   rather than against the day. */
+#runs-page .runs-key-report,
+#runs-page .runs-key-travel,
+#runs-page .runs-key-paid,
+#runs-page .runs-key-unpaid {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: block;
+}
+
+#runs-page .runs-key-report {
+  top: 4px;
+  height: 20px;
+}
+
+#runs-page .runs-key-paid {
+  top: 6px;
+  height: 16px;
+}
+
+#runs-page .runs-key-unpaid,
+#runs-page .runs-key-travel {
+  top: 13px;
+}

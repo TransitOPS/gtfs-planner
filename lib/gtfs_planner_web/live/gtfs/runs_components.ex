@@ -801,8 +801,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   attr :track_style, :string, default: nil
 
   def run_row(assigns) do
+    assigns =
+      assign(assigns, :marks, marks(assigns.run.work.segments, assigns.axis))
+
     ~H"""
-    <tr id={@dom} data-run={@run.run_id} data-type={@run.work.type} class="runs-row">
+    <tr
+      id={@dom}
+      data-run={@run.run_id}
+      data-type={@run.work.type}
+      class="runs-row"
+    >
       <td class={["runs-meta", "runs-meta-id"]}>
         <button
           type="button"
@@ -830,12 +838,11 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
         {hm(@run.work.paid_secs)}
       </td>
       <td class={["runs-meta", "runs-meta-status"]}>
-        <span data-role="run-status" class="inline-flex items-center gap-1">
-          {status_count(@run.findings)}
-        </span>
+        <.status_cell findings={@run.findings} />
       </td>
       <td class="runs-track" style={@track_style}>
         <span class="runs-lane">
+          <.segment_mark :for={mark <- @marks} mark={mark} />
           <.piece_bar
             :for={piece <- @run.pieces}
             run={@run}
@@ -843,6 +850,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
             index={index_of(@run.pieces, piece)}
             axis={@axis}
             route={Map.get(@routes, piece.route_id) || %{}}
+            severity={piece_severity(piece, @run.findings, index_of(@run.pieces, piece))}
           />
         </span>
       </td>
@@ -870,6 +878,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   attr :index, :integer, required: true
   attr :axis, :map, default: nil
   attr :route, :map, default: nil
+  attr :severity, :atom, default: nil
 
   def piece_bar(assigns) do
     assigns =
@@ -888,10 +897,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       phx-click="open_run"
       phx-value-run={@run.run_id}
       style={@style}
-      class="runs-piece"
+      class={["runs-piece", @severity && "runs-piece-#{@severity}"]}
       title={piece_title(@run, @piece, @index)}
     >
+      <.boundary_mark :if={@piece.start_boundary} boundary={@piece.start_boundary} side={:in} />
       <span class="runs-piece-label">B {@piece.block_id}</span>
+      <.boundary_mark :if={@piece.end_boundary} boundary={@piece.end_boundary} side={:out} />
     </button>
     """
   end
@@ -958,16 +969,332 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   defp type_label(:straight), do: "Straight"
   defp type_label(:split), do: "Split"
 
-  # A run with no findings says "No problems" in words; one with findings says how
-  # many, because which one it is is step 24's status text. Saying nothing at
-  # all in a Status cell is the one thing a table row must never do.
-  defp status_count([]), do: "No problems"
+  @doc """
+  Renders the `⇄` or `!` at a piece edge where the operator changes.
 
-  defp status_count(findings) do
-    count = length(findings)
-    "#{count} #{if count == 1, do: "problem", else: "problems"}"
+  `⇄` means the change is where a plan says it may happen: a boundary the
+  version marked as a relief point. `!` means it is not — the operator changed
+  away from a relief point, which is rule 6's error and the reason the change is
+  a problem at all. Both are on the piece that carries the edge, so the mark
+  moves with the bar when the track is zoomed.
+  """
+  attr :boundary, :map, required: true
+  attr :side, :atom, required: true, values: [:in, :out]
+
+  def boundary_mark(assigns) do
+    ~H"""
+    <span
+      data-role="boundary"
+      data-at-relief={to_string(assigns.boundary.at_relief?)}
+      data-side={@side}
+      class={[
+        "runs-boundary",
+        @side == :out && "runs-boundary-out",
+        if(assigns.boundary.at_relief?, do: "runs-boundary-relief", else: "runs-boundary-bad")
+      ]}
+      aria-hidden="true"
+    >
+      {if assigns.boundary.at_relief?, do: "⇄", else: "!"}
+    </span>
+    """
   end
 
+  @doc """
+  Renders one `WorkTime` segment as a mark on the track.
+
+  The DOM `data-kind` is NOT the domain's `kind`, and deliberately: the domain
+  has one `:break` where the chart has three, because a break the operator
+  cannot take, a break they take unpaid and a break they are paid for are three
+  different things to look at and one thing to compute. A negative span is
+  `break-cant-reach` — the later piece starts before the earlier one ends, and
+  the mark takes the earlier piece's real width rather than being hidden.
+
+  Every mark carries a `title` in words, so nothing on the track is hover-only.
+  The travel mark carries an `est.` label when its source is `:estimated`, and
+  a `?` when the version could not answer the leg at all — an unmeasured
+  stretch drawn as if it were known would be worse than a gap.
+  """
+  attr :mark, :map, required: true
+
+  def segment_mark(assigns) do
+    ~H"""
+    <span
+      data-role="mark"
+      data-kind={@mark.kind}
+      data-seg={@mark.segment}
+      data-source={to_string(@mark.source)}
+      style={@mark.style}
+      class={["runs-mark", "runs-mark-#{@mark.kind}"]}
+      title={@mark.title}
+    >
+      <span :if={@mark.label} class="runs-mark-label">{@mark.label}</span>
+    </span>
+    """
+  end
+
+  @doc """
+  Renders the chart key: every mark the track can draw, in words, in the same
+  order the track draws them.
+
+  Each key paints the mark it names rather than describing it, so the key cannot
+  drift from the surface it explains — the same rule
+  `BlocksComponents.timeline_legend/2` follows, and the reason the paid break
+  reads as hatched here and as hatched on a row. A reader who cannot see the
+  hatching can still read "Paid break", and vice versa.
+  """
+  def chart_key(assigns) do
+    ~H"""
+    <div
+      id="chart-key"
+      aria-label="What each mark on the chart means"
+      class="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-subtle px-5 py-2 text-[13px] text-base-content"
+    >
+      <span :for={entry <- chart_key_entries()} class="inline-flex items-center gap-1.5">
+        <.key_swatch entry={entry} />
+        <span data-role="chart-key-label">{entry.label}</span>
+      </span>
+    </div>
+    """
+  end
+
+  attr :entry, :map, required: true
+
+  defp key_swatch(assigns) do
+    ~H"""
+    <span
+      data-role="chart-key-swatch"
+      data-kind={@entry.key}
+      class={["runs-key", "runs-key-#{@entry.key}"]}
+      aria-hidden="true"
+    >
+      <span :if={@entry.text} class="runs-key-text">{@entry.text}</span>
+    </span>
+    """
+  end
+
+  # The eight marks, in the reference's order: the piece first, because the
+  # piece is what a row is about and the rest is what happened around it.
+  defp chart_key_entries do
+    [
+      %{
+        key: "piece",
+        label: "Piece of vehicle work: block number, route colour underneath",
+        text: "B 301"
+      },
+      %{key: "report", label: "Report or sign-off", text: nil},
+      %{key: "travel", label: "Travel, estimated", text: nil},
+      %{key: "paid", label: "Paid break", text: nil},
+      %{key: "unpaid", label: "Unpaid break (split)", text: nil},
+      %{key: "relief", label: "Change at a relief point", text: "⇄"},
+      %{key: "bad", label: "Change away from a relief point", text: "!"},
+      %{key: "reach", label: "Can\u2019t reach the next piece", text: "!"}
+    ]
+  end
+
+  @doc """
+  Renders a run's status: an icon, the words, and how many more there are.
+
+  **Never colour alone**, and never a bare count. The words carry the meaning
+  and the icon repeats it, so a reader who cannot separate amber from white
+  still reads "Piece too long" — which is the one thing a Status cell is for.
+  `+N` says there are more without listing them, because the cell is 176px and a
+  list would either wrap or truncate the one finding that matters.
+
+  The worst finding leads, and `Runs.Checks` returns errors before warnings
+  before notices, so the lead is the one that stops a plan being published.
+  """
+  attr :findings, :list, required: true
+
+  def status_cell(assigns) do
+    assigns = assign(assigns, :status, status_of(assigns.findings))
+
+    ~H"""
+    <span
+      data-role="run-status"
+      data-status={@status.state}
+      class={["inline-flex min-w-0 max-w-full items-center gap-1.5", "text-[13px]", @status.class]}
+    >
+      <.icon name={@status.icon} class="size-4 shrink-0" />
+      <span data-role="run-status-label" class="truncate">{@status.label}</span>
+      <span
+        :if={@status.more > 0}
+        data-role="run-status-more"
+        class="shrink-0 font-normal text-base-content/70"
+      >
+        +{@status.more}
+      </span>
+    </span>
+    """
+  end
+
+  # The five codes `Runs.Checks` raises about a run, in its own words. A code
+  # with no entry here is a NEW code, and it falls through to its own name rather
+  # than to a wrong label: a finding nobody thought to word is still a finding,
+  # and showing "too_many_pieces" is honest where "Too many pieces" would be a
+  # guess.
+  defp status_of([]) do
+    %{
+      state: "ok",
+      icon: "hero-check-mini",
+      label: "No problems",
+      more: 0,
+      class: "text-success"
+    }
+  end
+
+  defp status_of(findings) do
+    worst = List.first(findings)
+    label = finding_label(worst)
+    more = max(length(findings) - 1, 0)
+
+    %{
+      state: Atom.to_string(worst.code),
+      icon: severity_icon(worst.severity),
+      label: label,
+      more: more,
+      class: severity_class(worst.severity)
+    }
+  end
+
+  defp finding_label(%{code: :not_at_relief}), do: "Not at a relief point"
+  defp finding_label(%{code: :too_many_pieces}), do: "Too many pieces"
+  defp finding_label(%{code: :cannot_reach_piece}), do: "Can\u2019t reach piece"
+  defp finding_label(%{code: :piece_too_long}), do: "Piece too long"
+  defp finding_label(%{code: :spread_too_long}), do: "Spread too long"
+  defp finding_label(%{code: :travel_unknown}), do: "Travel not known"
+  defp finding_label(%{code: :uncovered_work}), do: "Not in a run"
+  defp finding_label(%{code: :orphan_assignments}), do: "Assignment no longer in this day type"
+  defp finding_label(%{code: code}), do: Atom.to_string(code)
+
+  # The house icons `BlocksComponents` already uses for the same three states.
+  defp severity_icon(:error), do: "hero-x-circle-mini"
+  defp severity_icon(:warning), do: "hero-exclamation-triangle-mini"
+  defp severity_icon(_severity), do: "hero-information-circle-mini"
+
+  defp severity_class(:error), do: "font-semibold text-error"
+  defp severity_class(:warning), do: "font-semibold text-warning"
+  defp severity_class(_severity), do: "font-semibold text-base-content/70"
+
+  # The worst severity among the findings that name THIS piece, or nil.
+  #
+  # Each code is mapped explicitly, because `detail.piece` means three different
+  # things in `Runs.Checks`: an integer index for `:piece_too_long`, a RUN ID
+  # string for `:cannot_reach_piece`, and absent for the rest. Reading one of
+  # them as another would outline the wrong bar, so a code not listed here
+  # outlines nothing and shows in the Status cell instead — the conservative
+  # direction, since a missing outline hides a mark rather than inventing one.
+  defp piece_severity(piece, findings, index) do
+    findings
+    |> Enum.filter(&names_piece?(&1, piece, index))
+    |> Enum.map(& &1.severity)
+    |> worst_severity()
+  end
+
+  defp names_piece?(%{code: :piece_too_long, detail: %{piece: piece_index}}, _piece, index),
+    do: piece_index == index
+
+  defp names_piece?(
+         %{code: :cannot_reach_piece, detail: %{after_piece: piece_index}},
+         _piece,
+         index
+       ),
+       do: piece_index == index
+
+  defp names_piece?(%{code: :not_at_relief, block_id: block_id}, piece, _index),
+    do: block_id == piece.block_id
+
+  defp names_piece?(_finding, _piece, _index), do: false
+
+  defp worst_severity([]), do: nil
+
+  defp worst_severity(severities) do
+    # Errors beat warnings beat notices. The order is `Runs.Checks`'s own
+    # return order, so the outline a piece wears is the one a reader would
+    # have found first in the Status cell.
+    Enum.find(severities, &(&1 == :error)) || Enum.find(severities, &(&1 == :warning)) || :notice
+  end
+
+  # ── The segments, positioned ────────────────────────────────────────────────
+
+  # Every segment that is not the piece itself, positioned on the day's axis.
+  # The piece segments are skipped: the piece bar already draws that span, and
+  # drawing it twice would put a mark under a bar the reader cannot see through.
+  defp marks(segments, axis) do
+    segments
+    |> Enum.reject(&(&1.kind == :piece))
+    |> Enum.map(&mark(&1, axis))
+  end
+
+  defp mark(segment, axis) do
+    kind = mark_kind(segment)
+    {start, span} = axis_geometry(axis)
+
+    # A negative break is drawn over the piece it follows, at the width of the
+    # stretch it cannot cover. Clamping it to zero width would render a run that
+    # cannot reach its next piece as a run with no mark there at all.
+    from = min(segment.start_secs, segment.end_secs)
+    length_secs = abs(segment.end_secs - segment.start_secs)
+
+    %{
+      kind: kind,
+      # `data-kind` is the CHART's name for the mark and `data-seg` is the
+      # domain's. They differ for a break, which the chart splits three ways,
+      # and they agree for a sign-off, which the chart draws as a report mark.
+      # Carrying both means a test can ask "is this a report or a sign-off?"
+      # without reading the title, and the words are still the last word.
+      segment: Atom.to_string(segment.kind),
+      source: segment.source,
+      style:
+        "left: #{percent(from - start, span)}%; " <>
+          "width: #{percent(length_secs, span)}%",
+      label: mark_label(segment, kind),
+      title: mark_title(segment, kind)
+    }
+  end
+
+  # One `:break` in the domain, three in the chart: a break the operator is paid
+  # for, one they are not, and one they cannot take at all.
+  defp mark_kind(%{kind: :break, start_secs: start, end_secs: finish}) when finish < start,
+    do: "cant-reach"
+
+  defp mark_kind(%{kind: :break, paid?: true}), do: "break-paid"
+  defp mark_kind(%{kind: :break}), do: "break-unpaid"
+  defp mark_kind(%{kind: :travel}), do: "travel"
+  defp mark_kind(%{kind: :report}), do: "report"
+  defp mark_kind(%{kind: :sign_off}), do: "report"
+  defp mark_kind(%{kind: _other}), do: "other"
+
+  # `est.` on a measured-by-estimate leg and `?` on one the version could not
+  # answer. A travel leg drawn as if it were known would be worse than a gap,
+  # because the gap is visible and the lie is not.
+  defp mark_label(%{source: :estimated}, "travel"), do: "est."
+  defp mark_label(%{source: :unknown}, "travel"), do: "?"
+  defp mark_label(_segment, _kind), do: nil
+
+  defp mark_title(%{kind: :report, start_secs: from, end_secs: to}, _kind),
+    do: "Report, #{duration(to - from)}, ending #{BlocksComponents.clock(to)}"
+
+  defp mark_title(%{kind: :sign_off, start_secs: from, end_secs: to}, _kind),
+    do: "Sign-off, #{duration(to - from)}, from #{BlocksComponents.clock(from)}"
+
+  defp mark_title(%{kind: :travel, start_secs: from, end_secs: to} = segment, _kind) do
+    "Travel, #{duration(to - from)}, estimated" <> unknown_note(segment.source)
+  end
+
+  defp mark_title(%{kind: :break, paid?: true} = segment, "break-paid"),
+    do: "Paid break, #{duration(segment.end_secs - segment.start_secs)}"
+
+  defp mark_title(%{kind: :break, paid?: false} = segment, "break-unpaid"),
+    do: "Unpaid break, #{duration(segment.end_secs - segment.start_secs)}"
+
+  defp mark_title(%{kind: :break} = segment, "cant-reach"),
+    do:
+      "Can't reach the next piece in time, #{duration(abs(segment.end_secs - segment.start_secs))} short"
+
+  defp mark_title(_segment, _kind), do: ""
+
+  defp unknown_note(:unknown), do: " · the version could not answer this leg"
+  defp unknown_note(_source), do: ""
   defp axis_ticks(nil), do: []
 
   defp axis_ticks(axis) do
