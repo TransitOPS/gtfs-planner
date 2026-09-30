@@ -48,6 +48,7 @@ import PatternCompareMap from "./pattern_compare_map"
 import FillPreviewMapHook from "./fill_preview_map"
 import PathwayEvolutionsFloorplan from "./pathway_evolutions_floorplan"
 import TransferMapHook from "./transfer_map_hook"
+import ConnectionMapHook from "./connection_map_hook"
 import "../vendor/leaflet"
 import LiveSelect from "../vendor/live_select"
 
@@ -61,7 +62,7 @@ const liveSocket = new LiveSocket("/live", Socket, {
     _csrf_token: csrfToken,
     new_route_attempt: el?.querySelector("#new-route-attempt")?.value,
   }),
-  hooks: {...colocatedHooks, CalendarDateChange, CalendarCombination, CalendarEditor, DraftGuard: CalendarEditor, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, DiagramCandidateProbe, MapAlignment: MapAlignmentHook, FareZoneMap: FareZoneMapHook, FlexAreaMap: FlexAreaMapHook, PatternAlignment, OverlayDialog: OverlayDialogHook, FormErrorFocus: FormErrorFocusHook, TablistHook, TimetableGrid, UserMenu: UserMenuHook, JournalPanelHook, LiveSelect: LiveSelect.LiveSelect, RoutePatternEditor: RoutePatternEditorHook, RouteDetailsEditor: RouteDetailsEditorHook, RouteDetailsMap: RouteDetailsMapHook, FillPreviewMap: FillPreviewMapHook, TransferMap: TransferMapHook, PathwayEvolutionsFloorplan, PatternCompareWorkspace, PatternCompareMap},
+  hooks: {...colocatedHooks, CalendarDateChange, CalendarCombination, CalendarEditor, DraftGuard: CalendarEditor, GtfsVersionHook, DiagramCanvas: DiagramCanvasHook, DiagramCandidateProbe, MapAlignment: MapAlignmentHook, FareZoneMap: FareZoneMapHook, FlexAreaMap: FlexAreaMapHook, PatternAlignment, OverlayDialog: OverlayDialogHook, FormErrorFocus: FormErrorFocusHook, TablistHook, TimetableGrid, UserMenu: UserMenuHook, JournalPanelHook, LiveSelect: LiveSelect.LiveSelect, RoutePatternEditor: RoutePatternEditorHook, RouteDetailsEditor: RouteDetailsEditorHook, RouteDetailsMap: RouteDetailsMapHook, FillPreviewMap: FillPreviewMapHook, TransferMap: TransferMapHook, ConnectionMap: ConnectionMapHook, PathwayEvolutionsFloorplan, PatternCompareWorkspace, PatternCompareMap},
 })
 
 const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")
