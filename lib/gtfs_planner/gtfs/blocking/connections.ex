@@ -59,13 +59,21 @@ defmodule GtfsPlanner.Gtfs.Blocking.Connections do
   @typedoc """
   How many of a group's connections carry each setting, and how many need review.
   A connection needing review is counted under its setting and under `:review`.
+
+  `quiet_stay` and `quiet_reboard` count only the connections `filter/2` keeps
+  under that setting — a stale or conflicting connection is never kept under a
+  decided setting, so a surface that offers the filter must quote these two
+  rather than `stay` and `reboard`, or the row would promise connections the
+  filter then drops.
   """
   @type counts :: %{
           none: non_neg_integer(),
           stay: non_neg_integer(),
           reboard: non_neg_integer(),
           conflict: non_neg_integer(),
-          review: non_neg_integer()
+          review: non_neg_integer(),
+          quiet_stay: non_neg_integer(),
+          quiet_reboard: non_neg_integer()
         }
 
   @type connection :: %{
@@ -348,10 +356,19 @@ defmodule GtfsPlanner.Gtfs.Blocking.Connections do
       acc
       |> Map.update!(connection.setting, &(&1 + 1))
       |> Map.update!(:review, &(&1 + if(connection.review?, do: 1, else: 0)))
+      |> Map.update!(quiet_count(connection), &(&1 + 1))
     end)
   end
 
-  defp empty_counts, do: %{none: 0, stay: 0, reboard: 0, conflict: 0, review: 0}
+  # A connection needing review is kept by no decided setting, so only a quiet
+  # one is counted under its setting's quiet count.
+  defp quiet_count(%{review?: true}), do: :none
+  defp quiet_count(%{setting: :stay}), do: :quiet_stay
+  defp quiet_count(%{setting: :reboard}), do: :quiet_reboard
+  defp quiet_count(_connection), do: :none
+
+  defp empty_counts,
+    do: %{none: 0, stay: 0, reboard: 0, conflict: 0, review: 0, quiet_stay: 0, quiet_reboard: 0}
 
   defp filter_group(group, setting, route, q) do
     case Enum.filter(group.connections, &matches?(&1, group.place.name, setting, route, q)) do
@@ -396,6 +413,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.Connections do
       "block " <> connection.block_id
     ]
     |> Enum.reject(&is_nil/1)
+    # The term is downcased by `search_term/1`, so the haystack is downcased
+    # here: stop names, route ids and trip ids are feed text carrying capitals,
+    # and a reader typing "depot" is asking about "Depot Row".
+    |> Enum.map(&String.downcase/1)
   end
 
   defp place_row(id, groups) do

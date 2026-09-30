@@ -5246,6 +5246,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     default: %{},
     doc: "the day's connections by id, each `%{setting, review?}`"
 
+  attr :connection_setting_options, :any,
+    default: [],
+    doc: "the Show filter's four values in control order, as `{label, value}`"
+
   attr :connections, :any,
     default: nil,
     doc:
@@ -5370,14 +5374,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
         <%= cond do %>
           <% @state.view == :connections -> %>
             <%!-- The Connections view is the blocks work queue read as connections:
-            the same day, the same derived groups and no trip rows of its own. The
-            group list, its filters and its pager are step 21's; this step owns the
-            URL state, the derived assigns and the summary they add up to. --%>
-            <div id="connections-panel" class="px-4 py-3">
-              <p id="connections-summary" class="text-[13px] text-muted">
-                {connections_summary(@connections)}
-              </p>
-            </div>
+            the same day, the same derived groups and no trip rows of its own. --%>
+            <.connections_panel
+              connections={@connections}
+              routes={@routes}
+              state={@state}
+              version_id={@state.version_id}
+              setting_options={@connection_setting_options}
+            />
           <% @state.panel == :pool -> %>
             <p
               :if={@counts.blocks == 0}
@@ -5697,7 +5701,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       not (filtered? and visible_count == 0)
   end
 
-  # The Connections view's own count line, read from the derived assigns rather
+  # The Connections view's count line, read from the derived assigns rather
   # than from a query: how many of the day's connections the filters kept, how
   # many the day holds, and how many places they are decided at. The two plural
   # nouns follow their own counts, so a day of one connection reads as one.
@@ -5706,6 +5710,405 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   defp connections_summary(connections) do
     "#{connections.count} of #{count_label(connections.total, "connection", "connections")} " <>
       "at #{count_label(length(connections.places), "place", "places")}"
+  end
+
+  # The page's groups as one section per place, in the order R12 already sorted
+  # them: a place's first appearance on the page is its busiest group, so the
+  # sections read the way the groups would if the page were not paged, and a
+  # place split across two pages appears on both rather than being merged from
+  # groups the reader is not looking at.
+  defp connection_sections(connections) do
+    connections.groups
+    |> Enum.group_by(& &1.place.id)
+    |> Enum.map(fn {place_id, groups} ->
+      %{
+        id: place_id,
+        name: place_name(groups),
+        groups: groups,
+        count: Enum.sum(Enum.map(groups, &length(&1.connections)))
+      }
+    end)
+  end
+
+  # The place name is the group's own, so a section's heading and a row's stop
+  # name come from the same derivation and cannot disagree.
+  defp place_name([%{place: %{name: name}} | _rest]), do: name
+
+  # A GTFS stop id is feed text, so a section's DOM id is that id encoded without
+  # padding rather than the id itself: a stop id holding a quote or a space can
+  # then never produce a malformed id.
+  defp place_token(place_id), do: Base.url_encode64(place_id, padding: false)
+
+  # The two states a day can be in that show no groups, said as different facts.
+  # A day with no connections at all has nothing to filter, so it names the step
+  # that creates them; a day whose connections the filters all dropped says so
+  # and names the filters.
+  defp no_match_text(connections) do
+    case connections.chips do
+      [] -> "No connection on this service day matches these filters."
+      chips -> "No connection matches #{Enum.map_join(chips, " and ", & &1.label)}."
+    end
+  end
+
+  # A group's own headline: the turnback Google can offer within one route says
+  # so, and every other pair says which route it continues as.
+  defp connection_continuation(%{turnback?: true}, _routes), do: "Turns back"
+
+  defp connection_continuation(group, routes),
+    do: "continues as #{route_label(routes, group.to_route_id)}"
+
+  defp connection_join_icon(%{turnback?: true}), do: "hero-arrow-uturn-right"
+  defp connection_join_icon(_group), do: "hero-arrow-right"
+
+  # The arrival stop's own name rather than the place's: the place is the parent
+  # station when the stop has one, and the two are one decision but not the same
+  # words.
+  defp connection_stop_name(group) do
+    case Map.get(group.arrival_stop || %{}, :name) do
+      name when name in [nil, ""] -> group.place.name
+      name -> name
+    end
+  end
+
+  # The handoff the group's first connection makes, in words. A group can hold
+  # more than one kind and the row has one line, so it names the kind its first
+  # arrival makes; the group panel lists the rest.
+  defp connection_handoff_label([:same_stop | _rest]), do: "Same stop"
+  defp connection_handoff_label([:same_station | _rest]), do: "Same station"
+  defp connection_handoff_label([:nearby | _rest]), do: "Nearby stop"
+  defp connection_handoff_label([:moves | _rest]), do: "Vehicle moves"
+  defp connection_handoff_label(_handoffs), do: "Handoff"
+
+  defp connection_wait_text(%{wait_min: min, wait_max: max}) when min == max, do: "#{min}"
+  defp connection_wait_text(%{wait_min: min, wait_max: max}), do: "#{min}–#{max}"
+
+  # The setting marks the row shows: the two decided settings the Show filter can
+  # keep and the review count, in the order a reader decides them, and only when
+  # the group holds one. The stay and reboard marks are the counts
+  # `Blocking.Connections` reports under the same rule the filter applies, so a
+  # mark never promises a connection the filter would then drop.
+  defp connection_marks(counts) do
+    [
+      %{kind: :stay, count: counts.quiet_stay, label: "stay on board", icon: "hero-link-mini"},
+      %{
+        kind: :reboard,
+        count: counts.quiet_reboard,
+        label: "must re-board",
+        icon: "hero-arrow-right-start-on-rectangle-mini"
+      },
+      %{
+        kind: :review,
+        count: counts.review,
+        label: "need review",
+        icon: "hero-exclamation-triangle-mini"
+      }
+    ]
+    |> Enum.reject(&(&1.count == 0))
+  end
+
+  # The Timeline, on the service day the reader is on. The link exists because a
+  # day with no connections has nothing to filter and nothing to page, and
+  # assigning trips to blocks is the one step that creates the first connection.
+  defp connections_timeline_path(version_id, state) do
+    case state.day do
+      nil -> "/gtfs/#{version_id}/blocks"
+      day -> "/gtfs/#{version_id}/blocks?" <> URI.encode_query(day: day)
+    end
+  end
+
+  # Renders the Connections view's list side: the Find/Show/Route toolbar, the
+  # summary strip with its removable chips, one section per place, the group rows
+  # that open a group, the two empty states and the group pager.
+  #
+  # Everything the panel shows comes from the `:connections` assign step 20's
+  # `connections_view/1` derived, over the same server-only `:connections_all`
+  # the timeline's chips and the connection drawer read. The panel re-derives
+  # nothing: what a filter keeps, in what order, how many of each setting a group
+  # holds and which page of groups this is are all decided by
+  # `Blocking.Connections` (CR-1, CR-4).
+  #
+  # The two empty states are different facts. A day with no connections at all has
+  # nothing to filter, so it offers the one step that creates them — the Timeline.
+  # A day with connections that the filters dropped says so and offers the filters
+  # back, because the connections exist and the reader asked the wrong question.
+  #
+  # The map pane is an empty placeholder of step 23's shape and height: the layout
+  # is the workspace's, so the list keeps its column and the map takes the rest
+  # without either one re-measuring the other.
+  attr :connections, :map, required: true
+  attr :routes, :map, required: true
+  attr :state, :map, required: true
+  attr :version_id, :any, required: true
+  attr :setting_options, :list, required: true
+
+  defp connections_panel(assigns) do
+    assigns =
+      assigns
+      |> assign(:sections, connection_sections(assigns.connections))
+      |> assign(:route_options, route_options(assigns.routes))
+      |> assign(:chips, assigns.connections.chips)
+
+    ~H"""
+    <div id="connections-panel" class="min-w-0 max-w-full">
+      <form
+        id="connections-filter-form"
+        phx-change="filter_connections"
+        phx-debounce="300"
+        class="flex min-w-0 flex-wrap items-end gap-x-5 gap-y-3 px-4 py-3 md:px-5"
+      >
+        <div class="min-w-0 flex-1 basis-[200px]">
+          <.input
+            type="search"
+            id="connections-q"
+            name="cq"
+            label="Find"
+            value={@connections.filter.q}
+            placeholder="Place, stop, route, trip or block"
+            autocomplete="off"
+          />
+        </div>
+        <div class="min-w-0 basis-[240px]">
+          <.input
+            type="select"
+            id="connections-show"
+            name="setting"
+            label="Show"
+            value={@connections.filter.setting || ""}
+            prompt="All connections"
+            options={@setting_options}
+          />
+        </div>
+        <div class="min-w-0 basis-[150px]">
+          <.input
+            type="select"
+            id="connections-route"
+            name="route"
+            label="Route"
+            value={@connections.filter.route || ""}
+            prompt="All routes"
+            options={@route_options}
+          />
+        </div>
+      </form>
+
+      <div
+        id="connections-summary-strip"
+        class="flex min-h-[48px] flex-wrap items-center gap-2 border-y border-subtle px-4 py-1.5 text-[13px] md:px-5"
+      >
+        <span id="connections-summary" class="font-semibold tabular-nums text-strong">
+          {connections_summary(@connections)}
+        </span>
+
+        <.connections_chip
+          :for={chip <- @chips}
+          id={"connections-chip-#{chip.kind}"}
+          kind={chip.kind}
+          label={chip.label}
+        />
+
+        <button
+          :if={@chips != []}
+          id="connections-clear-filters"
+          type="button"
+          phx-click="clear_connection_filters"
+          class={link_class()}
+        >
+          Clear filters
+        </button>
+
+        <span class="ml-auto text-muted">
+          Settings apply to every date both trips run, not only this day type.
+        </span>
+      </div>
+
+      <div
+        id="connections-layout"
+        class="grid min-w-0 max-w-full grid-cols-[400px_minmax(0,1fr)] max-xl:grid-cols-[320px_minmax(0,1fr)] max-md:grid-cols-1"
+      >
+        <div
+          id="connections-list"
+          class="h-[max(560px,calc(100dvh-230px))] min-w-0 max-w-full overflow-y-auto border-r border-subtle max-md:border-r-0 max-md:border-b"
+        >
+          <.state_panel
+            :if={@connections.total == 0}
+            id="connections-empty"
+            icon="hero-arrow-path"
+            title="No connections yet"
+          >
+            A connection appears where a block runs two trips in a row. This service day holds
+            none, so assign trips to blocks on the Timeline first.
+            <:action>
+              <.link
+                id="connections-timeline-link"
+                patch={connections_timeline_path(@version_id, @state)}
+                class={link_class()}
+              >
+                Assign trips to blocks
+              </.link>
+            </:action>
+          </.state_panel>
+
+          <div :if={@connections.total > 0 and @connections.count == 0} class="grid gap-3 p-6">
+            <h2 class="font-display text-base font-semibold tracking-[-0.02em] text-strong">
+              No connections match
+            </h2>
+            <p id="connections-no-match-text" class="text-sm text-muted">
+              {no_match_text(@connections)}
+            </p>
+            <div>
+              <.button
+                id="connections-no-match-clear"
+                type="button"
+                variant="secondary"
+                class="min-h-11"
+                phx-click="clear_connection_filters"
+              >
+                Clear filters
+              </.button>
+            </div>
+          </div>
+
+          <section
+            :for={section <- @sections}
+            id={"connections-place-#{place_token(section.id)}"}
+            aria-labelledby={"connections-place-name-#{place_token(section.id)}"}
+            class="border-b border-subtle"
+          >
+            <div class="flex items-baseline justify-between gap-3 bg-canvas px-5 py-2">
+              <h2
+                id={"connections-place-name-#{place_token(section.id)}"}
+                class="font-display text-sm font-semibold tracking-[-0.02em] text-strong"
+              >
+                {section.name}
+              </h2>
+              <span class="text-[13px] tabular-nums text-muted">
+                {count_label(section.count, "connection", "connections")}
+              </span>
+            </div>
+
+            <.connection_group_row
+              :for={group <- section.groups}
+              group={group}
+              routes={@routes}
+              state={@state}
+            />
+          </section>
+
+          <div
+            :if={@connections.pages > 1}
+            id="connections-pager"
+            class="border-t border-subtle px-4"
+          >
+            <.pagination
+              page={@connections.page}
+              per_page={@connections.page_size}
+              total={@connections.group_count}
+              entity="groups"
+              event="paginate_groups"
+            />
+          </div>
+        </div>
+
+        <div
+          id="connections-map-pane"
+          class="h-[max(560px,calc(100dvh-230px))] min-w-0 max-w-full overflow-hidden bg-map-paper"
+        >
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  # One removable filter chip. Its control carries the kind it removes and the
+  # LiveView drops that one filter, so removing a chip never has to reconstruct
+  # the other two from the form.
+  attr :id, :string, required: true
+  attr :kind, :atom, required: true
+  attr :label, :string, required: true
+
+  defp connections_chip(assigns) do
+    ~H"""
+    <button
+      id={@id}
+      type="button"
+      phx-click="remove_connection_filter"
+      phx-value-filter={@kind}
+      class="inline-flex min-h-11 items-center gap-1 rounded-badge border border-control bg-white pl-2 pr-1 font-semibold text-strong hover:bg-canvas"
+    >
+      {@label}
+      <.icon name="hero-x-mark" class="size-4 text-muted" />
+      <span class="sr-only">Remove filter</span>
+    </button>
+    """
+  end
+
+  # One group row: the two route badges with the arrow or turnback between them,
+  # what the connection continues as, the arrival stop, the handoff, the wait
+  # range, how many connections the group holds here, and its non-zero setting
+  # counts. The row is one button because choosing a group is its only action;
+  # the counts are inside it so a reader never has to open a group to learn
+  # whether it holds anything needing review.
+  attr :group, :map, required: true
+  attr :routes, :map, required: true
+  attr :state, :map, required: true
+
+  defp connection_group_row(assigns) do
+    ~H"""
+    <button
+      id={"connections-group-#{@group.token}"}
+      type="button"
+      phx-click="open_group"
+      phx-value-group={@group.token}
+      aria-current={to_string(@state.group == @group.token)}
+      class="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 border-t border-subtle px-5 py-2.5 text-left hover:bg-canvas aria-[current=true]:bg-selection"
+    >
+      <span class="flex min-w-0 items-center gap-1.5">
+        <.route_badge_for route_id={@group.from_route_id} routes={@routes} />
+        <.icon
+          name={connection_join_icon(@group)}
+          class="size-4 shrink-0 text-muted"
+        />
+        <.route_badge_for route_id={@group.to_route_id} routes={@routes} />
+        <span class="truncate text-sm text-strong">
+          <span class="font-semibold">{connection_continuation(@group, @routes)}</span>
+          <span :if={@group.headsign} class="font-normal text-muted">
+            to {@group.headsign}
+          </span>
+        </span>
+      </span>
+
+      <span
+        id={"connections-group-count-#{@group.token}"}
+        class="row-span-2 text-right text-[13px] tabular-nums text-strong"
+      >
+        {length(@group.connections)}
+      </span>
+
+      <span class="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[13px] text-muted">
+        <span>
+          {connection_stop_name(@group)} · {connection_handoff_label(@group.handoffs)} · {connection_wait_text(
+            @group
+          )} min
+        </span>
+        <.connection_mark :for={mark <- connection_marks(@group.counts)} {mark} />
+      </span>
+    </button>
+    """
+  end
+
+  attr :kind, :atom, required: true
+  attr :count, :integer, required: true
+  attr :label, :string, required: true
+  attr :icon, :string, required: true
+
+  defp connection_mark(assigns) do
+    ~H"""
+    <span class={["connections-mark", "connections-mark-#{@kind}"]}>
+      <.icon name={@icon} class="size-3.5 shrink-0" />
+      {@count}
+      <span class="sr-only">{@label}</span>
+    </span>
+    """
   end
 
   defp filtered_empty_text(%{status: :problems, route: route}) when not is_nil(route),
