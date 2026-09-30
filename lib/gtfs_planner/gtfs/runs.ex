@@ -1019,10 +1019,19 @@ defmodule GtfsPlanner.Gtfs.Runs do
     end)
   end
 
-  # Every row of the version, grouped by its day type key. A key no current day
-  # type has is simply absent from `day_type_shares/2`'s answer, because the
-  # answer is built from the day types the export listed.
-  defp assignments_by_day_type(organization_id, gtfs_version_id) do
+  @doc """
+  Every saved run assignment of the version, grouped by its day type key.
+
+  This is the saved half of a day: which trips are in which run. It is public
+  because the operations export composes the other half itself — it already holds
+  the `Blocking.export_movements/2` result, so it passes that to `derive_version/3`
+  beside these rather than deriving the blocks and windows a second time.
+
+  A key no current day type has is simply absent, because the day types come from
+  the export rather than from the table.
+  """
+  @spec assignments_by_day_type(Ecto.UUID.t(), Ecto.UUID.t()) :: %{optional(String.t()) => map()}
+  def assignments_by_day_type(organization_id, gtfs_version_id) do
     Repo.all(
       from(row in TripRun,
         where:

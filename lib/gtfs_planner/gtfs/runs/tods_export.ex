@@ -73,14 +73,23 @@ defmodule GtfsPlanner.Gtfs.Runs.TodsExport do
   before midnight, which is the only thing that makes a previous-day service carry
   a row a consumer can act on.
 
+  A day type with **no runs at all** is left out of the map altogether, not listed
+  with `prev?: false`. This is the rule that keeps a version with blocks but no
+  runs from gaining an empty `calendar_dates_supplement.txt`: asking for a service
+  makes `Blocking.TodsExport` mint one and list the day type's dates on it, which
+  is precisely the header-only file spec 07 refuses to write. A day type is asked
+  for a service when it has something to hang on that service.
+
   A run with an error finding does not count towards `prev?`: it is left out of
   `run_events.txt` entirely, so reserving a service for it would write one listing
-  dates with nothing on it. A day type with no runs is left out of the map
-  altogether, so it is not asked for a service.
+  dates with nothing on it. It does not remove the day type from the map, because
+  the day type's other runs are still written.
   """
   @spec run_day_types(%{optional(String.t()) => map()}) :: %{optional(String.t()) => map()}
   def run_day_types(run_days) when is_map(run_days) do
-    Map.new(run_days, fn {key, day} -> {key, %{prev?: prev?(day)}} end)
+    for {key, day} <- run_days, day.runs != [], into: %{} do
+      {key, %{prev?: prev?(day)}}
+    end
   end
 
   defp prev?(day) do

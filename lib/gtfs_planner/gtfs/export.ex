@@ -36,6 +36,8 @@ defmodule GtfsPlanner.Gtfs.Export do
   alias GtfsPlanner.Gtfs.Flex.Export, as: FlexExport
   alias GtfsPlanner.Gtfs.Flex.Export.FileSpecs, as: FlexFileSpecs
   alias GtfsPlanner.Gtfs.FlexService
+  alias GtfsPlanner.Gtfs.Runs
+  alias GtfsPlanner.Gtfs.Runs.TodsExport, as: RunsTodsExport
   alias GtfsPlanner.Gtfs.Stop
   alias GtfsPlanner.Gtfs.StopTime
   alias GtfsPlanner.Operations
@@ -361,7 +363,10 @@ defmodule GtfsPlanner.Gtfs.Export do
           export_tods_files(temp_dir, garages, vehicles) ++
           export_movement_files(temp_dir, movements)
 
-      warnings = movement_warnings(movements) ++ tods_omission_warnings(garages, vehicles)
+      warnings =
+        movement_warnings(movements) ++
+          run_warnings(movements) ++
+          tods_omission_warnings(garages, vehicles)
 
       {:ok, create_zip_archive(file_paths, organization_id, gtfs_version_id), warnings}
     end
@@ -639,18 +644,47 @@ defmodule GtfsPlanner.Gtfs.Export do
     if Versions.published_gtfs_version_for_org?(organization_id, gtfs_version_id) do
       movements = Blocking.export_movements(organization_id, gtfs_version_id)
 
+      # The saved half of each day beside the derived half the movements already
+      # carry. Both come from the same `Blocking.export_movements/2` result, so
+      # the blocks a run was cut from and the blocks the movements were derived
+      # from are one snapshot, not two reads that might disagree.
+      run_days =
+        Runs.derive_version(
+          movements,
+          Runs.assignments_by_day_type(organization_id, gtfs_version_id),
+          Runs.get_crew_settings(organization_id, gtfs_version_id)
+        )
+
+      rows =
+        TodsExport.rows(%{
+          day_types: movements.day_types,
+          blocks_by_day_type: movements.blocks_by_day_type,
+          garages_by_id: movements.garages_by_id,
+          public_ids: public_ids(organization_id, gtfs_version_id),
+          run_day_types: RunsTodsExport.run_day_types(run_days)
+        })
+
       %{
-        rows:
-          TodsExport.rows(%{
+        rows: rows,
+        # `ids` is absent when no day type survived `collect/4` — with no day type
+        # there is no service and no movement to name, and nothing to refer back
+        # to. The default keeps a run row's lookup of a service or a movement
+        # trip from raising on a version whose movements produced no file.
+        run_rows:
+          RunsTodsExport.rows(%{
             day_types: movements.day_types,
-            blocks_by_day_type: movements.blocks_by_day_type,
-            garages_by_id: movements.garages_by_id,
-            public_ids: public_ids(organization_id, gtfs_version_id)
+            run_days: run_days,
+            ids: Map.get(rows, :ids, %{service_ids: %{}, movement_trip_ids: %{}}),
+            garages_by_id: movements.garages_by_id
           }),
         published?: true
       }
     else
-      %{rows: empty_movement_rows(), published?: false}
+      %{
+        rows: empty_movement_rows(),
+        run_rows: %{run_events: [], left_out: 0, uncovered: []},
+        published?: false
+      }
     end
   end
 
@@ -691,7 +725,8 @@ defmodule GtfsPlanner.Gtfs.Export do
       {Tods.calendar_dates_supplement_spec(), rows.calendar_dates},
       {Tods.routes_supplement_spec(), rows.routes},
       {Tods.trips_supplement_spec(), rows.trips},
-      {Tods.stop_times_supplement_spec(), rows.stop_times}
+      {Tods.stop_times_supplement_spec(), rows.stop_times},
+      {Tods.run_events_spec(), movements.run_rows.run_events}
     ]
     |> Enum.reject(fn {_spec, rows} -> rows == [] end)
     |> Enum.map(fn {spec, rows} -> write_tods_file(temp_dir, spec, rows) end)
@@ -754,6 +789,62 @@ defmodule GtfsPlanner.Gtfs.Export do
           end
         end
       )
+  end
+
+  # The run warnings, in the order a reader meets them: what the file is missing,
+  # what was left out of it, and then each day type's uncovered work. One warning
+  # naming a count, never one per run or per trip.
+  defp run_warnings(%{run_rows: run_rows, published?: published?}) do
+    filename = Tods.run_events_spec().filename
+
+    # No "file omitted" warning for an empty `run_events.txt`. The four movement
+    # supplements warn when they are absent, and it was tempting to match them —
+    # but spec 07's EV-8 asserts a version with movements and no runs produces no
+    # warnings at all, and that export is exactly this one plus a run file. The
+    # absence of a file a caller knows is optional needs no announcement; the two
+    # warnings below are about work that exists and was dropped.
+    unpublished =
+      if published? do
+        []
+      else
+        [
+          %{
+            # Its own code, not the movements' `tods_movements_unavailable`. Both
+            # fire for an unpublished version, and a consumer reading the movement
+            # code would not know a run file was also missing.
+            code: "tods_runs_unavailable",
+            detail: "The run files were left out because this version is not published.",
+            file: filename,
+            entity_type: "run"
+          }
+        ]
+      end
+
+    left_out =
+      if run_rows.left_out == 0 do
+        []
+      else
+        [
+          %{
+            code: "tods_runs_left_out",
+            detail: "#{run_rows.left_out} runs have errors and were left out.",
+            file: filename,
+            entity_type: "run"
+          }
+        ]
+      end
+
+    uncovered =
+      Enum.map(run_rows.uncovered, fn %{day_type: day_type, trips: trips} ->
+        %{
+          code: "tods_runs_uncovered",
+          detail: "#{trips} trips are not in a run for #{day_type.label}.",
+          file: filename,
+          entity_type: "run"
+        }
+      end)
+
+    unpublished ++ left_out ++ uncovered
   end
 
   # An empty table omits its file rather than exporting an empty one.
