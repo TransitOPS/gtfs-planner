@@ -708,6 +708,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   attr :sort, :atom, required: true
   attr :dir, :atom, required: true
   attr :scale, :atom, required: true
+  attr :crew, :map, default: nil
 
   def timeline(assigns) do
     assigns =
@@ -717,7 +718,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       |> assign(:track_style, track_style(assigns.axis))
 
     ~H"""
-    <div id="runs-timeline-scroll">
+    <div id="runs-timeline-scroll" phx-hook=".RunsRovingRow">
       <table
         id="runs-timeline"
         data-scale={@scale}
@@ -774,8 +775,99 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
         </tbody>
       </table>
     </div>
+
+    <.timeline_footnote paid_break_minutes={paid_break_minutes(@crew)} />
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".RunsRovingRow">
+      // A run row's pieces are ONE tab stop, not one tab stop each.
+      //
+      // The server owns the tabindex, so a row that has never been focused and a
+      // row whose focus has moved look the same in the initial HTML; this hook
+      // only moves focus and re-points the roving tabindex when a key arrives.
+      // That split is deliberate: if the client owned the tabindex, a row would
+      // arrive with no tab stop at all and be unreachable by keyboard.
+      export default {
+        mounted() {
+          this.handleKeydown = e => this.move(e)
+          this.el.addEventListener("keydown", this.handleKeydown)
+        },
+        destroyed() {
+          this.el.removeEventListener("keydown", this.handleKeydown)
+        },
+        // Only the four keys a roving row owns. Everything else is left alone,
+        // so Tab still leaves the row, Enter still activates the bar, and a
+        // reader's own browser shortcuts keep working.
+        move(e) {
+          const keys = ["ArrowRight", "ArrowLeft", "Home", "End"]
+          if (!keys.includes(e.key)) return
+
+          const el = e.target.closest?.(".runs-piece")
+          if (!el || !this.el.contains(el)) return
+
+          // One row, its pieces in document order. `closest("tr")` is the row,
+          // and a run's pieces are the only piece bars inside it.
+          const row = Array.from(el.closest("tr").querySelectorAll(".runs-piece"))
+          const index = row.indexOf(el)
+          if (index < 0) return
+
+          const last = row.length - 1
+          // Clamped rather than wrapped: Right on the last piece and Left on the
+          // first stay where they are. Wrapping would make a reader who overshot
+          // believe they had changed row.
+          const to = {
+            ArrowRight: Math.min(index + 1, last),
+            ArrowLeft: Math.max(index - 1, 0),
+            Home: 0,
+            End: last
+          }[e.key]
+
+          e.preventDefault()
+          row.forEach((bar, i) => { bar.tabIndex = i === to ? 0 : -1 })
+          row[to].focus()
+        }
+      };
+    </script>
     """
   end
+
+  @doc """
+  Renders the two-part footnote under the chart: how the keyboard works, and how
+  paid time is measured.
+
+  The roving hint is visible words rather than a tooltip or a hidden label,
+  because a keyboard rule a reader has to discover is a rule most readers never
+  find. It sits under the table it describes, in the same muted type as the rest
+  of the footnote, so it reads as an aside about the chart rather than as a
+  control.
+  """
+  attr :paid_break_minutes, :any, required: true
+
+  def timeline_footnote(assigns) do
+    ~H"""
+    <div
+      id="runs-timeline-foot"
+      class="flex flex-wrap items-center justify-between gap-3 border-t border-base-300 px-5 py-3 text-[13px] text-base-content/70"
+    >
+      <span id="roving-hint">
+        Each row&rsquo;s pieces are one Tab stop. Left and Right move between pieces; Home and
+        End jump to the first and last. Enter opens the run.
+      </span>
+      <span id="paid-time-note">
+        Travel marked &ldquo;est.&rdquo; is estimated from garage-to-stop driving times. Paid
+        time = report (per piece) + time on vehicles + travel + breaks of {@paid_break_minutes} min
+        or less + sign-off.
+      </span>
+    </div>
+    """
+  end
+
+  # The footnote quotes the version's OWN paid-break limit rather than the
+  # design default, because a break's hatching already says the same thing and
+  # the sentence must not be able to disagree with it. A version with no limit
+  # read is shown as an em dash rather than as a number nobody set.
+  defp paid_break_minutes(nil), do: "—"
+  defp paid_break_minutes(%{paid_break_max_minutes: nil}), do: "—"
+  defp paid_break_minutes(%{paid_break_max_minutes: minutes}), do: minutes
 
   @doc """
   Renders one 44 px run row: the sticky Run, Type, Sign-on, Sign-off, Spread,
@@ -872,6 +964,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   The route colour is a **bottom rule** rather than the fill, so two pieces of
   different routes on one run are told apart at a glance while the fill stays
   the one colour the design system owns.
+
+  **`tabindex` is rendered here, by the server, and not by the hook.** The
+  roving rule needs a row to arrive with exactly one piece in the tab order, and
+  a client that computed the tabindex on mount would leave every row with none
+  until its hook ran — a row the reader cannot reach at all in the moment before
+  JavaScript arrives. The server draws the first piece as `0` and the rest as
+  `-1`, so the initial HTML is already correct and the hook only re-points it
+  when a key moves focus. A one-piece run therefore has one `tabindex="0"` and
+  no `-1` sibling, which is the whole point: the row is one stop whether it
+  holds one piece or six.
   """
   attr :run, :map, required: true
   attr :piece, :map, required: true
@@ -896,6 +998,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
       data-block={@piece.block_id}
       phx-click="open_run"
       phx-value-run={@run.run_id}
+      tabindex={if @index == 1, do: "0", else: "-1"}
       style={@style}
       class={["runs-piece", @severity && "runs-piece-#{@severity}"]}
       title={piece_title(@run, @piece, @index)}
