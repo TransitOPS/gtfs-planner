@@ -39,12 +39,14 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   assembly is re-run over them, with no read and no write — so a page can show the
   suggestion on the page itself and the saved day is never mutated.
 
-  `project_calendar_combination/2` is the pure batch producer a calendar combination
-  review reads: it projects every proposed service-ID move and destination date change at
-  once, decides which moved blocks must be cleared from that one projection, and reports
-  the real before/after checks and in-seat states. `CalendarChange`/`Schedules` keep
-  their single-trip R9 answer, and no calendar-side module evaluates blocks a second time
-  (CR-2).
+  `project_calendar_combination/2` and `project_trip_changes/2` are the pure batch
+  producers a calendar combination and a per-trip change review read. The first projects
+  every proposed service-ID move and destination date change at once and decides which
+  moved blocks must be cleared from that one projection; the second projects per-trip
+  service and endpoint changes over the same private helpers, with every changed row
+  applied at once and every clear decided from that one projection before any clear is
+  applied. `CalendarChange`/`Schedules` keep their single-trip R9 answer, and no
+  calendar-side module evaluates blocks a second time (CR-2).
 
   `apply_block_change/4` is the one write path for an `:assign`, `:unassign`,
   `:rename` or `:merge` command. It locks the version's blocking advisory lock and
@@ -330,6 +332,22 @@ defmodule GtfsPlanner.Gtfs.Blocking do
           destination_id: String.t(),
           source_ids: [String.t()],
           result_dates: [Date.t()]
+        }
+
+  @typedoc """
+  The loaded input set one per-trip change projection reads.
+
+  It is the block subset of the review state: `calendars` in the summary shape
+  `Calendars.list_calendars/3` returns, `trips` every loaded trip of the review with its
+  real endpoints, `transfers` the type-4/5 records naming those trips and `settings` the
+  version's stored minimum layover. A per-trip change never changes a calendar, so both
+  projections of `project_trip_changes/2` read the same calendars.
+  """
+  @type trip_change_inputs :: %{
+          calendars: [DayTypes.calendar()],
+          trips: [Queries.trip_row()],
+          transfers: [Queries.in_seat_row()],
+          settings: %{min_layover_minutes: 0..120}
         }
 
   @typedoc """
@@ -1885,6 +1903,67 @@ defmodule GtfsPlanner.Gtfs.Blocking do
   end
 
   @doc """
+  Projects every block and in-seat consequence of per-trip service and endpoint changes (R6).
+
+  `inputs` is the loaded input set of `trip_change_inputs()` and `changed` the rows the
+  command writes: each one replaces the input row with the same `:id`, and an input row
+  the command does not name stays as loaded. The function is pure: it reads the loaded
+  rows and the version's stored layover and no database, clock, file or network (CR-1).
+
+  One projection carries every changed row at once, so Shift's endpoint changes and Change
+  calendar's service changes are projected together and a block decision never sees a
+  half-applied command. A changed row whose `service_id` differs from its input row's and
+  that names a block is a clear candidate; a candidate keeps its block only when the move
+  leaves its companion set unchanged, where a companion counts when its own dates
+  intersect the trip's (`companions_on_dates/3`). That rejects a companion the input did
+  not hold - the trip would join another vehicle's work on its new dates - and a companion
+  left behind on the old calendar, which would leave the trip carrying the block alone.
+  Every clear is decided from that one after-projection before any clear is applied, so a
+  block whose trips move together keeps its ID and clearing one block can never make
+  another move look safe (AC-13, PM-4).
+
+  `cleared_trip_ids` lists exactly the moved trips whose block is cleared, sorted.
+  `after_findings` is computed with the clears applied, so it describes the day the
+  command leaves behind, and `before_findings` describes the loaded day. `transfers`
+  reports every distinct type-4/5 record of `inputs.transfers` once, sorted by record
+  UUID, with its `InSeat` state before and after; a clear that makes one stale or
+  unconfirmed is reported, never rewritten.
+  """
+  @spec project_trip_changes(trip_change_inputs(), [Queries.trip_row()]) ::
+          combination_projection()
+  def project_trip_changes(
+        %{
+          calendars: calendars,
+          trips: trips,
+          transfers: transfers,
+          settings: %{min_layover_minutes: min_layover_minutes}
+        },
+        changed_trips
+      )
+      when is_list(calendars) and is_list(trips) and is_list(transfers) and
+             is_list(changed_trips) do
+    before = projection_state(calendars, trips, transfers, min_layover_minutes)
+
+    after_moves =
+      projection_state(
+        calendars,
+        replace_trips(trips, changed_trips),
+        transfers,
+        min_layover_minutes
+      )
+
+    cleared_trip_ids = trip_change_clear_decisions(before, after_moves, changed_trips)
+    after_state = state_trips(after_moves, clear_trips(after_moves.trips, cleared_trip_ids))
+
+    %{
+      cleared_trip_ids: cleared_trip_ids,
+      before_findings: before.findings,
+      after_findings: after_state.findings,
+      transfers: transfer_states(before, after_state, transfers)
+    }
+  end
+
+  @doc """
   Applies one block command on `day_type_key` inside the reviewed transaction.
 
   The command's shape is validated before any transaction (AC-13, Mutation):
@@ -2800,6 +2879,65 @@ defmodule GtfsPlanner.Gtfs.Blocking do
     Enum.map(trips, fn trip ->
       if MapSet.member?(cleared, trip.id), do: %{trip | block_id: nil}, else: trip
     end)
+  end
+
+  # -- Per-trip change projection --------------------------------------------
+
+  # A changed row replaces the input row with the same ID: the input rows the command does
+  # not name stay as loaded, and a changed row the inputs do not hold is ignored. The input
+  # order is kept, so reordering the changed rows returns an identical projection.
+  defp replace_trips(trips, changed_trips) do
+    changed_by_id = Map.new(changed_trips, &{&1.id, &1})
+    Enum.map(trips, &Map.get(changed_by_id, &1.id, &1))
+  end
+
+  # R6's clear candidates: a changed row whose service differs from its input row's and
+  # that names a block. An endpoint-only change and an unblocked move are not candidates.
+  defp trip_change_clear_candidates(changed_trips, original_by_id) do
+    Enum.filter(changed_trips, fn changed ->
+      original = Map.get(original_by_id, changed.id)
+
+      is_binary(changed.block_id) and is_map(original) and
+        changed.service_id != original.service_id
+    end)
+  end
+
+  # R6 over the one after-projection: a moved trip keeps its block only when the move
+  # leaves its companion set unchanged - no companion it did not run with before (another
+  # vehicle's work on its new dates) and no companion left behind (the block stayed on the
+  # old calendar, so the trip would carry it alone). Every changed row is already part of
+  # the projection, so a block whose trips move together keeps its ID, while deciding one
+  # trip at a time would still hold its companions on the old service and clear it (PM-4).
+  defp trip_change_clears_block?(changed, original, before, after_moves) do
+    companions_before =
+      companions_on_dates(
+        block_others(before.trips, original),
+        before.service_dates,
+        service_dates_for(before.service_dates, original.service_id)
+      )
+
+    companions_after =
+      companions_on_dates(
+        block_others(after_moves.trips, changed),
+        after_moves.service_dates,
+        service_dates_for(after_moves.service_dates, changed.service_id)
+      )
+
+    not MapSet.equal?(companions_after, companions_before)
+  end
+
+  defp trip_change_clear_decisions(before, after_moves, changed_trips) do
+    original_by_id = Map.new(before.trips, &{&1.id, &1})
+
+    changed_trips
+    |> trip_change_clear_candidates(original_by_id)
+    |> Enum.filter(fn changed ->
+      original = Map.fetch!(original_by_id, changed.id)
+      trip_change_clears_block?(changed, original, before, after_moves)
+    end)
+    |> Enum.map(& &1.id)
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   # Only the destination's dates change: a source calendar keeps its own definition after
