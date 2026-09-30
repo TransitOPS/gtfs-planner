@@ -37,6 +37,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.GtfsTime
   alias GtfsPlanner.Gtfs.Schedules
+  alias GtfsPlanner.Gtfs.Schedules.FrequencyWindows
   alias GtfsPlanner.Gtfs.Schedules.Summary
   alias GtfsPlanner.Gtfs.Schedules.TimeEntry
   alias GtfsPlanner.Versions
@@ -48,7 +49,8 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
 
   @filter_keys ~w(service_id direction pattern stops)
   @drawer_fields ~w(pattern_id timed_pattern_id service_id start_time repeat every until
-    trip_headsign trip_short_name wheelchair_accessible bikes_allowed)
+    run_as windows exact_times trip_headsign trip_short_name wheelchair_accessible
+    bikes_allowed)
   @duplicate_offset_secs 1_800
   # A `:copy` offset is a whole minute inside ±24 h (TripChanges.validate_offset/1),
   # so a typed "first departure at" further away is not a time this page can paste.
@@ -60,6 +62,11 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   @default_departure "06:00"
   @default_every "30"
   @default_until "09:00"
+  # The Add drawer's frequency mode starts from one window the drawer can already
+  # read, so switching the run-as choice lands on a valid editor instead of an
+  # empty list (R8). A new window is two hours long, like the reference's.
+  @default_window %{from: @default_departure, until: @default_until, every: @default_every}
+  @window_hours 2
 
   @impl true
   def mount(_params, _session, socket) do
@@ -351,7 +358,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
               "start_time" => @default_departure,
               "repeat" => "false",
               "every" => @default_every,
-              "until" => @default_until
+              "until" => @default_until,
+              "run_as" => "scheduled",
+              "windows" => [@default_window],
+              "exact_times" => "1"
             },
             return_focus_id: "schedules-add-trips"
           })
@@ -434,6 +444,43 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   def handle_event("drawer_submit", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("drawer_add_window", _params, socket) do
+    case socket.assigns.drawer do
+      %{values: %{"windows" => [_window | _rest] = windows} = values} = drawer ->
+        windows = windows ++ [next_window(List.last(windows))]
+        drawer = %{drawer | values: Map.put(values, "windows", windows), errors: %{}}
+
+        {:noreply,
+         socket
+         |> assign(:drawer, refresh_drawer(socket, drawer))
+         |> push_event("focus_scoped_target", %{id: "windows-#{length(windows) - 1}-from"})}
+
+      _drawer ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("drawer_remove_window", params, socket) when is_map(params) do
+    case socket.assigns.drawer do
+      %{values: %{"windows" => [_window, _second | _rest] = windows} = values} = drawer ->
+        windows = List.delete_at(windows, window_index(params["index"]))
+        drawer = %{drawer | values: Map.put(values, "windows", windows), errors: %{}}
+
+        # The remove button goes away with its row, so focus lands on the Add
+        # window control rather than on the document body.
+        {:noreply,
+         socket
+         |> assign(:drawer, refresh_drawer(socket, drawer))
+         |> push_event("focus_scoped_target", %{id: "win-add"})}
+
+      _drawer ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("drawer_remove_window", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("reload_drawer", _params, socket) do
@@ -2633,21 +2680,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp apply_drawer(socket, %{mode: :add} = drawer) do
-    case create_attrs(drawer) do
-      {:ok, attrs} ->
-        case Gtfs.create_trips(socket.assigns.route_id, attrs, audit_context(socket)) do
-          {:ok, %{trips: [first | _] = trips}} ->
-            {:noreply, added(socket, attrs, trips, first)}
-
-          {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply, drawer_changeset_error(socket, drawer, changeset)}
-
-          {:error, reason} ->
-            {:noreply, drawer_problem(socket, drawer, reason)}
-        end
-
-      {:error, field, message} ->
-        {:noreply, drawer_field_error(socket, drawer, field, message)}
+    if drawer_run_as(drawer) == "frequency" do
+      {:noreply, apply_frequency(socket, drawer)}
+    else
+      add_trips(socket, drawer)
     end
   end
 
@@ -2687,6 +2723,102 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
              ) do
           {:ok, trip} ->
             {:noreply, duplicated(socket, drawer, trip)}
+
+          {:error, %Ecto.Changeset{} = changeset} ->
+            {:noreply, drawer_changeset_error(socket, drawer, changeset)}
+
+          {:error, reason} ->
+            {:noreply, drawer_problem(socket, drawer, reason)}
+        end
+
+      {:error, field, message} ->
+        {:noreply, drawer_field_error(socket, drawer, field, message)}
+    end
+  end
+
+  # Frequency service is one command with no prior row to fence (`:add_frequency`
+  # takes `:none`), so the drawer applies it directly, pushes the restore payload
+  # for Undo and reports the write on the grid bar (AC-17, AC-21).
+  defp apply_frequency(socket, drawer) do
+    case frequency_command(drawer.values) do
+      {:ok, command} ->
+        apply_frequency_command(socket, drawer, command)
+
+      :error ->
+        drawer_field_error(
+          socket,
+          drawer,
+          :windows,
+          ScheduleComponents.frequency_preview_error()
+        )
+    end
+  end
+
+  defp apply_frequency_command(socket, drawer, command) do
+    case Gtfs.apply_trip_change(socket.assigns.route_id, command, :none, audit_context(socket)) do
+      {:ok, result} ->
+        added_frequency(socket, drawer, command, result)
+
+      {:error, {:refused, errors}} ->
+        frequency_refused(socket, drawer, errors)
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        drawer_changeset_error(socket, drawer, changeset)
+
+      {:error, reason} ->
+        drawer_problem(socket, drawer, reason)
+    end
+  end
+
+  # Adding frequency service is undoable (R10): the created trip takes the
+  # just-changed tint, the bar names the service day and the span, and Undo holds
+  # the restore payload the engine captured.
+  defp added_frequency(socket, drawer, command, result) do
+    message = frequency_outcome(socket, drawer, command)
+
+    socket
+    |> assign(:drawer, nil)
+    |> assign(:cell_error, nil)
+    |> assign(:just_changed, MapSet.new(result.created_trip_ids ++ result.changed_trip_ids))
+    |> assign(:outcome, %{tone: :info, text: message, undo?: not is_nil(result.restore)})
+    |> push_undo(result.restore, message)
+    |> reload_cell()
+  end
+
+  defp frequency_outcome(socket, drawer, {:add_frequency, attrs}) do
+    first = List.first(attrs.windows)
+    last = List.last(attrs.windows)
+    riders = if attrs.exact_times == 0, do: "every N minutes", else: "each departure time"
+    day = calendar_name(socket, drawer.values["service_id"])
+
+    "Added frequency service to #{day}: #{clock(first.start_secs)}–#{clock(last.end_secs)}. " <>
+      "Riders see #{riders}."
+  end
+
+  # The R9 refusal is the run-as choice's own error: the service day is the field
+  # the user changes, so the sentence stays under the choice cards and the one
+  # primary is unavailable until something changes (FH-35, AC-20).
+  defp frequency_refused(socket, drawer, errors) do
+    case Enum.find(errors, &match?({:error, {:mixed_service, _details}}, &1)) do
+      {:error, {:mixed_service, _details}} ->
+        message =
+          ScheduleComponents.mixed_service_choice_message(
+            calendar_name(socket, drawer.values["service_id"])
+          )
+
+        drawer_field_error(socket, drawer, :run_as, message)
+
+      _other ->
+        drawer_problem(socket, drawer, {:refused, errors})
+    end
+  end
+
+  defp add_trips(socket, drawer) do
+    case create_attrs(drawer) do
+      {:ok, attrs} ->
+        case Gtfs.create_trips(socket.assigns.route_id, attrs, audit_context(socket)) do
+          {:ok, %{trips: [first | _] = trips}} ->
+            {:noreply, added(socket, attrs, trips, first)}
 
           {:error, %Ecto.Changeset{} = changeset} ->
             {:noreply, drawer_changeset_error(socket, drawer, changeset)}
@@ -2970,6 +3102,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp field_input_id(:pattern_id), do: "trip-pattern"
   defp field_input_id(:timed_pattern_id), do: "trip-timing"
   defp field_input_id(:service_id), do: "trip-calendar"
+  defp field_input_id(:run_as), do: "trip-run-scheduled"
   defp field_input_id(:start_time), do: "trip-start"
   defp field_input_id(:every), do: "trip-every"
   defp field_input_id(:until), do: "trip-until"
@@ -3138,6 +3271,15 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   defp drawer_label(:edit), do: "Save trip"
   defp drawer_label(:duplicate), do: "Duplicate trip"
 
+  defp drawer_run_as(%{values: values}), do: values["run_as"] || "scheduled"
+  defp drawer_run_as(_drawer), do: "scheduled"
+
+  defp preview_label(%{mode: :add} = drawer) do
+    if drawer_run_as(drawer) == "frequency", do: "Add frequency service", else: "Add 1 trip"
+  end
+
+  defp preview_label(%{mode: mode}), do: drawer_label(mode)
+
   defp merge_drawer_values(socket, params) do
     case socket.assigns.drawer do
       nil -> nil
@@ -3145,7 +3287,78 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
-  defp clean_values(params), do: Map.take(params, @drawer_fields)
+  defp clean_values(params) do
+    values = Map.take(params, @drawer_fields)
+
+    case Map.fetch(values, "windows") do
+      {:ok, windows} -> Map.put(values, "windows", normalize_windows(windows))
+      :error -> values
+    end
+  end
+
+  # The editor posts `drawer[windows][<index>][from|until|every]`, so the rows
+  # arrive as an index-keyed map of typed text and are stored as the component's
+  # list shape. A list that reads to nothing keeps one default row: the editor
+  # always holds at least one window (its remove button is disabled on the last
+  # row), and a request that posts none is not allowed to empty it.
+  defp normalize_windows(windows) when is_map(windows) do
+    windows
+    |> Enum.filter(fn {_index, row} -> is_map(row) end)
+    |> Enum.sort_by(fn {index, _row} -> window_index(index) end)
+    |> Enum.map(fn {_index, row} -> window_row(row) end)
+    |> case do
+      [] -> [@default_window]
+      rows -> rows
+    end
+  end
+
+  defp normalize_windows(windows) when is_list(windows), do: Enum.map(windows, &window_row/1)
+  defp normalize_windows(_windows), do: [@default_window]
+
+  defp window_row(row) when is_map(row) do
+    %{
+      from: window_text(row["from"]),
+      until: window_text(row["until"]),
+      every: window_text(row["every"])
+    }
+  end
+
+  defp window_row(_row), do: @default_window
+
+  defp window_text(value) when is_binary(value), do: value
+  defp window_text(_value), do: ""
+
+  defp window_index(index) do
+    case Integer.parse(to_string(index)) do
+      {value, _rest} -> value
+      :error -> 0
+    end
+  end
+
+  defp windows(values) do
+    case values["windows"] do
+      [_window | _rest] = windows -> windows
+      _empty -> [@default_window]
+    end
+  end
+
+  # A new row starts where the last one ends and keeps its gap, so the windows
+  # touch and the list stays valid as typed (R8).
+  defp next_window(%{until: until_text} = window) do
+    case parse_clock_value(until_text) do
+      {:ok, until_secs} ->
+        %{
+          from: seconds_to_clock(until_secs),
+          until: seconds_to_clock(until_secs + @window_hours * 3_600),
+          every: window.every
+        }
+
+      _invalid ->
+        @default_window
+    end
+  end
+
+  defp next_window(_window), do: @default_window
 
   defp edit_values(socket, row) do
     %{
@@ -3204,17 +3417,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   end
 
   defp drawer_preview(socket, %{mode: :add} = drawer) do
-    values = drawer.values
-    pattern = preview_pattern(socket, drawer)
-    timing = timing_for(pattern, values["timed_pattern_id"])
-    meta = "#{pattern && pattern.name} · #{calendar_name(socket, values["service_id"])}"
-
-    case parse_clock_value(values["start_time"]) do
-      {:error, _reason} ->
-        error_preview(:start_time, ScheduleComponents.error_message(:invalid_time), drawer)
-
-      {:ok, start_secs} ->
-        add_preview(drawer, timing, start_secs, meta)
+    if drawer_run_as(drawer) == "frequency" do
+      frequency_add_preview(socket, drawer)
+    else
+      scheduled_add_preview(socket, drawer)
     end
   end
 
@@ -3296,6 +3502,126 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     end
   end
 
+  # The frequency mode's card: the span the windows cover and how many departures
+  # they add (the reference's result card). A row that does not read, or windows
+  # that overlap, show the card's pointer to the highlighted window instead, so
+  # nothing here claims a preview the command could not produce (AC-17).
+  defp frequency_add_preview(socket, drawer) do
+    values = drawer.values
+
+    meta =
+      "#{preview_pattern_name(socket, drawer)} · #{calendar_name(socket, values["service_id"])}"
+
+    case read_windows(windows(values)) do
+      {:ok, windows} -> frequency_preview(windows, meta, preview_label(drawer))
+      :error -> error_preview(:windows, ScheduleComponents.frequency_preview_error(), drawer)
+    end
+  end
+
+  defp frequency_preview(windows, meta, label) do
+    first = List.first(windows)
+    last = List.last(windows)
+    departures = windows |> Enum.flat_map(&FrequencyWindows.departures/1) |> length()
+
+    %{
+      error: nil,
+      target: nil,
+      label: label,
+      meta: meta,
+      range: "#{clock(first.start_secs)}–#{clock(last.end_secs)}",
+      total_minutes: nil,
+      sentence:
+        "About #{departures} departures. Not assigned to blocks; counted as ≈ in Trips per hour " <>
+          "and Vehicles needed.",
+      hint: nil
+    }
+  end
+
+  # The typed rows read with the page's one grammar (CR-4) and validate with the
+  # engine's own R8 rules, so the card and the command agree. The windows come
+  # back in start order, which is the order the card's span and the command use.
+  defp read_windows(rows) do
+    case parsed_windows(rows) do
+      {:ok, windows} ->
+        case FrequencyWindows.validate(windows) do
+          :ok -> {:ok, Enum.sort_by(windows, & &1.start_secs)}
+          {:error, _errors} -> :error
+        end
+
+      :error ->
+        :error
+    end
+  end
+
+  defp parsed_windows(rows) do
+    parsed = Enum.map(rows, &parsed_window/1)
+
+    if Enum.all?(parsed, &match?({:ok, _window}, &1)) do
+      {:ok, Enum.map(parsed, fn {:ok, window} -> window end)}
+    else
+      :error
+    end
+  end
+
+  defp parsed_window(row) do
+    with {:ok, start_secs} <- window_clock(row.from),
+         {:ok, end_secs} <- window_clock(row.until),
+         {:ok, headway_secs} <- window_headway(row.every) do
+      {:ok, %{start_secs: start_secs, end_secs: end_secs, headway_secs: headway_secs}}
+    end
+  end
+
+  defp window_clock(text) do
+    case parse_clock_value(text) do
+      {:ok, secs} -> {:ok, secs}
+      {:error, _reason} -> :error
+    end
+  end
+
+  defp window_headway(text) do
+    case text |> to_string() |> String.trim() |> Integer.parse() do
+      {minutes, ""} when minutes >= 1 -> {:ok, minutes * 60}
+      _other -> :error
+    end
+  end
+
+  # The `:add_frequency` command the drawer submits, built only from the drawer's
+  # own choice and the text it read: the client sends no seconds (CR-5).
+  defp frequency_command(values) do
+    with {:ok, parsed} <- read_windows(windows(values)) do
+      {:ok,
+       {:add_frequency,
+        %{
+          pattern_id: values["pattern_id"],
+          timed_pattern_id: values["timed_pattern_id"],
+          service_id: values["service_id"],
+          windows: parsed,
+          exact_times: exact_times(values)
+        }}}
+    end
+  end
+
+  # New service stores `1` (each departure time) unless the riders-see choice
+  # picked the headway itself (R8).
+  defp exact_times(values) do
+    if values["exact_times"] == "0", do: 0, else: 1
+  end
+
+  defp scheduled_add_preview(socket, drawer) do
+    values = drawer.values
+    pattern = preview_pattern(socket, drawer)
+    timing = timing_for(pattern, values["timed_pattern_id"])
+    meta = "#{pattern && pattern.name} · #{calendar_name(socket, values["service_id"])}"
+
+    case parse_clock_value(values["start_time"]) do
+      {:error, _reason} ->
+        error_preview(:start_time, ScheduleComponents.error_message(:invalid_time), drawer)
+
+      {:ok, start_secs} ->
+        add_preview(drawer, timing, start_secs, meta)
+    end
+  end
+
   defp add_preview(drawer, timing, start_secs, meta) do
     if drawer.values["repeat"] == "true" do
       repeat_preview(drawer, timing, start_secs, meta)
@@ -3372,7 +3698,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     %{
       error: message,
       target: target,
-      label: if(drawer.mode == :add, do: "Add 1 trip", else: drawer_label(drawer.mode)),
+      label: preview_label(drawer),
       meta: nil,
       range: nil,
       total_minutes: nil,
@@ -3801,6 +4127,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
                 blocks_path={"/gtfs/#{@current_gtfs_version.id}/blocks"}
                 patterns_path={~p"/gtfs/#{@current_gtfs_version.id}/routes/#{@route_id}/patterns"}
                 version_name={@current_gtfs_version.name}
+                sections={@sections_list}
               />
 
               <% change_drawer = change_drawer_view(assigns) %>

@@ -331,7 +331,9 @@ test.describe("Schedules editing journeys", () => {
     await page.fill("#trip-until", "06:30");
 
     await expect(page.locator("#trip-drawer-save")).toHaveText("Add 2 trips");
-    await expect(page.locator("#trip-preview")).toContainText("Adds 2 trips, 06:00 → 06:30 every 30 min.");
+    await expect(page.locator("#add-result-card")).toContainText(
+      "Adds 2 trips, 06:00 → 06:30 every 30 min.",
+    );
 
     await page.locator("#trip-drawer-save").focus();
     await page.keyboard.press("Enter");

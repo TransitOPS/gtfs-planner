@@ -1416,6 +1416,65 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
     """
   end
 
+  @doc """
+  Renders the Add trips drawer's "How the trips run" choice (AC-17).
+
+  Two design-system choice cards: Scheduled trips (the default) and Every N
+  minutes. The mixing refusal sits under the cards and marks the group invalid,
+  so the drawer shows one error where the user changes the choice or the service
+  day rather than under a field the refusal is not about (FH-35).
+  """
+  attr :run_as, :string, default: "scheduled", doc: ~s("scheduled" or "frequency")
+  attr :refusal, :string, default: nil, doc: "the mixing refusal under the cards"
+
+  def run_as_choice(assigns) do
+    assigns = assign(assigns, :scheduled?, assigns.run_as != "frequency")
+
+    ~H"""
+    <fieldset id="how-trips-run" class="grid gap-2" aria-invalid={to_string(@refusal != nil)}>
+      <legend class="mb-1.5 text-[13px] font-[650] text-default">How the trips run</legend>
+      <div class="grid gap-2 sm:grid-cols-2">
+        <label class={choice_card_class(@scheduled?)}>
+          <input
+            type="radio"
+            id="trip-run-scheduled"
+            name="drawer[run_as]"
+            value="scheduled"
+            checked={@scheduled?}
+            class="mt-0.5 size-[18px] shrink-0 accent-[var(--color-action)]"
+          />
+          <span class="min-w-0">
+            <strong class="block text-sm font-[650] text-strong">Scheduled trips</strong>
+            <small class="mt-0.5 block text-[13px] leading-snug text-default">
+              Each trip has its own departure time. Repeat one at a regular interval.
+            </small>
+          </span>
+        </label>
+        <label class={choice_card_class(not @scheduled?)}>
+          <input
+            type="radio"
+            id="trip-run-frequency"
+            name="drawer[run_as]"
+            value="frequency"
+            checked={not @scheduled?}
+            class="mt-0.5 size-[18px] shrink-0 accent-[var(--color-action)]"
+          />
+          <span class="min-w-0">
+            <strong class="block text-sm font-[650] text-strong">Every N minutes</strong>
+            <small class="mt-0.5 block text-[13px] leading-snug text-default">
+              Frequency service in time windows, such as every 10 min from 07:00 to 09:00.
+            </small>
+          </span>
+        </label>
+      </div>
+      <p :if={@refusal} id="add-refusal" class="flex gap-1.5 text-[13px] font-[650] text-error-fg">
+        <.icon name="hero-exclamation-circle" class="mt-0.5 size-4 shrink-0" />
+        <span>{@refusal}</span>
+      </p>
+    </fieldset>
+    """
+  end
+
   # One row's raw text plus everything the editor decides from it: the parsed
   # seconds, the inline errors and, only while the row is valid, its departures
   # sentence and its shorter-than-the-gap warning.
