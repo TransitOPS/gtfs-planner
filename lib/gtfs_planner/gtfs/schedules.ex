@@ -50,6 +50,7 @@ defmodule GtfsPlanner.Gtfs.Schedules do
   alias GtfsPlanner.Gtfs.ExportDefaults
   alias GtfsPlanner.Gtfs.Frequency
   alias GtfsPlanner.Gtfs.GtfsTime
+  alias GtfsPlanner.Gtfs.Headsigns
   alias GtfsPlanner.Gtfs.ReviewedApplyTransaction
   alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RoutePattern
@@ -176,6 +177,15 @@ defmodule GtfsPlanner.Gtfs.Schedules do
 
   @type delete_error :: :invalid_input | :not_found | :stale | :busy
   @type delete_result :: %{trips: non_neg_integer(), transfers: non_neg_integer()}
+
+  @typedoc "One reviewed headsign change: `id` is the trip UUID, `trip_id` its
+  natural ID, and `from`/`to` the normalized reviewed and target headsigns."
+  @type change :: %{
+          required(:id) => Ecto.UUID.t(),
+          required(:trip_id) => String.t(),
+          required(:from) => String.t() | nil,
+          required(:to) => String.t() | nil
+        }
 
   @typedoc """
   What an apply accepts as its stale tolerance (R3, §4.4).
@@ -1671,6 +1681,62 @@ defmodule GtfsPlanner.Gtfs.Schedules do
     end)
 
     %{trips: count, stop_times: stop_times, frequencies: frequencies}
+  end
+
+  @doc """
+  Writes the reviewed trip headsign changes and audits each written trip.
+
+  This is the only path that writes `trip_headsign` for headsign propagation
+  (CR-2). `changes` are `%{id, trip_id, from, to}` maps: `id` is the trip UUID,
+  `from` the normalized value the review showed and `to` the normalized target.
+  The changed trips are locked `FOR UPDATE` scoped to the audit context's
+  organization and version, and an id outside that scope rolls back
+  `:invalid_selection`. Each trip is fenced on its reviewed value: any trip
+  whose stored `trip_headsign` no longer normalizes to `change.from` rolls back
+  `{:stale, [%{id, trip_id, reviewed, current}]}` and nothing is written. A
+  change whose `from` and `to` agree is a no-op and writes neither trip row nor
+  audit log. Every other trip gets `trip_headsign: change.to` and a fresh
+  `updated_at` through one `update_all` per distinct target, and one `"trip"`
+  "updated" ChangeLog row with an `edit_snapshot` before and after, the given
+  `operation_id` and all written trip UUIDs. Returns the written changes in
+  input order.
+
+  Call only inside the caller's transaction that holds the published route lock
+  (the lock `RoutePatterns.lock_published_route!/2` takes). The function opens
+  no transaction of its own: every rollback, including an audit failure, rolls
+  back the caller's transaction, so the trip writes and their audit rows commit
+  together or not at all.
+  """
+  @spec write_trip_headsigns!([change()], Ecto.UUID.t(), AuditContext.t()) :: [change()]
+  def write_trip_headsigns!(changes, operation_id, %AuditContext{} = audit_context)
+      when is_list(changes) and is_binary(operation_id) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+    changes = Enum.uniq_by(changes, & &1.id)
+
+    trips = lock_headsign_trips!(organization_id, version_id, changes)
+    stale = stale_headsign_changes(trips, changes)
+
+    if stale != [], do: Repo.rollback({:stale, stale})
+
+    # Both sides are already normalized review values, so the no-op equality is
+    # the `Headsigns` rule like every other headsign comparison (CR-1).
+    written = Enum.reject(changes, fn change -> Headsigns.follows?(change.to, change.from) end)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    written
+    |> Enum.group_by(& &1.to)
+    |> Enum.each(fn {to, group} ->
+      from(t in Trip,
+        where:
+          t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+            t.id in ^Enum.map(group, & &1.id)
+      )
+      |> Repo.update_all(set: [trip_headsign: to, updated_at: now])
+    end)
+
+    audit_written_headsigns!(audit_context, trips, written, operation_id, now)
+    written
   end
 
   @doc """
@@ -4408,6 +4474,77 @@ defmodule GtfsPlanner.Gtfs.Schedules do
       frequencies,
       trip.pattern_derivation_state != "linked"
     )
+  end
+
+  # -- Audited trip headsign writes -------------------------------------------
+
+  # Every change id must name a trip of this organization and version; a foreign
+  # row, a stale UUID or a non-UUID is an invalid selection that writes nothing
+  # (INV-1). Precedent: `FareZones.lock_selected_stops/3`.
+  defp lock_headsign_trips!(organization_id, version_id, changes) do
+    ids = Enum.map(changes, & &1.id)
+
+    unless Enum.all?(ids, &uuid?/1), do: Repo.rollback(:invalid_selection)
+
+    trips =
+      from(t in Trip,
+        where:
+          t.organization_id == ^organization_id and t.gtfs_version_id == ^version_id and
+            t.id in ^ids,
+        lock: "FOR UPDATE"
+      )
+      |> Repo.all()
+
+    if length(trips) != length(ids), do: Repo.rollback(:invalid_selection)
+
+    trips
+  end
+
+  # `from` is the normalized value the review showed, so the fence applies the
+  # same normalization to the stored value before comparing. The stale rows name
+  # the raw stored value so the caller can show what moved.
+  defp stale_headsign_changes(trips, changes) do
+    trip_by_id = Map.new(trips, &{&1.id, &1})
+
+    for %{id: id, from: from} <- changes,
+        trip = Map.fetch!(trip_by_id, id),
+        Headsigns.normalize(trip.trip_headsign) != from do
+      %{id: id, trip_id: trip.trip_id, reviewed: from, current: trip.trip_headsign}
+    end
+  end
+
+  # One audit row per written trip, sharing the caller's operation id and the
+  # full written id list like the other bulk trip audits. The write touches only
+  # `trip_headsign` and `updated_at`, so the reconstructed after row is exact
+  # and the before/after snapshots differ in `trip_headsign` alone.
+  defp audit_written_headsigns!(audit_context, trips, written, operation_id, now) do
+    organization_id = audit_context.organization_id
+    version_id = audit_context.gtfs_version_id
+    trip_by_id = Map.new(trips, &{&1.id, &1})
+    affected = Enum.map(written, & &1.id)
+
+    Enum.each(written, fn change ->
+      trip = Map.fetch!(trip_by_id, change.id)
+      frequencies = trip_frequencies(organization_id, version_id, trip.trip_id)
+
+      start_secs =
+        first_departure_secs(trip_stop_times(organization_id, version_id, trip.trip_id))
+
+      before = edit_snapshot(trip, frequencies, start_secs)
+
+      updated = %{trip | trip_headsign: change.to, updated_at: now}
+      after_snapshot = edit_snapshot(updated, frequencies, start_secs)
+
+      audit_trip!(
+        audit_context,
+        updated,
+        "updated",
+        before,
+        after_snapshot,
+        operation_id,
+        affected
+      )
+    end)
   end
 
   defp delete_children!(:stop_times, organization_id, version_id, trip_ids) do
