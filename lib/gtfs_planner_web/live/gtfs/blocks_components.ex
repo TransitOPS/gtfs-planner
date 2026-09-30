@@ -5255,6 +5255,11 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     doc:
       "the Connections view's derived state: the page of filtered groups, the pager, the counts, the places, the selected group and the filter chips"
 
+  attr :bulk_choice, :any,
+    default: nil,
+    doc:
+      "the Set-all setting the reader has chosen in the group panel: one of the three setting values, or `nil` while they have chosen none"
+
   attr :selected_ids, :any, required: true
   attr :selected_block_ids, :any, required: true, doc: "the block IDs the reader has selected"
   attr :page_block_ids, :any, required: true, doc: "the block IDs the current page holds"
@@ -5381,6 +5386,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
               state={@state}
               version_id={@state.version_id}
               setting_options={@connection_setting_options}
+              bulk_choice={@bulk_choice}
             />
           <% @state.panel == :pool -> %>
             <p
@@ -5773,11 +5779,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   # The handoff the group's first connection makes, in words. A group can hold
   # more than one kind and the row has one line, so it names the kind its first
   # arrival makes; the group panel lists the rest.
-  defp connection_handoff_label([:same_stop | _rest]), do: "Same stop"
-  defp connection_handoff_label([:same_station | _rest]), do: "Same station"
-  defp connection_handoff_label([:nearby | _rest]), do: "Nearby stop"
-  defp connection_handoff_label([:moves | _rest]), do: "Vehicle moves"
+  defp connection_handoff_label([kind | _rest]), do: connection_handoff_name(kind)
   defp connection_handoff_label(_handoffs), do: "Handoff"
+
+  defp connection_handoff_name(:same_stop), do: "Same stop"
+  defp connection_handoff_name(:same_station), do: "Same station"
+  defp connection_handoff_name(:nearby), do: "Nearby stop"
+  defp connection_handoff_name(:moves), do: "Vehicle moves"
 
   defp connection_wait_text(%{wait_min: min, wait_max: max}) when min == max, do: "#{min}"
   defp connection_wait_text(%{wait_min: min, wait_max: max}), do: "#{min}–#{max}"
@@ -5840,6 +5848,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
   attr :state, :map, required: true
   attr :version_id, :any, required: true
   attr :setting_options, :list, required: true
+  attr :bulk_choice, :any, default: nil
 
   defp connections_panel(assigns) do
     assigns =
@@ -5847,6 +5856,13 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
       |> assign(:sections, connection_sections(assigns.connections))
       |> assign(:route_options, route_options(assigns.routes))
       |> assign(:chips, assigns.connections.chips)
+      # Set all offers the three settings, never the review filter: "Needs
+      # review" is a way of reading the list, not a setting anyone can apply, so
+      # the fieldset's radios are the Show control's own values without it.
+      |> assign(
+        :bulk_options,
+        Enum.reject(assigns.setting_options, fn {_label, value} -> value == "review" end)
+      )
 
     ~H"""
     <div id="connections-panel" class="min-w-0 max-w-full">
@@ -5929,6 +5945,20 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           id="connections-list"
           class="h-[max(560px,calc(100dvh-230px))] min-w-0 max-w-full overflow-y-auto border-r border-subtle max-md:border-r-0 max-md:border-b"
         >
+          <%!-- A selected group replaces the list in the same column: the reader
+          came here to decide one place-and-route pair, and the groups behind it
+          are the "All places" link's job. The toolbar and the summary strip stay,
+          so the filters that found this group are still the filters that can
+          leave it. --%>
+          <.connections_group_panel
+            :if={@connections.group}
+            group={@connections.group}
+            routes={@routes}
+            state={@state}
+            bulk_options={@bulk_options}
+            bulk_choice={@bulk_choice}
+          />
+
           <.state_panel
             :if={@connections.total == 0}
             id="connections-empty"
@@ -5970,6 +6000,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
 
           <section
             :for={section <- @sections}
+            :if={is_nil(@connections.group)}
             id={"connections-place-#{place_token(section.id)}"}
             aria-labelledby={"connections-place-name-#{place_token(section.id)}"}
             class="border-b border-subtle"
@@ -5995,7 +6026,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
           </section>
 
           <div
-            :if={@connections.pages > 1}
+            :if={@connections.pages > 1 and is_nil(@connections.group)}
             id="connections-pager"
             class="border-t border-subtle px-4"
           >
@@ -6110,6 +6141,265 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksComponents do
     </span>
     """
   end
+
+  # Renders the selected group: "All places" back to the list, the heading with
+  # the two route badges, the group's facts, the hints that follow from its first
+  # connection, the table of every connection it holds, and the Set-all fieldset.
+  #
+  # Every number here is one `Blocking.Connections` already derived: the wait and
+  # arrival ranges are the group's own, each row's wait is its own gap, and the
+  # setting chip is the same `block_gap_note/2` the timeline's gap chips and the
+  # drawer's list carry, so R13's four settings read the same in all three. The
+  # hints are `Blocking.RiderOutcomes` over the group's first connection, the
+  # same list the connection drawer shows for that connection (CR-3).
+  #
+  # A row's block button opens the connection drawer through the ordinary
+  # `open_gap` event with the pair's two trip UUIDs, so the drawer is a deep link
+  # and the URL keeps `view=connections` and the group behind it — the reader
+  # closes the drawer and is back on this panel.
+  #
+  # Set all is secondary and inert until a setting is chosen: the review it opens
+  # shows what the save would write, so a review reachable without a choice would
+  # be a review of nothing. The button says which half is missing.
+  attr :group, :map, required: true
+  attr :routes, :map, required: true
+  attr :state, :map, required: true
+  attr :bulk_options, :list, required: true
+  attr :bulk_choice, :any, default: nil
+
+  defp connections_group_panel(assigns) do
+    assigns =
+      assigns
+      |> assign(:first, List.first(assigns.group.connections))
+      |> assign(:hints, group_hints(assigns.group))
+      |> assign(:same_stop?, List.first(assigns.group.handoffs) == :same_stop)
+
+    ~H"""
+    <div id="connections-group" class="min-w-0 max-w-full px-5 pb-6 pt-2">
+      <button
+        id="connections-group-back"
+        type="button"
+        phx-click={JS.push("close_group") |> JS.focus(to: "#connections-group-#{@group.token}")}
+        class={link_class()}
+      >
+        <.icon name="hero-chevron-left" class="size-4" /> All places
+      </button>
+
+      <h2
+        id="connections-group-heading"
+        class="mt-1 flex flex-wrap items-center gap-2 font-display text-[18px] font-semibold tracking-[-0.02em] text-strong"
+      >
+        <.route_badge_for route_id={@group.from_route_id} routes={@routes} />
+        <.icon name={connection_join_icon(@group)} class="size-5 shrink-0 text-muted" />
+        <.route_badge_for route_id={@group.to_route_id} routes={@routes} />
+        <span id="connections-group-title">{group_headline(@group, @routes)}</span>
+      </h2>
+
+      <dl
+        id="connections-group-facts"
+        class="mt-3 grid grid-cols-[112px_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-sm"
+      >
+        <dt class="text-muted">Arrives at</dt>
+        <dd>{arrival_stop_name(@group)}</dd>
+        <dt class="text-muted">Departs from</dt>
+        <dd>{departure_stop_text(@group, @same_stop?)}</dd>
+        <dt :if={!@same_stop?} class="text-muted">Handoff</dt>
+        <dd :if={!@same_stop?}>{connection_handoff_names(@group.handoffs)}</dd>
+        <dt class="text-muted">On board</dt>
+        <dd class="tabular-nums">
+          {connection_wait_text(@group)} min, arrivals {clock(@group.first_arrival)}–{clock(
+            @group.last_arrival
+          )}
+        </dd>
+      </dl>
+
+      <ul :if={@hints != []} id="connections-group-hints" class="mt-3 grid gap-1.5">
+        <li
+          :for={hint <- @hints}
+          data-hint={hint.kind}
+          class="flex gap-2 text-[13px] text-default"
+        >
+          <.icon name={hint_icon(hint.kind)} class="mt-0.5 size-4 shrink-0" />
+          <span class="min-w-0">{hint.text}</span>
+        </li>
+      </ul>
+
+      <h3
+        id="connections-group-count"
+        class="mt-5 text-sm font-semibold text-strong"
+      >
+        {count_label(length(@group.connections), "connection", "connections")}
+      </h3>
+
+      <div class="mt-2 max-w-full overflow-x-auto">
+        <%!-- The production setting chip is the same one the timeline's gap chips
+        and the drawer carry, so it is longer than the reference's own short
+        label, and a feed's own trip ids are longer than the reference's. One
+        line per connection therefore needs more width than the list column has,
+        so the table is as wide as its own content and scrolls sideways inside
+        the column — the same treatment the List view's block tables already
+        give their wide ones. Pinning a column would be the alternative, but it
+        hides a required column (Wait) behind the pinned one at scroll zero, and
+        `table-row-design.md` asks every column for a visible header. --%>
+        <table
+          id="connections-group-table"
+          class="w-max min-w-[420px] border-collapse whitespace-nowrap text-left text-[13px]"
+        >
+          <thead>
+            <tr class="bg-white text-default">
+              <th scope="col" class="h-9 pr-2 font-[650]">Block</th>
+              <th scope="col" class="pr-2 font-[650]">Arrives</th>
+              <th scope="col" class="pr-2 text-right font-[650]">Wait</th>
+              <th scope="col" class="pr-1 font-[650]">Setting</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              :for={connection <- @group.connections}
+              id={"connections-connection-row-#{connection_row_token(connection)}"}
+              aria-current={to_string(@state.gap == connection.id)}
+              class="border-t border-subtle bg-white hover:bg-canvas aria-[current=true]:bg-selection"
+            >
+              <td class="pr-2">
+                <button
+                  id={"connections-connection-#{connection_row_token(connection)}"}
+                  type="button"
+                  phx-click="open_gap"
+                  phx-value-from={connection.from.id}
+                  phx-value-to={connection.to.id}
+                  phx-value-block={connection.block_id}
+                  class="min-h-11 min-w-11 py-1 text-left font-semibold text-action hover:underline"
+                >
+                  {connection.block_id}
+                </button>
+              </td>
+              <td class="pr-2 tabular-nums">
+                {clock(connection.from.last_arrival)}
+                <span class="text-[12px] text-muted">
+                  {connection.from.trip_id}→{connection.to.trip_id}
+                </span>
+              </td>
+              <td class="pr-2 text-right tabular-nums">
+                {connection_wait_minutes(connection)} min
+              </td>
+              <td class="pr-1">
+                <.block_gap_note connection={block_gap_note(connection.setting, connection.review?)} />
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <form
+        id="connections-bulk-form"
+        phx-change="bulk_choice"
+        class="mt-6 rounded-card border border-subtle p-4"
+      >
+        <fieldset>
+          <legend class="px-1 text-sm font-semibold text-strong">
+            Set all {length(@group.connections)} at once
+          </legend>
+          <p id="connections-bulk-note" class="text-[13px] text-muted">
+            The review lists every connection with its wait. Leave any out before saving.
+          </p>
+          <div class="mt-3 grid gap-2">
+            <label
+              :for={{label, value} <- @bulk_options}
+              class="flex min-h-11 cursor-pointer items-center gap-2.5 rounded-control border border-subtle px-3 text-sm has-[:checked]:border-action has-[:checked]:bg-selection"
+            >
+              <input
+                type="radio"
+                id={"connections-bulk-#{value}"}
+                name="bulk"
+                value={value}
+                checked={@bulk_choice == value}
+                class="size-[18px] accent-action"
+              />
+              {label}
+            </label>
+          </div>
+        </fieldset>
+        <.button
+          id="bulk-review-open"
+          type="button"
+          variant="secondary"
+          class="mt-3"
+          disabled={is_nil(@bulk_choice)}
+        >
+          Review {count_label(length(@group.connections), "connection", "connections")}
+        </.button>
+        <p
+          :if={is_nil(@bulk_choice)}
+          id="connections-bulk-disabled-note"
+          class="mt-1 text-[13px] text-muted"
+        >
+          Choose a setting to review.
+        </p>
+      </form>
+    </div>
+    """
+  end
+
+  # The group's own headline, the list row's continuation with the place spelled
+  # out: a turnback says so, and every other pair names the route it continues
+  # as. The route is the day's own badge name, so a group with a short name reads
+  # "Continues as 24" and never "Continues as R24".
+  defp group_headline(%{turnback?: true} = group, _routes),
+    do: "Turns back at #{group.place.name}"
+
+  defp group_headline(group, routes),
+    do: "Continues as #{route_label(routes, group.to_route_id)} at #{group.place.name}"
+
+  # The arrival stop's own name, the place's when the day's derivation carries no
+  # stop for it — the same fallback the list row makes.
+  defp arrival_stop_name(group) do
+    case Map.get(group.arrival_stop || %{}, :name) do
+      name when name in [nil, ""] -> group.place.name
+      name -> name
+    end
+  end
+
+  # A pair that hands over at the stop it arrived at has nowhere to go, so the
+  # facts say "Same stop" rather than repeating the arrival stop's own name.
+  defp departure_stop_text(_group, true), do: "Same stop"
+
+  defp departure_stop_text(group, false) do
+    case Map.get(group.departure_stop || %{}, :name) do
+      name when name in [nil, ""] -> group.place.name
+      name -> name
+    end
+  end
+
+  # Every handoff kind the group holds, in `Blocking.Connections`' own order. A
+  # group can hold more than one — a stop that some pairs hand over at and others
+  # walk from — and the facts can say all of them where the list row named one.
+  defp connection_handoff_names(handoffs) do
+    case handoffs do
+      [] -> "Handoff"
+      handoffs -> Enum.map_join(handoffs, " · ", &connection_handoff_name/1)
+    end
+  end
+
+  # The hints of the group's first connection: the copy is per connection, and
+  # the first connection is the one the list's row and the heading already
+  # describe, so the panel's facts and its hints are about the same pair. The
+  # turnback flag is the group's own, which is what `Connections` grouped on.
+  defp group_hints(group) do
+    case List.first(group.connections) do
+      nil -> []
+      connection -> RiderOutcomes.hints(Map.merge(connection, %{turnback?: group.turnback?}))
+    end
+  end
+
+  # One connection's own wait, in whole minutes. The connection is one gap, so it
+  # has one wait rather than a range, and an overlap keeps its negative sign
+  # exactly as `Connections` reports it.
+  defp connection_wait_minutes(connection), do: div(connection.gap.gap_secs, 60)
+
+  # A connection's id is its two trip UUIDs joined by a bar, so the row's DOM id
+  # is that id encoded without padding: the same rule the list's section ids and
+  # the group's token follow, for the same reason.
+  defp connection_row_token(connection), do: Base.url_encode64(connection.id, padding: false)
 
   defp filtered_empty_text(%{status: :problems, route: route}) when not is_nil(route),
     do: "No block on this route has a problem on this service day."

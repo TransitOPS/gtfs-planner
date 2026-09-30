@@ -484,15 +484,35 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
 
   def handle_event("paginate_groups", _params, socket), do: {:noreply, socket}
 
+  # Selecting a group resets the Set-all choice: the choice belongs to the group
+  # it was made in, and a reader who opens another group must choose again
+  # rather than arrive at a review of the wrong pair.
   def handle_event("open_group", %{"group" => group}, socket) do
-    patch(socket, %{group: blank_to_nil(group)})
+    socket |> assign(:bulk_choice, nil) |> patch(%{group: blank_to_nil(group)})
   end
 
   def handle_event("open_group", _params, socket), do: {:noreply, socket}
 
   def handle_event("close_group", _params, socket) do
-    patch(socket, %{group: nil})
+    socket |> assign(:bulk_choice, nil) |> patch(%{group: nil})
   end
+
+  # The Set-all setting the reader chose in the group panel. It is a choice, not a
+  # filter, so it stays out of the URL: a reload or a shared link opens the group
+  # with no choice, which is the state the fieldset explains. The value is one of
+  # the three settings the fieldset offers and nothing else, so a crafted event
+  # cannot leave a review for a setting nobody picked.
+  def handle_event("bulk_choice", %{"bulk" => choice}, socket) do
+    case Map.fetch(@connection_settings, choice) do
+      {:ok, _label} when choice in ["none", "stay", "reboard"] ->
+        {:noreply, assign(socket, :bulk_choice, choice)}
+
+      _unknown ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("bulk_choice", _params, socket), do: {:noreply, socket}
 
   def handle_event("set_scale", %{"scale" => "day"}, socket) do
     patch(socket, %{scale: :day})
@@ -4233,6 +4253,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       connection_form: connection_form(nil),
       connection_scope: nil,
       connection_discard: nil,
+      # The Set-all setting chosen in the group panel, and no group open with it:
+      # the choice is per group and starts empty, which is why the fieldset's
+      # review button is disabled on a panel the reader has just opened.
+      bulk_choice: nil,
       block_view: nil,
       back_block: nil,
       block_action: nil,
@@ -4873,6 +4897,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 connection_settings={@connection_settings}
                 connection_setting_options={@connection_setting_options}
                 connections={@connections}
+                bulk_choice={@bulk_choice}
                 selected_ids={@selection}
                 selected_block_ids={@block_selection}
                 page_block_ids={@timeline_block_ids}
