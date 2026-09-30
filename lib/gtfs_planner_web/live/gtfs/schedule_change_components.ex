@@ -17,7 +17,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
   """
   use GtfsPlannerWeb, :html
 
-  import GtfsPlannerWeb.PlannerComponents, only: [message: 1]
+  import GtfsPlannerWeb.PlannerComponents, only: [message: 1, drawer_scroll: 1, drawer_footer: 1]
 
   alias GtfsPlannerWeb.Gtfs.ScheduleComponents
 
@@ -368,6 +368,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
           }
           phx-disable-with={apply_label(@kind)}
           disabled={not @enabled?}
+          data-unavailable={not @enabled? || nil}
         >
           {primary_label(@change, @count)}
         </.button>
@@ -501,6 +502,473 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleChangeComponents do
   @doc "Whether the open change renders as the docked strip."
   def change_strip?(%{kind: kind}) when kind in [:shift, :timing], do: true
   def change_strip?(_change), do: false
+
+  # --- Copy to calendar and Change calendar: the change review drawer ---------
+
+  @doc """
+  Renders the Copy to calendar and Change calendar review drawer.
+
+  The design system's change review: a title that repeats the count, a context
+  line, the "Preview · not saved" badge, the target service-day select, the copy
+  skip choice, three metric cells, the changes table, one card per affected
+  service day and a footer that names what the primary will do. The review is the
+  drawer's only behavioral input: its inserts name the new trip IDs, its skipped
+  and cleared-block notes fill the table, its counts fill the metrics, and its
+  refusal consequences disable the primary and raise the error banner. A stale
+  review replaces the primary with Refresh preview (FH-33); the refusal's reason
+  disables the primary and its status sits in the footer.
+  """
+  attr :change, :map, required: true
+  attr :drawer, :map, required: true
+  attr :version_name, :string, default: nil
+
+  def change_review_drawer(assigns) do
+    change = assigns.change
+    drawer = assigns.drawer
+    change_set = reviewed_change_set(change)
+    count = review_count(change, drawer, change_set)
+    refusal = review_refusal(change, drawer.to)
+    skip? = Map.get(change.params, :skip_existing, true) != false
+
+    assigns =
+      assign(assigns,
+        kind: change.kind,
+        copy?: change.kind == :copy,
+        skip?: skip?,
+        rows: review_rows(change, drawer, change_set, refusal != nil),
+        metrics: review_metrics(change, change_set, count, refusal != nil),
+        cards: review_cards(change, drawer, change_set),
+        refusal: refusal,
+        stale?: change.stale? == true,
+        count: count,
+        title: review_title(change.kind, length(drawer.rows), drawer.to),
+        context: "#{drawer.from} → #{drawer.to} · #{assigns.version_name}",
+        status: review_status(change.kind, refusal, assigns.version_name),
+        skip_help: skip_help(change_set, skip?, drawer.to),
+        primary_label: review_primary(change.kind, count),
+        apply_label: review_apply_label(change.kind),
+        enabled?: refusal == nil and change.stale? != true and count > 0
+      )
+
+    ~H"""
+    <.drawer
+      id="change-review"
+      chrome="planner"
+      open
+      title={@title}
+      on_close="cancel_change"
+      return_focus_id={@drawer.return_focus_id}
+    >
+      <:lede>{@context}</:lede>
+      <:header_actions>
+        <span class="inline-flex items-center rounded-badge bg-warning-bg px-2 py-0.5 text-[13px] font-[650] text-warning-fg">
+          Preview · not saved
+        </span>
+      </:header_actions>
+
+      <.form
+        for={%{}}
+        as={:change}
+        id="review-form"
+        phx-change="change_params"
+        phx-submit="change_params"
+        class="flex min-h-0 flex-1 flex-col"
+      >
+        <.drawer_scroll>
+          <div class="grid gap-4 sm:grid-cols-[minmax(0,280px)_minmax(0,1fr)] sm:items-end">
+            <.input
+              id="review-target"
+              name="change[service_id]"
+              type="select"
+              label={if @copy?, do: "Copy to", else: "Move to"}
+              options={@drawer.target_options}
+              value={@change.params[:service_id]}
+              class="w-full select select-lg"
+            />
+            <.input
+              :if={@copy?}
+              id="review-skip"
+              name="change[skip_existing]"
+              type="checkbox"
+              label="Skip trips that already leave at the same time"
+              checked={@skip?}
+              help={@skip_help}
+            />
+          </div>
+
+          <.message
+            :if={@refusal}
+            id="review-refusal"
+            kind="error"
+            role="alert"
+            title={@refusal.title}
+          >
+            <%= if @refusal.body do %>
+              {@refusal.body}
+            <% end %>
+          </.message>
+
+          <.message
+            :if={@stale?}
+            id="review-stale"
+            kind="warning"
+            role="alert"
+            title="These trips changed after this preview. Nothing was written."
+          >
+            Refresh the preview to see their current times, then apply again.
+          </.message>
+
+          <div class="grid grid-cols-3 gap-px overflow-hidden rounded-card border border-subtle bg-subtle">
+            <div :for={{label, value} <- @metrics} class="bg-white px-4 py-3">
+              <p class="text-[13px] text-muted">{label}</p>
+              <p class="mt-0.5 font-display text-[26px] font-semibold leading-none tabular-nums text-strong">
+                {value}
+              </p>
+            </div>
+          </div>
+
+          <div class="max-h-[300px] overflow-auto rounded-control border border-subtle">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="text-left text-[13px] text-default">
+                  <th class="border-b border-subtle bg-canvas px-3 py-2 font-[650]">Trip</th>
+                  <th class="border-b border-subtle bg-canvas px-3 py-2 text-right font-[650]">
+                    Departs
+                  </th>
+                  <th class="border-b border-subtle bg-canvas px-3 py-2 font-[650]">
+                    {if @copy?, do: "New trip ID", else: "Block now → after"}
+                  </th>
+                  <th
+                    :if={@copy?}
+                    class="border-b border-subtle bg-canvas px-3 py-2 font-[650]"
+                  >
+                    Note
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={row <- @rows} class="border-t border-subtle">
+                  <td class="px-3 py-2 font-mono text-[12px] text-muted">{row.label}</td>
+                  <td class="px-3 py-2 text-right font-[650] tabular-nums text-strong">
+                    {row.clock}
+                  </td>
+                  <td class={["px-3 py-2 text-[12px]", row.third_class]}>{row.third}</td>
+                  <td :if={@copy?} class={["px-3 py-2", row.note_class]}>{row.note}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <section
+            :for={card <- @cards}
+            class="rounded-card border border-subtle px-4 py-3"
+          >
+            <h4 class="text-sm font-bold text-strong">
+              <span :if={card.prefix} class="font-normal text-muted">{card.prefix}</span>
+              {card.title}
+            </h4>
+            <p class="mt-1 text-sm text-default">{card.body}</p>
+          </section>
+        </.drawer_scroll>
+
+        <.drawer_footer>
+          <p id="review-status" class="mr-auto max-w-[340px] text-[13px] text-muted">
+            {@status}
+          </p>
+          <.button
+            id="review-cancel"
+            type="button"
+            variant="secondary"
+            class="min-h-11"
+            phx-click={
+              JS.push("cancel_change")
+              |> JS.dispatch("timetable-grid:keep-cursor", to: "#schedules-grid")
+            }
+          >
+            Keep trips
+          </.button>
+          <.button
+            :if={@stale?}
+            id="review-refresh"
+            type="button"
+            variant="primary"
+            class="min-h-11"
+            phx-click={
+              JS.push("refresh_change")
+              |> JS.dispatch("timetable-grid:keep-cursor", to: "#schedules-grid")
+            }
+          >
+            Refresh preview
+          </.button>
+          <.button
+            :if={not @stale?}
+            id="review-apply"
+            type="button"
+            variant="primary"
+            class="min-h-11"
+            phx-click={
+              JS.push("apply_change")
+              |> JS.dispatch("timetable-grid:keep-cursor", to: "#schedules-grid")
+            }
+            phx-disable-with={@apply_label}
+            disabled={not @enabled?}
+            data-unavailable={not @enabled? || nil}
+          >
+            {@primary_label}
+          </.button>
+        </.drawer_footer>
+      </.form>
+    </.drawer>
+    """
+  end
+
+  # The reviewed change set, or the shapes an absent review renders with.
+  defp reviewed_change_set(%{review: %{change_set: change_set}}), do: change_set
+
+  defp reviewed_change_set(_change),
+    do: %{updates: [], inserts: [], deletes: [], consequences: []}
+
+  defp reviewed_consequences(%{review: %{change_set: %{consequences: consequences}}}),
+    do: consequences
+
+  defp reviewed_consequences(_change), do: []
+
+  # The primary counts what the review will write: the inserts a copy keeps, and
+  # every trip a move carries.
+  defp review_count(%{kind: :copy}, _drawer, change_set), do: length(change_set.inserts)
+  defp review_count(%{kind: :move}, drawer, _change_set), do: length(drawer.rows)
+
+  # The first refusal the review or the apply reported. R9's refusal names the
+  # target service day the person chose rather than the raw service IDs, because
+  # the drawer is about that service day.
+  defp review_refusal(change, to) do
+    reviewed =
+      for {:error, reason} <- reviewed_consequences(change), do: reason
+
+    applied = for {:error, reason} <- List.wrap(change.refusal), do: reason
+
+    case reviewed ++ applied do
+      [] -> nil
+      [reason | _rest] -> refusal_copy(reason, to)
+    end
+  end
+
+  defp refusal_copy({:mixed_service, _details}, to) do
+    %{
+      title: "#{to} already runs frequency service on this pattern.",
+      body:
+        "Listed trips can't run on the same days. Convert the frequency service to scheduled trips first."
+    }
+  end
+
+  defp refusal_copy(reason, _to),
+    do: %{title: ScheduleComponents.error_message(reason), body: nil}
+
+  # The reference's three cells: what is written, what the skip choice leaves
+  # alone (or the blocks a move leaves) and the block problems the action adds.
+  defp review_metrics(%{kind: :copy}, change_set, count, blocked?) do
+    [
+      {"Trips copied", if(blocked?, do: 0, else: count)},
+      {"Skipped", note_count(change_set, :skipped_existing)},
+      {"New problems", problem_count(change_set)}
+    ]
+  end
+
+  defp review_metrics(%{kind: :move}, change_set, count, blocked?) do
+    [
+      {"Trips move", if(blocked?, do: 0, else: count)},
+      {"Leave their block", note_count(change_set, :cleared_block)},
+      {"New problems", problem_count(change_set)}
+    ]
+  end
+
+  defp note_count(change_set, tag) do
+    Enum.count(change_set.consequences, &match?({:note, {^tag, _id, _value}}, &1))
+  end
+
+  defp problem_count(change_set) do
+    for {:warning, {:block_findings, findings}} <- change_set.consequences, reduce: 0 do
+      total -> total + length(findings)
+    end
+  end
+
+  # One table row per selected trip: the copy's new ID and note, or the move's
+  # block before and after.
+  defp review_rows(%{kind: :copy}, drawer, change_set, blocked?) do
+    new_ids = Map.new(change_set.inserts, &{&1.source_id, &1.attrs.trip_id})
+
+    skipped =
+      MapSet.new(for {:note, {:skipped_existing, id, _clock}} <- change_set.consequences, do: id)
+
+    Enum.map(drawer.rows, fn row ->
+      new_id = Map.get(new_ids, row.trip_id)
+      skipped? = MapSet.member?(skipped, row.trip_id)
+
+      %{
+        label: row.label,
+        clock: row.clock,
+        third: new_id || "—",
+        third_class: if(new_id, do: "font-mono text-strong", else: "font-mono text-muted"),
+        note: copy_note(blocked?, skipped?, new_id),
+        note_class: copy_note_class(blocked?, skipped?)
+      }
+    end)
+  end
+
+  defp review_rows(%{kind: :move}, drawer, change_set, _blocked?) do
+    after_blocks =
+      Map.new(change_set.updates, fn update ->
+        {update.trip_id, Map.get(update.fields, :block_id, :kept)}
+      end)
+
+    Enum.map(drawer.rows, fn row ->
+      {block, cleared?} = block_change(row.block_id, Map.get(after_blocks, row.trip_id))
+
+      %{
+        label: row.label,
+        clock: row.clock,
+        third: block,
+        third_class:
+          if(cleared?,
+            do: "font-[650] tabular-nums text-warning-fg",
+            else: "tabular-nums text-default"
+          ),
+        note: nil,
+        note_class: nil
+      }
+    end)
+  end
+
+  defp copy_note(true, _skipped?, _new_id), do: "Not copied"
+  defp copy_note(false, true, _new_id), do: "Skipped · already leaves at this time"
+  defp copy_note(false, false, nil), do: "Not copied"
+  defp copy_note(false, false, _new_id), do: "Starts without a block"
+
+  defp copy_note_class(true, _skipped?), do: "text-muted"
+  defp copy_note_class(false, true), do: "text-muted"
+  defp copy_note_class(false, false), do: "text-default"
+
+  # A trip with no block answers the column's question with no block, not with
+  # "none" (the reference's dash row); a trip that loses its block names it.
+  defp block_change(nil, _after), do: {"— → —", false}
+  defp block_change(block, :kept), do: {"#{block} → #{block}", false}
+  defp block_change(block, nil), do: {"#{block} → none", true}
+  defp block_change(block, kept_block), do: {"#{block} → #{kept_block}", false}
+
+  # The reference's one card per service day: the target day says what happens
+  # there, and a source day the target shares dates with gets its own card.
+  defp review_cards(change, drawer, change_set) do
+    [target_card(change, drawer, change_set) | shared_cards(change, drawer, change_set)]
+  end
+
+  defp target_card(change, drawer, change_set) do
+    %{prefix: nil, title: drawer.to, body: target_card_body(change, drawer, change_set)}
+  end
+
+  defp target_card_body(change, drawer, change_set) do
+    blocked? = Enum.any?(change_set.consequences, &match?({:error, _reason}, &1))
+    cleared = note_count(change_set, :cleared_block)
+
+    cond do
+      blocked? ->
+        nothing_moved_body(change.kind)
+
+      change.kind == :copy ->
+        "Copies start without a block and appear in the Blocks pool for #{drawer.to}. " <>
+          "No new timing or block problems."
+
+      cleared > 0 ->
+        cleared_block_body(change_set, drawer.to, cleared)
+
+      true ->
+        "No new block problems."
+    end
+  end
+
+  defp nothing_moved_body(:copy), do: "Nothing is added while the frequency service is there."
+  defp nothing_moved_body(:move), do: "Nothing is moved while the frequency service is there."
+
+  # R6 clears a moved trip's block when its companion set changes, whether that
+  # leaves it carrying the block alone or joins it to another vehicle's work, so
+  # the sentence names neither cause alone.
+  defp cleared_block_body(change_set, to, count) do
+    verb = if count == 1, do: "leaves", else: "leave"
+    subject = if count == 1, do: "it wouldn't", else: "they wouldn't"
+    pronoun = if count == 1, do: "it goes", else: "they go"
+    blocks = Enum.join(cleared_block_names(change_set), ", ")
+
+    "#{trip_count(count)} #{verb} block #{blocks}: #{subject} run with the same trips " <>
+      "on #{to}, so #{pronoun} to the unassigned pool on Blocks."
+  end
+
+  defp cleared_block_names(change_set) do
+    change_set.consequences
+    |> Enum.flat_map(fn
+      {:note, {:cleared_block, _id, block}} -> [block]
+      _consequence -> []
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp shared_cards(change, drawer, change_set) do
+    for {:warning, {:shared_dates, _service_id, count}} <- change_set.consequences do
+      %{
+        prefix: "Also changes · ",
+        title: drawer.from,
+        body: shared_card_body(change, drawer, count)
+      }
+    end
+  end
+
+  defp shared_card_body(%{kind: :copy}, drawer, count) do
+    "#{drawer.from} and #{drawer.to} both run on #{count} dates. " <>
+      "On those dates riders would see the originals and the copies. " <>
+      "To change which dates each service day covers, use Calendars."
+  end
+
+  defp shared_card_body(%{kind: :move}, drawer, count) do
+    "#{drawer.from} and #{drawer.to} both run on #{count} dates. " <>
+      "On those dates the trips still run. " <>
+      "To change which dates each service day covers, use Calendars."
+  end
+
+  defp review_title(:copy, count, to), do: "Copy #{trip_count(count)} to #{to}?"
+  defp review_title(:move, count, to), do: "Move #{trip_count(count)} to #{to}?"
+
+  defp review_primary(:copy, count), do: "Copy #{trip_count(count)}"
+  defp review_primary(:move, count), do: "Move #{trip_count(count)}"
+
+  defp review_apply_label(:copy), do: "Copying…"
+  defp review_apply_label(:move), do: "Moving…"
+
+  defp review_status(kind, refusal, _version_name) when is_map(refusal) do
+    verb = if kind == :copy, do: "added", else: "moved"
+
+    "Nothing can be #{verb} while that frequency service runs on these days."
+  end
+
+  defp review_status(kind, nil, version_name) do
+    verb = if kind == :copy, do: "copy", else: "move"
+
+    "Nothing changes until you #{verb}.#{saves_clause(version_name)}"
+  end
+
+  defp saves_clause(nil), do: ""
+  defp saves_clause(version_name), do: " Then it saves to #{version_name} right away."
+
+  # The skip help states what the review already found on the target service day;
+  # with the choice off, every selected trip is copied whether or not one is
+  # there, so the line answers a question the choice no longer asks.
+  defp skip_help(_change_set, false, _to), do: nil
+
+  defp skip_help(change_set, true, to) do
+    case note_count(change_set, :skipped_existing) do
+      0 -> "None do on #{to}."
+      1 -> "1 trip already runs at the same time on #{to}."
+      count -> "#{count} trips already run at the same time on #{to}."
+    end
+  end
 
   defp chip_class(true), do: "border-action bg-white text-action"
   defp chip_class(false), do: "border-subtle bg-white text-strong hover:bg-canvas"
