@@ -5943,6 +5943,28 @@ defmodule GtfsPlanner.Gtfs do
   end
 
   @doc """
+  Suggests runs for a day type and returns a plan, writing nothing.
+
+  The plan carries the moves the suggestion would make, the figures the day
+  would have afterwards, and the fingerprint an apply re-checks. Suggesting is
+  read-only: no `trip_runs` row, crew column or settings row is written, and no
+  lock is taken.
+
+  A foreign or unpublished version is `{:error, :not_found}` and a key no day
+  type has is `{:error, {:unknown_day_type, day_types}}` — the same answers
+  `load_runs/3` gives, because this composes it.
+  """
+  @spec suggest_runs(Ecto.UUID.t(), Ecto.UUID.t(), String.t() | nil, Cutter.scope()) ::
+          {:ok, GtfsPlanner.Gtfs.Runs.Plan.t()}
+          | {:error,
+             :not_found
+             | {:unknown_day_type, [GtfsPlanner.Gtfs.Blocking.DayTypes.day_type()]}
+             | :unavailable}
+  def suggest_runs(organization_id, gtfs_version_id, day_type_key, scope) do
+    Runs.suggest_runs(organization_id, gtfs_version_id, day_type_key, scope)
+  end
+
+  @doc """
   Returns the current block errors and warnings involving the given trips.
 
   Natural trip IDs name the trips; for each one that runs in a block, every day
