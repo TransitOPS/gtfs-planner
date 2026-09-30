@@ -60,6 +60,38 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.HeadsignUsageFactsTest do
     assert trip.mid_trip_change == nil
   end
 
+  test "a group mixing interlined and non-interlined trips is labelled :other", context do
+    %{pattern: pattern, differing_trip: interlined} =
+      block_scenario(context, successor_route_id: "20")
+
+    weekday = Repo.get_by!(GtfsPlanner.Gtfs.TimedPattern, route_pattern_id: pattern.id)
+
+    unblocked =
+      trip_fixture(context.organization.id, context.version.id, context.route_10.route_id,
+        trip_headsign: "Roads End",
+        service_id: "WK"
+      )
+      |> trip_pattern_metadata_fixture(%{
+        route_pattern_id: pattern.route_pattern_id,
+        timed_pattern_id: weekday.id,
+        pattern_derivation_state: "linked"
+      })
+
+    assert {:ok, usage} =
+             Gtfs.headsign_usage(
+               context.organization.id,
+               context.version.id,
+               pattern.id,
+               :pattern
+             )
+
+    assert [%{value: "Roads End", kind: :other, trips: trips}] = usage.groups
+    next_blocks = Map.new(trips, &{&1.id, &1.next_block})
+
+    assert %{route_short_name: "20"} = next_blocks[interlined.id]
+    assert next_blocks[unblocked.id] == nil
+  end
+
   test "a successor on the same route gives next_block nil and kind :other", context do
     %{pattern: pattern, differing_trip: differing_trip} =
       block_scenario(context, successor_route_id: "10")

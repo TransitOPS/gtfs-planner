@@ -416,7 +416,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   # :follows group already follow the default, so the drawer never shows them
   # next-block or mid-trip lines and their facts stay nil (no lookups run for
   # them). The group kind is re-run through the shared Headsigns rule with the
-  # facts so an interline value is labelled :interline.
+  # facts: a group is :interline only when every trip in it continues on another
+  # route, so a mixed group never explains a continuation its other trips lack.
   defp trip_facts(pattern, groups, default, rows_by_id) do
     differing_trips =
       Enum.flat_map(groups, fn
@@ -435,8 +436,10 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
         trips =
           Enum.map(group.trips, &put_trip_facts(&1, next_blocks, mid_trip_changes, rows_by_id))
 
+        differences = Enum.map(trips, &Headsigns.difference(group.value, default, &1.next_block))
+
         %{kind: kind, likely_typo: likely_typo} =
-          Headsigns.difference(group.value, default, hd(trips).next_block)
+          Enum.find(differences, hd(differences), &(&1.kind != :interline))
 
         %{group | trips: trips, kind: kind, likely_typo: likely_typo}
     end)

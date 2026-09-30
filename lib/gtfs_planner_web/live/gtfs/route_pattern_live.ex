@@ -3122,9 +3122,6 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternLive do
   # The differ line counts the saved scope's fresh usage, which the reload
   # after the save loaded; another task's usage describes another scope and
   # counts nothing here.
-  # The differ line counts the saved scope's fresh usage, which the reload
-  # after the save loaded; another task's usage describes another scope and
-  # counts nothing here.
   defp usage_differ_for_scope(%{
          headsign_undo: %{scope: scope},
          headsign_usage: %{scope: scope} = usage
