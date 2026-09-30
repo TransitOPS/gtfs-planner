@@ -1455,7 +1455,7 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   end
 
   def error_message(:invalid_time) do
-    "Enter a departure as HH:MM, for example 06:00 or 25:10."
+    "Enter a time such as 6:05, 605, 6:05p or 25:10."
   end
 
   def error_message(:unauthorized) do

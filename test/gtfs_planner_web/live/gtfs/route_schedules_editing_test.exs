@@ -248,7 +248,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesEditingTest do
           "drawer" => add_params(scope, %{"start_time" => "25:9"})
         })
 
-      assert html =~ "Enter a departure as HH:MM, for example 06:00 or 25:10."
+      assert html =~ "Enter a time such as 6:05, 605, 6:05p or 25:10."
       assert html =~ ~s(id="trip-start")
       assert html =~ ~s(aria-invalid="true")
 
