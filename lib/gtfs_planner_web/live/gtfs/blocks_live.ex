@@ -53,6 +53,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlanner.Gtfs.Blocking
   alias GtfsPlanner.Gtfs.Blocking.Checks
+  alias GtfsPlanner.Gtfs.Blocking.Connections
   alias GtfsPlanner.Gtfs.Blocking.Summary
   alias GtfsPlanner.Versions
   alias GtfsPlannerWeb.EnsureRole
@@ -250,6 +251,10 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   @empty_counts %{blocks: 0, trips: 0, unassigned: 0, problems: 0, notices: 0}
   @empty_peak %{count: 0, at_secs: nil, excluded_unassigned: 0, excluded_frequency: 0}
   @empty_figures %{vehicles: 0, minimum: 0, riders: 0}
+
+  # A day with no blocks still carries the derivation's shape, so the timeline's
+  # per-gap lookup has the same keys it has on a loaded day.
+  @empty_connections %{connections: [], groups: []}
 
   # The Plan summary's chart counts the same 15-minute bins as the day load's own
   # `bins`, so the width is one constant rather than two that could drift.
@@ -3456,6 +3461,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
   defp assign_derived(socket, day) do
     selection = retain_in_day(socket.assigns.selection, day)
     block_selection = retain_blocks_in_day(socket.assigns.block_selection, day)
+    connections = Connections.build(day)
 
     socket
     |> assign(:selection, selection)
@@ -3495,6 +3501,12 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       trip_labels: trip_labels(day),
       findings_by_trip: findings_by_trip(day.findings),
       destination_blocks: Enum.map(day.blocks, &destination_option/1),
+      # The day's connections and their groups, derived once per load from the
+      # loaded day rather than stored (CR-4). `:connections_all` is server-only:
+      # the Connections view and the later drawers read it, and only the small
+      # per-connection setting entry reaches the timeline.
+      connections_all: connections,
+      connection_settings: connection_settings(connections),
       min_layover_minutes: day.settings.min_layover_minutes,
       # The whole settings row, so the Block rules drawer renders every
       # field from the day load rather than a second read.
@@ -3509,6 +3521,14 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       # explain a value, never to resolve one.
       route_settings: day.context.route_settings
     )
+  end
+
+  # One entry per connection for the render path: the setting and the review flag
+  # `Blocking.Connections` already derived, keyed by the connection id. The
+  # timeline reads this map and nothing else, so a gap's chip cannot disagree with
+  # the derivation the drawer and the later Connections view read.
+  defp connection_settings(%{connections: connections}) do
+    Map.new(connections, &{&1.id, %{setting: &1.setting, review?: &1.review?}})
   end
 
   # The garage picker lists the organization's garages by name, the vehicle type
@@ -3585,6 +3605,8 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
       routes: %{},
       findings: [],
       in_seat: %{},
+      connections_all: @empty_connections,
+      connection_settings: %{},
       trip_view: nil,
       gap_view: nil,
       block_view: nil,
@@ -4050,6 +4072,7 @@ defmodule GtfsPlannerWeb.Gtfs.BlocksLive do
                 axis={@axis}
                 max_piece_minutes={@max_piece_minutes}
                 routes={@routes}
+                connection_settings={@connection_settings}
                 selected_ids={@selection}
                 selected_block_ids={@block_selection}
                 page_block_ids={@timeline_block_ids}
