@@ -14,17 +14,6 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
   # are absent: each destination ships as a working page, so it has no catalog
   # entry.
   @catalog [
-    runs: %{
-      title: "Runs",
-      scope: :version,
-      summary: "Cut vehicle blocks into each operator’s daily work.",
-      section_names: [
-        "Review every run on one chart",
-        "Get suggested runs",
-        "Set your work rules",
-        "Catch problems early"
-      ]
-    },
     rosters: %{
       title: "Rosters",
       scope: :version,
@@ -51,7 +40,10 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
   describe "feature/1" do
     test "returns the finalized copy for every fixed key" do
-      assert length(@catalog) == 3
+      # Runs is absent: `/gtfs/:version/runs` is `Gtfs.RunsLive`, not a
+      # placeholder. The count is asserted so a removed destination cannot be
+      # re-added by accident.
+      assert length(@catalog) == 2
 
       Enum.each(@catalog, fn {key, expected} ->
         entry = ComingSoon.feature(key)
@@ -130,14 +122,14 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
     end
 
     test "renders the caller's scope label verbatim" do
-      doc = render_doc(ComingSoon.feature(:runs), "This version: Fall 2026")
+      doc = render_doc(ComingSoon.feature(:rosters), "This version: Fall 2026")
 
       assert text_of(doc, "#coming-soon-scope") == "This version: Fall 2026"
     end
 
     test "renders exactly one title at the requested level and the outcome list heading one level below" do
       for level <- [1, 2, 3] do
-        doc = render_doc(ComingSoon.feature(:runs), "All versions", level)
+        doc = render_doc(ComingSoon.feature(:rosters), "All versions", level)
 
         assert Enum.count(LazyHTML.query(doc, "#coming-soon-title")) == 1
         assert Enum.count(LazyHTML.query(doc, "h#{level}#coming-soon-title")) == 1
@@ -152,7 +144,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
 
       html =
         rendered_to_string(~H"""
-        <.coming_soon feature={ComingSoon.feature(:runs)} scope_label="All versions" />
+        <.coming_soon feature={ComingSoon.feature(:rosters)} scope_label="All versions" />
         """)
 
       doc = LazyHTML.from_fragment(html)
@@ -161,7 +153,7 @@ defmodule GtfsPlannerWeb.Components.ComingSoonTest do
     end
 
     test "renders a labelled section with a semantic subsection list and no controls" do
-      doc = render_doc(ComingSoon.feature(:runs), "This version: Fall 2026")
+      doc = render_doc(ComingSoon.feature(:rosters), "This version: Fall 2026")
 
       assert LazyHTML.attribute(LazyHTML.query(doc, "section#coming-soon"), "aria-labelledby") ==
                ["coming-soon-title"]
