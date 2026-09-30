@@ -102,6 +102,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
       |> assign(:dir, dir)
       |> assign(:scale, scale_value(params["scale"]))
       |> assign(:view, view)
+      |> assign(:panel, panel_value(params["panel"]))
       |> ensure_day_loaded()
 
     socket =
@@ -143,6 +144,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # stale or hand-edited link lands on the page rather than on an error.
   defp view_value("list"), do: :list
   defp view_value(_view), do: :timeline
+
+  # The Runs | Uncovered work tabs are a URL param for the reason `?day=` is: a
+  # panel a reader cannot link to is a panel they have to find again. An unknown
+  # value is the Runs panel, so a stale link lands on a page rather than an error.
+  defp panel_value("uncovered"), do: :uncovered
+  defp panel_value(_panel), do: :runs
 
   @count_tile_keys ~w(runs straight_share paid_hours on_vehicles longest_spread uncovered)
 
@@ -194,6 +201,17 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   end
 
   def handle_event("set_view", _params, socket), do: {:noreply, socket}
+
+  def handle_event("set_panel", %{"panel" => "uncovered"}, socket) do
+    {:noreply,
+     push_patch(socket, to: runs_path(socket, socket.assigns.day, %{panel: "uncovered"}))}
+  end
+
+  def handle_event("set_panel", %{"panel" => "runs"}, socket) do
+    {:noreply, push_patch(socket, to: runs_path(socket, socket.assigns.day, %{panel: "runs"}))}
+  end
+
+  def handle_event("set_panel", _params, socket), do: {:noreply, socket}
 
   # Every strip tile opens the same drawer, and the pressed tile is the one the
   # reader pressed. The prototype sends each tile its own `data-act`; only the
@@ -365,6 +383,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     socket
     |> assign(:run_axis, runs_day.derived.axis)
     |> assign(:run_routes, runs_day.day.routes)
+    |> assign(:run_stop_names, run_stop_names(runs_day))
     |> stream(:run_rows, runs, reset: true, dom_id: &run_dom_id/1)
   end
 
@@ -452,6 +471,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
     dir = Map.get(extra, :dir) || socket.assigns.dir
     view = to_string(Map.get(extra, :view) || socket.assigns.view)
     scale = to_string(Map.get(extra, :scale) || socket.assigns.scale)
+    panel = to_string(Map.get(extra, :panel) || socket.assigns.panel)
 
     params =
       [
@@ -459,7 +479,8 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
         {"sort", if(sort != "sign_on", do: sort)},
         {"dir", if(dir == :desc, do: "desc")},
         {"scale", if(scale != "day", do: scale)},
-        {"view", if(view != "timeline", do: view)}
+        {"view", if(view != "timeline", do: view)},
+        {"panel", if(panel != "runs", do: panel)}
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
       |> Enum.map_join("&", fn {key, value} -> key <> "=" <> to_string(value) end)
@@ -503,6 +524,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
                 spread_limit_minutes={@runs_day.crew.max_spread_minutes}
                 selected_key={selected_count_tile(@drawer)}
               />
+
+              <RunsComponents.uncovered_callout
+                :if={@runs_day}
+                segments={@runs_day.derived.uncovered}
+                duration_secs={@runs_day.derived.stats.uncovered.secs}
+              />
             </:counts>
           </RunsComponents.scope_bar>
 
@@ -519,7 +546,16 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
 
           <div :if={@load_state == :loaded or @load_state == :unavailable} class="mt-4">
             <div class="flex flex-wrap items-end justify-end gap-3 pb-3">
+              <RunsComponents.tabs
+                :if={@runs_day}
+                panel={@panel}
+                run_count={length(@runs_day.derived.runs)}
+                uncovered_trips={uncovered_trip_count(@runs_day)}
+                uncovered_segments={length(uncovered_segments(@runs_day))}
+              />
+
               <.segmented_control
+                :if={@panel == :runs}
                 id="runs-view"
                 name="view"
                 legend="Runs view"
@@ -533,7 +569,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
               />
 
               <.segmented_control
-                :if={@view == :timeline}
+                :if={@panel == :runs and @view == :timeline}
                 id="runs-scale"
                 name="scale"
                 legend="Chart scale"
@@ -548,24 +584,33 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
             </div>
 
             <RunsComponents.plan_card version_id={@current_gtfs_version.id}>
-              <%= if @view == :list do %>
-                <RunsComponents.list
-                  run_rows={@streams.run_rows}
-                  sort={@sort}
-                  dir={@dir}
-                  day_label={day_label(@runs_day)}
+              <%= if @panel == :uncovered do %>
+                <RunsComponents.uncovered
+                  segments={uncovered_segments(@runs_day)}
+                  windows={uncovered_windows(@runs_day)}
+                  routes={@run_routes}
+                  stop_names={@run_stop_names}
                 />
               <% else %>
-                <RunsComponents.chart_key />
-                <RunsComponents.timeline
-                  run_rows={@streams.run_rows}
-                  axis={@run_axis}
-                  routes={@run_routes}
-                  sort={@sort}
-                  dir={@dir}
-                  scale={@scale}
-                  crew={runs_crew(@runs_day)}
-                />
+                <%= if @view == :list do %>
+                  <RunsComponents.list
+                    run_rows={@streams.run_rows}
+                    sort={@sort}
+                    dir={@dir}
+                    day_label={day_label(@runs_day)}
+                  />
+                <% else %>
+                  <RunsComponents.chart_key />
+                  <RunsComponents.timeline
+                    run_rows={@streams.run_rows}
+                    axis={@run_axis}
+                    routes={@run_routes}
+                    sort={@sort}
+                    dir={@dir}
+                    scale={@scale}
+                    crew={runs_crew(@runs_day)}
+                  />
+                <% end %>
               <% end %>
             </RunsComponents.plan_card>
           </div>
@@ -624,6 +669,44 @@ defmodule GtfsPlannerWeb.Gtfs.RunsLive do
   # check — the same nil trap step 21 recorded on the count strip, reached here
   # through a different door. A nil crew makes the footnote's paid-break limit
   # read as an em dash, which is the right thing to say about a limit nobody set.
+  # Every stop the day's trips name, as `%{stop_id => name}`.
+  #
+  # A relief window carries a `stop_id` and a time, and a reader needs the stop's
+  # NAME to plan a change: "09:12 at BAY_B" is a stop code, and "09:12 at Bay B"
+  # is a place. The name is already on the trips the day loaded, so this is a
+  # projection of data the page is holding rather than a second read, and the
+  # routes map beside it is built the same way.
+  #
+  # A window naming a stop no trip names keeps its id, because a window is real
+  # whether or not the page can spell its stop.
+  # The day's uncovered segments, or an empty list when there is no day. Every
+  # read of them is guarded the same way, because the tools row renders in the
+  # `:unavailable` state too and a failed FIRST load has no day at all - step 25's
+  # nil trap, and this step adds three more doors onto the same room.
+  defp uncovered_segments(nil), do: []
+  defp uncovered_segments(%{derived: %{uncovered: uncovered}}), do: uncovered
+
+  defp uncovered_windows(nil), do: %{}
+
+  defp uncovered_windows(%{day: %{blocks: blocks}}),
+    do: Map.new(blocks, &{&1.summary.block_id, &1.windows})
+
+  defp uncovered_trip_count(nil), do: 0
+
+  defp uncovered_trip_count(%{derived: %{uncovered: segments}}) do
+    Enum.reduce(segments, 0, &(length(&1.trips) + &2))
+  end
+
+  defp run_stop_names(runs_day) do
+    for block <- runs_day.day.blocks,
+        trip <- block.trips,
+        stop <- [trip.first_stop, trip.last_stop],
+        is_map(stop),
+        reduce: %{} do
+      names -> Map.put_new(names, stop.stop_id, stop[:name] || stop.stop_id)
+    end
+  end
+
   defp runs_crew(runs_day) when is_map(runs_day), do: runs_day.crew
   defp runs_crew(_runs_day), do: nil
 end
