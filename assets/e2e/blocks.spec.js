@@ -202,7 +202,7 @@ async function blockBoxes(page) {
     [...document.querySelectorAll("#blocks-timeline-body tr[data-block]")].map(
       (row) => ({
         block: row.dataset.block,
-        // The Trips column is gone (AC-32), so the bars are the trip count.
+        // The timeline has no Trips column, so the bars are the trip count.
         trips: row.querySelectorAll("[data-role='trip-bar']").length,
         out: row.querySelector(".blocks-meta-out")?.textContent ?? "",
       }),
