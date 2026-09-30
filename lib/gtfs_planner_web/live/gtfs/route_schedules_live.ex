@@ -44,6 +44,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
   @drawer_fields ~w(pattern_id timed_pattern_id service_id start_time repeat every until
     trip_headsign trip_short_name wheelchair_accessible bikes_allowed)
   @duplicate_offset_secs 1_800
+  @undo_limit 20
   @default_departure "06:00"
   @default_every "30"
   @default_until "09:00"
@@ -70,6 +71,10 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
      |> assign(:selected_ids, MapSet.new())
      |> assign(:selected_count, 0)
      |> assign(:grid_revision, 0)
+     |> assign(:undo_stack, [])
+     |> assign(:outcome, nil)
+     |> assign(:just_changed, MapSet.new())
+     |> assign(:cell_error, nil)
      |> assign(:vehicle_change, nil)
      |> assign(:vehicle_change_from, nil)
      |> assign(:keep_vehicle_change, false)
@@ -156,6 +161,42 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     {:noreply,
      Enum.reduce(socket.assigns.sections_list, socket, &stream_insert(&2, :sections, &1))}
   end
+
+  @impl true
+  def handle_event(
+        "cell_preview",
+        %{"trip" => trip_id, "position" => position, "text" => text},
+        socket
+      ) do
+    {:reply, cell_preview(socket, trip_id, position, text), socket}
+  end
+
+  def handle_event("cell_preview", _params, socket) do
+    {:reply, %{ok: false, message: ScheduleComponents.save_failure_copy()}, socket}
+  end
+
+  @impl true
+  def handle_event(
+        "cell_commit",
+        %{"trip" => trip_id, "position" => position, "text" => text, "mode" => mode},
+        socket
+      ) do
+    case commit_cell(socket, trip_id, position, text, mode) do
+      {:ok, socket} -> {:reply, %{ok: true}, socket}
+      {:error, socket, message} -> {:reply, %{ok: false, message: message}, socket}
+    end
+  end
+
+  def handle_event("cell_commit", _params, socket) do
+    {:reply, %{ok: false, message: ScheduleComponents.save_failure_copy()}, socket}
+  end
+
+  @impl true
+  def handle_event("cell_clear", %{"trip" => trip_id, "position" => position}, socket) do
+    {:noreply, clear_cell(socket, trip_id, position)}
+  end
+
+  def handle_event("cell_clear", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("retry", _params, socket) do
@@ -653,6 +694,347 @@ defmodule GtfsPlannerWeb.Gtfs.RouteSchedulesLive do
     Enum.find(patterns, &(&1.id == payload.filters.pattern)) ||
       Enum.find(patterns, &(&1.direction_id == payload.filters.direction_id)) ||
       List.first(patterns)
+  end
+
+  # --- cell editing ------------------------------------------------------------
+
+  # The reading request: parse through the page's one grammar with the trip's
+  # preceding stored time and the cell's own value, and say what the default
+  # Enter commit would do. Nothing is written.
+  defp cell_preview(socket, trip_id, position, text) do
+    with true <- editor_access?(socket),
+         {:ok, context} <- cell_context(socket, trip_id, position),
+         {:ok, %{secs: secs, reading: reading, note: note}} <-
+           TimeEntry.parse(text, previous: context.previous, current: context.current) do
+      %{
+        ok: true,
+        reading: reading,
+        note: preview_note(note, secs),
+        effect: preview_effect(context, secs)
+      }
+    else
+      false -> %{ok: false, message: ScheduleComponents.error_message(:unauthorized)}
+      :error -> %{ok: false, message: ScheduleComponents.error_message(:not_found)}
+      {:error, reason} -> %{ok: false, message: ScheduleComponents.error_message(reason)}
+    end
+  end
+
+  # One commit: parse the typed time with the same R2 grammar, apply `:edit_stop`
+  # with the loaded row's `updated_at` as the fence (INV-2), then reload and
+  # report the outcome. The reply carries no more than the client shows.
+  defp commit_cell(socket, trip_id, position, text, mode_value) do
+    with true <- editor_access?(socket),
+         {:ok, mode} <- commit_mode(mode_value),
+         {:ok, context} <- cell_context(socket, trip_id, position),
+         {:ok, %{secs: secs}} <-
+           TimeEntry.parse(text, previous: context.previous, current: context.current) do
+      apply_cell_change(socket, context, mode, secs)
+    else
+      false -> {:error, socket, ScheduleComponents.error_message(:unauthorized)}
+      :invalid_mode -> {:error, socket, ScheduleComponents.save_failure_copy()}
+      :error -> {:error, socket, ScheduleComponents.error_message(:not_found)}
+      {:error, reason} -> {:error, socket, ScheduleComponents.error_message(reason)}
+    end
+  end
+
+  # Delete/Backspace clears one stop time; the hook sends no reply callback, so a
+  # refusal reaches the page only through the re-streamed error state.
+  defp clear_cell(socket, trip_id, position) do
+    with true <- editor_access?(socket),
+         {:ok, context} <- cell_context(socket, trip_id, position) do
+      command = edit_stop_command(socket, context, :clear, :later)
+      fence = {:expected, %{context.row.id => context.row.updated_at}}
+
+      case Gtfs.apply_trip_change(socket.assigns.route_id, command, fence, audit_context(socket)) do
+        {:ok, result} -> committed_cell(socket, context, :clear, nil, result)
+        {:error, {:refused, errors}} -> cell_error(socket, context, refusal_message(errors))
+        {:error, reason} -> cell_error(socket, context, ScheduleComponents.error_message(reason))
+      end
+    else
+      _unauthorized_or_unknown -> socket
+    end
+  end
+
+  defp apply_cell_change(socket, context, mode, secs) do
+    command = edit_stop_command(socket, context, secs, mode)
+    fence = {:expected, %{context.row.id => context.row.updated_at}}
+
+    case Gtfs.apply_trip_change(socket.assigns.route_id, command, fence, audit_context(socket)) do
+      {:ok, result} ->
+        {:ok, committed_cell(socket, context, mode, secs, result)}
+
+      {:error, {:refused, errors}} ->
+        message = refusal_message(errors)
+        {:error, cell_error(socket, context, message), message}
+
+      {:error, reason} ->
+        message = ScheduleComponents.error_message(reason)
+        {:error, cell_error(socket, context, message), message}
+    end
+  end
+
+  # A successful write reloads once, then re-merges the grid state into the
+  # re-streamed sections and bumps the revision so the hook re-applies its cursor
+  # and editor (the reload rebuilds every section with an empty grid).
+  defp committed_cell(socket, context, mode, secs, result) do
+    message = cell_outcome(context, mode, secs, result)
+
+    socket
+    |> assign(:just_changed, MapSet.new(result.changed_trip_ids))
+    |> assign(:cell_error, nil)
+    |> assign(:outcome, %{tone: :info, text: message, undo?: true})
+    |> push_undo(result.restore, message)
+    |> reload_cell()
+  end
+
+  defp reload_cell(socket) do
+    case reload_schedule(socket) do
+      {:ok, socket} -> stream_grid_state(socket)
+      {:error, :not_found} -> route_not_found(socket)
+      {:error, :unavailable} -> assign(socket, :load_state, :unavailable)
+    end
+  end
+
+  # The wait is on the sections whose grid state changed: the changed row's tint,
+  # or the one cell a refusal points at. Everything else keeps the empty grid the
+  # reload put on it.
+  defp stream_grid_state(socket) do
+    grid = %{
+      preview: %{},
+      just_changed: socket.assigns.just_changed,
+      cell_error: socket.assigns.cell_error
+    }
+
+    socket = assign(socket, :grid_revision, socket.assigns.grid_revision + 1)
+
+    socket.assigns.sections_list
+    |> Enum.filter(&grid_section?(&1, grid))
+    |> Enum.reduce(socket, &stream_insert(&2, :sections, Map.put(&1, :grid, grid)))
+  end
+
+  defp grid_section?(section, grid) do
+    Enum.any?(section.rows, fn row ->
+      match?(%{trip: trip} when trip == row.id, grid.cell_error) or
+        MapSet.member?(grid.just_changed, row.id)
+    end)
+  end
+
+  defp cell_error(socket, context, message) do
+    socket
+    |> assign(:cell_error, %{
+      trip: context.row.id,
+      position: context.position,
+      message: message
+    })
+    |> stream_grid_state()
+  end
+
+  defp push_undo(socket, nil, _message), do: socket
+
+  defp push_undo(socket, payload, message) do
+    entry = %{payload: payload, message: message}
+    assign(socket, :undo_stack, Enum.take([entry | socket.assigns.undo_stack], @undo_limit))
+  end
+
+  defp edit_stop_command(socket, context, value, mode) do
+    {:edit_stop, context.row.id,
+     %{
+       position: context.position,
+       value: value,
+       mode: mode,
+       shown_positions: shown_positions(socket, context.section)
+     }}
+  end
+
+  # The loaded row plus the two times R2 reads: the nearest preceding stored cell
+  # (`nil` at the first stop) and the cell's own value. A position that names no
+  # occurrence of this trip resolves to `:error` and writes nothing.
+  defp cell_context(socket, trip_id, position) when is_integer(position) and position >= 1 do
+    with {_dom_id, section} <- find_section(socket, trip_id),
+         %{} = row <- Enum.find(section.rows, &(&1.id == trip_id)),
+         true <- Map.has_key?(row.cells, position) do
+      {:ok,
+       %{
+         section: section,
+         row: row,
+         position: position,
+         previous: previous_cell_secs(row, position),
+         current: cell_secs(Map.fetch!(row.cells, position))
+       }}
+    else
+      _missing -> :error
+    end
+  end
+
+  defp cell_context(_socket, _trip_id, _position), do: :error
+
+  defp previous_cell_secs(row, position) do
+    row.cells
+    |> Enum.filter(fn {key, _cell} -> key < position end)
+    |> Enum.sort_by(&elem(&1, 0), :desc)
+    |> Enum.find_value(fn {_key, cell} -> cell_secs(cell) end)
+  end
+
+  defp cell_secs(%{missing?: true}), do: nil
+
+  # The cell's text is the page's display clock (seconds only when nonzero), so
+  # it reads back through the page's one grammar, not the storage clock parser.
+  defp cell_secs(%{text: text}) do
+    case TimeEntry.parse(text, []) do
+      {:ok, %{secs: secs}} -> secs
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp shown_positions(socket, section) do
+    if socket.assigns.filters.stops == :all do
+      :all
+    else
+      Enum.map(section.columns, & &1.position)
+    end
+  end
+
+  defp commit_mode("later"), do: {:ok, :later}
+  defp commit_mode("only"), do: {:ok, :only}
+  defp commit_mode("anchor"), do: {:ok, :anchor}
+  defp commit_mode(_value), do: :invalid_mode
+
+  defp refusal_message([{:error, reason} | _rest]), do: ScheduleComponents.error_message(reason)
+  defp refusal_message(_errors), do: ScheduleComponents.save_failure_copy()
+
+  # The reading card's parenthetical: the service-day adjustments R2 can make,
+  # spelled the way the timetable titles them.
+  defp preview_note(nil, _secs), do: nil
+  defp preview_note(:plus_12h, _secs), do: "12 hours later"
+  defp preview_note(:next_day, secs), do: "#{human_clock(secs)} next day"
+
+  # What Enter would do to the rest of the trip; nothing when the entry keeps the
+  # current value or the cell has no time to move.
+  defp preview_effect(%{current: nil}, _secs), do: nil
+  defp preview_effect(%{current: current}, secs) when current == secs, do: nil
+
+  defp preview_effect(%{row: row, position: position, current: current}, secs) do
+    delta = signed_minutes(secs - current)
+
+    if first_position?(row, position) do
+      "the whole trip moves #{delta}" <> if(row.custom?, do: "", else: " and keeps its timing")
+    else
+      "later stops move #{delta}"
+    end
+  end
+
+  # The one line the grid bar shows after a cell write (step 28 renders it): the
+  # stop, the trip's departure and what moved, using the revision-2 copy.
+  defp cell_outcome(%{position: position, row: row, section: section}, :clear, _secs, result) do
+    "Cleared #{stop_name(section, position)} on the #{clock(row.start_secs)} trip." <>
+      custom_note(row, result)
+  end
+
+  defp cell_outcome(
+         %{position: position, row: row, current: current, section: section} = context,
+         mode,
+         secs,
+         result
+       ) do
+    stop = stop_name(section, position)
+    departs = clock(row.start_secs)
+    first? = first_position?(row, position)
+
+    title =
+      if first? or mode == :anchor do
+        "The #{departs} trip now leaves at #{cell_clock(first_departure(context, mode, secs))}."
+      else
+        "#{stop} on the #{departs} trip is now #{cell_clock(secs)}."
+      end
+
+    body =
+      cond do
+        current == nil ->
+          nil
+
+        first? ->
+          nil
+
+        mode == :anchor ->
+          "Every stop moved #{signed_minutes(secs - current)}; #{stop} is at #{cell_clock(secs)}."
+
+        mode == :later ->
+          "#{later_stops(row, position)} moved #{signed_minutes(secs - current)}." <>
+            custom_note(row, result)
+
+        true ->
+          "Only this stop changed." <> custom_note(row, result)
+      end
+
+    Enum.join(Enum.reject([title, body], &is_nil/1), " ")
+  end
+
+  defp first_departure(%{row: %{start_secs: start_secs}, current: current}, :anchor, secs)
+       when is_integer(start_secs) and is_integer(current),
+       do: start_secs + (secs - current)
+
+  defp first_departure(%{row: row, position: position}, _mode, secs) do
+    if first_position?(row, position), do: secs, else: row.start_secs
+  end
+
+  defp later_stops(row, position) do
+    count = Enum.count(row.cells, fn {key, cell} -> key > position and not cell.missing? end)
+    "#{count} later #{if count == 1, do: "stop", else: "stops"}"
+  end
+
+  defp first_position?(row, position),
+    do: position == row.cells |> Map.keys() |> Enum.min(fn -> nil end)
+
+  defp stop_name(section, position) do
+    case Enum.find(section.all_columns, &(&1.position == position)) do
+      nil -> "stop #{position}"
+      column -> column.stop_name
+    end
+  end
+
+  # The reference's linkage line: a linked trip that stopped matching every timing
+  # now has custom times.
+  defp custom_note(row, result) do
+    if not row.custom? and became_custom?(result) do
+      " The trip now has custom times."
+    else
+      ""
+    end
+  end
+
+  defp became_custom?(result) do
+    Enum.any?(result.change_set.updates, fn update ->
+      Map.get(update.fields, :pattern_derivation_state) == "custom"
+    end)
+  end
+
+  defp signed_minutes(seconds) do
+    sign = if seconds < 0, do: "−", else: "+"
+    "#{sign}#{abs(round(seconds / 60))} min"
+  end
+
+  # The same clock the reading uses: seconds only when they are nonzero.
+  defp cell_clock(secs) do
+    formatted = GtfsTime.format(secs)
+
+    if String.ends_with?(formatted, ":00"),
+      do: String.replace_suffix(formatted, ":00", ""),
+      else: formatted
+  end
+
+  defp human_clock(secs) do
+    hour = rem(div(secs, 3_600), 24)
+    minutes = div(rem(secs, 3_600), 60)
+
+    {display_hour, meridiem} =
+      cond do
+        hour == 0 -> {12, "AM"}
+        hour < 12 -> {hour, "AM"}
+        hour == 12 -> {12, "PM"}
+        true -> {hour - 12, "PM"}
+      end
+
+    "#{display_hour}:#{pad(minutes)} #{meridiem}"
   end
 
   # --- mutations -------------------------------------------------------------

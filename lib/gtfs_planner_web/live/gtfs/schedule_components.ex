@@ -1424,7 +1424,13 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   # Raw errors never reach the screen: an unknown reason falls back to the save
   # failure sentence.
   @doc "Returns the fixed sentence a schedule mutation error shows."
-  @spec error_message(atom() | {:mixed_service, map()} | nil) :: String.t()
+  @spec error_message(
+          atom()
+          | {:mixed_service, map()}
+          | {:out_of_order, pos_integer()}
+          | {:refused, [term()]}
+          | nil
+        ) :: String.t()
   def error_message(:stale) do
     "This trip changed since you opened it. Reload it to see the current values."
   end
@@ -1490,6 +1496,27 @@ defmodule GtfsPlannerWeb.Gtfs.ScheduleComponents do
   def error_message({:mixed_service, %{service_ids: service_ids}}) do
     "#{Enum.join(service_ids, ", ")} already run frequency service on this pattern. " <>
       "Listed trips can't run on the same days. Convert the frequency service to scheduled trips first."
+  end
+
+  # The grid cell refusals: each names the fix, never a value the page would have
+  # to supply (an error row is rendered from this copy alone).
+  def error_message({:out_of_order, _position}) do
+    "That time would put the stops out of order. Type a time at or after the previous stop."
+  end
+
+  def error_message(:negative_time) do
+    "That time is before the service day starts at 00:00. Type a later time."
+  end
+
+  def error_message(:clear_not_allowed) do
+    "Only a stop between timepoints can be cleared. Change its time instead."
+  end
+
+  def error_message({:refused, errors}) do
+    case errors do
+      [{:error, reason} | _rest] -> error_message(reason)
+      _other -> save_failure_copy()
+    end
   end
 
   def error_message(_other), do: save_failure_copy()
