@@ -57,6 +57,42 @@ defmodule GtfsPlanner.AdvancedBlockingFixtures do
   end
 
   @doc """
+  Creates a block's planning attributes together with a trip that runs the block
+  on that service, and returns the attribute row.
+
+  A `block_attributes` row only counts as a reference to its garage or vehicle
+  type while a trip in its version runs that block on that service; without one it
+  is a dead row that a delete clears. Takes the same attributes as
+  `block_attribute_fixture/3`, with `:service_id` and `:block_id` both required.
+  """
+  def live_block_attribute_fixture(organization_id, gtfs_version_id, attrs) do
+    route = GtfsFixtures.route_fixture(organization_id, gtfs_version_id)
+
+    GtfsFixtures.trip_fixture(organization_id, gtfs_version_id, route.route_id, %{
+      service_id: Map.fetch!(attrs, :service_id),
+      block_id: Map.fetch!(attrs, :block_id)
+    })
+
+    block_attribute_fixture(organization_id, gtfs_version_id, attrs)
+  end
+
+  @doc """
+  Creates a route's operating settings together with the route, and returns the
+  settings row.
+
+  A `route_operating_settings` row only counts as a reference while its route is
+  still in the version; without the route it is a dead row that a delete clears.
+  Takes the same attributes as `route_operating_setting_fixture/3`.
+  """
+  def live_route_setting_fixture(organization_id, gtfs_version_id, attrs) do
+    GtfsFixtures.route_fixture(organization_id, gtfs_version_id, %{
+      route_id: Map.fetch!(attrs, :route_id)
+    })
+
+    route_operating_setting_fixture(organization_id, gtfs_version_id, attrs)
+  end
+
+  @doc """
   Creates an entered driving time between two references and returns the row.
 
   `:from_ref` and `:to_ref` are required and `:minutes` defaults to `0`, the

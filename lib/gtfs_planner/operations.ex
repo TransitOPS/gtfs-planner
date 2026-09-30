@@ -10,6 +10,12 @@ defmodule GtfsPlanner.Operations do
   vehicle, block attribute or route operating setting references the parent;
   deleting the organization still cascades.
 
+  A block attribute or route operating setting only counts while what it
+  describes exists: a trip still runs the block on that service, or the route is
+  still in that version. A row left behind by a deleted route, a combined
+  calendar or unassigned trips names nothing a person can see or change, so it
+  neither counts nor blocks a delete, and the delete clears its reference.
+
   A garage also owns its entered driving times: `delete_garage/2` deletes the
   `deadhead_times` rows whose reference is `"garage:<uuid>"` in the same
   transaction as the guarded delete, and restores them when the delete is
@@ -23,8 +29,10 @@ defmodule GtfsPlanner.Operations do
   alias GtfsPlanner.Gtfs.BlockAttribute
   alias GtfsPlanner.Gtfs.Blocking.DeadheadTimes
   alias GtfsPlanner.Gtfs.DeadheadTime
+  alias GtfsPlanner.Gtfs.Route
   alias GtfsPlanner.Gtfs.RouteOperatingSetting
   alias GtfsPlanner.Gtfs.Stop
+  alias GtfsPlanner.Gtfs.Trip
   alias GtfsPlanner.Operations.Garage
   alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Operations.Vehicle
@@ -38,9 +46,9 @@ defmodule GtfsPlanner.Operations do
   @typedoc """
   What still references a garage or vehicle type, counted per referring kind.
 
-  `blocks` counts distinct `block_attributes` rows by `block_id` and `routes`
-  counts `route_operating_settings` rows, which is one row per route. A
-  settings page names the non-zero parts.
+  `blocks` counts the distinct `block_id`s of live `block_attributes` rows and
+  `routes` counts live `route_operating_settings` rows, which is one row per
+  route. A settings page names the non-zero parts.
   """
   @type in_use_counts :: %{
           vehicles: non_neg_integer(),
@@ -149,7 +157,9 @@ defmodule GtfsPlanner.Operations do
   still reference it; nothing is deleted, including the driving times removed
   just before the attempt. A garage no planning row references is deleted
   together with the `deadhead_times` rows whose `from_ref` or `to_ref` is
-  `"garage:<uuid>"`; every other driving time is left alone. A missing,
+  `"garage:<uuid>"`; every other driving time is left alone. A block attribute
+  or route setting that no longer describes a live block or route is cleared of
+  the garage in the same transaction instead of refusing the delete. A missing,
   malformed or foreign id returns `{:error, :not_found}`. Never deletes after a
   precheck alone.
   """
@@ -179,7 +189,8 @@ defmodule GtfsPlanner.Operations do
 
   @doc """
   Counts what still references a garage: its vehicles, the distinct blocks that
-  name it and the routes that operate from it.
+  name it and the routes that operate from it. Only blocks that still have trips
+  and routes that still exist count.
 
   A settings page reads this to name the references in its in-use message, and
   `delete_garage/2` answers a refused delete with the same counts.
@@ -342,8 +353,10 @@ defmodule GtfsPlanner.Operations do
 
   The delete is attempted against the `NO ACTION` foreign keys and translated to
   `{:error, {:in_use, counts}}` naming the vehicles, blocks and routes that
-  still reference it; nothing is deleted. A missing, malformed or foreign id
-  returns `{:error, :not_found}`.
+  still reference it; nothing is deleted. A block attribute or route setting
+  that no longer describes a live block or route is cleared of the type in the
+  same transaction instead of refusing the delete. A missing, malformed or
+  foreign id returns `{:error, :not_found}`.
   """
   @spec delete_vehicle_type(Ecto.UUID.t(), Ecto.UUID.t()) ::
           {:ok, VehicleType.t()} | {:error, {:in_use, in_use_counts()} | :not_found}
@@ -353,15 +366,23 @@ defmodule GtfsPlanner.Operations do
         {:error, :not_found}
 
       vehicle_type ->
-        delete_with_in_use_guard(vehicle_type, @vehicle_type_constraints, fn ->
-          vehicle_type_in_use_counts(organization_id, vehicle_type.id)
+        counts_fun = fn -> vehicle_type_in_use_counts(organization_id, vehicle_type.id) end
+
+        guarded_delete(vehicle_type, @vehicle_type_constraints, counts_fun, fn ->
+          clear_orphan_references(
+            organization_id,
+            :vehicle_type_id,
+            :required_vehicle_type_id,
+            vehicle_type.id
+          )
         end)
     end
   end
 
   @doc """
   Counts what still references a vehicle type: its vehicles, the distinct blocks
-  that require it and the routes that require it.
+  that require it and the routes that require it. Only blocks that still have
+  trips and routes that still exist count.
 
   A settings page reads this to name the references in its in-use message, and
   `delete_vehicle_type/2` answers a refused delete with the same counts.
@@ -1074,23 +1095,10 @@ defmodule GtfsPlanner.Operations do
   defp delete_garage_with_driving_times(organization_id, garage) do
     counts_fun = fn -> garage_in_use_counts(organization_id, garage.id) end
 
-    Repo.transaction(fn ->
+    guarded_delete(garage, @garage_constraints, counts_fun, fn ->
       delete_garage_driving_times(organization_id, garage.id)
-      garage_delete_outcome(garage, counts_fun)
+      clear_orphan_references(organization_id, :garage_id, :garage_id, garage.id)
     end)
-    |> case do
-      {:ok, result} -> result
-      {:error, {:in_use, counts}} -> {:error, {:in_use, counts}}
-    end
-  end
-
-  # A refusal rolls the whole transaction back, which is what restores the
-  # driving times removed just before the attempt.
-  defp garage_delete_outcome(garage, counts_fun) do
-    case delete_with_in_use_guard(garage, @garage_constraints, counts_fun) do
-      {:ok, deleted} -> {:ok, deleted}
-      {:error, {:in_use, counts}} -> Repo.rollback({:in_use, counts})
-    end
   end
 
   defp delete_garage_driving_times(organization_id, garage_id) do
@@ -1105,17 +1113,97 @@ defmodule GtfsPlanner.Operations do
   # One `block_attributes` row exists per service and block, so a block that
   # spans three services is named once.
   defp count_referring_blocks(organization_id, field, id) do
-    BlockAttribute
-    |> where([a], a.organization_id == ^organization_id and field(a, ^field) == ^id)
+    organization_id
+    |> referencing_block_attributes(field, id)
+    |> where(^live_block_attribute())
     |> select([a], a.block_id)
     |> distinct(true)
     |> Repo.aggregate(:count, :block_id)
   end
 
   defp count_route_settings(organization_id, field, id) do
-    RouteOperatingSetting
-    |> where([s], s.organization_id == ^organization_id and field(s, ^field) == ^id)
+    organization_id
+    |> referencing_route_settings(field, id)
+    |> where(^live_route_setting())
     |> Repo.aggregate(:count, :id)
+  end
+
+  defp referencing_block_attributes(organization_id, field, id) do
+    from(a in BlockAttribute,
+      as: :attribute,
+      where: a.organization_id == ^organization_id and field(a, ^field) == ^id
+    )
+  end
+
+  defp referencing_route_settings(organization_id, field, id) do
+    from(s in RouteOperatingSetting,
+      as: :setting,
+      where: s.organization_id == ^organization_id and field(s, ^field) == ^id
+    )
+  end
+
+  # Rows outlive what they describe: deleting a route leaves its settings,
+  # combining calendars moves trips to a new service, and unassigning trips
+  # leaves the block's row. Nothing in the UI reaches such a row, so it must not
+  # count as a reference. An attribute row is live while a trip in its version
+  # runs that block on that service.
+  defp live_block_attribute do
+    dynamic(
+      exists(
+        from(t in Trip,
+          where:
+            t.organization_id == parent_as(:attribute).organization_id and
+              t.gtfs_version_id == parent_as(:attribute).gtfs_version_id and
+              t.service_id == parent_as(:attribute).service_id and
+              t.block_id == parent_as(:attribute).block_id,
+          select: 1
+        )
+      )
+    )
+  end
+
+  # A settings row is live while its route is still in its version.
+  defp live_route_setting do
+    dynamic(
+      exists(
+        from(r in Route,
+          where:
+            r.organization_id == parent_as(:setting).organization_id and
+              r.gtfs_version_id == parent_as(:setting).gtfs_version_id and
+              r.route_id == parent_as(:setting).route_id,
+          select: 1
+        )
+      )
+    )
+  end
+
+  # The foreign keys are `NO ACTION`, so a dead row that still names the parent
+  # would refuse the delete with nothing to show for it. Only the column that
+  # names the parent is cleared, and live rows are left for the foreign key to
+  # refuse. Runs in the delete's transaction, so a refusal restores the rows.
+  defp clear_orphan_references(organization_id, attribute_field, setting_field, id) do
+    organization_id
+    |> referencing_block_attributes(attribute_field, id)
+    |> where(^dynamic(not (^live_block_attribute())))
+    |> Repo.update_all(set: [{attribute_field, nil}])
+
+    organization_id
+    |> referencing_route_settings(setting_field, id)
+    |> where(^dynamic(not (^live_route_setting())))
+    |> Repo.update_all(set: [{setting_field, nil}])
+  end
+
+  # Prepares and attempts the delete in one transaction; a refusal rolls back
+  # the preparation with it.
+  defp guarded_delete(parent, constraint_names, counts_fun, prepare_fun) do
+    Repo.transaction(fn ->
+      prepare_fun.()
+
+      case delete_with_in_use_guard(parent, constraint_names, counts_fun) do
+        {:ok, deleted} -> deleted
+        {:error, {:in_use, counts}} -> Repo.rollback({:in_use, counts})
+      end
+    end)
   end
 
   # The attempted delete runs in a savepoint so a constraint violation leaves
