@@ -1345,6 +1345,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
       end
     end)
   end
+
   @doc false
   def audit_snapshot(%RoutePattern{} = pattern), do: pattern_snapshot(pattern)
 
@@ -1536,6 +1537,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp apply_details_operation!(pattern, attrs, selection, audit_context) do
     with :ok <- reject_forged_linkage(attrs),
          {:ok, attrs} <- normalize_allowed_attrs(attrs, @pattern_fields),
+         :ok <- reject_labelled_direction_change(pattern, attrs),
          :ok <- validate_noop_or_pattern(pattern, attrs) do
       attrs = RoutePattern.changeset(pattern, attrs).changes
       old_default = Headsigns.normalize(pattern.headsign)
@@ -1776,8 +1778,21 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp lock_trips_for_operation!(route, pattern, operation) do
-    if trips_lock_required?(operation), do: lock_pattern_trips!(route, pattern)
+    if trips_lock_required?(operation) do
+      lock_pattern_trips!(route, pattern)
+
+      # A details direction change on an owner also writes the children's
+      # trips, so they are locked with the owner's.
+      if direction_change?(operation) do
+        Enum.each(label_children(pattern), &lock_pattern_trips!(route, &1))
+      end
+    end
   end
+
+  defp direction_change?({:details, attrs}) when is_map(attrs),
+    do: Map.has_key?(attrs, :direction_id) or Map.has_key?(attrs, "direction_id")
+
+  defp direction_change?(_operation), do: false
 
   defp load_locked_pattern!(route, pattern, audit_context) do
     case get_pattern(
@@ -1834,7 +1849,8 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp validate_lifecycle_base_operation(pattern, {:details, attrs}, _loaded, _opts) do
     with :ok <- reject_forged_linkage(attrs),
-         {:ok, values} <- normalize_allowed_attrs(attrs, @pattern_fields) do
+         {:ok, values} <- normalize_allowed_attrs(attrs, @pattern_fields),
+         :ok <- reject_labelled_direction_change(pattern, values) do
       validate_noop_or_pattern(pattern, values)
     end
   end
@@ -1884,6 +1900,21 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   defp validate_lifecycle_base_operation(_pattern, _, _, _), do: {:error, :invalid_operation}
 
+  # A labelled child always shares its owner's direction (rule 8), so the
+  # direction is the owner's to move: the owner cascades the change to its
+  # children and their trips, and a child refuses it outright. Only a real
+  # change is refused, so saving a child without touching its direction still
+  # behaves as before.
+  defp reject_labelled_direction_change(pattern, attrs) do
+    changes = RoutePattern.changeset(pattern, attrs).changes
+
+    if is_nil(pattern.label_pattern_id) or not Map.has_key?(changes, :direction_id) do
+      :ok
+    else
+      {:error, :labelled_direction}
+    end
+  end
+
   defp operation_impact({:delete_timing, timing_id}, %{pattern: pattern}) do
     %{trips_affected: count_timing_trips(pattern, timing_id)}
   end
@@ -1923,11 +1954,29 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   defp details_impact(pattern, attrs, selection) do
     changes = RoutePattern.changeset(pattern, attrs).changes
 
+    direction_change? = Map.has_key?(changes, :direction_id)
+
+    # A direction change on a label owner moves the children with it, so the
+    # review names them and counts the trips that follow them.
+    children = if direction_change?, do: label_children(pattern), else: []
+
     trips_affected =
-      if Map.has_key?(changes, :direction_id), do: count_pattern_trips(pattern), else: 0
+      if direction_change? do
+        count_pattern_trips(pattern) + Enum.sum(Enum.map(children, &count_pattern_trips/1))
+      else
+        0
+      end
 
     %{
       trips_affected: trips_affected,
+      children:
+        Enum.map(children, fn child ->
+          %{
+            route_pattern_id: child.route_pattern_id,
+            route_pattern_name: child.route_pattern_name,
+            trips_affected: count_pattern_trips(child)
+          }
+        end),
       headsign_trips: length(selected_scope_trips(pattern, :pattern, selection))
     }
   end
@@ -3104,14 +3153,35 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
     |> Repo.all()
   end
 
+  # The owner and its labelled children always carry the same direction, so
+  # moving the owner moves the children's patterns and the trips linked to
+  # either. The whole family is written in the caller's transaction.
   defp update_trip_direction!(pattern, direction_id) do
-    trips = pattern_trips(pattern)
+    children = label_children(pattern)
+    trips = Enum.flat_map([pattern | children], &pattern_trips/1)
 
     Repo.update_all(from(t in Trip, where: t.id in ^Enum.map(trips, & &1.id)),
       set: [direction_id: direction_id, updated_at: DateTime.utc_now()]
     )
 
+    update_label_children_direction!(children, direction_id)
+
     length(trips)
+  end
+
+  defp update_label_children_direction!([], _direction_id), do: :ok
+
+  defp update_label_children_direction!(children, direction_id) do
+    # A child's `derivation_key` embeds the direction it was derived for, so it
+    # goes the same way the owner's signature does on a direction change.
+    Repo.update_all(
+      from(child in RoutePattern, where: child.id in ^Enum.map(children, & &1.id)),
+      set: [
+        direction_id: direction_id,
+        derivation_key: nil,
+        updated_at: DateTime.utc_now()
+      ]
+    )
   end
 
   defp update_trip_timestamps!([]), do: :ok
@@ -3302,7 +3372,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
   end
 
   defp trips_lock_required?({:details, attrs}) when is_map(attrs),
-    do: Map.has_key?(attrs, :direction_id) or Map.has_key?(attrs, "direction_id")
+    do: direction_change?({:details, attrs})
 
   defp trips_lock_required?(_operation), do: false
 
@@ -3507,14 +3577,18 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns do
 
   # A pattern that still names a label owner cannot be deleted: the reference
   # restricts the deletion and the child would be left without a label at all.
-  defp pattern_labelled?(pattern) do
-    Repo.exists?(
-      from(child in RoutePattern,
-        where:
-          child.organization_id == ^pattern.organization_id and
-            child.gtfs_version_id == ^pattern.gtfs_version_id and
-            child.label_pattern_id == ^pattern.id
-      )
+  defp pattern_labelled?(pattern), do: Repo.exists?(label_children_query(pattern))
+
+  defp label_children(pattern) do
+    label_children_query(pattern) |> order_by(asc: :id) |> Repo.all()
+  end
+
+  defp label_children_query(pattern) do
+    from(child in RoutePattern,
+      where:
+        child.organization_id == ^pattern.organization_id and
+          child.gtfs_version_id == ^pattern.gtfs_version_id and
+          child.label_pattern_id == ^pattern.id
     )
   end
 
