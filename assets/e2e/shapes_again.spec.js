@@ -484,6 +484,86 @@ test.describe("labels", () => {
   });
 });
 
+// ── map lines (step 23) ────────────────────────────────────────────────────
+//
+// Every imported line the Details map draws carries one next step. On
+// `BROWSER_SHAPES` the only imported line is the one the 18 direction-less
+// trips share, so the production half captures that line's `Group 18 trips`
+// action. The chooser and the no-patterns route are the prototype's other two
+// states; the seed carries neither, so they are captured as reference halves
+// only and the test says so instead of implying it compared them.
+//
+// This block runs before `grouping review` because that review's apply groups
+// the 18 trips this line counts. The suite shares one seeded database with
+// `workers: 1`, so the file's order is the run's order.
+// ────────────────────────────────────────────────────────────────────────────
+
+test.describe("map lines", () => {
+  test("offers the grouping action on the imported line", async ({
+    page,
+  }, testInfo) => {
+    testInfo.setTimeout(120_000);
+
+    const problems = collectPageErrors(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await stubTiles(page);
+    await logIn(page);
+    const versionId = await getVersionId(page);
+
+    await page.goto(`/gtfs/${versionId}/routes/${SHAPES_ROUTE}`);
+    await waitForLiveView(page);
+
+    // The line keeps its highlight control and gains the one next step.
+    await expect(
+      page.locator(
+        "#route-map-variant-list [data-map-highlight='BROWSER_SHAPE_N']",
+      ),
+    ).toBeVisible();
+
+    const group = page.locator("#route-map-line-BROWSER_SHAPE_N-group");
+    await expect(group).toHaveText("Group 18 trips");
+    await expect(group).toHaveAttribute(
+      "href",
+      `/gtfs/${versionId}/routes/${SHAPES_ROUTE}/patterns?review=group`,
+    );
+
+    // Neither of the other two actions belongs on this line.
+    await expect(
+      page.locator("#route-map-line-BROWSER_SHAPE_N-edit"),
+    ).toHaveCount(0);
+    await expect(
+      page.locator("#route-map-line-BROWSER_SHAPE_N-choose"),
+    ).toHaveCount(0);
+
+    // The route has patterns, so the panel is not the empty card.
+    await expect(page.locator("#route-map-pattern-list")).toBeVisible();
+    await expect(page.locator("#route-map-first-pattern")).toHaveCount(0);
+
+    await capture(page, "map-lines-production-1440");
+
+    const states = [
+      ["?state=map", "map-lines-reference-map-1440"],
+      ["?state=map-choose", "map-lines-reference-map-choose-1440"],
+      ["?state=map-nopatterns", "map-lines-reference-map-nopatterns-1440"],
+    ];
+    const captured = [];
+
+    for (const [query, name] of states) {
+      if (await captureReference(page, query, name)) captured.push(name);
+    }
+
+    testInfo.annotations.push({
+      type: "reference-captured",
+      description:
+        captured.length === states.length
+          ? captured.join(", ")
+          : "prototype absent from this checkout",
+    });
+
+    expect(problems).toEqual([]);
+  });
+});
+
 // ── grouping review ─────────────────────────────────────────────────────────
 
 // `BROWSER_SHAPES` seeds exactly what the review is built for: a saved 13-stop

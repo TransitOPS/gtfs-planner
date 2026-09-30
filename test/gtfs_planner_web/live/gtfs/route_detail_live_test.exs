@@ -1875,6 +1875,7 @@ defmodule GtfsPlannerWeb.Gtfs.RouteDetailLiveTest do
           usage: %{trips: 2},
           transfer_count: 1,
           gtfs_version_id: Ecto.UUID.generate(),
+          map_line_choice: nil,
           show_context: false,
           route_context: nil,
           route_context_status: nil
