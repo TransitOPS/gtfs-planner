@@ -7,6 +7,7 @@ defmodule GtfsPlanner.Gtfs.Level do
           id: Ecto.UUID.t(),
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
+          lock_version: pos_integer(),
           level_id: String.t(),
           level_index: float(),
           level_name: String.t() | nil,
@@ -18,6 +19,7 @@ defmodule GtfsPlanner.Gtfs.Level do
   @foreign_key_type :binary_id
 
   schema "levels" do
+    field :lock_version, :integer, default: 1, read_after_writes: true
     field :level_id, :string
     field :level_index, :float
     field :level_name, :string

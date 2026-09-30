@@ -19,6 +19,7 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
           floorplan_rotation_deg: float() | nil,
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
+          lock_version: pos_integer(),
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
         }
@@ -43,6 +44,7 @@ defmodule GtfsPlanner.Gtfs.StopLevel do
   @foreign_key_type :binary_id
 
   schema "stop_levels" do
+    field :lock_version, :integer, default: 1, read_after_writes: true
     field :diagram_filename, :string
     field :scale_point_a, :map
     field :scale_point_b, :map

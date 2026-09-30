@@ -7,6 +7,7 @@ defmodule GtfsPlanner.Gtfs.Stop do
   @foreign_key_type :binary_id
 
   schema "stops" do
+    field :lock_version, :integer, default: 1, read_after_writes: true
     field :stop_id, :string
     field :stop_name, :string
     field :stop_desc, :string
@@ -52,6 +53,7 @@ defmodule GtfsPlanner.Gtfs.Stop do
           id: Ecto.UUID.t(),
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
+          lock_version: pos_integer(),
           stop_id: String.t(),
           stop_name: String.t() | nil,
           stop_desc: String.t() | nil,

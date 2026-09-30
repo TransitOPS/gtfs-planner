@@ -17,6 +17,7 @@ defmodule GtfsPlanner.Gtfs.Pathway do
           id: Ecto.UUID.t(),
           organization_id: Ecto.UUID.t(),
           gtfs_version_id: Ecto.UUID.t(),
+          lock_version: pos_integer(),
           pathway_id: String.t(),
           pathway_mode: integer(),
           is_bidirectional: boolean(),
@@ -39,6 +40,7 @@ defmodule GtfsPlanner.Gtfs.Pathway do
   @foreign_key_type :binary_id
 
   schema "pathways" do
+    field :lock_version, :integer, default: 1, read_after_writes: true
     field :pathway_id, :string
     field :pathway_mode, :integer
     field :is_bidirectional, :boolean, default: true
