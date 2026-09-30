@@ -54,10 +54,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsSetupStatesLiveTest do
 
   defp doc(view), do: view |> render() |> LazyHTML.from_document()
 
-  defp text(view, selector) do
-    view |> doc() |> LazyHTML.query(selector) |> LazyHTML.text()
-  end
-
   defp attribute(view, selector, name) do
     view |> doc() |> LazyHTML.query(selector) |> LazyHTML.attribute(name) |> List.first()
   end

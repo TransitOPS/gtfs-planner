@@ -46,6 +46,7 @@ defmodule GtfsPlanner.Gtfs.Runs.DayTest do
   """
   use ExUnit.Case, async: true
 
+  alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Gtfs.Blocking.Context
   alias GtfsPlanner.Gtfs.Blocking.Movements
   alias GtfsPlanner.Gtfs.Blocking.Relief
@@ -124,7 +125,7 @@ defmodule GtfsPlanner.Gtfs.Runs.DayTest do
   end
 
   defp block(block_id, trips, context) do
-    sequence = GtfsPlanner.Gtfs.Blocking.Checks.sequence(trips)
+    sequence = Checks.sequence(trips)
     movements = Movements.build(trips, resolution(), context)
     windows = Relief.windows(trips, movements, context)
 

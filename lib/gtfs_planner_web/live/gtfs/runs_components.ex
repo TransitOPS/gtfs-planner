@@ -27,9 +27,9 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
   # qualified call and the wrapper keeps the name the spec records.
   import GtfsPlannerWeb.CoreComponents, except: [count_strip: 1]
 
+  alias GtfsPlannerWeb.Components.RouteIdentity
   alias GtfsPlannerWeb.CoreComponents
   alias GtfsPlannerWeb.Gtfs.BlocksComponents
-  alias GtfsPlannerWeb.Components.RouteIdentity
 
   # The select's marker for "a run of its own". Run IDs are one to eight
   # letters, digits or hyphens, so no real run can carry this value and the
@@ -965,23 +965,47 @@ defmodule GtfsPlannerWeb.Gtfs.RunsComponents do
         detail: "of paid time",
         tone: :neutral
       },
-      %{
-        key: "longest_spread",
-        label: "Longest spread",
-        count: spread_secs || 0,
-        value: if(spread, do: hm(spread.secs), else: "—"),
-        detail: spread_detail(spread, spread_limit_minutes),
-        tone: if(over_limit?, do: :warning, else: :neutral)
-      },
-      %{
-        key: "uncovered",
-        label: "Uncovered work",
-        count: uncovered.trips,
-        value: if(uncovered.trips > 0, do: "#{uncovered.trips} trips", else: "None"),
-        detail: if(uncovered.trips > 0, do: duration(uncovered.secs), else: nil),
-        tone: if(uncovered.trips > 0, do: :warning, else: :neutral)
-      }
+      longest_spread_item(spread, spread_secs, over_limit?, spread_limit_minutes),
+      uncovered_item(uncovered)
     ]
+  end
+
+  # The spread tile. Its own function so "what a spread with no run looks like"
+  # and "what a spread over the limit looks like" are decided in one place each,
+  # the way `spread_detail/2` and `no_share_reason/1` already are below.
+  defp longest_spread_item(spread, spread_secs, over_limit?, limit) do
+    %{
+      key: "longest_spread",
+      label: "Longest spread",
+      count: spread_secs || 0,
+      value: if(spread, do: hm(spread.secs), else: "—"),
+      detail: spread_detail(spread, limit),
+      tone: if(over_limit?, do: :warning, else: :neutral)
+    }
+  end
+
+  # The uncovered tile. Zero uncovered trips is "None" and stays quiet, because
+  # a day with every trip in a run is the good case and has nothing to warn about.
+  defp uncovered_item(%{trips: trips} = uncovered) when trips > 0 do
+    %{
+      key: "uncovered",
+      label: "Uncovered work",
+      count: trips,
+      value: "#{trips} trips",
+      detail: duration(uncovered.secs),
+      tone: :warning
+    }
+  end
+
+  defp uncovered_item(uncovered) do
+    %{
+      key: "uncovered",
+      label: "Uncovered work",
+      count: uncovered.trips,
+      value: "None",
+      detail: nil,
+      tone: :neutral
+    }
   end
 
   # A dash is the honest answer here, and the two reasons it is a dash are

@@ -321,7 +321,7 @@ defmodule GtfsPlannerWeb.Gtfs.RunsProblemsLiveTest do
       expected =
         day.derived.runs |> Enum.flat_map(& &1.findings) |> Enum.map(& &1.severity) |> Enum.uniq()
 
-      assert length(expected) > 0
+      assert expected != []
 
       assert to_string(hd(expected)) ==
                attribute(view, "[data-role=problems-finding]", "data-severity")

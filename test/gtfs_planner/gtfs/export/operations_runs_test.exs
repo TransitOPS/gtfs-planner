@@ -20,10 +20,11 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
   use GtfsPlanner.DataCase, async: false
 
   alias GtfsPlanner.Gtfs
-  alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Gtfs.Blocking
+  alias GtfsPlanner.Gtfs.Export
   alias GtfsPlanner.Operations.Tods
   alias GtfsPlanner.Repo
+  alias GtfsPlanner.Versions.GtfsVersion
 
   import GtfsPlanner.RunsFixtures
 
@@ -367,12 +368,17 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
   defp run_of(world, key, trip_id) do
     {:ok, day} = Gtfs.load_runs(world.organization.id, world.version.id, key)
 
-    case for run <- day.derived.runs,
-             Enum.any?(run.pieces, fn piece -> Enum.any?(piece.trips, &(&1.id == trip_id)) end),
-             do: run.run_id do
+    runs_containing(day, trip_id)
+    |> case do
       [one] -> one
       other -> raise "expected trip #{trip_id} in exactly one run, got #{inspect(other)}"
     end
+  end
+
+  defp runs_containing(day, trip_id) do
+    for run <- day.derived.runs,
+        Enum.any?(run.pieces, fn piece -> Enum.any?(piece.trips, &(&1.id == trip_id)) end),
+        do: run.run_id
   end
 
   # Renaming a run to collide with nothing, then leaving a finding on it: the
@@ -447,7 +453,7 @@ defmodule GtfsPlanner.Gtfs.Export.OperationsRunsTest do
   defp unpublish(world) do
     {:ok, version} =
       world.version
-      |> GtfsPlanner.Versions.GtfsVersion.transition_changeset("staging")
+      |> GtfsVersion.transition_changeset("staging")
       |> Repo.update()
 
     %{world | version: version}

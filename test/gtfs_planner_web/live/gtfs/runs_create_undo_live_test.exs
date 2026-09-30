@@ -24,8 +24,12 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCreateUndoLiveTest do
   import GtfsPlanner.AccountsFixtures
   import GtfsPlanner.RunsFixtures
 
+  import Ecto.Query
+
   alias GtfsPlanner.Accounts
   alias GtfsPlanner.Gtfs
+  alias GtfsPlanner.Gtfs.TripRun
+  alias GtfsPlanner.Repo
 
   @moduletag :ev_26
   @moduletag timeout: 120_000
@@ -68,10 +72,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCreateUndoLiveTest do
   end
 
   defp run_ids(w, run_id) do
-    import Ecto.Query
-    alias GtfsPlanner.Repo
-    alias GtfsPlanner.Gtfs.TripRun
-
     Repo.all(
       from(row in TripRun,
         where:
@@ -86,10 +86,6 @@ defmodule GtfsPlannerWeb.Gtfs.RunsCreateUndoLiveTest do
   # Every run id this version's day type uses, for the "numbered above every
   # existing run" claim.
   defp all_run_ids(w) do
-    import Ecto.Query
-    alias GtfsPlanner.Repo
-    alias GtfsPlanner.Gtfs.TripRun
-
     Repo.all(
       from(row in TripRun,
         where:

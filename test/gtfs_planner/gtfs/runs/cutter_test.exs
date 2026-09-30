@@ -33,6 +33,7 @@ defmodule GtfsPlanner.Gtfs.Runs.CutterTest do
   """
   use ExUnit.Case, async: true
 
+  alias GtfsPlanner.Gtfs.Blocking.Checks
   alias GtfsPlanner.Gtfs.Blocking.Context
   alias GtfsPlanner.Gtfs.Blocking.Movements
   alias GtfsPlanner.Gtfs.Blocking.Relief
@@ -76,7 +77,7 @@ defmodule GtfsPlanner.Gtfs.Runs.CutterTest do
     [%{id: _} | _] = trips = [trip(block_id, departure, arrival, @bay_a, @bay_a)]
 
     context = context()
-    sequence = GtfsPlanner.Gtfs.Blocking.Checks.sequence(trips)
+    sequence = Checks.sequence(trips)
     movements = Movements.build(trips, resolution(), context)
 
     %{
