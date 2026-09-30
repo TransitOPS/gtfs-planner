@@ -102,11 +102,14 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   """
   @type leg :: %{
           kind: :pull_out | :pull_back | :deadhead,
+          leg_key: :pull_out | :pull_back | {:gap, non_neg_integer()},
           from: Context.ref(),
           to: Context.ref(),
           start_secs: integer(),
           end_secs: integer()
         }
+
+  @type run_day_type :: %{optional(:prev?) => boolean()}
 
   @type result :: %{
           calendar_dates: [map()],
@@ -114,6 +117,33 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
           trips: [map()],
           stop_times: [map()],
           omitted: non_neg_integer()
+        }
+
+  @type result_with_ids :: %{
+          calendar_dates: [map()],
+          routes: [map()],
+          trips: [map()],
+          stop_times: [map()],
+          omitted: non_neg_integer(),
+          ids: ids()
+        }
+
+  @typedoc """
+  The identifiers a consumer needs to refer back to what was written.
+
+  `service_ids` is by day type, so a run event can name the service its run hangs
+  on. `movement_trip_ids` is by `{day_type_key, block_id, leg}` — the leg being
+  `:pull_out`, `:pull_back` or `{:gap, index}` for a drive — so a run event on a
+  deadhead can name the trip that movement was written as.
+
+  A gap the export could not write, an unknown drive, has no entry: it has no trip,
+  so there is nothing to refer to.
+  """
+  @type ids :: %{
+          required(:service_ids) => %{optional(String.t()) => String.t()},
+          required(:movement_trip_ids) => %{
+            optional({String.t(), String.t(), term()}) => String.t()
+          }
         }
 
   @doc """
@@ -125,19 +155,38 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   empty service, no empty route — so the export can omit an empty file rather
   than write a header-only one.
 
+  `run_day_types` is optional and defaults to `%{}`. When a day type carries runs,
+  it is listed there and is kept even when it has no movement, because its
+  service is what the run events hang on: a day type with runs and no deadhead
+  still needs a `service_id` and its `calendar_dates` rows. Such a day type
+  contributes no `routes` row, since the deadhead route exists only to carry
+  movements.
+
+  A `run_day_types` entry may carry `prev?: true` to reserve that day type's
+  `_prev` service and its shifted dates, which is what a run reaching before
+  midnight needs even when no movement on that day type starts before it.
+
   `garages_by_id` must cover every garage a movement names: a pull's endpoint is
   resolved with `Map.fetch!/2`, so a caller that passed the wrong map is told
   rather than receiving a stop time with no stop.
   """
-  @spec rows(input()) :: result()
-  def rows(%{
-        day_types: day_types,
-        blocks_by_day_type: blocks_by_day_type,
-        garages_by_id: garages_by_id,
-        public_ids: public_ids
-      }) do
-    %{days: days, omitted: omitted} = collect(day_types, blocks_by_day_type, garages_by_id)
+  @spec rows(input()) :: result() | result_with_ids()
+  def rows(
+        %{
+          day_types: day_types,
+          blocks_by_day_type: blocks_by_day_type,
+          garages_by_id: garages_by_id,
+          public_ids: public_ids
+        } = input
+      ) do
+    run_day_types = Map.get(input, :run_day_types, %{})
 
+    %{days: days, omitted: omitted} =
+      collect(day_types, blocks_by_day_type, garages_by_id, run_day_types)
+
+    # No day type survived, so there is no service and no movement to name: the
+    # result carries no `ids` at all in this case, and keeps the shape spec 07
+    # asserted. Every path that can be referred to runs through `build/3`.
     if days == [] do
       %{calendar_dates: [], routes: [], trips: [], stop_times: [], omitted: omitted}
     else
@@ -148,23 +197,41 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   # One pass over the day types, in their own order, keeping only the legs a
   # consumer can run and counting the ones left out. Nothing is identified yet, so
   # a day type with nothing to write is known before an identifier is spent on it.
-  defp collect(day_types, blocks_by_day_type, garages_by_id) do
+  #
+  # A day type listed in `run_day_types` is the exception: it is kept with no legs
+  # at all, because a run on it still needs a service to hang on. `prev?` is
+  # carried onto the day so the reservation is made where the service is minted,
+  # rather than by threading the whole map into `day_rows/3`.
+  defp collect(day_types, blocks_by_day_type, garages_by_id, run_day_types) do
     Enum.reduce(day_types, %{days: [], omitted: 0}, fn day_type, acc ->
-      case legs_for(Map.get(blocks_by_day_type, day_type.key, []), garages_by_id) do
+      run? = Map.has_key?(run_day_types, day_type.key)
+      prev? = prev?(Map.get(run_day_types, day_type.key))
+
+      case legs_for(Map.get(blocks_by_day_type, day_type.key, []), garages_by_id, day_type.key) do
+        {[], omitted} when run? ->
+          %{
+            acc
+            | days: acc.days ++ [%{day_type: day_type, legs: [], prev?: prev?}],
+              omitted: acc.omitted + omitted
+          }
+
         {[], omitted} ->
           %{acc | omitted: acc.omitted + omitted}
 
         {legs, omitted} ->
           %{
             acc
-            | days: acc.days ++ [%{day_type: day_type, legs: legs}],
+            | days: acc.days ++ [%{day_type: day_type, legs: legs, prev?: prev?}],
               omitted: acc.omitted + omitted
           }
       end
     end)
   end
 
-  defp legs_for(blocks, garages_by_id) do
+  defp prev?(nil), do: false
+  defp prev?(run_day_type), do: Map.get(run_day_type, :prev?, false)
+
+  defp legs_for(blocks, garages_by_id, day_type_key) do
     Enum.flat_map_reduce(blocks, 0, fn block, omitted ->
       {legs, block_omitted} = block_legs(block, garages_by_id)
 
@@ -172,7 +239,8 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
         Enum.map(legs, fn leg ->
           Map.merge(leg, %{
             from: resolve_ref(leg.from, garages_by_id),
-            to: resolve_ref(leg.to, garages_by_id)
+            to: resolve_ref(leg.to, garages_by_id),
+            movement_key: {day_type_key, block.block_id, leg.leg_key}
           })
         end)
 
@@ -208,6 +276,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   defp pull_leg(pull, kind) do
     leg = %{
       kind: kind,
+      leg_key: kind,
       from: pull.from,
       to: pull.to,
       start_secs: pull.start_secs,
@@ -223,6 +292,11 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
   # the arrival rather than at the departure; a gap whose drive overruns its
   # departure is an infeasible plan, and the movement written is still the one it
   # actually describes.
+  #
+  # The gap's own `index` is carried into the leg, so a drive is addressable as
+  # `{:gap, index}` rather than only by where it sits in the written order. A
+  # block with two identical drives would otherwise be indistinguishable, and the
+  # index is what a run event holds.
   defp drive_legs(trips, gaps) do
     by_id = Map.new(trips, &{&1.id, &1})
 
@@ -239,6 +313,7 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
             {%{last_stop: %{stop_id: from_id}}, %{first_stop: %{stop_id: to_id}}} ->
               leg = %{
                 kind: :deadhead,
+                leg_key: {:gap, gap.index},
                 from: {:stop, from_id},
                 to: {:stop, to_id},
                 start_secs: gap.arrival_secs,
@@ -260,18 +335,32 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
 
     # The used set is carried through every day type, not reset between them, so
     # two day types that hashed alike still get two services and two sets of trip
-    # IDs.
-    {day_rows, _used} =
-      Enum.map_reduce(days, used, fn day, used ->
-        day_rows(day, route_id, used)
+    # IDs. Reservation order is `days` order, which is `day_types` order, so an
+    # existing export's identifiers do not shift because runs were added.
+    {day_rows, {_used, ids}} =
+      Enum.map_reduce(days, {used, []}, fn day, {used, ids} ->
+        {rows, day_ids, used} = day_rows(day, route_id, used)
+
+        {rows, {used, [day_ids | ids]}}
       end)
+
+    ids = Enum.reverse(ids)
+    trips = Enum.flat_map(day_rows, & &1.trips)
 
     %{
       calendar_dates: Enum.flat_map(day_rows, & &1.calendar_dates),
-      routes: [route_row(route_id)],
-      trips: Enum.flat_map(day_rows, & &1.trips),
+      # The deadhead route exists only to carry movements, so a run day type with
+      # no movement writes none: a route row with no trip on it is a row a
+      # consumer cannot act on, which is the same rule that drops a service with
+      # no movement.
+      routes: if(trips == [], do: [], else: [route_row(route_id)]),
+      trips: trips,
       stop_times: Enum.flat_map(day_rows, & &1.stop_times),
-      omitted: omitted
+      omitted: omitted,
+      ids: %{
+        service_ids: Map.new(ids, &{&1.key, &1.service_id}),
+        movement_trip_ids: Enum.reduce(ids, %{}, &Map.merge(&2, &1.movement_trip_ids))
+      }
     }
   end
 
@@ -282,14 +371,15 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
     MapSet.new(public_ids.service_ids ++ public_ids.trip_ids ++ public_ids.route_ids)
   end
 
-  defp day_rows(%{day_type: day_type, legs: legs}, route_id, used) do
+  defp day_rows(%{day_type: day_type, legs: legs, prev?: prev?}, route_id, used) do
     {service_id, used} = reserve(service_candidates(day_type.key), used)
 
-    # The `_prev` service exists only when something actually starts before
-    # midnight: a service listing previous dates with no movement on it is a row
-    # no consumer can act on.
+    # The `_prev` service exists when something actually starts before midnight, or
+    # when the caller says a run reaches before it: a service listing previous
+    # dates with no movement on it is a row no consumer can act on, so it is
+    # reserved for one of those two reasons and not otherwise.
     {prev_id, used} =
-      if Enum.any?(legs, &(&1.start_secs < 0)) do
+      if prev? or Enum.any?(legs, &(&1.start_secs < 0)) do
         reserve(fixed_candidates(service_id <> @prev_suffix), used)
       else
         {nil, used}
@@ -333,10 +423,10 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
           stop_time(trip_id, leg.to, leg.end_secs, previous?, 2)
         ]
 
-        {{trip, stop_times}, used}
+        {{trip, stop_times, {leg.movement_key, trip_id}}, used}
       end)
 
-    {trips, stop_times} = Enum.unzip(trips_with_times)
+    {trips, stop_times, movement_trip_ids} = unzip3(trips_with_times)
 
     {
       %{
@@ -344,8 +434,23 @@ defmodule GtfsPlanner.Gtfs.Blocking.TodsExport do
         trips: trips,
         stop_times: Enum.flat_map(stop_times, & &1)
       },
+      %{
+        key: day_type.key,
+        service_id: service_id,
+        movement_trip_ids: Map.new(movement_trip_ids)
+      },
       used
     }
+  end
+
+  # Trips, their stop times and the id each movement was written as, all from one
+  # pass — the mapping is only correct if it is taken from the same trip row that
+  # was written, never recomputed from the leg afterwards.
+  defp unzip3(tuples) do
+    Enum.reduce(tuples, {[], [], []}, fn {trip, stop_times, movement}, {t, s, m} ->
+      {[trip | t], [stop_times | s], [movement | m]}
+    end)
+    |> then(fn {t, s, m} -> {Enum.reverse(t), Enum.reverse(s), Enum.reverse(m)} end)
   end
 
   # A movement is written on the previous service day when it *starts* before
