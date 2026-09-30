@@ -23,6 +23,7 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
   alias GtfsPlanner.Gtfs.Schedules.FrequencyWindows
   alias GtfsPlanner.Gtfs.Schedules.TripChanges.Copy
   alias GtfsPlanner.Gtfs.Schedules.TripChanges.EditStop
+  alias GtfsPlanner.Gtfs.Schedules.TripChanges.Frequency
   alias GtfsPlanner.Gtfs.Schedules.TripChanges.MoveCalendar
   alias GtfsPlanner.Gtfs.Schedules.TripChanges.Restore
   alias GtfsPlanner.Gtfs.Schedules.TripChanges.SetTiming
@@ -313,10 +314,11 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
 
   `:shift` is planned by `TripChanges.Shift`, `:edit_stop` by
   `TripChanges.EditStop`, `:set_timing` by `TripChanges.SetTiming`,
-  `:move_calendar` by `TripChanges.MoveCalendar`, `:copy` by `TripChanges.Copy`
-  and `:restore` by `TripChanges.Restore`; every command without a planner clause
-  is `{:error, :invalid_command}` until its planner step adds a clause above the
-  fallback (steps 17–18).
+  `:move_calendar` by `TripChanges.MoveCalendar`, `:copy` by `TripChanges.Copy`,
+  `:add_frequency` and `:update_frequency` by `TripChanges.Frequency` and
+  `:restore` by `TripChanges.Restore`; every command without a planner clause is
+  `{:error, :invalid_command}` until its planner step adds a clause above the
+  fallback (step 18).
   """
   @spec plan(command(), state()) :: {:ok, change_set()} | {:error, term()}
   def plan({:shift, _trip_ids, _delta, _from_position} = command, state),
@@ -332,6 +334,11 @@ defmodule GtfsPlanner.Gtfs.Schedules.TripChanges do
 
   def plan({:copy, _trip_ids, _service_id, _offset, _skip_existing} = command, state),
     do: Copy.plan(command, state)
+
+  def plan({:add_frequency, _attrs} = command, state), do: Frequency.plan(command, state)
+
+  def plan({:update_frequency, _trip_id, _params} = command, state),
+    do: Frequency.plan(command, state)
 
   def plan({:restore, _payload} = command, state), do: Restore.plan(command, state)
 
