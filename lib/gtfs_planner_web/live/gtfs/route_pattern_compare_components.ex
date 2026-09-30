@@ -1764,7 +1764,11 @@ defmodule GtfsPlannerWeb.Gtfs.RoutePatternCompareComponents do
       |> Enum.filter(fn {row, _index} -> Map.fetch!(row, key) != nil end)
       |> Enum.map(&elem(&1, 1))
 
-    {Enum.min(indexes), Enum.max(indexes)}
+    # A side without stops has no span; `{0, -1}` draws no lane, as in the overview.
+    case indexes do
+      [] -> {0, -1}
+      _ -> {Enum.min(indexes), Enum.max(indexes)}
+    end
   end
 
   defp b_sequence(comparison) do
