@@ -12,10 +12,15 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
   answers.
   """
 
-  use GtfsPlannerWeb.ConnCase, async: true
+  # The Missing stop times impact block loads through `assign_async`, whose
+  # task is a separate process: like the dashboard regions suite, this file
+  # runs shared (`async: false`) so the task reads through the test's
+  # sandbox connection, and the new cases wait on it with `render_async/1`.
+  use GtfsPlannerWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
   import GtfsPlanner.AccountsFixtures
+  import GtfsPlanner.GtfsFixtures
   import GtfsPlanner.OrganizationsFixtures
   import GtfsPlanner.VersionsFixtures
 
@@ -95,7 +100,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
       assert has_element?(
                view,
                "#export-defaults-more",
-               "ID formats and stop times between timepoints will join this page."
+               "ID formats will join this page."
              )
 
       # This page, not the Coming soon body, and it returns by the Settings link
@@ -311,6 +316,283 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
       assert first.realtime_source == :own
 
       assert Repo.aggregate(ExportDefault, :count) == 2
+    end
+  end
+
+  describe "missing stop times (EV-8, AC-17)" do
+    setup :editor_setup
+
+    test "the section renders both radio groups reflecting the saved values", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      # No row reads Estimate by distance (AC-7 defaults).
+      {:ok, view, _html} = live(conn, section_path(version))
+
+      assert has_element?(view, "#export-defaults-missing-times")
+      assert has_element?(view, "legend", "In exported files")
+      assert has_element?(view, "legend", "Share the time between timed stops by")
+      assert has_element?(view, "label", ~r/Estimate missing times/)
+      assert has_element?(view, "label", ~r/Leave them blank/)
+      assert has_element?(view, "label", ~r/Distance along the path/)
+      assert has_element?(view, "label", ~r/Equal time per stop/)
+
+      assert has_element?(view, "#estimate-missing-times-estimate[checked]")
+      refute has_element?(view, "#estimate-missing-times-blank[checked]")
+      assert has_element?(view, "#estimate-method-distance[checked]")
+      refute has_element?(view, "#estimate-method-even[checked]")
+
+      # A saved row reads back through the same radios.
+      {:ok, _defaults} =
+        ExportDefaults.update(organization.id, %{
+          estimate_missing_times: false,
+          estimate_method: :even
+        })
+
+      {:ok, reloaded, _html} = live(conn, section_path(version))
+
+      assert has_element?(reloaded, "#estimate-missing-times-blank[checked]")
+      refute has_element?(reloaded, "#estimate-missing-times-estimate[checked]")
+      assert has_element?(reloaded, "#estimate-method-even[checked]")
+      refute has_element?(reloaded, "#estimate-method-distance[checked]")
+    end
+
+    test "choosing Leave them blank shows the consequence and saving persists it", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      seed_fillable_trip(organization.id, version.id)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, section_path(version))
+      render_async(view)
+
+      params = %{
+        "export_default" => %{
+          "include_flex" => "true",
+          "realtime_source" => "unsure",
+          "estimate_missing_times" => "false",
+          "estimate_method" => "distance"
+        }
+      }
+
+      html = view |> form("#export-defaults-form", params) |> render_change()
+
+      # The consequence names this version's missing-time count.
+      assert html =~ "leaves 2 times blank on 1 trip"
+      refute html =~ "Export defaults saved."
+
+      html = view |> form("#export-defaults-form", params) |> render_submit()
+
+      assert html =~ "Export defaults saved."
+      refute html =~ "missing-times-consequence"
+
+      stored = Repo.get_by(ExportDefault, organization_id: organization.id)
+      assert stored.estimate_missing_times == false
+      assert stored.estimate_method == :distance
+      # The save keeps the other two settings (FH-8).
+      assert stored.include_flex == true
+      assert stored.realtime_source == :unsure
+    end
+
+    test "changing only the method names the changed estimates and saves them", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      seed_fillable_trip(organization.id, version.id)
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, section_path(version))
+      render_async(view)
+
+      params = %{
+        "export_default" => %{
+          "include_flex" => "true",
+          "realtime_source" => "unsure",
+          "estimate_missing_times" => "true",
+          "estimate_method" => "even"
+        }
+      }
+
+      html = view |> form("#export-defaults-form", params) |> render_change()
+
+      assert html =~ "will change in the next export"
+
+      html = view |> form("#export-defaults-form", params) |> render_submit()
+
+      assert html =~ "Export defaults saved."
+      assert ExportDefaults.get(organization.id).estimate_method == :even
+    end
+
+    test "the impact block loads asynchronously with counts, routes and capped trips", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      # One fillable trip plus 22 trips with no last time: 23 trips,
+      # 46 missing cells, 22 not estimable (only 20 shown).
+      seed_fillable_trip(organization.id, version.id)
+      seed_no_last_time_trips(organization.id, version.id, 22)
+      conn = log_in_user(conn, user, organization: organization)
+
+      # The disconnected render shows the loading skeleton.
+      {:ok, view, html} = live(conn, section_path(version))
+      assert html =~ "Counting trips with missing times"
+
+      render_async(view)
+      html = render(view)
+
+      assert html =~ "Trips with missing times"
+      assert html =~ "23"
+      assert html =~ "46"
+      assert html =~ "Can’t be estimated"
+
+      # Per-route rows link to each route's Schedules.
+      assert has_element?(
+               view,
+               "#missing-impact-routes a[href='/gtfs/#{version.id}/routes/R1/schedules']"
+             )
+
+      assert has_element?(
+               view,
+               "#missing-impact-routes a[href='/gtfs/#{version.id}/routes/R2/schedules']"
+             )
+
+      # At most 20 not-estimable trips are listed.
+      unestimable =
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#missing-impact-unestimable li")
+
+      assert Enum.count(unestimable) == 20
+    end
+
+    test "a version with no blanks shows the empty sentence", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, section_path(version))
+      render_async(view)
+
+      assert has_element?(
+               view,
+               "#missing-impact-empty",
+               "Every trip has a time at every stop."
+             )
+    end
+
+    test "the foot note no longer promises stop times between timepoints", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      version: version
+    } do
+      conn = log_in_user(conn, user, organization: organization)
+
+      {:ok, view, _html} = live(conn, section_path(version))
+      html = render(view)
+
+      assert html =~ "ID formats will join this page."
+      refute html =~ "stop times between timepoints"
+    end
+
+    test "a Pathways Studio organization is not offered Export defaults", %{conn: conn} do
+      organization = organization_fixture(%{product: :pathways})
+      member = editor_for(organization)
+      version = gtfs_version_fixture(organization.id)
+
+      conn = log_in_user(conn, member, organization: organization)
+      {:ok, overview, _html} = live(conn, settings_path(version))
+
+      refute has_element?(overview, "#settings-entry-export_defaults")
+    end
+  end
+
+  # --- missing-times seeds ----------------------------------------------------
+
+  # One fillable trip on R2: anchors 08:00/08:10 over stored distances with
+  # one fully blank middle row (2 missing cells).
+  defp seed_fillable_trip(organization_id, version_id) do
+    stop_fixture(organization_id, version_id, stop_id: "S1")
+    stop_fixture(organization_id, version_id, stop_id: "S2")
+    stop_fixture(organization_id, version_id, stop_id: "S3")
+
+    route_fixture(organization_id, version_id,
+      route_id: "R1",
+      route_short_name: "10",
+      route_long_name: "Downtown Loop",
+      route_color: "FF0000"
+    )
+
+    route_fixture(organization_id, version_id,
+      route_id: "R2",
+      route_short_name: "20",
+      route_long_name: "Crosstown",
+      route_color: "00FF00"
+    )
+
+    trip_fixture(organization_id, version_id, "R2", %{trip_id: "T_FILL", service_id: "SV1"})
+
+    stop_time_fixture(organization_id, version_id, "T_FILL", "S1", %{
+      stop_sequence: 1,
+      arrival_time: "08:00:00",
+      departure_time: "08:00:00",
+      timepoint: 1,
+      shape_dist_traveled: Decimal.new("0")
+    })
+
+    stop_time_fixture(organization_id, version_id, "T_FILL", "S2", %{
+      stop_sequence: 2,
+      arrival_time: nil,
+      departure_time: nil,
+      timepoint: nil,
+      shape_dist_traveled: Decimal.new("1500")
+    })
+
+    stop_time_fixture(organization_id, version_id, "T_FILL", "S3", %{
+      stop_sequence: 3,
+      arrival_time: "08:10:00",
+      departure_time: "08:10:00",
+      timepoint: 1,
+      shape_dist_traveled: Decimal.new("3000")
+    })
+  end
+
+  # Trips with no last time on R1: each carries 2 missing cells and is not
+  # estimable, so the unestimable list can be capped.
+  defp seed_no_last_time_trips(organization_id, version_id, count) do
+    for index <- 1..count do
+      trip_id = "T_NOLAST_#{index}"
+      trip_fixture(organization_id, version_id, "R1", %{trip_id: trip_id, service_id: "SV1"})
+
+      stop_time_fixture(organization_id, version_id, trip_id, "S1", %{
+        stop_sequence: 1,
+        arrival_time: "08:00:00",
+        departure_time: "08:00:00",
+        timepoint: 1,
+        shape_dist_traveled: Decimal.new("0")
+      })
+
+      stop_time_fixture(organization_id, version_id, trip_id, "S3", %{
+        stop_sequence: 2,
+        arrival_time: nil,
+        departure_time: nil,
+        timepoint: nil,
+        shape_dist_traveled: Decimal.new("3000")
+      })
     end
   end
 
