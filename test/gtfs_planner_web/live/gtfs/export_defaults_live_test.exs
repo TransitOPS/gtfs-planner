@@ -374,7 +374,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} = live(conn, section_path(version))
-      render_async(view)
+      render_async(view, 2_000)
 
       params = %{
         "export_default" => %{
@@ -414,7 +414,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} = live(conn, section_path(version))
-      render_async(view)
+      render_async(view, 2_000)
 
       params = %{
         "export_default" => %{
@@ -483,7 +483,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
       {:ok, view, html} = live(conn, section_path(version))
       assert html =~ "Counting trips with missing times"
 
-      render_async(view)
+      render_async(view, 2_000)
       html = render(view)
 
       assert html =~ "Trips with missing times"
@@ -520,7 +520,7 @@ defmodule GtfsPlannerWeb.Gtfs.ExportDefaultsLiveTest do
       conn = log_in_user(conn, user, organization: organization)
 
       {:ok, view, _html} = live(conn, section_path(version))
-      render_async(view)
+      render_async(view, 2_000)
 
       assert has_element?(
                view,
