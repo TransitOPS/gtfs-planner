@@ -8,11 +8,12 @@ defmodule GtfsPlanner.Support.RunnerSlots do
   @supervisors [
     GtfsPlanner.Gtfs.Import.RunnerSupervisor,
     GtfsPlanner.Gtfs.Import.ChangeRunnerSupervisor,
-    GtfsPlanner.Gtfs.Export.RunnerSupervisor
+    GtfsPlanner.Gtfs.Export.RunnerSupervisor,
+    GtfsPlanner.Reachability.RunnerSupervisor
   ]
 
   @doc """
-  Waits until the import, change and export runner supervisors have no children.
+  Waits until every runner supervisor in `@supervisors` has no children.
 
   A runner still alive after `timeout` milliseconds is killed, so a test that
   left a worker blocked cannot hold the slot for the tests after it.
