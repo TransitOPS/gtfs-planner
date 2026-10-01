@@ -115,7 +115,7 @@ defmodule GtfsPlanner.Gtfs.RoutePatterns.ImportLifecycleTest do
         context.organization.id,
         run.id,
         run.lease_token,
-        StagedImport.stage(feed())
+        files: StagedImport.stage(feed())
       )
 
     refute runner_pid == self()

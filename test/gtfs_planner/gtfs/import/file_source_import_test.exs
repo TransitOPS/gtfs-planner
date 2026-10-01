@@ -290,7 +290,7 @@ defmodule GtfsPlanner.Gtfs.Import.FileSourceImportTest do
 
   defp start_runner(organization, run, files) do
     staged = stage(organization, run.id, files)
-    {:ok, runner} = Runner.start_import(organization.id, run.id, run.lease_token, staged)
+    {:ok, runner} = Runner.start_import(organization.id, run.id, run.lease_token, files: staged)
     runner
   end
 

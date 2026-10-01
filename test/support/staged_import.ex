@@ -1,7 +1,7 @@
 defmodule GtfsPlanner.Support.StagedImport do
   @moduledoc """
   Test adapter from in-memory feed files to the staged file descriptors that
-  `Import.import_files/5`, `Import.Publication.run/4` and `Import.Runner.start_import/4`
+  `Import.import_files/5`, `Import.Publication.run/4` and the `:files` option of `Import.Runner.start_import/4`
   take.
 
   Each call writes the `%{filename, content}` maps to a fresh private directory, one

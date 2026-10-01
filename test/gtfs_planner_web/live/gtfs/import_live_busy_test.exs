@@ -74,10 +74,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveBusyTest do
     } do
       {_runner, _worker} = hold_import_slot(organization, user)
       {:ok, view, _html} = live(conn, "/gtfs/#{version.id}/import")
+      attach_staging_probe()
 
       upload_feed(view)
       submit_import(view, "Busy Feed")
 
+      refute_received :staging_started
       assert has_element?(view, "#flash-error", @import_busy)
       assert has_element?(view, "#gtfs-import-upload-entries", "levels.txt")
       assert has_element?(view, "#gtfs-import-version-name[value='Busy Feed']")
@@ -198,7 +200,7 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveBusyTest do
         name: "Occupant #{System.unique_integer([:positive])}"
       })
 
-    {:ok, runner} = Runner.start_import(organization.id, run.id, run.lease_token, [])
+    {:ok, runner} = Runner.start_import(organization.id, run.id, run.lease_token, files: [])
     assert_receive {:blocking_import_worker_started, worker}, 2_000
     on_exit(fn -> send(worker, :finish) end)
     {runner, worker}
@@ -223,6 +225,25 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveBusyTest do
 
   defp latest_change_run(organization, version),
     do: ChangeRuns.latest_for_version(organization.id, version.id)
+
+  # `SourceStorage.stage/4` announces every staging call, in the calling LiveView, before it
+  # copies a byte. A refused import must never reach it.
+  defp attach_staging_probe do
+    handler_id = "import-live-busy-staging-#{System.unique_integer([:positive])}"
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:gtfs_planner, :task_artifact_capacity, :lock_attempt],
+        &__MODULE__.record_staging/4,
+        %{owner: self()}
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+  end
+
+  def record_staging(_event, _measurements, _metadata, %{owner: owner}),
+    do: send(owner, :staging_started)
 
   defp upload_feed(view) do
     view

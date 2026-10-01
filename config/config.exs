@@ -42,6 +42,9 @@ config :gtfs_planner,
   # Heartbeat interval (in milliseconds) at which the import runner renews its
   # execution/cleanup lease.
   import_runner_heartbeat_ms: 60_000,
+  # Time (in milliseconds) an import runner waits, after claiming its run, for the
+  # staged upload to be installed before it fails the run as `source_not_installed`.
+  import_source_install_timeout_ms: 60_000,
   # Duration (in seconds) a validation run's execution lease remains valid before
   # `Validations.reconcile_expired/1` may fail the run as `lease_expired`.
   validation_lease_seconds: 300,

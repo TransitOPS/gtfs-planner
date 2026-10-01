@@ -1588,6 +1588,8 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
     >
       Nothing was published, and {version_display_name(@version)} is unchanged.
       <%= case @reason do %>
+        <% {:upload_consumption_failed, :artifact_capacity_exceeded} -> %>
+          These files exceed the import storage limit. Upload fewer or smaller files.
         <% {:upload_consumption_failed, detail} -> %>
           We couldn’t read the uploaded files. Choose them again and retry.
           <details class="mt-1">
@@ -2616,11 +2618,12 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
   defp run_count(_run, _key), do: 0
 
   # Create exactly one staging target + pending run, subscribe to its stable
-  # topic, stage the uploads into the run's private directory on disk, and hand the
-  # run, lease token and file descriptors to a supervised Runner that claims and
-  # executes the import. The route/current version is never a write destination,
-  # and no task reference is owned by the socket: the Runner is durable and
-  # survives disconnect (AC-6). The run exists before any file is staged, so the
+  # topic, and ask the supervised Runner to take the run. The Runner is admitted
+  # and claims the run before a single upload byte is read, then waits while this
+  # process copies the uploads into the run's private directory and installs them.
+  # The route/current version is never a write destination, and no task reference
+  # is owned by the socket: the Runner is durable and survives disconnect once the
+  # source is installed (AC-6). The run exists before any file is staged, so the
   # orphan sweep never sees a staged directory without its run.
   defp create_and_start_import(socket, _form_data, version_name) do
     organization_id = socket.assigns.current_organization.id
@@ -2658,60 +2661,89 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLive do
         # broadcast is missed.
         Phoenix.PubSub.subscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
 
-        case stage_import_files(socket, organization_id, run.id) do
-          {:ok, staged_files} ->
-            start_staged_import(socket, run, target, version_name, staged_files)
+        case Runner.start_import(organization_id, run.id, run.lease_token, caller: self()) do
+          {:ok, runner} ->
+            stage_and_install_source(socket, runner, run, target)
 
-          {:error, reason} ->
-            # Post-create staging error: fail the exact pending target, start no
-            # runner, and render target-specific feedback. `stage/4` has already
-            # removed anything it wrote.
-            drop_import_files(socket)
+          {:error, :busy} ->
+            refuse_unstarted_import(socket, run, version_name)
+
+          {:error, _claim_failure} ->
+            # No runner owns the run, so the staging target is closed here.
             failed = fail_target_best_effort(run, target)
+            Phoenix.PubSub.unsubscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
 
             {:noreply,
              socket
              |> assign(:import_target, failed)
-             |> assign(:import_result, {:error, failed, {:upload_consumption_failed, reason}})
-             |> assign(:importing, false)
-             |> assign(:import_progress, nil)}
+             |> assign(:import_result, {:error, failed, :import_not_started})}
         end
     end
   end
 
-  # Hands the pending run + lease token and the staged file descriptors to the
-  # supervised runner. The runner re-claims in init and executes publication
-  # through ImportRuns, broadcasting {:import_run_changed, run.id} on closure.
-  defp start_staged_import(socket, run, target, version_name, staged_files) do
+  # The runner supervisor is full. Nothing was staged, and the uploads are still in
+  # the form, so the same Import click works once the other import finishes.
+  defp refuse_unstarted_import(socket, run, version_name) do
     organization_id = socket.assigns.current_organization.id
 
-    case Runner.start_import(organization_id, run.id, run.lease_token, staged_files) do
-      {:error, :busy} ->
-        # The runner supervisor is full. The uploads are still in the form, so the
-        # same Import click works once the other import finishes. The staged copies
-        # are of no further use.
-        _ = ImportRuns.fail_unstarted(organization_id, run.id, run.lease_token)
-        _ = SourceStorage.remove(organization_id, run.id)
-        Phoenix.PubSub.unsubscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
+    _ = ImportRuns.fail_unstarted(organization_id, run.id, run.lease_token)
+    Phoenix.PubSub.unsubscribe(GtfsPlanner.PubSub, ImportRuns.topic(run.id))
 
-        {:noreply,
-         socket
-         |> assign(:form, to_form(%{"version_name" => version_name}, as: :gtfs_import_form))
-         |> put_flash(:error, @import_busy_message)}
+    {:noreply,
+     socket
+     |> assign(:form, to_form(%{"version_name" => version_name}, as: :gtfs_import_form))
+     |> put_flash(:error, @import_busy_message)}
+  end
 
-      _started ->
-        drop_import_files(socket)
+  # Stages the uploads and hands their descriptors to the runner that is waiting for
+  # them. The runner executes publication through ImportRuns, broadcasting
+  # {:import_run_changed, run.id} on closure.
+  defp stage_and_install_source(socket, runner, run, target) do
+    organization_id = socket.assigns.current_organization.id
 
-        {:noreply,
-         socket
-         |> assign(:import_target, target)
-         |> assign(:importing, true)
-         |> assign(:import_result, nil)
-         |> assign(:import_agency_health, nil)
-         |> assign(:import_left_out, [])
-         |> assign(:published_version, nil)
-         |> assign(:import_progress, nil)}
+    case stage_import_files(socket, organization_id, run.id) do
+      {:ok, staged_files} ->
+        case Runner.install_source(runner, staged_files) do
+          :ok ->
+            drop_import_files(socket)
+
+            {:noreply,
+             socket
+             |> assign(:import_target, target)
+             |> assign(:importing, true)
+             |> assign(:import_result, nil)
+             |> assign(:import_agency_health, nil)
+             |> assign(:import_left_out, [])
+             |> assign(:published_version, nil)
+             |> assign(:import_progress, nil)}
+
+          {:error, _stopped} ->
+            # The runner passed its install deadline and closed the run while the
+            # copy was still running. `stage/4` may have recreated the directory
+            # after the runner removed it, so remove it again.
+            _ = SourceStorage.remove(organization_id, run.id)
+            source_refused(socket, target, :source_not_installed)
+        end
+
+      {:error, reason} ->
+        # Post-create staging error: the runner closes the exact staging target as
+        # `source_not_installed` and removes whatever was written. No worker starts.
+        _ = Runner.cancel_source(runner)
+        source_refused(socket, target, reason)
     end
+  end
+
+  # A set that is over the storage limit stays selected so the person can remove
+  # files from it. After any other refusal the person chooses the files again.
+  defp source_refused(socket, target, reason) do
+    if reason != :artifact_capacity_exceeded, do: drop_import_files(socket)
+
+    {:noreply,
+     socket
+     |> assign(:import_target, target)
+     |> assign(:import_result, {:error, target, {:upload_consumption_failed, reason}})
+     |> assign(:importing, false)
+     |> assign(:import_progress, nil)}
   end
 
   # Copies the uploads from their temporary paths into the run's private directory

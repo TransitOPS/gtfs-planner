@@ -71,7 +71,7 @@ defmodule GtfsPlanner.Gtfs.Import.Failure do
                     row_invalid constraint_violation database_error
                     missing_references image_write_failed missing_image
                     filesystem_error verification_failed executor_lost forbidden
-                    busy unknown_error
+                    busy source_not_installed unknown_error
                   )
 
   @failed_file_max 255
@@ -184,6 +184,8 @@ defmodule GtfsPlanner.Gtfs.Import.Failure do
   defp classify({:write_failed, _zip_path, _reason}), do: {"image_write_failed", nil, nil}
 
   defp classify(:executor_lost), do: {"executor_lost", nil, nil}
+
+  defp classify(:source_not_installed), do: {"source_not_installed", nil, nil}
 
   defp classify(_other), do: {"unknown_error", nil, nil}
 

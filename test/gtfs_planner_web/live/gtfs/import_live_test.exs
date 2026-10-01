@@ -669,19 +669,11 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
     end
   end
 
-  describe "post-create staging failure" do
+  describe "admission before staging" do
     setup :editor_context
+    setup :await_idle_runners
 
-    # A zero root budget makes `SourceStorage.stage/4` refuse every upload.
-    setup do
-      previous = Application.get_env(:gtfs_planner, :gtfs_task_artifacts_max_total_bytes)
-      Application.put_env(:gtfs_planner, :gtfs_task_artifacts_max_total_bytes, 0)
-      on_exit(fn -> restore_application_env(:gtfs_task_artifacts_max_total_bytes, previous) end)
-
-      :ok
-    end
-
-    test "a staging error fails the exact staging target and starts no task", %{
+    test "claims the run before copying the upload and starts the worker only after install", %{
       conn: conn,
       user: user,
       organization: organization,
@@ -689,10 +681,43 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
     } do
       conn = log_in_user(conn, user, organization: organization)
       {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+      upload_gtfs(view, [%{name: "levels.txt", content: @levels_content, type: "text/plain"}])
+      attach_staging_probe(&__MODULE__.record_staging/4, organization)
+
+      submit_import(view, "Ordered Import")
+      await_import_task(view)
+
+      assert_received {:staging_started, at_first_copy}
+      assert at_first_copy.run_state == "running"
+      assert at_first_copy.run_token == at_first_copy.runner_token
+      assert at_first_copy.worker == nil
+
+      target = version_by_name(organization.id, "Ordered Import")
+      assert target.publication_status == "published"
+      assert Gtfs.get_level_by_level_id(organization.id, target.id, "L1")
+    end
+  end
+
+  describe "post-create staging failure" do
+    setup :editor_context
+    setup :await_idle_runners
+
+    test "an upload set over the storage limit stays selected and the run fails", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      # A zero root budget makes `SourceStorage.stage/4` refuse every upload.
+      put_application_env(:gtfs_task_artifacts_max_total_bytes, 0)
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
 
       upload_gtfs(view, [%{name: "levels.txt", content: @levels_content, type: "text/plain"}])
 
-      html = submit_import(view, "Consume Fail")
+      submit_import(view, "Consume Fail")
+      GtfsPlanner.Support.RunnerSlots.await_idle()
+      html = render(view)
 
       target = version_by_name(organization.id, "Consume Fail")
       assert target
@@ -705,10 +730,10 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
         |> GtfsPlanner.Repo.one!()
 
       assert run.state == "failed"
-      assert run.reason_code == "unknown_error"
+      assert run.reason_code == "source_not_installed"
       assert is_nil(run.lease_token)
 
-      # No task started, no rows written to any version, and nothing staged.
+      # No worker started, no rows written to any version, and nothing staged.
       assert Task.Supervisor.children(GtfsPlanner.TaskSupervisor) == []
       refute Gtfs.get_level_by_level_id(organization.id, route_version.id, "L1")
       refute Gtfs.get_level_by_level_id(organization.id, target.id, "L1")
@@ -717,7 +742,68 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
       refute File.exists?(run_dir)
 
       assert has_element?(view, "#gtfs-import-result", "“Consume Fail” wasn’t imported.")
-      assert html =~ "Nothing was published"
+      assert has_element?(view, "#gtfs-import-result", "exceed the import storage limit")
+      assert html =~ "Upload fewer or smaller files."
+      refute html =~ "couldn’t read the uploaded files"
+      assert has_element?(view, "#gtfs-import-upload-entries", "levels.txt")
+      assert has_element?(view, "#import-run-#{run.id}")
+    end
+
+    test "storage that cannot be written asks for the files again and drops the selection", %{
+      conn: conn,
+      user: user,
+      organization: organization,
+      gtfs_version: route_version
+    } do
+      # A root below a regular file cannot be created, so staging fails without a capacity error.
+      blocker = Path.join(System.tmp_dir!(), "import-live-blocker-#{Ecto.UUID.generate()}")
+      File.write!(blocker, "not a directory")
+      on_exit(fn -> File.rm(blocker) end)
+      put_application_env(:gtfs_task_artifacts_path, Path.join(blocker, "root"))
+
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+      upload_gtfs(view, [%{name: "levels.txt", content: @levels_content, type: "text/plain"}])
+
+      submit_import(view, "Unwritable")
+      GtfsPlanner.Support.RunnerSlots.await_idle()
+      html = render(view)
+
+      target = version_by_name(organization.id, "Unwritable")
+      assert target.publication_status == "failed"
+      assert has_element?(view, "#gtfs-import-result", "couldn’t read the uploaded files")
+      refute html =~ "exceed the import storage limit"
+      refute has_element?(view, "#gtfs-import-upload-entries", "levels.txt")
+      assert Task.Supervisor.children(GtfsPlanner.TaskSupervisor) == []
+    end
+
+    test "an install that arrives after the runner's deadline fails the import and removes the copy",
+         %{
+           conn: conn,
+           user: user,
+           organization: organization,
+           gtfs_version: route_version
+         } do
+      put_application_env(:import_source_install_timeout_ms, 50)
+      conn = log_in_user(conn, user, organization: organization)
+      {:ok, view, _html} = live(conn, "/gtfs/#{route_version.id}/import")
+      upload_gtfs(view, [%{name: "levels.txt", content: @levels_content, type: "text/plain"}])
+      attach_staging_probe(&__MODULE__.await_runner_exit/4, organization)
+
+      submit_import(view, "Too Slow")
+      html = render(view)
+
+      target = version_by_name(organization.id, "Too Slow")
+      run = Repo.get_by!(Run, organization_id: organization.id, gtfs_version_id: target.id)
+      assert %Run{state: "failed", reason_code: "source_not_installed"} = run
+
+      {:ok, run_dir} = SourceStorage.run_dir(organization.id, run.id)
+      refute File.exists?(run_dir)
+      assert Task.Supervisor.children(GtfsPlanner.TaskSupervisor) == []
+      refute Gtfs.get_level_by_level_id(organization.id, target.id, "L1")
+      assert has_element?(view, "#gtfs-import-result", "“Too Slow” wasn’t imported.")
+      assert html =~ "couldn’t read the uploaded files"
+      refute has_element?(view, "#gtfs-importing-card")
     end
   end
 
@@ -1926,6 +2012,72 @@ defmodule GtfsPlannerWeb.Gtfs.ImportLiveTest do
 
   defp restore_application_env(key, nil), do: Application.delete_env(:gtfs_planner, key)
   defp restore_application_env(key, value), do: Application.put_env(:gtfs_planner, key, value)
+
+  defp await_idle_runners(_context), do: GtfsPlanner.Support.RunnerSlots.await_idle()
+
+  # Sets an application key for one test and restores the previous value on exit.
+  defp put_application_env(key, value) do
+    previous = Application.get_env(:gtfs_planner, key)
+    Application.put_env(:gtfs_planner, key, value)
+    on_exit(fn -> restore_application_env(key, previous) end)
+  end
+
+  # `SourceStorage.stage/4` announces every staging call from the calling process, here the
+  # LiveView, before it copies a byte. The probe's handler runs at that moment.
+  defp attach_staging_probe(handler, organization) do
+    handler_id = "import-live-staging-#{System.unique_integer([:positive])}"
+    config = %{owner: self(), organization_id: organization.id}
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:gtfs_planner, :task_artifact_capacity, :lock_attempt],
+        handler,
+        config
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+  end
+
+  # Records the run and the runner as they are when the upload starts to be copied.
+  def record_staging(_event, _measurements, _metadata, %{owner: owner, organization_id: id}) do
+    run = Repo.one!(from(r in Run, where: r.organization_id == ^id))
+    runner_state = :sys.get_state(only_import_runner())
+
+    send(
+      owner,
+      {:staging_started,
+       %{
+         run_state: run.state,
+         run_token: run.lease_token,
+         runner_token: runner_state.lease_token,
+         worker: runner_state.task_pid
+       }}
+    )
+  end
+
+  # Holds the staging process until the runner has stopped, so the install that follows
+  # reaches a runner that already passed its deadline.
+  def await_runner_exit(_event, _measurements, _metadata, _config) do
+    for {_id, runner, _type, _modules} <-
+          DynamicSupervisor.which_children(GtfsPlanner.Gtfs.Import.RunnerSupervisor),
+        is_pid(runner) do
+      ref = Process.monitor(runner)
+
+      receive do
+        {:DOWN, ^ref, :process, ^runner, _reason} -> :ok
+      after
+        5_000 -> raise "the import runner did not stop at its install deadline"
+      end
+    end
+  end
+
+  defp only_import_runner do
+    [{_id, runner, _type, _modules}] =
+      DynamicSupervisor.which_children(GtfsPlanner.Gtfs.Import.RunnerSupervisor)
+
+    runner
+  end
 
   describe "upload display" do
     setup :editor_context

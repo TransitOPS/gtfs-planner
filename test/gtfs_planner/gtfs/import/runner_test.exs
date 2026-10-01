@@ -103,7 +103,7 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
     # supervised runner (children of RunnerSupervisor, not of the spawner).
     spawner =
       spawn(fn ->
-        {:ok, pid} = Runner.start_import(org.id, run.id, run.lease_token, [])
+        {:ok, pid} = Runner.start_import(org.id, run.id, run.lease_token, files: [])
         allow_repo(pid)
         send(parent, {:runner, pid})
         # Stay alive until the parent signals shutdown.
@@ -148,7 +148,7 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
     {:ok, %{run: run}} =
       ImportRuns.create_pending_target(org.id, editor_actor(org), %{name: "Feed"})
 
-    {:ok, runner_pid} = Runner.start_import(org.id, run.id, run.lease_token, [])
+    {:ok, runner_pid} = Runner.start_import(org.id, run.id, run.lease_token, files: [])
     allow_repo(runner_pid)
 
     state = :sys.get_state(runner_pid)
@@ -225,7 +225,7 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
     {:ok, %{run: run}} =
       ImportRuns.create_pending_target(org.id, editor_actor(org), %{name: "Feed"})
 
-    {:ok, runner_pid} = Runner.start_import(org.id, run.id, run.lease_token, [])
+    {:ok, runner_pid} = Runner.start_import(org.id, run.id, run.lease_token, files: [])
     allow_repo(runner_pid)
 
     state = :sys.get_state(runner_pid)
@@ -298,7 +298,7 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
     {:ok, %{run: run}} =
       ImportRuns.create_pending_target(org.id, editor_actor(org), %{name: "Feed"})
 
-    {:ok, runner_pid} = Runner.start_import(org.id, run.id, run.lease_token, [])
+    {:ok, runner_pid} = Runner.start_import(org.id, run.id, run.lease_token, files: [])
     allow_repo(runner_pid)
 
     state = :sys.get_state(runner_pid)
@@ -335,7 +335,7 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
     # Start a runner with a WRONG token. init/1 must fail the claim and stop
     # without writing. A failed init returns an error tuple from start_child.
     assert {:error, {:bad_return_value, {:stop, :claim_failed, nil}}} =
-             Runner.start_import(org.id, run.id, Ecto.UUID.generate(), [])
+             Runner.start_import(org.id, run.id, Ecto.UUID.generate(), files: [])
 
     reloaded = Repo.get!(Run, run.id)
     assert reloaded.state == "pending"
@@ -352,7 +352,7 @@ defmodule GtfsPlanner.Gtfs.Import.RunnerTest do
     {:ok, %{run: run}} =
       ImportRuns.create_pending_target(org.id, editor_actor(org), %{name: "Feed"})
 
-    {:ok, runner_pid} = Runner.start_import(org.id, run.id, run.lease_token, [])
+    {:ok, runner_pid} = Runner.start_import(org.id, run.id, run.lease_token, files: [])
     allow_repo(runner_pid)
 
     state = :sys.get_state(runner_pid)

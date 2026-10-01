@@ -805,7 +805,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
       ]
 
       {:ok, runner_pid} =
-        Runner.start_import(organization.id, run.id, token, StagedImport.stage(files))
+        Runner.start_import(organization.id, run.id, token, files: StagedImport.stage(files))
 
       refute runner_pid == self()
       Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), runner_pid)
@@ -902,7 +902,7 @@ defmodule GtfsPlanner.Gtfs.Import.PublicationTest do
 
       # Drive the real runner; it broadcasts {:import_run_changed, run_id} only
       # after durable closure.
-      {:ok, runner_pid} = Runner.start_import(organization.id, run_id, token, files)
+      {:ok, runner_pid} = Runner.start_import(organization.id, run_id, token, files: files)
 
       assert_receive {:import_run_changed, ^run_id}, 15_000
 

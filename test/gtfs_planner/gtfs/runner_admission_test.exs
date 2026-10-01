@@ -314,7 +314,7 @@ defmodule GtfsPlanner.Gtfs.RunnerAdmissionTest do
   end
 
   defp start_import(organization, %{run: run}),
-    do: ImportRunner.start_import(organization.id, run.id, run.lease_token, [])
+    do: ImportRunner.start_import(organization.id, run.id, run.lease_token, files: [])
 
   # One non-terminal change run is allowed per version, so each run gets its own.
   defp pending_compute(organization, actor) do

@@ -463,7 +463,9 @@ defmodule GtfsPlanner.Gtfs.Import.RecoveryTest do
       ]
 
       {:ok, runner_pid} =
-        Runner.start_import(org.id, new_run.id, new_run.lease_token, StagedImport.stage(files))
+        Runner.start_import(org.id, new_run.id, new_run.lease_token,
+          files: StagedImport.stage(files)
+        )
 
       Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), runner_pid)
 
