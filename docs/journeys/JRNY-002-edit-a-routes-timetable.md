@@ -396,18 +396,27 @@ The count is the executed trail's, recorded at
 - **Seed:** sample-feed
 - **Start path:** /
 - **Success check:** timetable-add-trip — exactly one new weekend trip with those stop times and no other trip changes
-- **Reference actions:** 8
+- **Reference actions:** 6
 - **Entry route:** /gtfs/:version/routes/:route_id/schedules
 
-The eight reference actions are the ones after sign-in, waits excluded: press the route in the
-Routes list; press `Schedules` in the route navigation; press `Add trips`; choose `Service days`;
-choose `Pattern`; select the `First departure` field's value; type the new time; press
-`Add 1 trip`. `Scheduled trips` is already the selected radio and needs no action, and reading the
-flash is not an action. As in `change-times`, the field shows 24-hour clocks where the goal reads
-5:00 p.m.
+The six reference actions are the ones after sign-in, waits excluded, and the executed reference
+trail reaches them: open `Routes` from the dashboard; open route `AAMV` in the list; press
+`Schedules` in the route navigation; press `Add trips`; type `17:00` into `First departure`; press
+`Add 1 trip`. Reading the flash and the reloaded row are not actions.
 
-This count is an estimate until the reference trail for `JRNY-002/add-trip` runs, and the executed
-trail's count replaces it (OQ-006).
+The traced estimate counted four actions this trail does not need. `Scheduled trips` is already the
+selected radio in the drawer, and `Service days` and `Pattern` already carry `WE · 4 trips` and
+`Nye County Airport (Demo) – Amargosa Valley (Demo)`, the calendar and pattern the timetable was
+filtered to, so a tester who filters first never chooses them. Only the departure has to change. As
+in `change-times`, the field shows 24-hour clocks where the goal reads 5:00 p.m.
+
+The drawer is one screen taller than the viewport, so `Where these trips run` and the timetables
+behind it are reached by scrolling the drawer; that is why the trail's step on the save button
+follows the drawer rather than the timetable. The recorded trail's seventh step is a `wait` on the
+flash and is not counted.
+
+The count is the executed trail's, recorded at
+`.specs/ux-qa/reference-trails/JRNY-002-add-trip.json`; it replaces the traced estimate (OQ-006).
 
 ## Open questions
 
@@ -427,9 +436,9 @@ trail's count replaces it (OQ-006).
   `calendar_attributes.txt` and therefore no calendar description. Whether a tester should be sent
   to a feed that names its calendars is a seeding decision, not a documentation one. Owner: product
   owner.
-- OQ-006 — `Reference actions: 6` is the executed `change-times` trail's count; `8` is still
-  counted from the traced `add-trip` flow, not executed. Each reference trail's count replaces its
-  own estimate. Owner: the reference-trail step.
+- OQ-006 — `Reference actions` is now the executed count for both scenarios: `6` for `change-times`
+  and `6` for `add-trip`. Each reference trail's count replaces its own estimate, and each trail is
+  recorded under `.specs/ux-qa/reference-trails/`. Owner: the reference-trail step.
 - OQ-007 — No capture of this journey exists, so section 9 cites none. Which states the pilot
   captures must cover — the timetable, the Add drawer's result card, the Edit drawer, the undo bar —
   is a decision for the pilot steps. Owner: product owner.
@@ -440,3 +449,4 @@ trail's count replaces it (OQ-006).
 |---|---|---|---|
 | 2026-10-01 | 1 | Initial page: stages, seams, examples and the `change-times` and `add-trip` scenarios for JRNY-002 | spec step 38 |
 | 2026-10-01 | 2 | `change-times`: the executed reference trail's six actions replace the traced estimate, and each row's Edit button is named for its trip | spec step 63 |
+| 2026-10-01 | 3 | `add-trip`: the executed reference trail's six actions replace the traced estimate of eight; the drawer already carries the calendar and pattern the timetable is filtered to | spec step 64 |
