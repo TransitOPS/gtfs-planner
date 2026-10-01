@@ -1292,3 +1292,241 @@ test.describe("alert cancelled departures", () => {
     await captureDeparturesReference(page, testInfo, "form-trips", "320");
   });
 });
+
+// The timing question, as spec 30's step 19 renders it: what a current
+// disruption's end needs, and what a planned change expands to (AC-20). Nothing
+// here looks for a publication state or action (R2, CR-1).
+
+// The prototype states this question is compared against. The reference file
+// lives in the gitignored `.specs/` workspace, so a checkout without it skips
+// the capture rather than failing.
+async function captureTimingReference(page, testInfo, state, width) {
+  if (!fs.existsSync(REFERENCE_PATH)) return;
+
+  await page.goto(`file://${REFERENCE_PATH}?state=${state}`);
+  await page.waitForLoadState("load");
+
+  await page.screenshot({
+    path: capturePath(testInfo, `timing-ref-${state}-${width}.png`),
+    fullPage: false,
+  });
+}
+
+// A delay is the sequence the specification's step table gives: urgency,
+// situation, mode, routes, direction, timing - so this journey walks the
+// editor's own flow to the timing question rather than opening a URL with an
+// alert that never existed.
+async function openTiming(page, urgency) {
+  await openNewAlert(page);
+  await waitForEditorMounted(page);
+
+  await page.locator(`#alert-urgency-${urgency}`).click();
+  await page.waitForURL(/step=situation/, { timeout: 15_000 });
+  await page.locator("#situation-delay").click();
+
+  await page.waitForSelector("#mode-3", { timeout: 15_000 });
+  await page.locator("#mode-3").click();
+  await page.waitForSelector("#alert-routes-continue", { timeout: 15_000 });
+
+  await page.locator("#alert-route-search").pressSequentially("Route 1");
+  await page.waitForSelector("#alert-route-options button", { timeout: 15_000 });
+  // Match the label span, not the button's text: the button wraps the label in
+  // whitespace, and "Route 12" and "Route 50" both contain "Route 1".
+  await page
+    .locator("#alert-route-options button")
+    .filter({ has: page.locator("span.font-semibold", { hasText: /^Route 1$/ }) })
+    .first()
+    .click();
+  await page.locator("#alert-routes-continue").click();
+
+  await page.waitForSelector("#direction-both", { timeout: 15_000 });
+  await page.locator("#direction-both").click();
+
+  await page.waitForSelector("#alert-timing", { timeout: 15_000 });
+}
+
+// The days this question offers, Monday first, as the ISO numbers the answer
+// stores. Only Monday to Friday is a plain weekday run.
+const WEEKDAYS = [1, 2, 3, 4, 5];
+
+async function chooseWeekdays(page, days = WEEKDAYS) {
+  for (const day of days) {
+    await page.locator(`#timing-weekday-${day}`).click();
+    await expect(page.locator(`#timing-weekday-${day}`)).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  }
+}
+
+test.describe("alert timing", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  test("a current disruption's end asks for a check-in or an end time @timing", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openTiming(page, "now");
+
+    await expect(page.locator("#alert-question-title")).toHaveText(
+      "When should this alert end?",
+    );
+
+    // The card names the zone the times are read in, because a transit
+    // professional's clock and the browser's clock are not always the same one.
+    await expect(page.locator("#alert-timing-zone")).toContainText(
+      "America/Los_Angeles",
+    );
+
+    // An estimate keeps the alert live, so it asks when staff check back.
+    await page.locator("#alert-timing-end-kind-estimated").click();
+    await expect(page.locator("#alert-timing-end-kind-estimated")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(page.locator("#timing-check-in")).toBeVisible();
+    await expect(page.locator("#timing-end-date")).toHaveCount(0);
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+    // Choosing the check-in writes the civil time it falls on.
+    await page.locator("#timing-check-in").selectOption({ index: 2 });
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+    // A confirmed end expires the alert, so it asks a date and a time instead.
+    await page.locator("#alert-timing-end-kind-confirmed").click();
+    await expect(page.locator("#timing-end-date")).toBeVisible();
+    await expect(page.locator("#timing-end-time")).toBeVisible();
+    await expect(page.locator("#timing-check-in")).toHaveCount(0);
+
+    await page.screenshot({
+      path: capturePath(testInfo, "timing-now-1440.png"),
+      fullPage: false,
+    });
+    await captureTimingReference(page, testInfo, "form-when-now", "1440");
+  });
+
+  test("planned night work previews every date and loses the one removed @timing", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(DESKTOP);
+    await openTiming(page, "planned");
+
+    await expect(page.locator("#alert-question-title")).toHaveText(
+      "When will service change?",
+    );
+
+    // Once and Repeats each week are two different answers, so choosing the
+    // pattern reveals the questions that answer is made of.
+    await page.locator("#alert-timing-pattern-weekly").click();
+    await expect(page.locator("#timing-first-date")).toBeVisible();
+    await expect(page.locator("#timing-weeks")).toBeVisible();
+
+    await page.locator("#timing-first-date").fill("2026-10-05");
+    await page.locator("#timing-weeks").fill("2");
+    await chooseWeekdays(page);
+
+    await page.locator("#timing-day-start").fill("20:00");
+    await page.locator("#timing-day-end").fill("05:00");
+
+    // Until is at or before From, so each night ends the next morning, and the
+    // card says so in words.
+    await expect(page.locator("#alert-timing-overnight")).toContainText(
+      "Ends the following day.",
+    );
+
+    // The preview is the alert's own expansion: ten nights, Monday to Friday
+    // for two weeks.
+    await expect(page.locator("#alert-timing-count")).toContainText(
+      "10 days: Oct 5 to Oct 16",
+    );
+    await expect(page.locator("#alert-timing-occurrences > li")).toHaveCount(10);
+    await expect(page.locator("#alert-timing-occurrence-2026-10-05")).toContainText(
+      "Monday, October 5",
+    );
+    await expect(page.locator("#alert-timing-occurrence-2026-10-05")).toContainText(
+      "8:00 PM to 5:00 AM (next day)",
+    );
+    await expect(page.locator("#alert-timing-occurrence-2026-10-10")).toHaveCount(0);
+
+    // Riders are told from the later of today and a week before the first date,
+    // and the field says so before anything is stored.
+    const notice = await page.locator("#timing-notice-on").inputValue();
+    expect(notice).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+    await page.screenshot({
+      path: capturePath(testInfo, "timing-planned-1440.png"),
+      fullPage: false,
+    });
+
+    // One Friday is removed, which is nine nights and a chip saying so.
+    await page.locator("#timing-date").fill("2026-10-09");
+    await page.locator("#add-timing-date").click();
+
+    await expect(page.locator("#alert-timing-removed-2026-10-09")).toContainText(
+      "Friday, October 9",
+    );
+    await expect(page.locator("#alert-timing-count")).toContainText(
+      "9 days: Oct 5 to Oct 16",
+    );
+    await expect(page.locator("#alert-timing-occurrences > li")).toHaveCount(9);
+    await expect(page.locator("#alert-timing-occurrence-2026-10-09")).toHaveCount(0);
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+    // Putting it back rejoins the pattern.
+    await page.locator("#alert-timing-removed-remove-2026-10-09").click();
+    await expect(page.locator("#alert-timing-count")).toContainText(
+      "10 days: Oct 5 to Oct 16",
+    );
+
+    await page.screenshot({
+      path: capturePath(testInfo, "timing-planned-removed-1440.png"),
+      fullPage: false,
+    });
+    await captureTimingReference(page, testInfo, "form-when-planned", "1440");
+  });
+
+  test("the weekday toggles and the date input work by keyboard @timing", async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(NARROW);
+    await openTiming(page, "planned");
+
+    await page.locator("#alert-timing-pattern-weekly").click();
+    expect(await fitsViewport(page)).toBe(true);
+
+    // A weekday is a button, so Enter on the focused one is the keyboard's own
+    // selection - the same answer a click stores.
+    const monday = page.locator("#timing-weekday-1");
+    await monday.focus();
+    await expect(monday).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(monday).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator("#alert-save-status")).toHaveText("Saved");
+
+    await page.keyboard.press("Space");
+    await expect(monday).toHaveAttribute("aria-pressed", "false");
+
+    await chooseWeekdays(page);
+
+    // The date input is typed rather than filled: a date the keyboard cannot
+    // reach is a date a keyboard user cannot choose.
+    await page.locator("#timing-date").focus();
+    await page.keyboard.type("10052026");
+    await expect(page.locator("#timing-date")).toHaveValue("2026-10-05");
+
+    // Tab reaches Add date and Enter presses it.
+    await page.keyboard.press("Tab");
+    await expect(page.locator("#add-timing-date")).toBeFocused();
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator("#alert-timing-occurrences > li")).toHaveCount(5);
+
+    // The narrow viewport is shorter than the card, so this capture is the
+    // whole page: a cropped one would show the heading and no preview.
+    await page.screenshot({
+      path: capturePath(testInfo, "timing-planned-320.png"),
+      fullPage: true,
+    });
+    await captureTimingReference(page, testInfo, "form-when-planned", "320");
+  });
+});

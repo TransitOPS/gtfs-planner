@@ -1527,6 +1527,482 @@ defmodule GtfsPlannerWeb.Gtfs.AlertComponents do
     """
   end
 
+  @doc """
+  When this applies: the timing question, for a current or a planned alert
+  (AC-20).
+
+  The two halves are the prototype's own `nowWhen` and `plannedWhen` cards: a
+  current alert asks when it started and how it ends, and a planned alert asks
+  whether the change happens once or repeats each week, over which dates, at
+  which time of day, with any individual dates added or removed.
+
+  Every date and time is civil and is read in the version's own zone, which this
+  card names; nothing here converts between zones (CR-7).
+
+  The end-kind cards write the kind and reveal what that kind needs: a
+  confirmed end expires the alert and so asks a date and a time, while an
+  estimated or unknown end leaves it running and asks when staff check back.
+  The overnight note appears whenever Until is at or before From, because that
+  period ends on the following morning (R12). It is a sentence rather than a
+  colour, because it is an instruction and not a warning.
+
+  The preview is `Recurrence.occurrences/1` read from the saved answer, so the
+  dates a reader counts here are the dates the alert stores, and an answer the
+  bounds refuse shows the same message those bounds produce rather than a
+  partial list.
+
+  The notice date renders its derived default as its value - the later of the
+  agency's today and seven days before the first date - so the rule is visible
+  before it is typed rather than after it is stored.
+  """
+  attr :alert, :any, required: true
+  attr :form, :any, required: true
+  attr :now?, :boolean, required: true
+
+  attr :date_form, :any,
+    required: true,
+    doc: "the `to_form/2` form the exception-date input writes to"
+
+  attr :occurrences, :list, required: true, doc: "`Recurrence.occurrences/1` for the saved answer"
+  attr :notice_value, :string, default: nil
+  attr :check_in_options, :list, required: true, doc: "the check-in offsets this editor offers"
+  attr :error, :string, default: nil
+
+  def timing_question(assigns) do
+    ~H"""
+    <div id="alert-timing" class="grid gap-4">
+      <p id="alert-timing-zone" class="text-sm text-muted">
+        All dates and times are in {timing_zone(@alert)}.
+      </p>
+
+      <.now_timing_fields
+        :if={@now?}
+        alert={@alert}
+        form={@form}
+        check_in_options={@check_in_options}
+      />
+
+      <.planned_timing_fields
+        :if={not @now?}
+        alert={@alert}
+        form={@form}
+        date_form={@date_form}
+        notice_value={@notice_value}
+      />
+
+      <div
+        :if={not @now? and @occurrences != []}
+        id="alert-timing-preview"
+        class="rounded-card border border-subtle p-4"
+      >
+        <p id="alert-timing-count" class="text-sm font-bold text-strong">
+          {occurrence_count(@occurrences)}
+        </p>
+
+        <ol id="alert-timing-occurrences" class="mt-2 grid max-h-72 gap-1 overflow-y-auto">
+          <li
+            :for={occurrence <- @occurrences}
+            id={"alert-timing-occurrence-#{Date.to_iso8601(occurrence.date)}"}
+            class="flex flex-wrap items-baseline justify-between gap-2 text-[13px]"
+          >
+            <span class="font-semibold text-strong">{long_date(occurrence.date)}</span>
+            <span class="text-muted">{occurrence_window(occurrence)}</span>
+          </li>
+        </ol>
+      </div>
+
+      <p
+        :if={@error}
+        id="alert-timing-error"
+        role="alert"
+        tabindex="-1"
+        class="text-sm font-semibold text-error-fg"
+      >
+        {@error}
+      </p>
+    </div>
+    """
+  end
+
+  # The three ways a current disruption ends, in the prototype's words. A
+  # function rather than a module attribute because it is read from the template
+  # below, which the compiler does not count as an attribute use.
+  defp end_kind_choices do
+    [
+      %{
+        value: "unknown",
+        label: "Not known yet",
+        description: "Keep the alert live until someone ends it."
+      },
+      %{
+        value: "estimated",
+        label: "Estimated recovery",
+        description: "Tell riders the estimate; keep it live until confirmed."
+      },
+      %{
+        value: "confirmed",
+        label: "Confirmed end time",
+        description: "Automatically end the alert at this time."
+      }
+    ]
+  end
+
+  attr :alert, :any, required: true
+  attr :form, :any, required: true
+  attr :check_in_options, :list, required: true
+
+  # The half of the timing question a current disruption asks: when it started
+  # and how it ends.
+  defp now_timing_fields(assigns) do
+    ~H"""
+    <div id="alert-timing-now-fields" class="grid gap-4">
+      <.choice_cards
+        id="alert-timing-end-kind"
+        event="choose_end_kind"
+        name="end_kind"
+        choices={selected_choices(end_kind_choices(), end_kind_of(@alert))}
+      />
+
+      <.inputs_for :let={f} field={@form[:timing]}>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <.input
+            field={f[:start_date]}
+            type="date"
+            id="timing-start-date"
+            label="Started"
+            help="The date service changed."
+          />
+
+          <.input
+            field={f[:start_time]}
+            type="time"
+            id="timing-start-time"
+            label="Starting at"
+            phx-debounce="450"
+            help="The time riders were first affected."
+          />
+
+          <.input
+            :if={end_time_shown?(@alert)}
+            field={f[:end_time]}
+            type="time"
+            id="timing-end-time"
+            label={if confirmed?(@alert), do: "End alert at", else: "Expected recovery"}
+            phx-debounce="450"
+          />
+
+          <.input
+            :if={confirmed?(@alert)}
+            field={f[:end_date]}
+            type="date"
+            id="timing-end-date"
+            label="Ends on"
+            help="The alert expires on its own at this time."
+          />
+
+          <.input
+            :if={check_in_shown?(@alert)}
+            type="select"
+            name="check_in_offset"
+            id="timing-check-in"
+            label="Remind me to check"
+            options={Enum.map(@check_in_options, &{&1.label, Integer.to_string(&1.minutes)})}
+            value={selected_check_in(@check_in_options)}
+            help="A reminder for staff. The alert stays live until service is confirmed restored."
+          />
+        </div>
+      </.inputs_for>
+    </div>
+    """
+  end
+
+  # A planned change: once, or the same days each week for a number of weeks.
+  defp pattern_choices do
+    [
+      %{
+        value: "continuous",
+        label: "Once",
+        description: "One date or a continuous period."
+      },
+      %{
+        value: "weekly",
+        label: "Repeats each week",
+        description: "Select weekdays, then add or remove individual dates."
+      }
+    ]
+  end
+
+  # Monday to Sunday, as riders name them and as the ISO weekday numbers the
+  # timing answer stores.
+  defp weekdays do
+    [
+      %{iso: 1, short: "Mon", long: "Monday"},
+      %{iso: 2, short: "Tue", long: "Tuesday"},
+      %{iso: 3, short: "Wed", long: "Wednesday"},
+      %{iso: 4, short: "Thu", long: "Thursday"},
+      %{iso: 5, short: "Fri", long: "Friday"},
+      %{iso: 6, short: "Sat", long: "Saturday"},
+      %{iso: 7, short: "Sun", long: "Sunday"}
+    ]
+  end
+
+  attr :alert, :any, required: true
+  attr :form, :any, required: true
+  attr :date_form, :any, required: true
+  attr :notice_value, :string, default: nil
+
+  defp planned_timing_fields(assigns) do
+    ~H"""
+    <div id="alert-timing-planned-fields" class="grid gap-4">
+      <.choice_cards
+        id="alert-timing-pattern"
+        event="choose_pattern"
+        name="pattern"
+        choices={selected_choices(pattern_choices(), pattern_of(@alert))}
+      />
+
+      <.inputs_for :let={f} field={@form[:timing]}>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <.input
+            field={f[:first_date]}
+            type="date"
+            id="timing-first-date"
+            label={if weekly?(@alert), do: "First date", else: "Starts on"}
+          />
+
+          <.input
+            :if={not weekly?(@alert)}
+            field={f[:last_date]}
+            type="date"
+            id="timing-last-date"
+            label="Ends on"
+          />
+
+          <.input
+            :if={weekly?(@alert)}
+            field={f[:weeks]}
+            type="number"
+            id="timing-weeks"
+            label="Number of weeks"
+            min="1"
+            max="52"
+            phx-debounce="450"
+            help="Between 1 and 52 weeks."
+          />
+        </div>
+
+        <div class="mt-2 flex items-center gap-3">
+          <%!-- The checkbox sits beside its label rather than inside it: a
+                 control nested in the label that points at it is activated
+                 twice by the keyboard. The hidden field is what carries the
+                 "no longer all day" answer when the box is cleared. --%>
+          <input type="hidden" name={f[:all_day].name} value="false" />
+          <input
+            type="checkbox"
+            id="timing-all-day"
+            name={f[:all_day].name}
+            value="true"
+            checked={checked?(f[:all_day].value)}
+            class="size-5 shrink-0 accent-action"
+          />
+          <label for="timing-all-day" class="cursor-pointer text-sm font-semibold text-strong">
+            All day
+          </label>
+        </div>
+
+        <div :if={not all_day?(@alert)} class="mt-2 grid gap-4 sm:grid-cols-2">
+          <.input
+            field={f[:start_time]}
+            type="time"
+            id="timing-day-start"
+            label="From"
+            phx-debounce="450"
+          />
+
+          <.input
+            field={f[:end_time]}
+            type="time"
+            id="timing-day-end"
+            label="Until"
+            phx-debounce="450"
+          />
+        </div>
+      </.inputs_for>
+
+      <p
+        :if={overnight?(@alert)}
+        id="alert-timing-overnight"
+        class="text-sm font-semibold text-default"
+      >
+        Ends the following day. Each date below is the night it starts.
+      </p>
+
+      <div :if={weekly?(@alert)} id="alert-timing-weekly" class="grid gap-4">
+        <fieldset id="alert-timing-weekdays" class="grid gap-2">
+          <legend class="text-sm font-semibold text-strong">Days each week</legend>
+
+          <div class="flex flex-wrap gap-1.5">
+            <button
+              :for={day <- weekdays()}
+              id={"timing-weekday-#{day.iso}"}
+              type="button"
+              phx-click="toggle_weekday"
+              phx-value-day={day.iso}
+              aria-pressed={to_string(day.iso in weekdays_of(@alert))}
+              aria-label={day.long}
+              class={[
+                "min-h-11 min-w-11 rounded-control border px-2 text-sm font-semibold transition-colors",
+                day.iso in weekdays_of(@alert) && "border-action bg-selection text-action",
+                day.iso not in weekdays_of(@alert) &&
+                  "border-control text-strong hover:border-action hover:bg-selection"
+              ]}
+            >
+              {day.short}
+            </button>
+          </div>
+        </fieldset>
+
+        <div id="alert-timing-dates" class="grid gap-2">
+          <.input
+            type="date"
+            field={@date_form[:date]}
+            id="timing-date"
+            label="Add or remove a date"
+            help="A date the pattern already covers is removed; any other date is added."
+          />
+
+          <div>
+            <.button id="add-timing-date" type="button" phx-click="add_timing_date">
+              <.icon name="hero-plus" class="size-4" /> Add date
+            </.button>
+          </div>
+
+          <ul id="alert-timing-date-chips" class="flex flex-wrap gap-2">
+            <li :for={date <- added_dates(@alert)} id={date_chip_id("added", date)}>
+              <span class="inline-flex min-h-11 items-center gap-2 rounded-control border border-action bg-selection px-3 text-[13px] font-semibold text-action">
+                {long_date(date)}
+                <.button
+                  id={date_chip_button_id("added", date)}
+                  type="button"
+                  variant="quiet"
+                  phx-click="remove_timing_date"
+                  phx-value-date={Date.to_iso8601(date)}
+                >
+                  <.icon name="hero-x-mark" class="size-4" /> Remove
+                  <span class="sr-only">{long_date(date)}</span>
+                </.button>
+              </span>
+            </li>
+
+            <li :for={date <- removed_dates(@alert)} id={date_chip_id("removed", date)}>
+              <span class="inline-flex min-h-11 items-center gap-2 rounded-control border border-dashed border-strong px-3 text-[13px] font-semibold text-strong line-through">
+                {long_date(date)}
+                <.button
+                  id={date_chip_button_id("removed", date)}
+                  type="button"
+                  variant="quiet"
+                  phx-click="remove_timing_date"
+                  phx-value-date={Date.to_iso8601(date)}
+                >
+                  <.icon name="hero-arrow-uturn-left" class="size-4" /> Put it back
+                  <span class="sr-only">{long_date(date)}</span>
+                </.button>
+              </span>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      <.input
+        type="date"
+        name="alert[timing][notice_on]"
+        id="timing-notice-on"
+        label="Riders told from"
+        value={@notice_value}
+        help="Advance notice does not mean the disruption is happening yet. Riders see the alert from this date, and the service change applies from the dates above."
+      />
+    </div>
+    """
+  end
+
+  defp timing_zone(%{timing: %{time_zone: zone}}) when is_binary(zone) and zone != "", do: zone
+  defp timing_zone(_alert), do: "the agency's own time zone"
+
+  defp timing_of(%{timing: timing}), do: timing
+  defp timing_of(_alert), do: nil
+
+  defp end_kind_of(alert), do: timing_of(alert) && timing_of(alert).end_kind
+  defp pattern_of(alert), do: timing_of(alert) && timing_of(alert).pattern
+  defp weekdays_of(alert), do: (timing_of(alert) && timing_of(alert).weekdays) || []
+  defp added_dates(alert), do: (timing_of(alert) && timing_of(alert).added_dates) || []
+  defp removed_dates(alert), do: (timing_of(alert) && timing_of(alert).removed_dates) || []
+
+  defp weekly?(alert), do: pattern_of(alert) == :weekly
+  defp confirmed?(alert), do: end_kind_of(alert) == :confirmed
+
+  defp end_time_shown?(alert), do: end_kind_of(alert) in [:estimated, :confirmed]
+  defp check_in_shown?(alert), do: end_kind_of(alert) in [:unknown, :estimated]
+
+  defp all_day?(alert), do: timing_of(alert) != nil and timing_of(alert).all_day == true
+
+  # A period whose end is at or before its start ends on the following civil
+  # day (R12), so the answer needs saying in words.
+  defp overnight?(alert) do
+    case timing_of(alert) do
+      %{start_time: start, end_time: %Time{} = end_time} ->
+        not all_day?(alert) and Time.compare(end_time, start) != :gt
+
+      _other ->
+        false
+    end
+  end
+
+  defp selected_choices(choices, value) do
+    Enum.map(choices, fn choice ->
+      Map.put(choice, :selected?, Atom.to_string(value) == choice.value)
+    end)
+  end
+
+  defp selected_check_in(options) do
+    case Enum.find(options, & &1.selected?) do
+      nil -> nil
+      option -> Integer.to_string(option.minutes)
+    end
+  end
+
+  defp checked?(value), do: value not in [nil, false, "false"]
+
+  defp date_chip_id(kind, date), do: "alert-timing-#{kind}-#{Date.to_iso8601(date)}"
+
+  defp date_chip_button_id(kind, date), do: "alert-timing-#{kind}-remove-#{Date.to_iso8601(date)}"
+
+  defp occurrence_count(occurrences) do
+    first = List.first(occurrences)
+    last = List.last(occurrences)
+    days = if length(occurrences) == 1, do: "day", else: "days"
+
+    "#{length(occurrences)} #{days}: #{short_date(first.date)} to #{short_date(last.date)}"
+  end
+
+  # The window one occurrence covers, in the agency's own words: an all-day
+  # period is the whole date, and an overnight period says so rather than
+  # reading as an end before its start.
+  defp occurrence_window(%{all_day?: true}), do: "All day"
+
+  defp occurrence_window(%{starts: nil}), do: "All day"
+
+  defp occurrence_window(%{starts: starts, ends: nil}), do: clock(starts)
+
+  defp occurrence_window(%{starts: starts, ends: ends}) do
+    overnight = if NaiveDateTime.compare(ends, starts) == :gt, do: "", else: " (next day)"
+    "#{clock(starts)} to #{clock(ends)}#{overnight}"
+  end
+
+  defp clock(datetime), do: Calendar.strftime(datetime, "%-I:%M %p")
+
+  defp long_date(date), do: Calendar.strftime(date, "%A, %B %-d")
+  defp short_date(date), do: Calendar.strftime(date, "%b %-d")
+
   # The one combobox both stop questions use, styled like the transfers editor's
   # so the same control looks the same wherever an operator meets it.
   attr :id, :string, required: true

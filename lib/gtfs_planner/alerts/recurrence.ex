@@ -94,6 +94,26 @@ defmodule GtfsPlanner.Alerts.Recurrence do
   end
 
   @doc """
+  Returns the date riders are told from (AC-20).
+
+  The answer's own `notice_on` when it has one, because that is what the editor
+  chose. Otherwise the later of the agency's `today` and seven days before the
+  first date the pattern applies: an alert is never told before it can be
+  published, and never more than a week early by default. A `today` is read in
+  the agency's own zone by the caller, so nothing here converts a time (CR-7).
+  """
+  @spec notice_on(TimingAnswer.t() | nil, Date.t()) :: Date.t()
+  def notice_on(%TimingAnswer{notice_on: %Date{} = notice_on}, _today), do: notice_on
+
+  def notice_on(%TimingAnswer{first_date: %Date{} = first_date}, today) do
+    latest = Date.add(first_date, -7)
+
+    if Date.compare(latest, today) == :gt, do: latest, else: today
+  end
+
+  def notice_on(_timing, today), do: today
+
+  @doc """
   Returns the `{first_date, last_date}` an alert covers, or `{nil, nil}` when it
   does not cover any date yet.
 

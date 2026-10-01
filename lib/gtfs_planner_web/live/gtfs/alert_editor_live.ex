@@ -121,6 +121,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
       shared_question: 1,
       situation_question: 1,
       stops_question: 1,
+      timing_question: 1,
       urgency_question: 1
     ]
 
@@ -132,6 +133,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   alias GtfsPlanner.Alerts.Completion
   alias GtfsPlanner.Alerts.Listing
   alias GtfsPlanner.Alerts.Recurrence
+  alias GtfsPlanner.Alerts.TimingAnswer
   alias GtfsPlanner.Gtfs.AuditContext
   alias GtfsPlannerWeb.Gtfs.AlertComponents
   alias LiveSelect.Component, as: LiveSelectComponent
@@ -188,6 +190,20 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     review: "Review"
   }
 
+  # The values this step's own cards offer, so a hand-made event naming anything
+  # else stores nothing. Both are the enums `TimingAnswer` itself casts.
+  @end_kinds [:confirmed, :estimated, :unknown]
+  @patterns [:continuous, :weekly]
+
+  # How long from now a check-in can be set for. These are the offsets the
+  # prototype offers and they are resolved against the agency's own clock, so a
+  # reminder is a civil time rather than a count of seconds (CR-7).
+  @check_in_offsets [15, 30, 60, 120, 240]
+
+  # What `Recurrence` says when a pattern would expand past its own bound, in
+  # the editor's words rather than the module's (AC-20).
+  @too_many_occurrences "That's too many dates. Shorten the period or choose fewer days."
+
   # The middle of each situation's sequence, exactly as the specification's
   # step-sequence table gives it (spec 4.3). `shared` is marked conditional here
   # because it appears only when a chosen stop is served by a route the alert
@@ -242,6 +258,12 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
      |> assign(:added_dates, [])
      |> assign(:chosen_date, nil)
      |> assign(:service_date_form, service_date_form(nil))
+     |> assign(:chosen_timing_date, nil)
+     |> assign(:timing_date_form, timing_date_form(nil))
+     |> assign(:timing_occurrences, [])
+     |> assign(:timing_error, nil)
+     |> assign(:check_in_options, [])
+     |> assign(:notice_value, nil)
      |> assign(:form, draft_form(%Alert{}))}
   end
 
@@ -429,31 +451,53 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   # own. It is only the date the editor is looking at: **Add date** is what puts
   # it in the list, so typing a date never answers the question by itself and
   # nothing is written for it here.
-  def handle_event("autosave", %{"service_date" => %{"date" => value}}, socket)
+  def handle_event("autosave", %{"service_date" => %{"date" => value}} = params, socket)
       when is_binary(value) do
-    {:noreply,
-     socket
-     |> assign(:chosen_date, parse_date(value))
-     |> assign(:service_date_form, service_date_form(value))}
+    # The date the editor is looking at is not the answer, so only the value is
+    # taken from this event; every other field it carries is written as usual.
+    socket =
+      socket
+      |> assign(:chosen_date, parse_date(value))
+      |> assign(:service_date_form, service_date_form(value))
+
+    autosave_alert(socket, params)
   end
 
-  def handle_event("autosave", %{"alert" => params}, socket) when is_map(params) do
-    case socket.assigns.alert do
-      # Nothing has been answered yet, so there is no row to save. The first
-      # answer creates it (AC-15); autosave has nothing to write before that.
-      nil ->
-        {:noreply, socket}
+  # The exception date is a field inside this same autosave form, so it arrives
+  # as this question's own answer rather than as an event of its own. It is
+  # only the date the editor is looking at: **Add date** is what puts it on the
+  # alert, as a removed date when the pattern already covers it and as an added
+  # one when it does not.
+  def handle_event("autosave", %{"timing_date" => %{"date" => value}} = params, socket)
+      when is_binary(value) do
+    # As with the service date, the typed date is what **Add date** acts on
+    # rather than an answer of its own.
+    socket =
+      socket
+      |> assign(:chosen_timing_date, parse_date(value))
+      |> assign(:timing_date_form, timing_date_form(value))
 
-      alert ->
-        # A change carrying nothing but the base revision is the route search
-        # losing focus, not an answer. Writing it would move the row's revision
-        # for no change and hand the next write a base nobody typed at.
-        if castable(params) == %{} do
-          {:noreply, socket}
-        else
-          save(socket, alert, params)
-        end
-    end
+    autosave_alert(socket, params)
+  end
+
+  # A check-in is stored as the civil time it falls on rather than as a count of
+  # seconds, so it is read in the agency's own zone wherever it is shown (CR-7).
+  def handle_event("autosave", %{"check_in_offset" => minutes} = params, socket)
+      when is_binary(minutes) do
+    # The select is one field of the same form, so its change arrives with every
+    # other answer this card holds; the resolved time joins them rather than
+    # replacing them.
+    params =
+      case check_in_at(socket, minutes) do
+        nil -> params
+        at -> put_in(params, ["alert", "timing", "check_in_at"], at)
+      end
+
+    autosave_alert(socket, params)
+  end
+
+  def handle_event("autosave", %{"alert" => params} = all, socket) when is_map(params) do
+    autosave_alert(socket, all)
   end
 
   # Retry re-sends the params the last save carried. The typed values are still
@@ -816,6 +860,139 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     end
   end
 
+  # -- Timing -------------------------------------------------------------
+
+  # The end kind decides what this card needs next, so choosing one writes the
+  # kind and clears whatever that kind no longer means: a confirmed end expires
+  # the alert and has no check-in, an estimate has no end date, and an unknown
+  # end has neither (AC-20). The card stays open, because the rest of the answer
+  # is still this question's.
+  def handle_event("choose_end_kind", %{"end_kind" => kind}, socket) when is_binary(kind) do
+    case Enum.find(@end_kinds, &(Atom.to_string(&1) == kind)) do
+      nil ->
+        {:noreply, socket}
+
+      kind ->
+        attrs =
+          case kind do
+            :confirmed -> %{"end_kind" => kind, "check_in_at" => nil}
+            :estimated -> %{"end_kind" => kind, "end_date" => nil}
+            :unknown -> %{"end_kind" => kind, "end_time" => nil, "end_date" => nil}
+          end
+
+        write_timing(socket, attrs)
+    end
+  end
+
+  # Once and Repeats each week are two different answers rather than two
+  # settings, so choosing one clears the fields the other answer used. The card
+  # stays open for the same reason the end kind does.
+  def handle_event("choose_pattern", %{"pattern" => pattern}, socket) when is_binary(pattern) do
+    case Enum.find(@patterns, &(Atom.to_string(&1) == pattern)) do
+      nil ->
+        {:noreply, socket}
+
+      :continuous ->
+        write_timing(socket, %{
+          "pattern" => pattern,
+          "weeks" => nil,
+          "weekdays" => [],
+          "added_dates" => [],
+          "removed_dates" => []
+        })
+
+      :weekly ->
+        write_timing(socket, %{"pattern" => pattern, "last_date" => nil})
+    end
+  end
+
+  # One day and one write, which is what keeps Back lossless. The weekday is the
+  # ISO number the timing answer stores, and a value outside 1 to 7 stores
+  # nothing (R12).
+  def handle_event("toggle_weekday", %{"day" => day}, socket) when is_binary(day) do
+    alert = socket.assigns.alert
+
+    with {iso, ""} <- Integer.parse(day),
+         true <- iso in 1..7,
+         %{} = alert <- alert do
+      chosen = timing_of(alert).weekdays || []
+      days = if iso in chosen, do: List.delete(chosen, iso), else: Enum.sort(chosen ++ [iso])
+
+      write_timing(socket, %{"weekdays" => days})
+    else
+      _not_a_weekday -> {:noreply, socket}
+    end
+  end
+
+  # **Add date** is one date at a time, because a date inside the pattern is
+  # removed while any other date is added - the same two answers the pattern
+  # itself has, and the alert stores them as two lists (AC-20).
+  def handle_event("add_timing_date", _params, socket) do
+    case socket.assigns.chosen_timing_date do
+      nil ->
+        {:noreply, assign(socket, :timing_error, "Choose a date to add.")}
+
+      date ->
+        case timing_of(socket.assigns.alert) do
+          %TimingAnswer{} = timing ->
+            attrs =
+              if in_pattern?(timing, date) do
+                %{
+                  "removed_dates" => Enum.uniq((timing.removed_dates || []) ++ [date]),
+                  "added_dates" => (timing.added_dates || []) -- [date]
+                }
+              else
+                %{
+                  "added_dates" => Enum.uniq((timing.added_dates || []) ++ [date]),
+                  "removed_dates" => (timing.removed_dates || []) -- [date]
+                }
+              end
+
+            write_timing(socket, attrs)
+
+          # There is no row to add a date to before the first answer.
+          _absent ->
+            {:noreply, socket}
+        end
+    end
+  end
+
+  # Putting a date back takes it off whichever list held it, so a removed day
+  # rejoins the pattern and an added day leaves the alert.
+  def handle_event("remove_timing_date", %{"date" => value}, socket) when is_binary(value) do
+    with %Date{} = date <- parse_date(value),
+         %{} = alert <- socket.assigns.alert do
+      timing = timing_of(alert)
+
+      write_timing(socket, %{
+        "added_dates" => (timing.added_dates || []) -- [date],
+        "removed_dates" => (timing.removed_dates || []) -- [date]
+      })
+    else
+      _not_a_date -> {:noreply, socket}
+    end
+  end
+
+  # The timing answers are several fields rather than one self-contained choice,
+  # so Continue is the action that moves on, and it moves only once every answer
+  # this alert's situation asks for is stored. The message it refuses with is
+  # `Completion`'s own, so the question and the review cannot disagree.
+  def handle_event("continue_timing", _params, socket) do
+    case socket.assigns.alert do
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        case timing_errors(alert) do
+          [] ->
+            {:noreply, advance_without_writing(socket, alert, :timing)}
+
+          [{_step, _field, message} | _rest] ->
+            {:noreply, assign(socket, :timing_error, message)}
+        end
+    end
+  end
+
   def handle_event(_event, _params, socket), do: {:noreply, socket}
 
   # R7, and the failure EV-16 exists to reject: a label the editor then types
@@ -916,6 +1093,41 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   end
 
   # -- Stop answers ------------------------------------------------------
+
+  # One change of the editor's own form, whatever else it carries: the row is
+  # written through `Alerts.save_draft/4` and never through anything else
+  # (INV-1).
+  defp autosave_alert(socket, %{"alert" => params}) when is_map(params) do
+    case socket.assigns.alert do
+      # Nothing has been answered yet, so there is no row to save. The first
+      # answer creates it (AC-15); autosave has nothing to write before that.
+      nil ->
+        {:noreply, socket}
+
+      alert ->
+        # A change carrying nothing but the base revision is a control losing
+        # focus, not an answer. Writing it would move the row's revision for no
+        # change and hand the next write a base nobody typed at.
+        if castable(params) == %{} do
+          {:noreply, socket}
+        else
+          save(socket, alert, params)
+        end
+    end
+  end
+
+  defp autosave_alert(socket, _params), do: {:noreply, socket}
+
+  # The civil time a check-in offset falls on, or `nil` for an offset this
+  # editor does not offer.
+  defp check_in_at(socket, minutes) do
+    with {offset, ""} <- Integer.parse(minutes),
+         true <- offset in @check_in_offsets do
+      NaiveDateTime.add(Alerts.agency_now(audit_context(socket)), offset * 60)
+    else
+      _not_an_offset -> nil
+    end
+  end
 
   # Every stop answer goes through the one writer. A `nil` alert is the new-alert
   # frame, which writes nothing before the first answer (AC-15, INV-1).
@@ -1172,6 +1384,136 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp trip_params(trips),
     do: Enum.map(trips, &%{"trip_id" => &1.trip_id, "service_date" => &1.service_date})
 
+  # -- Timing answers ----------------------------------------------------
+
+  # Every timing answer goes through the one writer, like every other answer
+  # (INV-1). A `nil` alert is the new-alert frame, which writes nothing before
+  # the first answer (AC-15).
+  defp write_timing(socket, attrs) do
+    case socket.assigns.alert do
+      nil -> {:noreply, socket}
+      alert -> save(socket, alert, attrs)
+    end
+  end
+
+  defp timing_of(%Alert{timing: %TimingAnswer{} = timing}), do: timing
+  defp timing_of(_alert), do: nil
+
+  # Whether the pattern itself covers this date, which is what decides whether
+  # naming it removes it or adds it. The bounds are the ones
+  # `Recurrence.occurrences/1` expands with, so a date the editor can remove is
+  # a date the preview was counting.
+  defp in_pattern?(
+         %TimingAnswer{
+           first_date: %Date{} = first_date,
+           weeks: weeks,
+           weekdays: weekdays
+         },
+         %Date{} = date
+       )
+       when is_integer(weeks) and weeks > 0 and is_list(weekdays) do
+    offset = Date.diff(date, first_date)
+    offset >= 0 and offset < weeks * 7 and Date.day_of_week(date) in weekdays
+  end
+
+  defp in_pattern?(_timing, _date), do: false
+
+  # Only the errors this step's own question is responsible for, read from the
+  # one completion check the review step also uses, so Continue and the review
+  # refuse for the same reasons (AC-20, AC-23).
+  defp timing_errors(%Alert{situation: :cancelled_trips}), do: []
+
+  defp timing_errors(%Alert{} = alert) do
+    Enum.filter(Completion.errors(alert), &match?({:timing, _field, _message}, &1))
+  end
+
+  # The exception date input's own form, built from the date the editor typed
+  # rather than from the row, because a date that has not been added is not an
+  # answer.
+  defp timing_date_form(value), do: to_form(%{"date" => value}, as: :timing_date)
+
+  # The timing question is read from the row rather than queried, so it is
+  # prepared where every other step's values are: when the row changes or the
+  # editor arrives.
+  defp prepare_timing_question(socket, alert) do
+    if socket.assigns.step == :timing do
+      build_timing_question(socket, alert)
+    else
+      # The card is the only reader of these, and the agency clock is a read, so
+      # no other step pays for them.
+      assign(socket,
+        timing_occurrences: [],
+        timing_error: nil,
+        check_in_options: [],
+        timing_date_form: timing_date_form(nil),
+        notice_value: nil
+      )
+    end
+  end
+
+  defp build_timing_question(socket, alert) do
+    now = socket |> audit_context() |> Alerts.agency_now()
+
+    {occurrences, error} =
+      case timing_of(alert) do
+        %TimingAnswer{} = timing ->
+          case Recurrence.occurrences(timing) do
+            {:ok, occurrences} -> {occurrences, nil}
+            {:error, :too_many} -> {[], @too_many_occurrences}
+            {:error, :incomplete} -> {[], nil}
+          end
+
+        _absent ->
+          {[], nil}
+      end
+
+    socket
+    |> assign(:timing_occurrences, occurrences)
+    |> assign(:timing_error, error)
+    |> assign(:check_in_options, check_in_options(now, alert))
+    |> assign(:timing_date_form, timing_date_form(iso_or_nil(socket.assigns.chosen_timing_date)))
+    |> assign(:notice_value, notice_value(socket, alert, NaiveDateTime.to_date(now)))
+  end
+
+  # The offsets the check-in offers, each with the civil time it falls on in the
+  # agency's own zone, so the reader sees the clock time they are choosing
+  # rather than only an interval (CR-7).
+  defp check_in_options(now, alert) do
+    chosen = timing_of(alert) && timing_of(alert).check_in_at
+
+    Enum.map(@check_in_offsets, fn minutes ->
+      at = NaiveDateTime.add(now, minutes * 60)
+
+      %{
+        minutes: minutes,
+        at: at,
+        label: "In #{minutes} minutes · #{Calendar.strftime(at, "%-I:%M %p")}",
+        selected?: not is_nil(chosen) and NaiveDateTime.compare(chosen, at) == :eq
+      }
+    end)
+  end
+
+  # What the notice input shows: the value the form holds - which is a refused
+  # save's own value when one is on screen - and otherwise the rule's default,
+  # the later of today and seven days before the first date (AC-20). Storing
+  # nothing is what lets the default follow a date the editor changes later.
+  defp notice_value(socket, alert, today) do
+    field =
+      case socket.assigns.form && socket.assigns.form[:timing] do
+        nil -> nil
+        timing_form -> timing_form[:notice_on]
+      end
+
+    if is_binary(field && field.value) and field.value != "" do
+      field.value
+    else
+      iso_or_nil(Recurrence.notice_on(timing_of(alert), today))
+    end
+  end
+
+  defp iso_or_nil(nil), do: nil
+  defp iso_or_nil(%Date{} = date), do: Date.to_iso8601(date)
+
   defp parse_date(value) when is_binary(value) do
     case Date.from_iso8601(value) do
       {:ok, date} -> date
@@ -1332,7 +1674,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:flags, flags)
     |> assign(:steps, prepare_steps(steps_for(alert, flags), socket.assigns.step, flags, socket))
     |> assign(:preview, preview(socket, alert))
-    |> prepare_stop_questions(alert)
+    |> prepare_questions(alert)
   end
 
   # -- Loading ------------------------------------------------------------
@@ -1401,21 +1743,24 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     |> assign(:departure_error, nil)
     |> assign(:stretch_ends, %{})
     |> assign(:directions_open?, false)
+    |> assign(:chosen_timing_date, socket.assigns[:chosen_timing_date] || nil)
     |> assign(:form, draft_form(alert || %Alert{}))
-    |> prepare_stop_questions(alert)
+    |> prepare_questions(alert)
   end
 
-  # The three reads the stop questions need, taken when the row changes rather
-  # than in the render function: the route's own stop list for the skipped-stop
-  # question, the routes that share the stops the alert names, and the combobox
-  # fields. Every read goes through the audit context, so all three are the
-  # alert's own version's (CR-4).
-  defp prepare_stop_questions(socket, alert) do
+  # The reads the questions that need more than the alert's own answers take,
+  # taken when the row changes rather than in the render function: the route's
+  # own stop list for the skipped-stop question, the routes that share the stops
+  # the alert names, the combobox fields, the cancelled departures and this
+  # step's expanded occurrences. Every read goes through the audit context, so
+  # all of them are the alert's own version's (CR-4).
+  defp prepare_questions(socket, alert) do
     socket
     |> reset_stop_fields()
     |> assign(:route_stop_options, route_stop_options(socket, alert))
     |> assign(:shared_routes, shared_route_options(socket, alert))
     |> prepare_departure_question()
+    |> prepare_timing_question(alert)
   end
 
   # The prototype's skipped-stop list is the chosen route's own stops, in the
@@ -1630,7 +1975,15 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   end
 
   defp step_answered?(:departures, alert), do: present?(scope(alert).trips)
-  defp step_answered?(:timing, alert), do: not is_nil(alert.timing)
+
+  defp step_answered?(:timing, %Alert{urgency: :now, timing: timing}),
+    do: current_timing_answered?(timing)
+
+  defp step_answered?(:timing, %Alert{timing: %TimingAnswer{first_date: %Date{}}} = alert),
+    do: not is_nil(alert.timing.pattern)
+
+  defp step_answered?(:timing, _alert), do: false
+
   defp step_answered?(:reason, alert), do: not is_nil(alert.cause)
 
   defp step_answered?(:message, alert) do
@@ -1638,6 +1991,15 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   end
 
   defp step_answered?(:review, alert), do: alert.complete
+
+  # The timing embed exists on every row - the zone is written when the draft is
+  # created - so an answer means what the question stores, not that a struct is
+  # there (AC-20).
+  defp current_timing_answered?(nil), do: false
+
+  defp current_timing_answered?(%TimingAnswer{start_date: start_date, end_kind: end_kind}) do
+    not is_nil(start_date) and not is_nil(end_kind)
+  end
 
   # -- Creating, saving and deleting --------------------------------------
 
@@ -1848,6 +2210,9 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
   defp question_hint(:departures),
     do: "Choose the departures that will not run, and the dates they run on."
 
+  defp question_hint(:timing),
+    do: "Say when this starts and ends, then check the dates it covers."
+
   defp question_hint(:place), do: "Search this version's stops by name or number."
 
   defp question_hint(_step), do: "Choose an option to move on. You can go back at any time."
@@ -1866,6 +2231,7 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
     :shared,
     :alternative,
     :departures,
+    :timing,
     :message
   ]
 
@@ -2085,6 +2451,18 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                     error={@departure_error}
                   />
 
+                  <.timing_question
+                    :if={@step == :timing}
+                    alert={@alert}
+                    form={@form}
+                    now?={not is_nil(@alert) and @alert.urgency == :now}
+                    date_form={@timing_date_form}
+                    occurrences={@timing_occurrences}
+                    notice_value={@notice_value}
+                    check_in_options={@check_in_options}
+                    error={@timing_error}
+                  />
+
                   <.message_fields
                     :if={@step == :message}
                     form={@form}
@@ -2139,6 +2517,21 @@ defmodule GtfsPlannerWeb.Gtfs.AlertEditorLive do
                       variant="primary"
                       class="ml-auto"
                       phx-click="continue_departures"
+                    >
+                      Continue
+                    </.button>
+
+                    <%!-- The timing answers are several fields rather than one
+                         self-contained choice, so Continue is what carries the
+                         reader on, and it refuses while an answer this
+                         situation needs is missing. --%>
+                    <.button
+                      :if={@step == :timing}
+                      id="alert-timing-continue"
+                      type="button"
+                      variant="primary"
+                      class="ml-auto"
+                      phx-click="continue_timing"
                     >
                       Continue
                     </.button>
